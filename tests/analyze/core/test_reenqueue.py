@@ -308,8 +308,8 @@ async def test_pushed_file_is_not_analyze_done_for_process_file(
         session, _ledger_fids([SchedulingLedger(key=key, function="push_file", routing="agent", payload={"file_id": str(f.id)})])
     )
 
-    # The landed file IS in the push done-set (SUCCEEDED cloud_job, D-07)...
-    assert str(f.id) in done_sets.push_done
+    # The landed file IS in the cloud-lane done-set (SUCCEEDED cloud_job, D-07)...
+    assert str(f.id) in done_sets.cloud_lane_done
 
     # ...but a process_file row for the same file is NOT domain-completed (no analysis row -> analyze pending).
     pf_row = SchedulingLedger(key=f"process_file:{f.id}", function="process_file", routing="agent", payload={"file_id": str(f.id)})

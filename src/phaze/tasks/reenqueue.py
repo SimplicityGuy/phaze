@@ -123,7 +123,7 @@ import json
 from typing import TYPE_CHECKING, Any, cast
 import uuid
 
-from sqlalchemy import ARRAY, Select, bindparam, exists, func, or_, select, text
+from sqlalchemy import ARRAY, Select, bindparam, func, select, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 import structlog
 
@@ -134,11 +134,12 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.services import cloud_staging
 from phaze.services.backends import IN_FLIGHT
+from phaze.services.cloud_staging import NoCloudJobToRedriveError
 from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_agent_by_id
 from phaze.services.pipeline import count_inflight_jobs, get_live_job_keys
 from phaze.services.s3_staging import S3StagingError
 from phaze.services.scheduling_ledger import get_ledger_rows, insert_ledger_if_absent
-from phaze.services.stage_status import domain_completed_clause, skipped_clause
+from phaze.services.stage_status import CLOUD_LANE_FUNCTIONS, cloud_lane_completed_clause, domain_completed_clause, skipped_clause
 from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS
 from phaze.tasks._shared.replay_safety import LEDGER_REPLAY_REGENERATED, find_time_limited_paths
 
@@ -174,17 +175,31 @@ _DOMAIN_COMPLETED_STAGES: frozenset[str] = frozenset(
     {
         "process_file",  # analyze: domain_completed_clause(ANALYZE) == done OR terminal-failed
         "extract_file_metadata",  # domain_completed_clause(METADATA) + the D-10 enqueued_at gate at the call site
-        "push_file",  # D-07: cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)
+        "push_file",  # D-07: cloud_lane_completed_clause() == cloud_job 'succeeded' OR domain_completed_clause(ANALYZE)
+        "s3_upload",  # phaze-k95r7: the SAME cloud-lane predicate as push_file -- see below
     }
 )
 """Keyed functions that carry a per-stage domain-completed predicate (the SECONDARY exclusion).
 
-EVERY other keyed function (the four controller stages) is live-keys-only -- its ledger row is
-reliably cleared on every terminal outcome (Plan 01's after_process), so any surviving row IS
-genuinely orphaned and needs no domain net.
-Phase 80 (READ-03) cut every predicate over to the derived layer -- ``process_file`` /
-``extract_file_metadata`` / ``push_file`` are now derived from the per-stage output tables via the
-LOCKED ``domain_completed_clause`` builder, with ZERO ``FileRecord.state`` reads (the old FileState-derived "done" is gone).
+This set is exactly THE FILE-KEYED AGENT TASKS -- every keyed function that is both routed to an agent
+(``enqueue_router.AGENT_TASKS``) and keyed on a ``file_id`` (``deterministic_key._KEY_BUILDERS``). That
+is the population whose ledger clear is NOT reliable, because the work runs off-controller and the row
+is cleared by a control-side callback that a crash, a restart or a swept ``saq_jobs`` row can lose.
+(``write_file_tags`` is agent-routed but keyed on a ``log_id``, not a file, so no per-file completion
+predicate can exist for it; the remaining keyed functions are CONTROLLER tasks whose clear rides the
+broker's own ``after_process`` and needs no domain net.)
+
+phaze-k95r7 ADDED ``s3_upload``, which had been the one file-keyed agent task with NO completion
+exclusion of any kind -- an omission, not a decision. Measured on the live deployment 2026-08-08: 17
+``s3_upload`` rows dated 2026-07-07/14, every one of them for a file whose analysis had SUCCEEDED and
+whose ``cloud_job`` row had since been cleaned up, were still being handed to the regenerator on every
+single recovery run and reported ``unreplayable`` forever. Nothing else could have excluded them: the
+two cloud exclusions (:func:`_in_flight_cloud_job_ids` / :func:`_awaiting_cloud_job_ids`) both key off a
+``cloud_job`` row these files no longer had.
+
+Phase 80 (READ-03) cut every predicate over to the derived layer -- all four are derived from the
+per-stage output tables via the LOCKED ``domain_completed_clause`` / ``cloud_lane_completed_clause``
+builders, with ZERO ``FileRecord.state`` reads (the old FileState-derived "done" is gone).
 Kept in sync with ``deterministic_key._KEY_BUILDERS`` by a totality test in test_recovery.py.
 """
 
@@ -210,7 +225,7 @@ class _DoneSets:
     metadata_domain_completed: set[str]  # domain_completed_clause(METADATA): done OR skipped OR failed (D-10 gate refines the failed-only subset)
     metadata_failed_at: dict[str, datetime]  # failed_clause(METADATA) rows -> failed_at (D-10 gate)
     metadata_skipped: set[str]  # skipped_clause(METADATA) alone: force-skip is domain-complete UNCONDITIONALLY, never gated
-    push_done: set[str]  # D-07: cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)
+    cloud_lane_done: set[str]  # D-07 / phaze-k95r7: cloud_lane_completed_clause() -- covers BOTH push_file and s3_upload
 
 
 TALLY_KEYS: tuple[str, ...] = ("reenqueued", "skipped", "errored", "unreplayable")
@@ -290,11 +305,13 @@ async def _build_done_sets(session: AsyncSession, fids: list[uuid.UUID]) -> _Don
       gate -- a force-skipped file that ALSO carries a stale ``failed_at`` (the force-skip writer's
       additive-only contract, T-87-20, never clears it) must stay domain-complete UNCONDITIONALLY,
       never re-subjected to the failed-only ``enqueued_at`` comparison (phaze-3m5n).
-    - ``push_done``: ``cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)`` (D-07). A
-      ``push_file`` ledger row implies compute (``ComputeAgentBackend.dispatch`` is its only producer), so no
-      backend-kind resolution is needed: SUCCEEDED covers the landed-but-not-yet-analyzed window and
+    - ``cloud_lane_done``: ``cloud_lane_completed_clause()`` -- ``cloud_job.status='succeeded' OR
+      domain_completed_clause(ANALYZE)`` (D-07, generalised by phaze-k95r7 to cover ``s3_upload`` as
+      well as ``push_file``). SUCCEEDED covers the landed-but-not-yet-analyzed window and
       ``domain_completed(analyze)`` covers the onward advance; a SUBMITTED / AWAITING / no-row file is
-      NOT push-done and re-drives.
+      NOT cloud-lane-done and re-drives. No backend-kind resolution is needed: both producers name a
+      file and a cloud destination, and both are moot the moment the analysis they exist to feed has
+      reached a terminal state.
 
     Every query keeps its own per-stage shape (one targeted probe per stage) so each Phase-77 partial
     index drives its own scan, and every probe is scoped to ``fids`` via a single ``= ANY(array)`` bind
@@ -322,14 +339,14 @@ async def _build_done_sets(session: AsyncSession, fids: list[uuid.UUID]) -> _Don
     metadata_skipped = {
         str(fid) for fid in (await session.scalars(select(FileRecord.id).where(_fids_scope(fids, "ms_ids"), skipped_clause(Stage.METADATA)))).all()
     }
-    push_done = {str(fid) for fid in (await session.scalars(_select_done_push_ids(fids))).all()}
+    cloud_lane_done = {str(fid) for fid in (await session.scalars(_select_cloud_lane_done_ids(fids))).all()}
 
     return _DoneSets(
         analyze_done=analyze_done,
         metadata_domain_completed=metadata_domain_completed,
         metadata_failed_at=metadata_failed_at,
         metadata_skipped=metadata_skipped,
-        push_done=push_done,
+        cloud_lane_done=cloud_lane_done,
     )
 
 
@@ -347,20 +364,24 @@ def _select_done_analyze_ids(fids: list[uuid.UUID]) -> Select[tuple[uuid.UUID]]:
     return select(FileRecord.id).where(_fids_scope(fids, "a_ids"), domain_completed_clause(Stage.ANALYZE))
 
 
-def _select_done_push_ids(fids: list[uuid.UUID]) -> Select[tuple[uuid.UUID]]:
-    """Build the ledger-scoped SELECT for file ids whose push stage is done (D-07, sidecar-derived).
+def _select_cloud_lane_done_ids(fids: list[uuid.UUID]) -> Select[tuple[uuid.UUID]]:
+    """Build the ledger-scoped SELECT for file ids whose CLOUD LANE is done (D-07, sidecar-derived).
 
-    ``push_done = cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)``. A ``push_file``
-    ledger row is created ONLY by ``ComputeAgentBackend.dispatch``'s parked enqueue, so a
-    push_file row IMPLIES the compute lane (kueue never enqueues push_file); on that lane SUCCEEDED
-    means "pushed and analyzing" and SUBMITTED means "still pushing". This is behavior-identical to the
-    retired ``state IN (PUSHED, ANALYZED, ANALYSIS_FAILED)``: SUCCEEDED covers PUSHED (the
-    landed-but-not-yet-analyzed window) and ``domain_completed(analyze)`` covers the onward advance. A
-    file at SUBMITTED / AWAITING / no-row is NOT push-done and its push_file row correctly re-drives.
-    NO ``FileRecord.state`` read. Scoped to the ledger's ``fids`` via a single array bind.
+    ``cloud_lane_done = cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)`` -- composed
+    from the LOCKED :func:`~phaze.services.stage_status.cloud_lane_completed_clause` builder rather
+    than re-spelled here, so recovery's exclusion and the reaper's target set are the SAME predicate by
+    construction (phaze-k95r7: a row excluded from recovery but invisible to the reaper is immortal
+    stale state, which is how the 17 ``s3_upload`` rows survived a month).
+
+    Covers BOTH file-keyed cloud producers. A ``push_file`` row is created only by
+    ``ComputeAgentBackend.dispatch``'s parked enqueue and an ``s3_upload`` row only by
+    ``cloud_staging.stage_file_to_s3``, so no backend-kind resolution is needed: SUCCEEDED means
+    "landed, now analyzing" for both, and ``domain_completed(analyze)`` covers the onward advance
+    (behavior-identical to the retired ``state IN (PUSHED, ANALYZED, ANALYSIS_FAILED)``). A file at
+    SUBMITTED / AWAITING / no-row is NOT cloud-lane-done and its row correctly re-drives. NO
+    ``FileRecord.state`` read. Scoped to the ledger's ``fids`` via a single array bind.
     """
-    succeeded = exists(select(CloudJob.id).where(CloudJob.file_id == FileRecord.id, CloudJob.status == CloudJobStatus.SUCCEEDED.value))
-    return select(FileRecord.id).where(_fids_scope(fids, "p_ids"), or_(succeeded, domain_completed_clause(Stage.ANALYZE)))
+    return select(FileRecord.id).where(_fids_scope(fids, "p_ids"), cloud_lane_completed_clause())
 
 
 # phaze-fc2l: the ONLY functions a file's cloud_job actually owns the re-drive of -- the analyze/push
@@ -439,7 +460,13 @@ def is_domain_completed(row: SchedulingLedger, done_sets: _DoneSets) -> bool:
     file cannot be silently mis-classified as done):
 
     - ``process_file``: file id in ``analyze_done`` (domain_completed(analyze) == done OR terminal-failed).
-    - ``push_file``: file id in ``push_done`` (succeeded OR domain_completed(analyze), D-07).
+      NOTE the discriminator this reads (DERIV-03, and the thing phaze-k95r7's live measurement has to
+      be re-read against): ``done(analyze)`` is ``analysis_completed_at IS NOT NULL``, NOT "an
+      ``analysis`` row exists" and NOT "``failed_at IS NULL``". A PARTIAL row -- the shape
+      ``POST /agent/analysis/{id}/progress`` writes, carrying real window counters and no completion
+      stamp -- is correctly NOT domain-complete and IS re-driven: the analysis never finished.
+    - ``push_file`` / ``s3_upload``: file id in ``cloud_lane_done`` (cloud_job succeeded OR
+      domain_completed(analyze); D-07, extended to ``s3_upload`` by phaze-k95r7).
     - ``extract_file_metadata``: skip-first, THEN the D-10 cell. A force-SKIPPED file (``metadata_skipped``)
       is domain-complete UNCONDITIONALLY and returns True BEFORE the D-10 gate is ever consulted
       (phaze-3m5n) -- the force-skip writer's additive-only contract (T-87-20) never clears
@@ -462,8 +489,8 @@ def is_domain_completed(row: SchedulingLedger, done_sets: _DoneSets) -> bool:
         return False
     if function == "process_file":
         return fid in done_sets.analyze_done
-    if function == "push_file":
-        return fid in done_sets.push_done
+    if function in CLOUD_LANE_FUNCTIONS:  # push_file / s3_upload -- one lane, one predicate (phaze-k95r7)
+        return fid in done_sets.cloud_lane_done
     # extract_file_metadata -- force-skip is checked BEFORE the D-10 gate (phaze-3m5n): the gate must
     # refine ONLY the subset of metadata_domain_completed whose membership derives solely from the
     # failed disjunct, never a row that is ALSO domain-complete via the skipped disjunct.
@@ -592,6 +619,23 @@ class UnreplayableRow(Exception):
     """
 
 
+class StaleLedgerRow(UnreplayableRow):
+    """This ledger row describes work that is NOT PENDING -- there is nothing to regenerate (phaze-k95r7).
+
+    A strict refinement of :class:`UnreplayableRow`, split off it because the parent's wording is a
+    statement about the CLOCK ("cannot be replayed correctly RIGHT NOW", "its payload is time-limited")
+    and this case has nothing to do with the clock. The row points at a staging attempt that does not
+    exist: no ``cloud_job`` row for the file at all. Waiting does not help, a fileserver coming online
+    does not help, and a later recovery pass will report exactly the same thing -- which is what 17
+    live ``s3_upload`` rows did on every run for a month while claiming to be an expiry problem.
+
+    Tallied under the SAME ``unreplayable`` counter (the operator-facing meaning -- "this run did not
+    cover that work" -- is unchanged, and the tally shape stays total), but logged with its own message
+    so the two are never again read as one thing. Subclassing keeps every existing
+    ``except UnreplayableRow`` handler correct; handlers that care catch this one FIRST.
+    """
+
+
 @dataclass(frozen=True)
 class _RegenTarget:
     """A ledger row SNAPSHOT, detached from the ORM identity map before regeneration runs.
@@ -661,6 +705,13 @@ async def _regenerate_s3_upload(session: AsyncSession, task_router: Any, target:
     try:
         await cloud_staging.redrive_upload(session, file, task_router)
         await session.commit()
+    except NoCloudJobToRedriveError as exc:
+        # phaze-k95r7: NOT "cannot regenerate right now" -- there is no staging attempt to regenerate.
+        # Caught BEFORE the S3StagingError branch below (it is a subclass) so this row is reported as
+        # the stale ledger row it is, never as a time-limited payload.
+        await session.rollback()
+        await cloud_staging.drop_pending_s3_enqueues(session)
+        raise StaleLedgerRow(str(exc)) from exc
     except (NoActiveAgentError, S3StagingError) as exc:
         # Both are "the inputs to regenerate are not available right now", not faults: no online
         # fileserver to run the upload (cold boot), or no staging bucket recorded/resolvable for this
@@ -717,6 +768,10 @@ async def _regenerate_row_isolated(
 
     - success -> the regenerator tallies ``reenqueued`` (fresh job) or ``skipped`` (SAQ deduped
       against a still-live job);
+    - :class:`StaleLedgerRow` -> ``unreplayable`` + a WARNING saying the row points at work that is
+      not pending. Checked FIRST (it is a subclass of the next branch) so a stale row is never
+      described as a time-limited payload -- the mis-description that cost the 2026-08-08
+      investigation (phaze-k95r7);
     - :class:`UnreplayableRow` -> ``unreplayable`` + a WARNING carrying the reason. The row stays in
       the ledger; nothing is enqueued. This is the deliberate, VISIBLE skip;
     - any other exception -> ``errored`` + an exception log, and the loop moves to the next row
@@ -726,6 +781,16 @@ async def _regenerate_row_isolated(
     regenerator = _REPLAY_REGENERATORS[target.function]
     try:
         await regenerator(session, task_router, target, tally)
+    except StaleLedgerRow as exc:
+        logger.warning(
+            "recover_orphaned_work: row NOT replayed -- it points at work that is not pending, so there is nothing to "
+            "regenerate (this is NOT a time-limited/expired payload; the ledger entry is stale and the reaper clears it "
+            "once the work reads domain-complete)",
+            key=target.key,
+            function=target.function,
+            reason=str(exc),
+        )
+        tally["unreplayable"] += 1
     except UnreplayableRow as exc:
         logger.warning(
             "recover_orphaned_work: row NOT replayed -- its payload is time-limited and cannot be regenerated right now "
@@ -965,9 +1030,15 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
 
     unreplayable = sum(tally["unreplayable"] for tally in stages.values())
     if unreplayable:
+        # phaze-k95r7: state the COUNT and the STAGES here, never the cause. This summary used to
+        # assert "its payload is time-limited and could not be regenerated" for every unreplayable row,
+        # which is one of at least two causes (the other being a row that points at work which is not
+        # pending at all) -- and stating the wrong one at run level sent the 2026-08-08 investigation
+        # after an expiry problem that did not exist. The per-row WARNING above carries the actual
+        # reason for each row; this line only says how much was left uncovered.
         logger.warning(
-            "recover_orphaned_work: some orphaned work was NOT re-enqueued -- its payload is time-limited and "
-            "could not be regenerated (phaze-71nz). These stages are NOT covered by this run.",
+            "recover_orphaned_work: some orphaned work was NOT re-enqueued (phaze-71nz). These stages are NOT covered by "
+            "this run -- see the per-row warnings above for each row's reason.",
             unreplayable=unreplayable,
             stages=sorted(fn for fn, tally in stages.items() if tally["unreplayable"]),
         )

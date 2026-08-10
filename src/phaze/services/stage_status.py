@@ -290,6 +290,28 @@ def failed_clause(stage: Stage) -> ColumnElement[bool]:
     raise ValueError(f"unknown stage: {stage!r}")  # pragma: no cover - exhaustive dispatch above
 
 
+def ledger_key_for_function(func_name: str) -> ColumnElement[str]:
+    """Return the deterministic ``"<function>:<file_id>"`` ledger-key expression, correlated to ``files``.
+
+    ONE spelling of the key, shared by every probe that has to talk about a ledger row: the
+    stage-keyed :func:`inflight_clause` / :func:`live_job_clause` and the function-keyed
+    :func:`inflight_for_function` / :func:`live_job_for_function` below. A re-spelled prefix silently
+    mismatches the real ledger PK, so the concat lives here exactly once.
+    """
+    return func.concat(func_name + ":", cast(FileRecord.id, String))
+
+
+def inflight_for_function(func_name: str) -> ColumnElement[bool]:
+    """Return "a ``scheduling_ledger`` row exists on ``<func_name>:<file_id>``" (the D-01 fact, by FUNCTION).
+
+    The function-keyed core of :func:`inflight_clause`. It exists because the cloud-lane keyed
+    producers (``s3_upload`` / ``push_file``) have a per-file ledger key but are NOT
+    :class:`~phaze.enums.stage.Stage` members, so they cannot be reached through the stage ladder --
+    and phaze-k95r7's stale ``s3_upload`` rows are precisely rows nothing could name.
+    """
+    return exists(select(SchedulingLedger.key).where(SchedulingLedger.key == ledger_key_for_function(func_name)))
+
+
 def inflight_clause(stage: Stage) -> ColumnElement[bool]:
     """Return ``in_flight`` for ``stage`` -- authoritative from ``scheduling_ledger`` (D-01).
 
@@ -307,7 +329,7 @@ def inflight_clause(stage: Stage) -> ColumnElement[bool]:
     func_name = STAGE_TO_FUNCTION.get(stage.value)
     if func_name is None:
         return false()
-    return exists(select(SchedulingLedger.key).where(SchedulingLedger.key == func.concat(func_name + ":", cast(FileRecord.id, String))))
+    return inflight_for_function(func_name)
 
 
 def domain_completed_clause(stage: Stage) -> ColumnElement[bool]:
@@ -477,9 +499,20 @@ def live_job_clause(stage: Stage) -> ColumnElement[bool]:
     func_name = STAGE_TO_FUNCTION.get(stage.value)
     if func_name is None:
         return false()
+    return live_job_for_function(func_name)
+
+
+def live_job_for_function(func_name: str) -> ColumnElement[bool]:
+    """Return "a LIVE ``saq_jobs`` row exists on ``<func_name>:<file_id>``" -- :func:`live_job_clause` by FUNCTION.
+
+    Same relationship to :func:`live_job_clause` that :func:`inflight_for_function` has to
+    :func:`inflight_clause`, and built from the SAME :func:`ledger_key_for_function` spelling, so the
+    ledger probe and the broker probe can only ever be talking about the same key. READ-ONLY, and out
+    of the ``Stage`` dispatch ladder for the same reason its stage-keyed sibling is.
+    """
     return exists(
         select(_saq_jobs.c.key).where(
-            _saq_jobs.c.key == func.concat(func_name + ":", cast(FileRecord.id, String)),
+            _saq_jobs.c.key == ledger_key_for_function(func_name),
             _saq_jobs.c.status.in_(_LIVE_SAQ_STATUSES),
         )
     )
@@ -543,6 +576,60 @@ def resolved_ledger_clause(stage: Stage) -> ColumnElement[bool]:
     Consumed by :mod:`phaze.tasks.ledger_reaper`. Kept OUT of the ``Stage`` dispatch ladder (D-13).
     """
     return and_(inflight_clause(stage), not_(running_clause(stage)), domain_completed_clause(stage))
+
+
+# phaze-k95r7. The file-keyed AGENT producers that serve the cloud analyze lane. They own a per-file
+# ``scheduling_ledger`` key but are NOT ``Stage`` members, which is exactly why they fell through every
+# stage-keyed predicate: ``s3_upload`` had no completion exclusion of ANY kind, so a row for a file
+# whose analysis had long since landed stayed a recovery candidate forever (17 such rows, dated
+# 2026-07-07/14, were still being re-driven on 2026-08-08). ``submit_cloud_job`` is deliberately ABSENT:
+# it is a CONTROLLER task (``enqueue_router.CONTROLLER_TASKS``) whose ledger clear runs in the same
+# ``after_process`` the broker guarantees, so the live-key filter alone is the right exclusion for it.
+CLOUD_LANE_FUNCTIONS: tuple[str, ...] = ("push_file", "s3_upload")
+"""Cloud-lane keyed functions carrying a per-file ledger key -- ordered, so counters render stably."""
+
+
+def cloud_lane_completed_clause() -> ColumnElement[bool]:
+    """Return "the cloud staging/push lane has nothing left to do for this file" (phaze-k95r7).
+
+    ``cloud_job.status = 'succeeded' OR domain_completed_clause(ANALYZE)`` -- a FILE-LEVEL predicate
+    (no ``stage`` argument), correlated to :class:`~phaze.models.file.FileRecord` like
+    :func:`cloud_busy_clause`, and kept out of the ``Stage`` dispatch ladder for the same reason
+    (D-13). Both disjuncts say the same thing from opposite ends of the lane:
+
+    - SUCCEEDED covers the landed-but-not-yet-analyzed window -- the upload/push demonstrably ran;
+    - ``domain_completed(analyze)`` covers the onward advance, INCLUDING a terminally FAILED analyze
+      (``FAILURE_IS_TERMINAL[analyze]``): re-staging bytes for a file the domain has given up on is
+      exactly the waste this predicate exists to stop.
+
+    This is the SINGLE definition of cloud-lane completion. ``reenqueue._build_done_sets`` derives the
+    ``cloud_lane_done`` set from it (so recovery EXCLUDES such a row) and
+    :func:`resolved_cloud_ledger_clause` composes it (so the reaper CLEARS the row recovery is now
+    ignoring). Deriving those two independently is how a row ends up excluded-but-immortal.
+    """
+    succeeded = exists(select(CloudJob.id).where(CloudJob.file_id == FileRecord.id, CloudJob.status == CloudJobStatus.SUCCEEDED.value))
+    return or_(succeeded, domain_completed_clause(Stage.ANALYZE))
+
+
+def resolved_cloud_ledger_clause(func_name: str) -> ColumnElement[bool]:
+    """Return the RESOLVED-but-uncleared predicate for a CLOUD-LANE ledger row (phaze-k95r7).
+
+    The function-keyed twin of :func:`resolved_ledger_clause`, with the same three conjuncts in the
+    same order: ``inflight_for_function ∧ ¬running ∧ completed``. ``running`` is
+    ``live_job_for_function OR cloud_busy_clause()`` -- BOTH substrates, mirroring
+    :func:`running_clause`'s analyze branch, because the cloud lane's work is invisible to ``saq_jobs``
+    while a ``cloud_job`` is UPLOADING/SUBMITTED/RUNNING/AWAITING. On ``saq_jobs`` alone every file
+    mid-upload would look reapable.
+
+    Consumed by :mod:`phaze.tasks.ledger_reaper`. ``func_name`` is a member of
+    :data:`CLOUD_LANE_FUNCTIONS`; it is interpolated ONLY into the bound-parameter side of the key
+    concat (:func:`ledger_key_for_function`), never into raw SQL (T-87-05).
+    """
+    return and_(
+        inflight_for_function(func_name),
+        not_(or_(live_job_for_function(func_name), cloud_busy_clause())),
+        cloud_lane_completed_clause(),
+    )
 
 
 def stage_status_case(stage: Stage) -> ColumnElement[str]:
