@@ -604,6 +604,41 @@ class TestTTLCacheExpiry:
         cache.clear()
         assert cache.get("k") is None
 
+    def test_set_evicts_already_expired_entries_not_just_the_written_key(self) -> None:
+        """phaze-a18s4: an entry nobody ever reads again must not sit in ``_entries`` forever.
+
+        ``get()`` only ever evicted the ONE key it was asked to read, so a query that is never
+        repeated (the common case in a long-lived drain worker doing mostly-unique lookups) grew
+        the dict without bound. `set()` must sweep every already-expired entry on write, not just
+        insert the new one. The two "stale" entries are backdated directly rather than relying on
+        real elapsed time, so the assertion is deterministic.
+        """
+        import time as time_module
+
+        from phaze.services.tracklist_scraper import _TTLCache
+
+        cache: _TTLCache[str] = _TTLCache(ttl_seconds=3600.0)
+        cache.set("stale-1", "v1")
+        cache.set("stale-2", "v2")
+        already_expired = time_module.monotonic() - 1.0
+        cache._entries["stale-1"] = (already_expired, "v1")
+        cache._entries["stale-2"] = (already_expired, "v2")
+
+        # A THIRD, unrelated write is what a long-lived worker does continuously -- and it must
+        # sweep the two now-expired entries above rather than merely adding a third live one.
+        cache.set("fresh", "v3")
+        assert set(cache._entries) == {"fresh"}, "the expired entries must be swept on the next write, not accumulate"
+
+    def test_set_does_not_evict_still_live_entries(self) -> None:
+        """The sweep in `set()` must only drop EXPIRED entries -- a live one survives an
+        unrelated write, the same as it always did."""
+        from phaze.services.tracklist_scraper import _TTLCache
+
+        cache: _TTLCache[str] = _TTLCache(ttl_seconds=3600.0)
+        cache.set("live", "v1")
+        cache.set("other", "v2")
+        assert set(cache._entries) == {"live", "other"}
+
 
 class TestTracklistScraperCaching:
     """phaze-hu8v: repeat lookups must not re-hit the site."""

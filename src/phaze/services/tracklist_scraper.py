@@ -149,8 +149,21 @@ class _TTLCache[T]:
         return value
 
     def set(self, key: str, value: T) -> None:
-        """Cache value under key for this cache's configured TTL."""
-        self._entries[key] = (time.monotonic() + self._ttl_seconds, value)
+        """Cache value under key for this cache's configured TTL, evicting expired entries first.
+
+        phaze-a18s4: ``get()`` only ever evicted the ONE key it was asked to read, so an entry
+        nobody happens to re-query again just sits in ``_entries`` forever -- in the long-lived
+        drain worker, which populates this cache once per unique query and mostly never repeats
+        one, that is an unbounded, monotonically-growing dict for the process lifetime. Sweeping
+        every already-expired entry here (on the write path, which the drain hits once per
+        unique lookup regardless of repeats) bounds the cache to roughly one TTL window's worth
+        of live entries instead of the whole run's history.
+        """
+        now = time.monotonic()
+        expired = [k for k, (expires_at, _) in self._entries.items() if now >= expires_at]
+        for k in expired:
+            del self._entries[k]
+        self._entries[key] = (now + self._ttl_seconds, value)
 
     def clear(self) -> None:
         """Drop every cached entry (test isolation)."""
