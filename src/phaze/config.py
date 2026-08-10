@@ -794,7 +794,12 @@ class ControlSettings(BaseSettings):
     anthropic_api_key: SecretStr | None = None
     llm_model: str = "claude-sonnet-4-20250514"
     llm_max_rpm: int = 30
-    llm_batch_size: int = 10
+    # phaze-ceuvd: bounded gt=0, matching the sibling knobs in this class (e.g.
+    # cloud_route_threshold_sec above). Used as a range() step in
+    # get_proposal_pending_batches (services/pipeline.py); 0 raises ValueError at trigger
+    # time and a negative value silently collapses the pending set to zero batches (both
+    # would previously boot green and only detonate on GENERATE ALL).
+    llm_batch_size: int = Field(default=10, gt=0)
     llm_max_companion_chars: int = 3000
 
     # ------------------------------------------------------------------------------------
