@@ -362,3 +362,117 @@ def test_agent_ref_to_unregistered_agent_is_not_a_boot_error(backends_toml_env) 
     )
     settings = ControlSettings()  # no raise, no DB access
     assert settings.cloud_enabled is True
+
+
+# --------------------------------------------------------------------------- #
+# phaze-1sgee: container-level duplicate-BACKEND-id boot guard, kind-agnostic
+#
+# `_validate_registry` already fails fast on duplicate bucket ids (WR-03) and
+# duplicate compute agent_refs (D-04), but had no equivalent Counter over
+# ``be.id for be in self.backends`` -- so a copy-paste id typo across two
+# ``[[backends]]`` entries passed every existing check as long as agent_refs
+# differed. Downstream this silently collapses `resolve_compute_backend`'s
+# `{backend.id: backend}` dict to whichever entry appears LAST (the exact
+# WR-03 shape) and double-counts in-flight cap accounting across both entries.
+# Mirrors the WR-03/D-04 test idiom below: construct via the shared
+# ``backends_toml_env`` fixture, assert the raise names both offending ids.
+# --------------------------------------------------------------------------- #
+def test_duplicate_backend_id_same_kind_fails_fast_with_id(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """Two compute backends sharing an id (distinct agent_refs) fail fast, naming the id (phaze-1sgee)."""
+    backends_toml_env(
+        """
+        [[backends]]
+        kind = "compute"
+        id = "burst"
+        rank = 10
+        cap = 2
+        agent_ref = "agent-a"
+        scratch_dir = "/scratch/a"
+        push_host = "a.push"
+
+        [[backends]]
+        kind = "compute"
+        id = "burst"
+        rank = 20
+        cap = 2
+        agent_ref = "agent-b"
+        scratch_dir = "/scratch/b"
+        push_host = "b.push"
+        """
+    )
+    with pytest.raises(ValueError, match=r"duplicate backend ids.*burst") as excinfo:
+        ControlSettings()
+    assert "compute" in str(excinfo.value)
+
+
+def test_duplicate_backend_id_across_kinds_fails_fast(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """A compute and a kueue entry sharing an id is the nastiest variant: resolve_compute_backend
+    (kind=="compute" filter) and the drain snapshot / non_local_backend_kinds (whichever came last)
+    would otherwise resolve genuinely inconsistent views of "the backend named <id>" -- the guard
+    must be KIND-AGNOSTIC, not scoped to same-kind collisions only (phaze-1sgee).
+    """
+    backends_toml_env(
+        """
+        [[backends]]
+        kind = "compute"
+        id = "burst"
+        rank = 10
+        cap = 2
+        agent_ref = "agent-a"
+        scratch_dir = "/scratch/a"
+        push_host = "a.push"
+
+        [[backends]]
+        kind = "kueue"
+        id = "burst"
+        rank = 20
+        cap = 4
+        buckets = []
+
+        [backends.kube]
+        api_url = "https://a.example.com"
+        namespace = "phaze"
+        local_queue = "lq-a"
+        """
+    )
+    with pytest.raises(ValueError, match=r"duplicate backend ids.*burst") as excinfo:
+        ControlSettings()
+    message = str(excinfo.value)
+    assert "compute" in message
+    assert "kueue" in message
+
+
+def test_distinct_backend_ids_boot_cleanly(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """Distinct backend ids across kinds boot cleanly -- the new guard does not false-positive (phaze-1sgee)."""
+    backends_toml_env(
+        """
+        [[backends]]
+        kind = "compute"
+        id = "compute-a"
+        rank = 10
+        cap = 2
+        agent_ref = "agent-a"
+        scratch_dir = "/scratch/a"
+        push_host = "a.push"
+
+        [[backends]]
+        kind = "kueue"
+        id = "kueue-a"
+        rank = 20
+        cap = 4
+        buckets = ["shared-bucket"]
+
+        [backends.kube]
+        api_url = "https://a.example.com"
+        namespace = "phaze"
+        local_queue = "lq-a"
+
+        [[buckets]]
+        id = "shared-bucket"
+        scope = "shared"
+        endpoint_url = "https://s3.example.com"
+        bucket = "phaze-shared"
+        """
+    )
+    settings = ControlSettings()  # no raise — distinct ids across kinds are a first-class shape
+    assert [be.id for be in settings.backends] == ["compute-a", "kueue-a"]
