@@ -814,27 +814,39 @@ async def _replay_agent_rows_by_owner(
     task_router: Any,
     rows: list[SchedulingLedger],
     stages: dict[str, dict[str, int]],
+    *,
+    required_kind: str | None,
 ) -> None:
-    """Replay agent-routed ledger rows onto EACH row's OWNING fileserver agent (phaze-fjii).
+    """Replay agent-routed ledger rows onto EACH row's OWNING agent (phaze-fjii / phaze-5dkgp).
 
     phaze-c9w9 fixed the LIVE enqueue paths (``resolve_queue_for_task`` /
     ``resolve_queues_for_owned_files``) to route every file-keyed agent task to the FILE's owning
-    agent (``payload["agent_id"]``) iff that agent is a live fileserver -- never to "the single
-    most-recently-seen fileserver". Recovery was never updated: it picked ONE
-    ``select_active_agent(kind="fileserver")`` and replayed every orphaned agent row onto it, so in
-    a multi-fileserver deployment every recovered row landed on ONE agent's lanes regardless of the
-    payload's real owner. That agent's mount lacks the other owners' paths, so ``process_file``
-    FileNotFounds into terminal ANALYSIS_FAILED and the meta lane wedges on a
-    consumer-less key -- a silent misroute of everyone else's work.
+    agent (``payload["agent_id"]``) iff that agent is live -- never to "the single most-recently-seen
+    fileserver". Recovery was never updated: it picked ONE ``select_active_agent(kind="fileserver")``
+    and replayed every orphaned agent row onto it, so in a multi-fileserver deployment every recovered
+    row landed on ONE agent's lanes regardless of the payload's real owner. That agent's mount lacks
+    the other owners' paths, so ``process_file`` FileNotFounds into terminal ANALYSIS_FAILED and the
+    meta lane wedges on a consumer-less key -- a silent misroute of everyone else's work.
 
     This mirrors phaze-c9w9's contract for the recovery path: group ``rows`` by their stored
     ``payload["agent_id"]`` (encounter order preserved within each group), resolve each owner
-    independently via :func:`select_agent_by_id` (same liveness filter, ``kind="fileserver"``), and
-    replay each row onto that owner's per-function lane queue. An owner that is offline / revoked /
-    never-seen / not a fileserver is SKIPPED with a WARNING -- its rows are NEVER rerouted onto
-    another agent (the exact misroute this fixes); a later recovery re-drives them once the owner is
-    back. A row whose payload carries no ``agent_id`` (malformed / legacy) is likewise skipped rather
-    than blind-routed, since its true owner is unknowable.
+    independently via :func:`select_agent_by_id`, and replay each row onto that owner's per-function
+    lane queue. An owner that is offline / revoked / never-seen / wrong-kind is SKIPPED with a
+    WARNING -- its rows are NEVER rerouted onto another agent (the exact misroute this fixes); a later
+    recovery re-drives them once the owner is back. A row whose payload carries no ``agent_id``
+    (malformed / legacy) is likewise skipped rather than blind-routed, since its true owner is
+    unknowable.
+
+    ``required_kind`` pins the accepted ``Agent.kind`` -- ``"fileserver"`` for ``push_file`` rows
+    (Phase 50 / D-10: a re-driven push reads the media mount, so it MUST route to the rsync
+    initiator, never a compute agent). ``None`` accepts whatever live kind the row's stored owner
+    actually is (phaze-5dkgp): the compute-lane ``process_file`` enqueued by the ``/pushed`` callback
+    (``routers/agent_push.py``) is owned by a COMPUTE agent, and pinning ``kind="fileserver"`` there
+    made :func:`select_agent_by_id` raise :class:`NoActiveAgentError` on every recovery pass -- even
+    with the owning compute agent live and healthy -- permanently stranding the row. Resolving by id
+    without a kind filter and letting :func:`~phaze.services.agent_task_router.AgentTaskRouter.queue_for`
+    route on the resolved agent's own id (kind-agnostic) fixes that without weakening the push_file
+    guarantee, which still passes its own ``required_kind="fileserver"``.
     """
     if not rows:
         return
@@ -854,13 +866,14 @@ async def _replay_agent_rows_by_owner(
             continue
         try:
             # phaze-fjii (mirrors phaze-c9w9 / enqueue_router.resolve_queue_for_task's per-file
-            # ``agent_id`` form): the destination is THIS owner iff it is a live fileserver, or
-            # nothing -- never "some other live fileserver" whose mount lacks the path.
-            agent = await select_agent_by_id(session, owner_id, kind="fileserver")
+            # ``agent_id`` form): the destination is THIS owner iff it is live (and, when pinned, of
+            # ``required_kind``) -- never "some other live fileserver" whose mount lacks the path.
+            agent = await select_agent_by_id(session, owner_id, kind=required_kind)
         except NoActiveAgentError:
             logger.warning(
-                "recover_orphaned_work: owning fileserver agent offline -- rows skipped, not rerouted (phaze-fjii)",
+                "recover_orphaned_work: owning agent offline -- rows skipped, not rerouted (phaze-fjii)",
                 agent_id=owner_id,
+                required_kind=required_kind,
                 functions=sorted({r.function for r in owned}),
                 rows=len(owned),
             )
@@ -900,11 +913,15 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
     2. RECOVER (when ``saq_jobs`` is empty, OR ``force=True``): read the ledger rows + the live keys +
        the per-stage done sets ONCE; ``orphaned = [r for r in rows if r.key not in live and not
        is_domain_completed(r, done_sets)]``. Partition by ``r.routing``: controller rows replay on
-       ``ctx["queue"]``; agent rows replay onto EACH row's OWNING fileserver agent
-       (``payload["agent_id"]``, phaze-fjii -- mirroring phaze-c9w9's live-path per-owner routing),
-       resolved via :func:`select_agent_by_id`. An offline / non-fileserver owner (cold boot, D-05)
-       has its rows SKIPPED with a WARNING (zero counts) -- never rerouted onto another agent -- while
-       the controller rows still replay. Each producer's ``None`` return (deterministic-key dedup)
+       ``ctx["queue"]``; agent rows replay onto EACH row's OWNING agent (``payload["agent_id"]``,
+       phaze-fjii -- mirroring phaze-c9w9's live-path per-owner routing), resolved via
+       :func:`select_agent_by_id`. ``push_file`` rows require the owner to be a live FILESERVER
+       (Phase 50, D-10 -- the re-drive reads the media mount); every other agent function accepts
+       whatever live kind the stored owner actually is (phaze-5dkgp -- a compute-lane
+       ``process_file`` row is owned by a COMPUTE agent, and pinning ``kind="fileserver"`` there
+       stranded it forever). An offline / wrong-kind owner (cold boot, D-05) has its rows SKIPPED
+       with a WARNING (zero counts) -- never rerouted onto another agent -- while the controller
+       rows still replay. Each producer's ``None`` return (deterministic-key dedup)
        counts as ``skipped``, otherwise ``reenqueued``. A row whose replay RAISES (a transient
        ``queue.enqueue``/``connect()`` failure, or a routing failure for a legacy row) is isolated
        via :func:`_replay_row_isolated` -- logged, tallied under ``errored``, and the loop continues
@@ -1016,11 +1033,12 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
         # Phase 50 (D-10): push_file re-drives route to a FILESERVER (the media-mount owner that runs
         # the rsync); an offline owner skips with a WARNING (the next staging-cron tick / a later
         # recovery re-drives the still-PUSHING file -- never enqueue it onto a compute agent).
-        await _replay_agent_rows_by_owner(session, ctx["task_router"], push_rows, stages)
+        await _replay_agent_rows_by_owner(session, ctx["task_router"], push_rows, stages, required_kind="fileserver")
 
-        # Remaining agent rows re-drive onto their OWNING fileserver (cold boot / offline owner -> skip,
-        # never raise).
-        await _replay_agent_rows_by_owner(session, ctx["task_router"], other_agent_rows, stages)
+        # Remaining agent rows re-drive onto their OWNING agent, whatever kind it actually is
+        # (phaze-5dkgp: e.g. a compute-lane process_file row owned by a compute agent) -- cold
+        # boot / offline owner -> skip, never raise.
+        await _replay_agent_rows_by_owner(session, ctx["task_router"], other_agent_rows, stages, required_kind=None)
 
         # phaze-71nz: the time-limited rows, re-derived from durable inputs rather than replayed.
         # Run LAST so a regenerator's commit boundary (it owns one, unlike every replay above) can
