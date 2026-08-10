@@ -98,6 +98,37 @@ async def test_breakdown_separates_running_from_claimed_unrun(session: AsyncSess
     assert "running (attempts>=1, genuinely executing): 2" in lines
 
 
+async def test_breakdown_exempts_timeout_zero_rows_from_stuck_and_stranded(session: AsyncSession) -> None:
+    """phaze-mllxc REGRESSION: a ``timeout: 0`` (SAQ UNBOUNDED) row must never count as stuck or stranded.
+
+    ``scan_directory`` enqueues with ``timeout=0`` deliberately -- a full SHA-256 walk of a large
+    network-mounted archive legitimately runs 1-2h -- and SAQ's own ``Job.stuck`` treats 0 as falsy
+    (never sweep-eligible). Pre-fix, the ``stuck_past_timeout`` FILTER's bare ``> timeout::bigint`` and
+    the ``stranded`` FILTER's ``COALESCE(..., :default) + :slack`` both treated a PRESENT 0 as a real
+    zero-second bound, so a healthy scan only minutes into a 1-2h run was flagged STRANDED well inside
+    ``active_reap_slack_seconds``. Aged an hour past slack here to prove the exemption holds regardless
+    of age, not just "not yet due".
+    """
+    await session.execute(_CREATE_SAQ_JOBS)
+    now = _now_ms()
+    slack_s = 900  # default active_reap_slack_seconds
+    await _seed(
+        session,
+        key="scan_directory:unbounded",
+        status="active",
+        blob={"attempts": 1, "started": now - (slack_s + 3600) * 1000, "timeout": 0},
+    )
+    await session.commit()
+
+    breakdown = await summarize_active_jobs(session, _QUEUE)
+
+    assert breakdown.total_active == 1
+    assert breakdown.running == 1
+    assert breakdown.stuck_past_timeout == 0
+    assert breakdown.stranded == 0
+    assert not breakdown.exceeds_concurrency
+
+
 async def test_breakdown_scopes_to_the_named_queue(session: AsyncSession) -> None:
     """Active rows on OTHER queues are not counted -- the split is per-queue."""
     await session.execute(_CREATE_SAQ_JOBS)
