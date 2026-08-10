@@ -16,9 +16,30 @@ is the router's concern.
 from typing import Literal
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from phaze.schemas.wire_bounds import INT32_MAX
+from phaze.services.pg_text import find_pg_unsafe_json_reason
+
+
+def _reject_pg_unsafe_json(v: object, info: ValidationInfo) -> object:
+    """Shared field_validator body for a dict field bound for `features`/JSONB or dict-summarized
+    into a `String` column (phaze-hvve5, site 4).
+
+    ``features`` lands straight into a JSONB column; ``mood``/``style`` on
+    :class:`AnalysisWritePayload` are reduced to a bounded summary string by
+    ``_summarize_dict_to_string`` (routers/agent_analysis.py) BEFORE storage, but a NUL nested in a
+    dict KEY survives that reduction and lands in the ``String(50)`` column, while a NaN/Infinity
+    VALUE reaches ``json.dumps`` (``allow_nan=True`` by default) for the JSONB ``features`` case.
+    Neither hazard is caught by a scalar ``Field(ge=..., le=...)`` bound -- those only guard a
+    top-level float, never one buried inside a dict value. REJECT (422) rather than silently drop
+    the offending key/value: this is analysis data, and silently discarding part of it would make
+    the persisted result disagree with what the agent actually computed.
+    """
+    reason = find_pg_unsafe_json_reason(v)
+    if reason is not None:
+        raise ValueError(f"{info.field_name} {reason}")
+    return v
 
 
 class AnalysisWindowPayload(BaseModel):
@@ -81,6 +102,8 @@ class AnalysisWindowPayload(BaseModel):
     danceability: float | None = Field(default=None, ge=0.0, le=1.0)
     features: dict | None = None
 
+    _reject_pg_unsafe_features = field_validator("features", mode="after")(_reject_pg_unsafe_json)
+
 
 class AnalysisWritePayload(BaseModel):
     """Audio analysis upsert body. All optional -- partial-PUT preserves unset fields."""
@@ -95,6 +118,9 @@ class AnalysisWritePayload(BaseModel):
     musical_key: str | None = Field(default=None, max_length=10)
     mood: dict[str, float] | None = None
     style: dict[str, float] | None = None
+
+    _reject_pg_unsafe_mood_style = field_validator("mood", "style", mode="after")(_reject_pg_unsafe_json)
+
     danceability: float | None = Field(default=None, ge=0.0, le=1.0)
     energy: float | None = Field(default=None, ge=0.0, le=1.0)
     # Phase 43 windowed-analysis coverage (the five-field contract analyze_file
