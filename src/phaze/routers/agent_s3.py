@@ -449,8 +449,23 @@ async def report_upload_failed(
     # dance is unnecessary; and (2) if a crash lands between the hook's commit and this commit, the
     # column keeps its prior value (un-incremented at `current_attempt`) instead of being reset to 0,
     # so the bounded upload budget survives the crash window (phaze-y0j0).
-    await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == ledger_key).values(redrive_attempt=next_attempt))
-    await session.commit()
+    #
+    # phaze-hi3ix: wrap the stamp + commit in try/except BaseException so a failure here still drops
+    # the s3_upload enqueue redrive_upload just parked on the session -- mirroring stage_file_to_s3's own
+    # `except BaseException: await drop_pending_s3_enqueues(session); raise`. Without this, a failure at
+    # either the UPDATE or the commit let the request-scoped session be discarded with the parked entry
+    # silently GC'd, skipping the phaze-cws5 abort compensation for the FRESH multipart redrive_upload
+    # just created -- since that multipart's upload_id was never persisted anywhere (the redrive's own
+    # cloud_job upsert rolled back too), no later cleanup path could ever find it to abort it. The
+    # explicit rollback puts the aborted-transaction session back into a usable state before the S3-only
+    # drop call (which issues no SQL of its own).
+    try:
+        await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == ledger_key).values(redrive_attempt=next_attempt))
+        await session.commit()
+    except BaseException:
+        await session.rollback()
+        await cloud_staging.drop_pending_s3_enqueues(session)
+        raise
     # phaze-grzo: redrive_upload PARKS its fresh s3_upload enqueue on the session; fire it ONLY now
     # that the re-driven cloud_job (still UPLOADING) and the attempt stamp are durably committed, so the
     # re-driven job (and its report_uploaded callback) can never precede the committed row it reads. A

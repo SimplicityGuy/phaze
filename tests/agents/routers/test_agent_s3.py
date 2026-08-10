@@ -883,6 +883,58 @@ async def test_failed_under_cap_redrive_no_cloud_job_to_redrive_holds_cleanly(
     assert r.json()["cleared"] is False
 
 
+async def test_failed_under_cap_ledger_stamp_failure_drops_pending_s3_enqueues(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-hi3ix: a failure stamping/committing the redrive_attempt counter AFTER a successful
+    redrive_upload must still drop the s3_upload enqueue redrive_upload just parked on the session
+    (mirrors stage_file_to_s3's own ``except BaseException: drop_pending_s3_enqueues(); raise``).
+    Without this, the request-scoped session is discarded with the parked entry silently GC'd,
+    skipping the phaze-cws5 abort compensation for the fresh multipart redrive_upload just created.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
+
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
+    await _seed_ledger(session, file_id, attempt=0)
+
+    redrive = AsyncMock()
+    monkeypatch.setattr(cloud_staging, "redrive_upload", redrive)
+
+    drop = AsyncMock()
+    monkeypatch.setattr(cloud_staging, "drop_pending_s3_enqueues", drop)
+
+    real_commit = _AsyncSession.commit
+    call_count = {"n": 0}
+
+    async def _spy_commit(self: _AsyncSession) -> None:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # The FIRST commit reached after redrive_upload (mocked to a no-op) is the ledger stamp's
+            # commit -- simulate a PgBouncer blip / DB restart landing exactly there.
+            raise RuntimeError("ledger stamp commit failed (simulated)")
+        await real_commit(self)
+
+    monkeypatch.setattr(_AsyncSession, "commit", _spy_commit)
+
+    app = FastAPI(title="smoke", version="test")
+    app.include_router(agent_s3_router)
+    app.dependency_overrides[get_session] = lambda: session
+    app.state.task_router = FakeTaskRouter()
+    app.state.controller_queue = FakeQueue("controller")
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test", headers={"Authorization": f"Bearer {raw_token}"}) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/failed", json={"detail": "transfer error"})
+
+    assert r.status_code == 500  # the ledger-stamp failure itself still surfaces (unchanged) ...
+    drop.assert_awaited_once_with(session)  # ... but the parked enqueue is no longer silently dropped
+
+
 async def test_failed_under_cap_redrive_keeps_fresh_part_urls(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
