@@ -22,6 +22,7 @@ import uuid
 
 import pytest
 from sqlalchemy import select, text, update
+from sqlalchemy.exc import ProgrammingError
 
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.scheduling_ledger import (
@@ -318,15 +319,13 @@ async def test_clear_entry_clears_when_saq_jobs_table_present_but_key_absent(ses
 
 
 class _RaisingLivenessProbeSession:
-    """AsyncSession stand-in whose guarded-clear SAVEPOINT read always raises -- models a missing
-    ``saq_jobs`` table (a pre-migration env) DETERMINISTICALLY, independent of the ambient test
-    database's history. Once ANY real integration test in this suite's run has created the REAL
-    ``saq_jobs`` table (a durably-committed, non-ORM table that outlives any single test's rolled-
-    back transaction -- see ``test_ledger_backfill.py``), the ``session``-fixture-based absent-table
-    case above stops exercising this branch. Mirrors ``test_ledger_backfill.py``'s ``_RaisingSession``.
+    """AsyncSession stand-in whose guarded-clear SAVEPOINT read always raises ``probe_exc``, so the
+    fallback branch taken is deterministic and independent of the ambient test database's history.
+    Mirrors ``test_ledger_backfill.py``'s ``_RaisingSession``.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, probe_exc: BaseException) -> None:
+        self._probe_exc = probe_exc
         self.fallback_deletes: list[Any] = []
 
     def begin_nested(self) -> Any:
@@ -343,21 +342,42 @@ class _RaisingLivenessProbeSession:
         from sqlalchemy.sql.elements import TextClause
 
         if isinstance(statement, TextClause):
-            raise RuntimeError('relation "saq_jobs" does not exist')
+            raise self._probe_exc
         self.fallback_deletes.append(statement)
         return None
 
 
+def _undefined_table_error() -> ProgrammingError:
+    """A ``ProgrammingError`` shaped like asyncpg's ``UndefinedTableError`` wrapped by SQLAlchemy --
+    the ONE probe failure the fallback's safety proof covers (mirrors
+    ``test_controller_reenqueue.py``'s ``_schema_not_ready``)."""
+    return ProgrammingError("SELECT 1 FROM saq_jobs", {}, Exception('relation "saq_jobs" does not exist'))
+
+
 @pytest.mark.asyncio
-async def test_clear_entry_falls_back_to_unconditional_delete_when_liveness_probe_raises() -> None:
-    """Deterministic degrade-path coverage (phaze-3yln): the guarded SAVEPOINT read raises, so the
-    nested scope rolls back alone and the pre-fix unconditional delete-by-key fires as a fallback --
-    never leaving a row permanently un-clearable just because the liveness probe itself failed."""
-    session = _RaisingLivenessProbeSession()
+async def test_clear_entry_falls_back_to_unconditional_delete_on_missing_table() -> None:
+    """Deterministic degrade-path coverage (phaze-3yln, narrowed by phaze-jf7xt): the guarded
+    SAVEPOINT read raises a missing-table ``ProgrammingError``, so the nested scope rolls back alone
+    and the pre-fix unconditional delete-by-key fires as a fallback -- never leaving a row
+    permanently un-clearable just because ``saq_jobs`` does not exist yet (pre-migration/test env)."""
+    session = _RaisingLivenessProbeSession(_undefined_table_error())
 
     await clear_ledger_entry(session, "process_file:degrade-path")  # type: ignore[arg-type]
 
     assert len(session.fallback_deletes) == 1
+
+
+@pytest.mark.asyncio
+async def test_clear_entry_skips_the_clear_on_a_non_missing_table_probe_error() -> None:
+    """phaze-jf7xt regression: a transient probe failure that is NOT a missing-table error (e.g. a
+    ``statement_timeout``/``QueryCanceled`` under load) must NOT fall back to the unconditional
+    delete -- that would reopen the phaze-3yln race by deleting a live re-enqueue's row on the very
+    same load bursts that produce same-key re-enqueues. The clear is skipped entirely instead."""
+    session = _RaisingLivenessProbeSession(TimeoutError("statement timeout"))
+
+    await clear_ledger_entry(session, "process_file:transient-error")  # type: ignore[arg-type]
+
+    assert session.fallback_deletes == []
 
 
 @pytest.mark.asyncio

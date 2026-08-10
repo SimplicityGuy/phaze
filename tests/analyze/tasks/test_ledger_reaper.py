@@ -205,9 +205,13 @@ async def test_reap_is_idempotent(session: AsyncSession, make_file) -> None:  # 
 async def test_degrades_to_zero_without_saq_jobs(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
     """With no ``saq_jobs`` table the liveness probe IS the evidence, so the reaper does NOTHING.
 
-    Deliberately ASYMMETRIC with ``clear_ledger_entry``, which falls back to an unguarded delete when
-    its probe fails. That fallback is safe for a caller that just watched its own job go terminal; here
-    the probe is the only thing standing between a reap and deleting a live job's row.
+    Deliberately ASYMMETRIC with ``clear_ledger_entry``, which falls back to an unguarded delete ONLY
+    on this specific missing-table probe failure (phaze-jf7xt narrowed the fallback to that one error
+    shape; any OTHER probe failure now skips the clear instead of deleting unguarded). That narrow
+    fallback is safe here too -- with no ``saq_jobs`` table there is no live same-key row to protect --
+    but the reaper still does nothing rather than reuse it, because the reaper's own probe is the only
+    thing standing between a reap and deleting a live job's row (it has no equivalent "my own job just
+    went terminal" precondition to fall back on).
     """
     await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
     await session.commit()
