@@ -1177,12 +1177,27 @@ _PENDING_SORTS: dict[str, SortContract] = {
     ),
 }
 
+# phaze-6not3: sort what is shown -- FILES_SORT's own "sort what you show" precedent (see its comment
+# below) was violated on BOTH of these columns. `_tracklist_sets_page_stmt` already outerjoins
+# `FileRecord`, so both expressions below can reach it directly (no additional join needed).
+#   - "Set" renders `set_name = filename if matched else (artist or event or external_id)`
+#     (services/pipeline.py::get_tracklist_sets_page) -- NOT bare `Tracklist.artist`, which put a
+#     matched row's audio filename in a column that ordered by a value never shown for that row.
+#   - "Tracklist" renders ONLY the two-value `tracklist_state` ("matched"/"candidate") derived from
+#     `Tracklist.file_id IS NOT NULL` -- NOT `Tracklist.event`, a column that appears nowhere on
+#     screen. `Tracklist.file_id.is_not(None)` groups matched apart from candidate exactly like the
+#     rendered state does; a boolean ORDER BY sorts False-then-True (or the reverse on desc), which is
+#     the grouping the header promises.
 TRACKLIST_SETS_SORT = SortContract(
     endpoint="/pipeline/tracklist-sets",
     target="#tracklist-sets-view",
     columns=(
-        SortableColumn(key="artist", label="Set", expression=Tracklist.artist),
-        SortableColumn(key="event", label="Tracklist", expression=Tracklist.event),
+        SortableColumn(
+            key="artist",
+            label="Set",
+            expression=func.coalesce(FileRecord.original_filename, Tracklist.artist, Tracklist.event, Tracklist.external_id),
+        ),
+        SortableColumn(key="event", label="Tracklist", expression=Tracklist.file_id.is_not(None)),
     ),
     default_key="artist",
 )
