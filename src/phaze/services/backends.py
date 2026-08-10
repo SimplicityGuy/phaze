@@ -1109,10 +1109,19 @@ class KueueBackend(_BaseBackend):
                         # A new cycle always re-upserts status back to UPLOADING with a FRESH upload_id
                         # (_stage_file_to_s3), so a row still 'awaiting' with the SAME upload_id we observed
                         # proves no new cycle has claimed the key -- only then is the delete safe.
-                        current = (
-                            await session.execute(select(CloudJob.status, CloudJob.upload_id).where(CloudJob.id == cloud_job_id))
-                        ).one_or_none()
-                        await session.rollback()  # read-only probe; release its implicit tx either way
+                        current = None
+                        try:
+                            current = (
+                                await session.execute(select(CloudJob.status, CloudJob.upload_id).where(CloudJob.id == cloud_job_id))
+                            ).one_or_none()
+                        finally:
+                            # phaze-a6un6: rollback in a finally, not after the SELECT in the try body --
+                            # if the SELECT itself raises (transient DB error), the old placement skipped
+                            # this rollback entirely and the outer except below only logged, leaving the
+                            # session in an aborted/pending transaction. The NEXT row's advisory-lock
+                            # acquire then raised PendingRollbackError and THAT healthy row's reap was
+                            # skipped for the whole tick, misleadingly blamed instead of this probe.
+                            await session.rollback()  # read-only probe; release its implicit tx either way
                         if current is not None and current.status == CloudJobStatus.AWAITING.value and current.upload_id == upload_id:
                             await s3_staging.delete_staged_object(file_id, bucket)
                     except Exception:
