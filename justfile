@@ -964,15 +964,42 @@ perf-db-up:
     set -euo pipefail
     container="{{perf_db_container}}"
     port="{{perf_db_port}}"
+    # phaze-uame5: mirror test-db's `docker start`-first pattern (phaze-20vd). This container
+    # is the durable home for the ~200K-row PERF-02 corpus (see the recipe doc comment above),
+    # seeded into its writable layer with no volume backing it. `docker run` has no --restart
+    # flag, so the normal state after a host reboot or daemon restart is "exists, stopped" --
+    # the previous `docker rm -f` on that path destroyed the corpus and silently reprovisioned
+    # an empty database, printing the same "Starting..." line either way. `docker start`
+    # succeeds on a stopped container and fails harmlessly when none exists, so no `rm -f` is
+    # needed here at all -- and skipping it also avoids reintroducing the speculative-rm race
+    # phaze-20vd eliminated from test-db (a concurrent `just perf-db-up` racing our own
+    # `docker run` could otherwise have its just-created container deleted out from under it).
+    run_or_yield() {
+        local run_err
+        run_err="$(mktemp)"
+        if docker run -d --name "$container" \
+            -e POSTGRES_USER=phaze -e POSTGRES_PASSWORD=phaze -e POSTGRES_DB={{perf_db_name}} \
+            --shm-size {{postgres_shm_size}} \
+            -p "{{test_db_bind_ip}}:${port}:5432" {{postgres_image}} >/dev/null 2>"$run_err"; then
+            rm -f "$run_err"
+            return 0
+        fi
+        if grep -q "is already in use" "$run_err"; then
+            echo "🔁 ${container} was created by a concurrent invocation; continuing"
+            rm -f "$run_err"
+            return 0
+        fi
+        cat "$run_err" >&2
+        rm -f "$run_err"
+        return 1
+    }
     if [ "$(docker inspect -f '{{{{.State.Running}}' "$container" 2>/dev/null || echo false)" = "true" ]; then
         echo "🐘 ${container} already running on port ${port}"
     else
-        docker rm -f "$container" >/dev/null 2>&1 || true
         echo "🐘 Starting ${container} ({{postgres_image}}) on host port ${port}..."
-        docker run -d --name "$container" \
-            -e POSTGRES_USER=phaze -e POSTGRES_PASSWORD=phaze -e POSTGRES_DB={{perf_db_name}} \
-            --shm-size {{postgres_shm_size}} \
-            -p "{{test_db_bind_ip}}:${port}:5432" {{postgres_image}} >/dev/null
+        if ! docker start "$container" >/dev/null 2>&1; then
+            run_or_yield
+        fi
     fi
     for _ in $(seq 1 30); do
         if docker exec "$container" pg_isready -U phaze -d {{perf_db_name}} >/dev/null 2>&1; then
