@@ -64,14 +64,17 @@ def test_test_db_down_probes_for_live_seats_before_removing_anything() -> None:
 
 
 def test_the_probe_matches_per_worktree_test_databases() -> None:
-    """The probe must look at ``phaze%test`` databases, not only the default ``phaze_test``.
+    """The probe must look at every ``phaze%`` database, not only the default ``phaze_test``.
 
     Every isolated seat is named ``phaze_<name>_test`` by ``just test-db-for``, so a probe pinned
     to the literal default database would see none of the seats it exists to protect -- it would
-    pass the check precisely when the most seats are at risk.
+    pass the check precisely when the most seats are at risk. The pattern is deliberately not
+    narrowed to ``phaze%test``: a database misplaced on this shared container under a non-``test``
+    name (e.g. a perf corpus seeded here by mistake, phaze-zpdyg) would otherwise be invisible to
+    this guard even while it lives on the exact container the recipe is about to remove.
     """
     body = _recipe_body("test-db-down")
-    assert "'phaze%test'" in body, "the live-seat probe must match every per-worktree phaze_<name>_test database"
+    assert "'phaze%'" in body, "the live-seat probe must match every phaze-prefixed database on the shared container"
     assert "client backend" in body, "the probe must exclude Postgres' own background workers, which are always present"
 
 
