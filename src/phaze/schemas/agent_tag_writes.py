@@ -53,3 +53,37 @@ class TagWriteResultResponse(BaseModel):
     # False when the row was already terminal and this callback was a duplicate/late replay --
     # the endpoint is idempotent, so a replay is a 200 no-op, never an error.
     applied: bool
+
+
+class TagWriteBeforeSnapshotPayload(BaseModel):
+    """The pre-write on-disk snapshot, reported SEPARATELY and BEFORE any mutating write (phaze-anrw4).
+
+    ``PATCH /api/internal/agent/tag-writes/{log_id}/before-snapshot`` exists to close a gap the
+    main result callback cannot: on a SAQ retry of ``write_file_tags`` (the job body raises on a
+    failed result-callback so SAQ retries -- "only the CALLBACK is allowed to fail the job"), the
+    first attempt's write can have already landed on disk even though its result callback never
+    reached the control plane. A second attempt's ``_extract_before_tags`` then reads the
+    ALREADY-WRITTEN state, not the true original -- and the row is still ``queued``, so the main
+    callback's ``status != queued`` duplicate guard does not catch it either.
+
+    Reporting the snapshot here, before the disk is touched, makes it independent of which
+    attempt's write or result callback actually lands: the control plane accepts it FIRST-WRITE-WINS
+    (whichever call reaches it first while ``TagWriteLog.before_tags`` is still empty), so the
+    corrupted second extraction can never overwrite an already-captured original.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    before_tags: dict[str, str | int | None] = Field(default_factory=dict)
+
+
+class TagWriteBeforeSnapshotResponse(BaseModel):
+    """Ack for a before-snapshot report."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    log_id: uuid.UUID
+    # False when a snapshot was already recorded for this row (first-write-wins) or the row has
+    # already left ``queued`` -- never an error, always a safe no-op.
+    applied: bool

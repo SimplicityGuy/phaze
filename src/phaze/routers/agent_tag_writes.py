@@ -1,4 +1,4 @@
-"""PATCH /api/internal/agent/tag-writes/{log_id} -- terminal outcome of an on-agent tag write (phaze-6bkk)."""
+"""PATCH /api/internal/agent/tag-writes/{log_id}[/before-snapshot] -- agent -> control tag-write callbacks (phaze-6bkk)."""
 
 from typing import Annotated
 import uuid
@@ -12,7 +12,12 @@ from phaze.enums.tag_write import TagWriteStatus
 from phaze.models.agent import Agent
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.routers.agent_auth import get_authenticated_agent
-from phaze.schemas.agent_tag_writes import TagWriteResultPayload, TagWriteResultResponse
+from phaze.schemas.agent_tag_writes import (
+    TagWriteBeforeSnapshotPayload,
+    TagWriteBeforeSnapshotResponse,
+    TagWriteResultPayload,
+    TagWriteResultResponse,
+)
 from phaze.services.pg_text import sanitize_pg_text
 
 
@@ -45,6 +50,14 @@ async def patch_tag_write(
     ``applied=false``. That matters beyond tidiness: the audit row is the undo anchor, and letting a
     late duplicate overwrite ``before_tags`` with a snapshot taken AFTER the first write landed
     would make undo restore the written tags instead of the original ones.
+
+    ``before_tags`` is FIRST-WRITE-WINS (phaze-anrw4): if a snapshot already arrived -- via
+    :func:`record_tag_write_before_snapshot` (the normal path) or an earlier call to this same
+    endpoint -- this call's ``before_tags`` is discarded and the existing value is kept. A SAQ retry
+    of ``write_file_tags`` re-extracts ``before_tags`` from disk on every attempt; if an earlier
+    attempt's write already landed but its result callback never arrived, that re-extraction reads
+    the ALREADY-WRITTEN state. Only the FIRST snapshot any attempt ever reports can be trusted as
+    the true original, regardless of which attempt's callback happens to reach this endpoint.
 
     ``agent`` comes from the auth dep (token, never body -- AUTH-01) and the row is addressed by
     the PATH ``log_id`` only, so a forged body cannot redirect the write. The endpoint deliberately
@@ -81,7 +94,13 @@ async def patch_tag_write(
         return TagWriteResultResponse(agent_id=agent.id, log_id=log_id, status=TagWriteStatus(log_entry.status), applied=False)
 
     log_entry.status = body.status.value
-    log_entry.before_tags = dict(body.before_tags)
+    # phaze-anrw4: first-write-wins -- ``TagWriteLog.before_tags`` starts as a literal ``{}`` at
+    # ``enqueue_tag_write`` and only ever gets keys from an actual snapshot (every core field,
+    # ``None`` where absent -- see ``_extract_before_tags``), so "still ``{}``" unambiguously means
+    # "no snapshot recorded yet". A retry's redundant re-extraction must never clobber an already
+    # -- correct -- captured original.
+    if not log_entry.before_tags:
+        log_entry.before_tags = dict(body.before_tags)
     log_entry.discrepancies = body.discrepancies or None
     # Sanitize BEFORE truncating (stripping can only shorten, so the bound still holds): a NUL from
     # a mangled filename in an OSError string passes pydantic but aborts the transaction in Postgres
@@ -90,3 +109,40 @@ async def patch_tag_write(
     await session.commit()
 
     return TagWriteResultResponse(agent_id=agent.id, log_id=log_id, status=body.status, applied=True)
+
+
+@router.patch("/{log_id}/before-snapshot", status_code=status.HTTP_200_OK, response_model=TagWriteBeforeSnapshotResponse)
+async def record_tag_write_before_snapshot(
+    log_id: uuid.UUID,
+    body: TagWriteBeforeSnapshotPayload,
+    agent: Annotated[Agent, Depends(get_authenticated_agent)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> TagWriteBeforeSnapshotResponse:
+    """Durably record the pre-write on-disk snapshot, first-write-wins (phaze-anrw4).
+
+    ``phaze.tasks.tag_write.write_file_tags`` calls this BEFORE it performs the mutating mutagen
+    write, so the true original tags are captured independent of whether that attempt's write, or
+    its later result callback (:func:`patch_tag_write`), ever succeeds. A SAQ retry re-invokes this
+    same call with a snapshot re-extracted from (by then) the ALREADY-WRITTEN disk -- accepted only
+    when no snapshot has been recorded yet, so the first attempt's capture always wins.
+
+    Accepts only while the row is still ``queued`` -- a row that has left ``queued`` already has
+    its final ``before_tags`` (set by :func:`patch_tag_write`, itself first-write-wins) and a late
+    snapshot report has nothing left to protect. Same ``FOR UPDATE`` discipline as the result
+    callback for the same TOCTOU reason: two snapshot reports for the same row (a genuine retry
+    racing an in-flight first attempt) must serialize, not both observe "empty" and both write.
+    """
+    result = await session.execute(select(TagWriteLog).where(TagWriteLog.id == log_id).with_for_update())
+    log_entry = result.scalar_one_or_none()
+    if log_entry is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tag write log not found")
+
+    if log_entry.status != TagWriteStatus.QUEUED or log_entry.before_tags:
+        # Already terminal, or a snapshot already won -- always a safe no-op, never an error (the
+        # agent must not burn tenacity retries on this call, and it does not gate the write itself).
+        return TagWriteBeforeSnapshotResponse(agent_id=agent.id, log_id=log_id, applied=False)
+
+    log_entry.before_tags = dict(body.before_tags)
+    await session.commit()
+
+    return TagWriteBeforeSnapshotResponse(agent_id=agent.id, log_id=log_id, applied=True)

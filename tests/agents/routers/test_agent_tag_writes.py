@@ -356,3 +356,115 @@ async def test_concurrent_duplicate_callbacks_do_not_clobber_before_tags(async_e
             await s.commit()
         # NOTE: do NOT dispose ``engine`` -- it is the session-scoped ``async_engine`` fixture,
         # owned (and disposed) by conftest.
+
+
+# ---------------------------------------------------------------------------
+# phaze-anrw4: the pre-write snapshot endpoint + the first-write-wins guard it shares with the
+# result callback.
+# ---------------------------------------------------------------------------
+
+
+def _snapshot_body(**overrides: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {"before_tags": {"artist": "Original Artist"}}
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_before_snapshot_records_on_a_queued_row(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
+    _agent, token = seed_test_agent
+    log = await _seed_queued_log(session)
+
+    async with _make_client(session, token) as client:
+        resp = await client.patch(f"/api/internal/agent/tag-writes/{log.id}/before-snapshot", json=_snapshot_body())
+
+    assert resp.status_code == 200
+    assert resp.json()["applied"] is True
+    await session.refresh(log)
+    assert log.before_tags == {"artist": "Original Artist"}
+    assert log.status == TagWriteStatus.QUEUED, "the snapshot report must not advance the row's status"
+
+
+@pytest.mark.asyncio
+async def test_before_snapshot_first_write_wins_against_a_second_snapshot_report(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
+    """phaze-anrw4: a SAQ retry's re-extraction (a second snapshot report) must never win.
+
+    Simulates the corrupted case: the first report carries the TRUE original; a later report
+    (standing in for a retry that re-extracted from the already-written disk) carries the WRONG,
+    post-write snapshot. Only the first must persist.
+    """
+    _agent, token = seed_test_agent
+    log = await _seed_queued_log(session)
+
+    async with _make_client(session, token) as client:
+        first = await client.patch(f"/api/internal/agent/tag-writes/{log.id}/before-snapshot", json=_snapshot_body())
+        second = await client.patch(
+            f"/api/internal/agent/tag-writes/{log.id}/before-snapshot",
+            json=_snapshot_body(before_tags={"artist": "Proposed Value"}),
+        )
+
+    assert first.json()["applied"] is True
+    assert second.json()["applied"] is False
+    await session.refresh(log)
+    assert log.before_tags == {"artist": "Original Artist"}, "a later snapshot must never clobber the first"
+
+
+@pytest.mark.asyncio
+async def test_result_callback_keeps_the_before_snapshot_already_recorded(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
+    """The end-to-end phaze-anrw4 sequence: snapshot lands first, then the (corrupted) result callback.
+
+    Mirrors the real failure this closes: attempt 1's write lands but its result callback never
+    reaches the control plane, so the row is still ``queued`` when attempt 2's callback arrives
+    carrying a ``before_tags`` re-extracted from the ALREADY-WRITTEN disk (equal to the proposed
+    value). The genuine, pre-write snapshot reported earlier must win.
+    """
+    _agent, token = seed_test_agent
+    log = await _seed_queued_log(session)
+
+    async with _make_client(session, token) as client:
+        await client.patch(f"/api/internal/agent/tag-writes/{log.id}/before-snapshot", json=_snapshot_body())
+        resp = await client.patch(
+            f"/api/internal/agent/tag-writes/{log.id}",
+            json=_body(before_tags={"artist": "New Artist"}),  # the corrupted, post-write re-extraction
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["applied"] is True
+    await session.refresh(log)
+    assert log.status == TagWriteStatus.COMPLETED
+    assert log.before_tags == {"artist": "Original Artist"}, "the undo anchor must be the true original, not the retry's re-extraction"
+
+
+@pytest.mark.asyncio
+async def test_before_snapshot_no_op_once_the_row_is_terminal(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
+    _agent, token = seed_test_agent
+    log = await _seed_queued_log(session)
+
+    async with _make_client(session, token) as client:
+        await client.patch(f"/api/internal/agent/tag-writes/{log.id}", json=_body())
+        resp = await client.patch(f"/api/internal/agent/tag-writes/{log.id}/before-snapshot", json=_snapshot_body())
+
+    assert resp.status_code == 200
+    assert resp.json()["applied"] is False
+    await session.refresh(log)
+    assert log.before_tags == {"artist": "Old Artist", "title": None}, "a late snapshot must not touch an already-terminal row"
+
+
+@pytest.mark.asyncio
+async def test_before_snapshot_unknown_log_id_404s(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
+    _agent, token = seed_test_agent
+
+    async with _make_client(session, token) as client:
+        resp = await client.patch(f"/api/internal/agent/tag-writes/{uuid.uuid4()}/before-snapshot", json=_snapshot_body())
+
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_before_snapshot_unauthenticated_is_refused(session: AsyncSession) -> None:
+    log = await _seed_queued_log(session)
+
+    async with _make_client(session) as client:
+        resp = await client.patch(f"/api/internal/agent/tag-writes/{log.id}/before-snapshot", json=_snapshot_body())
+
+    assert resp.status_code in (401, 403)
