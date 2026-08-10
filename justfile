@@ -190,7 +190,15 @@ rebuild: tailwind
 [group('build')]
 tailwind:
     @mkdir -p src/phaze/static/css bin
-    @if [ ! -x ./bin/tailwindcss ]; then \
+    # phaze-y3iyt: the download used to be gated on EXISTENCE only (`[ ! -x ./bin/tailwindcss ]`),
+    # so bumping tailwind_version (+ the sha256 pins) had no effect on any machine already holding
+    # a cached binary -- every `just tailwind`/`up`/`up-dev`/`rebuild` kept compiling app.css with
+    # the stale version forever, silently diverging from the Dockerfile css-builder stage (whose
+    # cache key is the Docker layer, busted automatically by its ARG). Stamp the version that was
+    # actually verified and installed next to the binary, and re-download whenever it doesn't
+    # match the currently configured pin -- this also closes the residual phaze-hvzd hole where a
+    # binary cached before the sha256 pins existed was never re-checked against any digest.
+    @if [ ! -x ./bin/tailwindcss ] || [ "$(cat ./bin/tailwindcss.version 2>/dev/null || true)" != "{{ tailwind_version }}" ]; then \
         echo "⬇️  Downloading standalone Tailwind binary ({{ tailwind_version }})..."; \
         OS=$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/macos/'); \
         ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/'); \
@@ -201,7 +209,7 @@ tailwind:
             "macos-arm64") TW_SHA256="{{ tailwind_sha256_macos_arm64 }}" ;; \
             *) echo "❌ no pinned sha256 for ${OS}-${ARCH}; refusing to download unverified" >&2; exit 1 ;; \
         esac; \
-        rm -f ./bin/tailwindcss.tmp; \
+        rm -f ./bin/tailwindcss.tmp ./bin/tailwindcss.version; \
         curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --retry-delay 5 -o ./bin/tailwindcss.tmp \
             "https://github.com/tailwindlabs/tailwindcss/releases/download/{{ tailwind_version }}/tailwindcss-${OS}-${ARCH}" \
         && { \
@@ -216,7 +224,8 @@ tailwind:
         && chmod +x ./bin/tailwindcss.tmp \
         && ./bin/tailwindcss.tmp --help >/dev/null \
         && mv ./bin/tailwindcss.tmp ./bin/tailwindcss \
-        || { echo "❌ Tailwind download or verification failed; removing partial binary" >&2; rm -f ./bin/tailwindcss.tmp; exit 1; }; \
+        && echo "{{ tailwind_version }}" > ./bin/tailwindcss.version \
+        || { echo "❌ Tailwind download or verification failed; removing partial binary" >&2; rm -f ./bin/tailwindcss.tmp ./bin/tailwindcss.version; exit 1; }; \
     fi
     ./bin/tailwindcss -i assets/src/app.css -o src/phaze/static/css/app.css --minify
 
