@@ -92,6 +92,47 @@ def test_scan_batch_patch_response_full_row_echo() -> None:
     assert r.error_message is None
 
 
+def test_scan_batch_patch_rejects_explicit_null_status() -> None:
+    """phaze-q6i5g: an explicitly transmitted `"status": null` used to validate and survive
+    `exclude_unset=True` identically to a real value (it IS in `model_fields_set`), letting it
+    skip every `body.status is not None` guard in the router and reach the unconditional
+    setattr apply loop -- `status` backs a NOT NULL column, so that flushed a NULL and crashed
+    `session.commit()` with an unhandled 500 instead of a 422. Must now be rejected at
+    validation time."""
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        ScanBatchPatch.model_validate({"status": None, "processed_files": 5})
+    assert "status" in str(exc_info.value)
+
+
+def test_scan_batch_patch_rejects_explicit_null_total_files() -> None:
+    """Same defect, `total_files` twin -- also backs a NOT NULL column."""
+    with pytest.raises(pydantic.ValidationError):
+        ScanBatchPatch.model_validate({"total_files": None})
+
+
+def test_scan_batch_patch_rejects_explicit_null_processed_files() -> None:
+    """Same defect, `processed_files` twin -- also backs a NOT NULL column."""
+    with pytest.raises(pydantic.ValidationError):
+        ScanBatchPatch.model_validate({"processed_files": None})
+
+
+def test_scan_batch_patch_accepts_explicit_null_error_message() -> None:
+    """`error_message` is the ONE nullable column (models/scan_batch.py) -- an explicit null
+    there is a legitimate clear-the-error-message request and must still validate."""
+    p = ScanBatchPatch.model_validate({"error_message": None})
+    assert "error_message" in p.model_fields_set
+    assert p.model_dump(exclude_unset=True) == {"error_message": None}
+
+
+def test_scan_batch_patch_omitted_status_still_unset() -> None:
+    """A field that is simply OMITTED (not sent as null) stays the unset sentinel -- the
+    explicit-null guard must not regress the ordinary partial-update path."""
+    p = ScanBatchPatch.model_validate({"processed_files": 5})
+    assert p.status is None
+    assert "status" not in p.model_fields_set
+    assert p.model_dump(exclude_unset=True) == {"processed_files": 5}
+
+
 def test_scan_batch_patch_status_json_schema_excludes_live() -> None:
     """JSON schema's `status` Literal alternative MUST NOT include 'live'."""
     schema = ScanBatchPatch.model_json_schema()
