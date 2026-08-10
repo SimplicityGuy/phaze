@@ -672,9 +672,32 @@ async def _route_discovered_by_duration(
 
 
 async def _enqueue_proposal_jobs(queue: Any, batches: list[list[str]]) -> None:
-    """Background coroutine to enqueue generate_proposals jobs for batched file IDs."""
+    """Background coroutine to enqueue generate_proposals jobs for batched file IDs.
+
+    phaze-ysz16: each batch's enqueue is individually contained, mirroring phaze-4ter's
+    ``_enqueue_analysis_jobs`` containment. Pre-fix this was a bare loop with no per-item
+    try/except -- every caller spawns it via ``asyncio.create_task`` with only a bare
+    ``_background_tasks.discard`` done-callback (``task.result()`` never called), so the FIRST
+    exception (a transient broker/pool error) aborted every remaining batch AND surfaced only as
+    asyncio's uncorrelated GC-time "Task exception was never retrieved" log -- never tied to this
+    request -- while the HTTP response had already reported the FULL batch count as enqueued.
+    Nothing here mutates durable state before the enqueue, so a dropped batch just stays in the
+    derived pending set and an idempotent re-click re-enqueues it; this fix is purely about making
+    the drop visible in a correlated log instead of losing every remaining batch to one failure.
+    """
+    dropped = 0
     for idx, batch in enumerate(batches):
-        await queue.enqueue("generate_proposals", file_ids=batch, batch_index=idx)
+        try:
+            await queue.enqueue("generate_proposals", file_ids=batch, batch_index=idx)
+        except Exception:
+            dropped += 1
+            logger.exception("_enqueue_proposal_jobs: failed to enqueue generate_proposals batch", batch_index=idx, batch_size=len(batch))
+    if dropped:
+        logger.warning(
+            "_enqueue_proposal_jobs: batches dropped from this run -- pending set unaffected, re-click will retry",
+            dropped=dropped,
+            total=len(batches),
+        )
 
 
 @router.post("/api/v1/analyze")
@@ -2689,7 +2712,18 @@ async def _enqueue_extraction_jobs(queue: Any, files: list[FileRecord], agent_id
     worker's ``model_validate`` accepts it. The deterministic key
     (``extract_file_metadata:<file_id>``) is applied centrally by the ``before_enqueue`` hook
     (35-01), so no explicit ``key=`` is set here.
+
+    phaze-ysz16: each file's enqueue is individually contained, mirroring phaze-4ter's
+    ``_enqueue_analysis_jobs`` containment. Pre-fix a bare loop with no per-item try/except meant
+    the FIRST transient broker/pool error aborted every remaining file in the group, surfacing
+    only as asyncio's uncorrelated GC-time "Task exception was never retrieved" log (every caller
+    detaches this via ``asyncio.create_task`` + a bare ``_background_tasks.discard`` done-callback
+    that never calls ``task.result()``) while the response had already reported the full count.
+    Nothing here mutates durable state before the enqueue, so a dropped file stays in the derived
+    pending set for an idempotent re-click; this fix makes the drop visible in a correlated log
+    instead of losing every remaining file to one failure.
     """
+    dropped = 0
     for f in files:
         payload = ExtractMetadataPayload(
             file_id=f.id,
@@ -2697,7 +2731,17 @@ async def _enqueue_extraction_jobs(queue: Any, files: list[FileRecord], agent_id
             file_type=f.file_type,
             agent_id=agent_id,
         )
-        await queue.enqueue("extract_file_metadata", **payload.model_dump(mode="json"))
+        try:
+            await queue.enqueue("extract_file_metadata", **payload.model_dump(mode="json"))
+        except Exception:
+            dropped += 1
+            logger.exception("_enqueue_extraction_jobs: failed to enqueue extract_file_metadata job", file_id=str(f.id))
+    if dropped:
+        logger.warning(
+            "_enqueue_extraction_jobs: files dropped from this run -- pending set unaffected, re-click will retry",
+            dropped=dropped,
+            total=len(files),
+        )
 
 
 @router.post("/api/v1/extract-metadata")
@@ -2791,9 +2835,30 @@ async def _enqueue_match_jobs(queue: Any, tracklists: list[Tracklist]) -> None:
     ``match_tracklist_to_discogs:<tracklist_id>`` is applied centrally by the ``before_enqueue`` hook
     (Phase 35), so a double-click / refresh dedups in flight (D, T-41-02). Set NO explicit ``key=``.
     Background-enqueued to avoid HTTP timeout on a large pending set (Pitfall 2).
+
+    phaze-ysz16: each tracklist's enqueue is individually contained, mirroring phaze-4ter's
+    ``_enqueue_analysis_jobs`` containment. Pre-fix a bare loop with no per-item try/except meant
+    the FIRST transient broker/pool error aborted every remaining tracklist, surfacing only as
+    asyncio's uncorrelated GC-time "Task exception was never retrieved" log (this is detached via
+    ``asyncio.create_task`` + a bare ``_background_tasks.discard`` done-callback that never calls
+    ``task.result()``) while the response had already reported the full count. Nothing here
+    mutates durable state before the enqueue, so a dropped tracklist stays in the derived pending
+    set for an idempotent re-click; this fix makes the drop visible in a correlated log instead of
+    losing every remaining tracklist to one failure.
     """
+    dropped = 0
     for tl in tracklists:
-        await queue.enqueue("match_tracklist_to_discogs", tracklist_id=str(tl.id))
+        try:
+            await queue.enqueue("match_tracklist_to_discogs", tracklist_id=str(tl.id))
+        except Exception:
+            dropped += 1
+            logger.exception("_enqueue_match_jobs: failed to enqueue match_tracklist_to_discogs job", tracklist_id=str(tl.id))
+    if dropped:
+        logger.warning(
+            "_enqueue_match_jobs: tracklists dropped from this run -- pending set unaffected, re-click will retry",
+            dropped=dropped,
+            total=len(tracklists),
+        )
 
 
 @router.post("/pipeline/match-tracklists", response_class=HTMLResponse)
