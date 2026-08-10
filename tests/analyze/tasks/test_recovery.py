@@ -290,6 +290,56 @@ async def test_orphaned_agent_row_replays_through_keyed_producer(
 
 
 @pytest.mark.asyncio
+async def test_recover_orphaned_work_releases_read_txn_before_replay_loops(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-266lc: the read-phase transaction is committed before the enqueue replay loops.
+
+    ``recover_orphaned_work`` wraps its whole body in one ``async with async_session()`` block.
+    After the read phase (ledger rows / live keys / done sets / cloud exclusions) it must commit
+    BEFORE entering the controller/agent replay loops -- each row's replay is a network-dependent
+    ``queue.enqueue`` call, and on a large orphaned set the loop can run for minutes. Left open,
+    the control-engine connection sits idle-in-transaction across the whole replay (the phaze-1v37
+    pool-drain class). Spy on both the session commit and the per-agent queue's enqueue and assert
+    a commit is recorded strictly before the first enqueue.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file()
+    session.add(f)
+    await session.commit()
+    await _seed_ledger(session, function="process_file", file_id=f.id)
+
+    order: list[str] = []
+    real_commit = AsyncSession.commit
+    real_enqueue = DedupFakeQueue.enqueue
+
+    async def _spy_commit(self: AsyncSession) -> None:
+        await real_commit(self)
+        order.append("commit")
+
+    async def _spy_enqueue(self: DedupFakeQueue, task_name: str, **kwargs: Any) -> Any:
+        order.append("enqueue")
+        return await real_enqueue(self, task_name, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "commit", _spy_commit)
+    monkeypatch.setattr(DedupFakeQueue, "enqueue", _spy_enqueue)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert result["stages"]["process_file"]["reenqueued"] == 1
+    assert "enqueue" in order
+    enqueue_index = order.index("enqueue")
+    assert "commit" in order[:enqueue_index], f"expected a read-phase commit before the first replay enqueue, got order={order}"
+
+
+@pytest.mark.asyncio
 async def test_replay_preserves_stored_timeout_and_retries(
     async_engine: AsyncEngine,
     session: AsyncSession,

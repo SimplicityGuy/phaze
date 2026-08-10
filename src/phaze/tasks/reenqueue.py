@@ -878,6 +878,13 @@ async def _replay_agent_rows_by_owner(
                 rows=len(owned),
             )
             continue
+        # phaze-266lc: ``select_agent_by_id`` above autobegins a new transaction on this shared
+        # session; commit it here, before the per-row enqueue loop below, so THIS owner's group of
+        # network-dependent replay calls does not run with the session idle-in-transaction (same
+        # class + same fix shape as the read-phase commit above and agent_analysis.py phaze-7jfgi).
+        # ``agent`` stays usable after the commit -- ``expire_on_commit=False`` -- and only its
+        # plain ``.id`` column is read below, never a lazy-loaded relationship.
+        await session.commit()
         # quick-260707-dh1: derive the LANE per row via lane_for_task(row.function) (push_file -> io;
         # process_file -> analyze; ...). An unmapped function raises loudly (never a bad queue).
         for row in owned:
@@ -993,6 +1000,20 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
             and not is_domain_completed(r, done_sets)
             and (r.function not in _CLOUD_OWNED_FUNCTIONS or (_natural_id(r) not in in_flight and _natural_id(r) not in awaiting_cloud))
         ]
+
+        # phaze-266lc: the read phase above (get_ledger_rows / get_live_job_keys / _build_done_sets /
+        # _in_flight_cloud_job_ids / _awaiting_cloud_job_ids) is done -- ``orphaned`` is materialized
+        # in-memory and nothing below reads any of those queries' results again. Commit here to close
+        # the read transaction BEFORE the enqueue replay loops (controller_rows / push_rows /
+        # other_agent_rows / regenerated_targets), each of which spans a per-row network-dependent
+        # enqueue and, on a large orphaned set, minutes of wall time. Left open, this control-engine
+        # connection sat idle-in-transaction across the whole replay -- the same phaze-1v37 pool-drain
+        # class fixed at the other request/task-scoped session sites (agent_analysis.py phaze-7jfgi,
+        # tags.py phaze-7bjjj). ``ctx["async_session"]`` is ``expire_on_commit=False`` (controller.py),
+        # so ``rows``/``orphaned``'s ORM instances stay usable after the commit; ``select_agent_by_id``
+        # and the regenerators below reopen a transaction on demand exactly as they already did on
+        # every subsequent call.
+        await session.commit()
 
         # Initialize every keyed function to zero so the return shape is TOTAL (and a stage with no
         # orphaned rows reads as an explicit zero, not a missing key the startup-log/UI must guess at).
