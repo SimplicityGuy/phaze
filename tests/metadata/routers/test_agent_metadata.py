@@ -990,3 +990,95 @@ async def test_metadata_failed_error_at_max_length_boundary_is_accepted(
     assert row.failed_at is not None, "an accepted (2000-char) failure POST must persist the marker"
     assert row.error_message is not None
     assert row.error_message.startswith("error: "), f"error_message must be composed as '<reason>: <error>', got {row.error_message!r}"
+
+
+# ---------------------------------------------------------------------------
+# phaze-1lnzo: a concurrently-deleted FileRecord (a scan deletion racing an in-flight
+# extract_file_metadata run) must hold with a clean 200, not FK-violate into an unhandled
+# 500. Each callback is exercised against a `file_id` that was NEVER seeded -- the exact shape
+# a vanished FileRecord leaves behind, since `services.scan_deletion.delete_scan_cascade`
+# removes the row entirely rather than leaving a tombstone (mirrors
+# tests/agents/routers/test_agent_analysis.py's phaze-wn1l coverage).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_metadata_put_vanished_file_holds_200_not_500(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """PUT against a file_id with no FileRecord holds with a clean 200 (phaze-1lnzo), not a 500."""
+    agent, raw_token = seed_test_agent
+    agent_id = agent.id
+    vanished_file_id = uuid.uuid4()  # never seeded -- mirrors a scan-deleted FileRecord
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        response = await ac.put(f"/api/internal/agent/metadata/{vanished_file_id}", json={"title": "Some Title"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["agent_id"] == agent_id
+    assert body["file_id"] == str(vanished_file_id)
+
+    # No row was (or could be) written for the vanished file.
+    session.expire_all()
+    row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == vanished_file_id))).scalar_one_or_none()
+    assert row is None
+
+    # The session survives the caught IntegrityError -- a SUBSEQUENT PUT against a real
+    # file_id on the SAME session still works (the SAVEPOINT unwound only its own scope).
+    real_file_id = await _seed_file(session, agent_id)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        response2 = await ac.put(f"/api/internal/agent/metadata/{real_file_id}", json={"title": "Real Title"})
+    assert response2.status_code == 200, response2.text
+    session.expire_all()
+    real_row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == real_file_id))).scalar_one()
+    assert real_row.title == "Real Title"
+
+
+@pytest.mark.asyncio
+async def test_metadata_failed_vanished_file_holds_200_not_500(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """POST .../failed against a file_id with no FileRecord holds with a clean 200 (phaze-1lnzo).
+
+    This is the TERMINAL ack -- the worker's non-retryable last attempt after SAQ retries are
+    exhausted. Before the fix, this FK-violated identically to `put_metadata`, so the worker's
+    outcome was lost entirely and the client burned its retry budget on a request that could
+    never succeed.
+    """
+    agent, raw_token = seed_test_agent
+    vanished_file_id = uuid.uuid4()
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        response = await ac.post(f"/api/internal/agent/metadata/{vanished_file_id}/failed", json={"reason": "timeout", "error": "boom"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["agent_id"] == agent.id
+    assert body["file_id"] == str(vanished_file_id)
+    assert body["cleared"] is True
+
+    session.expire_all()
+    row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == vanished_file_id))).scalar_one_or_none()
+    assert row is None
+
+
+@pytest.mark.asyncio
+async def test_metadata_failed_bodyless_vanished_file_holds_200_not_500(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """The bodyless (legacy agent) terminal-ack shape also holds 200 against a vanished file."""
+    _, raw_token = seed_test_agent
+    vanished_file_id = uuid.uuid4()
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        response = await ac.post(f"/api/internal/agent/metadata/{vanished_file_id}/failed")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["file_id"] == str(vanished_file_id)
+    assert body["cleared"] is True
+
+    session.expire_all()
+    row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == vanished_file_id))).scalar_one_or_none()
+    assert row is None
