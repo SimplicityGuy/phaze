@@ -235,7 +235,10 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
        ``file_size`` misreports. The same effective size is what gets recorded on
        ``UploadFileS3Payload.part_size_bytes`` -- passing the raw config value there while presigning
        against an adjusted part count would silently corrupt the object (the agent would slice bytes
-       at the wrong boundaries).
+       at the wrong boundaries). phaze-pq1fe: every part is presigned with the SAME
+       part-count-scaled TTL (``max(cfg.s3_presign_put_ttl_sec, upload_file_saq_timeout_sec(part_count))``)
+       instead of the flat 1h default, so a signature is still valid when the agent's strictly
+       SEQUENTIAL transfer (``tasks/s3_upload._transfer_parts``) finally reaches a later part.
     3. Upsert the ``cloud_job`` row (``UPLOADING`` + file_id-scoped key + multipart ``upload_id``)
        ON CONFLICT (file_id) so a re-stage is idempotent against the unique FK (no duplicate row).
     4. PARK exactly one ``s3_upload`` job on the session (phaze-grzo) carrying the presigned part
@@ -287,7 +290,15 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
         # s3_multipart_part_size_bytes is a floor, not the final word (phaze-wz1q).
         part_size = max(cfg.s3_multipart_part_size_bytes, math.ceil(file.file_size / s3_staging.S3_MAX_PART_COUNT))
         part_count = max(1, math.ceil(file.file_size / part_size))
-        part_urls = await s3_staging.presign_upload_parts(file.id, upload_id, part_count, bucket)
+        # phaze-pq1fe: scale the presign TTL with the transfer's OWN sanctioned budget instead of the
+        # flat ``s3_presign_put_ttl_sec`` (default 3600s). The agent PUTs parts strictly SEQUENTIALLY
+        # (tasks/s3_upload._transfer_parts) under a per-part budget that already drives the SAQ job-net
+        # timeout below (phaze-g37f, ``upload_file_saq_timeout_sec``) -- reusing that SAME part-count-scaled
+        # value here keeps the presign TTL and the transfer's sanctioned wall-clock budget from drifting
+        # apart, so a signature is still valid when the sequential agent finally reaches its part. Never
+        # goes BELOW the configured floor (a short transfer keeps the operator's shorter default).
+        presign_ttl_sec = max(cfg.s3_presign_put_ttl_sec, upload_file_saq_timeout_sec(part_count))
+        part_urls = await s3_staging.presign_upload_parts(file.id, upload_id, part_count, bucket, expires_in_sec=presign_ttl_sec)
 
         # Idempotent upsert against the unique file_id FK: a re-stage refreshes the key/status/upload_id
         # in place instead of erroring on the duplicate (mirrors the scheduling_ledger upsert idiom).
