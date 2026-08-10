@@ -1282,7 +1282,8 @@ async def pipeline_files(
     bare fragment, unchanged.
 
     phaze-uvmcr.2: anything else -- a plain request or a restore -- used to get a rail-less full
-    page (``pipeline/files.html``, its own ``{% extends "base.html" %}`` fork of this same content).
+    page (``pipeline/files.html``, its own extends-base.html fork of this same content --
+    base.html itself was deleted by phaze-uvmcr.5, its last live caller gone).
     That page was redundant: ``"files"`` is a registered shell stage (``routers/shell.py``
     ``STAGE_PARTIALS``), reachable with the rail intact at ``/s/files``, which composes the SAME
     ``files_table_view.html`` fragment via ``pipeline/partials/files_workspace.html``. So the

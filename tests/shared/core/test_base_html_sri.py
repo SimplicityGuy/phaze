@@ -1,10 +1,15 @@
-"""Regression tests for base.html CDN script integrity (Phase 27 UAT Gap 11).
+"""Regression tests for shell.html CDN script integrity (Phase 27 UAT Gap 11).
 
 When a `<script src=...>` tag uses Subresource Integrity (SRI), the browser
 refuses to execute the script if the served file's SHA hash does not match
 the `integrity` attribute. For the phaze admin UI this means: if any pinned
 SRI hash drifts out of sync with the actual CDN content, the page is left
 non-interactive (HTMX/Alpine blocked).
+
+phaze-uvmcr.5: base.html (the original target of this test) was deleted once
+audit/agents/files moved onto the shell and it had zero remaining callers.
+shell/shell.html is now the ONLY page layout, so it is the only template left
+to guard here.
 
 NOTE: Tailwind is no longer a CDN `<script>` — it is compiled at image-build
 time by the standalone Tailwind binary and served as a same-origin
@@ -42,12 +47,13 @@ import pytest
 
 
 _TEMPLATES_DIR = Path(__file__).resolve().parents[3] / "src" / "phaze" / "templates"
-_BASE_HTML = _TEMPLATES_DIR / "base.html"
 # RESEARCH Pitfall 1: the v7.0 shell runs on shell.html (its OWN <head> block), where the
 # record slide-in + ⌘K focus-traps actually load @alpinejs/focus. A stale/missing SRI hash
-# there was previously invisible to this test — guard BOTH templates.
+# there was previously invisible to this test.
+# phaze-uvmcr.5: base.html deleted (zero live callers) — shell.html is now the only page
+# layout, so it is the only template left to guard.
 _SHELL_HTML = _TEMPLATES_DIR / "shell" / "shell.html"
-_ALL_TEMPLATES = (_BASE_HTML, _SHELL_HTML)
+_ALL_TEMPLATES = (_SHELL_HTML,)
 _SCRIPT_TAG = re.compile(
     r"<script\b[^>]*?\bsrc=[\"']([^\"']+)[\"'][^>]*?\bintegrity=[\"']([^\"']+)[\"']",
     re.IGNORECASE | re.DOTALL,
@@ -60,7 +66,7 @@ _MAX_FETCH_ATTEMPTS = 3
 _FETCH_RETRY_DELAY_SECONDS = 1.0
 
 
-def _extract_cdn_scripts(template: Path = _BASE_HTML) -> list[tuple[str, str]]:
+def _extract_cdn_scripts(template: Path = _SHELL_HTML) -> list[tuple[str, str]]:
     """Return (src, integrity) tuples for every <script> in ``template`` with both attrs."""
     html = template.read_text()
     return _SCRIPT_TAG.findall(html)

@@ -2,8 +2,9 @@
 
 Two surfaces are covered:
 
-- The ``$store.pipeline`` extension in ``base.html`` (a pure template-text assertion;
-  no DB) — every per-node sub-key is registered AND seeded to 0, with the Phase-34 keys
+- The ``$store.pipeline`` extension in ``shell/shell.html`` (phaze-uvmcr.5: formerly
+  ``base.html``, deleted once it had zero live callers) — a pure template-text assertion
+  (no DB); every per-node sub-key is registered AND seeded to 0, with the Phase-34 keys
   preserved (``-k store``).
 - The per-node router context built by ``_build_dag_context`` + the OOB seed paragraphs
   emitted by ``stats_bar.html`` on the 5s poll (DB-backed, auto-marked ``integration``):
@@ -31,7 +32,9 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-_BASE_HTML = Path(__file__).resolve().parent.parent.parent.parent / "src" / "phaze" / "templates" / "base.html"
+# phaze-uvmcr.5: base.html deleted (zero live callers) — shell/shell.html is now the only
+# page layout and the sole home of the $store.pipeline literal.
+_SHELL_HTML = Path(__file__).resolve().parent.parent.parent.parent / "src" / "phaze" / "templates" / "shell" / "shell.html"
 
 # Every per-node store sub-key the UI-SPEC "Store extension" mandates (35-UI-SPEC L294).
 _NEW_STORE_KEYS = (
@@ -89,10 +92,10 @@ _PRESERVED_STORE_KEYS = ("discovered", "analyzed", "metadataExtracted", "agentBu
 
 
 def _store_literal() -> str:
-    """Return the ``Alpine.store('pipeline', { ... });`` object-literal text from base.html."""
-    text = _BASE_HTML.read_text(encoding="utf-8")
+    """Return the ``Alpine.store('pipeline', { ... });`` object-literal text from shell.html."""
+    text = _SHELL_HTML.read_text(encoding="utf-8")
     match = re.search(r"Alpine\.store\('pipeline',\s*\{(.*?)\}\s*\);", text, re.DOTALL)
-    assert match is not None, "Alpine.store('pipeline', {...}) literal not found in base.html"
+    assert match is not None, "Alpine.store('pipeline', {...}) literal not found in shell/shell.html"
     return match.group(1)
 
 
