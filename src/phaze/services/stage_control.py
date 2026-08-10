@@ -59,10 +59,25 @@ _PAUSE_SQL = text("UPDATE saq_jobs SET scheduled = :s WHERE status = 'queued' AN
 # ``scheduled`` key from the JSON blob (``jsonb - 'scheduled'``), which is exactly the shape SAQ emits
 # for an unparked job (``to_dict`` omits the default-0 field), so the deserialized job.scheduled is 0.
 # The blob is default-JSON (queue_factory sets no custom dump/load), stored as UTF-8 BYTEA.
+#
+# SANITIZE (phaze-a0m3z): strip the literal ``\u0000`` JSON escape BEFORE the ``::jsonb`` cast.
+# SAQ's default serializer is ``json.dumps`` (``ensure_ascii=True``), which encodes any NUL
+# character in the job dict as the six-character text escape ``\u0000`` -- e.g. a re-queued job
+# whose ``error`` field still carries a prior attempt's traceback (SAQ's ``_retry`` rewrites the
+# full blob; only the pause-bounce path clears ``error``), and agent-worker tracebacks routinely
+# embed binary tool output that can contain a NUL byte. Postgres's ``::jsonb`` input parser
+# rejects that escape outright (``22P05 unsupported Unicode escape sequence``, "\u0000 cannot be
+# converted to text") even though the surrounding BYTEA storage and the JSON *text* type both
+# accept it fine. Because this UPDATE matches every parked row for the stage in one statement (the
+# ``key LIKE`` prefix), one poisoned blob aborts the whole UPDATE and wedges every other row in the
+# stage parked too. ``replace()`` on the plain decoded text -- BEFORE the cast -- removes the
+# escape sequence text unconditionally, which is safe here specifically because ``\u0000`` can
+# never be part of a legitimate paired-surrogate encoding (unlike ``\uD800``-``\uDFFF``, which
+# DOES appear in valid non-BMP character encodings and must not be blanket-stripped).
 _RESUME_SQL = text(
     "UPDATE saq_jobs "
     "SET scheduled = 0, "
-    "job = convert_to(((convert_from(job, 'UTF8')::jsonb) - 'scheduled')::text, 'UTF8') "
+    "job = convert_to(((replace(convert_from(job, 'UTF8'), '\\u0000', '')::jsonb) - 'scheduled')::text, 'UTF8') "
     "WHERE status = 'queued' AND key LIKE :pfx AND scheduled = :s"
 )
 
