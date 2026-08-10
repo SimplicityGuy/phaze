@@ -25,6 +25,7 @@ import pytest
 
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
+from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS
 
 
 if TYPE_CHECKING:
@@ -188,6 +189,24 @@ async def test_pipeline_files_plain_request_redirect_lands_on_a_full_shell_docum
     assert "<html" in body.lower(), "the redirect target must be a full document, not a fragment"
     assert "<h1" in body, "the page heading must be present"
     assert 'id="files-table-view"' in body, "the swap target itself must be present on the redirected page"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_files_redirect_and_fragment_both_mark_the_response_uncacheable(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-r6e5m (response_shape.py contract rule 6) -- ``/pipeline/files`` forks on request
+    headers alone into a 302 redirect OR a fragment, so the browser's URL-only HTTP cache could
+    otherwise replay one shape's cached bytes for a request that wanted the other. Both branches
+    must carry DUAL_SHAPE_RESPONSE_HEADERS.
+    """
+    redirect = await client.get("/pipeline/files?stage=metadata&bucket=failed", follow_redirects=False)
+    assert redirect.status_code == 302
+    for name, value in DUAL_SHAPE_RESPONSE_HEADERS.items():
+        assert redirect.headers.get(name) == value, f"redirect branch missing/wrong {name!r}"
+
+    fragment = await client.get("/pipeline/files?stage=metadata&bucket=failed", headers={"HX-Request": "true"})
+    assert fragment.status_code == 200
+    for name, value in DUAL_SHAPE_RESPONSE_HEADERS.items():
+        assert fragment.headers.get(name) == value, f"fragment branch missing/wrong {name!r}"
 
 
 @pytest.mark.asyncio

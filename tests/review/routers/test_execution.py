@@ -16,6 +16,7 @@ from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS
 from phaze.services.pagination import MIN_PAGE_SIZE
 
 
@@ -162,6 +163,26 @@ async def test_audit_log_page_htmx(client: AsyncClient, session: AsyncSession) -
     assert response.status_code == 200
     assert "<html" not in response.text.lower()
     assert "audit-table-container" in response.text
+
+
+@pytest.mark.asyncio
+async def test_audit_log_redirect_and_fragment_both_mark_the_response_uncacheable(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-r6e5m (response_shape.py contract rule 6) -- ``/audit/`` forks on request headers
+    alone into a 301 redirect OR a fragment, so the browser's URL-only HTTP cache could otherwise
+    replay one shape's cached bytes for a request that wanted the other. Both branches must carry
+    DUAL_SHAPE_RESPONSE_HEADERS.
+    """
+    await create_test_execution_log(session)
+
+    redirect = await client.get("/audit/", follow_redirects=False)
+    assert redirect.status_code == 301
+    for name, value in DUAL_SHAPE_RESPONSE_HEADERS.items():
+        assert redirect.headers.get(name) == value, f"redirect branch missing/wrong {name!r}"
+
+    fragment = await client.get("/audit/", headers={"HX-Request": "true"})
+    assert fragment.status_code == 200
+    for name, value in DUAL_SHAPE_RESPONSE_HEADERS.items():
+        assert fragment.headers.get(name) == value, f"fragment branch missing/wrong {name!r}"
 
 
 @pytest.mark.asyncio

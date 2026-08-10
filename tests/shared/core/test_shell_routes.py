@@ -29,9 +29,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS
+
 
 if TYPE_CHECKING:
-    from httpx import AsyncClient
+    from httpx import AsyncClient, Response
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -224,6 +226,47 @@ async def test_stage_fragment_is_bare(client: AsyncClient, stage: str) -> None:
     assert full.status_code == 200
     # The non-HX request is the full shell (carries the swap target + chrome).
     assert 'id="stage-workspace"' in full.text
+
+
+def _assert_dual_shape_headers(response: Response, *, context: str) -> None:
+    """Assert ``response`` carries every header ``DUAL_SHAPE_RESPONSE_HEADERS`` demands."""
+    for name, value in DUAL_SHAPE_RESPONSE_HEADERS.items():
+        assert response.headers.get(name) == value, f"{context}: missing/wrong {name!r} header (got {response.headers.get(name)!r})"
+
+
+@pytest.mark.parametrize("stage", _RAIL_STAGES + _UTILITY_PANE_STAGES)
+@pytest.mark.asyncio
+async def test_stage_route_marks_every_shape_uncacheable_by_the_browser(client: AsyncClient, stage: str) -> None:
+    """phaze-r6e5m (response_shape.py contract rule 6) -- /s/<stage> forks THREE ways on the SAME
+    URL (fragment / full shell / history restore), and the browser's HTTP cache keys by URL alone.
+    Every branch must carry DUAL_SHAPE_RESPONSE_HEADERS so a cached fragment can never be replayed
+    as the whole document on a Back/Forward navigation, or vice versa. Covers every DAG stage
+    (``_RAIL_STAGES``) and utility pane (``_UTILITY_PANE_STAGES``) through the single shared
+    ``_render_stage`` fork -- no bespoke per-stage copy.
+    """
+    live_swap = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
+    assert live_swap.status_code == 200
+    _assert_dual_shape_headers(live_swap, context=f"live htmx swap of /s/{stage}")
+
+    direct_nav = await client.get(f"/s/{stage}")
+    assert direct_nav.status_code == 200
+    _assert_dual_shape_headers(direct_nav, context=f"direct navigation to /s/{stage}")
+
+    restore = await client.get(f"/s/{stage}", headers=_RESTORE_HEADERS)
+    assert restore.status_code == 200
+    _assert_dual_shape_headers(restore, context=f"history restore of /s/{stage}")
+
+
+@pytest.mark.asyncio
+async def test_root_marks_every_shape_uncacheable_by_the_browser(client: AsyncClient) -> None:
+    """``GET /`` shares ``_render_stage`` with ``/s/<stage>``, so it owes the same guarantee."""
+    direct_nav = await client.get("/")
+    assert direct_nav.status_code == 200
+    _assert_dual_shape_headers(direct_nav, context="direct navigation to /")
+
+    restore = await client.get("/", headers=_RESTORE_HEADERS)
+    assert restore.status_code == 200
+    _assert_dual_shape_headers(restore, context="history restore of /")
 
 
 @pytest.mark.asyncio

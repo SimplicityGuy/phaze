@@ -99,28 +99,64 @@ THE CONTRACT
    present on restore rather than merely that the status is 200. A status assertion alone would
    have passed against the bug.
 
+6. A ``wants_fragment`` FORK MUST MARK EVERY BRANCH UNCACHEABLE BY THE BROWSER (phaze-r6e5m).
+   Rules 1 and 2 close the SERVER-side half of this class: a handler asked the right question and
+   answers with the right document shape. But the browser's HTTP cache keys a response by URL
+   ALONE -- it never sees ``HX-Request`` / ``HX-History-Restore-Request`` / ``HX-Target`` unless a
+   response says those headers make its body vary, via ``Vary``. Absent that, a chrome-less
+   fragment fetched for a live rail swap of ``GET /s/discover`` is cached under the exact same key a
+   full-document navigation to ``/s/discover`` would use, and vice versa for a redirect-vs-fragment
+   pair like ``GET /audit/``. On a browser Back/Forward whose bfcache entry is gone (routine --
+   bfcache eligibility is narrow and htmx's own 10-entry history cache is unrelated to it), the
+   browser reuses that stored HTTP-cache entry WITHOUT asking the server again: the stored fragment
+   renders as the whole document -- no ``<head>``, no stylesheet, no htmx/Alpine, no rail, no
+   header -- the exact "bare workspace with no way out but a manual reload" failure rule 2 exists
+   to prevent, reintroduced one layer down, below the server entirely.
+
+   Every response emitted by a ``wants_fragment`` fork -- EVERY branch, not just the fragment one,
+   since the inverse poisoning (a cached full document swapped into a live target) is equally
+   possible -- carries :data:`DUAL_SHAPE_RESPONSE_HEADERS`. ``Cache-Control: no-store`` is the
+   effective half: it stops the browser from ever storing the response, so which headers it would
+   have varied on stops mattering. ``Vary`` rides alongside as defense in depth for any
+   intermediary that respects it over ``no-store``.
+
 USING IT
 --------
 ::
 
-    from phaze.routers.response_shape import wants_fragment
+    from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_fragment
 
     @router.get("/audit/", response_class=HTMLResponse)
     async def audit_log(request: Request, ...) -> HTMLResponse:
         context = {...}
 
         # Fragment ONLY for a live in-page swap. A history restore falls through to the full
-        # page, because htmx will put this response in <body>.
+        # page, because htmx will put this response in <body>. BOTH branches carry
+        # DUAL_SHAPE_RESPONSE_HEADERS (rule 6) -- the same URL answers with either shape depending
+        # on request headers the browser's HTTP cache does not key on by default.
         if wants_fragment(request):
-            return templates.TemplateResponse(request=request, name="execution/partials/audit_content.html", context=context)
+            return templates.TemplateResponse(
+                request=request,
+                name="execution/partials/audit_content.html",
+                context=context,
+                headers=DUAL_SHAPE_RESPONSE_HEADERS,
+            )
 
-        return templates.TemplateResponse(request=request, name="execution/audit_log.html", context=context)
+        return templates.TemplateResponse(
+            request=request, name="execution/audit_log.html", context=context, headers=DUAL_SHAPE_RESPONSE_HEADERS
+        )
 """
 
 from fastapi import Request
 
 
-__all__ = ["RENDERABLE_ALERT_STATUS", "is_history_restore", "is_htmx_request", "wants_fragment"]
+__all__ = [
+    "DUAL_SHAPE_RESPONSE_HEADERS",
+    "RENDERABLE_ALERT_STATUS",
+    "is_history_restore",
+    "is_htmx_request",
+    "wants_fragment",
+]
 
 
 RENDERABLE_ALERT_STATUS = 200
@@ -133,6 +169,31 @@ at all, so any other value silently discards the markup.
 This is NOT a general "errors are 200" rule -- see contract rule 4 for the boundary against
 ``request_guards.MALFORMED_PAYLOAD_STATUS`` (422), which remains correct for a request phaze could
 not parse.
+"""
+
+
+DUAL_SHAPE_RESPONSE_HEADERS: dict[str, str] = {
+    "Cache-Control": "no-store",
+    "Vary": "HX-Request, HX-History-Restore-Request, HX-Target",
+}
+"""Headers EVERY branch of a ``wants_fragment`` fork must carry (contract rule 6, phaze-r6e5m).
+
+The browser's HTTP cache keys a stored response by URL alone -- it never consults
+``HX-Request`` / ``HX-History-Restore-Request`` / ``HX-Target`` unless told those headers make the
+body vary. Without this, the SAME URL legitimately answering with two (or three -- see
+``routers/shell.py``'s ``_render_stage``) different bodies lets the browser serve one shape's cached
+bytes for a request that wanted the other -- most dangerously a cached chrome-less fragment
+rendered as the WHOLE document on a Back/Forward navigation whose bfcache entry is gone.
+
+``Cache-Control: no-store`` is the effective directive: it stops the browser from caching the
+response at all, so an incomplete or since-widened ``Vary`` value can never matter. ``Vary`` rides
+alongside as defense in depth for any intermediary that honors it in preference to ``no-store``; it
+deliberately lists every header any in-tree ``wants_fragment`` fork discriminates on today
+(``HX-Target`` for ``shell.py``'s propose-list narrow swap) rather than being hand-tuned per
+call site, so one shared constant stays correct as new forks are added.
+
+Pass directly as ``headers=`` to every ``TemplateResponse`` / ``RedirectResponse`` a
+``wants_fragment``-forked handler returns -- see the module docstring's "USING IT" example.
 """
 
 

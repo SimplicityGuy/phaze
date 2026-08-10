@@ -39,7 +39,7 @@ from phaze.models.tracklist import Tracklist
 from phaze.routers.column_sort import SortableColumn, SortContract
 from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.routers.request_guards import MALFORMED_PAYLOAD_STATUS
-from phaze.routers.response_shape import RENDERABLE_ALERT_STATUS, wants_fragment
+from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, RENDERABLE_ALERT_STATUS, wants_fragment
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
 from phaze.services import enqueue_router
 from phaze.services.agent_liveness import derive_compute_lane_identities
@@ -1354,8 +1354,11 @@ async def pipeline_files(
     caller of ``pipeline/files.html``, which phaze-uvmcr.2 deletes alongside this change.
     """
     if not wants_fragment(request):
+        # phaze-r6e5m (response_shape.py contract rule 6): this same URL also answers with the
+        # fragment below depending on request headers alone, so the redirect must be as
+        # browser-uncacheable as the fragment is (see the corresponding note on execution.audit_log).
         query = request.url.query
-        return RedirectResponse(url=f"/s/files?{query}" if query else "/s/files", status_code=302)
+        return RedirectResponse(url=f"/s/files?{query}" if query else "/s/files", status_code=302, headers=DUAL_SHAPE_RESPONSE_HEADERS)
 
     stage_enum: Stage | None = None
     if stage:
@@ -1376,7 +1379,9 @@ async def pipeline_files(
         "active_bucket": bucket_val,
         "sort": sort_state,
     }
-    return templates.TemplateResponse(request=request, name="pipeline/partials/files_table_view.html", context=context)
+    return templates.TemplateResponse(
+        request=request, name="pipeline/partials/files_table_view.html", context=context, headers=DUAL_SHAPE_RESPONSE_HEADERS
+    )
 
 
 @router.get("/pipeline/analyze-files", response_class=HTMLResponse)
