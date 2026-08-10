@@ -319,6 +319,72 @@ async def test_uploaded_empty_parts_spills_to_awaiting_instead_of_500_looping(
     assert await _ledger_row(session, f"s3_upload:{file_id}") is None  # ledger cleared
 
 
+async def test_uploaded_empty_parts_post_commit_abort_failure_does_not_500(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-z0eur: the post-commit best-effort multipart abort in the empty-parts branch must not
+    escape as a 500 when S3 faults (e.g. a 503 SlowDown mid-burst). The spill CAS + ledger clear are
+    ALREADY durable at that point, so an S3StagingError there is best-effort/TTL-backstopped, not a
+    reason to turn an already-successful state transition into a 500 the agent retries against a no-op.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING, cloud_phase="running")
+    await _seed_ledger(session, file_id, attempt=0)
+
+    async def _boom_abort(*_args: Any, **_kwargs: Any) -> None:
+        raise s3_staging.S3StagingError("simulated 503 SlowDown during abort_multipart_upload")
+
+    delete = AsyncMock()
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", _boom_abort)
+    monkeypatch.setattr(s3_staging, "delete_staged_object", delete)
+
+    async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/uploaded", json={"parts": []})
+
+    assert r.status_code == 200, r.text  # best-effort: never a 500 over an already-durable state
+    delete.assert_not_awaited()  # abort's exception short-circuits the wrapped best-effort block
+    job = await _cloud_job(session, file_id)
+    assert job is not None
+    assert job.status == CloudJobStatus.AWAITING.value  # the spill already committed before cleanup ran
+
+
+async def test_uploaded_empty_parts_post_commit_delete_failure_does_not_500(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-z0eur: same as above for delete_staged_object -- an S3StagingError there must also be
+    swallowed as best-effort, after the (successful) multipart abort already ran."""
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING, cloud_phase="running")
+    await _seed_ledger(session, file_id, attempt=0)
+
+    abort = AsyncMock()
+
+    async def _boom_delete(*_args: Any, **_kwargs: Any) -> None:
+        raise s3_staging.S3StagingError("simulated 503 SlowDown during delete_staged_object")
+
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", abort)
+    monkeypatch.setattr(s3_staging, "delete_staged_object", _boom_delete)
+
+    async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/uploaded", json={"parts": []})
+
+    assert r.status_code == 200, r.text
+    abort.assert_awaited_once()
+    job = await _cloud_job(session, file_id)
+    assert job is not None
+    assert job.status == CloudJobStatus.AWAITING.value
+
+
 async def test_uploaded_releases_txn_before_the_multipart_complete_round_trip(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
@@ -912,6 +978,44 @@ async def test_upload_failed_at_cap_spills_to_awaiting_cloud_and_cleans_up(
     # Phase 90 (D-09): the files.state = AWAITING_CLOUD dual-write was removed; the cloud_job re-stamp
     # to 'awaiting' above is the sole derived spill authority.
     assert await _ledger_row(session, f"s3_upload:{file_id}") is None  # ledger cleared
+
+
+async def test_upload_failed_at_cap_post_commit_cleanup_failure_does_not_500(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-z0eur: the over-cap branch's post-commit abort/delete is documented best-effort/TTL-
+    backstopped -- an S3StagingError there (e.g. a 503 SlowDown mid-burst) must not turn the already-
+    committed spill CAS + ledger clear into an unhandled 500 the agent retries against a no-op.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    settings = ControlSettings()
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING, cloud_phase="running")
+    await _seed_ledger(session, file_id, attempt=3)  # next attempt (4) exceeds the cap
+    redrive = AsyncMock()
+
+    async def _boom_abort(*_args: Any, **_kwargs: Any) -> None:
+        raise s3_staging.S3StagingError("simulated 503 SlowDown during abort_multipart_upload")
+
+    delete = AsyncMock()
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", _boom_abort)
+    monkeypatch.setattr(s3_staging, "delete_staged_object", delete)
+    monkeypatch.setattr(cloud_staging, "redrive_upload", redrive)
+
+    async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/failed", json={"detail": "fatal"})
+
+    assert r.status_code == 200, r.text  # best-effort: never a 500 over an already-durable state
+    assert r.json()["cleared"] is True  # the spill CAS + ledger clear already committed
+    delete.assert_not_awaited()  # abort's exception short-circuits the wrapped best-effort block
+    job = await _cloud_job(session, file_id)
+    assert job is not None
+    assert job.status == CloudJobStatus.AWAITING.value
+    assert job.attempts >= settings.cloud_submit_max_attempts
 
 
 # --- Phase 83 (SC#2 / T-83-01): the over-cap CAS must NOT clobber an already-advanced cloud_job ------

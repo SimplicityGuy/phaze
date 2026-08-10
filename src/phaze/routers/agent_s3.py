@@ -133,10 +133,26 @@ async def report_uploaded(
         # phaze-1v37: run the S3 abort + delete AFTER the commit (best-effort, lifecycle TTL backstop),
         # so the spill CAS + ledger clear are durable and no transaction/row lock is held across the S3
         # round-trip (mirrors the /failed over-cap branch and _delete_staged_object_if_cloud).
+        #
+        # phaze-z0eur: wrap it in try/except -- the state transition just committed is ALREADY durable,
+        # so an S3 fault here (e.g. a 503 SlowDown mid-burst) must not turn a successful, already-committed
+        # transition into an unhandled 500 the agent retries against a no-op. Best-effort, TTL-backstopped
+        # (KSTAGE-04 / T-53-17), matching the block's own documented intent -- bare Exception mirrors
+        # drop_pending_s3_enqueues / stage_file_to_s3's compensation catches, which also see a raw
+        # network/DNS error surface before the SDK call reaches botocore's ClientError wrapping.
         if cleared and bucket is not None:
-            if upload_id:
-                await s3_staging.abort_multipart_upload(file_id, upload_id, bucket)
-            await s3_staging.delete_staged_object(file_id, bucket)
+            try:
+                if upload_id:
+                    await s3_staging.abort_multipart_upload(file_id, upload_id, bucket)
+                await s3_staging.delete_staged_object(file_id, bucket)
+            except Exception:
+                logger.warning(
+                    "report_uploaded: best-effort post-commit multipart abort/object delete failed "
+                    "(state already committed; the lifecycle TTL backstop is the last resort)",
+                    file_id=str(file_id),
+                    agent_id=agent.id,
+                    exc_info=True,
+                )
         logger.warning(
             "report_uploaded: empty parts list (zero-byte/degenerate upload) -> cloud_job spilled to awaiting (routes local) + cleaned up",
             file_id=str(file_id),
@@ -345,10 +361,25 @@ async def report_upload_failed(
         upload_id = cloud_job.upload_id if cloud_job is not None else None
         await clear_ledger_entry(session, ledger_key)
         await session.commit()
+        # phaze-z0eur: wrap the post-commit best-effort cleanup in try/except -- the spill CAS + ledger
+        # clear above are already durable, so an S3 fault here (e.g. a 503 SlowDown mid-burst) must not
+        # turn a successful, already-committed transition into an unhandled 500 the agent retries against
+        # a no-op. TTL-backstopped (KSTAGE-04 / T-53-17); bare Exception mirrors the sibling cleanup paths
+        # (drop_pending_s3_enqueues / stage_file_to_s3), which also see a raw network/DNS error surface
+        # before the SDK call reaches botocore's ClientError wrapping.
         if bucket is not None:
-            if upload_id:
-                await s3_staging.abort_multipart_upload(file_id, upload_id, bucket)
-            await s3_staging.delete_staged_object(file_id, bucket)
+            try:
+                if upload_id:
+                    await s3_staging.abort_multipart_upload(file_id, upload_id, bucket)
+                await s3_staging.delete_staged_object(file_id, bucket)
+            except Exception:
+                logger.warning(
+                    "report_upload_failed: best-effort post-commit multipart abort/object delete failed "
+                    "(state already committed; the lifecycle TTL backstop is the last resort)",
+                    file_id=str(file_id),
+                    agent_id=agent.id,
+                    exc_info=True,
+                )
         logger.warning(
             "report_upload_failed: re-drive cap reached -> cloud_job re-stamped to awaiting + cleaned up + spill to AWAITING_CLOUD (routes to local)",
             file_id=str(file_id),
