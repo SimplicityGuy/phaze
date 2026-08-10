@@ -168,6 +168,42 @@ class TestRecordAndLookup:
             assert entry.attempts == attempt
             assert entry.expires_at == compute_expires_at(LookupOutcome.SEARCH_FAILED, attempt, NOW)
 
+    async def test_attempts_resets_after_a_definitive_outcome_ends_a_transient_streak(self, session: AsyncSession) -> None:
+        """phaze-w1c25: a definitive answer (FOUND/NOT_FOUND) must end any transient streak that
+        preceded it, so the counter starts fresh -- not keep accumulating toward
+        ``TRANSIENT_MAX_ATTEMPTS`` across an unrelated definitive history."""
+        for _ in range(3):
+            entry = await record_outcome(session, set_key="k-reset", query_text="q", outcome=LookupOutcome.BLOCKED, now=NOW)
+        assert entry.attempts == 3
+
+        found = await record_outcome(session, set_key="k-reset", query_text="q", outcome=LookupOutcome.FOUND, external_id="x", now=NOW)
+        assert found.attempts == 1, "a definitive FOUND must reset the streak, not extend it to 4"
+
+    async def test_attempts_resets_on_the_first_transient_of_a_new_streak_after_not_found(self, session: AsyncSession) -> None:
+        """phaze-w1c25 failure scenario: a set that failed transiently a few times, then resolved
+        cleanly to NOT_FOUND, must NOT inherit those old attempts when it re-enters the queue
+        after the TTL and hits a single new transient failure -- that single failure must not
+        look like the 4th/5th independent attempt (park risk) or get an inflated 4h backoff."""
+        for _ in range(3):
+            await record_outcome(session, set_key="k-streak", query_text="q", outcome=LookupOutcome.BLOCKED, now=NOW)
+        not_found = await record_outcome(session, set_key="k-streak", query_text="q", outcome=LookupOutcome.NOT_FOUND, now=NOW)
+        assert not_found.attempts == 1
+
+        # Re-enters the queue (e.g. after NEGATIVE_TTL_DAYS) and hits ONE transient failure.
+        first_of_new_streak = await record_outcome(session, set_key="k-streak", query_text="q", outcome=LookupOutcome.SEARCH_FAILED, now=NOW)
+        assert first_of_new_streak.attempts == 1, "the first transient failure of a NEW streak must not inherit the old count"
+        assert first_of_new_streak.expires_at == NOW + _backoff_delay(1), "backoff must be the 30-min base, not inflated by the old streak"
+
+    async def test_attempts_continues_incrementing_within_one_transient_streak(self, session: AsyncSession) -> None:
+        """The reset must be selective -- consecutive transient failures with no definitive
+        outcome in between still accumulate normally toward TRANSIENT_MAX_ATTEMPTS."""
+        first = await record_outcome(session, set_key="k-continue", query_text="q", outcome=LookupOutcome.RENDER_FAILED, now=NOW)
+        assert first.attempts == 1
+        second = await record_outcome(session, set_key="k-continue", query_text="q", outcome=LookupOutcome.PARSE_FAILED, now=NOW)
+        assert second.attempts == 2
+        third = await record_outcome(session, set_key="k-continue", query_text="q", outcome=LookupOutcome.BLOCKED, now=NOW)
+        assert third.attempts == 3
+
     async def test_a_later_positive_overwrites_an_earlier_negative(self, session: AsyncSession) -> None:
         await record_outcome(session, set_key="k-flip", query_text="q", outcome=LookupOutcome.NOT_FOUND, now=NOW)
         await record_outcome(session, set_key="k-flip", query_text="q", outcome=LookupOutcome.FOUND, external_id="1001-xyz", now=NOW)
