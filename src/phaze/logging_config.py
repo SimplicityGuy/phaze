@@ -46,6 +46,32 @@ _NOISY_LIBRARIES = ("httpx", "httpcore", "asyncio")
 _UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access")
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 
+_PSYCOPG_POOL_LOGGER_NAME = "psycopg.pool"
+_PSYCOPG_POOL_CONNECT_ERROR_PREFIX = "error connecting in"
+
+
+class _ElevatePsycopgPoolConnectErrors(logging.Filter):
+    """Elevate psycopg_pool's "error connecting in ..." WARNING to ERROR (phaze-xuec1).
+
+    ``psycopg_pool`` logs a total loss of its connection pool at WARNING
+    (``psycopg_pool/pool_async.py``: ``logger.warning("error connecting in %r: %s", ...)``,
+    logger name ``"psycopg.pool"``). The 2026-08-08 nox incident: this is the SAQ broker
+    pool underneath an agent worker's dispatch loop, and the warning sat unnoticed for 73
+    of the 1h41m the worker silently dequeued nothing -- a total broker-connection loss is
+    not a warning-level condition. This filter republishes matching records at ERROR
+    in-place, without patching the third-party package.
+
+    Scoped to the exact ``"error connecting in ..."`` message so other, genuinely
+    transient ``psycopg.pool`` warnings (e.g. individual connection checks failing while
+    the pool otherwise keeps serving) are left at their original level.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno == logging.WARNING and record.getMessage().startswith(_PSYCOPG_POOL_CONNECT_ERROR_PREFIX):
+            record.levelno = logging.ERROR
+            record.levelname = "ERROR"
+        return True
+
 
 def _parse_bool(value: str) -> bool:
     """Parse a human-written boolean env value (``true``/``1``/``yes`` -> True)."""
@@ -188,3 +214,10 @@ def configure_logging(*, level: str | None = None, json_logs: bool | None = None
         uvicorn_logger = _stdlib_get_logger(name)
         uvicorn_logger.handlers.clear()
         uvicorn_logger.propagate = True
+
+    # phaze-xuec1: elevate psycopg_pool's dead-broker-connection WARNING to ERROR. Idempotent
+    # guard (mirrors the handler-reset discipline above) so re-calling configure_logging()
+    # never stacks duplicate filters on the shared logger object.
+    psycopg_pool_logger = _stdlib_get_logger(_PSYCOPG_POOL_LOGGER_NAME)
+    if not any(isinstance(f, _ElevatePsycopgPoolConnectErrors) for f in psycopg_pool_logger.filters):
+        psycopg_pool_logger.addFilter(_ElevatePsycopgPoolConnectErrors())
