@@ -1920,3 +1920,117 @@ async def test_an_unreadable_pod_list_degrades_to_the_ordinary_budget(session: A
     assert cj.attempts == 1  # the terminal still happened -- the row is NOT left wedged in-flight
     assert cj.node_loss_redrives == 0
     assert tally["redriven"] == 1
+
+
+# --- phaze-mwbz3: the node-loss verdict must survive the still-terminating re-drive deferral --------
+#
+# ``_handle_no_callback_terminal``'s "prior Job still terminating" deferral (delete_job succeeds, the
+# confirm-gone read still sees the dying Job) commits with NO other row mutation to release the
+# per-row advisory lock (phaze-nq3c) -- pre-fix, the classified ``node_loss_reason`` argument died with
+# that stack frame. If the Job finished vanishing before the next tick, ``_reconcile_one`` re-entered
+# through the vanished-Job branch (get_job -> None), which has no pods left to classify and passes no
+# ``node_loss_reason`` at all -- silently charging ``attempts`` instead of the deliberately tighter
+# ``node_loss_redrives``. ``cloud_job.node_loss_pending`` is the durable carry that closes the gap.
+
+
+@pytest.mark.asyncio
+async def test_node_loss_verdict_persists_across_the_still_terminating_deferral(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A deferred re-drive stashes its classified node-loss verdict; NO budget is charged yet.
+
+    Mirrors ``test_redrive_confirms_prior_job_gone_before_resubmit``'s Case B (still terminating), but
+    with a node-lost pod on the terminal read -- proving the classification is recorded on the row
+    even though the re-drive itself is deferred to a later tick.
+    """
+    _patch_cap(monkeypatch, cap=3, node_loss_ceiling=1)
+    fid, name = await _seed(session)
+    # First get_job read: Job Failed (no-callback terminal). Confirm-gone read: STILL a dying Job.
+    _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(failed=1, name=name), fake_job(failed=1, name=name)),
+        list_pods=ListPodsSpy(_node_lost_pod()),
+    )
+
+    tally = await reconcile_cloud_jobs(_make_ctx())
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.node_loss_pending is not None and "node_lost" in cj.node_loss_pending  # verdict stashed
+    assert cj.attempts == 0  # neither budget charged yet -- the re-drive itself is deferred
+    assert cj.node_loss_redrives == 0
+    assert cj.status == CloudJobStatus.SUBMITTED.value  # row left untouched for a later tick
+    assert tally.get("redriven", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_vanished_job_after_node_loss_deferral_charges_node_loss_budget_not_attempts(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """THE phaze-mwbz3 REGRESSION TEST -- the exact reported sequence, across two ticks.
+
+    Tick 1: the Job reads Failed, its pod says NODE_LOST, ``delete_job`` runs, but the confirm-gone
+    read still sees the dying Job -> the re-drive is deferred and the verdict is stashed. Tick 2: the
+    SAME (unchanged, deterministic-name) row is read again; the Job has now fully vanished (both
+    ``get_job`` reads return None) -> ``_reconcile_one`` takes the vanished-Job branch, which classifies
+    nothing (no pods left) and passes NO ``node_loss_reason``. Pre-fix this silently charged
+    ``attempts``; post-fix it recovers the stashed verdict and charges ``node_loss_redrives`` instead,
+    and clears the now-spent marker.
+    """
+    _patch_cap(monkeypatch, cap=3, node_loss_ceiling=1)
+    fid, name = await _seed(session)
+
+    # Tick 1: node-loss terminal, still-terminating deferral.
+    _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(failed=1, name=name), fake_job(failed=1, name=name)),
+        list_pods=ListPodsSpy(_node_lost_pod()),
+    )
+    await reconcile_cloud_jobs(_make_ctx())
+    cj_after_defer = await _read_cloud_job(session, fid)
+    assert cj_after_defer.node_loss_pending is not None
+    assert cj_after_defer.attempts == 0
+    assert cj_after_defer.node_loss_redrives == 0
+
+    # Tick 2: the Job has fully vanished -- no pods left, so a fresh classification is impossible.
+    queue = DedupFakeQueue("controller")
+    _patch_seam(monkeypatch, get_job=GetJobSpy(None), list_pods=ListPodsSpy())
+
+    tally = await reconcile_cloud_jobs(_make_ctx(queue))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.node_loss_redrives == 1  # the recovered verdict charged the RIGHT budget
+    assert cj.attempts == 0  # the file's analyze budget stays untouched
+    assert cj.node_loss_pending is None  # the verdict was spent -- cleared, not left to leak forward
+    assert cj.status == CloudJobStatus.SUBMITTED.value
+    assert tally["redriven"] == 1
+    assert [t for t, _ in queue.captured] == ["submit_cloud_job"]
+
+
+@pytest.mark.asyncio
+async def test_ordinary_deferral_leaves_no_node_loss_marker(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An ordinary (non-node-loss) still-terminating deferral must NOT fabricate a node-loss verdict.
+
+    Regression guard for the other direction: a deferred re-drive whose cause is an ordinary failure
+    (no node-lost pod evidence) leaves ``node_loss_pending`` NULL, so a later vanished-Job re-entry for
+    the same row still charges the ordinary ``attempts`` budget, exactly as before this fix.
+    """
+    _patch_cap(monkeypatch, cap=3, node_loss_ceiling=1)
+    fid, name = await _seed(session)
+
+    # Tick 1: ordinary Failed terminal (no node-lost pod), still-terminating deferral.
+    _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(failed=1, name=name), fake_job(failed=1, name=name)),
+    )
+    await reconcile_cloud_jobs(_make_ctx())
+    cj_after_defer = await _read_cloud_job(session, fid)
+    assert cj_after_defer.node_loss_pending is None
+
+    # Tick 2: the Job has fully vanished.
+    queue = DedupFakeQueue("controller")
+    _patch_seam(monkeypatch, get_job=GetJobSpy(None))
+
+    await reconcile_cloud_jobs(_make_ctx(queue))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.attempts == 1  # the ordinary budget, not the node-loss one
+    assert cj.node_loss_redrives == 0
+    assert cj.node_loss_pending is None

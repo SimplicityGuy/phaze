@@ -22,7 +22,7 @@ new members need no enum migration, only the CHECK-constraint membership list. `
 import enum
 import uuid
 
-from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Index, Integer, String, text
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -102,6 +102,20 @@ class CloudJob(TimestampMixin, Base):
     # node_loss_redrives=1 lost a node once. Total pods per row is bounded by
     # 1 + cloud_submit_max_attempts + cloud_node_loss_max_redrives.
     node_loss_redrives: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
+    # phaze-mwbz3: durable carry for a node-loss verdict classified WHILE the still-terminating re-drive
+    # deferral is waiting (``reconcile_cloud_jobs._handle_no_callback_terminal``, the "prior Job still
+    # terminating" branch). That deferral commits with no OTHER row mutation to release the per-row
+    # advisory lock (phaze-nq3c) and returns for a later tick to re-decide; the pod-list classification
+    # that produced the verdict is a per-call, in-memory-only argument, so without a durable copy it dies
+    # with the stack frame. If the Job finishes vanishing before the next tick, ``_reconcile_one`` re-enters
+    # through the vanished-Job branch, which has no pods left to classify and passes no verdict at all --
+    # this column is what lets that re-entry still charge ``node_loss_redrives`` instead of silently
+    # falling through to the looser ``attempts`` ceiling (the whole defect phaze-1q4g bounds). NULL means
+    # "no pending verdict"; set to the classified reason string on a deferral, cleared the moment a re-drive
+    # actually charges a budget or the row leaves in-flight (spill to 'awaiting'). Free-text (mirrors
+    # ``_terminal_node_loss_reason``'s ``f"node_lost ({...})"`` shape) rather than a boolean so the
+    # eventually-charged re-drive's log line still carries the original pod evidence.
+    node_loss_pending: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Drives the D-06 operator alert: set when the Kueue Workload is Inadmissible (never enters
     # the re-drive cap path).
     inadmissible: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false", default=False)
