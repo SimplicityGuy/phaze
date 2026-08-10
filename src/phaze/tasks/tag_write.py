@@ -14,6 +14,21 @@ same second-order constraint tracked by phaze-mwvt / phaze-au0r for ``execute_ap
 compose change ships with this bead, and ``tests/agents/deployment/test_agent_compose.py`` asserts
 it so the mount cannot silently regress to ``:ro`` and re-break every write.
 
+phaze-2xg8n: ``payload.file_path`` (``FileRecord.current_path``) is agent-supplied -- upserted from
+wire input via ``POST``/``PATCH /agent/files`` -- and this task performs a full mutagen rewrite of
+it. It is therefore gated through the SAME ``resolve_and_check_containment`` boundary the
+move/execution path already applies, before any disk I/O: refuse (as a terminal FAILED report, not
+a raise -- see below) a path that resolves outside this agent's configured ``scan_roots``.
+
+phaze-anrw4: the pre-write on-disk snapshot (``before_tags`` -- the undo anchor) is reported to the
+control plane in its OWN call, BEFORE the mutating write, via
+``PhazeAgentClient.report_tag_write_before_snapshot``. See that method's and
+``phaze.routers.agent_tag_writes.record_tag_write_before_snapshot``'s docstrings for why: a SAQ
+retry's ``write_and_verify_sync`` re-extracts ``before_tags`` from whatever is on disk NOW, which
+-- if an earlier attempt's write landed but its result callback never arrived -- is the
+ALREADY-WRITTEN state, not the true original. Reporting it up front, first-write-wins, makes the
+captured snapshot independent of which attempt's write or callback actually completes.
+
 This module MUST NOT import phaze.database, phaze.models.*, or sqlalchemy.
 Enforced by tests/shared/core/test_task_split.py (Plan 10 / D-25).
 """
@@ -25,9 +40,12 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from phaze.schemas.agent_tag_writes import TagWriteResultPayload
+from phaze.config import AgentSettings, get_settings
+from phaze.enums.tag_write import TagWriteStatus
+from phaze.schemas.agent_tag_writes import TagWriteBeforeSnapshotPayload, TagWriteResultPayload
 from phaze.schemas.agent_tasks import WriteFileTagsPayload
-from phaze.services.tag_write_disk import write_and_verify_sync
+from phaze.services.containment import resolve_and_check_containment
+from phaze.services.tag_write_disk import _extract_before_tags, write_and_verify_sync
 
 
 if TYPE_CHECKING:
@@ -48,12 +66,52 @@ async def write_file_tags(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
 
     logger.info("tag write started", file_id=str(payload.file_id), log_id=str(payload.log_id))
 
+    # phaze-2xg8n: containment check BEFORE any disk I/O, against THIS agent's own configured scan
+    # roots -- only the agent's filesystem can resolve symlinks honestly (mirrors
+    # ``tasks.cue_write._write_sync``'s reasoning: the control plane cannot resolve a path that
+    # does not exist inside its own container).
+    cfg = get_settings()
+    scan_roots = list(cfg.scan_roots) if isinstance(cfg, AgentSettings) else []
+    try:
+        resolved_path, _owning_root = resolve_and_check_containment(payload.file_path, scan_roots)
+    except ValueError as exc:
+        # A path that escapes scan_roots will not resolve differently on a SAQ retry, so this must
+        # NOT raise and burn the retry budget leaving the row stranded ``queued`` -- report a
+        # terminal FAILED outcome instead, exactly like a disk-level write failure below.
+        logger.warning(
+            "tag write refused -- path escapes scan_roots",
+            file_id=str(payload.file_id),
+            log_id=str(payload.log_id),
+            error=str(exc),
+        )
+        result = TagWriteResultPayload(status=TagWriteStatus.FAILED, before_tags={}, error_message=str(exc)[:_ERROR_MESSAGE_MAX])
+        await api.patch_tag_write(payload.log_id, result)
+        return {"file_id": str(payload.file_id), "log_id": str(payload.log_id), "status": str(TagWriteStatus.FAILED)}
+    file_path = str(resolved_path)
+
+    # phaze-anrw4: capture + durably report the pre-write snapshot in its own thread offload and
+    # HTTP round trip, BEFORE the mutating write below -- see the module docstring. Best-effort:
+    # neither an extraction failure nor a transport failure here may abort the write itself, since
+    # ``write_and_verify_sync`` below still captures + reports its own ``before_tags`` as a
+    # single-attempt fallback (the endpoint's first-write-wins guard keeps whichever call lands
+    # first; a second, redundant report is simply ignored).
+    try:
+        before_snapshot = await asyncio.to_thread(_extract_before_tags, file_path)
+        await api.report_tag_write_before_snapshot(payload.log_id, TagWriteBeforeSnapshotPayload(before_tags=before_snapshot))
+    except Exception:
+        logger.warning(
+            "tag write pre-snapshot failed -- falling back to the write-time capture",
+            file_id=str(payload.file_id),
+            log_id=str(payload.log_id),
+            exc_info=True,
+        )
+
     # phaze-qfxv discipline, carried over from the api: the ENTIRE blocking sequence (read-before,
     # mutagen save -- which rewrites the whole file when the tag area must grow -- and the verify
     # re-read) runs in ONE thread offload. The agent's event loop also runs the Phase-46 liveness
     # heartbeat, whose design premise is 'the event loop is free'; an on-loop stall against a slow
     # media mount risks a false DEAD classification and duplicate-work re-enqueue.
-    status, discrepancies, error_message, before_tags = await asyncio.to_thread(write_and_verify_sync, payload.file_path, payload.tags)
+    status, discrepancies, error_message, before_tags = await asyncio.to_thread(write_and_verify_sync, file_path, payload.tags)
 
     result = TagWriteResultPayload(
         status=status,

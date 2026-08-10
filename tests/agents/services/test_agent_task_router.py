@@ -22,12 +22,13 @@ from __future__ import annotations
 
 import os
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 import uuid
 
 import pytest
 
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
-from phaze.services.agent_task_router import AgentTaskRouter
+from phaze.services.agent_task_router import AgentTaskRouter, AmbiguousEnqueueError
 from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 
 
@@ -170,6 +171,44 @@ async def test_enqueue_for_file_derives_agent_id(router) -> None:  # type: ignor
     await router.enqueue_for_file(file_record=fake_file, task_name="extract_file_metadata", payload=payload)
     assert ("agent-c", "meta") in router._queues
     assert router._queues[("agent-c", "meta")].name == "phaze-agent-agent-c-meta"
+
+
+# ---------------------------------------------------------------------------
+# phaze-9f82r: enqueue_for_agent must distinguish a failure BEFORE the broker connection existed
+# (unambiguous -- nothing was created) from one AFTER (ambiguous -- durable side effects may
+# already exist). Mocked at the SAQ Queue boundary, no live broker needed.
+# ---------------------------------------------------------------------------
+
+
+async def test_enqueue_raising_after_connect_wraps_as_ambiguous() -> None:
+    """A ``queue.enqueue()`` failure -- AFTER the broker connection is live -- wraps as ambiguous."""
+    router = AgentTaskRouter(queue_url="postgresql://u:p@h:5432/d", cache_redis_url="redis://c:6379/0")
+    queue = router._queue_for("agent-ambiguous", "meta")
+    queue.connect = AsyncMock()
+    queue.enqueue = AsyncMock(side_effect=RuntimeError("NOTIFY round trip failed"))
+
+    with pytest.raises(AmbiguousEnqueueError) as excinfo:
+        await router.enqueue_for_agent(agent_id="agent-ambiguous", task_name="extract_file_metadata", payload=_make_payload("agent-ambiguous"))
+
+    assert "NOTIFY round trip failed" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+
+
+async def test_connect_failure_propagates_unwrapped() -> None:
+    """A ``queue.connect()`` failure -- BEFORE ``queue.enqueue()`` is ever called -- is NOT ambiguous.
+
+    Nothing durable could have been created yet, so a caller must be able to tell this apart from
+    :class:`AmbiguousEnqueueError` and treat it as safe to downgrade (phaze-9f82r).
+    """
+    router = AgentTaskRouter(queue_url="postgresql://u:p@h:5432/d", cache_redis_url="redis://c:6379/0")
+    queue = router._queue_for("agent-connect-fail", "meta")
+    queue.connect = AsyncMock(side_effect=ConnectionError("postgres unreachable"))
+    queue.enqueue = AsyncMock()
+
+    with pytest.raises(ConnectionError, match="postgres unreachable"):
+        await router.enqueue_for_agent(agent_id="agent-connect-fail", task_name="extract_file_metadata", payload=_make_payload("agent-connect-fail"))
+
+    queue.enqueue.assert_not_awaited()
 
 
 def test_queue_for_sizes_dispatch_pool_from_config() -> None:

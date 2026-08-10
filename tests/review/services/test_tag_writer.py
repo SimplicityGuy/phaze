@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from sqlalchemy.ext.asyncio import AsyncSession
+from phaze.services.agent_task_router import AmbiguousEnqueueError
 from phaze.services.tag_write_disk import _extract_before_tags as _extract_before_tags_disk, _mp4_track_tuple, write_and_verify_sync
 from phaze.services.tag_writer import (
     TagWriteAlreadyQueuedError,
@@ -579,10 +580,14 @@ class TestEnqueueTagWrite:
 
     @pytest.mark.asyncio
     async def test_enqueue_failure_downgrades_the_row_to_failed(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
-        """A broker/enqueue failure leaves a FAILED row with an actionable message, not a stuck ``queued``.
+        """An UNAMBIGUOUS broker/enqueue failure leaves a FAILED row with an actionable message.
 
-        A ``queued`` row no agent will ever answer for would hold the file out of every terminal
-        count forever with nothing on screen explaining why.
+        A plain exception out of ``enqueue_for_agent`` here stands in for a failure the real
+        ``AgentTaskRouter`` would raise BEFORE ``queue.enqueue()`` is ever called (e.g.
+        ``queue.connect()``) -- provably nothing was created, so downgrading is safe. A ``queued``
+        row no agent will ever answer for would hold the file out of every terminal count forever
+        with nothing on screen explaining why. Contrast
+        :meth:`test_ambiguous_enqueue_failure_leaves_the_row_queued` below.
         """
         fr = await make_file()
         router = MagicMock()
@@ -595,6 +600,32 @@ class TestEnqueueTagWrite:
         assert log_entry.error_message is not None
         assert fr.agent_id in log_entry.error_message
         assert "broker unreachable" in log_entry.error_message
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_enqueue_failure_leaves_the_row_queued(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """phaze-9f82r: an AMBIGUOUS enqueue failure must NOT downgrade to FAILED.
+
+        ``AmbiguousEnqueueError`` means ``queue.enqueue()`` raised AFTER the broker connection was
+        live -- the ``saq_jobs`` INSERT (and its ledger row) may already be durably committed even
+        though this call never got its ack. Downgrading here would let an operator retry mint a
+        SECOND queued row + job for the SAME file while a possibly-live ghost job from THIS attempt
+        is still queued -- two concurrent mutagen rewrites of one archive file. The row must stay
+        ``queued`` so the phaze-lwqk guard refuses a retry instead.
+        """
+        fr = await make_file()
+        router = MagicMock()
+        router.enqueue_for_agent = AsyncMock(side_effect=AmbiguousEnqueueError("enqueue raised after connect"))
+
+        with patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)):
+            log_entry = await enqueue_tag_write(session, router, fr, {"artist": "Test"}, "manual_edit")
+
+            assert log_entry.status == TagWriteStatus.QUEUED
+            assert log_entry.error_message is None
+
+            # The phaze-lwqk guard now refuses a retry for this file -- exactly the protection an
+            # incorrect FAILED downgrade would have bypassed.
+            with pytest.raises(TagWriteAlreadyQueuedError):
+                await enqueue_tag_write(session, router, fr, {"artist": "Retry"}, "manual_edit")
 
     @pytest.mark.asyncio
     async def test_does_not_touch_the_filesystem(self, session: AsyncSession, make_file, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
