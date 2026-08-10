@@ -248,7 +248,11 @@ def test_baseline_is_the_only_migration() -> None:
     that outlives the `cloud_job` sidecar the D-14 reaper deletes -- the row 054's per-chain counters
     were being erased with, which let one file start an unbounded number of fresh attempt chains; 056
     (phaze-x8tof) renames the five CHECK constraints the `ck_%(table_name)s_%(constraint_name)s`
-    convention had double-prefixed in the database.
+    convention had double-prefixed in the database; 057 (phaze-mwbz3) adds
+    cloud_job.node_loss_pending, the durable carry for a node-loss verdict classified while the
+    still-terminating re-drive deferral is waiting -- without it the verdict died with the deferral's
+    stack frame and a Job that vanished before the next tick silently charged `attempts` instead of
+    the tighter `node_loss_redrives` ceiling.
     Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
@@ -271,6 +275,7 @@ def test_baseline_is_the_only_migration() -> None:
         "054_cloud_job_node_loss_redrives.py",
         "055_cloud_budget_ledger.py",
         "056_fix_double_prefixed_check_constraints.py",
+        "057_cloud_job_node_loss_pending.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -302,10 +307,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (056: the CHECK-name repair)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (057: the node-loss verdict carry)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "056"
+    assert version == "057"
 
 
 @pytest.mark.asyncio
@@ -634,7 +639,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "056"
+        assert version == "057"
     finally:
         if engine is not None:
             await engine.dispose()
