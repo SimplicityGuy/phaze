@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import Select, and_, exists, func, or_, select, tuple_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 from sqlalchemy.orm import selectinload
 import structlog
@@ -977,6 +978,25 @@ async def undo_tag_write(
         row_context = await _tagwrite_row_context(session, file_record, row_state="queued")
         already_message = f"A tag write is already queued for {file_record.original_filename}. Wait for it to finish, then retry the undo if needed."
         return _tagwrite_diff_row_response(request, row_context, already_message)
+    except ValueError:
+        # phaze-qe5y1: enqueue_tag_write's own is_applied guard (tag_writer.py:131-133) can fire
+        # here -- the scan-deletion race (services/scan_deletion.py deletes RenameProposal,
+        # TagWriteLog and FileRecord rows for a batch in one transaction) can revert the file's
+        # executed proposal between our idempotency check above and this dispatch. Mirror
+        # write_file_tags' is_applied handling (tags.py:524-528): redraw the row unchanged
+        # (pending) alongside an honest toast, rather than letting the ValueError escape uncaught
+        # as a 500 that htmx silently drops on this outerHTML-targeted row.
+        row_context = await _tagwrite_row_context(session, file_record, row_state="pending")
+        return _tagwrite_diff_row_response(request, row_context, "Only executed files can have tags written -- the revert could not be queued.")
+    except IntegrityError:
+        # phaze-qe5y1: TagWriteLog.file_id has no ondelete, and scan_deletion deletes
+        # rename_proposals BEFORE tag_write_log/files, so an adjacent race window can instead trip
+        # the enqueue's own audit-row INSERT (tag_writer.py's session.flush()) as an FK violation
+        # rather than the is_applied guard above. That leaves the session's transaction aborted, so
+        # roll back before touching it again, and treat the file as gone -- like the file_record is
+        # None branch above -- rather than trying to redraw a row for a file no longer in the DB.
+        await session.rollback()
+        return _tagwrite_stale_toast_response(request, "File not found -- it may have been removed or already processed.")
 
     # phaze-26t7 / phaze-6bkk: the toast must never claim an on-disk outcome the api has not
     # observed -- and post-DIST-01 it observes none, because the reversal runs on the agent. Say
