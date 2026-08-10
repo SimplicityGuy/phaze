@@ -25,7 +25,7 @@ it) so the liveness probe has something real to read -- the same idiom as
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 import uuid
 
@@ -34,6 +34,7 @@ from sqlalchemy import select, text
 from phaze.enums.stage import Stage
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 from phaze.tasks.ledger_reaper import reap_resolved_ledger_rows
@@ -328,3 +329,65 @@ async def test_live_broker_row_spares_a_cloud_lane_row(session: AsyncSession, ma
 
     assert (await reap_resolved_ledger_rows(_make_ctx()))["reaped"] == 0
     assert key in await _ledger_keys(session)
+
+
+# --- D-10 metadata retry gate (phaze-hr627) --------------------------------------------
+
+
+async def test_stale_terminal_metadata_row_is_still_reaped(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """A metadata failure whose ledger row PRE-DATES ``failed_at`` is a genuine stale clear -- still reaped.
+
+    This is the D-10 cell the reaper must keep clearing: the terminal-outcome callback ran and set
+    ``failed_at``, but its own ledger clear was lost. ``enqueued_at <= failed_at`` is exactly the
+    ``is_domain_completed`` (recovery) verdict for this shape, so the reaper reaping it stays correct.
+    """
+    await _saq_table(session)
+    file = await make_file()
+    failed_at = datetime.now(UTC)
+    session.add(FileMetadata(file_id=file.id, failed_at=failed_at))
+    key = f"extract_file_metadata:{file.id}"
+    session.add(
+        SchedulingLedger(
+            key=key,
+            function="extract_file_metadata",
+            routing="agent",
+            payload={"file_id": str(file.id)},
+            enqueued_at=failed_at - timedelta(minutes=5),  # ledger PRE-DATES the failure -> stale clear
+        )
+    )
+    await session.commit()
+
+    assert (await reap_resolved_ledger_rows(_make_ctx()))["reaped"] == 1
+    assert key not in await _ledger_keys(session)
+
+
+async def test_lost_operator_retry_of_failed_metadata_is_never_reaped(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """phaze-hr627 MUTATION-CHECK: a lost operator RETRY of a failed metadata file must survive the reaper.
+
+    ``retry_metadata_failed`` LEAVES ``FileMetadata.failed_at`` set (81 D-11: clearing it would make a
+    zero-metadata file read DONE forever) and writes a FRESH ledger row (``enqueued_at > failed_at``).
+    Before phaze-hr627 ``resolved_ledger_clause`` used the RAW ``domain_completed_clause(METADATA)``,
+    which is inflight-orthogonal and reads the failed-only row as domain-complete regardless of the
+    ledger timestamp -- so this exact row was DELETEd by the reaper, silently discarding the retry
+    recovery still owed a replay (``is_domain_completed`` classifies it False -- genuinely pending).
+    Dropping the D-10 refinement from ``resolved_ledger_clause`` turns this reconciler back into that
+    data-loss bug, and this assertion is what goes RED.
+    """
+    await _saq_table(session)
+    file = await make_file()
+    failed_at = datetime.now(UTC)
+    session.add(FileMetadata(file_id=file.id, failed_at=failed_at))
+    key = f"extract_file_metadata:{file.id}"
+    session.add(
+        SchedulingLedger(
+            key=key,
+            function="extract_file_metadata",
+            routing="agent",
+            payload={"file_id": str(file.id)},
+            enqueued_at=failed_at + timedelta(minutes=5),  # ledger POST-DATES the failure -> lost retry
+        )
+    )
+    await session.commit()
+
+    assert (await reap_resolved_ledger_rows(_make_ctx()))["reaped"] == 0
+    assert key in await _ledger_keys(session), "a lost operator retry is owed a replay -- Recover re-drives it, the reaper must not eat it (D-10)"
