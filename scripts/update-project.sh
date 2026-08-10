@@ -207,7 +207,15 @@ array_length() {
   eval "echo \${#${array_name}[@]}" 2>/dev/null || echo 0
 }
 
-# Diff uv.lock before/after to populate the package-change summary
+# Diff uv.lock before/after to populate the package-change summary.
+#
+# phaze-gxnal: a naive `grep "^name = |^version = " | paste -d' ' - -` pipeline assumes a
+# strict alternation of top-level `name = ` / `version = ` lines. uv.lock's document
+# preamble (`version = 1`, the lock-FORMAT version on line 1, unrelated to any package)
+# is exactly such an unpaired top-level `version` key, so `paste - -` pairs every package
+# off by one against the NEXT package's name and the summary silently stays empty forever.
+# Scoping the extraction to `[[package]]` table bodies (below) removes the ambiguity at
+# the source instead of trying to filter the preamble line back out after the fact.
 capture_package_changes() {
   if [[ "$DRY_RUN" == true ]]; then
     return
@@ -216,21 +224,48 @@ capture_package_changes() {
   if [[ -f "$BACKUP_DIR/uv.lock.backup" ]]; then
     print_info "$EMOJI_CHANGES Analyzing package changes..."
 
-    local old_packages new_packages
-    old_packages=$(grep -E "^name = |^version = " "$BACKUP_DIR/uv.lock.backup" | paste -d' ' - - | sed 's/name = "\(.*\)" version = "\(.*\)"/\1==\2/')
-    new_packages=$(grep -E "^name = |^version = " "uv.lock" | paste -d' ' - - | sed 's/name = "\(.*\)" version = "\(.*\)"/\1==\2/')
+    local diff_output
+    diff_output=$(
+      OLD_LOCK="$BACKUP_DIR/uv.lock.backup" NEW_LOCK="uv.lock" uv run python - <<'PY'
+import os
+import re
+from pathlib import Path
 
-    while IFS= read -r old_pkg; do
-      local pkg_name old_version new_version
-      pkg_name=$(echo "$old_pkg" | cut -d'=' -f1)
-      old_version=$(echo "$old_pkg" | cut -d'=' -f3)
-      new_version=$(echo "$new_packages" | grep "^$pkg_name==" | cut -d'=' -f3 || echo "")
 
-      if [[ -n "$new_version" ]] && [[ "$old_version" != "$new_version" ]]; then
-        PACKAGE_CHANGES+=("$pkg_name: $old_version → $new_version")
+def package_versions(path: str) -> dict[str, str]:
+    """Return {name: version} scoped to `[[package]]` table bodies only.
+
+    Unlike a flat name=/version= grep, splitting on the `[[package]]` table marker
+    means the lock-format preamble (`version = 1`, before the first table) can never
+    be mistaken for a package's version -- it simply isn't inside any block.
+    """
+    text = Path(path).read_text()
+    versions: dict[str, str] = {}
+    for block in text.split("\n[[package]]"):
+        name_match = re.search(r'^name = "([^"]*)"', block, re.MULTILINE)
+        version_match = re.search(r'^version = "([^"]*)"', block, re.MULTILINE)
+        if name_match and version_match:
+            versions[name_match.group(1)] = version_match.group(1)
+    return versions
+
+
+old_versions = package_versions(os.environ["OLD_LOCK"])
+new_versions = package_versions(os.environ["NEW_LOCK"])
+
+for pkg_name in sorted(old_versions):
+    old_version = old_versions[pkg_name]
+    new_version = new_versions.get(pkg_name)
+    if new_version and new_version != old_version:
+        print(f"{pkg_name}: {old_version} → {new_version}")
+PY
+    )
+
+    if [[ -n "$diff_output" ]]; then
+      while IFS= read -r change_line; do
+        PACKAGE_CHANGES+=("$change_line")
         CHANGES_MADE=true
-      fi
-    done <<<"$old_packages"
+      done <<<"$diff_output"
+    fi
   fi
 }
 
