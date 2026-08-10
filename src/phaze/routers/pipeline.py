@@ -482,9 +482,20 @@ async def _retry_analysis_group(queue: Any, group: list[FileRecord], agent_id: s
         from phaze.database import async_session  # noqa: PLC0415
 
         async with async_session() as restore_session:
+            # phaze-6ib1n: guard on `analysis_completed_at IS NULL`, mirroring
+            # `report_analysis_failed`'s own conflict predicate (routers/agent_analysis.py) and its
+            # documented reason -- "guard the failure stamp so it NEVER downgrades a row that already
+            # reads DONE". Without it, a file that raced this loop (its own enqueue landed and
+            # `put_analysis` stamped `analysis_completed_at` WHILE this background task was still
+            # grinding through the rest of the group) trips the `analysis_completed_xor_failed` CHECK.
+            # That is a STATEMENT-level violation: this multi-row UPDATE aborts as a whole, the `except`
+            # below only logs, and every OTHER id in `failed_ids` -- whose enqueue genuinely never
+            # happened -- permanently loses its failure marker with no replacement job. A completed row
+            # needs no restore (it is done, not failed), so excluding it here is correct independent of
+            # the crash, and it means one raced id can never void the restore for the whole group.
             await restore_session.execute(
                 update(AnalysisResult)
-                .where(_analysis_file_ids_scope(failed_ids, "restore_ids"))
+                .where(_analysis_file_ids_scope(failed_ids, "restore_ids"), AnalysisResult.analysis_completed_at.is_(None))
                 .values(failed_at=func.now(), error_message="retry_analysis_failed: enqueue error, see agent logs (phaze-4ter)"),
             )
             await restore_session.commit()
