@@ -145,7 +145,19 @@
                 // COMPUTE-02: count of ACTIVE compute lanes, additive to agentOnline for the header
                 // "Agents · N" total. A read-only derived int seeded onto the dag dict server-side;
                 // rides the existing dag.items() OOB loop onto dag-seed-computeLanesActive.
-                computeLanesActive: 0
+                computeLanesActive: 0,
+                // phaze-uvmcr.5: Phase 87 (87-08, UI-05) per-enrich-stage orphaned/stuck
+                // (recovery-candidate) counts. These two keys lived only in the now-deleted
+                // base.html, which never had a live caller once audit/agents moved onto this
+                // shell -- an oversight that would have re-created the exact "rail renders
+                // server-side 0 forever" defect CONSOLE-02 already fixed once (rail.html's
+                // amber orphan badges bind $store.pipeline.{metadata,analyze}Orphan and would
+                // have silently stuck at their seed value with no poll ever reaching them).
+                // Seeded to int 0 so no x-show/x-text binding ever reads `undefined` before the
+                // first /pipeline/stats poll tick; the dag.items() OOB loop in stats_bar.html
+                // pushes the real values each 5s poll via dag-seed-metadataOrphan /
+                // dag-seed-analyzeOrphan (tests/shared/core/test_workspace_poll_seeds.py).
+                metadataOrphan: 0, analyzeOrphan: 0
             });
             // phaze-cvn6.3: pipeline files-table column widths. A page-level singleton (mirrors the
             // theme store's localStorage shape above) is what lets a dragged width survive every

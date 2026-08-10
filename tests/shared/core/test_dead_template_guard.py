@@ -37,12 +37,18 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-from jinja2 import Environment, meta
+from jinja2 import Environment, meta, nodes
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _TEMPLATES = _REPO_ROOT / "src" / "phaze" / "templates"
 _ROUTERS = _REPO_ROOT / "src" / "phaze" / "routers"
+
+# The ONLY page layout a template may {% extends %} (phaze-uvmcr.5: base.html deleted once
+# audit/agents/files moved onto this shell — a second, rail-less full-document layout is
+# exactly the "second chrome" pattern that epic exists to remove; this pins the invariant so
+# it cannot quietly come back).
+_ALLOWED_EXTENDS_TARGET = "shell/shell.html"
 
 # Any quoted "....html" string literal in router source — covers name="x.html",
 # _render_partial(request, "x.html", ...) positional args, and ternary-assigned
@@ -134,4 +140,31 @@ def test_entry_literals_resolve_to_templates() -> None:
     assert not missing, (
         "router source references template literals that don't exist on disk "
         f"(dead entry-root literal — delete the literal or restore the template): {missing}"
+    )
+
+
+def test_no_template_extends_a_layout_other_than_the_shell() -> None:
+    """The shell (``shell/shell.html``) is the ONLY page layout — pins the phaze-uvmcr.5 invariant.
+
+    ``base.html`` was a second, rail-less full-document layout that every content page used to
+    fork via ``{% extends "base.html" %}`` before the v7.0 shell cutover. It was deleted once
+    audit, agents, and files all moved onto the shell and it had zero remaining callers. A future
+    page reintroducing a SECOND ``{% extends %}`` target — even a newly authored one, not
+    necessarily a resurrected ``base.html`` — is exactly the regression this epic exists to
+    prevent, so this guard fails the build on ANY extends target other than the shell, not just
+    on the literal name ``base.html``.
+    """
+    env = Environment(autoescape=True)
+    offenders: list[tuple[str, str]] = []
+    for path in sorted(_TEMPLATES.rglob("*.html")):
+        rel = path.relative_to(_TEMPLATES).as_posix()
+        ast = env.parse(path.read_text())
+        for extends_node in ast.find_all(nodes.Extends):
+            target = extends_node.template
+            target_name = target.as_const() if isinstance(target, nodes.Const) else "<dynamic>"
+            if target_name != _ALLOWED_EXTENDS_TARGET:
+                offenders.append((rel, str(target_name)))
+    assert not offenders, (
+        f"only {_ALLOWED_EXTENDS_TARGET!r} may be {{% extends %}}-ed (the shell is the ONLY page "
+        f"layout); offending (template, target) pairs: {offenders}"
     )

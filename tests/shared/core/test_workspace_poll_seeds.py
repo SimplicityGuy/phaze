@@ -4,7 +4,8 @@ The v7.0 shell fires ONE ``/pipeline/stats`` poll from chrome; each tick emits h
 ``hx-swap-oob="true"`` seeds (``dag-seed-<key>``) that re-push live counts into
 ``$store.pipeline``. htmx OOB swaps land ONLY on ids ALREADY present in the DOM, so:
 
-1. every ``$store.pipeline`` key seeded in ``base.html`` MUST have a matching
+1. every ``$store.pipeline`` key seeded in ``shell/shell.html`` (phaze-uvmcr.5: formerly
+   ``base.html``, deleted once it had zero live callers) MUST have a matching
    ``dag-seed-<key>`` placeholder in ``_workspace_poll_seeds.html`` — otherwise that seed
    no-ops on EVERY workspace and the bound badge sticks at its initial 0 (this is exactly how
    the Phase-87 ``metadataOrphan``/``analyzeOrphan`` badges were dead), and
@@ -27,15 +28,17 @@ if TYPE_CHECKING:
 
 
 _TEMPLATES = Path(__file__).resolve().parents[3] / "src" / "phaze" / "templates"
-_BASE_HTML = _TEMPLATES / "base.html"
+# phaze-uvmcr.5: base.html deleted (zero live callers) — shell/shell.html is now the only
+# page layout and the sole home of the $store.pipeline literal.
+_SHELL_HTML = _TEMPLATES / "shell" / "shell.html"
 _SEEDS_HTML = _TEMPLATES / "pipeline" / "partials" / "_workspace_poll_seeds.html"
 
 
 def _store_keys() -> set[str]:
-    """The keys initialised in base.html's ``Alpine.store('pipeline', { ... })`` object."""
-    src = _BASE_HTML.read_text(encoding="utf-8")
+    """The keys initialised in shell.html's ``Alpine.store('pipeline', { ... })`` object."""
+    src = _SHELL_HTML.read_text(encoding="utf-8")
     block = re.search(r"Alpine\.store\(\s*['\"]pipeline['\"]\s*,\s*\{(.*?)\}\s*\)", src, re.DOTALL)
-    assert block, "could not locate Alpine.store('pipeline', {...}) in base.html"
+    assert block, "could not locate Alpine.store('pipeline', {...}) in shell/shell.html"
     # Each key is `name: <number>` — strip JS line comments first so a commented key never counts.
     body = re.sub(r"//[^\n]*", "", block.group(1))
     return set(re.findall(r"(\w+)\s*:", body))
@@ -55,7 +58,7 @@ def test_every_store_key_has_a_poll_seed_target() -> None:
     """
     missing = _store_keys() - _seed_target_keys()
     assert not missing, (
-        "these $store.pipeline keys (base.html) have NO dag-seed-<key> target in "
+        "these $store.pipeline keys (shell/shell.html) have NO dag-seed-<key> target in "
         f"_workspace_poll_seeds.html, so the /pipeline/stats poll can never seed them: {sorted(missing)}"
     )
 

@@ -16,11 +16,12 @@
         from STAGE_PARTIALS rather than two more DAG rows here)
 
   Live-vs-static rule (locked): an x-text count renders ONLY for a node whose key already
-  exists in $store.pipeline (base.html:106-136). summary + the six Review & Apply
-  items carry NO count. Counts are numeric server/store values only.
+  exists in $store.pipeline (phaze-uvmcr.5: base.html deleted, the store now lives at
+  shell/shell.html:115-159). summary + the six Review & Apply items carry NO count. Counts
+  are numeric server/store values only.
 
   Phase 87 (87-08) ambient enrich-node additions (each rides the SAME #pipeline-stats OOB
-  fanout — no self-poll; store keys added to base.html):
+  fanout — no self-poll; store keys now live in shell/shell.html):
     • UI-05 — amber orphaned/stuck (recovery-candidate) badge bound to
       $store.pipeline.{metadata,analyze}Orphan, role="status", hidden at 0.
     • PRIO-01 — per-enrich-stage priority stepper (▲/▼) + pause/resume toggle, re-wired to the
@@ -149,7 +150,7 @@
                       :aria-label="$store.pipeline.metadataDone + ' of ' + $store.pipeline.metadataTotal + ' metadata files done'">0 / 0</span>
                 {# Phase 87 (87-08, UI-05 / D-05): amber orphaned/stuck (recovery-candidate) badge — the
                    count recover_orphaned_work would re-enqueue. Rides the #pipeline-stats OOB fanout via
-                   $store.pipeline.metadataOrphan (seeded 0 in base.html, no self-poll); hidden at 0 via
+                   $store.pipeline.metadataOrphan (seeded 0 in shell/shell.html, no self-poll); hidden at 0 via
                    x-show. role="status"; amber = "needs attention, not failure" (never red).
                    phaze-nebh: :title added so a sighted operator hovering gets the SAME sentence
                    assistive tech already gets from aria-label -- previously title-less, aria-only. #}
@@ -278,7 +279,7 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"/></svg>
                 <span class="flex-1 text-sm text-gray-700 dark:text-gray-300 max-lg:sr-only">Tracklist</span>
                 {# phaze-nebh: sweep -- tracklistDone had no title/aria-label either. No tracklistTotal
-                   key exists in the store (base.html), so this stays a bare DONE count (unambiguous on
+                   key exists in the store (shell/shell.html), so this stays a bare DONE count (unambiguous on
                    its own, unlike the metadata/analyze mix above); label it. #}
                 <span class="font-mono text-xs text-gray-500 max-lg:hidden"
                       x-text="$store.pipeline.tracklistDone"
@@ -296,7 +297,7 @@
                 class="rail-node w-[calc(100%-1rem)] mx-2 mt-1.5 rounded-lg px-3 py-2.5 flex items-center gap-3 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
             <span class="flex-1 text-sm text-gray-700 dark:text-gray-200 max-lg:sr-only">Propose</span>
-            {# phaze-nebh: sweep -- proposalsTotal is already in the store (base.html), so render
+            {# phaze-nebh: sweep -- proposalsTotal is already in the store (shell/shell.html), so render
                done/total (same self-explanatory form as metadata/analyze) with a matching
                :title/:aria-label rather than a bare, unlabeled DONE count. #}
             <span class="font-mono text-xs text-gray-500 max-lg:hidden"
