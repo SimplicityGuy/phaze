@@ -6,6 +6,7 @@ import uuid as uuid_mod
 
 from sqlalchemy import ColumnElement, Subquery, delete, func, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.models.dedup_resolution import DedupResolution
@@ -409,6 +410,18 @@ async def resolve_group(session: AsyncSession, group_hash: str, canonical_id: uu
     instead of minting a second, conflicting resolution. The lock is transaction-scoped (released at
     the caller's ``commit()``/``rollback()``), matching how both call sites (``resolve_group_endpoint``
     and the ``bulk_resolve`` loop) run inside a caller-owned transaction.
+
+    phaze-a3if1: the membership/non-canonical reads above are plain SELECTs with no ``FOR SHARE``, so
+    they do NOT block on ``delete_scan_cascade``'s ``SELECT ... FOR UPDATE`` -- a group member (or
+    ``canonical_id`` itself) can be deleted by a concurrent scan-batch delete AFTER this function's own
+    read sees it and BEFORE the ``DedupResolution`` INSERT below runs. ``delete_scan_cascade``'s own
+    comment names the expected outcome: the losing writer "simply FK-fails against the already-deleted
+    file". The INSERT therefore runs inside its own SAVEPOINT (request_guards.py contract rule 5) and
+    an ``IntegrityError`` there is caught (rule 4 -- a genuine race no stricter signature could have
+    rejected, not a validation bug), reporting 0 resolved instead of letting the FK violation escape
+    uncaught. That return value is indistinguishable from every other 0-resolved shape this function
+    already has (stale canonical, concurrent no-op), so the router's existing 0-resolved handling
+    (phaze-ptzse) covers this race too without a separate branch.
     """
     # phaze-v0iy: serialize per group_hash BEFORE the membership check so a concurrent resolve of the
     # same group (any canonical) blocks here until the first resolve's transaction commits or rolls
@@ -457,8 +470,22 @@ async def resolve_group(session: AsyncSession, group_hash: str, canonical_id: uu
         # the >10,922-row break in practice; the guard is one line, so it costs nothing to apply
         # here too rather than leave the shape unchunked (bulk_insert.py's atomicity rule holds --
         # every chunk lands on this session, and the caller still owns the single commit/flush).
-        for chunk in chunk_rows(rows):
-            await session.execute(pg_insert(DedupResolution).values(chunk).on_conflict_do_nothing(index_elements=["file_id"]))
+        #
+        # phaze-a3if1: the whole insert runs inside ONE SAVEPOINT (not per-chunk) so a mid-loop FK
+        # failure unwinds every chunk of THIS resolve atomically, never a partial marker set, and
+        # leaves the caller's outer transaction usable for the rest of the request (contract rule 5
+        # -- a nested rollback, never session.rollback(), which would expire every already-loaded
+        # ORM object on the session).
+        try:
+            async with session.begin_nested():
+                for chunk in chunk_rows(rows):
+                    await session.execute(pg_insert(DedupResolution).values(chunk).on_conflict_do_nothing(index_elements=["file_id"]))
+        except IntegrityError:
+            # A member of `files` (or `canonical_id` itself) was deleted by a concurrent scan-batch
+            # cascade between the SELECT above and this INSERT -- request_guards.py contract rule 4:
+            # catch the race, not the typo. Report the same 0-resolved shape every other no-op in
+            # this function already returns.
+            return 0, []
 
     await session.flush()
     return len(file_states), file_states
