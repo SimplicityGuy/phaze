@@ -97,7 +97,7 @@ async def enqueue_tag_write(
     session: AsyncSession,
     task_router: AgentTaskRouter,
     file_record: TagWriteTarget,
-    proposed_tags: dict[str, str | int | None],
+    proposed_tags: dict[str, str | int | list[str] | None],
     source: str,
 ) -> TagWriteLog:
     """Create the audit row and dispatch the write to the file's OWNING agent.

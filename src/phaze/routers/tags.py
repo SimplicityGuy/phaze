@@ -576,7 +576,7 @@ async def write_file_tags(
     form_data = await request.form()
 
     # Build tags dict from form data
-    tags: dict[str, str | int | None] = {}
+    tags: dict[str, str | int | list[str] | None] = {}
     for field in CORE_FIELDS:
         val = form_data.get(field)
         if val is not None and str(val).strip():
@@ -834,7 +834,7 @@ async def bulk_write_no_discrepancies(
                         # (stays per-file Approve/Edit/Skip). ``compute_proposed_tags`` never blanks,
                         # so defensive.
                         continue
-                    tags: dict[str, str | int | None] = {k: v for k, v in proposed.items() if v is not None}
+                    tags: dict[str, str | int | list[str] | None] = {k: v for k, v in proposed.items() if v is not None}
                     log_entry = await enqueue_tag_write(session, request.app.state.task_router, candidate, tags, source="proposal")
                     # phaze-k7g6: commit the audit row atomically with the dispatch it describes, so
                     # a mid-loop cancellation/crash can never leave a job enqueued with no

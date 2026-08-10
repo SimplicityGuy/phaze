@@ -69,7 +69,11 @@ class ExtractedTags:
     # corresponding normalized field is also ``None`` (the tag is genuinely absent).
     raw_year: str | None = None
     raw_track_number: str | None = None
-    raw_genre: str | None = None
+    # phaze-z2u08: a MULTI-value genre tag (e.g. two Vorbis ``genre`` comments) is a ``list[str]``
+    # here -- every value kept separate, never joined into one string -- so a write path can put
+    # them back on disk as distinct frames/comments/atoms. A single-value genre stays a plain
+    # ``str``, unchanged from before. See ``_raw_genre_value``.
+    raw_genre: str | list[str] | None = None
 
 
 # Tag key mappings for each format family
@@ -224,19 +228,30 @@ def normalize_track_number_text(value: Any) -> int | None:
     return _parse_track(value)
 
 
-def _raw_join(val: Any) -> str | None:
-    """Join every value of a multi-value tag field into one ``"; "``-separated raw string.
+def _raw_genre_value(val: Any) -> str | list[str] | None:
+    """Preserve every value of a multi-value genre tag, as a real ``list[str]``.
 
     phaze-2zl7: unlike :func:`_first_str` (which keeps only the FIRST value -- correct for the
     normalized ``genre`` field used in search/matching), this preserves the full genre list for an
     undo snapshot, so reverting a write does not silently collapse a multi-genre tag down to one
     value.
+
+    phaze-z2u08: this used to ``"; ".join`` the values into one string, which fixed the CAPTURE
+    half of the undo snapshot but not the RESTORE half -- nothing on the write side ever split
+    that joined string back apart, so undo wrote it as a single tag value anyway (and a naive
+    ``split("; ")`` fix would be wrong too: a single genre value can legitimately contain "; ").
+    Returning the values themselves, never re-joined into text, lets the write path put each one
+    back on disk verbatim. A single-value genre still returns a plain ``str`` (unchanged
+    behavior); ``None`` iff the tag is genuinely absent -- same contract as the sibling
+    raw_year/raw_track_number helpers.
     """
     if val is None:
         return None
     if isinstance(val, list):
         parts = [_sanitize_pg_text(str(item)) for item in val if not isinstance(item, bytes)]
-        return "; ".join(parts) if parts else None
+        if not parts:
+            return None
+        return parts[0] if len(parts) == 1 else parts
     return _sanitize_pg_text(str(val))
 
 
@@ -438,5 +453,5 @@ def extract_tags(file_path: str, *, strict: bool = False) -> ExtractedTags:
         # on a COPY (`fields.get("year")`), never mutating `fields` itself.
         raw_year=fields.get("year"),
         raw_track_number=_raw_track_text(raw_sources.get("track_number")),
-        raw_genre=_raw_join(raw_sources.get("genre")),
+        raw_genre=_raw_genre_value(raw_sources.get("genre")),
     )
