@@ -47,6 +47,9 @@ def _agent_env(monkeypatch: pytest.MonkeyPatch) -> Generator[None]:
     monkeypatch.setenv("PHAZE_AGENT_API_URL", "http://test:8000")
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-TOKEN-1234567890ab")
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/tmp")  # noqa: S108 -- validator only checks non-empty list
+    # phaze-27myl: fileserver-kind (the default) AgentSettings now fail-fasts on the default
+    # (docker-service-name) queue_url.
+    monkeypatch.setenv("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@app-server.example:5432/phaze")
 
     from phaze.config import get_settings
 
@@ -663,6 +666,9 @@ def test_scan_directory_registered_in_agent_worker_settings(monkeypatch: pytest.
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
     monkeypatch.setenv("PHAZE_AGENT_QUEUE", "phaze-agent-test-agent")
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/tmp")  # noqa: S108  # validator only checks non-empty list
+    # phaze-27myl: fileserver-kind (the default) AgentSettings now fail-fasts on the default
+    # (docker-service-name) queue_url.
+    monkeypatch.setenv("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@app-server.example:5432/phaze")
 
     from phaze.tasks.agent_worker import settings as agent_settings
 
