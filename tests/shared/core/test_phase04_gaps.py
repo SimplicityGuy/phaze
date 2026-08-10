@@ -148,6 +148,9 @@ async def test_agent_startup_invokes_ensure_models_present_after_whoami(tmp_path
     monkeypatch.setenv("PHAZE_AGENT_QUEUE", "phaze-agent-test-id")
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", str(tmp_path))
     monkeypatch.setenv("PHAZE_REDIS_URL", "redis://localhost:6379/0")
+    # phaze-27myl: fileserver-kind (the default) AgentSettings now fail-fasts on the default
+    # (docker-service-name) queue_url.
+    monkeypatch.setenv("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@app-server.example:5432/phaze")
 
     from phaze.config import AgentSettings
     import phaze.tasks.agent_worker as aw
@@ -204,6 +207,9 @@ async def test_agent_startup_propagates_ensure_models_present_failure(tmp_path: 
     monkeypatch.setenv("PHAZE_AGENT_QUEUE", "phaze-agent-test-id")
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", str(tmp_path))
     monkeypatch.setenv("PHAZE_REDIS_URL", "redis://localhost:6379/0")
+    # phaze-27myl: fileserver-kind (the default) AgentSettings now fail-fasts on the default
+    # (docker-service-name) queue_url.
+    monkeypatch.setenv("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@app-server.example:5432/phaze")
 
     from phaze.config import AgentSettings
     import phaze.tasks.agent_worker as aw

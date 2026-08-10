@@ -20,6 +20,9 @@ import pytest
 _VALID_URL = "http://app.test:8000"
 _VALID_TOKEN = "phaze_agent_test-token-abc123"
 _VALID_ROOTS = "/data/music,/data/concerts"
+# phaze-27myl: fileserver-kind (the default) AgentSettings now fail-fasts on the default
+# (docker-service-name) queue_url.
+_VALID_QUEUE_URL = "postgresql://phaze:phaze@app-server.example:5432/phaze"
 
 
 @pytest.fixture(autouse=True)
@@ -42,6 +45,7 @@ def test_get_settings_returns_agent_settings_when_role_is_agent(
     monkeypatch.setenv("PHAZE_AGENT_API_URL", _VALID_URL)
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", _VALID_TOKEN)
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", _VALID_ROOTS)
+    monkeypatch.setenv("PHAZE_QUEUE_URL", _VALID_QUEUE_URL)  # phaze-27myl
 
     from phaze.config import get_settings
 
@@ -149,6 +153,7 @@ def test_agent_settings_comma_splits_scan_roots(
     monkeypatch.setenv("PHAZE_AGENT_API_URL", _VALID_URL)
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", _VALID_TOKEN)
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/a,/b,/c")
+    monkeypatch.setenv("PHAZE_QUEUE_URL", _VALID_QUEUE_URL)  # phaze-27myl
 
     cfg = AgentSettings()
     assert cfg.scan_roots == ["/a", "/b", "/c"], f"scan_roots mismatch: {cfg.scan_roots!r}"
@@ -173,6 +178,7 @@ def _agent_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PHAZE_AGENT_API_URL", _VALID_URL)
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", _VALID_TOKEN)
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", _VALID_ROOTS)
+    monkeypatch.setenv("PHAZE_QUEUE_URL", _VALID_QUEUE_URL)  # phaze-27myl
     # Pin watcher knobs to their documented defaults so assertions in this
     # module hold regardless of what's in the project's .env file.
     monkeypatch.setenv("PHAZE_WATCHER_SETTLE_SECONDS", "10")

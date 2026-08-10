@@ -1407,6 +1407,27 @@ class AgentSettings(BaseSettings):
         # bearer over HTTP.
         if self.kind != "compute" and not self.scan_roots:
             raise ValueError("AgentSettings.scan_roots is required when PHAZE_ROLE=agent (set PHAZE_AGENT_SCAN_ROOTS=/path1,/path2)")
+        # phaze-27myl: queue_url's shared-base default is the docker-compose service-name DSN
+        # (`postgres:5432`, BaseSettings.queue_url above) — it only resolves on the APP-SERVER
+        # compose network. docker-compose.agent.yml's own invariant is "No postgres or redis
+        # service here", so on a file-server host that hostname never resolves. Unlike redis_url,
+        # queue_url has no production-only validator to catch this (see
+        # _enforce_redis_password_in_production), so it is the one shared-base field whose
+        # docker-network default silently survives into an agent process. Fail fast here instead
+        # of crash-looping every lane worker (tasks/agent_worker.py, the docker-compose.agent.yml
+        # SAQ worker loop) at PostgresQueue connection time.
+        #
+        # Scoped to kind != "compute" like the scan_roots relaxation above: the k8s one-shot
+        # analyze pod's entrypoint (job_runner.py) constructs AgentSettings and calls back over
+        # HTTP directly -- it never imports tasks/agent_worker.py's PostgresQueue and never reads
+        # queue_url, and its documented agent-env ConfigMap (docs/k8s-burst.md §6) does not carry
+        # PHAZE_QUEUE_URL. Enforcing this for compute agents too would crash-loop every burst pod.
+        if self.kind != "compute" and urlparse(self.queue_url).hostname == "postgres":
+            raise ValueError(
+                "PHAZE_QUEUE_URL is required when PHAZE_ROLE=agent — the default queue_url points at the "
+                "docker-compose service name 'postgres', which does not resolve on an agent host "
+                "(set PHAZE_QUEUE_URL to a Postgres DSN reachable from this host)"
+            )
         return self
 
     @model_validator(mode="after")

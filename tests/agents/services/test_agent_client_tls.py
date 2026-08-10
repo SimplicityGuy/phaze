@@ -146,6 +146,7 @@ def test_construct_agent_client_missing_ca_raises(tmp_path: Path) -> None:
         agent_token=SecretStr("phaze_agent_test-token-1234567890abcdef"),
         scan_roots=["/tmp"],  # noqa: S108  # test-only path
         agent_ca_file=str(missing_ca),
+        queue_url="postgresql://phaze:phaze@app-server.example:5432/phaze",  # phaze-27myl
     )
     with pytest.raises(RuntimeError, match="CA file empty or unreadable"):
         construct_agent_client(cfg)
@@ -163,6 +164,7 @@ def test_construct_agent_client_empty_ca_raises(tmp_path: Path) -> None:
         agent_token=SecretStr("phaze_agent_test-token-1234567890abcdef"),
         scan_roots=["/tmp"],  # noqa: S108  # test-only path
         agent_ca_file=str(empty_ca),
+        queue_url="postgresql://phaze:phaze@app-server.example:5432/phaze",  # phaze-27myl
     )
     with pytest.raises(RuntimeError, match="CA file empty or unreadable"):
         construct_agent_client(cfg)

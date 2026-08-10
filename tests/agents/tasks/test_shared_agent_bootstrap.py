@@ -45,6 +45,9 @@ def _build_agent_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Ag
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-xyz")
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/data/music")
     monkeypatch.setenv("PHAZE_AGENT_CA_FILE", str(ca_file))
+    # phaze-27myl: fileserver-kind (the default) AgentSettings now fail-fasts on the default
+    # (docker-service-name) queue_url.
+    monkeypatch.setenv("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@app-server.example:5432/phaze")
     return AgentSettings()
 
 

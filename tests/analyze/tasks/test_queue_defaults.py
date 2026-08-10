@@ -141,6 +141,9 @@ def test_agent_worker_settings_construct_real_worker(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-TOKEN-1234567890ab")
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/data/music")
     monkeypatch.setenv("PHAZE_AGENT_QUEUE", "phaze-agent-test")
+    # phaze-27myl: fileserver-kind (the default) AgentSettings now fail-fasts on the default
+    # (docker-service-name) queue_url.
+    monkeypatch.setenv("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@app-server.example:5432/phaze")
     # Clear the lru_cache so get_settings re-dispatches to AgentSettings.
     from phaze.config import get_settings
 

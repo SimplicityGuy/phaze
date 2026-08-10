@@ -27,6 +27,9 @@ _VALID_TOKEN = SecretStr("phaze_agent_test-token-abc123")
 _VALID_ROOTS = ["/data/music"]
 _PASSWORDLESS_URL = "redis://localhost:6379/0"
 _PASSWORDED_URL = "redis://default:secret@localhost:6379/0"
+# phaze-27myl: fileserver-kind (the default) AgentSettings now fail-fasts on the default
+# (docker-service-name) queue_url, so every direct-kwargs construction below needs one.
+_VALID_QUEUE_URL = "postgresql://phaze:phaze@app-server.example:5432/phaze"
 
 
 def test_production_refuses_passwordless_redis_url() -> None:
@@ -44,6 +47,7 @@ def test_production_refuses_passwordless_redis_url() -> None:
             agent_api_url=_VALID_API_URL,
             agent_token=_VALID_TOKEN,
             scan_roots=_VALID_ROOTS,
+            queue_url=_VALID_QUEUE_URL,
         )
     assert "requires a password in redis_url" in str(exc_info.value), f"Expected D-06 password hint in error; got: {exc_info.value}"
 
@@ -58,6 +62,7 @@ def test_production_accepts_passworded_redis_url() -> None:
         agent_api_url=_VALID_API_URL,
         agent_token=_VALID_TOKEN,
         scan_roots=_VALID_ROOTS,
+        queue_url=_VALID_QUEUE_URL,
     )
     assert cfg.agent_env == "production"
     assert cfg.redis_url == _PASSWORDED_URL
@@ -77,6 +82,7 @@ def test_dev_accepts_passwordless_redis_url() -> None:
         agent_api_url=_VALID_API_URL,
         agent_token=_VALID_TOKEN,
         scan_roots=_VALID_ROOTS,
+        queue_url=_VALID_QUEUE_URL,
     )
     assert cfg.agent_env == "dev"
     assert cfg.redis_url == _PASSWORDLESS_URL
@@ -91,6 +97,7 @@ def test_default_agent_env_is_dev() -> None:
         agent_api_url=_VALID_API_URL,
         agent_token=_VALID_TOKEN,
         scan_roots=_VALID_ROOTS,
+        queue_url=_VALID_QUEUE_URL,
     )
     assert cfg.agent_env == "dev", f"Default agent_env must be 'dev'; got {cfg.agent_env!r}"
 
@@ -115,6 +122,7 @@ def test_production_refuses_http_agent_api_url() -> None:
             agent_token=_VALID_TOKEN,
             redis_url=_PASSWORDED_URL,
             scan_roots=_VALID_ROOTS,
+            queue_url=_VALID_QUEUE_URL,
         )
     assert "requires https://" in str(exc_info.value), f"Expected CR-01 https:// hint in error; got: {exc_info.value}"
 
@@ -129,6 +137,7 @@ def test_production_accepts_https_agent_api_url() -> None:
         agent_token=_VALID_TOKEN,
         redis_url=_PASSWORDED_URL,
         scan_roots=_VALID_ROOTS,
+        queue_url=_VALID_QUEUE_URL,
     )
     assert cfg.agent_api_url == "https://app.test:8000"
 
@@ -143,6 +152,7 @@ def test_dev_accepts_http_agent_api_url() -> None:
         agent_token=_VALID_TOKEN,
         redis_url=_PASSWORDLESS_URL,
         scan_roots=_VALID_ROOTS,
+        queue_url=_VALID_QUEUE_URL,
     )
     assert cfg.agent_api_url == "http://localhost:8000"
 
@@ -171,6 +181,7 @@ def test_phaze_redis_url_env_var_binds(monkeypatch: pytest.MonkeyPatch, tmp_path
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/data/music")
     monkeypatch.setenv("PHAZE_AGENT_ENV", "production")
     monkeypatch.setenv("PHAZE_AGENT_CA_FILE", str(tmp_path / "phaze-ca.crt"))
+    monkeypatch.setenv("PHAZE_QUEUE_URL", _VALID_QUEUE_URL)
 
     cfg = AgentSettings()
 
