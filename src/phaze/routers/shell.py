@@ -6,10 +6,14 @@ right pane) on a direct/bookmark navigation, and a bare content fragment on an H
 rail swap -- the fork decided by ``response_shape.wants_fragment`` (contract rule 1),
 the same predicate ``admin_agents.page`` (``routers/admin_agents.py``) composes.
 
-Stage resolution is a strict whitelist: ``STAGE_PARTIALS`` maps each rail-node id to the
-content partial that bridges it (D-01). ``stage`` is NEVER interpolated into a template
-path -- the partial name always comes from this static dict, closing the
-template-path-injection surface (T-57-01 / ASVS V5). An unknown stage 404s (D-02).
+Stage resolution is a strict whitelist across TWO static maps: ``STAGE_PARTIALS`` for the DAG
+pipeline rail nodes (D-01), and its sibling ``UTILITY_PANES`` (phaze-uvmcr.1) for the two
+below-the-line utility panes -- Audit Log and Compute/Agents -- that are NOT DAG stages and so
+are kept out of ``STAGE_PARTIALS``, whose own docstring pins its key set AND order verbatim to
+the 57-UI-SPEC "DAG Rail" table. ``stage`` is NEVER interpolated into a template path -- the
+partial name always comes from one of these two static dicts, closing the
+template-path-injection surface (T-57-01 / ASVS V5). An unknown stage (in neither map) 404s
+(D-02).
 
 ``GET /`` renders the Summary landing placeholder (quick 260707-sq3) -- a static, DB-free
 stage reserving the landing slot for a future at-a-glance overview. Analyze is one rail click
@@ -148,6 +152,42 @@ STAGE_PARTIALS: dict[str, str] = {
     # closes the Review & Apply group, after the five review nodes it consumes the output of.
     "apply": "pipeline/partials/apply_workspace.html",
 }
+
+
+# phaze-uvmcr.1: rail-node id -> bridged content partial for the two BELOW-THE-LINE utility
+# panes (Audit Log, Compute/Agents) -- the sibling of STAGE_PARTIALS above, deliberately kept
+# SEPARATE from it rather than folded in. STAGE_PARTIALS' own comment pins its key set AND
+# order VERBATIM to the 57-UI-SPEC "DAG Rail" table; Audit and Agents are not DAG pipeline
+# stages -- they sit below the rail's border-t divider, carry no pipeline count/badge and never
+# take the blue aria-[current=page] active tint reserved for pipeline nodes (rail.html) -- so
+# adding them to STAGE_PARTIALS would silently falsify a documented invariant instead of
+# widening it honestly. This map exists so that claim stays literally true.
+#
+# Same T-57-01 discipline as STAGE_PARTIALS: every VALUE is a STATIC string literal, `stage` is
+# matched against these keys and NEVER spliced into a template path, and the literals double as
+# dead-template-guard entry roots (test_dead_template_guard.py) exactly like STAGE_PARTIALS'.
+#
+# phaze-uvmcr.1 lands both keys with placeholder/thin content so this bead is independently
+# mergeable; phaze-uvmcr.3 (audit) and phaze-uvmcr.4 (agents) replace the values with the real
+# hosted panes once their content has settled.
+UTILITY_PANES: dict[str, str] = {
+    "audit": "shell/partials/audit_placeholder.html",
+    "agents": "shell/partials/agents_placeholder.html",
+}
+
+
+def _stage_partial(stage: str) -> str:
+    """Resolve ``stage`` to its content partial across both static maps (T-57-01).
+
+    Checked in ``STAGE_PARTIALS`` first (DAG rail stages), then ``UTILITY_PANES``
+    (below-the-line utility panes). Both are STATIC string-literal dicts keyed by ``stage`` --
+    never spliced into a template path -- so this preserves T-57-01 whichever map resolves it.
+    Callers are expected to have already validated ``stage in STAGE_PARTIALS or stage in
+    UTILITY_PANES`` (``shell_stage`` does; ``shell_home`` passes the hardcoded ``"summary"``
+    literal); a stage in neither raises ``KeyError``, matching the pre-existing
+    ``STAGE_PARTIALS[stage]`` behavior this replaces.
+    """
+    return STAGE_PARTIALS.get(stage) or UTILITY_PANES[stage]
 
 
 # Phase 61 (61-05, RECORD-04): the first-run empty-state guide. A STATIC string literal
@@ -336,7 +376,7 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
     context: dict[str, Any] = {
         "request": request,
         "stage": stage,
-        "stage_partial": STAGE_PARTIALS[stage],
+        "stage_partial": _stage_partial(stage),
         "oob_counts": False,
         # Phase 71 (71-04, BEUI-02): seed the header force-local pill's state on EVERY page from the
         # durable route_control 'global' row (get_route_control is degrade-safe -> False on any DB
@@ -347,7 +387,7 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
     if stage == "analyze":
         context.update(await build_dashboard_context(request.app.state, session))
         context["stage"] = stage
-        context["stage_partial"] = STAGE_PARTIALS[stage]
+        context["stage_partial"] = _stage_partial(stage)
         context["oob_counts"] = False
         # Phase 88 (88-01, DRILL-03 / D-02): a reload of /s/analyze?lane={id} seeds the selected-lane
         # highlight server-side for the initial full grid (the poll re-applies it thereafter). Resolved
@@ -394,7 +434,7 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # `include_poll_seeds` context flag (87-09 gap-fix's hand-rolled substitute for that same
         # include) has no remaining producer and is removed rather than left to double-emit the seeds.
         context["stage"] = stage
-        context["stage_partial"] = STAGE_PARTIALS[stage]
+        context["stage_partial"] = _stage_partial(stage)
         context["oob_counts"] = False
     elif stage == "discover":
         # Phase 58 (58-02, WORK-01): the Discover workspace reuses the EXISTING recent-scans
@@ -543,9 +583,10 @@ async def shell_home(request: Request, session: AsyncSession = Depends(get_sessi
 async def shell_stage(request: Request, stage: str, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     """GET /s/{stage} -- a single rail-node workspace.
 
-    ``stage`` is whitelisted against ``STAGE_PARTIALS`` (D-02 per-stage validation owned
-    here); an unknown stage 404s and is NEVER used to build a template path (T-57-01).
+    ``stage`` is whitelisted against ``STAGE_PARTIALS`` (DAG rail stages) OR ``UTILITY_PANES``
+    (phaze-uvmcr.1's below-the-line utility panes) (D-02 per-stage validation owned here); an
+    unknown stage (in neither map) 404s and is NEVER used to build a template path (T-57-01).
     """
-    if stage not in STAGE_PARTIALS:
+    if stage not in STAGE_PARTIALS and stage not in UTILITY_PANES:
         raise HTTPException(status_code=404)
     return await _render_stage(request, stage, session)

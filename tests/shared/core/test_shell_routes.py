@@ -34,9 +34,10 @@ if TYPE_CHECKING:
     from httpx import AsyncClient
 
 
-# The 14 navigable rail-node ids (VERBATIM prototype RAIL order, with the quick-260707-sq3
+# The DAG pipeline rail-node ids (VERBATIM prototype RAIL order, with the quick-260707-sq3
 # Summary landing node prepended and the Phase-87 87-09 Files stage-matrix overview inserted
-# right after it), each wired to /s/<id>.
+# right after it), each wired to /s/<id> and resolved through routers/shell.py's
+# STAGE_PARTIALS.
 _RAIL_STAGES = [
     "summary",
     "files",
@@ -50,6 +51,18 @@ _RAIL_STAGES = [
     "move",
     "dedupe",
     "cue",
+]
+
+# phaze-uvmcr.1: the two below-the-line UTILITY_PANES ids (Audit Log, Compute/Agents) --
+# NOT DAG pipeline stages, so kept out of _RAIL_STAGES (which mirrors STAGE_PARTIALS'
+# DAG-verbatim-order contract), but wired to /s/<id> exactly like their stage siblings and
+# resolved through routers/shell.py's sibling UTILITY_PANES map. Combined with _RAIL_STAGES
+# below wherever a conformance assertion is meant to cover every navigable rail node, DAG or
+# utility -- so registering a pane in UTILITY_PANES is what buys it this coverage, with no
+# bespoke per-pane test of its own.
+_UTILITY_PANE_STAGES = [
+    "audit",
+    "agents",
 ]
 
 
@@ -190,17 +203,23 @@ async def test_files_rail_node_is_reachable_and_accessible(client: AsyncClient) 
     assert glyph is not None, "Files node missing its aria-hidden inline-SVG glyph"
 
 
+@pytest.mark.parametrize("stage", ["discover", "audit", "agents"])
 @pytest.mark.asyncio
-async def test_stage_fragment_is_bare(client: AsyncClient) -> None:
-    """SHELL-02 -- /s/<stage> is a bare fragment on an HX request, the full shell on direct nav (D-01)."""
-    hx = await client.get("/s/discover", headers={"HX-Request": "true"})
+async def test_stage_fragment_is_bare(client: AsyncClient, stage: str) -> None:
+    """SHELL-02 -- /s/<stage> is a bare fragment on an HX request, the full shell on direct nav (D-01).
+
+    ``discover`` is a STAGE_PARTIALS (DAG) stage; ``audit``/``agents`` (phaze-uvmcr.1) are
+    UTILITY_PANES stages -- both maps fork through the same ``_render_stage`` code path, so
+    this single parametrized test covers all three with no bespoke per-pane copy.
+    """
+    hx = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
     assert hx.status_code == 200
     # Content-only: a swapped fragment NEVER carries the document wrapper or head (no
     # duplicate landmarks / skip-links injected -- the chrome persists across swaps).
     assert "<html" not in hx.text
     assert "<head" not in hx.text
 
-    full = await client.get("/s/discover")
+    full = await client.get(f"/s/{stage}")
     assert full.status_code == 200
     # The non-HX request is the full shell (carries the swap target + chrome).
     assert 'id="stage-workspace"' in full.text
@@ -208,7 +227,8 @@ async def test_stage_fragment_is_bare(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_every_rail_stage_carries_exactly_one_focus_heading(client: AsyncClient) -> None:
-    """Regression (phaze-t0b8) -- every STAGE_PARTIALS value renders exactly one <h1 tabindex="-1">.
+    """Regression (phaze-t0b8) -- every STAGE_PARTIALS/UTILITY_PANES value renders exactly one
+    ``<h1 tabindex="-1">``.
 
     The shell's htmx:afterSwap / htmx:historyRestore handler (``shell.html``'s
     ``_focusStageHeading``) moves keyboard focus to ``#stage-workspace``'s first ``<h1>`` after
@@ -217,9 +237,11 @@ async def test_every_rail_stage_carries_exactly_one_focus_heading(client: AsyncC
     skipped this: it hand-rolled its own body instead of composing ``_workspace_scaffold.html``
     like every sibling, so it carried no heading at all. This guards the whole class, not just
     that one stage, the way the bead's own fix hint asked: every navigable rail node must have
-    exactly one focus-landing heading, not zero and not two.
+    exactly one focus-landing heading, not zero and not two -- DAG pipeline stages
+    (``_RAIL_STAGES``) AND below-the-line utility panes (``_UTILITY_PANE_STAGES``, phaze-uvmcr.1)
+    alike.
     """
-    for stage in _RAIL_STAGES:
+    for stage in _RAIL_STAGES + _UTILITY_PANE_STAGES:
         frag = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
         assert frag.status_code == 200, f"/s/{stage} must render"
         count = len(re.findall(r'<h1\b[^>]*\btabindex="-1"', frag.text))
@@ -237,24 +259,28 @@ async def test_unknown_stage_404(client: AsyncClient) -> None:
 async def test_rail_nodes_wired(client: AsyncClient) -> None:
     """SHELL-02 -- every navigable rail node carries the HTMX swap wiring; summary is active.
 
-    The DAG rail is the nav spine: each of the 14 nodes swaps ONLY ``#stage-workspace``
+    The DAG rail is the nav spine: each stage node swaps ONLY ``#stage-workspace``
     (innerHTML) via ``/s/<id>`` with ``hx-push-url``. The ``/`` default marks the summary node
     ``aria-current="page"`` (quick 260707-sq3 -- it was analyze before the landing repoint).
+    phaze-uvmcr.1: the two below-the-line utility panes (``_UTILITY_PANE_STAGES``) are wired
+    identically and are covered here too -- registering a pane in UTILITY_PANES is what buys
+    it this wiring assertion, with no bespoke per-pane copy.
     """
     response = await client.get("/")
     assert response.status_code == 200
     body = response.text
 
-    # Every navigable node carries hx-get="/s/<id>" for all 14 rail-order stages.
-    for stage in _RAIL_STAGES:
+    # Every navigable node carries hx-get="/s/<id>" for every rail-order DAG stage AND both
+    # below-the-line utility panes.
+    for stage in _RAIL_STAGES + _UTILITY_PANE_STAGES:
         assert f'hx-get="/s/{stage}"' in body, f"rail node {stage} missing hx-get wiring"
 
     # The single stable swap target + push-url are present on the rail nodes.
     assert 'hx-target="#stage-workspace"' in body
     assert 'hx-swap="innerHTML"' in body
     assert 'hx-push-url="true"' in body
-    # Exactly one swap-target attr per navigable stage node (the 14 /s/ stages).
-    assert body.count('hx-target="#stage-workspace"') >= len(_RAIL_STAGES)
+    # Exactly one swap-target attr per navigable node (DAG stages + utility panes).
+    assert body.count('hx-target="#stage-workspace"') >= len(_RAIL_STAGES) + len(_UTILITY_PANE_STAGES)
 
     # The summary node (the / default) is the active rail node: aria-current="page" sits on
     # the same element carrying data-rail-stage="summary".
@@ -390,14 +416,17 @@ def _assert_full_shell(body: str, *, context: str) -> None:
     assert 'id="stage-workspace"' in body, f"{context}: the swap target every rail node aims at must exist"
 
 
-@pytest.mark.parametrize("stage", ["analyze", "files", "discover", "summary", "dedupe"])
+@pytest.mark.parametrize("stage", ["analyze", "files", "discover", "summary", "dedupe", "audit", "agents"])
 @pytest.mark.asyncio
 async def test_stage_history_restore_returns_full_shell(client: AsyncClient, stage: str) -> None:
     """A history-restore GET /s/<stage> returns the FULL shell, not the bare stage fragment.
 
     This is the reproduction from the bead, one stage per parametrisation. Before the fix each of
     these returned ``_stage_fragment.html`` -- the dispatcher measured /s/analyze at 5796 bytes,
-    /s/files at 5656 and /s/discover at 8652, all with ``full_document=False``.
+    /s/files at 5656 and /s/discover at 8652, all with ``full_document=False``. ``audit``/``agents``
+    (phaze-uvmcr.1) are the UTILITY_PANES additions -- the H1 history-restore trap applies to them
+    identically since they fork through the same ``response_shape.wants_fragment`` check as every
+    STAGE_PARTIALS stage.
     """
     response = await client.get(f"/s/{stage}", headers=_RESTORE_HEADERS)
     assert response.status_code == 200
@@ -424,15 +453,17 @@ async def test_root_history_restore_returns_full_shell(client: AsyncClient) -> N
     _assert_full_shell(response.text, context="history restore of /")
 
 
+@pytest.mark.parametrize("stage", ["analyze", "audit", "agents"])
 @pytest.mark.asyncio
-async def test_stage_live_htmx_swap_still_returns_bare_fragment(client: AsyncClient) -> None:
+async def test_stage_live_htmx_swap_still_returns_bare_fragment(client: AsyncClient, stage: str) -> None:
     """The OTHER direction: a live rail swap must still get the chrome-less fragment.
 
     The fix must not turn every htmx request into a full page. ``_stage_fragment.html`` is swapped
     INTO ``#stage-workspace``; a full document here would nest ``<html>``/duplicate landmarks
-    inside the live shell, a ROADMAP-locked anti-pattern.
+    inside the live shell, a ROADMAP-locked anti-pattern. ``audit``/``agents`` (phaze-uvmcr.1) are
+    the UTILITY_PANES additions, covered here alongside the DAG ``analyze`` stage.
     """
-    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    response = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
     assert response.status_code == 200
     body = response.text
     assert "<html" not in body.lower(), "a live rail swap must get a fragment, not a full document"
