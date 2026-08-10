@@ -508,7 +508,10 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
     The whole read runs inside a ``session.begin_nested()`` SAVEPOINT and returns ``[]`` on any error so the
     render/poll path degrades instead of 500ing (no router try/except needed). Per card:
     ``tracklist_id`` · ``set_name`` (the audio file stem, matching the generated ``.cue`` name) ·
-    ``eligible`` (bool) · ``cue_text`` (the in-memory ``.cue`` string, or ``None`` for a gated card).
+    ``eligible`` (bool) · ``cue_text`` (the in-memory ``.cue`` string, or ``None`` for a gated card) ·
+    ``version_id`` (the ``latest_version_id`` this card's preview was built from, or ``None`` for a
+    gated/degraded card -- phaze-ce65s: carried back on APPROVE so the write route can detect a
+    version that moved between this render and the click).
     """
     try:
         async with session.begin_nested():
@@ -541,6 +544,7 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
                             "set_name": Path(file_record.current_path).stem,
                             "eligible": False,
                             "cue_text": None,
+                            "version_id": None,
                         }
                     )
                     continue
@@ -550,6 +554,10 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
                         "set_name": Path(file_record.current_path).stem,
                         "eligible": True,
                         "cue_text": cue_text,
+                        # phaze-ce65s: the version THIS preview's cue_text was actually built
+                        # from -- carried back on APPROVE (hx-vals) so the route can refuse a
+                        # write if `latest_version_id` moved before the click.
+                        "version_id": tracklist.latest_version_id,
                     }
                 )
 
@@ -576,6 +584,7 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
                         "set_name": Path(file_record.current_path).stem,
                         "eligible": False,
                         "cue_text": None,
+                        "version_id": None,
                     }
                 )
 

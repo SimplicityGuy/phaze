@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 import uuid
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import Select, func, select
@@ -203,11 +203,29 @@ async def generate_cue(
     request: Request,
     tracklist_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
+    version_id: uuid.UUID | None = Form(None),
 ) -> HTMLResponse:
-    """Generate a CUE file for a specific tracklist."""
+    """Generate a CUE file for a specific tracklist.
+
+    phaze-ce65s: ``version_id`` is the tracklist version the OPERATOR reviewed in the preview
+    card (carried back via the APPROVE button's ``hx-vals``, see ``_cue_preview.html``). It is
+    optional -- the legacy ``cue/partials/cue_row.html`` surface has no live caller and never
+    sends it, so omitting it preserves that branch's old always-latest behavior -- but when
+    present it MUST match ``tracklist.latest_version_id`` or nothing is written; see
+    :func:`_render_stale_version_response`.
+    """
     tracklist, file_record = await _load_tracklist_with_file(session, tracklist_id)
 
     if tracklist is None:
+        # phaze-bg1dk: htmx does not swap non-2xx responses, and the shell's only 404 rescue
+        # handler is scoped to `#record-body` -- never `cue-card-*` -- so a bare 404 here produces
+        # NO feedback on the v7 workspace card (silent no-op, hx-disabled-elt just re-enables the
+        # button). Mirror tags.py's `_tagwrite_stale_toast_response`: a toast-only 200 whose empty
+        # primary body lets htmx's outerHTML swap remove the stale card. The non-HX/legacy caller
+        # (no `cue-card-` target) still gets the honest 404.
+        hx_target = request.headers.get("HX-Target", "")
+        if hx_target.startswith("cue-card-"):
+            return _cue_stale_toast_response(request, "Tracklist not found -- it may have been removed.")
         return HTMLResponse(content="Tracklist not found", status_code=404)
 
     # Validate the file is applied (READ-05/D-01: an executed proposal exists, NOT files.state).
@@ -224,6 +242,14 @@ async def generate_cue(
     if not tracklist.latest_version_id:
         toast_msg = "No tracks have timestamps. CUE sheets require per-track timing data from the tracklist source."
         return await _render_generate_error(request, session, tracklist, file_record, toast_msg)
+
+    if version_id is not None and version_id != tracklist.latest_version_id:
+        # phaze-ce65s: a background re-scrape (tracklist_drain._append_version) moved
+        # latest_version_id between the workspace render and this click -- the content the
+        # operator reviewed is not the content `_build_cue_tracks` would build now. Refuse the
+        # write (nothing is written without review, the same guarantee phaze-p35v enforced for
+        # proposals) and hand back a FRESH preview of the current version instead.
+        return await _render_stale_version_response(request, session, tracklist, file_record, tracklist.latest_version_id)
 
     cue_tracks = await _build_cue_tracks(session, tracklist.latest_version_id)
 
@@ -283,6 +309,9 @@ async def generate_cue(
             "set_name": audio_path.stem,
             "eligible": True,
             "cue_text": content,
+            # phaze-ce65s: pin the NEXT preview's approve to the version this content was
+            # actually built from, so a subsequent stale click is caught the same way.
+            "version_id": tracklist.latest_version_id,
         }
         return templates.TemplateResponse(
             request=request,
@@ -348,6 +377,8 @@ async def _build_generate_error_card(
         "set_name": Path(file_record.current_path).stem if file_record is not None else str(tracklist.id),
         "eligible": eligible,
         "cue_text": cue_text,
+        # phaze-ce65s: pin a retried APPROVE to the version THIS card was rebuilt from.
+        "version_id": tracklist.latest_version_id if eligible else None,
     }
 
 
@@ -396,3 +427,82 @@ async def _render_generate_error(
         name="cue/partials/cue_row.html",
         context={"request": request, "tracklist": row_data, "toast_message": message},
     )
+
+
+def _cue_stale_toast_response(request: Request, toast_message: str) -> HTMLResponse:
+    """A cue-card whose tracklist has vanished entirely: OOB toast only, status 200 (phaze-bg1dk).
+
+    Mirrors ``tags.py``'s ``_tagwrite_stale_toast_response`` (phaze-nvll defect 3): there is no
+    tracklist left to rebuild a card from, so the response's main (non-OOB) body is empty --
+    htmx's ``outerHTML`` swap then removes the stale card from the DOM -- while the toast still
+    surfaces the failure, instead of the bare 404 htmx silently drops for a non-2xx status on this
+    target (the shell's only 404 rescue handler is scoped to ``#record-body``).
+
+    Unlike ``_render_generate_error`` (phaze-2w49), an EMPTY primary body is the desired outcome
+    here, not a bug: the tracklist is genuinely gone, so there is nothing valid left to redraw.
+    """
+    return templates.TemplateResponse(
+        request=request,
+        name="cue/partials/toast.html",
+        context={"request": request, "toast_message": toast_message},
+    )
+
+
+async def _build_cue_preview_card(
+    session: AsyncSession,
+    tracklist: Tracklist,
+    file_record: FileRecord,
+    version_id: uuid.UUID,
+) -> dict[str, Any]:
+    """Build a fresh eligible preview card for ``tracklist`` pinned to ``version_id``.
+
+    Shared by :func:`_render_stale_version_response` (phaze-ce65s) so a stale-version refusal
+    hands back the identical card shape a normal render would, pinned to the version it was
+    actually built from. ``version_id`` is taken as an explicit non-optional argument (rather than
+    read back off ``tracklist.latest_version_id``) so the caller's already-checked "is there a
+    version at all" guard carries through instead of re-widening to ``UUID | None`` here.
+    """
+    cue_tracks = await _build_cue_tracks(session, version_id)
+    audio_path = Path(file_record.current_path)
+    content = generate_cue_content(audio_path.name, file_record.file_type, cue_tracks)
+    return {
+        "tracklist_id": tracklist.id,
+        "set_name": audio_path.stem,
+        "eligible": True,
+        "cue_text": content,
+        "version_id": version_id,
+    }
+
+
+async def _render_stale_version_response(
+    request: Request,
+    session: AsyncSession,
+    tracklist: Tracklist,
+    file_record: FileRecord | None,
+    current_version_id: uuid.UUID,
+) -> HTMLResponse:
+    """phaze-ce65s: the submitted ``version_id`` no longer matches ``current_version_id``.
+
+    A background re-scrape (``tracklist_drain._append_version``) moved the pointer between the
+    workspace render and this APPROVE click, so the content the operator reviewed is not the
+    content generation would build now -- writing it would bypass the product's core review gate
+    (the same check-then-act shape ``phaze-p35v`` fixed for proposal approval). Refuse the write
+    and hand back a FRESH preview of the CURRENT version instead, so the operator can review and
+    re-approve rather than getting a bare failure with no path forward. ``current_version_id`` is
+    taken explicitly (rather than re-read off ``tracklist.latest_version_id``) so the caller's
+    already-checked "there IS a version" guard carries through without re-widening to optional.
+    """
+    message = "The tracklist changed since this preview was rendered -- review the refreshed sheet below and approve again."
+    hx_target = request.headers.get("HX-Target", "")
+
+    if hx_target.startswith("cue-card-") and file_record is not None:
+        card = await _build_cue_preview_card(session, tracklist, file_record, current_version_id)
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/_cue_preview.html",
+            context={"request": request, "card": card, "toast_message": message},
+        )
+
+    # No live caller sends `version_id` on the legacy row surface (or with no file_record at all)
+    # -- degrade the same way the error branch does if one somehow did.
+    return await _render_generate_error(request, session, tracklist, file_record, message)

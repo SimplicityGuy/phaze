@@ -1,0 +1,15 @@
+{# phaze-bg1dk: toast-only OOB fragment for the cue facet, mirroring tags/partials/toast.html
+   (phaze-nvll). Used ONLY when the primary body must stay empty ON PURPOSE -- e.g. the
+   tracklist-vanished branch of generate_cue, where there is no tracklist left to rebuild a card
+   from and htmx's outerHTML swap against the empty remainder is the desired "remove the stale
+   card" outcome (see cue.py::_cue_stale_toast_response). `toast_message` is autoescaped (never
+   `| safe`). #}
+{% if toast_message %}
+<div hx-swap-oob="beforeend:#toast-container">
+    <div class="bg-gray-800 text-white text-sm px-4 py-2 rounded shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg" role="status"
+         x-data="{ show: true }" x-show="show" x-init="setTimeout(() => show = false, 5000)"
+         x-transition>
+        {{ toast_message }}
+    </div>
+</div>
+{% endif %}
