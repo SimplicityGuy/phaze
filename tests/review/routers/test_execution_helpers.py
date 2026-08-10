@@ -367,6 +367,12 @@ def dispatch_app(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, AsyncMock, M
     redis_client.pipeline = MagicMock(return_value=pipe)
     redis_client.set = AsyncMock(return_value=True)
     redis_client.delete = AsyncMock(return_value=1)
+    # phaze-2tsw9: a refused claim now tries to reattach to the live batch via GET
+    # execdispatch:active + HGETALL exec:{batch_id}. Default to "nothing to reattach to" (no active
+    # batch_id) so tests that don't care about this path keep seeing the plain refusal alert; the
+    # reattachment test below overrides both.
+    redis_client.get = AsyncMock(return_value=None)
+    redis_client.hgetall = AsyncMock(return_value={})
     app.state.redis = redis_client
     # phaze-fa2p / phaze-j7u8: the single-dispatch guard claims the sentinel, now via the
     # claim-or-reconcile Lua rather than a bare SET NX. Default to 1 ("claimed outright") so the
@@ -544,6 +550,70 @@ async def test_start_execution_rejected_when_dispatch_already_active(
     mock_router.enqueue_for_agent.assert_not_awaited()
     # ...and the hash seeded for this refused batch_id is dropped rather than left to rot for 24h.
     redis_client.delete.assert_awaited_once()
+
+
+async def test_start_execution_refused_reattaches_to_the_live_progress_card(
+    dispatch_app: tuple[FastAPI, AsyncMock, MagicMock],
+) -> None:
+    """A refused claim re-attaches to the ACTUALLY running batch's progress card (phaze-2tsw9).
+
+    Before the fix this branch always rendered the static ``dispatch_in_progress.html`` alert into
+    the SAME sink (``#apply-execute-response``, ``hx-swap="innerHTML"``) the live progress card
+    already occupies, evicting it and closing its only ``sse-connect`` mount with no way back in.
+    """
+    app, mock_router, redis_client = dispatch_app
+    redis_client.claim_dispatch_mock.return_value = 0
+    live_batch_id = "11111111-1111-1111-1111-111111111111"
+    redis_client.get = AsyncMock(return_value=live_batch_id)
+    redis_client.hgetall = AsyncMock(
+        return_value={
+            "total": "10",
+            "completed": "3",
+            "failed": "0",
+            "status": "running",
+            "subjobs_expected": "2",
+            "dispatch_summary": json.dumps([{"agent_id": "agent-a", "name": "Agent A", "total": 10}]),
+            "agent:agent-a:completed": "3",
+            "agent:agent-a:failed": "0",
+            "agent:agent-a:total": "10",
+        }
+    )
+    groups = {"agent-a": [_proposal("agent-a"), _proposal("agent-a")]}
+
+    with (
+        patch("phaze.routers.execution.detect_collisions", AsyncMock(return_value=[])),
+        patch("phaze.routers.execution.get_approved_proposals_grouped_by_agent", AsyncMock(return_value=groups)),
+        patch("phaze.routers.execution.count_revoked_skipped_proposals", AsyncMock(return_value=0)),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post("/execution/start")
+
+    assert resp.status_code == 200
+    assert "Execution already in progress" not in resp.text
+    assert f"/execution/progress/{live_batch_id}" in resp.text
+    assert "Agent A" in resp.text
+    mock_router.enqueue_for_agent.assert_not_awaited()
+
+
+async def test_reattach_active_progress_returns_none_without_an_active_batch() -> None:
+    """No ``execdispatch:active`` value -> nothing to reattach to (falls back to the static alert)."""
+    from phaze.routers.execution import _reattach_active_progress
+
+    redis_client = MagicMock()
+    redis_client.get = AsyncMock(return_value=None)
+    result = await _reattach_active_progress(_fake_request(), redis_client)
+    assert result is None
+
+
+async def test_reattach_active_progress_returns_none_when_hash_already_reaped() -> None:
+    """An active sentinel whose batch hash has already reaped -> nothing to reattach to."""
+    from phaze.routers.execution import _reattach_active_progress
+
+    redis_client = MagicMock()
+    redis_client.get = AsyncMock(return_value="some-batch-id")
+    redis_client.hgetall = AsyncMock(return_value={})
+    result = await _reattach_active_progress(_fake_request(), redis_client)
+    assert result is None
 
 
 async def test_start_execution_reconciled_stale_sentinel_is_logged_and_proceeds(

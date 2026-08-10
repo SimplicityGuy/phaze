@@ -272,8 +272,10 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
     """Dispatch approved proposals as per-agent SAQ sub-jobs (Phase 28 D-09).
 
     Sequence:
-      1. Pre-check collisions (unchanged from Phase 25) -- destinations collide
-         GLOBALLY, not per-agent, so the check fires before any grouping.
+      1. Pre-check collisions -- fires before any grouping, but (phaze-p46n4) the
+         collision key is already agent-scoped (``FileRecord.agent_id`` is the
+         first component of ``_dest_key_columns``) and ``detect_collisions``
+         excludes revoked-agent proposals, matching step 2's population exactly.
       2. SELECT + GROUP BY ``FileRecord.agent_id``, filter revoked agents
          (services/execution_dispatch.py).
       3. Generate parent ``batch_id``; compute ``subjobs_expected`` from
@@ -285,7 +287,8 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
       6. INFO log line per D-11.
       7. Return the progress card with first-render context.
     """
-    # 1. Pre-check collision (unchanged) -- collision_block short-circuits dispatch.
+    # 1. Pre-check collision -- collision_block short-circuits dispatch. Revoked-agent proposals
+    # are excluded here too (phaze-p46n4), so this gate's population matches step 2's exactly.
     collisions = await detect_collisions(session)
     if collisions:
         return templates.TemplateResponse(
@@ -387,6 +390,13 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
             # the hash would otherwise sit unread for 24h and, worse, look like a live 'running'
             # batch to anything that enumerates the namespace.
             await redis_client.delete(key)
+            # phaze-2tsw9: re-attach to the batch that's ACTUALLY running instead of a dead-end
+            # alert -- both land in the same #apply-execute-response sink (hx-swap="innerHTML"), so
+            # the refusal would otherwise evict the live progress card and its only sse-connect
+            # mount, with the running batch_id unrecoverable from the UI afterwards.
+            reattached = await _reattach_active_progress(request, redis_client)
+            if reattached is not None:
+                return reattached
             return templates.TemplateResponse(
                 request=request,
                 name="execution/partials/dispatch_in_progress.html",
@@ -548,6 +558,69 @@ async def _hgetall_or_empty(redis_client: Redis, key: str) -> dict[str, str]:
         logger.warning("execution progress: %s is not a hash -- rendering the empty state", key)
         return {}
     return data
+
+
+async def _reattach_active_progress(request: Request, redis_client: Redis) -> HTMLResponse | None:
+    """Re-render ``progress.html`` for the CURRENTLY RUNNING batch, or ``None`` if there isn't one.
+
+    phaze-2tsw9: a refused dispatch (the ``exec:active`` sentinel already held) used to render the
+    static ``dispatch_in_progress.html`` alert straight into ``#apply-execute-response`` -- the same
+    ``hx-swap="innerHTML"`` sink the LIVE progress card already occupies (the button's only trigger,
+    ``pipeline/partials/apply_workspace.html``, targets that one node for all three response shapes).
+    That swap evicted the running batch's progress card and, with it, its only ``sse-connect``
+    mount -- the batch's ``batch_id`` is not surfaced anywhere else in the UI, so there was no way to
+    reattach and the operator's only remaining visibility was the audit log.
+
+    ``ACTIVE_DISPATCH_KEY``'s VALUE *is* the running batch_id (the promote script only releases the
+    sentinel ``if GET(active_key) == batch_id``), so it can be read back here and used to rebuild the
+    SAME context ``start_execution``'s first render and the SSE ``agents_table`` re-sort endpoint
+    already build from the ``exec:{batch_id}`` hash. Returns ``None`` (never raises) when there is no
+    active batch, or the batch's hash has already reaped out from under a very tight race -- either
+    way the caller falls back to the static refusal card, which is still correct in that case.
+    """
+    # The shared client is wired with decode_responses=True (main.lifespan, Phase 26 D-27), so this
+    # really is str | None; redis-py's own stub types GET as the undecoded union.
+    active_batch_id: str | None = await redis_client.get(ACTIVE_DISPATCH_KEY)  # type: ignore[assignment]
+    if not active_batch_id:
+        return None
+    batch_key = f"{BATCH_KEY_PREFIX}{active_batch_id}"
+    data = await _hgetall_or_empty(redis_client, batch_key)
+    if not data:
+        return None
+
+    total = int(data.get("total", 0))
+    completed = int(data.get("completed", 0))
+    failed = int(data.get("failed", 0))
+    status = data.get("status", "running")
+    try:
+        dispatch_summary: list[dict[str, object]] = json.loads(data.get("dispatch_summary", "[]"))
+    except json.JSONDecodeError:
+        dispatch_summary = []
+
+    agents_view = _agents_view_from_hash(data, dispatch_summary)
+    sort_state = EXEC_AGENTS_SORT.resolve(
+        sort=data.get("agents_sort"),
+        order=data.get("agents_order"),
+        view_state={"batch_id": str(active_batch_id)},
+    )
+
+    return templates.TemplateResponse(
+        request=request,
+        name="execution/partials/progress.html",
+        context={
+            "request": request,
+            "batch_id": str(active_batch_id),
+            # skipped_revoked is a first-render-only figure (never persisted to the hash) --
+            # omitted here, same as every SSE re-render already does.
+            "total": total,
+            "completed": completed,
+            "failed": failed,
+            "subjobs_expected": int(data.get("subjobs_expected", 0)),
+            "agents": _sort_agents_view(agents_view, sort_state),
+            "sort": sort_state,
+            "status": status,
+        },
+    )
 
 
 def _render_partial(request: Request, name: str, context: dict[str, object]) -> str:
