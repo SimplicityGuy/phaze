@@ -1,17 +1,24 @@
 """Controller-side contract tests for Phase 29 plan 07: /admin/agents router.
 
 Covers:
-- GET /admin/agents — full page render (extends base.html, contains nav + table).
-- GET /admin/agents/_table — partial-only render (HTMX poll target).
-- HX-Request: true on /admin/agents — returns the partial only.
+- GET /admin/agents — 301 redirect to /s/agents, preserving the query string (phaze-uvmcr.4).
+- GET /admin/agents/_table — partial-only render (HTMX poll target), UNCHANGED.
 - Status-pill rendering for the 4 states that reach the panel (alive/stale/dead/never).
 - Revoked agents are filtered out of the panel entirely (revoked_at IS NULL).
 - Empty state (UI-SPEC §Empty State LOCKED copy).
 - Sort order: alive → stale → dead → never (revoked agents are filtered out of the panel).
-- BLOCKER-2 failure-tolerant footer (htmx event listener + localStorage red banner).
+- BLOCKER-2 failure-tolerant footer (htmx event listener + localStorage red banner) -- the
+  listener now lives in shell.html (see tests/shared/core/test_shell_agents_pane.py for the
+  H2 relocation coverage); this module still pins the banner MARKUP in agents_table.html.
+
+phaze-uvmcr.4: the full-page render moved into the shell (UTILITY_PANES["agents"], reachable at
+GET /s/agents). Every assertion that used to hit bare GET /admin/agents for FULL-PAGE content now
+hits GET /s/agents instead (the smoke app mounts shell.router alongside admin_agents.router for
+exactly this); assertions against the unconditional fragment endpoints (/_table,
+/{id}/_activity, /compute-lanes/{id}) are unaffected and unchanged.
 
 Uses a self-contained smoke-app fixture (mirrors test_pipeline_scans.py:46-78)
-that installs the admin_agents router on a bare FastAPI app and overrides
+that installs the admin_agents + shell routers on a bare FastAPI app and overrides
 get_session to use the project-wide session fixture.
 """
 
@@ -32,7 +39,7 @@ from sqlalchemy import select
 from phaze.constants import AGENT_LIVENESS_STALE_SECONDS
 from phaze.database import get_session
 from phaze.models.agent import Agent
-from phaze.routers import admin_agents
+from phaze.routers import admin_agents, shell
 from phaze.services.agent_liveness import sort_key
 
 
@@ -43,9 +50,16 @@ if TYPE_CHECKING:
 
 
 def _make_smoke_app(session: AsyncSession) -> FastAPI:
-    """Build a smoke FastAPI app mounting only admin_agents.router."""
+    """Build a smoke FastAPI app mounting admin_agents.router + shell.router.
+
+    phaze-uvmcr.4: shell.router is now REQUIRED here, not optional -- GET /admin/agents redirects
+    to /s/agents (shell.shell_stage), and the full-page content assertions throughout this module
+    hit /s/agents directly to exercise the SAME build_agents_pane_context() admin_agents.page()'s
+    redirect target used to build inline before this bead.
+    """
     app = FastAPI(title="admin-agents-smoke", version="test")
     app.include_router(admin_agents.router)
+    app.include_router(shell.router)
     app.dependency_overrides[get_session] = lambda: session
     return app
 
@@ -147,16 +161,23 @@ async def empty_smoke(session: AsyncSession) -> AsyncGenerator[AsyncClient]:
 
 
 @pytest.mark.asyncio
-async def test_page_renders_full_html(smoke: AsyncClient) -> None:
-    """GET /admin/agents returns the full page with base.html chrome."""
-    response = await smoke.get("/admin/agents")
+async def test_page_redirects_to_shell_pane(smoke: AsyncClient) -> None:
+    """GET /admin/agents 301s to /s/agents (phaze-uvmcr.4), unconditionally -- no query string here."""
+    response = await smoke.get("/admin/agents", follow_redirects=False)
+    assert response.status_code == 301
+    assert response.headers["location"] == "/s/agents"
+
+
+@pytest.mark.asyncio
+async def test_shell_pane_renders_full_shell_with_agents_table(smoke: AsyncClient) -> None:
+    """GET /s/agents renders the full shell (rail/header/status strip) with the agents table inside."""
+    response = await smoke.get("/s/agents")
     assert response.status_code == 200, response.text
     body = response.text
-    # Full-page chrome from base.html.
+    # Full-shell chrome (not the retired base.html nav -- the shell's own rail/header/skip-link).
     assert "<html" in body
-    assert "<nav" in body
-    # Page title from agents.html block.
-    assert "Agents - Phaze" in body or "Agents" in body
+    assert 'id="stage-workspace"' in body
+    assert 'data-stage="agents"' in body
     # The polling section is rendered.
     assert 'id="agents-table-section"' in body
     # The polling cadence + endpoint are wired correctly.
@@ -169,14 +190,14 @@ async def test_page_renders_full_html(smoke: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_htmx_request_returns_partial_only(smoke: AsyncClient) -> None:
-    """HX-Request: true on /admin/agents returns the partial, not the full page."""
-    response = await smoke.get("/admin/agents", headers={"HX-Request": "true"})
+async def test_htmx_request_to_shell_pane_returns_bare_fragment(smoke: AsyncClient) -> None:
+    """HX-Request: true on /s/agents (a rail swap) returns the bare fragment, not the full shell."""
+    response = await smoke.get("/s/agents", headers={"HX-Request": "true"})
     assert response.status_code == 200
     body = response.text
-    # Partial has no <html> chrome.
+    # Bare fragment: no shell chrome.
     assert "<html" not in body
-    assert "<nav" not in body
+    assert "<head" not in body
     # But the polling section IS present.
     assert 'id="agents-table-section"' in body
 
@@ -232,7 +253,7 @@ async def test_revoked_agent_absent(smoke: AsyncClient) -> None:
     non-revoked control (``AliveBox``) is present — proving the filter drops only revoked
     rows, not the whole table.
     """
-    for path in ("/admin/agents/_table", "/admin/agents"):
+    for path in ("/admin/agents/_table", "/s/agents"):
         response = await smoke.get(path)
         assert response.status_code == 200, response.text
         body = response.text
@@ -305,7 +326,7 @@ async def test_lane_rows_render_for_both_clusters_never_dead(
 
     app = _make_smoke_app(session)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        for path in ("/admin/agents", "/admin/agents/_table"):
+        for path in ("/s/agents", "/admin/agents/_table"):
             response = await ac.get(path)
             assert response.status_code == 200, response.text
             body = response.text
@@ -349,7 +370,7 @@ async def test_poll_partial_matches_full_page_for_the_merged_table(
 
     app = _make_smoke_app(session)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        full = (await ac.get("/admin/agents")).text
+        full = (await ac.get("/s/agents")).text
         partial = (await ac.get("/admin/agents/_table")).text
 
     full_order = _merged_row_order(full)
@@ -410,7 +431,7 @@ async def test_dedupe_registry_shadow_compute_row_suppressed_from_agent_row(shad
     The exact "shown twice" defect: the vox cluster must render as a live LANE row (registry-composed)
     but NOT ALSO sit as a perpetual-NEVER AGENT row — one identity, one row.
     """
-    for path in ("/admin/agents", "/admin/agents/_table"):
+    for path in ("/s/agents", "/admin/agents/_table"):
         response = await shadow_smoke.get(path)
         assert response.status_code == 200, response.text
         body = response.text
@@ -480,7 +501,7 @@ async def test_dedupe_cluster_id_represented_by_exactly_one_row_kind(shadow_smok
     renders ONLY as a lane row — proving the "shown twice" duplication is gone while the lane identity
     is preserved.
     """
-    response = await shadow_smoke.get("/admin/agents")
+    response = await shadow_smoke.get("/s/agents")
     body = response.text
     assert "agent-trigger-vox" not in body, "vox still duplicated into an agent row (shown twice)"
     assert 'id="compute-lane-trigger-vox"' in body, "vox lane identity lost"
@@ -582,7 +603,7 @@ async def test_deployed_k8s_rows_never_render_as_dead_agents(deployed_shape_smok
     ``k8s-vox`` diverges from its backend id and binds no agent_ref; ``k8s-xenolab``'s backend is absent
     from the registry entirely. Registry-keyed suppression misses both; kind-keyed suppression cannot.
     """
-    for path in ("/admin/agents", "/admin/agents/_table"):
+    for path in ("/s/agents", "/admin/agents/_table"):
         response = await deployed_shape_smoke.get(path)
         assert response.status_code == 200, response.text
         body = response.text
@@ -598,7 +619,7 @@ async def test_deployed_shape_agent_and_lane_rows_do_not_contradict_each_other(d
     "ACTIVE · 3 workloads" in the other. Post-merge that is two DIFFERENT ROWS disagreeing — the lane
     row keeps the lane; no agent row for it exists to contradict it.
     """
-    response = await deployed_shape_smoke.get("/admin/agents")
+    response = await deployed_shape_smoke.get("/s/agents")
     body = response.text
     assert "agent-trigger-k8s-vox" not in body, "the vox cluster is still represented by an agent row"
     assert 'id="compute-lane-trigger-vox"' in body, "the vox lane identity was lost"
@@ -627,11 +648,11 @@ async def test_deployed_shape_fileserver_agent_keeps_its_liveness(deployed_shape
 
 @pytest.mark.asyncio
 async def test_kind_badge_compute_renders(smoke: AsyncClient) -> None:
-    """Full-page GET /admin/agents renders the COMPUTE badge for a kind='compute' row.
+    """Full shell-hosted GET /s/agents renders the COMPUTE badge for a kind='compute' row.
 
     Palette + label + aria-label are LOCKED by 48-UI-SPEC §Component Contract.
     """
-    response = await smoke.get("/admin/agents")
+    response = await smoke.get("/s/agents")
     body = response.text
     assert "COMPUTE" in body
     assert "bg-indigo-100 dark:bg-indigo-950" in body
@@ -643,8 +664,8 @@ async def test_kind_badge_compute_renders(smoke: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_kind_badge_fileserver_renders(smoke: AsyncClient) -> None:
-    """Full-page GET /admin/agents renders the FILE SERVER badge for a kind='fileserver' row."""
-    response = await smoke.get("/admin/agents")
+    """Full shell-hosted GET /s/agents renders the FILE SERVER badge for a kind='fileserver' row."""
+    response = await smoke.get("/s/agents")
     body = response.text
     assert "FILE SERVER" in body
     assert "bg-slate-100" in body
@@ -722,16 +743,22 @@ async def test_sort_order(smoke: AsyncClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 3 BLOCKER-2 tests — UI-SPEC §Error / Failure-Tolerant Refresh LOCKED
+# BLOCKER-2 tests — UI-SPEC §Error / Failure-Tolerant Refresh LOCKED
+#
+# phaze-uvmcr.4 (H2): the htmx:responseError/htmx:sendError/htmx:afterSwap LISTENER moved out of
+# admin/agents.html (retired) into shell.html's own persistent bottom <script> -- outside
+# #stage-workspace, so a rail swap can never re-run it and stack a duplicate. The banner MARKUP
+# itself (role=alert, localStorage-driven Alpine footer) is untouched in agents_table.html. The
+# tests below pin BOTH halves of that split, plus the structural proof that the listener-attach
+# code is physically absent from every response shape that could otherwise re-run it (a rail-swap
+# fragment, a poll tick) -- which is what makes "exactly one attach, ever" true without a browser.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_page_includes_htmx_error_listener(smoke: AsyncClient) -> None:
-    """BLOCKER-2: UI-SPEC §Error / Failure-Tolerant Refresh LOCKED — the full
-    page must include the htmx:responseError + htmx:sendError listener that
-    writes localStorage `phaze:agents:lastError`."""
-    response = await smoke.get("/admin/agents")
+async def test_full_shell_load_includes_htmx_error_listener(smoke: AsyncClient) -> None:
+    """BLOCKER-2 (H2): a full shell load of /s/agents includes the listener, exactly once."""
+    response = await smoke.get("/s/agents")
     body = response.text
     assert "htmx:responseError" in body, "Missing htmx:responseError listener (BLOCKER-2)"
     assert "htmx:sendError" in body, "Missing htmx:sendError listener (BLOCKER-2)"
@@ -739,6 +766,62 @@ async def test_page_includes_htmx_error_listener(smoke: AsyncClient) -> None:
     assert "phaze:agents:lastError" in body, "Missing localStorage key (BLOCKER-2)"
     assert "localStorage.setItem" in body, "Listener must write to localStorage (BLOCKER-2)"
     assert "localStorage.removeItem" in body, "Recovery handler must clear localStorage (BLOCKER-2)"
+    # Exactly one registration per full load -- not stacked, not duplicated.
+    assert body.count("document.body.addEventListener('htmx:responseError'") == 1
+
+
+@pytest.mark.asyncio
+async def test_error_listener_is_shell_chrome_not_agents_pane_content(smoke: AsyncClient) -> None:
+    """H2: the listener lives OUTSIDE #stage-workspace -- it renders on every stage, not just agents.
+
+    Proves the relocation actually landed in shell chrome (shell.html) rather than merely moving
+    within the pane content: a full load of a COMPLETELY DIFFERENT stage (the Summary landing) must
+    carry the identical listener, because it is part of the shared shell every stage's full-document
+    response includes -- agents-specific only in the id it checks against, never in whether it is
+    present at all.
+    """
+    other_stage = await smoke.get("/")
+    assert "htmx:responseError" in other_stage.text
+    assert "phaze:agents:lastError" in other_stage.text
+
+
+@pytest.mark.asyncio
+async def test_rail_swap_fragment_never_reattaches_the_error_listener(smoke: AsyncClient) -> None:
+    """H2 (the core fix): a rail-swap fragment for /s/agents never carries the listener-attach code.
+
+    This is the structural guarantee behind "N navigations to the pane never produce N listeners":
+    the attach code is simply ABSENT from every response an htmx rail swap could ever receive, so
+    repeated navigation cannot stack a duplicate no matter how many times it happens. The banner
+    MARKUP itself must still be present -- only the ATTACH code is chrome-only.
+    """
+    response = await smoke.get("/s/agents", headers={"HX-Request": "true"})
+    body = response.text
+    assert "document.body.addEventListener" not in body, "the listener-attach script leaked into the rail-swap fragment (H2 regression)"
+    # The banner it drives is untouched and still renders inside the fragment.
+    assert 'role="alert"' in body
+    assert "Refresh failed" in body
+
+
+@pytest.mark.asyncio
+async def test_poll_partial_never_carries_the_error_listener(smoke: AsyncClient) -> None:
+    """The 5s poll partial (/_table) never re-attaches the listener either -- same H2 guarantee."""
+    response = await smoke.get("/admin/agents/_table")
+    assert "document.body.addEventListener" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_banner_still_works_after_arriving_via_a_rail_swap(smoke: AsyncClient) -> None:
+    """Acceptance rule 5: the BLOCKER-2 banner still appears on a genuine poll failure reached via a
+    rail swap. The banner is a self-contained Alpine component (agents_table.html) that reads
+    localStorage on its own 2s poll, independent of how the surrounding pane was reached -- this
+    pins that its markup (and the localStorage read it needs) is present in the rail-swap fragment
+    shape, not only the full-page shape.
+    """
+    response = await smoke.get("/s/agents", headers={"HX-Request": "true"})
+    body = response.text
+    assert "localStorage.getItem" in body, "banner must read localStorage even inside a rail-swap fragment"
+    assert "phaze:agents:lastError" in body
+    assert 'role="alert"' in body
 
 
 @pytest.mark.asyncio
@@ -773,7 +856,7 @@ async def test_partial_failure_footer_uses_role_alert(smoke: AsyncClient) -> Non
 
 @pytest.mark.asyncio
 async def test_saq_link_present_when_enable_saq_ui_true(smoke: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Full-page GET /admin/agents renders the discreet /saq footer link when enable_saq_ui is true.
+    """Full shell-hosted GET /s/agents renders the discreet /saq footer link when enable_saq_ui is true.
 
     The handler reads the flag via the ``get_settings()`` call-site, so we toggle it through the
     env var + lru_cache-clear idiom (the conftest autouse fixture also clears the cache per test).
@@ -784,7 +867,7 @@ async def test_saq_link_present_when_enable_saq_ui_true(smoke: AsyncClient, monk
     monkeypatch.setenv("PHAZE_ENABLE_SAQ_UI", "true")
     get_settings.cache_clear()
 
-    response = await smoke.get("/admin/agents")
+    response = await smoke.get("/s/agents")
     assert response.status_code == 200, response.text
     body = response.text
     assert 'href="/saq"' in body, "flag-gated /saq footer link must be present when enable_saq_ui is true"
@@ -794,7 +877,7 @@ async def test_saq_link_present_when_enable_saq_ui_true(smoke: AsyncClient, monk
 
 @pytest.mark.asyncio
 async def test_saq_link_absent_when_enable_saq_ui_false(smoke: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Full-page GET /admin/agents omits the /saq link when enable_saq_ui is false.
+    """Full shell-hosted GET /s/agents omits the /saq link when enable_saq_ui is false.
 
     When the flag is off, the ``/saq`` sub-app is not mounted (main.py), so the link must NOT
     render — otherwise it would dangle as a dead 404 (D-09 / T-66-07).
@@ -804,7 +887,7 @@ async def test_saq_link_absent_when_enable_saq_ui_false(smoke: AsyncClient, monk
     monkeypatch.setenv("PHAZE_ENABLE_SAQ_UI", "false")
     get_settings.cache_clear()
 
-    response = await smoke.get("/admin/agents")
+    response = await smoke.get("/s/agents")
     assert response.status_code == 200, response.text
     body = response.text
     assert 'href="/saq"' not in body, "the /saq link must be absent when enable_saq_ui is false (never a dead 404)"
@@ -832,7 +915,7 @@ async def test_router_registered_in_main_app() -> None:
 
 
 # ---------------------------------------------------------------------------
-# GET /admin/agents history-restore response shape (phaze-64uy)
+# GET /admin/agents history-restore response shape (phaze-64uy, superseded by phaze-uvmcr.4)
 #
 # admin/partials/agents_table.html sets hx-push-url="/admin/agents?agent=<id>" on each drill-in row
 # (DRILL-03 / D-02), so that URL enters browser history. A Back with the snapshot evicted from
@@ -840,11 +923,11 @@ async def test_router_registered_in_main_app() -> None:
 # HX-History-Restore-Request: true -- and on a restore htmx IGNORES hx-target and swaps the
 # response into <body>.
 #
-# This handler used to ask the question through a LOCAL ``_is_htmx`` helper that re-derived the
-# decision from the raw header, which routers/response_shape.py rule 1 bans outright for exactly
-# this reason: it answered the restore with the chrome-less agents_table partial, replacing the
-# whole admin page with a bare table. The helper is deleted; the shared ``wants_fragment`` predicate
-# is the only sanctioned way to ask.
+# phaze-uvmcr.4: GET /admin/agents is now an UNCONDITIONAL 301 redirect to /s/agents (no shape
+# branching left here at all -- see admin_agents.page()'s docstring for why no in-tree caller ever
+# issues a live htmx swap against this bare path). A restore request redirects exactly like a plain
+# one; the interesting assertion is that FOLLOWING that redirect lands on shell.shell_stage's real
+# full document, which is what response_shape.py rule 2 actually requires for a restore.
 # ---------------------------------------------------------------------------
 
 
@@ -852,28 +935,34 @@ _RESTORE_HEADERS = {"HX-Request": "true", "HX-History-Restore-Request": "true"}
 
 
 @pytest.mark.asyncio
-async def test_history_restore_returns_full_page_not_partial(smoke: AsyncClient) -> None:
-    """A history-restore GET /admin/agents returns the FULL page, chrome included.
-
-    Asserts the CHROME, not merely a 200 -- the buggy handler returned 200 with the partial, so a
-    status-only assertion passes against the bug.
-    """
-    response = await smoke.get("/admin/agents?agent=alive-agent", headers=_RESTORE_HEADERS)
-    assert response.status_code == 200
-    body = response.text
-    assert "<html" in body.lower(), "a history restore must return a full document, not the table partial"
-    assert 'aria-label="Main navigation"' in body, "the app nav must survive a history restore"
-    assert 'id="agents-table-section"' in body, "the polling section must still be present inside the page"
+async def test_history_restore_also_redirects_to_shell(smoke: AsyncClient) -> None:
+    """A history-restore GET /admin/agents redirects too -- not just a plain request."""
+    response = await smoke.get("/admin/agents?agent=alive-agent", headers=_RESTORE_HEADERS, follow_redirects=False)
+    assert response.status_code == 301
+    assert response.headers["location"] == "/s/agents?agent=alive-agent"
 
 
 @pytest.mark.asyncio
-async def test_restore_header_alone_returns_full_page(smoke: AsyncClient) -> None:
-    """The restore header dominates even without ``HX-Request`` (response_shape rule 2)."""
-    response = await smoke.get("/admin/agents", headers={"HX-History-Restore-Request": "true"})
+async def test_restore_header_alone_also_redirects(smoke: AsyncClient) -> None:
+    """The restore header dominates even without ``HX-Request`` (response_shape rule 2) -- still redirects."""
+    response = await smoke.get("/admin/agents", headers={"HX-History-Restore-Request": "true"}, follow_redirects=False)
+    assert response.status_code == 301
+    assert response.headers["location"] == "/s/agents"
+
+
+@pytest.mark.asyncio
+async def test_history_restore_redirect_lands_on_the_full_shell(smoke: AsyncClient) -> None:
+    """Following the restore redirect lands on the real full document, chrome included.
+
+    Asserts the CHROME, not merely a 200 -- a handler that answered with the bare table partial
+    would still pass a status-only assertion, which is exactly the phaze-64uy defect class.
+    """
+    response = await smoke.get("/admin/agents?agent=alive-agent", headers=_RESTORE_HEADERS, follow_redirects=True)
     assert response.status_code == 200
     body = response.text
-    assert "<html" in body.lower()
-    assert 'aria-label="Main navigation"' in body
+    assert "<html" in body.lower(), "a history restore must ultimately land on a full document, not a fragment"
+    assert 'id="stage-workspace"' in body, "the shell chrome must survive a history restore"
+    assert 'id="agents-table-section"' in body, "the polling section must still be present inside the page"
 
 
 @pytest.mark.asyncio
@@ -1288,8 +1377,8 @@ async def test_drill_in_push_url_keeps_the_sort(smoke: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_page_route_honours_and_survives_sort(smoke: AsyncClient) -> None:
-    """A full-page load carries the sort too, so a reload/bookmark reproduces the chosen order."""
-    body = (await smoke.get("/admin/agents", params={"sort": "name", "order": "desc"})).text
+    """A full shell-hosted load carries the sort too, so a reload/bookmark reproduces the chosen order."""
+    body = (await smoke.get("/s/agents", params={"sort": "name", "order": "desc"})).text
     assert "<html" in body.lower()
     assert _poll_vals(body) == {"sort": "name", "order": "desc"}
 
@@ -1527,13 +1616,13 @@ async def test_selected_compute_lane_opens_its_expanded_row(
     make_file,  # type: ignore[no-untyped-def]
     backends_toml_env,  # type: ignore[no-untyped-def]
 ) -> None:
-    """?clane=<id> on the full page opens that lane's EXPANDED ROW (deep-link/reload), agent-row shape."""
+    """?clane=<id> on /s/agents opens that lane's EXPANDED ROW (deep-link/reload), agent-row shape."""
     backends_toml_env(_TWO_CLUSTER_REGISTRY)
     await _seed_cloud_job(session, make_file, backend_id="vox")
 
     app = _make_smoke_app(session)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        response = await ac.get("/admin/agents", params={"clane": "vox"})
+        response = await ac.get("/s/agents", params={"clane": "vox"})
 
     assert response.status_code == 200, response.text
     body = response.text
@@ -1548,6 +1637,6 @@ async def test_selected_compute_lane_opens_its_expanded_row(
 @pytest.mark.asyncio
 async def test_unknown_clane_query_param_highlights_nothing(smoke: AsyncClient) -> None:
     """An unresolvable ?clane= (T-88-01 lookup-in-known-set) highlights no lane and opens nothing."""
-    response = await smoke.get("/admin/agents", params={"clane": "__hostile__"})
+    response = await smoke.get("/s/agents", params={"clane": "__hostile__"})
     assert response.status_code == 200, response.text
     assert 'aria-current="true"' not in response.text

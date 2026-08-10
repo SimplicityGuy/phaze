@@ -1,70 +1,53 @@
-{% extends "base.html" %}
-{% block title %}Agents - Phaze{% endblock %}
-{% block skip_link %}
-<a href="#agents-table-section" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-blue-600 dark:bg-blue-700 focus:text-white focus:px-4 focus:py-2 focus:rounded focus:z-50">Skip to agents table</a>
-{% endblock %}
-{% block content %}
-<div class="space-y-6">
-    <h1 class="text-2xl font-semibold leading-tight">Agents</h1>
-    <p class="text-sm text-gray-500 dark:text-gray-400">
-        Live status of every heartbeating file-server agent and every ephemeral k8s burst lane, in one table. Refreshes every 5 seconds.
+{# phaze-uvmcr.4: the Compute/Agents content, converted from a base.html-extending full page
+   (the old {% extends "base.html" %} fork) into a content-only partial hosted by the shell at
+   /s/agents (routers/shell.py UTILITY_PANES["agents"], superseding the retired
+   shell/partials/agents_placeholder.html). GET /admin/agents (routers/admin_agents.py) now
+   301-redirects here, preserving its query string -- ?agent=/?clane=/?sort=/?order= all ride
+   along, which is what phaze-rdxfu's ?clane= deep-link acceptance depends on. The fragment
+   endpoints this pane still polls/drills into -- /admin/agents/_table, the 5s poll target,
+   /admin/agents/{id}/_activity, /admin/agents/compute-lanes/{backend_id} -- are UNCHANGED and stay
+   mounted under /admin/agents; they are swap targets, not bookmarkable pages, and moving them
+   would multiply this bead's diff for no operator-visible gain.
+
+   H2 (the crux of this bead): the retired page used to attach the BLOCKER-2
+   htmx:responseError/htmx:sendError/htmx:afterSwap listener in an inline <script> that ran once at
+   full-page load. Inside a rail-swapped fragment that script would either never run (htmx does not
+   execute every swap the way a full document load does) or run AGAIN on every visit, stacking a
+   duplicate document.body listener that never detaches. The listener now lives in shell.html's own
+   persistent bottom <script> -- the same seam that already owns htmx:historyRestore /
+   htmx:afterSwap / htmx:oobBeforeSwap for the whole shell -- so it attaches exactly ONCE, on the
+   one full-document load per session, and survives every #stage-workspace swap untouched because it
+   lives OUTSIDE that element (mirroring the cmdk modal / record host pattern at
+   shell.html:232-239). It tolerates the pane being unmounted: it only acts when the swapped htmx
+   target's id is agents-table-section, which is simply absent from the DOM on every other stage.
+
+   The BLOCKER-2 v1-LOCKED red "Refresh failed" banner MARKUP itself is untouched here -- it still
+   lives in admin/partials/agents_table.html (a self-contained Alpine component that reads
+   localStorage on its own 2s poll), so it renders correctly and stays live whether this pane
+   arrived via a full shell load or a rail swap.
+
+   Composes the shared _workspace_scaffold.html rather than hand-rolled markup: the scaffold's
+   single <h1 tabindex="-1"> is the focus target the shell's post-swap handler requires on every
+   navigable node (contract rule 9: this template carries no {% extends %} and no document-level
+   tags), and it includes _workspace_poll_seeds.html so the shell's one persistent /pipeline/stats
+   poll has landing targets here too, exactly like every other UTILITY_PANES/STAGE_PARTIALS host. #}
+{% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% call ws.workspace(title="COMPUTE / AGENTS") %}
+    <div class="px-6 pt-4">
+        <p class="text-sm text-gray-500 dark:text-gray-400">
+            Live status of every heartbeating file-server agent and every ephemeral k8s burst lane, in one table. Refreshes every 5 seconds.
+        </p>
+    </div>
+    <div class="p-6">
+        {% include "admin/partials/agents_table.html" %}
+    </div>
+    {% if enable_saq_ui %}
+    {# CLEAN-01 (D-09/D-10/D-11): discreet flag-gated footer link to the still-mounted /saq SAQ
+       monitor. Gated on enable_saq_ui -- the SAME flag that gates the /saq mount (main.py) -- so it
+       never dangles as a 404. Low visual weight (muted palette). Opens in a new tab with
+       rel="noopener" to prevent reverse-tabnabbing (T-66-05). #}
+    <p class="px-6 pb-6 text-xs text-gray-400 dark:text-gray-500">
+        <a href="/saq" target="_blank" rel="noopener" class="hover:underline">SAQ monitor ↗</a>
     </p>
-    {# phaze-rdxfu: the former two-panel layout — Section 1 "Agents · heartbeating" (a sortable TABLE
-       whose detail was an EXPANDED ROW) and Section 2 "Compute / burst lanes · ephemeral" (a CARD GRID
-       whose detail was a dedicated side panel, admin/partials/_compute_lane_pane.html) — gave one
-       operator question ("what is this worker doing right now?") two different answers depending on
-       whether the worker heartbeats. Every burst lane now renders as a ROW in the SAME table
-       (admin/partials/agents_table.html, driven by admin_agents._build_table_rows's unified
-       `TableRow` view-model) and every drill-in, agent or lane, opens the SAME expanded-row shape
-       (_agent_detail_row.html / _compute_lane_detail_row.html) — full table width, never a side panel.
-       admin/partials/_compute_lane_pane.html is DELETED; this page no longer includes it or references
-       #compute-lane-pane (test_compute_lane_pane_partial_deleted_and_not_wired_back pins both).
-
-       The Analyze workspace's lane CARDS (/s/analyze, pipeline/partials/_lane_card.html +
-       _detail_pane.html) are unaffected and out of scope — a card grid's own drill-down is correctly a
-       pop-out side panel, unlike this table's rows (test_agent_expanded_row.py locks THIS page to
-       never wire that shared file/variable back in either). #}
-    {% include "admin/partials/agents_table.html" %}
-</div>
-
-{# CLEAN-01 (D-09/D-10/D-11): discreet flag-gated footer link to the still-mounted /saq SAQ
-   monitor. Gated on enable_saq_ui — the SAME flag that gates the /saq mount (main.py) — so it
-   never dangles as a 404. Low visual weight (muted palette). Opens in a new tab with
-   rel="noopener" to prevent reverse-tabnabbing (T-66-05). #}
-{% if enable_saq_ui %}
-<p class="mt-6 text-xs text-gray-400 dark:text-gray-500">
-    <a href="/saq" target="_blank" rel="noopener" class="hover:underline">SAQ monitor ↗</a>
-</p>
-{% endif %}
-
-{# BLOCKER-2 (MANDATORY): UI-SPEC §Error / Failure-Tolerant Refresh — status: approved.
-   Attaches once at page load. Writes localStorage `phaze:agents:lastError` ISO timestamp
-   on htmx:responseError or htmx:sendError targeting #agents-table-section. Clears the
-   key on a successful htmx:afterSwap so transient failures do not pin the red banner.
-   localStorage calls are wrapped in try/catch so private-mode / quota errors degrade
-   silently (T-29-07-10 mitigation). #}
-<script>
-(function() {
-    const TARGET_ID = 'agents-table-section';
-    const STORAGE_KEY = 'phaze:agents:lastError';
-
-    function isOurTarget(evt) {
-        const target = evt.detail && evt.detail.target;
-        return target && target.id === TARGET_ID;
-    }
-    function recordFailure(evt) {
-        if (!isOurTarget(evt)) return;
-        try { localStorage.setItem(STORAGE_KEY, new Date().toISOString()); }
-        catch (e) { /* private-mode/quota: degrade silently */ }
-    }
-    function clearFailureOnSuccess(evt) {
-        if (!isOurTarget(evt)) return;
-        try { localStorage.removeItem(STORAGE_KEY); }
-        catch (e) { /* ignore */ }
-    }
-    document.body.addEventListener('htmx:responseError', recordFailure);
-    document.body.addEventListener('htmx:sendError', recordFailure);
-    document.body.addEventListener('htmx:afterSwap', clearFailureOnSuccess);
-})();
-</script>
-{% endblock %}
+    {% endif %}
+{% endcall %}

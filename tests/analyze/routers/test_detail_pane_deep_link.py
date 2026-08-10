@@ -41,7 +41,7 @@ import pytest_asyncio
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
-from phaze.routers import admin_agents
+from phaze.routers import admin_agents, shell
 
 
 if TYPE_CHECKING:
@@ -94,12 +94,18 @@ async def _seed_file(session: AsyncSession) -> None:
 
 @pytest_asyncio.fixture
 async def smoke(session: AsyncSession) -> AsyncGenerator[AsyncClient]:
-    """Smoke client over admin_agents.router alone, seeding one agent with a known id."""
+    """Smoke client over admin_agents.router + shell.router, seeding one agent with a known id.
+
+    phaze-uvmcr.4: shell.router is REQUIRED here now -- GET /admin/agents 301-redirects to
+    /s/agents (shell.shell_stage), which is where the full-page ``?agent=``/``?clane=`` deep-link
+    assertions below now resolve.
+    """
     session.add(Agent(id=AGENT_ID, name="DeepLinkBox", scan_roots=["/data/music"], last_seen_at=datetime.now(UTC), kind="compute"))
     await session.commit()
 
     app = FastAPI(title="detail-pane-deep-link-smoke", version="test")
     app.include_router(admin_agents.router)
+    app.include_router(shell.router)
     app.dependency_overrides[get_session] = lambda: session
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
@@ -200,7 +206,7 @@ async def test_agent_deep_link_loads_the_activity_body(smoke: AsyncClient) -> No
     wiring rather than the whole page body, which legitimately carries the shared shell's
     ``id="detail-pane"`` swap target for that unrelated caller.
     """
-    response = await smoke.get("/admin/agents", params={"agent": AGENT_ID})
+    response = await smoke.get("/s/agents", params={"agent": AGENT_ID})
     assert response.status_code == 200, response.text
     body = response.text
 
@@ -219,7 +225,7 @@ async def test_agent_deep_link_loads_the_activity_body(smoke: AsyncClient) -> No
 @pytest.mark.asyncio
 async def test_unknown_agent_param_emits_no_expanded_row(smoke: AsyncClient) -> None:
     """An unknown ?agent highlights nothing and renders no expanded row at all."""
-    response = await smoke.get("/admin/agents", params={"agent": "no-such-agent"})
+    response = await smoke.get("/s/agents", params={"agent": "no-such-agent"})
     assert response.status_code == 200, response.text
     assert "agent-detail-row-" not in response.text
     assert "agent-activity-" not in response.text
@@ -228,7 +234,7 @@ async def test_unknown_agent_param_emits_no_expanded_row(smoke: AsyncClient) -> 
 @pytest.mark.asyncio
 async def test_no_agent_param_emits_no_expanded_row(smoke: AsyncClient) -> None:
     """Without ?agent the table renders no expanded row — no fetch, no chrome."""
-    response = await smoke.get("/admin/agents")
+    response = await smoke.get("/s/agents")
     assert response.status_code == 200, response.text
     assert "agent-detail-row-" not in response.text
     assert "agent-activity-" not in response.text
