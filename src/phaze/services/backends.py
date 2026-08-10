@@ -340,11 +340,11 @@ async def flush_pending_push_file_enqueues(session: AsyncSession) -> int:
 
     MUST be called ONLY after the caller has committed the ``cloud_job`` SUBMITTED row(s) the parked
     jobs depend on, so the worker-visible side effect can never precede its committed row. Best-effort
-    per item: an enqueue failure leaves that file's row committed-but-SUBMITTED (a row a future
-    compute-lane safety net would need to reap; today's callback-only reconcile does not, matching
-    ``ComputeAgentBackend.reconcile``'s documented no-op), and must not block the remaining enqueues.
-    The list is popped up front so a partial flush never double-fires. Mirrors
-    ``cloud_staging.flush_pending_s3_enqueues``.
+    per item: an enqueue failure leaves that file's row committed-but-SUBMITTED, a row
+    :meth:`ComputeAgentBackend._reap_stranded_submitted` (phaze-j7m18) now reaps once
+    ``cloud_submitted_stale_after_sec`` elapses with no live ``push_file:<file_id>`` broker key -- and
+    must not block the remaining enqueues. The list is popped up front so a partial flush never
+    double-fires. Mirrors ``cloud_staging.flush_pending_s3_enqueues``.
     """
     pending: list[_PendingPushFileEnqueue] = session.info.pop(_PENDING_PUSH_FILE_ENQUEUE_KEY, [])
     fired = 0
@@ -534,8 +534,10 @@ class ComputeAgentBackend(_BaseBackend):
 
     ``is_available`` re-homes GATE-1 (``release_awaiting_cloud`` L145-150): True iff a compute agent is
     online. ``dispatch`` owns a NEW in-txn ``cloud_job`` write (Pitfall 1 / D-03) then PARKS the
-    ``push_file`` enqueue (phaze-s5sz, :func:`_park_push_file_enqueue`). ``reconcile`` is a no-op --
-    compute terminalization is the existing ``/pushed`` callback path (§4.2, D-08).
+    ``push_file`` enqueue (phaze-s5sz, :func:`_park_push_file_enqueue`). Compute terminalization is
+    PRIMARILY the existing ``/pushed``/``/mismatch``/``/failed`` callback path (§4.2, D-08); ``reconcile``
+    (phaze-j7m18) is the age-bounded safety net for a row those callbacks never reach --
+    :meth:`_reap_stranded_submitted`, the compute twin of ``KueueBackend._reap_stranded_staging``.
     ``in_flight_count`` is inherited from :class:`_BaseBackend` (the D-02 substrate).
 
     Phase 72 (MCOMP-01/D-02): ``is_available`` resolves THIS backend's bound ``agent_ref``
@@ -607,10 +609,12 @@ class ComputeAgentBackend(_BaseBackend):
         worker-visible BEFORE the drain's post-loop commit landed this SUBMITTED row. ``report_pushed``'s
         ONLY guard is ``cloud_job.status == 'submitted'`` (SC#1/D-12); under READ COMMITTED that fast
         callback saw the row's PREVIOUS committed status (typically 'awaiting'), matched 0 rows, and took
-        the idempotent-no-op hold FOREVER -- nothing else owns recovery for an in-flight cloud_job
-        (``ComputeAgentBackend.reconcile`` is a documented no-op; ``recover_orphaned_work`` excludes any
-        file carrying an in-flight ``cloud_job`` row on the premise that the ``/pushed`` callback owns
-        it). Parking the enqueue removes it from the transaction entirely, so the drain fires it via
+        the idempotent-no-op hold FOREVER -- at the time nothing else owned recovery for an in-flight
+        cloud_job (``ComputeAgentBackend.reconcile`` was a documented no-op; ``recover_orphaned_work``
+        excludes any file carrying an in-flight ``cloud_job`` row on the premise that the ``/pushed``
+        callback owns it -- phaze-j7m18 later added ``reconcile``'s age-bounded
+        :meth:`_reap_stranded_submitted` as the backstop for exactly this class of lost callback).
+        Parking the enqueue removes it from the transaction entirely, so the drain fires it via
         ``flush_pending_push_file_enqueues`` ONLY AFTER the single post-loop commit -- the worker-visible
         job can never precede the committed row it reads. Because the enqueue is no longer in the
         transaction, the ``session.begin_nested()`` SAVEPOINT phaze-uciu.3 added to protect it is dead
@@ -660,9 +664,137 @@ class ComputeAgentBackend(_BaseBackend):
         _park_push_file_enqueue(session, _PendingPushFileEnqueue(queue=push_queue, enqueue_kwargs=enqueue_kwargs))
         return True
 
-    async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> dict[str, int] | None:  # noqa: ARG002 -- protocol signature; compute terminalizes via the /pushed callback
-        """No-op: compute terminalization is the existing ``/pushed`` callback path (§4.2, D-08), not a cron read."""
-        return None
+    async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> dict[str, int]:  # noqa: ARG002 -- protocol signature; the cloud_job read itself is compute's only cron work
+        """Reap THIS backend's age-stranded SUBMITTED rows (phaze-j7m18); compute has no Job/Workload to reconcile.
+
+        Compute's ONLY in-flight status is SUBMITTED (D-08, D-10) and it is terminalized SOLELY by the
+        ``/pushed``/``/mismatch``/``/failed`` agent HTTP callbacks -- there is no Kueue Job/Workload for
+        this cron to read against, unlike :meth:`KueueBackend.reconcile`. That made this method a
+        documented no-op, on the premise the callback path always eventually fires. It does not: a dead
+        fileserver agent host mid-rsync, or an enqueue failure in
+        :func:`flush_pending_push_file_enqueues` (its own docstring names the gap), leaves the row
+        SUBMITTED forever with no callback ever coming -- permanently consuming a lane cap slot, the
+        same "N/N busy with zero real workloads" failure :meth:`KueueBackend._reap_stranded_staging`
+        (phaze-ul2v) fixed for the staging half. :meth:`_reap_stranded_submitted` is that mechanism's
+        compute twin.
+        """
+        tally = {"submitted_reaped": 0}
+        await self._reap_stranded_submitted(session, tally)
+        return tally
+
+    async def _reap_stranded_submitted(self, session: AsyncSession, tally: dict[str, int]) -> None:
+        """Spill THIS backend's age-stranded SUBMITTED ``cloud_job`` rows back to awaiting (phaze-j7m18).
+
+        Mirrors :meth:`KueueBackend._reap_stranded_staging` exactly, narrowed to compute's single
+        in-flight status and its owning callback:
+
+        0. **The broker-liveness gate, checked FIRST.** Skip any row whose ``push_file:<file_id>``
+           broker key is still ``queued``/``active`` in ``saq_jobs`` (:func:`get_live_job_keys`, the
+           same probe recovery uses). A live key means the ``push_file`` SAQ job (and its eventual
+           ``/pushed``/``/mismatch``/``/failed`` callback) still owns the row regardless of age -- a
+           multi-GB rsync over a slow link legitimately runs for hours and bumps no timestamp while it
+           transfers, so age alone cannot distinguish a live push from a lost one.
+        1. **The age bound** (:attr:`ControlSettings.cloud_submitted_stale_after_sec`). A row is a
+           candidate only once ``now - updated_at`` exceeds it. The coarse backstop for when even the
+           broker row is gone (a lost/swept job, or an enqueue that never landed one at all).
+        2. **The CAS.** The spill goes through the single awaiting writer (:func:`hold_awaiting_cloud`)
+           in SPILL mode with ``expect_status=('submitted',)``. A callback that lands between our read
+           and our update advances the row out of SUBMITTED, the CAS matches 0 rows, and the reaper
+           takes a FULL no-op -- the happy path always wins the race, by construction.
+
+        ``clear_cloud_phase`` stays ``False``: ``cloud_phase`` is a Kueue-only field (queued_behind_quota
+        / admitted / running / finished, D-05) that ``ComputeAgentBackend.dispatch`` never sets, so there
+        is nothing to clear (mirrors the push-spill branches in ``routers/agent_push.py``, which also
+        leave it untouched). No S3 cleanup either -- compute's ``cloud_job`` carries no S3 object
+        (``s3_key`` is NULL, D-08); the only durable side effect to undo is the ``push_file:<file_id>``
+        scheduling-ledger row, cleared exactly like ``report_push_failed``'s spill.
+
+        Re-drive is bounded exactly like the staging reaper: each reap increments ``cloud_job.attempts``
+        (capped at ``cloud_submit_max_attempts``), so a file that strands repeatedly reaches a spent
+        budget and ``select_backend`` routes it to local instead of re-stranding on compute.
+
+        Per-row discipline mirrors :meth:`KueueBackend._reap_stranded_staging`: the drain's
+        ``pg_advisory_xact_lock`` is taken at the top of each row's unit of work, each row commits on its
+        own, and a per-row ``except`` rolls back so one bad row never aborts the tick.
+        """
+        cfg = cast("ControlSettings", get_settings())
+        now = datetime.now(UTC)
+        rows = (
+            (
+                await session.execute(
+                    select(CloudJob).where(
+                        CloudJob.status == CloudJobStatus.SUBMITTED.value,
+                        CloudJob.backend_id == self.id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        # Capture primitive ids only: the per-row rollback expires the ORM identity map, so every row is
+        # re-read fresh INSIDE the loop against the fresh state (mirrors the staging reaper).
+        cloud_job_ids = [row.id for row in rows]
+
+        # phaze-j7m18 (mirrors phaze-31q3): snapshot the live-broker key set ONCE per sweep (degrade-safe
+        # -- an empty set on any read failure falls the reaper back to age-only, never raising).
+        live_keys = await get_live_job_keys(session)
+
+        for cloud_job_id in cloud_job_ids:
+            try:
+                await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY})
+                # phaze-7lpb discipline: force a real re-read under the lock rather than the sweep-start
+                # identity-mapped object (the sessionmaker is expire_on_commit=False).
+                cloud_job = await session.get(CloudJob, cloud_job_id, populate_existing=True)
+                if cloud_job is None or cloud_job.status != CloudJobStatus.SUBMITTED.value:
+                    # A callback terminalized/advanced it since the snapshot -- nothing to reap.
+                    await session.rollback()
+                    continue
+                file_id = cloud_job.file_id
+                live_key = f"push_file:{file_id}"
+                if live_key in live_keys:
+                    # A queued/active push_file job (and its eventual callback) still owns this row.
+                    await session.rollback()
+                    continue
+                # ``updated_at`` is TIMESTAMP WITHOUT TIME ZONE, so asyncpg hands it back NAIVE in
+                # production; assume-UTC before subtracting (mirrors the staging reaper's coercion).
+                ref = cloud_job.updated_at or cloud_job.created_at
+                if ref.tzinfo is None:
+                    ref = ref.replace(tzinfo=UTC)
+                age_sec = (now - ref).total_seconds()
+                if age_sec < cfg.cloud_submitted_stale_after_sec:
+                    # YOUNGER THAN THE BOUND: the callback owns this row. Never fire here.
+                    await session.rollback()
+                    continue
+                # Bounded re-drive: each reap spends one attempt; at the cap select_backend routes local.
+                attempts = min(cloud_job.attempts + 1, cfg.cloud_submit_max_attempts)
+                file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
+                spilled = file is not None and await hold_awaiting_cloud(
+                    session,
+                    file,
+                    attempts=attempts,
+                    expect_status=(CloudJobStatus.SUBMITTED.value,),
+                )
+                if not spilled:
+                    # Lost the race to a live callback (or the FK file vanished): FULL no-op.
+                    await session.rollback()
+                    continue
+                await clear_ledger_entry(session, f"push_file:{file_id}")
+                await session.commit()
+                tally["submitted_reaped"] += 1
+                logger.warning(
+                    "ComputeAgentBackend.reconcile: stranded SUBMITTED cloud_job reaped -> spilled back to awaiting (lost agent callback)",
+                    cloud_job_id=str(cloud_job_id),
+                    file_id=str(file_id),
+                    backend_id=self.id,
+                    age_sec=int(age_sec),
+                    bound_sec=cfg.cloud_submitted_stale_after_sec,
+                    attempts=attempts,
+                )
+            except Exception:
+                await session.rollback()
+                logger.warning(
+                    "ComputeAgentBackend.reconcile: stranded SUBMITTED reap failed; continuing", cloud_job_id=str(cloud_job_id), exc_info=True
+                )
 
 
 class KueueBackend(_BaseBackend):
@@ -1181,6 +1313,21 @@ async def _probe_one(session: AsyncSession, backend: Backend) -> tuple[str, bool
     by ``_PROBE_TIMEOUT_SEC``; a timeout OR any probe exception degrades THAT lane to offline and logs the
     ``backend_id`` ONLY (never a SecretStr / kube token, T-71-01). A single hung Kueue cluster can
     therefore never stall the shared read (T-71-02).
+
+    phaze-ntr8s: a compute probe's DB read (``select_agent_by_id`` -> ``session.execute``) cancelled
+    mid-flight by the ``asyncio.wait_for`` timeout can leave the SHARED session unusable for the next
+    statement -- SQLAlchemy raises ``PendingRollbackError`` on the following ``execute`` until the
+    session is rolled back. ``_probe_availability`` runs every backend's probe SEQUENTIALLY on this ONE
+    session (Pitfall 1), so without an immediate roll back HERE that poison outlives this probe: the very
+    next backend's probe (or, for a Kueue probe that ignores the session, whichever LATER probe next
+    touches it) inherits a broken session and fails immediately -- a single slow compute lane cascading
+    every SUBSEQUENT lane in the SAME sweep to a false "offline", which then reports a false "no cloud
+    backend reachable" hold reason for a transient DB blip that has nothing to do with reachability. Roll
+    back HERE, inside the per-probe except, not just once after the whole fan-out (the pre-existing
+    post-fan-out rollback in :func:`get_backend_lane_snapshot` only protected the NEXT poll's snapshot,
+    never a sibling lane within THIS one). ``session.rollback()`` is a safe no-op when there is nothing to
+    roll back, and any failure rolling back is itself swallowed -- a cleanup failure must never mask the
+    real probe failure this branch is already reporting.
     """
     if isinstance(backend, LocalBackend):
         return (backend.id, True)
@@ -1188,6 +1335,10 @@ async def _probe_one(session: AsyncSession, backend: Backend) -> tuple[str, bool
         available = await asyncio.wait_for(backend.is_available(session), _PROBE_TIMEOUT_SEC)
     except Exception:
         logger.info("backend_lane_probe_offline", backend_id=backend.id)
+        try:
+            await session.rollback()
+        except Exception:
+            logger.warning("backend_lane_probe_rollback_failed", backend_id=backend.id, exc_info=True)
         return (backend.id, False)
     return (backend.id, bool(available))
 
@@ -1201,13 +1352,15 @@ async def _probe_availability(session: AsyncSession, backends: list[Backend]) ->
     single-active-compute assumption, N≥2 compute backends are legal and each compute probe touches the
     shared ``session`` via ``select_agent_by_id`` (``session.execute``); serializing the fan-out guarantees
     those ``session.execute`` calls can never overlap (SQLAlchemy forbids concurrent operations on one
-    session). Each ``_probe_one`` is individually capped by ``asyncio.wait_for(..., _PROBE_TIMEOUT_SEC)``;
-    because the probes now run one at a time the worst-case aggregate wait is ``N x _PROBE_TIMEOUT_SEC``
-    (not the old ``asyncio.gather`` ~1x bound) -- a deliberate D-01 trade-off, acceptable because N is small
-    (registry-declared local + N-Kueue + N-compute) and session-safety takes priority over probe latency on
-    the 5s ``/pipeline/stats`` poll. The post-fan-out ``session.rollback`` in
-    :func:`get_backend_lane_snapshot` clears any single-probe DB poison before the ``in_flight_count``
-    reads. Kueue probes ignore the session (kr8s I/O) and local is short-circuited (no I/O).
+    session). Each ``_probe_one`` is individually capped by ``asyncio.wait_for(..., _PROBE_TIMEOUT_SEC)``
+    AND rolls the session back itself on a timeout/exception (phaze-ntr8s), so one poisoned probe can
+    never cascade to the NEXT backend probed in this same loop. Because the probes now run one at a time
+    the worst-case aggregate wait is ``N x _PROBE_TIMEOUT_SEC`` (not the old ``asyncio.gather`` ~1x
+    bound) -- a deliberate D-01 trade-off, acceptable because N is small (registry-declared local +
+    N-Kueue + N-compute) and session-safety takes priority over probe latency on the 5s
+    ``/pipeline/stats`` poll. The post-fan-out ``session.rollback`` in :func:`get_backend_lane_snapshot`
+    is retained as a second, harmless line of defense before the ``in_flight_count`` reads. Kueue probes
+    ignore the session (kr8s I/O) and local is short-circuited (no I/O).
     """
     results: dict[str, bool] = {}
     for backend in backends:

@@ -773,11 +773,14 @@ async def reconcile_cloud_jobs(ctx: dict[str, Any]) -> dict[str, int]:
     The ``*/5`` cron body (D-01/D-03), Phase-69 SCHED-05 form: dispatch reconcile PER-BACKEND
     (``for b in resolve_backends(cfg): await b.reconcile(session, ctx)``) instead of a single global
     ``select(CloudJob WHERE status IN {SUBMITTED, RUNNING})`` query. Removing that global un-scoped query
-    closes the double-owner vector: a compute ``cloud_job`` row is now touched ONLY by its ``/pushed``
-    callback (Compute/Local ``reconcile`` are no-ops); the Kueue rows are owned by ``KueueBackend.reconcile``
-    (backend_id-scoped, per-row advisory-locked). Each backend's tally is aggregated into the cron's
-    return dict (same shape); the per-row guard + delete-after-record ordering + "never raise out of the
-    cron" discipline live inside each backend's ``reconcile`` (KSUBMIT-03: still never writes a result).
+    closes the double-owner vector: a compute ``cloud_job`` row's PRIMARY terminalization stays its
+    ``/pushed``/``/mismatch``/``/failed`` callback path -- ``ComputeAgentBackend.reconcile`` only reaps
+    the AGE-STRANDED rows those callbacks never reach (phaze-j7m18); ``LocalBackend.reconcile`` stays a
+    genuine no-op (local completion is synchronous). The Kueue rows are owned by
+    ``KueueBackend.reconcile`` (backend_id-scoped, per-row advisory-locked). Each backend's tally is
+    aggregated into the cron's return dict (same shape); the per-row guard + delete-after-record
+    ordering + "never raise out of the cron" discipline live inside each backend's ``reconcile``
+    (KSUBMIT-03: still never writes a result).
 
     ``resolve_backends`` is imported FUNCTION-LOCALLY (deferred) because ``services.backends`` does a
     module-top ``from phaze.tasks.reconcile_cloud_jobs import _reconcile_one`` -- a module-top import
@@ -791,7 +794,7 @@ async def reconcile_cloud_jobs(ctx: dict[str, Any]) -> dict[str, int]:
     async with ctx["async_session"]() as session:
         for backend in resolve_backends(cfg):
             backend_tally = await backend.reconcile(session, ctx)
-            # Kueue returns its per-backend tally; Local/Compute reconcile are no-ops (None). Aggregate.
+            # Kueue and Compute return per-backend tallies; Local's reconcile is a genuine no-op (None).
             if backend_tally:
                 for key, value in backend_tally.items():
                     tally[key] = tally.get(key, 0) + value

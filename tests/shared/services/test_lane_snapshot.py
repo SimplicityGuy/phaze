@@ -248,6 +248,84 @@ async def test_probe_reports_backend_availability() -> None:
     assert await _probe_one(None, _FastBackend("k8s", available=False)) == ("k8s", False)  # type: ignore[arg-type]
 
 
+class _RollbackTrackingPoisonSession:
+    """Tracks ``rollback`` calls; ``execute`` (via ``is_available``) is what a probe would poison."""
+
+    def __init__(self) -> None:
+        self.rollback_count = 0
+
+    async def rollback(self) -> None:
+        self.rollback_count += 1
+
+
+@pytest.mark.asyncio
+async def test_probe_one_rolls_back_the_session_on_a_failed_probe() -> None:
+    """phaze-ntr8s: ``_probe_one`` clears the poison it may have caused BEFORE returning.
+
+    A compute probe's cancelled/failed DB read can leave the shared session unusable for the very next
+    statement. The failing branch must roll back immediately -- not rely on some later, one-time
+    cleanup -- so a SEQUENCE of probes on the same session (``_probe_availability``) never inherits a
+    poisoned session from an earlier lane in the SAME sweep.
+    """
+    session = _RollbackTrackingPoisonSession()
+    result = await _probe_one(session, _RaisingBackend("k8s-bad"))  # type: ignore[arg-type]
+
+    assert result == ("k8s-bad", False)
+    assert session.rollback_count == 1
+
+
+@pytest.mark.asyncio
+async def test_probe_one_swallows_a_rollback_failure_after_a_failed_probe() -> None:
+    """A rollback failure in the cleanup branch must never mask the original probe failure (degrade-safe)."""
+
+    class _RollbackAlsoFailsSession:
+        async def rollback(self) -> None:
+            raise RuntimeError("rollback boom")
+
+    result = await _probe_one(_RollbackAlsoFailsSession(), _RaisingBackend("k8s-bad"))  # type: ignore[arg-type]
+    assert result == ("k8s-bad", False)  # the probe failure still degrades cleanly, no raise
+
+
+class _CascadeVictimLane:
+    """A backend whose ``is_available`` fails IFF the shared session is (still) poisoned.
+
+    Models a sibling compute probe's own DB read failing on an already-aborted session -- the exact
+    cascade phaze-ntr8s describes: backend A's cancelled probe poisons the session, and backend B's
+    UNRELATED, otherwise-healthy probe immediately fails too because nothing rolled back in between.
+    """
+
+    def __init__(self, backend_id: str, rank: int) -> None:
+        self.id = backend_id
+        self.rank = rank
+        self.cap = 1
+
+    async def is_available(self, session: _PoisonRecoverSession) -> bool:
+        if session.poisoned:
+            raise RuntimeError("query failed: current transaction is aborted")
+        return True
+
+
+@pytest.mark.asyncio
+async def test_probe_availability_isolates_a_poisoned_probe_from_the_next_sibling_lane() -> None:
+    """phaze-ntr8s ACCEPTANCE: a poisoned probe must NOT cascade to the NEXT lane in the same sweep.
+
+    ``_probe_availability`` runs every backend's probe SEQUENTIALLY on ONE shared session (Pitfall 1).
+    Pre-fix, ``_probe_one`` never rolled back on its own failure -- only a rollback AFTER the whole
+    fan-out cleared the poison, which is too late for a sibling probed WITHIN this same sweep. Ordering
+    the poisoning lane FIRST and a lane that only fails while the session is poisoned SECOND reproduces
+    exactly that: without the per-probe rollback, the second (otherwise healthy) lane would also read
+    False, reporting a false 'offline' for a lane that never actually failed.
+    """
+    session = _PoisonRecoverSession()
+    poison = _DbPoisoningLane("compute-a", 10)
+    victim = _CascadeVictimLane("compute-b", 20)
+
+    result = await _probe_availability(session, [poison, victim])  # type: ignore[arg-type]
+
+    assert result == {"compute-a": False, "compute-b": True}  # the sibling lane is UNAFFECTED
+    assert session.rollbacks >= 1  # the per-probe rollback ran between the two probes
+
+
 # --------------------------------------------------------------------------- Task 2: kind
 
 

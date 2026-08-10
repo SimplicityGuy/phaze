@@ -1068,6 +1068,27 @@ class ControlSettings(BaseSettings):
         validation_alias=AliasChoices("PHAZE_CLOUD_UPLOADED_STALE_AFTER_SEC", "cloud_uploaded_stale_after_sec"),
         description="Seconds a cloud_job may sit UPLOADED with no submit enqueued before the reconcile reaper spills it back to awaiting (phaze-ul2v). Default 900 (15 min).",
     )
+    # phaze-j7m18: the compute-lane twin of the two STAGING bounds above. A compute ``cloud_job`` row's
+    # ONLY in-flight status is SUBMITTED (D-08) -- it is terminalized ONLY by the ``/pushed`` agent HTTP
+    # callback (``ComputeAgentBackend.reconcile`` is a documented no-op, §4.2/D-08). A dead fileserver
+    # agent host mid-rsync, a lost ``push_file`` SAQ job after its retries exhaust while the agent is
+    # down, or an enqueue failure in ``flush_pending_push_file_enqueues`` (its own docstring admits the
+    # gap) all leave the row SUBMITTED forever with no callback ever coming -- permanently consuming a
+    # compute lane cap slot (the exact "N/N busy with zero real workloads" failure phaze-ul2v fixed for
+    # the staging half). Mirrors ``cloud_uploading_stale_after_sec``'s discipline exactly: the live
+    # ``push_file:<file_id>`` broker key (``get_live_job_keys``) is the PRECISE live-vs-lost
+    # discriminator and is checked FIRST; this bound is only the coarse backstop for when even that
+    # broker row is gone. MUST comfortably exceed the largest real ``push_file_saq_timeout_sec`` net (a
+    # multi-GB rsync push over a slow link is legitimately slow and bumps no timestamp while it
+    # transfers) -- default 21600 (6h), same as the UPLOADING bound it mirrors. Bounded (gt=0, lt=604800)
+    # so an out-of-range operator value fails fast at startup rather than reaping a live push.
+    cloud_submitted_stale_after_sec: int = Field(
+        default=21600,
+        gt=0,
+        lt=604800,
+        validation_alias=AliasChoices("PHAZE_CLOUD_SUBMITTED_STALE_AFTER_SEC", "cloud_submitted_stale_after_sec"),
+        description="Seconds a compute cloud_job may sit SUBMITTED with no live push_file broker key before the reconcile reaper spills it back to awaiting (phaze-j7m18). Default 21600 (6h); MUST exceed the largest push_file SAQ net.",
+    )
     # Phase 67 (REG-04, D-12): the flat compute scratch-dir field and the flat S3
     # connection/credential surface (endpoint / bucket / region / addressing-style / access-key /
     # secret-key) were REMOVED with no shim. Compute scratch dir now comes from the compute
