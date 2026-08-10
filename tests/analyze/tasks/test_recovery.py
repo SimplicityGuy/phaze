@@ -1294,12 +1294,10 @@ async def test_count_inflight_jobs_reads_real_saq_jobs() -> None:
     from phaze.services.agent_task_router import AgentTaskRouter
     from phaze.services.analysis_enqueue import enqueue_process_file
     from phaze.services.pipeline import count_inflight_jobs
+    from tests.db_guard import integration_dsns
 
     redis_url = os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6379/0")
-    raw_dsn = (os.environ.get("PHAZE_QUEUE_URL") or os.environ.get("TEST_DATABASE_URL", "postgresql://phaze:phaze@localhost:5432/phaze")).replace(
-        "postgresql+asyncpg://", "postgresql://"
-    )
-    sa_dsn = (os.environ.get("TEST_DATABASE_URL") or raw_dsn).replace("postgresql://", "postgresql+asyncpg://")
+    raw_dsn, sa_dsn = integration_dsns()
 
     # Probe broker connectivity FIRST so the skip path creates nothing to clean up.
     try:

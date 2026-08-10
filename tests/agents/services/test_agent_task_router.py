@@ -30,15 +30,14 @@ import pytest
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
 from phaze.services.agent_task_router import AgentTaskRouter, AmbiguousEnqueueError
 from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
+from tests.db_guard import integration_dsns
 
 
 _REDIS_URL = os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6380/0")
 """Cache-Redis DSN. Override via `PHAZE_REDIS_URL=redis://...:6380/0 uv run pytest ...`."""
 
-_QUEUE_URL = os.environ.get("PHAZE_QUEUE_URL") or os.environ.get("TEST_DATABASE_URL", "postgresql://phaze:phaze@localhost:5432/phaze").replace(
-    "postgresql+asyncpg://", "postgresql://"
-)
-"""Postgres broker DSN (raw libpq form). Derived from TEST_DATABASE_URL in the harness."""
+_QUEUE_URL, _ = integration_dsns()
+"""Postgres broker DSN (raw libpq form). Derived from TEST_DATABASE_URL via the shared db_guard resolver."""
 
 
 @pytest.fixture
