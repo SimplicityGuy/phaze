@@ -1187,3 +1187,58 @@ async def test_migration_051_downgrade_deletes_discogs_links_before_tracklist_tr
         if engine is not None:
             await engine.dispose()
         await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+
+
+@pytest.mark.asyncio
+async def test_migration_042_downgrade_backfills_redrive_attempt_into_payload() -> None:
+    """042's downgrade must mirror-write ``redrive_attempt`` back into the legacy payload JSONB
+    keys before dropping the column, or a rollback silently resets every in-flight push/upload
+    re-drive budget to zero (phaze-dt2cx).
+
+    Seeds two post-042 ``scheduling_ledger`` rows (one ``push_file``, one ``s3_upload``) with a
+    non-zero ``redrive_attempt`` and a payload that carries no legacy counter key (the realistic
+    post-042 shape, since nothing writes the legacy keys anymore), then downgrades to 041 and
+    asserts the payload now carries the counter under the function-appropriate legacy key --
+    exactly what pre-042 code reads.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    cfg = _build_alembic_config(MIGRATIONS_TEST_DATABASE_URL)
+    engine = None
+    try:
+        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+        await asyncio.to_thread(upgrade_to, cfg, "042")
+
+        engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
+        push_key, s3_key = "dt2cx-push-key", "dt2cx-s3-key"
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO scheduling_ledger (key, function, routing, payload, redrive_attempt, enqueued_at, created_at, updated_at) "
+                    "VALUES (:key, 'push_file', 'agent', '{}'::jsonb, 4, NOW(), NOW(), NOW())"
+                ),
+                {"key": push_key},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO scheduling_ledger (key, function, routing, payload, redrive_attempt, enqueued_at, created_at, updated_at) "
+                    "VALUES (:key, 's3_upload', 'agent', '{}'::jsonb, 2, NOW(), NOW(), NOW())"
+                ),
+                {"key": s3_key},
+            )
+        await engine.dispose()
+        engine = None
+
+        # The regression this bead fixes: the counter must not be silently discarded.
+        await asyncio.to_thread(downgrade_to, cfg, "041")
+
+        engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
+        async with engine.connect() as conn:
+            push_payload = (await conn.execute(text("SELECT payload FROM scheduling_ledger WHERE key = :key"), {"key": push_key})).scalar_one()
+            s3_payload = (await conn.execute(text("SELECT payload FROM scheduling_ledger WHERE key = :key"), {"key": s3_key})).scalar_one()
+        assert push_payload.get("push_attempt") == 4, "downgrade must back-fill push_file's counter into payload.push_attempt"
+        assert s3_payload.get("s3_upload_attempt") == 2, "downgrade must back-fill s3_upload's counter into payload.s3_upload_attempt"
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
