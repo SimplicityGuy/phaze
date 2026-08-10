@@ -17,10 +17,12 @@ from sqlalchemy import select
 from phaze.enums.tracklist_candidate import TRANSIENT_MAX_ATTEMPTS, CacheDecision, LookupOutcome
 from phaze.models.tracklist_lookup_cache import TracklistLookupCache
 from phaze.services.tracklist_lookup_cache import (
+    IN_CLAUSE_CHUNK_SIZE,
     NEGATIVE_TTL_DAYS,
     TRANSIENT_BACKOFF_BASE_MINUTES,
     TRANSIENT_BACKOFF_MAX_HOURS,
     _backoff_delay,
+    chunked,
     compute_expires_at,
     lookup,
     lookup_many,
@@ -219,6 +221,48 @@ class TestRecordAndLookup:
 
     async def test_lookup_many_with_no_keys_touches_nothing(self, session: AsyncSession) -> None:
         assert await lookup_many(session, [], now=NOW) == {}
+
+    async def test_lookup_many_chunks_past_the_bind_parameter_cap(self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+        """phaze-1x31w: a key count past ``IN_CLAUSE_CHUNK_SIZE`` must be split across multiple
+        SELECTs, and the merged result must be identical to what one (impossible) unbounded
+        statement would have returned -- proven here against a small chunk size so the test does
+        not need tens of thousands of real rows to exercise the split."""
+        import phaze.services.tracklist_lookup_cache as lookup_cache_module
+
+        monkeypatch.setattr(lookup_cache_module, "IN_CLAUSE_CHUNK_SIZE", 2)
+
+        await record_outcome(session, set_key="c-1", query_text="q", outcome=LookupOutcome.FOUND, external_id="x1", now=NOW)
+        await record_outcome(session, set_key="c-3", query_text="q", outcome=LookupOutcome.FOUND, external_id="x3", now=NOW)
+
+        keys = ["c-1", "c-2", "c-3", "c-4", "c-5"]  # 5 keys over a chunk size of 2 -> 3 SELECTs
+        verdicts = await lookup_many(session, keys, now=NOW)
+
+        assert set(verdicts) == set(keys)
+        assert verdicts["c-1"].decision is CacheDecision.HIT_POSITIVE
+        assert verdicts["c-1"].external_id == "x1"
+        assert verdicts["c-3"].decision is CacheDecision.HIT_POSITIVE
+        assert verdicts["c-3"].external_id == "x3"
+        assert verdicts["c-2"].decision is CacheDecision.MISS
+        assert verdicts["c-4"].decision is CacheDecision.MISS
+        assert verdicts["c-5"].decision is CacheDecision.MISS
+
+
+class TestChunked:
+    """Direct coverage of the shared chunking helper (phaze-1x31w)."""
+
+    def test_chunked_splits_into_slices_of_at_most_size(self) -> None:
+        assert list(chunked([1, 2, 3, 4, 5], 2)) == [[1, 2], [3, 4], [5]]
+
+    def test_chunked_of_empty_sequence_yields_nothing(self) -> None:
+        assert list(chunked([], 10)) == []
+
+    def test_chunked_with_size_larger_than_input_yields_one_chunk(self) -> None:
+        assert list(chunked([1, 2, 3], 100)) == [[1, 2, 3]]
+
+    def test_in_clause_chunk_size_is_comfortably_under_the_asyncpg_bind_cap(self) -> None:
+        """32767 is asyncpg's hard wire-protocol cap (phaze-syxv); the chunk size must leave
+        headroom under it, not sit right at the edge."""
+        assert IN_CLAUSE_CHUNK_SIZE < 32767
 
     async def test_lookup_defaults_to_wall_clock(self, session: AsyncSession) -> None:
         await record_outcome(session, set_key="k-clock", query_text="q", outcome=LookupOutcome.FOUND, external_id="x")

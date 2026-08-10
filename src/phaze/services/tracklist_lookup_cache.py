@@ -25,7 +25,7 @@ from phaze.models.tracklist_lookup_cache import TracklistLookupCache
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterator, Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,6 +49,28 @@ short enough that a set failing early in a months-long drain is not effectively 
 TRANSIENT_BACKOFF_MAX_HOURS: int = 24
 """Ceiling on the doubling. Beyond a day the attempt cap (``TRANSIENT_MAX_ATTEMPTS``) is the
 mechanism that stops the retries, not an ever-growing sleep that hides the problem."""
+
+IN_CLAUSE_CHUNK_SIZE: int = 10_000
+"""Keys per ``SELECT ... WHERE set_key IN (...)`` statement (phaze-1x31w).
+
+An unchunked ``.in_(list(verdicts))`` renders one bind parameter per key, and asyncpg's wire
+protocol caps a single statement at 32767 bind parameters (the same PostgreSQL extended-protocol
+limit ``phaze.services.bulk_insert`` chunks INSERTs against, phaze-syxv). :func:`lookup_many` is
+called with every unique set key the drain currently cares about in ONE call -- tens of thousands
+at the measured corpus size, and the module's own docstring sizes it "tens of thousands of keys"
+at the ~250,000-file target. 10k keeps comfortably under the bind cap with headroom, and splitting
+across statements is invisible to the caller: the merged verdict dict is identical to what one
+(impossible, over the cap) unbounded statement would have returned."""
+
+
+def chunked[T](items: Sequence[T], size: int) -> Iterator[list[T]]:
+    """Yield ``items`` in consecutive slices of at most ``size`` elements.
+
+    Shared by :func:`lookup_many` and (for the sibling ``FileRecord.id.in_(...)`` bind-count
+    cluster site, phaze-1x31w) ``tracklist_drain._load_added_at``.
+    """
+    for start in range(0, len(items), size):
+        yield list(items[start : start + size])
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,19 +163,24 @@ def compute_expires_at(outcome: LookupOutcome, attempts: int, now: datetime, *, 
 
 
 async def lookup_many(session: AsyncSession, set_keys: Sequence[str], *, now: datetime | None = None) -> dict[str, CacheVerdict]:
-    """Return a verdict for every key in ``set_keys`` -- one round trip, keys absent = ``MISS``.
+    """Return a verdict for every key in ``set_keys`` -- keys absent from the cache = ``MISS``.
 
     Batched on purpose: the queue builder holds tens of thousands of keys, and a per-key SELECT
-    would make the cache lookup more expensive than the crawl it protects.
+    would make the cache lookup more expensive than the crawl it protects. Chunked into multiple
+    round trips of at most :data:`IN_CLAUSE_CHUNK_SIZE` keys each (phaze-1x31w) -- past that count
+    a single ``IN (...)`` statement would exceed asyncpg's 32767 bind-parameter cap; see
+    :data:`IN_CLAUSE_CHUNK_SIZE` for the full explanation. Splitting is transparent to the caller:
+    the merged dict below is what one unbounded statement would have returned.
     """
     moment = now or datetime.now(UTC)
     verdicts = {key: CacheVerdict(set_key=key, decision=CacheDecision.MISS) for key in set_keys}
     if not verdicts:
         return verdicts
 
-    result = await session.execute(select(TracklistLookupCache).where(TracklistLookupCache.set_key.in_(list(verdicts))))
-    for entry in result.scalars():
-        verdicts[entry.set_key] = CacheVerdict(set_key=entry.set_key, decision=_decide(entry, moment), entry=entry)
+    for chunk in chunked(list(verdicts), IN_CLAUSE_CHUNK_SIZE):
+        result = await session.execute(select(TracklistLookupCache).where(TracklistLookupCache.set_key.in_(chunk)))
+        for entry in result.scalars():
+            verdicts[entry.set_key] = CacheVerdict(set_key=entry.set_key, decision=_decide(entry, moment), entry=entry)
     return verdicts
 
 

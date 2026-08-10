@@ -100,7 +100,7 @@ from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.text_repair import repair_mojibake
 from phaze.services.tracklist_candidate_queue import CandidateQueue, QueuedCandidate, build_queue_from_signals, load_candidate_signals
 from phaze.services.tracklist_candidates import UniqueSet, group_unique_sets
-from phaze.services.tracklist_lookup_cache import lookup, lookup_many, record_outcome
+from phaze.services.tracklist_lookup_cache import IN_CLAUSE_CHUNK_SIZE, chunked, lookup, lookup_many, record_outcome
 from phaze.services.tracklist_parser import TracklistParseError, parse_tracklist_tracks
 from phaze.services.tracklist_priority import clear_flags, load_flagged_file_ids
 from phaze.services.tracklist_query import DerivedQuery, derive_query
@@ -320,12 +320,18 @@ async def _load_added_at(session: AsyncSession, file_ids: set[uuid.UUID]) -> dic
 
     Read here rather than threaded through ``CandidateSignals``: recency is a SCHEDULING input, not
     a classification or dedup one, and the candidate builder is deliberately kept runnable against
-    a fixture corpus with no notion of when a row was inserted.
+    a fixture corpus with no notion of when a row was inserted. Chunked the same way
+    ``tracklist_lookup_cache.lookup_many`` is (phaze-1x31w): ``file_ids`` here is every member of
+    every QUEUED set -- unbounded by classification, so it can exceed asyncpg's 32767 bind-parameter
+    cap at the same corpus sizes ``lookup_many`` does.
     """
     if not file_ids:
         return {}
-    result = await session.execute(select(FileRecord.id, FileRecord.created_at).where(FileRecord.id.in_(list(file_ids))))
-    return {row_id: created for row_id, created in result.all() if created is not None}
+    added_at: dict[uuid.UUID, datetime] = {}
+    for chunk in chunked(list(file_ids), IN_CLAUSE_CHUNK_SIZE):
+        result = await session.execute(select(FileRecord.id, FileRecord.created_at).where(FileRecord.id.in_(chunk)))
+        added_at.update((row_id, created) for row_id, created in result.all() if created is not None)
+    return added_at
 
 
 def _newest(values: Iterable[datetime | None]) -> datetime | None:
