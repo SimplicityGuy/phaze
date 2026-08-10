@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import TYPE_CHECKING
 import uuid
 
 import pytest
+from sqlalchemy import update
 
 from phaze.models.file import FileRecord
 from phaze.models.proposal import APPROVE_REJECT_FROM, UNDO_FROM, ProposalStatus, RenameProposal
@@ -13,6 +15,7 @@ from phaze.routers.proposal_sort import PROPOSE_SORT
 from phaze.services.proposal_queries import (
     Pagination,
     ProposalEditRefusedError,
+    ProposalStaleWriteError,
     ProposalStats,
     ProposalTransitionError,
     approve_pending_above_confidence,
@@ -392,6 +395,87 @@ async def test_update_proposal_status_guard_not_found_returns_none(session: Asyn
     """A guarded update on a missing id is 404 (None), not a spurious transition error."""
     result = await update_proposal_status(session, uuid.uuid4(), ProposalStatus.PENDING, allowed_from=UNDO_FROM)
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# update_proposal_status expected_updated_at guard (phaze-exivg)
+#
+# store_proposals is an idempotent upsert that overwrites a still-PENDING row's content in place
+# (same id, same status, new proposed_filename/proposed_path/confidence) on a replayed
+# generate_proposals. The status-only allowed_from guard does not see that: it matches this
+# swapped-in row exactly the same as the one the operator actually reviewed. These assert the
+# expected_updated_at token closes that gap by folding INTO the same conditional UPDATE the
+# status guard already uses (phaze-upnj's one-statement pattern), mirroring how phaze-p35v closed
+# the confidence half of the bulk-approve predicate.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_update_proposal_status_stale_token_refused(session: AsyncSession) -> None:
+    """A token minted before a concurrent content-swap is refused, and the swapped row survives
+    untouched -- the approve never silently commits content nobody reviewed.
+    """
+    proposal = await _create_proposal(session, proposed_filename="Artist - Track A.mp3")
+    stale_token = proposal.updated_at
+
+    # Mirrors store_proposals' upsert: same id, same PENDING status, new proposed_filename, and a
+    # bumped updated_at (store_proposals' on_conflict_do_update set_ writes updated_at=func.now()
+    # explicitly; bumping it explicitly here too, rather than relying on the mixin's
+    # onupdate=func.now(), because Postgres' now() is constant for the whole surrounding
+    # transaction -- this test's own commit and the swap's commit would otherwise land in the SAME
+    # transaction under the test session fixture and read back byte-identical timestamps).
+    await session.execute(
+        update(RenameProposal)
+        .where(RenameProposal.id == proposal.id)
+        .values(proposed_filename="Artist - Track B (unreviewed).mp3", updated_at=stale_token + timedelta(seconds=5))
+    )
+    await session.commit()
+    await session.refresh(proposal)
+    assert proposal.updated_at != stale_token, "the swap must actually advance updated_at for this test to mean anything"
+
+    with pytest.raises(ProposalStaleWriteError):
+        await update_proposal_status(
+            session,
+            proposal.id,
+            ProposalStatus.APPROVED,
+            allowed_from=APPROVE_REJECT_FROM,
+            expected_updated_at=stale_token,
+        )
+
+    # The swapped-in, unreviewed content was never approved.
+    refetched = await session.get(RenameProposal, proposal.id)
+    assert refetched is not None
+    assert refetched.status == ProposalStatus.PENDING
+    assert refetched.proposed_filename == "Artist - Track B (unreviewed).mp3"
+
+
+@pytest.mark.asyncio
+async def test_update_proposal_status_current_token_succeeds(session: AsyncSession) -> None:
+    """A token that matches the row's live updated_at (the non-race path) approves normally."""
+    proposal = await _create_proposal(session)
+    result = await update_proposal_status(
+        session,
+        proposal.id,
+        ProposalStatus.APPROVED,
+        allowed_from=APPROVE_REJECT_FROM,
+        expected_updated_at=proposal.updated_at,
+    )
+    assert result is not None
+    assert result.status == ProposalStatus.APPROVED
+
+
+@pytest.mark.asyncio
+async def test_update_proposal_status_no_token_preserves_legacy_behavior(session: AsyncSession) -> None:
+    """expected_updated_at=None (the default) skips the check entirely -- every pre-phaze-exivg
+    caller keeps its exact prior behavior, including approving right after a concurrent swap.
+    """
+    proposal = await _create_proposal(session)
+    proposal.proposed_filename = "Artist - Track B (unreviewed).mp3"
+    await session.commit()
+
+    result = await update_proposal_status(session, proposal.id, ProposalStatus.APPROVED, allowed_from=APPROVE_REJECT_FROM)
+    assert result is not None
+    assert result.status == ProposalStatus.APPROVED
 
 
 # ---------------------------------------------------------------------------

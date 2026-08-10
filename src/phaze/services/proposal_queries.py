@@ -16,6 +16,7 @@ from phaze.services.like_escape import LIKE_ESCAPE_CHAR, like_wildcard
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+    import datetime as datetime_mod
     import uuid as uuid_mod
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,6 +45,30 @@ class ProposalPendingConflictError(Exception):
 
     def __init__(self, proposal_id: str) -> None:
         super().__init__(f"file already has a pending proposal (proposal {proposal_id})")
+        self.proposal_id = proposal_id
+
+
+class ProposalStaleWriteError(Exception):
+    """A single-proposal status write blocked because the row changed since it was rendered (phaze-exivg).
+
+    ``update_proposal_status`` used to fold only the from-status into its conditional UPDATE's WHERE
+    clause. ``store_proposals`` is an idempotent upsert that overwrites an existing PENDING row's
+    content in place on a replayed ``generate_proposals`` (a SAQ retry, or ``recover_orphaned_work``'s
+    verbatim ledger replay) -- same id, same status, new ``proposed_filename`` / ``proposed_path`` /
+    ``confidence``. A row rewritten between the operator's page render and their Approve click still
+    satisfied the status-only WHERE, so the write could commit content the operator never saw --
+    exactly the TOCTOU class phaze-p35v closed for the confidence half of the bulk-approve predicate.
+
+    Callers that pass ``expected_updated_at`` fold it into the SAME conditional UPDATE (one
+    statement, no snapshot-then-write gap): the write only ever commits against the row's CURRENT
+    ``updated_at`` at the moment it runs. This is raised when the row exists, is in an allowed
+    from-state, but its live ``updated_at`` no longer matches the caller's token -- the router
+    translates it into a 409 telling the operator to reload and re-review, instead of silently
+    approving the swapped-in content.
+    """
+
+    def __init__(self, proposal_id: str) -> None:
+        super().__init__(f"proposal {proposal_id} changed since it was loaded -- reload to re-review")
         self.proposal_id = proposal_id
 
 
@@ -242,6 +267,7 @@ async def update_proposal_status(
     proposal_id: uuid_mod.UUID,
     new_status: ProposalStatus,
     allowed_from: Iterable[ProposalStatus] | None = None,
+    expected_updated_at: datetime_mod.datetime | None = None,
 ) -> RenameProposal | None:
     """Update a single proposal's status and return it with eagerly loaded file.
 
@@ -260,10 +286,23 @@ async def update_proposal_status(
     into the UPDATE predicate makes the write itself conditional, so a row that
     left the allowed set between any read and this write matches zero rows and
     the transition is refused rather than clobbered.
+
+    ``expected_updated_at`` (phaze-exivg) closes the SIBLING TOCTOU the status-only guard above
+    leaves open: ``store_proposals`` can overwrite a still-PENDING row's content in place (same id,
+    same status, new ``proposed_filename`` / ``proposed_path`` / ``confidence``) between the
+    operator's page render and their Approve click, and the status-only WHERE still matches that
+    swapped-in row. When provided, this is folded into the SAME conditional UPDATE, so the write
+    only ever commits against the row's CURRENT ``updated_at``; a mismatch (row exists, is in an
+    allowed from-state, but was touched since the caller's token was minted) raises
+    :class:`ProposalStaleWriteError` instead of approving content the operator never reviewed.
+    ``None`` (the default) skips the check entirely, preserving the pre-phaze-exivg behavior for
+    every caller that does not carry a render-time token.
     """
     stmt = update(RenameProposal).where(RenameProposal.id == proposal_id)
     if allowed_from is not None:
         stmt = stmt.where(RenameProposal.status.in_([s.value for s in allowed_from]))
+    if expected_updated_at is not None:
+        stmt = stmt.where(RenameProposal.updated_at == expected_updated_at)
     stmt = stmt.values(status=new_status.value)
     try:
         cursor_result: Any = await session.execute(stmt)
@@ -275,14 +314,22 @@ async def update_proposal_status(
         raise ProposalPendingConflictError(str(proposal_id)) from exc
 
     if int(cursor_result.rowcount) == 0:
-        # The conditional UPDATE matched nothing: either the proposal does not exist,
-        # or (when allowed_from is set) its current status is outside the allowed set.
-        # Re-read to distinguish 404 (None) from an illegal transition (409).
+        # The conditional UPDATE matched nothing: either the proposal does not exist, its current
+        # status is outside the allowed set (when allowed_from is set), or its updated_at no longer
+        # matches the caller's token (when expected_updated_at is set). Re-read to distinguish which.
         current = await session.execute(select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id))
         proposal = current.scalar_one_or_none()
         if proposal is None:
             return None
+        if allowed_from is not None and proposal.status not in {s.value for s in allowed_from}:
+            raise ProposalTransitionError(proposal.status, new_status.value)
+        if expected_updated_at is not None and proposal.updated_at != expected_updated_at:
+            raise ProposalStaleWriteError(str(proposal_id))
         if allowed_from is not None:
+            # allowed_from was satisfied and (if checked) the token matched, yet the guarded
+            # UPDATE still matched nothing -- a fresh row swap between the UPDATE and this
+            # re-SELECT. Keep refusing rather than silently reporting success on a re-read that
+            # is already stale itself.
             raise ProposalTransitionError(proposal.status, new_status.value)
         return proposal
 
