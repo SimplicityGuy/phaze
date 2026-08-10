@@ -3316,6 +3316,33 @@ async def test_dashboard_admission_card_finished_is_green_not_alert(client: Asyn
 
 
 @pytest.mark.asyncio
+async def test_dashboard_admission_card_finished_is_a_lifetime_total_not_a_live_snapshot(client: AsyncClient, session: AsyncSession) -> None:
+    """Acceptance 6 (phaze-zyoag): Finished renders OUTSIDE the "per reconcile" live grid, captioned as cumulative.
+
+    ``cloud_phase == FINISHED`` counts EVERY succeeded row ever, unbounded -- unlike its three siblings
+    it is not a live-at-this-instant snapshot. The template must make that explicit rather than
+    implying, via the shared "per reconcile, updates ~5 min" caption, that all four counts share one
+    clock.
+    """
+    await _seed_cloud_phase(session, cloud_phase=CloudPhase.FINISHED.value)
+
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    import re
+
+    card = re.search(r'id="admission-state-card".*?</section>', response.text, re.DOTALL)
+    assert card is not None
+    card_html = card.group(0)
+    assert "lifetime total" in card_html, "the Finished tile must say it is cumulative, not live"
+    # The live-grid caption must not sit above a lone Finished tile implying it shares that clock.
+    live_caption_pos = card_html.find("live — per reconcile")
+    finished_pos = card_html.find("Finished")
+    assert live_caption_pos == -1, "with only Finished non-zero, the live-snapshot caption must not render"
+    assert finished_pos != -1
+
+
+@pytest.mark.asyncio
 async def test_dashboard_admission_card_quiet_for_null_cloud_phase(client: AsyncClient, session: AsyncSession) -> None:
     """An a1/local row (NULL cloud_phase) counts toward no phase → empty carrier, no heading."""
     await _seed_cloud_phase(session, cloud_phase=None)
@@ -3419,6 +3446,91 @@ async def test_dashboard_count_grid_holds_four_cards_outside_alert_carriers(clie
     assert inadmissible_pos < grid_open
     assert localqueue_pos < grid_open
     assert grid_open < admission_pos < awaiting_pos < staged_pos < analyzing_pos
+
+
+# ---------------------------------------------------------------------------
+# phaze-zyoag acceptance 5: a kueue cloud_job row in each of {uploading, uploaded, submitted, running}
+# must describe ITSELF consistently across the Staged / Analyzing / Admission panels on the SAME
+# rendered page -- no row may be claimed by two contradictory captions (the original bug report's
+# shape: one SUBMITTED row was simultaneously "Queued (quota)" on Admission AND "mid-transfer" on
+# Staged).
+# ---------------------------------------------------------------------------
+
+_VOX_KUEUE_ONLY_TOML = """
+[[backends]]
+kind = "kueue"
+id = "vox"
+rank = 10
+cap = 5
+buckets = ["burst-vox"]
+
+  [backends.kube]
+  api_url = "https://kube.example:6443"
+  namespace = "phaze"
+  local_queue = "phaze-burst"
+
+[[backends]]
+kind = "local"
+id = "local"
+rank = 99
+cap = 1
+
+[[buckets]]
+id = "burst-vox"
+scope = "cluster-specific"
+bucket = "phaze-burst"
+endpoint_url = "https://s3.example"
+"""
+
+
+@pytest.mark.asyncio
+async def test_staged_analyzing_and_admission_agree_per_row(client: AsyncClient, session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """One ``vox`` (kueue) row per {uploading, uploaded, submitted, running} renders consistently everywhere.
+
+    uploading/uploaded -> Staged only (never Analyzing, never an Admission tile -- cloud_phase is NULL
+    pre-submit). submitted -> Analyzing + Admission's "Queued (quota)", NEVER Staged (the exact bug
+    report shape). running -> Analyzing + Admission's "Running", never Staged.
+    """
+    backends_toml_env(_VOX_KUEUE_ONLY_TOML)
+
+    async def _seed(i: int, status: CloudJobStatus, cloud_phase: str | None) -> None:
+        f = _make_file()
+        session.add(f)
+        await session.flush()
+        session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, status=status.value, backend_id="vox", cloud_phase=cloud_phase))
+
+    await _seed(1, CloudJobStatus.UPLOADING, None)
+    await _seed(2, CloudJobStatus.UPLOADED, None)
+    await _seed(3, CloudJobStatus.SUBMITTED, CloudPhase.QUEUED_BEHIND_QUOTA.value)
+    await _seed(4, CloudJobStatus.RUNNING, CloudPhase.RUNNING.value)
+    await session.commit()
+
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    text = response.text
+
+    import re
+
+    def _card(section_id: str) -> str:
+        card = re.search(rf'id="{section_id}".*?</section>', text, re.DOTALL)
+        assert card is not None, f"{section_id} carrier must always render"
+        return card.group(0)
+
+    staged_card = _card("staged-pushing-card")
+    analyzing_card = _card("analyzing-cloud-card")
+    admission_card = _card("admission-state-card")
+
+    # Staged counts EXACTLY the two pre-submit rows (uploading + uploaded); the submitted row must
+    # NEVER inflate it -- the exact bug this bead fixes.
+    assert re.search(r"text-2xl[^>]*>\s*2\s*<", staged_card), staged_card
+
+    # Analyzing counts EXACTLY the two post-submit rows (submitted-on-kueue + running).
+    assert re.search(r"text-2xl[^>]*>\s*2\s*<", analyzing_card), analyzing_card
+
+    # Admission agrees: the SAME submitted row is "Queued (quota)" 1, the SAME running row is "Running" 1.
+    assert "Queued (quota)" in admission_card
+    assert "Running" in admission_card
+    assert re.search(r"Queued \(quota\)", admission_card)
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-{# Phase 55 (55-05, D-04, KROUTE-06): Cloud admission-state card — per-cloud_phase counts.
+{# Phase 55 (55-05, D-04, KROUTE-06; re-split phaze-zyoag): Cloud admission-state card — per-cloud_phase counts.
 
    Four counts (queued_behind_quota / admitted / running / finished) read from cloud_job.cloud_phase
    by the degrade-safe service read (get_cloud_phase_counts), surfacing how far the k8s Kueue cloud
@@ -19,8 +19,14 @@
 
    The Running tile reads "admitted — pod running" (not the former "pod analyzing"): this is a
    ``cloud_phase`` reconcile-cron reflection, not a live probe, so the card-level freshness hint
-   below the heading ("per reconcile, updates ~5 min") tells the operator how stale the whole grid
-   can be -- the same staleness class every Kueue-row status carries.
+   below the heading ("per reconcile, updates ~5 min") tells the operator how stale the LIVE three
+   tiles can be -- the same staleness class every Kueue-row status carries.
+
+   phaze-zyoag (THIRD FINDING): ``finished`` counts cloud_phase == FINISHED with no time bound and no
+   deletion -- only ``awaiting`` rows are ever pruned, so this is a LIFETIME CUMULATIVE total, not a
+   live snapshot like its three siblings. It is deliberately pulled OUT of the "per reconcile, updates
+   ~5 min" grid into its own row below a divider, with its OWN "lifetime total" caption, so it can
+   never be misread as a fourth instantaneous count on the same clock.
 
    Rendered inline in dashboard.html on first load (#admission-state-card lives OUTSIDE the
    #pipeline-stats poll target and outside #pipeline-stages so the OOB swap never re-renders the DAG
@@ -33,7 +39,8 @@
          class="border border-gray-200 dark:border-phaze-border rounded-lg p-4 space-y-3">
     {% if queued_behind_quota_count or admitted_count or running_count or finished_count %}
     <h2 id="admission-state-heading" class="text-lg font-semibold">Cloud · Admission</h2>
-    <p class="text-xs text-gray-400 dark:text-gray-500">per reconcile, updates ~5 min</p>
+    {% if queued_behind_quota_count or admitted_count or running_count %}
+    <p class="text-xs text-gray-400 dark:text-gray-500">live — per reconcile, updates ~5 min</p>
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
         {% if queued_behind_quota_count %}
         <div class="bg-gray-50 dark:bg-phaze-panel rounded-lg p-4 text-center">
@@ -56,13 +63,16 @@
             <p class="text-xs text-violet-500 dark:text-violet-500 mt-1">admitted — pod running</p>
         </div>
         {% endif %}
-        {% if finished_count %}
+    </div>
+    {% endif %}
+    {% if finished_count %}
+    <div class="border-t border-gray-200 dark:border-phaze-border pt-3">
         <div class="bg-green-50 dark:bg-green-950 rounded-lg p-4 text-center">
             <p class="text-2xl font-bold text-green-700 dark:text-green-400">{{ finished_count }}</p>
             <p class="text-sm text-green-600 dark:text-green-400">Finished</p>
-            <p class="text-xs text-green-500 dark:text-green-500 mt-1">result returned</p>
+            <p class="text-xs text-green-500 dark:text-green-500 mt-1">result returned — lifetime total, not a live snapshot</p>
         </div>
-        {% endif %}
     </div>
+    {% endif %}
     {% endif %}
 </section>

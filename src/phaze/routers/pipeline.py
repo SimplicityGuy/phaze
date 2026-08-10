@@ -794,9 +794,10 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # added here -- same service-owns-degrade wiring idiom as the straggler/failed counts above.
     awaiting_cloud_count = await get_awaiting_cloud_count(session)
 
-    # Phase 50 (50-07, D-09): the two bounded cloud-window count cards -- "Staged (pushing)"
-    # (FileState.PUSHING, mid-rsync) and "Analyzing (cloud)" (FileState.PUSHED, landed/within
-    # analysis). Both service reads own the never-500 _safe_count degrade (return 0 on any DB
+    # Phase 50 (50-07, D-09; re-seamed phaze-zyoag): the two bounded cloud-window count cards --
+    # "Staged (pushing)" (pre-submit / mid-transfer, per-backend-kind aware) and "Analyzing (cloud)"
+    # (post-submit, in the cloud window -- includes a kueue row waiting on cluster quota, NOT just
+    # "landed"). Both service reads own the never-500 _safe_count degrade (return 0 on any DB
     # error), so NO try/except here -- same service-owns-degrade idiom as awaiting_cloud_count.
     pushing_count = await get_pushing_count(session)
     analyzing_cloud_count = await get_pushed_count(session)
