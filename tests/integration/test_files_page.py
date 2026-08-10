@@ -20,7 +20,6 @@ connectivity-probe ``pytest.skip`` so a bare ``uv run pytest`` skips rather than
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import os
 from typing import TYPE_CHECKING
 import uuid
 
@@ -36,6 +35,7 @@ from phaze.models.base import Base
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.services.pipeline import _files_page_stmt, get_files_page
+from tests.db_guard import integration_dsns
 
 
 if TYPE_CHECKING:
@@ -47,10 +47,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.integration
 
 
-BROKER_DSN = (os.environ.get("PHAZE_QUEUE_URL") or os.environ.get("TEST_DATABASE_URL", "postgresql://phaze:phaze@localhost:5432/phaze")).replace(
-    "postgresql+asyncpg://", "postgresql://"
-)
-SA_DSN = (os.environ.get("TEST_DATABASE_URL") or BROKER_DSN).replace("postgresql://", "postgresql+asyncpg://")
+BROKER_DSN, SA_DSN = integration_dsns()
 
 _LEGACY_AGENT_ID = "test-fileserver"
 

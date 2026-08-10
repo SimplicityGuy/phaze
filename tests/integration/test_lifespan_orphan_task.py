@@ -18,11 +18,12 @@ established ``settings`` monkeypatch idiom rather than relying on ambient env:
 * ``auto_migrate=False`` -- the integration harness provisions the schema via ``Base.metadata.create_all``
   (no alembic stamp), so a lifespan ``alembic upgrade head`` would ``DuplicateTableError`` on ``files``.
 * ``enable_saq_ui=False`` -- skip the ``/saq`` mount (it queries the agents table + opens per-agent pools).
-* ``queue_url`` / ``redis_url`` -- point the controller queue at the reachable integration broker (the
-  same libpq DSN derivation the other live-broker integration tests use) instead of the unreachable
-  ``postgres:5432/phaze`` default, so ``controller_queue.connect()`` (and the reverse-order shutdown that
-  dereferences it) succeed. This is the ``integration`` bucket: it needs ``TEST_DATABASE_URL`` (port 5433
-  locally via ``just test-db``; 5432 in CI) so the module engine's startup ``SELECT 1`` has a reachable DB.
+* ``queue_url`` / ``redis_url`` -- point the controller queue at the reachable integration broker (via
+  ``tests.db_guard.integration_dsns``, the same shared resolver the other live-broker integration tests
+  use) instead of the unreachable ``postgres:5432/phaze`` default, so ``controller_queue.connect()`` (and
+  the reverse-order shutdown that dereferences it) succeed. This is the ``integration`` bucket: it needs
+  ``TEST_DATABASE_URL`` (defaults to the 5433 harness locally via ``just test-db``; 5432 in CI, where the
+  DB service container publishes that port) so the module engine's startup ``SELECT 1`` has a reachable DB.
 """
 
 from __future__ import annotations
@@ -36,18 +37,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from phaze.config import settings
 from phaze.main import create_app
+from tests.db_guard import integration_dsns
 
 
 pytestmark = pytest.mark.integration
 
-# Raw libpq broker DSN (NOT the ``+asyncpg`` dialect psycopg3 cannot parse), derived the same way the
-# other live-broker integration tests derive it: prefer PHAZE_QUEUE_URL, else TEST_DATABASE_URL with the
-# SQLAlchemy dialect suffix stripped. Points the controller queue at the reachable integration broker DB.
-_BROKER_DSN = (os.environ.get("PHAZE_QUEUE_URL") or os.environ.get("TEST_DATABASE_URL", "postgresql://phaze:phaze@localhost:5432/phaze")).replace(
-    "postgresql+asyncpg://", "postgresql://"
-)
-# SQLAlchemy async DSN for the rebind below (test DB, port 5433 locally / 5432 in CI).
-_SA_DSN = (os.environ.get("TEST_DATABASE_URL") or _BROKER_DSN).replace("postgresql://", "postgresql+asyncpg://")
+# Raw libpq broker DSN (NOT the ``+asyncpg`` dialect psycopg3 cannot parse) + SQLAlchemy async DSN for
+# the rebind below, both derived via the shared tests.db_guard resolver: prefer PHAZE_QUEUE_URL / else
+# TEST_DATABASE_URL, defaulting to the 5433 test harness (never the developer's own 5432 database).
+# Points the controller queue at the reachable integration broker DB.
+_BROKER_DSN, _SA_DSN = integration_dsns()
 _CACHE_REDIS_URL = os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6380/0")
 
 

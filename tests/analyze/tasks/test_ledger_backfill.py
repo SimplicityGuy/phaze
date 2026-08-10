@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 from typing import Any
 import uuid
 
@@ -40,14 +39,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.scheduling_ledger import upsert_ledger_entry
 from phaze.tasks.reenqueue import _parse_job_blob, backfill_ledger_from_saq_jobs
+from tests.db_guard import integration_dsns
 
 
 # Raw libpq broker DSN (NOT the +asyncpg dialect form psycopg3 cannot parse) + the SQLAlchemy
-# +asyncpg form for the AsyncSession the backfill reads/writes through.
-_RAW_DSN = (os.environ.get("PHAZE_QUEUE_URL") or os.environ.get("TEST_DATABASE_URL", "postgresql://phaze:phaze@localhost:5432/phaze")).replace(
-    "postgresql+asyncpg://", "postgresql://"
-)
-_SA_DSN = (os.environ.get("TEST_DATABASE_URL") or _RAW_DSN).replace("postgresql://", "postgresql+asyncpg://")
+# +asyncpg form for the AsyncSession the backfill reads/writes through, both derived via the
+# shared tests.db_guard resolver (defaults to the 5433 test harness, never the dev DB on 5432).
+_RAW_DSN, _SA_DSN = integration_dsns()
 
 
 # --- Pure blob-parse tolerance (no DB) -------------------------------------------------

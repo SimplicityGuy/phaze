@@ -33,7 +33,6 @@ RED at RUN time (import error) only, which is the intended TDD RED state.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import os
 from typing import TYPE_CHECKING, Any
 import uuid
 
@@ -57,6 +56,7 @@ from phaze.models.tracklist import Tracklist
 from phaze.services.backends import ComputeAgentBackend, KueueBackend
 from phaze.services.pipeline import get_pushed_count, get_pushing_count
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
+from tests.db_guard import integration_dsns
 
 
 if TYPE_CHECKING:
@@ -66,12 +66,9 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.integration
 
 
-# Raw libpq broker DSN + SQLAlchemy async DSN, derived exactly as tests/integration/conftest.py
-# (prefer PHAZE_QUEUE_URL / TEST_DATABASE_URL; fall back to the local dev DSN).
-BROKER_DSN = (os.environ.get("PHAZE_QUEUE_URL") or os.environ.get("TEST_DATABASE_URL", "postgresql://phaze:phaze@localhost:5432/phaze")).replace(
-    "postgresql+asyncpg://", "postgresql://"
-)
-SA_DSN = (os.environ.get("TEST_DATABASE_URL") or BROKER_DSN).replace("postgresql://", "postgresql+asyncpg://")
+# Raw libpq broker DSN + SQLAlchemy async DSN, derived via the shared tests.db_guard resolver
+# (prefer PHAZE_QUEUE_URL / TEST_DATABASE_URL; default to the 5433 test harness, never 5432).
+BROKER_DSN, SA_DSN = integration_dsns()
 
 _LEGACY_AGENT_ID = "test-fileserver"
 

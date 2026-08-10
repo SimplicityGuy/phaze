@@ -18,15 +18,15 @@ no raise, no overwrite, the payload never re-lands). Once the job reaches a term
 status (here ``complete`` via ``finish``), the same key enqueues again -- provided the
 new ``scheduled`` is strictly greater than the old one (the second ON CONFLICT clause).
 
-The harness derives the raw libpq broker DSN from ``PHAZE_QUEUE_URL`` or the integration
-harness' ``TEST_DATABASE_URL`` (``+asyncpg`` dialect stripped). The whole
-``tests/integration/`` package is auto-marked ``integration`` (see ``tests/conftest.py``).
+The harness derives the raw libpq broker DSN via ``tests.db_guard.integration_dsns`` (``PHAZE_QUEUE_URL``
+or the integration harness' ``TEST_DATABASE_URL``, ``+asyncpg`` dialect stripped -- defaulting to the
+5433 test harness, never the developer's own 5432 database). The whole ``tests/integration/`` package
+is auto-marked ``integration`` (see ``tests/conftest.py``).
 """
 
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import TYPE_CHECKING
 import uuid
 
@@ -36,15 +36,15 @@ from saq.job import Status
 from saq.queue.postgres import PostgresQueue
 from saq.utils import now_seconds
 
+from tests.db_guard import integration_dsns
+
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 
 # Raw libpq broker DSN (NOT the +asyncpg dialect form psycopg3 cannot parse).
-BROKER_DSN = os.environ.get("PHAZE_QUEUE_URL") or os.environ.get("TEST_DATABASE_URL", "postgresql://phaze:phaze@localhost:5432/phaze").replace(
-    "postgresql+asyncpg://", "postgresql://"
-)
+BROKER_DSN, _ = integration_dsns()
 
 
 @pytest_asyncio.fixture
