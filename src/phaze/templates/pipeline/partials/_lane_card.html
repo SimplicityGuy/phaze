@@ -1,23 +1,48 @@
 {# Phase 71 (71-03, BEUI-01, UI-SPEC Pattern 3): the reusable per-backend lane card.
+   Rebuilt phaze-5c6i2 around queued/working/processed (see below) instead of the misleading
+   {in_flight}/{cap} numeral + saturation bar.
 
    Generalized from the Phase-58 fixed local/A1/k8s card to render ONE registry backend lane from a
    `lane` dict (looped N times by _analyze_lanes.html over the get_backend_lane_snapshot list). The
-   box model is FROZEN from Phase 58 (p-4 / mt-3 / mt-2 / h-1.5 / rounded-xl) -- only the DATA source
-   generalized to the N-lane loop, not the card geometry.
+   box model is FROZEN from Phase 58 (p-4 / mt-3 / mt-2 / rounded-xl) -- only the DATA source
+   generalized to the N-lane loop, not the card geometry (the h-1.5 saturation bar itself is RETIRED
+   by this bead, see below).
 
-   Lane dict contract (one entry from get_backend_lane_snapshot, Plan 01):
-     * lane.id           -- operator-declared backend id (e.g. "a1" / "k8s-a" / "nox").
-     * lane.kind         -- "local" | "compute" | "kueue" (drives color + glyph, WCAG 1.4.1).
-     * lane.rank         -- scheduler dispatch rank (lower = preferred; RANK {n} micro-label, D-06).
-     * lane.cap          -- per-backend concurrency cap.
-     * lane.in_flight    -- live per-backend cloud_job COUNT (D-02); numeral = {in_flight}/{cap}.
-     * lane.available    -- live is_available() probe (D-02); False -> greyed "offline" for THIS poll.
-     * lane.quota_wait   -- per-lane Kueue quota-waiting count (D-03); kueue caption only.
-     * lane.inadmissible -- per-lane Kueue Inadmissible count (D-03); amber + role="alert" when > 0.
+   Lane dict contract (one entry from get_backend_lane_snapshot):
+     * lane.id                -- operator-declared backend id (e.g. "a1" / "k8s-a" / "nox").
+     * lane.kind              -- "local" | "compute" | "kueue" (drives color + glyph, WCAG 1.4.1).
+     * lane.rank              -- scheduler dispatch rank (lower = preferred; RANK {n} micro-label, D-06).
+     * lane.cap               -- per-backend concurrency cap. phaze-5c6i2: renders as a CAPTION next to
+                                  RANK ("RANK {n} · cap {n}"), never as a live-count denominator -- see
+                                  the bead's DEGRADE POSTURE / false-ratio rationale.
+     * lane.in_flight         -- live per-backend cloud_job COUNT (D-02); NO LONGER RENDERED HERE
+                                  (still consumed by derive_localqueue_unreachable / derive_cloud_hold_reason
+                                  / _lane_detail.html elsewhere -- unchanged, this card just stopped
+                                  displaying it as a numeral).
+     * lane.available          -- live is_available() probe (D-02); False -> greyed "offline" for THIS poll.
+     * lane.quota_wait         -- per-lane Kueue quota-waiting count (D-03); kueue caption only.
+     * lane.inadmissible       -- per-lane Kueue Inadmissible count (D-03); amber + role="alert" when > 0.
+     * lane.queued             -- phaze-5c6i2: work assigned to this lane, not yet executing. LOCAL:
+                                  SAQ's own count("queued") (services.backends._local_lane_queued_working).
+                                  CLOUD: the phaze-zyoag "staged" half (services.backends._cloud_lane_queued_working).
+                                  ``None`` = degraded/unknown (renders "—", NEVER a fabricated 0 -- acceptance rule 8).
+     * lane.working            -- phaze-5c6i2: work this lane is executing RIGHT NOW. LOCAL: SAQ's own
+                                  count("active"). CLOUD: the phaze-zyoag "analyzing" half. ``None`` = unknown.
+                                  Exceeding lane.cap is a REAL FAULT, rendered visibly (role="alert"), never
+                                  clamped or hidden (acceptance rule 5).
+     * lane.processed_24h      -- phaze-5c6i2: completions attributed to this lane in the last 24h (primary
+                                  figure). ``None`` = unknown.
+     * lane.processed_lifetime -- phaze-5c6i2: the lifetime total (smaller caption beneath processed_24h).
+                                  ``None`` = unknown.
 
    Lane identity by kind (never hue-only -- always word + glyph): local=🖥️/emerald, compute=☁️/blue,
    kueue=⎈/amber (kueue keeps the border-amber-500/30 accent). Cards are disambiguated by the RANK {n}
    caption + the {KIND · id} title, NOT by hue (all compute share blue, all kueue share amber).
+
+   Every queued/working/processed value can independently be ``None`` (an explicit unknown -- a DB or
+   broker hiccup on this poll tick, acceptance rule 8) or come from a test double that predates
+   phaze-5c6i2 and simply omits the key -- ``_render_metric`` below treats BOTH the same way (an
+   em-dash), so neither a missing dict key nor an explicit None ever tries to compare/format as a number.
 
    Pure presentation: no hx-trigger / setInterval -- the whole #analyze-lanes grid OOB-swaps as a unit
    on the single existing 5s poll (WORK-05/R-2, Pitfall 2). Every value is a server-rendered scalar from
@@ -27,34 +52,37 @@
     {% set lane_glyph = "🖥️" %}
     {% set lane_border = "border-gray-200 dark:border-phaze-border" %}
     {% set lane_color = "text-emerald-600 dark:text-emerald-300" %}
-    {% set lane_bar = "bg-emerald-400" %}
     {% set lane_sub = "short sets < 90 min" %}
 {% elif _kind == 'compute' %}
     {% set lane_glyph = "☁️" %}
     {% set lane_border = "border-gray-200 dark:border-phaze-border" %}
     {% set lane_color = "text-blue-600 dark:text-blue-300" %}
-    {% set lane_bar = "bg-blue-400" %}
     {% set lane_sub = "long sets ≥ 90 min" %}
 {% elif _kind == 'kueue' %}
     {% set lane_glyph = "⎈" %}
     {% set lane_border = "border-amber-500/30" %}
     {% set lane_color = "text-amber-600 dark:text-amber-300" %}
-    {% set lane_bar = "bg-amber-400" %}
     {% set lane_sub = "Kueue quota wait · admitting" %}
 {% else %}
     {% set lane_glyph = "▪" %}
     {% set lane_border = "border-gray-200 dark:border-phaze-border" %}
     {% set lane_color = "text-gray-600 dark:text-gray-300" %}
-    {% set lane_bar = "bg-gray-400" %}
     {% set lane_sub = "" %}
 {% endif %}
-{% set _cap = lane.cap or 0 %}
-{% set _pct = ((lane.in_flight / _cap * 100) if _cap else 0) %}
-{% set _pct = 0 if _pct < 0 else (100 if _pct > 100 else _pct) %}
+{# phaze-5c6i2: normalize BOTH "key present but None" (a real degrade) and "key absent" (a pre-bead
+   test double / any future caller that has not learned the new fields yet) to the SAME `none` Jinja
+   value, so every consumer below has exactly one thing to check. #}
+{% set _queued = lane.queued if (lane.queued is defined and lane.queued is not none) else none %}
+{% set _working = lane.working if (lane.working is defined and lane.working is not none) else none %}
+{% set _processed_24h = lane.processed_24h if (lane.processed_24h is defined and lane.processed_24h is not none) else none %}
+{% set _processed_lifetime = lane.processed_lifetime if (lane.processed_lifetime is defined and lane.processed_lifetime is not none) else none %}
+{# acceptance rule 5: "working" exceeding cap is a REAL FAULT (not a rendering artifact) -- render it
+   visibly rather than clamping/hiding it the way the retired saturation bar effectively did. #}
+{% set _working_over_cap = (_working is not none) and lane.cap and (_working > lane.cap) %}
 {# Phase 88 (88-01, DRILL-03 / D-09): the card ROOT is the keyboard-accessible drill-in trigger.
    selected_lane is re-derived from ?lane= by the poll (D-02) so the ring survives every 5s swap; it
    defaults to none on any render that does not thread it (an unknown/absent id highlights nothing).
-   The box model (rounded-xl border / p-4 / mt-3 / h-1.5) and kind tokens are UNCHANGED — only the
+   The box model (rounded-xl border / p-4 / mt-3 / rounded-xl) and kind tokens are UNCHANGED — only the
    trigger a11y + selection classes are appended. lane.id/kind stay Jinja-autoescaped (never |safe). #}
 {% set selected_lane = selected_lane | default(none) %}
 <div id="lane-trigger-{{ lane.id }}"
@@ -80,23 +108,38 @@
     <div class="flex items-center justify-between gap-2">
         <span class="text-sm text-gray-700 dark:text-gray-200">
             {{ lane_glyph }} {{ lane.kind|upper }} · {{ lane.id }}
-            <span class="ml-1 font-jura text-xs font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500">RANK {{ lane.rank }}</span>
         </span>
-        {% if lane.available %}
-        <span class="font-mono text-sm font-medium {{ lane_color }}">{{ lane.in_flight }}/{{ lane.cap }}</span>
-        {% else %}
-        {# phaze-xd8k: an unavailable lane MUST still render its true in_flight -- a literal "0" here
-           read as "nothing is running" and hid real in-flight work behind "offline" (the lane can be
-           unreachable for NEW dispatch while still draining work it already accepted). Greyed styling
-           carries the "offline" signal instead of fabricating a zero. #}
-        <span class="font-mono text-sm font-medium text-gray-400 dark:text-gray-500">{{ lane.in_flight }}/{{ lane.cap }}</span>
-        {% endif %}
+        {# phaze-5c6i2: cap is operator CONFIGURATION, not a live measurement -- it moves from the
+           denominator of a false ratio into a caption beside RANK. #}
+        <span class="font-jura text-xs font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500">RANK {{ lane.rank }} · cap {{ lane.cap }}</span>
     </div>
-    <div class="mt-3 h-1.5 rounded-full bg-gray-200 dark:bg-phaze-border">
-        {% if lane.available and _pct > 0 %}
-        <div class="h-full rounded-full {{ lane_bar }}" style="width: {{ _pct }}%"></div>
-        {% endif %}
-    </div>
+
+    {# phaze-5c6i2: the queued/working/processed grid replaces the {in_flight}/{cap} numeral + the
+       h-1.5 saturation bar (both retired). A None component renders an em-dash (acceptance rule 8). #}
+    <dl class="mt-3 grid grid-cols-3 gap-2 text-center">
+        <div>
+            <dt class="text-[10px] font-jura font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500">queued</dt>
+            <dd class="font-mono text-sm font-medium {{ lane_color }}">{{ _queued if _queued is not none else "—" }}</dd>
+        </div>
+        <div>
+            <dt class="text-[10px] font-jura font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500">working</dt>
+            {# acceptance rule 5: working > cap is a visible fault -- role="alert" + red, never clamped. #}
+            <dd class="font-mono text-sm font-medium {% if _working_over_cap %}text-red-600 dark:text-red-400{% else %}{{ lane_color }}{% endif %}"
+                {% if _working_over_cap %}role="alert"{% endif %}>{{ _working if _working is not none else "—" }}</dd>
+        </div>
+        <div>
+            <dt class="text-[10px] font-jura font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500">processed</dt>
+            <dd class="font-mono text-sm font-medium {{ lane_color }}">{{ _processed_24h if _processed_24h is not none else "—" }}</dd>
+        </div>
+    </dl>
+    <p class="mt-1 text-center text-[10px] text-gray-400 dark:text-gray-500">
+        processed {{ _processed_24h if _processed_24h is not none else "—" }} (24h) / {{ _processed_lifetime if _processed_lifetime is not none else "—" }} all time
+    </p>
+    {% if _working_over_cap %}
+    {# acceptance rule 5: the 519-against-cap-4 condition, made legible instead of disguised. #}
+    <p role="alert" class="mt-1 text-center text-xs font-medium text-red-600 dark:text-red-400">working {{ _working }} exceeds cap {{ lane.cap }}</p>
+    {% endif %}
+
     <div class="mt-2 text-xs {% if lane.available %}text-gray-500 dark:text-gray-500{% else %}text-amber-600 dark:text-amber-400{% endif %}">
         {% if not lane.available %}
             offline

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 import uuid
 
@@ -347,10 +348,20 @@ def test_kind_of_unknown_fallback() -> None:
 @pytest.mark.asyncio
 async def test_snapshot_shape_and_rank_order(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A 3-backend registry returns 3 rank-ascending secret-free lane dicts with live counts."""
+    import phaze.services.pipeline as pipeline_mod
+
     local = LocalBackend(id="local", rank=99, cap=1)
     compute = ComputeAgentBackend(id="a1", rank=10, cap=2)
     kueue = KueueBackend(id="k8s", rank=20, cap=3)
     monkeypatch.setattr(backends_mod, "resolve_backends", lambda _settings: [local, compute, kueue])
+    # phaze-5c6i2: _cloud_lane_queued_working resolves kueue-ness via `_cloud_window_clauses`, which
+    # reads pipeline.get_settings() -- a SEPARATE bound name from the resolve_backends mock above, so
+    # it needs its own deterministic registry (a1=compute, k8s=kueue) for the new queued/working split.
+    monkeypatch.setattr(
+        pipeline_mod,
+        "get_settings",
+        lambda: SimpleNamespace(backends=[SimpleNamespace(id="a1", kind="compute"), SimpleNamespace(id="k8s", kind="kueue")]),
+    )
 
     async def _fake_probe(_session: Any, _backends: Any) -> dict[str, bool]:
         return {"local": True, "a1": True, "k8s": False}
@@ -370,15 +381,46 @@ async def test_snapshot_shape_and_rank_order(session: AsyncSession, monkeypatch:
     )
     await session.commit()
 
+    # app_state=None (default) -- the local lane's SAQ queued/working are unavailable without a real
+    # task_router, so they degrade to None (explicit unknown), exactly like every pre-phaze-5c6i2 caller.
     lanes = await get_backend_lane_snapshot(session)
 
     assert [lane["id"] for lane in lanes] == ["a1", "k8s", "local"]  # rank-ascending
-    expected_keys = {"id", "kind", "rank", "cap", "in_flight", "available", "quota_wait", "inadmissible"}
+    expected_keys = {
+        "id",
+        "kind",
+        "rank",
+        "cap",
+        "in_flight",
+        "available",
+        "quota_wait",
+        "inadmissible",
+        "queued",
+        "working",
+        "processed_24h",
+        "processed_lifetime",
+    }
     for lane in lanes:
         assert set(lane) == expected_keys  # secret-free: no config / SecretStr / token key
 
     by_id = {lane["id"]: lane for lane in lanes}
-    assert by_id["a1"] == {"id": "a1", "kind": "compute", "rank": 10, "cap": 2, "in_flight": 1, "available": True, "quota_wait": 0, "inadmissible": 0}
+    # phaze-5c6i2: a1 is compute-kind under the mocked registry above, so its SUBMITTED row is
+    # pre-execution ("staged") -> queued=1, working=0. No AnalysisResult rows exist -> processed all 0.
+    assert by_id["a1"] == {
+        "id": "a1",
+        "kind": "compute",
+        "rank": 10,
+        "cap": 2,
+        "in_flight": 1,
+        "available": True,
+        "quota_wait": 0,
+        "inadmissible": 0,
+        "queued": 1,
+        "working": 0,
+        "processed_24h": 0,
+        "processed_lifetime": 0,
+    }
+    # k8s is kueue-kind, so its SUBMITTED row is post-submit ("analyzing") -> working=1, queued=0.
     assert by_id["k8s"] == {
         "id": "k8s",
         "kind": "kueue",
@@ -388,6 +430,10 @@ async def test_snapshot_shape_and_rank_order(session: AsyncSession, monkeypatch:
         "available": False,
         "quota_wait": 1,
         "inadmissible": 0,
+        "queued": 0,
+        "working": 1,
+        "processed_24h": 0,
+        "processed_lifetime": 0,
     }
     assert by_id["local"] == {
         "id": "local",
@@ -398,6 +444,10 @@ async def test_snapshot_shape_and_rank_order(session: AsyncSession, monkeypatch:
         "available": True,
         "quota_wait": 0,
         "inadmissible": 0,
+        "queued": None,
+        "working": None,
+        "processed_24h": 0,
+        "processed_lifetime": 0,
     }
 
 

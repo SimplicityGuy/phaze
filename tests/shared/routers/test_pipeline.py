@@ -1554,11 +1554,39 @@ async def test_dashboard_context_binds_lanes(client: AsyncClient, session: Async
     from phaze.routers.pipeline import build_dashboard_context
 
     sentinel: list[dict[str, object]] = [
-        {"id": "a1", "kind": "compute", "rank": 10, "cap": 2, "in_flight": 1, "available": True, "quota_wait": 0, "inadmissible": 0},
-        {"id": "local", "kind": "local", "rank": 99, "cap": 1, "in_flight": 0, "available": True, "quota_wait": 0, "inadmissible": 0},
+        {
+            "id": "a1",
+            "kind": "compute",
+            "rank": 10,
+            "cap": 2,
+            "in_flight": 1,
+            "available": True,
+            "quota_wait": 0,
+            "inadmissible": 0,
+            "queued": 0,
+            "working": 1,
+            "processed_24h": 3,
+            "processed_lifetime": 10,
+        },
+        {
+            "id": "local",
+            "kind": "local",
+            "rank": 99,
+            "cap": 1,
+            "in_flight": 0,
+            "available": True,
+            "quota_wait": 0,
+            "inadmissible": 0,
+            "queued": 0,
+            "working": 0,
+            "processed_24h": 0,
+            "processed_lifetime": 0,
+        },
     ]
 
-    async def _fake_snapshot(_session: AsyncSession) -> list[dict[str, object]]:
+    # phaze-5c6i2: get_backend_lane_snapshot now takes app_state (the local lane's SAQ read) --
+    # the stub's signature must accept it too, or build_dashboard_context's call raises TypeError.
+    async def _fake_snapshot(_session: AsyncSession, _app_state: object = None) -> list[dict[str, object]]:
         return sentinel
 
     monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _fake_snapshot)

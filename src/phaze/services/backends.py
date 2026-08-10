@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, cast
 import uuid
 
@@ -59,7 +59,7 @@ from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.cloud_budget import record_cloud_budget_spent
 from phaze.services.cloud_staging import _stage_file_to_s3
 from phaze.services.enqueue_router import LANES, NoActiveAgentError, lane_for_task, select_active_agent, select_agent_by_id
-from phaze.services.pipeline import MUSIC_VIDEO_TYPES, get_live_job_keys
+from phaze.services.pipeline import MUSIC_VIDEO_TYPES, _cloud_window_clauses, _safe_bucket_counts, get_live_job_keys
 from phaze.services.route_control import get_route_control
 from phaze.services.scheduling_ledger import clear_ledger_entry
 from phaze.services.stage_status import inflight_clause
@@ -72,6 +72,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.sql.elements import ColumnElement
 
     from phaze.config import ControlSettings
     from phaze.config_backends import BackendConfig, ComputeBackend, KubeConfig
@@ -1419,18 +1420,215 @@ def _kind_of(backend: Backend) -> str:
     return "unknown"
 
 
-async def get_backend_lane_snapshot(session: AsyncSession) -> list[dict[str, Any]]:
+# --- phaze-5c6i2: lane-card queued/working/processed metrics --------------------------------
+#
+# Replaces the misleading ``{in_flight}/{cap}`` numeral + saturation bar with the operator's four
+# numbers: TOTAL QUEUED (analyze, global), QUEUED per lane, WORKING per lane, and PROCESSED per lane
+# (24h primary + lifetime caption). See the bead description for the full rationale; the short version:
+# ``in_flight`` conflates "enqueued" with "executing" (the scheduling-ledger row exists at ENQUEUE
+# time), so a saturated-looking bar could mean nothing is actually running. These reads carry the
+# split queued-vs-working sources that already exist (SAQ's own queued/active counts for local, the
+# phaze-zyoag staged/analyzing seam for cloud) instead of re-deriving a third definition.
+
+# The processed-count rolling window -- the "24h" half of the operator's "412 (24h) / 545 all time"
+# target shape. Not a Settings knob (yet): a fixed, well-known window matching the target shape
+# verbatim; promote to config if an operator ever needs a different one.
+_PROCESSED_WINDOW = timedelta(hours=24)
+
+
+async def _safe_count_or_none(session: AsyncSession, stmt: Any, *, node: str) -> int | None:
+    """Run a single-scalar COUNT statement, degrading to ``None`` (NOT 0) on any failure (phaze-5c6i2).
+
+    The sibling of :func:`phaze.services.pipeline._safe_count` with a DELIBERATELY different degrade
+    value. ``_safe_count``'s 0-degrade is correct for a count whose true zero is itself a real, safe
+    state (e.g. 0 in-flight). It is WRONG for a queue-depth-shaped read: a DB hiccup that silently
+    renders "queued 0" on a healthy backlog of thousands is a worse lie than the ``{in_flight}/{cap}``
+    numeral this bead replaces (acceptance rule 8 / the bead's DEGRADE POSTURE design note). Every
+    lane-metric read below uses this wrapper so a failure surfaces to the template as an explicit
+    unknown (an em-dash) instead of a fabricated zero. Same SAVEPOINT discipline as ``_safe_count``: the
+    nested scope rolls back alone on error, recovering an aborted transaction without expiring the
+    caller's already-loaded ORM objects.
+    """
+    try:
+        async with session.begin_nested():
+            return int((await session.execute(stmt)).scalar() or 0)
+    except Exception:
+        logger.warning("lane_metric_degraded", node=node, exc_info=True)
+        return None
+
+
+async def _local_lane_queued_working(session: AsyncSession, app_state: Any) -> tuple[int | None, int | None]:
+    """Return the LOCAL lane's ``(queued, working)`` from SAQ's OWN ``analyze`` lane, kept SEPARATE (phaze-5c6i2).
+
+    :func:`phaze.services.pipeline.get_agent_lane_depths` sums ``count("queued") + count("active")``
+    into one number per lane; this reads the SAME two SAQ counts on the SAME ``analyze`` lane -- bound
+    to the live fileserver agent via :func:`resolve_lane_queue_agent` (the IDENTICAL binding
+    :func:`get_lane_queue_depths` uses for the lane-detail pane, so the two panels can never disagree
+    about WHICH agent's queue "the local lane" reads) -- but keeps the two counts distinct instead of
+    collapsing them. Neither figure is derived from
+    :func:`phaze.services.stage_status.inflight_clause` (which cannot distinguish "enqueued" from
+    "started" -- the exact defect this bead exists to fix; acceptance rule 3).
+
+    Degrades to ``(None, None)`` -- never ``(0, 0)`` -- when there is no live fileserver agent to read
+    (mirrors :data:`NO_FILESERVER_AGENT_NOTE`'s condition), when ``app_state`` itself is absent (callers
+    that only need availability/admission, e.g. :func:`derive_cloud_hold_reason`, pass none), or on any
+    broker hiccup: a missing agent or a dead broker is not evidence of an empty queue.
+    """
+    if app_state is None:
+        return None, None
+    identity = await resolve_lane_queue_agent(session, "local", "local")
+    if identity.agent_id is None:
+        return None, None
+    try:
+        queue = app_state.task_router.queue_for(identity.agent_id, "analyze")
+        await queue.connect()
+        queued = await queue.count("queued")
+        working = await queue.count("active")
+    except Exception:
+        logger.warning("local_lane_queued_working_degraded", agent_id=identity.agent_id, exc_info=True)
+        return None, None
+    return queued, working
+
+
+async def _cloud_lane_queued_working(session: AsyncSession, backend_id: str) -> tuple[int | None, int | None]:
+    """Return a CLOUD lane's ``(queued, working)``, scoped to ``backend_id`` via the phaze-zyoag seam (phaze-5c6i2).
+
+    ``queued`` = the pre-execution half of the bounded cloud window (:data:`STAGING` plus a
+    compute-attributed SUBMITTED row); ``working`` = the executing half (a kueue-attributed SUBMITTED
+    row -- admitted-or-queued-behind-quota counts as "in the cloud window, post-submit" under the
+    zyoag option-(a) definition -- plus RUNNING). Reuses
+    :func:`phaze.services.pipeline._cloud_window_clauses` verbatim (the SAME per-backend-kind split the
+    "Staged (pushing)"/"Analyzing (cloud)" cards use) ANDed with ``backend_id`` so this lane's figures
+    can never drift from those two cards' definition of the seam -- CONSUMING zyoag's decision rather
+    than re-deriving it a third time (the bead's explicit dependency reason; acceptance rule 4).
+
+    Degrades to ``(None, None)`` on any error -- an unknown queue depth must never render as a
+    fabricated 0 (acceptance rule 8).
+    """
+    try:
+        staged, analyzing = _cloud_window_clauses()
+    except Exception:
+        logger.warning("cloud_lane_queued_working_degraded", backend_id=backend_id, exc_info=True)
+        return None, None
+    queued = await _safe_count_or_none(session, select(func.count(CloudJob.id)).where(staged, CloudJob.backend_id == backend_id), node="lane_queued")
+    working = await _safe_count_or_none(
+        session, select(func.count(CloudJob.id)).where(analyzing, CloudJob.backend_id == backend_id), node="lane_working"
+    )
+    return queued, working
+
+
+def _cloud_job_succeeded_for_backend(backend_id: str) -> ColumnElement[bool]:
+    """Return ``EXISTS(a SUCCEEDED cloud_job for this file attributed to backend_id)`` (phaze-5c6i2)."""
+    return exists(
+        select(CloudJob.id).where(
+            CloudJob.file_id == FileRecord.id, CloudJob.status == CloudJobStatus.SUCCEEDED.value, CloudJob.backend_id == backend_id
+        )
+    )
+
+
+async def _lane_processed_counts(session: AsyncSession, *, backend_id: str | None) -> tuple[int | None, int | None]:
+    """Return ``(processed_24h, processed_lifetime)`` for one lane, attributed by EXECUTION (phaze-5c6i2).
+
+    Attribution keys on ``cloud_job.backend_id`` (the lane that EXECUTED the analysis), never on
+    ``FileRecord.agent_id`` (the FILESERVER that scanned/owns the file -- a different axis entirely; see
+    the bead's ATTRIBUTION design note). ``backend_id`` given -> direct: a completed file with a
+    ``succeeded`` cloud_job row attributed to it. ``backend_id=None`` -> the LOCAL negation: completed
+    with NO ``succeeded`` cloud_job row at all -- mirroring :meth:`LocalBackend.in_flight_count`'s own
+    carve-out, ADAPTED from its live ``IN_FLIGHT``-status negation to a TERMINAL-status one (this reads
+    completed history, not a live race).
+
+    This adaptation is explicitly NOT subject to that method's documented compute-timing gap (a
+    transient window where a compute row's cloud_job is already SUCCEEDED -- stamped at PUSH time --
+    before its remote ``process_file`` has actually STARTED, which can misattribute a LIVE in-flight
+    probe): every caller here gates on ``AnalysisResult.analysis_completed_at IS NOT NULL`` first, which
+    is stamped only once execution genuinely FINISHES, wherever it ran. By the time that gate opens, a
+    SUCCEEDED cloud_job's ``backend_id`` is a settled historical fact, so a completed file can never be
+    double-counted or lost between the local and cloud attributions -- the gap cannot reach a PROCESSED
+    count the way it can reach a live in-flight one. (No ``compute`` backend is configured in the
+    current deployment -- local + kueue -- so this is documented for completeness per the bead's
+    instruction to say so explicitly, not because it is presently load-bearing.)
+
+    Degrades to ``(None, None)`` on any error (acceptance rule 8).
+    """
+    attribution = (
+        ~exists(select(CloudJob.id).where(CloudJob.file_id == FileRecord.id, CloudJob.status == CloudJobStatus.SUCCEEDED.value))
+        if backend_id is None
+        else _cloud_job_succeeded_for_backend(backend_id)
+    )
+    base = (
+        select(func.count(AnalysisResult.id))
+        .select_from(AnalysisResult)
+        .join(FileRecord, FileRecord.id == AnalysisResult.file_id)
+        .where(
+            AnalysisResult.analysis_completed_at.is_not(None),
+            FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
+            attribution,
+        )
+    )
+    node = f"lane_processed_{backend_id or 'local'}"
+    lifetime = await _safe_count_or_none(session, base, node=f"{node}_lifetime")
+    cutoff = datetime.now(UTC) - _PROCESSED_WINDOW
+    windowed = await _safe_count_or_none(session, base.where(AnalysisResult.analysis_completed_at >= cutoff), node=f"{node}_24h")
+    return windowed, lifetime
+
+
+async def get_analyze_queue_totals(session: AsyncSession, lanes: list[dict[str, Any]]) -> dict[str, int | None]:
+    """Return the global "TOTAL QUEUED (analyze)" figure + its unrouted remainder (phaze-5c6i2, acceptance rule 2).
+
+    ``unrouted_queued`` = Stage.ANALYZE's ``not_started`` bucket
+    (:func:`phaze.services.pipeline._safe_bucket_counts`) -- files with NO scheduling-ledger row at all
+    for analyze, i.e. not yet routed to ANY lane (the ``in_flight`` bucket already counts every
+    routed-but-not-yet-done file, local or cloud, per the same ledger-existence-at-enqueue-time read the
+    bead's motivation cites). ``total_queued`` sums that with every lane's OWN ``queued`` figure -- work
+    assigned to a lane but not yet executing -- so ``total_queued >= sum(lane["queued"] for lane in
+    lanes)`` holds by construction and the unrouted remainder is always the visible, non-negative
+    difference between the two rendered numbers, never silently dropped.
+
+    Degrades to ``{"total_queued": None, "unrouted_queued": <bucket value>}`` when ANY lane's own
+    ``queued`` is itself degraded (``None``): a partial sum that silently omitted an unknown lane would
+    UNDERSTATE the total exactly the way a 0-degrade would, so one unknown component propagates to the
+    whole total rather than being quietly dropped. ``unrouted_queued`` keeps ``_safe_bucket_counts``'s
+    OWN pre-existing degrade discipline (0 on error) unchanged -- it is not a new read this bead adds.
+    """
+    buckets = await _safe_bucket_counts(session, Stage.ANALYZE)
+    unrouted = buckets["not_started"]
+    queued_values = [lane.get("queued") for lane in lanes]
+    if any(value is None for value in queued_values):
+        return {"total_queued": None, "unrouted_queued": unrouted}
+    lane_sum = sum(cast("int", value) for value in queued_values)
+    return {"total_queued": unrouted + lane_sum, "unrouted_queued": unrouted}
+
+
+async def get_backend_lane_snapshot(session: AsyncSession, app_state: Any = None) -> list[dict[str, Any]]:
     """Return one rank-ascending, secret-free lane dict per registry backend for the BEUI-01 grid.
 
-    Resolves the Phase-67 registry, then composes one lane per backend from three degrade-safe reads:
+    Resolves the Phase-67 registry, then composes one lane per backend from several degrade-safe reads:
     ``_admission_by_backend_id`` (per-``backend_id`` quota_wait/inadmissible, D-03), ``_probe_availability``
-    (live bounded is_available probes, D-02) and each backend's ``in_flight_count`` (the D-02 cloud_job
-    substrate). Lanes are sorted rank-ascending, tie-broken by ``id`` (D-06), so the Plan-03 template loops
-    them verbatim. A :class:`LocalBackend` lane always shows ``in_flight`` 0 and ``available`` True.
+    (live bounded is_available probes, D-02), each backend's ``in_flight_count`` (the D-02 cloud_job
+    substrate) and, since phaze-5c6i2, the queued/working/processed metrics below. Lanes are sorted
+    rank-ascending, tie-broken by ``id`` (D-06), so the Plan-03 template loops them verbatim. A
+    :class:`LocalBackend` lane always shows ``in_flight`` 0 and ``available`` True.
 
-    Every lane carries ONLY ``{id, kind, rank, cap, in_flight, available, quota_wait, inadmissible}`` -- no
-    ``config``, no ``SecretStr``, no kube/S3 token (T-71-01). Any top-level exception degrades to ``[]``
-    with a guarded rollback so it can NEVER raise into the hot 5s ``/pipeline/stats`` poll (SP-1, T-71-03).
+    ``app_state`` (phaze-5c6i2) is threaded through ONLY to resolve the local lane's SAQ queue via
+    ``app_state.task_router`` (:func:`_local_lane_queued_working`) -- every render caller already has
+    ``request.app.state`` at hand (the same object :func:`get_lane_queue_depths` takes). It defaults to
+    ``None`` for callers that only need availability/admission (e.g. :func:`derive_cloud_hold_reason`,
+    and every pre-phaze-5c6i2 test): the local lane's ``queued``/``working`` degrade to ``None``
+    (explicit unknown) rather than requiring every caller to thread a router it does not otherwise need.
+
+    Every lane carries ``{id, kind, rank, cap, in_flight, available, quota_wait, inadmissible, queued,
+    working, processed_24h, processed_lifetime}`` -- no ``config``, no ``SecretStr``, no kube/S3 token
+    (T-71-01). ``in_flight`` is UNCHANGED (still the D-02 cloud_job substrate; several other callers key
+    off it, e.g. :func:`derive_localqueue_unreachable` / :func:`derive_cloud_hold_reason` /
+    ``_lane_detail.html``'s header numeral). ``queued``/``working``/``processed_24h``/
+    ``processed_lifetime`` are the phaze-5c6i2 additions the lane cards render INSTEAD of the misleading
+    ``{in_flight}/{cap}`` numeral + saturation bar (acceptance rule 1): ``queued``/``working`` come from
+    :func:`_local_lane_queued_working` (local) or :func:`_cloud_lane_queued_working` (compute/kueue, the
+    phaze-zyoag seam), ``processed_24h``/``processed_lifetime`` from :func:`_lane_processed_counts`. Each
+    of the four is ``int | None`` -- ``None`` means degraded/unknown (never a fabricated 0, acceptance
+    rule 8) and the template renders an em-dash for it. Any top-level exception degrades the WHOLE
+    snapshot to ``[]`` with a guarded rollback so it can NEVER raise into the hot 5s ``/pipeline/stats``
+    poll (SP-1, T-71-03) -- unchanged from before this bead.
     """
     try:
         backends = resolve_backends(cast("ControlSettings", get_settings()))
@@ -1444,14 +1642,25 @@ async def get_backend_lane_snapshot(session: AsyncSession) -> list[dict[str, Any
         await session.rollback()
         lanes: list[dict[str, Any]] = []
         for backend in backends:
+            kind = _kind_of(backend)
+            if kind == "local":
+                queued, working = await _local_lane_queued_working(session, app_state)
+                processed_24h, processed_lifetime = await _lane_processed_counts(session, backend_id=None)
+            else:
+                queued, working = await _cloud_lane_queued_working(session, backend.id)
+                processed_24h, processed_lifetime = await _lane_processed_counts(session, backend_id=backend.id)
             lanes.append(
                 {
                     "id": backend.id,
-                    "kind": _kind_of(backend),
+                    "kind": kind,
                     "rank": backend.rank,
                     "cap": backend.cap,
                     "in_flight": await backend.in_flight_count(session),
                     "available": availability.get(backend.id, False),
+                    "queued": queued,
+                    "working": working,
+                    "processed_24h": processed_24h,
+                    "processed_lifetime": processed_lifetime,
                     **admission.get(backend.id, _ZERO_ADMISSION),
                 }
             )

@@ -66,8 +66,8 @@ _TWO_CLUSTER_REGISTRY = """
 # THE fixed lane list every surface must reflect: vox ACTIVE (running work) + xenolab IDLE (listed,
 # never DEAD). computeLanesActive must count ONLY the ACTIVE lane (== 1).
 _STUB_LANES = [
-    ComputeLane(backend_id="vox", kind="compute", state="ACTIVE", running=2, waiting=0),
-    ComputeLane(backend_id="xenolab", kind="compute", state="IDLE", running=0, waiting=0),
+    ComputeLane(backend_id="vox", kind="compute", state="ACTIVE", running=2, waiting=0, queued=0, working=2),
+    ComputeLane(backend_id="xenolab", kind="compute", state="IDLE", running=0, waiting=0, queued=0, working=0),
 ]
 
 

@@ -49,9 +49,17 @@ class AnalysisResult(TimestampMixin, Base):
     # here with the BARE name -- the ck_%(table_name)s_%(constraint_name)s convention renders it as
     # ck_analysis_analysis_completed_xor_failed, matching what migration 033 creates (the ORM half of
     # the empty-autogenerate-diff contract).
+    # phaze-5c6i2 (migration 058): a partial btree ON THE VALUE of ``analysis_completed_at`` (not just
+    # ``ix_analysis_completed``'s existence-only file_id index above) so the lane cards' rolling-24h
+    # PROCESSED count (``analysis_completed_at >= :cutoff``) and the lifetime count (both gated
+    # ``IS NOT NULL`` first) get an efficient range scan instead of a sequential one as the table grows
+    # (acceptance rule 7; see the bead's COST design note). Byte-identical name + predicate text to what
+    # migration 058 creates -- the ORM half of the empty-autogenerate-diff contract, same convention as
+    # the two indexes above.
     __table_args__ = (
         Index("ix_analysis_completed", "file_id", postgresql_where=text("analysis_completed_at IS NOT NULL")),
         Index("ix_analysis_failed", "file_id", postgresql_where=text("failed_at IS NOT NULL")),
+        Index("ix_analysis_completed_at_when", "analysis_completed_at", postgresql_where=text("analysis_completed_at IS NOT NULL")),
         CheckConstraint("NOT (analysis_completed_at IS NOT NULL AND failed_at IS NOT NULL)", name="analysis_completed_xor_failed"),
     )
 
