@@ -30,11 +30,11 @@ import json
 import math
 from operator import itemgetter
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from redis.exceptions import ResponseError
 from sqlalchemy import select
@@ -81,8 +81,11 @@ logger = structlog.get_logger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-# phaze-315t: fingerprinted, cache-forever static asset URLs. `execution/audit_log.html`
-# extends `base.html`, which carries the app.css link + favicon set.
+# phaze-315t: fingerprinted, cache-forever static asset URLs, registered as a Jinja global for
+# every template this router renders. `execution/audit_log.html` no longer needs it directly
+# (phaze-uvmcr.3 made it a content-only fragment, hosted by shell.html's own asset links), but the
+# global stays -- harmless if unused by the current template set, and cheap insurance against a
+# future template rendered through this same `templates` instance needing it.
 templates.env.globals["static_url"] = static_asset_url
 router = APIRouter(tags=["execution"])
 
@@ -609,7 +612,7 @@ async def execution_progress(request: Request, batch_id: uuid.UUID) -> EventSour
                     # batch_id). Close the stream with a terminal event rather than polling forever.
                     yield {
                         "event": "complete",
-                        "data": 'This execution is no longer available. <a href="/audit/" class="text-blue-600 hover:underline ml-2">View Audit Log</a>',
+                        "data": 'This execution is no longer available. <a href="/s/audit" class="text-blue-600 hover:underline ml-2">View Audit Log</a>',
                     }
                     return
                 yield {"event": "progress", "data": "Waiting for execution to start..."}
@@ -674,9 +677,9 @@ async def execution_progress(request: Request, batch_id: uuid.UUID) -> EventSour
             # (CONTEXT specifics line 264 widens the existing single-status check).
             if status in {"complete", "complete_with_errors"}:
                 if failed == 0:
-                    msg = f'Execution complete. All {total} files renamed successfully. <a href="/audit/" class="text-blue-600 hover:underline ml-2">View Audit Log</a>'
+                    msg = f'Execution complete. All {total} files renamed successfully. <a href="/s/audit" class="text-blue-600 hover:underline ml-2">View Audit Log</a>'
                 else:
-                    msg = f'Execution complete. {completed} succeeded, {failed} failed. <a href="/audit/" class="text-blue-600 hover:underline ml-2">View Audit Log</a>'
+                    msg = f'Execution complete. {completed} succeeded, {failed} failed. <a href="/s/audit" class="text-blue-600 hover:underline ml-2">View Audit Log</a>'
                 yield {"event": status, "data": msg}
                 return
 
@@ -743,17 +746,28 @@ async def execution_agents_table_sort(
     )
 
 
-@router.get("/audit/", response_class=HTMLResponse)
-async def audit_log(
-    request: Request,
-    status: str | None = Query(None),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
-    sort: str | None = Query(None),
-    order: str | None = Query(None),
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """Render the audit log page, or an HTMX table fragment."""
+async def build_audit_log_context(
+    session: AsyncSession,
+    *,
+    status: str | None,
+    page: int,
+    page_size: int,
+    sort: str | None,
+    order: str | None,
+) -> dict[str, Any]:
+    """Build every context key the audit log content needs, from the resolved view inputs alone.
+
+    Extracted (phaze-uvmcr.3) so BOTH producers of "what the audit log pane looks like" derive it
+    identically: the ``GET /audit/`` fragment endpoint below (the filter tab / pager / column-sort
+    swap target -- unchanged in path and behavior) and ``shell._render_stage``'s ``"audit"``
+    branch (the ``/s/audit`` direct-nav + rail-swap host, where ``GET /audit/`` now redirects a
+    full-page request). Two independently-drifting descriptions of this content is exactly the
+    phaze-7j50 class of defect ``build_propose_list_context`` (``routers/shell.py``) already paid
+    to avoid for the propose workspace; this follows the same discipline.
+
+    Does NOT include ``request`` -- callers merge that (and any stage-shell keys) into the base
+    context themselves, the same split ``build_propose_list_context`` uses.
+    """
     # phaze-a6hm.5: resolve BEFORE the read, same as every other sortable table (column_sort.py
     # USING IT). ``status`` rides view_state so a header click keeps the operator on their active
     # filter tab (contract rule 4); ``page`` deliberately does not -- a re-sort returns to page 1.
@@ -771,8 +785,7 @@ async def audit_log(
     # that branch so the normal, populated page pays no extra query.
     proposal_ready_count = await count_proposal_pending_files(session) if stats["total"] == 0 else 0
 
-    context = {
-        "request": request,
+    return {
         "logs": audit_page.rows,
         "pagination": audit_page,
         "stats": stats,
@@ -782,13 +795,46 @@ async def audit_log(
         "proposal_ready_count": proposal_ready_count,
     }
 
-    # Tabs + table fragment for a live htmx swap only (so tab active state updates). A history
-    # restore falls through to the full page: htmx ignores hx-target there and swaps the response
-    # into <body>, so a fragment would replace the whole page. See routers/response_shape.py.
-    if wants_fragment(request):
-        return templates.TemplateResponse(request=request, name="execution/partials/audit_content.html", context=context)
 
-    return templates.TemplateResponse(request=request, name="execution/audit_log.html", context=context)
+@router.get("/audit/", response_class=HTMLResponse)
+async def audit_log(
+    request: Request,
+    status: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
+    sort: str | None = Query(None),
+    order: str | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Render the audit-content fragment for a live htmx swap; redirect everything else to /s/audit.
+
+    phaze-uvmcr.3: "audit" is now a registered ``UTILITY_PANES`` shell stage
+    (``routers/shell.py``), reachable with the rail intact at ``/s/audit`` -- which composes the
+    SAME ``execution/audit_log.html`` content (now a content-only fragment, no ``{% extends %}``)
+    this route used to render standalone via its own ``base.html`` fork. That full-page branch was
+    therefore redundant, same shape as ``pipeline.pipeline_files``'s phaze-uvmcr.2 fix: a plain
+    request, a bookmark/reload, or a history restore (``response_shape.wants_fragment`` is False
+    for all three, per contract rule 2 -- a restore ignores ``hx-target`` and swaps into ``<body>``,
+    so it is a full-document request too) now 301-redirects to ``/s/audit``, carrying the request's
+    WHOLE query string across so a bookmarked/filtered ``/audit/`` URL still reads the same on the
+    other side.
+
+    The live htmx swap branch -- the filter tabs, the pager, and the column-sort headers, which all
+    target ``#audit-content`` and hit THIS route unchanged -- is untouched: it still returns the
+    chrome-less ``execution/partials/audit_content.html`` fragment, now sourced from the shared
+    :func:`build_audit_log_context` so it cannot drift from ``/s/audit``'s own render of the same
+    view. ``GET /audit/{log_id}/detail`` is a separate route entirely and is unaffected by any of
+    this -- it is a fragment endpoint, not a bookmarkable page, and stays exactly where it is.
+    """
+    if not wants_fragment(request):
+        query = request.url.query
+        return RedirectResponse(url=f"/s/audit?{query}" if query else "/s/audit", status_code=301)
+
+    context: dict[str, Any] = {
+        "request": request,
+        **(await build_audit_log_context(session, status=status, page=page, page_size=page_size, sort=sort, order=order)),
+    }
+    return templates.TemplateResponse(request=request, name="execution/partials/audit_content.html", context=context)
 
 
 @router.get("/audit/{log_id}/detail", response_class=HTMLResponse)

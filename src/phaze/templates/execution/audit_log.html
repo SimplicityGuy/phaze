@@ -1,14 +1,40 @@
-{% extends "base.html" %}
+{# phaze-uvmcr.3: the Audit Log pane content, hosted at /s/audit (routers/shell.py UTILITY_PANES).
 
-{% block title %}Audit Log - Phaze{% endblock %}
+   Content-only fragment: no {% extends %}, no <html>/<head> -- this is the SAME discipline every
+   STAGE_PARTIALS/UTILITY_PANES value follows (see shell/_stage_fragment.html's docstring). It used
+   to `{% extends "base.html" %}` as its own full document, rendered by the now-redirecting
+   GET /audit/ (routers/execution.py); that fork is gone, so this file is included verbatim by
+   BOTH the full shell (shell/shell.html) and a live rail swap (shell/_stage_fragment.html) via
+   `{% include stage_partial %}`, exactly like every sibling pane.
 
-{% block content %}
-<a href="#audit-table" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-blue-600 dark:bg-blue-700 focus:text-white focus:px-4 focus:py-2 focus:rounded focus:z-50">Skip to audit table</a>
+   It composes _workspace_scaffold.html rather than hand-rolling its own header, for the same two
+   reasons every other STAGE_PARTIALS/UTILITY_PANES host does (see audit_placeholder.html's retired
+   rationale, and shell/partials/agents_placeholder.html's live one): (1) the scaffold's single
+   <h1 tabindex="-1"> is the ONE focus-landing target test_every_rail_stage_carries_exactly_one_
+   focus_heading requires, on every navigable node; (2) it includes _workspace_poll_seeds.html, the
+   hidden OOB seed-target host the shell's single persistent /pipeline/stats poll needs on every
+   stage, this one included.
 
-<h1 class="text-2xl font-semibold leading-tight text-gray-900 dark:text-gray-100 mb-6">Audit Log</h1>
+   SKIP-LINK DECISION (explicit, not carried over mechanically): the old full-page version of this
+   template had its own "Skip to audit table" link. It is DROPPED here, deliberately. The shell
+   already provides "Skip to workspace" (shell.html:211), which lands on #stage-workspace -- the
+   element THIS content renders directly inside, with nothing but the scaffold's own header bar in
+   between. No other STAGE_PARTIALS/UTILITY_PANES content template carries a second skip-link (the
+   one exception in the codebase, admin/agents.html's "Skip to agents table", belongs to the
+   standalone admin page that pane replaces, not to a shell-hosted one) -- adding a second link here
+   would be redundant at best and, at worst, confusing: two skip targets landing one element apart
+   is not an accessibility improvement, it is a second choice nobody asked for.
 
+   #audit-content is unchanged: it is still the exact div id the filter tabs, pager, and column-sort
+   headers all hx-target (execution/partials/filter_tabs.html, pagination.html, audit_table.html),
+   still populated by GET /audit/'s fragment branch (execution/partials/audit_content.html, itself
+   just these same two includes) -- none of that swap wiring changed, only the page it now lives
+   inside of.
+#}
+{% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% call ws.workspace(title="AUDIT LOG") %}
 <div id="audit-content">
 {% include "execution/partials/filter_tabs.html" %}
 {% include "execution/partials/audit_table.html" %}
 </div>
-{% endblock %}
+{% endcall %}
