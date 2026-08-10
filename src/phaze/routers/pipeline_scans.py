@@ -606,7 +606,13 @@ async def trigger_scan(
             context={"request": request, "error_message": "A scan is already running for this path."},
             status_code=RENDERABLE_ALERT_STATUS,
         )
-    await session.refresh(batch)
+    # phaze-266lc: no ``session.refresh(batch)`` here. The sessionmaker is
+    # ``expire_on_commit=False`` (database.py), so ``batch``'s attributes already survive the
+    # commit above without a refresh -- the refresh was redundant and its sole effect was to
+    # autobegin a NEW transaction on this session, which then sat idle-in-transaction across the
+    # enqueue call below (the phaze-1v37 pool-drain class: PgBouncer SESSION mode pins an upstream
+    # server slot per checkout, and a long-open idle transaction also holds back the vacuum xmin
+    # horizon). Dropping it closes that window with no behavior change.
 
     # Enqueue scan_directory via AgentTaskRouter (Phase 26 D-19). On enqueue
     # failure: mark the batch FAILED and return 503 with the documented copy.

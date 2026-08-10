@@ -402,6 +402,41 @@ async def test_post_scans_happy_path(
 
 
 @pytest.mark.asyncio
+async def test_post_scans_does_not_refresh_before_enqueue(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-266lc: trigger_scan drops the redundant post-commit ``session.refresh(batch)``.
+
+    The sessionmaker is ``expire_on_commit=False`` (database.py), so ``batch``'s attributes already
+    survive the RUNNING-batch commit without a refresh -- the refresh's sole effect was to autobegin
+    a NEW read transaction on the request session that then sat idle-in-transaction across the
+    ``enqueue_for_agent`` broker call (the phaze-1v37 pool-drain class). Spy on both ``refresh`` and
+    ``enqueue_for_agent`` and assert refresh is never called at all.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
+
+    ac, mock_router = smoke
+    refresh_calls: list[str] = []
+    real_refresh = _AsyncSession.refresh
+
+    async def _spy_refresh(self: _AsyncSession, *args: object, **kwargs: object) -> None:
+        refresh_calls.append("refresh")
+        await real_refresh(self, *args, **kwargs)
+
+    monkeypatch.setattr(_AsyncSession, "refresh", _spy_refresh)
+
+    response = await ac.post(
+        "/pipeline/scans",
+        data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "2026/"},
+    )
+    assert response.status_code == 200, response.text
+    mock_router.enqueue_for_agent.assert_awaited_once()
+    assert refresh_calls == [], "trigger_scan must not refresh() the RUNNING batch before enqueueing (phaze-266lc)"
+
+
+@pytest.mark.asyncio
 async def test_post_scans_subpath_rejects_dotdot(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,
