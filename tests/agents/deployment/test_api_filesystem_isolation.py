@@ -21,6 +21,7 @@ the source-file invariant, not the post-interpolation runtime value.
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 
@@ -168,6 +169,14 @@ def test_app_services_pass_through_raw_redis_password() -> None:
     (phaze-1g89i). Passing the raw password through its OWN var instead lets
     ``config.py``'s ``_apply_redis_password`` percent-encode it into ``redis_url``'s userinfo
     in Python, where the byte string is still intact — no shell/URL round-trip to mangle it.
+
+    phaze-qu5ne (superseded by phaze-1g89i): the OLD DSN-assembly shape also had an
+    alias-priority bug — it used to inject under the bare ``REDIS_URL`` name, which
+    ``redis_url``'s ``AliasChoices("PHAZE_REDIS_URL", "REDIS_URL", "redis_url")`` ranks BELOW
+    an operator's own ``.env`` ``PHAZE_REDIS_URL``, so a passwordless ``.env`` value could
+    silently outrank and defeat it. ``_apply_redis_password`` closes that gap too, as a side
+    effect of applying AFTER alias resolution regardless of which alias won — see
+    ``test_compose_authenticated_redis_url_outranks_dotenv_alias`` below.
     """
     data = _load_compose()
     for svc_name in ("api", "worker"):
@@ -180,6 +189,36 @@ def test_app_services_pass_through_raw_redis_password() -> None:
         assert "${REDIS_PASSWORD:?" in password_entries[0], (
             f"{svc_name} REDIS_PASSWORD must keep the fail-fast ${{REDIS_PASSWORD:?...}} form; got {password_entries[0]!r}"
         )
+
+
+def test_compose_authenticated_redis_url_outranks_dotenv_alias(monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-qu5ne regression, end to end (superseded mechanism, same closed gap): simulate
+    compose's `environment:` REDIS_PASSWORD + `env_file: .env` both landing in the SAME process
+    env (as they do inside a running container), with an operator's .env-style passwordless
+    PHAZE_REDIS_URL ALSO present, and prove ControlSettings still resolves an AUTHENTICATED
+    redis_url — not the operator's passwordless one.
+
+    phaze-qu5ne originally reported this gap against the OLD compose shape, which assembled a
+    full authenticated DSN under the bare ``REDIS_URL`` name (outranked by ``PHAZE_REDIS_URL``
+    via ``AliasChoices`` first-match-wins). phaze-1g89i replaced that shape entirely: compose now
+    passes a RAW ``REDIS_PASSWORD`` (see ``test_app_services_pass_through_raw_redis_password``
+    above), and ``_apply_redis_password`` (config.py) percent-encodes it into whatever
+    ``redis_url`` resolved to AFTER alias resolution — so the password lands correctly
+    regardless of which alias (``PHAZE_REDIS_URL``, ``REDIS_URL``, or the field default) won,
+    closing the exact same NOAUTH drift by construction rather than by out-ranking an alias.
+    """
+    from phaze.config import ControlSettings
+
+    # The operator's own .env-style value — top-priority alias, passwordless, wins resolution.
+    monkeypatch.setenv("PHAZE_REDIS_URL", "redis://redis:6379/0")
+    # What compose now injects (phaze-1g89i) — a raw password, not a competing redis_url alias.
+    monkeypatch.setenv("REDIS_PASSWORD", "supersecret")
+
+    settings = ControlSettings()
+
+    assert settings.redis_url == "redis://default:supersecret@redis:6379/0", (
+        f"REDIS_PASSWORD must be applied to redis_url regardless of which alias resolved it; got {settings.redis_url!r}"
+    )
 
 
 def test_api_service_pins_container_side_models_path() -> None:

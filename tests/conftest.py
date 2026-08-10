@@ -522,6 +522,13 @@ def job_env(monkeypatch: pytest.MonkeyPatch, tmp_path):  # type: ignore[no-untyp
     monkeypatch.setenv("PHAZE_AGENT_CA_FILE", str(ca_file))
     monkeypatch.setenv("PHAZE_MODELS_DIR", str(models_dir))
     monkeypatch.setenv("PHAZE_JOB_FILE_ID", str(file_id))
+    # phaze-27myl: job_runner.py is EXCLUSIVELY the k8s one-shot analyze-pod entrypoint
+    # (build_job_manifest code-injects PHAZE_AGENT_KIND=compute alongside PHAZE_JOB_FILE_ID on
+    # every real deploy, docs/k8s-burst.md Sec 6) -- match that here so this fixture stays
+    # accurate to the real env AND so AgentSettings' queue_url fail-fast (scoped to
+    # kind != "compute") doesn't apply to it; job_runner never imports the PostgresQueue
+    # machinery and its documented agent-env ConfigMap carries no PHAZE_QUEUE_URL.
+    monkeypatch.setenv("PHAZE_AGENT_KIND", "compute")
 
     get_settings.cache_clear()
     yield {

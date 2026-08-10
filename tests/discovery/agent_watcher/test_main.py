@@ -60,6 +60,12 @@ def _build_agent_settings(monkeypatch: pytest.MonkeyPatch) -> AgentSettings:
     monkeypatch.setenv("PHAZE_AGENT_API_URL", "http://test:8000")
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-TOKEN-1234567890ab")
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/data/music")
+    # phaze-27myl: fileserver-kind (the default) AgentSettings now fail-fasts on the default
+    # (docker-service-name) queue_url. The watcher itself never reads queue_url (it doesn't
+    # import agent_worker's PostgresQueue), but it shares the SAME .env as the lane workers on
+    # a real deploy (docker-compose.agent.yml `watcher:` service, `env_file: .env`), so this is
+    # present on every real watcher process too.
+    monkeypatch.setenv("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@app-server.example:5432/phaze")
     return AgentSettings()
 
 
