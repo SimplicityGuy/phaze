@@ -66,8 +66,9 @@
    duplicate ids that grew one level deeper per filter/sort/pager click (mirrors the analyze-view fix,
    phaze-5462). The host owns the id and the shared OOB seed-target placeholders (87-09 gap-fix); this
    fragment is content only. pipeline_files() (pipeline.py) returns this same fragment for the live
-   filter/sort/pager swap and pipeline/files.html includes it for the bookmark/reload/history-restore
-   full page -- both host-side wrappers own the id, so this partial never needs to. #}
+   filter/sort/pager swap; a bookmark/reload/history-restore of the non-fragment shape now redirects
+   to /s/files (files_workspace.html, the sole surviving host) instead of a second full-page fork
+   (phaze-uvmcr.2 retired pipeline/files.html) -- the host owns the id, so this partial never needs to. #}
     {# One legend per surface (D-01) -- single-sourced in _stage_matrix.html's legend_only branch. #}
     <div class="px-6 pt-2">{% with legend_only=True %}{% include "pipeline/partials/_stage_matrix.html" %}{% endwith %}</div>
     {# Per-stage status filter lens (87-05, UI-02 / D-03) -- URL-carried, failure-inclusive; ONE canonical

@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Annotated, Any, cast
 import uuid  # noqa: TC003
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import ARRAY, String, bindparam, delete, exists, func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import UUID as PGUUID, insert as pg_insert
@@ -370,8 +370,8 @@ if TYPE_CHECKING:
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-# phaze-315t: fingerprinted, cache-forever static asset URLs. `pipeline/files.html` extends
-# `base.html`, which carries the app.css link + favicon set.
+# phaze-315t: fingerprinted, cache-forever static asset URLs (app.css link + favicon set), used by
+# any template rendered through this env that pulls in `base.html`/`shell.html` chrome.
 templates.env.globals["static_url"] = static_asset_url
 router = APIRouter(tags=["pipeline"])
 
@@ -1201,7 +1201,7 @@ async def pipeline_files(
     sort: str | None = Query(None),
     order: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
+) -> Response:
     """Render the paginated, per-row-derived files table (UI-01 / D-02).
 
     The scannable "where's this file at?" overview: each row carries the six-pill stage matrix
@@ -1225,10 +1225,24 @@ async def pipeline_files(
     ``HX-Request: true`` too but IGNORES ``hx-target`` and swaps into ``<body>``, so the fragment
     replaced the whole page with an orphaned filter bar + table; a plain reload/bookmark of the
     pushed URL (no htmx headers at all) hit the exact same branch and served a raw fragment with no
-    ``<html>``, CSS, htmx, or Alpine. Mirroring ``audit_log`` (``execution.py``): a live htmx swap
-    (``wants_fragment`` True) still gets the same bare fragment, unchanged; anything else -- a plain
-    request or a restore -- gets the full ``pipeline/files.html`` page instead.
+    ``<html>``, CSS, htmx, or Alpine. A live htmx swap (``wants_fragment`` True) still gets the same
+    bare fragment, unchanged.
+
+    phaze-uvmcr.2: anything else -- a plain request or a restore -- used to get a rail-less full
+    page (``pipeline/files.html``, its own ``{% extends "base.html" %}`` fork of this same content).
+    That page was redundant: ``"files"`` is a registered shell stage (``routers/shell.py``
+    ``STAGE_PARTIALS``), reachable with the rail intact at ``/s/files``, which composes the SAME
+    ``files_table_view.html`` fragment via ``pipeline/partials/files_workspace.html``. So the
+    non-fragment branch now REDIRECTS there instead of rendering a second copy of the page, carrying
+    the request's query string across (the filter/sort/pager state the URL-carried-lens idiom above
+    rides on) so the redirected URL at least reads the same as the one that was bookmarked --
+    ``/s/files`` itself is unchanged and does not re-derive a filtered page from it. This is the last
+    caller of ``pipeline/files.html``, which phaze-uvmcr.2 deletes alongside this change.
     """
+    if not wants_fragment(request):
+        query = request.url.query
+        return RedirectResponse(url=f"/s/files?{query}" if query else "/s/files", status_code=302)
+
     stage_enum: Stage | None = None
     if stage:
         try:
@@ -1248,10 +1262,7 @@ async def pipeline_files(
         "active_bucket": bucket_val,
         "sort": sort_state,
     }
-    if wants_fragment(request):
-        return templates.TemplateResponse(request=request, name="pipeline/partials/files_table_view.html", context=context)
-
-    return templates.TemplateResponse(request=request, name="pipeline/files.html", context=context)
+    return templates.TemplateResponse(request=request, name="pipeline/partials/files_table_view.html", context=context)
 
 
 @router.get("/pipeline/analyze-files", response_class=HTMLResponse)

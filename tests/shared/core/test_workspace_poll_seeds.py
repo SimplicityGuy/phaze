@@ -83,7 +83,7 @@ async def test_files_workspace_hosts_poll_seeds_but_filter_fragment_does_not(cli
     seed id would split the OOB target).
     """
     workspace = (await client.get("/s/files")).text
-    fragment = (await client.get("/pipeline/files")).text
+    fragment = (await client.get("/pipeline/files", headers={"HX-Request": "true"})).text
 
     assert 'id="dag-seed-analyzeOrphan"' in workspace, "/s/files workspace must host the orphan seed target"
     assert 'id="dag-seed-metadataDone"' in workspace, "/s/files workspace must host the poll-seed block"
