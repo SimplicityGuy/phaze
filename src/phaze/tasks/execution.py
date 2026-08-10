@@ -64,6 +64,21 @@ success-reporting path used by a first-time success -- already idempotent via th
 ``execution_log_id``/``progress_request_id`` -- which also self-heals ``current_path`` (the
 success PATCH sets it from ``str(proposed)``).
 
+phaze-ebb46 correction: "conclusive replay evidence" above overstated it. ``not original.exists()
+and proposed.exists()`` plus a matching content hash proves ``proposed`` is byte-identical to what
+``original`` used to be -- it does NOT prove `proposed` is THIS proposal's own move. phaze is a
+dedup tool, so an archive full of exact duplicates means a byte-identical `proposed` can just as
+easily be a DIFFERENT proposal's already-completed move to the same destination, whose own source
+has since gone missing for an unrelated reason. That gap is exactly the one phaze-i7jo already
+closed for the cross-fs residue branch below (content identity alone was ruled insufficient there
+too); the already-moved branch got no equivalent guard until now. The fix requires per-proposal
+corroboration -- this proposal's own "moved" flag (``_moved_flag_key``, persisted in ``job.meta``
+right after ITS move commits, retry-stable exactly like ``execution_log_id``/``progress_request_id``)
+or its cross-fs commit marker (``_committed_copy_marker_path``) -- before trusting the fast path.
+Uncorroborated, ``_execute_one`` falls through to the normal move/verify code, which fails loudly
+on the missing `original` instead of silently reporting a stranger's move as this proposal's own
+success.
+
 Cross-filesystem crash-state model (phaze-k23z / phaze-q2lg / phaze-qx8z / phaze-i7jo): a cross-fs
 move is a non-atomic copy-then-delete, so it has TWO durable committed states the executor must
 treat coherently:
@@ -250,6 +265,32 @@ def _unique_tmp_path(dst: Path) -> Path:
     the same (pid, uuid4) pair is not a real-world possibility.
     """
     return dst.with_name(f"{dst.name}{_COPY_TMP_SUFFIX}.{os.getpid()}.{uuid.uuid4().hex}")
+
+
+# phaze-ebb46: prefix for the per-proposal "moved" corroboration flag persisted in
+# ``ctx['job'].meta`` (see ``_moved_flag_key``). Mirrors the retry-stable
+# ``log_id:``/``req_id:`` key convention from `_load_or_seed_uuids` -- same dict, same
+# survive-a-SAQ-retry guarantee, just a boolean-shaped flag instead of a UUID.
+_MOVED_FLAG_PREFIX = "moved:"
+
+
+def _moved_flag_key(proposal_id: uuid.UUID) -> str:
+    """``job.meta`` key proving `proposal_id` itself already committed its move.
+
+    phaze-ebb46: the ``already_moved`` fast path (``not original.exists() and
+    proposed.exists()``) is conclusive evidence of a REPLAY only when corroborated
+    per-proposal -- phaze is a dedup tool, so a byte-identical `proposed` can just as
+    easily be a DIFFERENT proposal's already-completed move to the same destination
+    (the same insufficiency the phaze-i7jo cross-fs commit marker exists to close, one
+    level up). The same-fs move path has no residue window to inspect the way the
+    cross-fs copy does (a single atomic syscall, not a copy-then-delete with a
+    durable intermediate state), so this flag is the same-fs equivalent: written to
+    ``job.meta`` -- retry-stable like ``log_id:``/``req_id:`` (D-15) -- immediately
+    after THIS proposal's own move commits, so a later SAQ retry of the SAME job can
+    tell "my own prior move" apart from "someone else's already-completed move that
+    happens to sit at my destination".
+    """
+    return f"{_MOVED_FLAG_PREFIX}{proposal_id}"
 
 
 def _same_filesystem(src: Path, dst_dir: Path) -> bool:
@@ -576,6 +617,7 @@ async def _execute_one(
     is_last: bool,
     execution_log_id: uuid.UUID,
     progress_request_id: uuid.UUID,
+    job: Any | None,
 ) -> bool:
     """Execute one proposal. Returns True on success, False on any failure.
 
@@ -591,6 +633,10 @@ async def _execute_one(
     The two UUID arguments (``execution_log_id`` and ``progress_request_id``)
     come from ``execute_approved_batch`` which loaded them from ``ctx['job'].meta``
     so SAQ retries reuse the same per-proposal values (closes L6/L22; delivers D-15).
+
+    ``job`` (the SAQ job, or ``None`` for a legacy ctx with no ``'job'`` key) is threaded
+    through so this function can read and persist the phaze-ebb46 per-proposal "moved"
+    replay-corroboration flag in ``job.meta`` -- see the ``already_moved`` block below.
     """
     sha_verified = item.sha256_hash is not None
     # Relative destination for the audit trail (source_path is absolute, but the
@@ -652,7 +698,35 @@ async def _execute_one(
         # entirely and fall through to the success-reporting path, which is already
         # idempotent (retry-stable execution_log_id/progress_request_id) and also
         # self-heals current_path (the success PATCH sets it from `str(proposed)`).
+        #
+        # phaze-ebb46: content identity (a hash check below) plus a missing source is
+        # NOT, on its own, conclusive that `proposed` is THIS proposal's own replayed
+        # move -- phaze is a dedup tool, so an archive full of exact duplicates means a
+        # byte-identical `proposed` can just as easily be a DIFFERENT proposal's
+        # already-completed move to the same destination, whose OWN source has since
+        # gone missing for an unrelated reason (deleted by hand, external tooling, a
+        # prior partial failure). The already-moved branch used to trust content
+        # identity alone -- exactly the inference phaze-i7jo already rejected for the
+        # cross-fs residue branch one function down. Require the SAME kind of
+        # per-proposal corroboration here: either this proposal's own "moved" flag
+        # (`_moved_flag_key`, persisted in job.meta right after ITS move committed) or
+        # its cross-fs commit marker (the copy-committed-pending-unlink residue,
+        # phaze-i7jo/qx8z -- a genuine cross-fs replay can reach this same branch too).
+        # Absent both, this is not conclusive replay evidence: fall through to the
+        # normal move/verify path below, which fails LOUDLY on the now-missing
+        # `original` instead of silently reporting a stranger's move as this
+        # proposal's own success.
         already_moved = not original.exists() and proposed.exists()
+        if already_moved:
+            job_meta = dict(getattr(job, "meta", None) or {}) if job is not None else {}
+            corroborated = (
+                job_meta.get(_moved_flag_key(item.proposal_id)) is not None
+                or _committed_copy_marker_path(
+                    proposed,
+                    item.proposal_id,
+                ).exists()
+            )
+            already_moved = corroborated
         if already_moved and item.sha256_hash is not None:
             # Confirm `proposed` is actually the expected file before trusting the
             # replay -- a hash mismatch means this isn't the already-moved file (e.g.
@@ -807,6 +881,21 @@ async def _execute_one(
                 # The move completed in full within this same call -- the marker's only
                 # job was to survive a crash between the two lines above; clean it up.
                 _committed_copy_marker_path(proposed, item.proposal_id).unlink(missing_ok=True)
+
+            # phaze-ebb46: persist THIS proposal's own "moved" corroboration flag now that
+            # its move is fully committed -- retry-stable in job.meta, same idempotent
+            # convention as `log_id:`/`req_id:` (D-15). This is the fresh-execution half of
+            # the corroboration check above: a same-fs move is one atomic syscall with no
+            # cross-fs-style residue window to inspect on replay, so this flag is what lets
+            # a LATER SAQ retry of this same job tell "my own prior move" apart from a
+            # different proposal's already-completed move that happens to sit at this exact
+            # destination (the phaze-i7jo insufficiency this bead closes for the same-fs
+            # path too). Only reached on a FRESH commit -- an already-moved replay skips
+            # this whole block, so the flag is never redundantly re-persisted.
+            if job is not None:
+                updated_job_meta = dict(getattr(job, "meta", None) or {})
+                updated_job_meta[_moved_flag_key(item.proposal_id)] = "1"
+                await job.update(meta=updated_job_meta)
 
         # 6a. PATCH execution log to completed.
         # phaze-87ba: heal the row first if its write-ahead POST never landed -- otherwise this
@@ -1052,6 +1141,7 @@ async def execute_approved_batch(ctx: dict[str, Any], **kwargs: Any) -> dict[str
             is_last,
             log_ids[item.proposal_id],
             req_ids[item.proposal_id],
+            job,
         )
         processed += 1
         if not ok:

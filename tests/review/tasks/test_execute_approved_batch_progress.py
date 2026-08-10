@@ -51,10 +51,23 @@ def _make_api_client_mock() -> AsyncMock:
 
 
 def _make_job_mock(initial_meta: dict[str, str] | None = None) -> MagicMock:
-    """Mock SAQ Job with a writeable ``meta`` dict and an async ``update`` method."""
+    """Mock SAQ Job with a writeable ``meta`` dict and an async ``update`` method.
+
+    phaze-ebb46: ``update`` now has a ``side_effect`` that actually applies ``meta=...`` onto
+    ``job.meta``, mirroring real SAQ (``saq.queue.base.Queue.update`` does ``setattr(job, k, v)``
+    for every kwarg before persisting). Without this the mock's ``job.meta`` stayed frozen at
+    whatever ``initial_meta`` was, so code that reads ``job.meta`` again later in the SAME batch
+    (as this bead's per-proposal "moved" flag does, right after `_load_or_seed_uuids` already
+    wrote the UUID keys) would see a stale, incomplete dict instead of the real cumulative state.
+    """
     job = MagicMock()
     job.meta = dict(initial_meta or {})
-    job.update = AsyncMock(return_value=None)
+
+    async def _update(**kwargs: object) -> None:
+        for key, value in kwargs.items():
+            setattr(job, key, value)
+
+    job.update = AsyncMock(side_effect=_update)
     return job
 
 
@@ -371,7 +384,13 @@ async def test_uuids_reused_from_job_meta_on_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pre-seeded job.meta -> UUIDs re-used; job.update NOT called; POST'd UUIDs match."""
+    """Pre-seeded job.meta -> UUIDs re-used (no re-seed update); POST'd UUIDs match.
+
+    phaze-ebb46: this is a genuinely FRESH move (the destination doesn't exist yet), so
+    ``job.update`` IS still called once -- not to re-seed the already-present UUIDs (closes
+    L6/L22, unchanged), but to persist this bead's per-proposal "moved" corroboration flag
+    immediately after the move commits.
+    """
     _patch_settings(monkeypatch, [str(tmp_path)])
     api = _make_api_client_mock()
     orig_paths, proposed_paths = _seed_files(tmp_path, 1)
@@ -398,8 +417,13 @@ async def test_uuids_reused_from_job_meta_on_retry(
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
     await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
 
-    # Both keys were already present -> NO update call (closes L6/L22).
-    job.update.assert_not_awaited()
+    # The UUID keys were already present -> the only job.update call is this bead's
+    # per-proposal "moved" flag (phaze-ebb46), not a fresh UUID seed.
+    assert job.update.await_count == 1
+    updated_meta = job.update.await_args.kwargs["meta"]
+    assert updated_meta[f"log_id:{proposal_id}"] == str(preseeded_log_id)
+    assert updated_meta[f"req_id:{proposal_id}"] == str(preseeded_req_id)
+    assert updated_meta[f"moved:{proposal_id}"] is not None
 
     # ExecutionLog POST re-used the preseeded log_id.
     assert api.post_execution_log.await_count == 1
@@ -446,6 +470,15 @@ async def test_crash_retry_already_moved_reports_completed_not_stale_failed(
     proposed.exists()`` up front, skips the file op entirely, and falls through
     to the SAME success-reporting path a first-time success takes -- the
     proposal ends ``executed``/COMPLETED with ``current_path == str(proposed)``.
+
+    phaze-ebb46: the crash window this models is "the move committed AND this
+    proposal's own ``moved:`` flag was durably persisted to job.meta, then the
+    worker died before the completed/executed/progress PATCHes" -- so the flag is
+    pre-seeded here alongside the UUIDs, exactly as a real first attempt would have
+    left it. Without that corroboration the already-moved fast path is no longer
+    conclusive (see the same-named test file's sibling
+    ``test_crash_retry_already_moved_uncorroborated_fails_loudly_not_silently``),
+    which is the whole point of this bead.
     """
     _patch_settings(monkeypatch, [str(tmp_path)])
     api = _make_api_client_mock()
@@ -461,6 +494,7 @@ async def test_crash_retry_already_moved_reports_completed_not_stale_failed(
         initial_meta={
             f"log_id:{proposal_id}": str(preseeded_log_id),
             f"req_id:{proposal_id}": str(preseeded_req_id),
+            f"moved:{proposal_id}": "1",
         },
     )
 
@@ -527,15 +561,21 @@ async def test_crash_retry_already_moved_with_hash_verifies_against_proposed(
     Pre-fix, a hash-carrying retry of an already-moved proposal would hit
     ``_sha256_of_file(original)`` and raise FileNotFoundError (a distinct crash
     signature from the no-hash case, but still misreports the proposal FAILED).
+
+    phaze-ebb46: pre-seeds this proposal's own ``moved:`` corroboration flag,
+    modeling a real first attempt that committed the move and persisted the flag
+    before crashing -- see the docstring on
+    ``test_crash_retry_already_moved_reports_completed_not_stale_failed``.
     """
     _patch_settings(monkeypatch, [str(tmp_path)])
     api = _make_api_client_mock()
-    job = _make_job_mock()
 
     orig_paths, proposed_paths = _seed_files(tmp_path, 1)
     original = orig_paths[0]
     proposed = proposed_paths[0]
     content_hash = hashlib.sha256(original.read_bytes()).hexdigest()
+    proposal_id = uuid.uuid4()
+    job = _make_job_mock(initial_meta={f"moved:{proposal_id}": "1"})
 
     # Simulate the crash window (same as above): the move already committed.
     proposed.parent.mkdir(parents=True, exist_ok=True)
@@ -543,7 +583,7 @@ async def test_crash_retry_already_moved_with_hash_verifies_against_proposed(
 
     proposals = [
         ExecuteBatchProposalItem(
-            proposal_id=uuid.uuid4(),
+            proposal_id=proposal_id,
             file_id=uuid.uuid4(),
             original_path=str(original),
             proposed_path="new",
@@ -572,14 +612,22 @@ async def test_crash_retry_hash_mismatch_at_proposed_is_still_a_genuine_failure(
     the proposal's own replayed move (e.g. an unrelated file landed at the
     destination) and must be reported as a genuine verify failure, not silently
     swallowed into a false 'completed'.
+
+    phaze-ebb46: pre-seeds the ``moved:`` corroboration flag so this exercises the
+    hash-check verify branch specifically (a CORROBORATED replay that still fails on
+    content mismatch), rather than being short-circuited earlier by the new
+    uncorroborated-replay guard this bead adds -- see
+    ``test_crash_retry_already_moved_uncorroborated_fails_loudly_not_silently`` for
+    that separate, now-covered failure mode.
     """
     _patch_settings(monkeypatch, [str(tmp_path)])
     api = _make_api_client_mock()
-    job = _make_job_mock()
 
     orig_paths, proposed_paths = _seed_files(tmp_path, 1)
     original = orig_paths[0]
     proposed = proposed_paths[0]
+    proposal_id = uuid.uuid4()
+    job = _make_job_mock(initial_meta={f"moved:{proposal_id}": "1"})
 
     # Simulate the already-moved shape, but `proposed` does NOT match the
     # declared hash (as if an unrelated file occupies the destination).
@@ -588,7 +636,7 @@ async def test_crash_retry_hash_mismatch_at_proposed_is_still_a_genuine_failure(
 
     proposals = [
         ExecuteBatchProposalItem(
-            proposal_id=uuid.uuid4(),
+            proposal_id=proposal_id,
             file_id=uuid.uuid4(),
             original_path=str(original),
             proposed_path="new",
@@ -605,6 +653,148 @@ async def test_crash_retry_hash_mismatch_at_proposed_is_still_a_genuine_failure(
     assert state_patch.proposal_state == "failed"
     progress_post = _payload_from_call(api.post_exec_batch_progress.await_args)
     assert progress_post.failed_at_step == "verify"
+
+
+# ---------------------------------------------------------------------------
+# phaze-ebb46 — the already-moved heuristic must not trust content identity ALONE.
+# A missing source with a byte-identical file already sitting at the destination
+# (a DIFFERENT proposal's completed move, or simply no evidence at all) must fail
+# loudly instead of being silently reported EXECUTED with a stolen current_path.
+# ---------------------------------------------------------------------------
+
+
+async def test_crash_retry_already_moved_uncorroborated_fails_loudly_not_silently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The already-moved SHAPE alone (original gone, proposed present, hash matches) is not
+    conclusive replay evidence without per-proposal corroboration (phaze-ebb46).
+
+    Unlike the phaze-ebpt regression tests above -- which pre-seed THIS proposal's own
+    ``moved:`` flag to model the real "committed then crashed before the PATCHes" window --
+    this test seeds neither the flag nor a cross-fs commit marker, modeling the case the
+    old heuristic got wrong: content identity plus a missing source with zero evidence this
+    proposal is the one that produced it. The fast path must refuse to trust it.
+    """
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    job = _make_job_mock()  # no moved: flag seeded
+
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    original = orig_paths[0]
+    proposed = proposed_paths[0]
+    content_hash = hashlib.sha256(original.read_bytes()).hexdigest()
+
+    # already-moved SHAPE: original gone, proposed present with MATCHING content -- but no
+    # evidence that THIS proposal is the one that put it there.
+    proposed.parent.mkdir(parents=True, exist_ok=True)
+    original.replace(proposed)
+
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(original),
+            proposed_path="new",
+            proposed_filename=proposed.name,
+            sha256_hash=content_hash,
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+    result = await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    # Uncorroborated -- must fail loudly, never silently "executed".
+    assert result["status"] == "completed_with_errors"
+    assert result["error_count"] == 1
+    state_patch = api.patch_proposal_state.await_args.args[1]
+    assert state_patch.proposal_state == "failed"
+    # The destination -- which this proposal never proved it authored -- is untouched.
+    assert proposed.exists()
+
+
+async def test_duplicate_missing_source_is_not_silently_executed_onto_another_records_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-ebb46 failure scenario, reproduced directly against the real code path.
+
+    X and Y are byte-identical duplicates (same sha256; phaze's core use case). X's proposal
+    already executed via the REAL ``_execute_one`` path -- so X's OWN job.meta correctly
+    carries X's OWN ``moved:`` corroboration flag -- and landed X at a shared destination.
+    Y's source then goes missing for an unrelated reason (operator deleted the redundant
+    copy by hand, external tooling, a prior partial failure) before Y's proposal executes,
+    on a DIFFERENT job that has never touched this destination.
+
+    Pre-fix: ``original.exists()`` False, ``proposed.exists()`` True, and the hash matches
+    (duplicates are identical) -- the heuristic "confirmed" already-moved on content identity
+    alone and silently reported Y EXECUTED with ``current_path`` aliased onto X's file, the
+    exact FileRecord corruption this bead closes.
+
+    Post-fix: Y holds no corroboration of its own for this destination (only X's job ever
+    wrote one, and only under X's proposal_id), so Y fails loudly instead.
+    """
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    content = b"duplicate-audio-bytes" * 4096
+    content_hash = hashlib.sha256(content).hexdigest()
+    destination_name = "song.mp3"
+
+    # X: a real first execution, landing X at the shared destination and persisting X's own
+    # moved: flag under X's own job.
+    original_x = tmp_path / "orig" / "x.mp3"
+    original_x.parent.mkdir(parents=True, exist_ok=True)
+    original_x.write_bytes(content)
+    proposal_x = uuid.uuid4()
+    job_x = _make_job_mock()
+    proposals_x = [
+        ExecuteBatchProposalItem(
+            proposal_id=proposal_x,
+            file_id=uuid.uuid4(),
+            original_path=str(original_x),
+            proposed_path="new",
+            proposed_filename=destination_name,
+            sha256_hash=content_hash,
+        ),
+    ]
+    payload_x = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals_x)
+    result_x = await execute_approved_batch(
+        {"api_client": _make_api_client_mock(), "job": job_x},
+        **payload_x.model_dump(mode="json"),
+    )
+    destination = tmp_path / "new" / destination_name
+    assert result_x["status"] == "completed"
+    assert not original_x.exists()
+    assert destination.read_bytes() == content
+    # X's own job now carries X's flag -- Y's job (below) is a DIFFERENT job entirely and
+    # never sees this.
+    assert job_x.meta.get(f"moved:{proposal_x}") is not None
+
+    # Y: a DIFFERENT proposal, DIFFERENT job, same content/hash (a real dedup pair). Y's
+    # source has since gone missing for an unrelated reason -- simulated directly here, since
+    # "the operator deleted it by hand" leaves no code path to reproduce.
+    original_y = tmp_path / "orig" / "y.mp3"  # deliberately never created: Y's source is gone.
+    proposal_y = uuid.uuid4()
+    api_y = _make_api_client_mock()
+    job_y = _make_job_mock()  # Y's own job has never touched this destination -- no flag, no marker.
+    proposals_y = [
+        ExecuteBatchProposalItem(
+            proposal_id=proposal_y,
+            file_id=uuid.uuid4(),
+            original_path=str(original_y),
+            proposed_path="new",
+            proposed_filename=destination_name,
+            sha256_hash=content_hash,
+        ),
+    ]
+    payload_y = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals_y)
+    result_y = await execute_approved_batch({"api_client": api_y, "job": job_y}, **payload_y.model_dump(mode="json"))
+
+    # Y must fail loudly -- NOT silently report executed with current_path stolen from X.
+    assert result_y["status"] == "completed_with_errors"
+    assert result_y["error_count"] == 1
+    state_patch_y = api_y.patch_proposal_state.await_args.args[1]
+    assert state_patch_y.proposal_state == "failed"
+    # X's file at the shared destination is untouched by Y's failed attempt.
+    assert destination.read_bytes() == content
 
 
 # ---------------------------------------------------------------------------
