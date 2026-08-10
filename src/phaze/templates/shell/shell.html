@@ -384,5 +384,49 @@
         });
     </script>
 
+    <!-- phaze-uvmcr.4 (H2): BLOCKER-2's htmx:responseError/htmx:sendError/htmx:afterSwap listener
+         for the Compute/Agents pane's "Refresh failed" banner, relocated here from the retired
+         admin/agents.html page-load <script>. That script used to run once per full-page load of
+         /admin/agents; hosted instead inside a rail-swapped #stage-workspace fragment, it would
+         either never execute (htmx does not run inline <script> tags on every swap path the way a
+         full document load does) or run AGAIN on every visit, stacking a duplicate document.body
+         listener that never detaches -- H2, the crux of that bead.
+
+         Hosting it here, in shell.html's own body -- OUTSIDE #stage-workspace -- fixes it the same
+         way the cmdk modal / record host above are fixed: shell.html is only ever evaluated on a
+         full document load (a rail swap only replaces #stage-workspace's innerHTML; it never
+         re-fetches shell.html), so this IIFE attaches its three listeners exactly ONCE, for the
+         life of the tab, and they survive every subsequent #stage-workspace swap untouched.
+
+         It does not assume the Compute/Agents pane is mounted: isOurTarget only matches an event
+         whose swapped target id is agents-table-section, which is simply absent from the DOM on
+         every OTHER stage -- so this is a harmless no-op there, not a pane-presence assumption.
+         The banner MARKUP itself (role=alert, the localStorage-driven Alpine footer) is untouched
+         -- it still lives in admin/partials/agents_table.html and keeps working whether the pane
+         was reached by a full load or a rail swap. -->
+    <script>
+    (function () {
+        var TARGET_ID = 'agents-table-section';
+        var STORAGE_KEY = 'phaze:agents:lastError';
+        function isOurTarget(evt) {
+            var target = evt.detail && evt.detail.target;
+            return !!(target && target.id === TARGET_ID);
+        }
+        function recordFailure(evt) {
+            if (!isOurTarget(evt)) return;
+            try { localStorage.setItem(STORAGE_KEY, new Date().toISOString()); }
+            catch (e) { /* private-mode/quota: degrade silently */ }
+        }
+        function clearFailureOnSuccess(evt) {
+            if (!isOurTarget(evt)) return;
+            try { localStorage.removeItem(STORAGE_KEY); }
+            catch (e) { /* ignore */ }
+        }
+        document.body.addEventListener('htmx:responseError', recordFailure);
+        document.body.addEventListener('htmx:sendError', recordFailure);
+        document.body.addEventListener('htmx:afterSwap', clearFailureOnSuccess);
+    })();
+    </script>
+
 </body>
 </html>

@@ -39,6 +39,7 @@ from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
 from phaze.models.proposal import APPROVE_REJECT_FROM
+from phaze.routers.admin_agents import build_agents_pane_context
 from phaze.routers.execution import build_audit_log_context
 from phaze.routers.pipeline import FILES_SORT
 from phaze.routers.pipeline_scans import RECENT_SCANS_SORT, build_recent_scans
@@ -62,6 +63,7 @@ from phaze.services.review import (
     get_tagwrite_review_page,
 )
 from phaze.services.route_control import get_route_control
+from phaze.utils.humanize import relative_time
 from phaze.web.static import static_asset_url
 
 from .pipeline import build_dashboard_context
@@ -76,6 +78,13 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # phaze-315t: fingerprinted, cache-forever static asset URLs. `shell/shell.html` is the
 # top-level layout that carries the app.css link + favicon set.
 templates.env.globals["static_url"] = static_asset_url
+# phaze-uvmcr.4: admin/agents.html (UTILITY_PANES["agents"]) transitively includes
+# admin/partials/agents_table.html, which calls {{ humanize_relative_time(...) }} for each agent's
+# last-seen column -- the SAME global admin_agents.py's own (separate) Jinja2Templates instance
+# registers for its unchanged fragment endpoints (_table/_activity/compute-lanes). Two Jinja
+# environments, so the global must be registered on both; templates rendered through THIS env
+# (shell.html, every STAGE_PARTIALS/UTILITY_PANES partial) resolve it from here.
+templates.env.globals["humanize_relative_time"] = relative_time
 router = APIRouter(tags=["shell"])
 
 # Rail-node id -> bridged content partial (D-01). The keys + their order are VERBATIM
@@ -170,11 +179,23 @@ STAGE_PARTIALS: dict[str, str] = {
 # dead-template-guard entry roots (test_dead_template_guard.py) exactly like STAGE_PARTIALS'.
 #
 # phaze-uvmcr.1 landed both keys with placeholder/thin content so that bead was independently
-# mergeable; phaze-uvmcr.3 (audit) replaces its value with the real hosted pane below, once its
-# content settled. phaze-uvmcr.4 (agents) does the same for "agents" in its own change.
+# mergeable.
+#
+# phaze-uvmcr.3: "audit" now points at the REAL content -- execution/audit_log.html, converted
+# from a base.html-extending full page into a content-only partial. Its context is built by
+# build_audit_log_context (routers/execution.py, imported above), the SAME function GET /audit/'s
+# redirect target composes with -- shared so the shell-hosted pane and the (now-redirecting)
+# legacy route can never diverge on what a render of this content needs.
+#
+# phaze-uvmcr.4: "agents" now points at the REAL content -- admin/agents.html, converted from a
+# base.html-extending full page into a content-only partial (no more {% extends %}, no
+# document-level tags). Its context is built by build_agents_pane_context (routers/admin_agents.py,
+# imported above), the SAME function GET /admin/agents's redirect target composed with before this
+# bead -- shared so the shell-hosted pane and the (now-redirecting) legacy route can never diverge
+# on what a render of this content needs. See the ``elif stage == "agents"`` branch below.
 UTILITY_PANES: dict[str, str] = {
     "audit": "execution/audit_log.html",
-    "agents": "shell/partials/agents_placeholder.html",
+    "agents": "admin/agents.html",
 }
 
 
@@ -576,6 +597,21 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
             sort=audit_params.get("sort"),
             order=audit_params.get("order"),
         )
+    elif stage == "agents":
+        # phaze-uvmcr.4: the Compute/Agents UTILITY_PANES stage -- below-the-line, not a DAG stage
+        # (hence living last here, mirroring the below-the-line placement in rail.html) but forked through
+        # the exact same wants_fragment/history-restore machinery as every stage above (H1). Its
+        # context is built by admin_agents.build_agents_pane_context, the SAME assembly GET
+        # /admin/agents's redirect target used to build inline before this bead -- shared so this pane
+        # and the (now-redirecting) legacy route can never diverge on what a render needs. That
+        # function reads ?agent=/?clane=/?sort=/?order= straight off request.query_params (mirroring
+        # the ``analyze`` branch's ?lane= resolution above) rather than declaring typed Query()
+        # params on THIS route, so the wire-bounds contract stays scoped to the routes that actually
+        # declare them (/admin/agents/_table, unchanged).
+        context |= await build_agents_pane_context(request, session)
+        context["stage"] = stage
+        context["stage_partial"] = _stage_partial(stage)
+        context["oob_counts"] = False
 
     if wants_fragment(request):
         # phaze-a6hm.2 / .9: a live htmx swap has TWO shapes on this route, distinguished by what the

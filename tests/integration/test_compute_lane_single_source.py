@@ -128,8 +128,8 @@ async def test_all_three_surfaces_reflect_one_stubbed_lane_list(
     assert stats.status_code == 200, stats.text
     assert "$store.pipeline.computeLanesActive = 1" in stats.text, "header seed must reflect the ONE ACTIVE stubbed lane"
 
-    # ---- Surface (b): the Agents-page merged-table lane rows (full page + the /_table poll partial) ---
-    for path in ("/admin/agents", "/admin/agents/_table"):
+    # ---- Surface (b): the Agents-page merged-table lane rows (shell-hosted full page + the /_table poll partial) ---
+    for path in ("/s/agents", "/admin/agents/_table"):
         resp = await client.get(path)
         assert resp.status_code == 200, resp.text
         body = resp.text

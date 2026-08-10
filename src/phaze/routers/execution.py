@@ -83,7 +83,7 @@ TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # phaze-315t: fingerprinted, cache-forever static asset URLs, registered as a Jinja global for
 # every template this router renders. `execution/audit_log.html` no longer needs it directly
-# (phaze-uvmcr.3 made it a content-only fragment, hosted by shell.html's own asset links), but the
+# (phaze-uvmcr.3 made it a content-only fragment, hosted directly by the asset links in shell.html), but the
 # global stays -- harmless if unused by the current template set, and cheap insurance against a
 # future template rendered through this same `templates` instance needing it.
 templates.env.globals["static_url"] = static_asset_url
