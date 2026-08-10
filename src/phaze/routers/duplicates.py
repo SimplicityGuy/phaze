@@ -27,6 +27,7 @@ from phaze.services.dedup import (
     score_group,
     undo_resolve,
 )
+from phaze.services.pg_text import contains_pg_invalid_chars
 from phaze.services.review import build_dupe_group_card
 
 
@@ -108,7 +109,12 @@ async def compare_group(
     # phaze-m7ya: a LOOKUP by hash, not a paged read. This used to fetch a hardcoded first 1000
     # groups and linear-scan them, so any group past that arbitrary boundary answered "Group not
     # found" forever while the list page still offered it a Compare button.
-    group = await find_duplicate_group_by_hash(session, group_hash)
+    #
+    # phaze-i0jqu: skip the query entirely if group_hash carries a NUL/lone surrogate PostgreSQL
+    # cannot bind in a UTF8 text parameter (asyncpg raises CharacterNotInRepertoireError and aborts
+    # the transaction). No group could ever be keyed on such a hash, so it degrades to the SAME
+    # "Group not found" answer as a hash that is merely unknown, rather than an unhandled 500.
+    group = None if contains_pg_invalid_chars(group_hash) else await find_duplicate_group_by_hash(session, group_hash)
     if group is None:
         return HTMLResponse(content="<p class='text-sm text-gray-500'>Group not found.</p>", status_code=200)
 
@@ -126,6 +132,32 @@ async def compare_group(
     )
 
 
+async def _render_resolve_noop(request: Request, session: AsyncSession, group_hash: str) -> HTMLResponse:
+    """Render the group's CURRENT (unchanged) state with an honest "nothing changed" toast.
+
+    Shared by every 0-resolved shape ``resolve_group_endpoint`` can hit (phaze-ptzse): an invalid
+    group_hash (phaze-i0jqu, never queried below), a stale resubmit of an already-resolved card, a
+    concurrent resolve that already claimed the canonical, and a group member deleted mid-flight
+    (phaze-a3if1) -- ``resolved_count`` is the single honest signal for all four, so the router does
+    not need to distinguish them.
+
+    Re-queries by hash rather than trusting the (possibly stale) group state the request started
+    with -- the card must reflect what is actually still in the database, live and re-resolvable, not
+    a snapshot from before whatever made this resolve a no-op.
+    """
+    group = None if contains_pg_invalid_chars(group_hash) else await find_duplicate_group_by_hash(session, group_hash)
+    card = None
+    if group:
+        score_group(group)
+        card = build_dupe_group_card(group)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="duplicates/partials/resolve_noop_response.html",
+        context={"request": request, "group_hash": group_hash, "group": card},
+    )
+
+
 @router.post("/{group_hash}/resolve", response_class=HTMLResponse)
 async def resolve_group_endpoint(
     request: Request,
@@ -133,13 +165,34 @@ async def resolve_group_endpoint(
     canonical_id: uuid.UUID = Form(...),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Resolve a duplicate group by marking non-canonical files."""
-    resolved_count, resolved_file_states = await resolve_group(session, group_hash, canonical_id)
-    # `services/` builds and flushes but never commits (caller-owned transaction). `get_session`
-    # yields the session WITHOUT committing, so the router must — otherwise the marker and the
-    # dual-written state are rolled back on session close and the HTMX partial reports a resolve
-    # that never happened. Matches routers/tags.py:369, routers/tracklists.py.
-    await session.commit()
+    """Resolve a duplicate group by marking non-canonical files.
+
+    phaze-i0jqu: group_hash is rejected BEFORE it ever reaches ``resolve_group`` -- which binds it
+    into ``pg_advisory_xact_lock(hashtext(group_hash))`` as its very first statement -- if it carries
+    a NUL/lone surrogate PostgreSQL cannot bind (asyncpg ``CharacterNotInRepertoireError``, transaction
+    abort). No group could ever be keyed on such a hash, so it is treated as the SAME 0-resolved no-op
+    the branch below already renders honestly.
+
+    phaze-ptzse: a 0-resolved outcome -- an invalid hash above, a stale resubmit of an
+    already-resolved card (the hidden ``group_hashes``/canonical inputs survive a card's outerHTML
+    swap and can be replayed), a concurrent resolve that already claimed this group's canonical, or
+    (phaze-a3if1) a group member deleted mid-flight by a concurrent scan-batch delete -- must never
+    be reported as "Group resolved": the card is re-rendered live (never removed) with an honest
+    "nothing changed" toast instead of a confident lie.
+    """
+    resolved_file_states: list[dict[str, Any]]
+    if contains_pg_invalid_chars(group_hash):
+        resolved_count, resolved_file_states = 0, []
+    else:
+        resolved_count, resolved_file_states = await resolve_group(session, group_hash, canonical_id)
+        # `services/` builds and flushes but never commits (caller-owned transaction). `get_session`
+        # yields the session WITHOUT committing, so the router must — otherwise the marker and the
+        # dual-written state are rolled back on session close and the HTMX partial reports a resolve
+        # that never happened. Matches routers/tags.py:369, routers/tracklists.py.
+        await session.commit()
+
+    if resolved_count == 0:
+        return await _render_resolve_noop(request, session, group_hash)
 
     return templates.TemplateResponse(
         request=request,
@@ -167,6 +220,12 @@ async def undo_resolve_endpoint(
     contract rule 1, ``routers/request_guards.py``) -- a stale tab replaying a truncated payload
     gets a 422, not the unhandled ``JSONDecodeError`` 500 this used to raise. Rule 2's element half
     lives in ``undo_resolve``, which drops entries that are not dicts.
+
+    phaze-i0jqu: the undo itself never references ``group_hash`` -- it is scoped entirely by the
+    (file_id, canonical_id) pairs in ``file_states`` -- so a NUL/lone-surrogate ``group_hash``
+    cannot corrupt the undo. It only drives the re-fetch below, which is skipped entirely for an
+    invalid hash (no group could ever be keyed on one) rather than binding it into a query and
+    raising asyncpg's ``CharacterNotInRepertoireError`` AFTER the undo has already committed.
     """
     parsed_states = parse_json_array_payload(file_states, field="file_states")
     await undo_resolve(session, parsed_states)
@@ -175,7 +234,7 @@ async def undo_resolve_endpoint(
     # Re-fetch group data after undo
     # phaze-m7ya: keyed lookup, same reason as compare_group -- the capped scan silently dropped the
     # restored card (group=None) for any group outside the first 1000, so undo appeared to erase it.
-    group = await find_duplicate_group_by_hash(session, group_hash)
+    group = None if contains_pg_invalid_chars(group_hash) else await find_duplicate_group_by_hash(session, group_hash)
     dupe_group_card = None
     if group:
         score_group(group)
@@ -207,8 +266,15 @@ async def bulk_resolve(
     That re-derivation is what let a never-reviewed group get auto-resolved: an unordered paginated query
     can select a different set of hashes than what was displayed, and even with stable ordering the set
     can still drift if another resolve committed between the page render and this POST (phaze-81bu).
+
+    phaze-i0jqu: a NUL/lone-surrogate hash in ``group_hashes`` is dropped before the lookup below --
+    PostgreSQL cannot bind either in a UTF8 text parameter, so it would otherwise 500 the WHOLE batch
+    on asyncpg's ``CharacterNotInRepertoireError`` rather than the one hash that could never have
+    named a real group. The original (possibly-invalid) ``group_hashes`` still rides the response
+    below unchanged, so its card is OOB-removed the same as any other submitted hash.
     """
-    groups = await find_duplicate_groups_by_hashes(session, group_hashes)
+    safe_hashes = [h for h in group_hashes if not contains_pg_invalid_chars(h)]
+    groups = await find_duplicate_groups_by_hashes(session, safe_hashes)
 
     all_file_states: list[dict[str, Any]] = []
     resolved_groups = 0
@@ -218,7 +284,14 @@ async def bulk_resolve(
             continue
         score_group(group)
         canonical_id = uuid.UUID(group["canonical_id"])
-        _count, file_states = await resolve_group(session, group["sha256_hash"], canonical_id)
+        count, file_states = await resolve_group(session, group["sha256_hash"], canonical_id)
+        # phaze-ptzse: resolve_group can return 0 on a NON-empty group -- a concurrent resolve that
+        # already claimed this canonical (the phaze-v0iy post-lock recheck), or (phaze-a3if1) a
+        # group member deleted mid-flight by a concurrent scan-batch delete. Either way nothing was
+        # written for this hash by THIS request; counting it anyway is exactly the "confident lie
+        # about an irreplaceable archive" _bulk_toast's own docstring (proposals.py) warns against.
+        if count == 0:
+            continue
         all_file_states.extend(file_states)
         resolved_groups += 1
 
@@ -275,6 +348,19 @@ async def bulk_undo(
 
     phaze-wkqk: same guarded parse as ``undo_resolve_endpoint`` -- see the untrusted-input contract
     in ``routers/request_guards.py``.
+
+    phaze-i0jqu: a NUL/lone-surrogate hash in ``group_hashes`` is dropped before the re-hydration
+    read below, the same as ``bulk_resolve`` -- PostgreSQL cannot bind either, so it would otherwise
+    500 the whole undo response on asyncpg's ``CharacterNotInRepertoireError``.
+
+    phaze-cvjby: unlike ``find_duplicate_group_by_hash`` (``count > 1``) and the workspace read's own
+    ``HAVING count(id) > 1``, ``find_duplicate_groups_by_hashes`` has no group-size filter -- for a
+    hash whose group is still (or is once again) resolved down to one file, it returns that lone
+    survivor as a 1-member "group". Every OTHER render source in this router enforces ``count > 1``;
+    this loop is the one that didn't, so it could OOB-append a live keeper-select card for a file
+    that has no duplicates at all. Skipped here, mirroring ``find_duplicate_group_by_hash``'s own
+    invariant, rather than weakening ``find_duplicate_groups_by_hashes`` for its OTHER caller
+    (``bulk_resolve``, which tolerates a 1-member group as a harmless ``resolve_group`` no-op).
     """
     parsed_states = parse_json_array_payload(file_states, field="file_states")
     restored_count = await undo_resolve(session, parsed_states)
@@ -282,7 +368,10 @@ async def bulk_undo(
 
     restored_groups: list[dict[str, Any]] = []
     if restored_count and group_hashes:
-        for group in await find_duplicate_groups_by_hashes(session, group_hashes):
+        safe_hashes = [h for h in group_hashes if not contains_pg_invalid_chars(h)]
+        for group in await find_duplicate_groups_by_hashes(session, safe_hashes):
+            if group["count"] <= 1:
+                continue
             score_group(group)
             restored_groups.append(build_dupe_group_card(group))
 
