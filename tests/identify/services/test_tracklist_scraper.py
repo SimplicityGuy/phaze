@@ -410,6 +410,54 @@ class TestTracklistScraperRedirects:
         finally:
             await scraper.close()
 
+    @pytest.mark.asyncio
+    async def test_owned_client_rejects_disallowed_redirect_before_issuing_it(self):
+        """phaze-niflr: the SELF-OWNED client must reject a disallowed redirect hop BEFORE httpx
+        sends it, not merely after parsing the (already-fetched) final response.
+
+        A MockTransport handler counts every request it actually receives -- if the off-host hop
+        were sent, the handler would see two requests to two different hosts. It must see exactly
+        one: the initial POST to the allowed SEARCH_URL, rejected by the ``request`` event hook
+        before the redirect target is ever contacted.
+        """
+        received_hosts: list[str | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            received_hosts.append(request.url.host)
+            if request.url.host == "www.1001tracklists.com":
+                return httpx.Response(302, headers={"Location": "http://169.254.169.254/steal"})
+            return httpx.Response(200, text="stolen")  # pragma: no cover -- must never be reached
+
+        scraper = TracklistScraper()
+        try:
+            scraper._client._transport = httpx.MockTransport(handler)
+            with pytest.raises(DisallowedScrapeHostError):
+                await scraper.search("Skrillex Coachella")
+        finally:
+            await scraper.close()
+
+        assert received_hosts == ["www.1001tracklists.com"], "the off-host redirect target must never be contacted"
+
+    @pytest.mark.asyncio
+    async def test_owned_client_allows_a_same_host_redirect(self):
+        """A benign redirect that stays on an allowed host (e.g. apex -> www, phaze-8ib8) must
+        still be followed through the event hook, not just an off-host one rejected."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "1001tracklists.com":
+                return httpx.Response(302, headers={"Location": "https://www.1001tracklists.com/search/result.php"})
+            return httpx.Response(200, text=SAMPLE_EMPTY_SEARCH_HTML)
+
+        scraper = TracklistScraper()
+        try:
+            scraper._client._transport = httpx.MockTransport(handler)
+            scraper.SEARCH_URL = "https://1001tracklists.com/search/result.php"
+            results = await scraper.search("Skrillex")
+        finally:
+            await scraper.close()
+
+        assert results == []
+
 
 class TestTracklistScraperSharedRateLimit:
     """Regression coverage for phaze-wb1o: `_rate_limit` used to be a private per-coroutine

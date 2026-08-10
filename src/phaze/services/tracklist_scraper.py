@@ -291,12 +291,40 @@ class TracklistScraper:
             # ("1001tracklists.com") is deliberately on _ALLOWED_HOSTS (phaze-k5zz) BECAUSE it
             # redirects to "www" -- so every request to an apex URL, and any server-side slug move,
             # previously came back as an un-followed 301/302 that the non-200 guard (phaze-o8sy)
-            # turned into a permanently-retried HTTPStatusError. Follow redirects here;
-            # _is_allowed_url is re-checked against the FINAL response.url after the request (see
-            # search()) so this can't be used to smuggle a request off-host through a
-            # malicious/compromised redirect chain.
-            self._client = httpx.AsyncClient(headers=self._build_headers(), timeout=30.0, follow_redirects=True)
+            # turned into a permanently-retried HTTPStatusError. Follow redirects here.
+            #
+            # phaze-niflr: a plain "recheck the FINAL response.url" (search()'s post-hoc guard
+            # below) is NOT sufficient on its own -- httpx follows a redirect by ISSUING the next
+            # hop's request before that check ever runs, so a compromised/malicious upstream
+            # answering the search POST with a 302 to an internal address (cloud metadata, an
+            # internal Docker service) gets that request fired regardless of what the final check
+            # decides; only the parsed response is discarded. `_validate_request_host` is an httpx
+            # "request" event hook, which fires for the INITIAL request AND for every internally
+            # generated redirect hop, BEFORE it is sent (httpx's `_send_handling_redirects` loop
+            # runs the request hooks ahead of `_send_single_request` on every iteration) -- so a
+            # disallowed hop is rejected at the point httpx is about to send it, not after. The
+            # final-response.url recheck stays below as defense in depth for an INJECTED client
+            # (e.g. a caller-built client with no event hooks wired), which this hook cannot cover.
+            self._client = httpx.AsyncClient(
+                headers=self._build_headers(),
+                timeout=30.0,
+                follow_redirects=True,
+                event_hooks={"request": [self._validate_request_host]},
+            )
             self._owns_client = True
+
+    @staticmethod
+    async def _validate_request_host(request: httpx.Request) -> None:
+        """httpx ``request`` event hook: reject a request to a disallowed host before it is sent.
+
+        See the SSRF note in ``__init__`` (phaze-niflr) for why this exists. The initial request
+        always targets ``SEARCH_URL`` on an allowed host by construction, so in the normal case
+        this is a no-op that only ever actually rejects a REDIRECT hop.
+        """
+        url = str(request.url)
+        if not TracklistScraper._is_allowed_url(url):
+            logger.warning("Refusing to follow redirect to disallowed URL: %s", url)
+            raise DisallowedScrapeHostError(url)
 
     @staticmethod
     def _build_headers() -> dict[str, str]:
