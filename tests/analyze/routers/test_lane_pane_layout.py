@@ -69,6 +69,23 @@ def test_detail_pane_is_a_fixed_non_reflowing_overlay() -> None:
     assert "translate-x-full" in binding and "translate-x-0" in binding, "expected an open/closed translate-x toggle driving the slide-in"
 
 
+def test_detail_pane_degraded_flag_is_gone_not_a_dead_contract() -> None:
+    """phaze-d80hf: `degraded` must not be declared/rendered again unless something can set it true.
+
+    Before this bead, `_detail_pane.html` declared `degraded: false` and rendered a caption gated
+    on it, with a comment claiming "the wave-2 body flips `degraded` on a per-section fallback" --
+    but no code anywhere ever set it true (the per-section reads it would gate on treat a real
+    degrade and a genuinely-empty result as the SAME value by deliberate, documented design; see
+    ``get_lane_recent_completions`` / ``get_lane_queue_depths``). A flag nothing can ever truthfully
+    set is the bug, not a UI contract -- it was removed rather than wired to a lie. `refreshError`
+    (the sibling flag) stays -- see ``test_lane_detail.py``'s own-tick-failure assertions for where
+    it is now genuinely set.
+    """
+    html = _strip_comments(_DETAIL_PANE.read_text())
+    assert "degraded" not in html, "the dead flag/caption must be gone from the RENDERED template (comments are stripped above)"
+    assert "refreshError" in html, "refreshError must still be declared/rendered -- only degraded was dead"
+
+
 def test_detail_pane_never_uses_grid_or_col_span_classes() -> None:
     """No stray grid-column class should reappear on the pane shell itself."""
     html = _strip_comments(_DETAIL_PANE.read_text())

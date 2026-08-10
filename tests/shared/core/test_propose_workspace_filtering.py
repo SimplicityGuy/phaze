@@ -21,13 +21,18 @@ already shipped once:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from unittest.mock import patch
+import uuid
 
 import pytest
 from sqlalchemy import update
 from sqlalchemy.exc import OperationalError
 
+from phaze.models.analysis import AnalysisResult
+from phaze.models.file import FileRecord
+from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.routers.shell import PROPOSE_LIST_CONTAINER_ID
 from phaze.services.review import get_proposal_workspace_page
@@ -381,22 +386,55 @@ async def test_header_subcount_reports_the_filtered_total_not_the_page(
     assert "25 proposals ready" not in body
 
 
+async def _seed_generation_pending(session: AsyncSession, count: int) -> None:
+    """Seed ``count`` files that clear the D-02 convergence gate (metadata + completed analysis,
+    NO proposal row yet) -- the exact population ``get_proposal_pending_batches``/
+    ``count_proposal_pending_files`` enqueue over, DISJOINT from ``seed_pending_proposal``'s
+    already-proposed files (phaze-1aybg).
+    """
+    uids = [uuid.uuid4() for _ in range(count)]
+    session.add_all(
+        FileRecord(
+            agent_id="test-fileserver",
+            id=uid,
+            sha256_hash=uid.hex,
+            original_path=f"/music/gen-pending-{i}-{uid.hex}.mp3",
+            original_filename=f"gen-pending-{i}.mp3",
+            current_path=f"/music/gen-pending-{i}.mp3",
+            file_type="mp3",
+            file_size=1000,
+        )
+        for i, uid in enumerate(uids)
+    )
+    await session.flush()  # FileRecord rows must exist before the FK-dependent inserts below
+    for uid, i in zip(uids, range(count), strict=True):
+        session.add(AnalysisResult(file_id=uid, bpm=120.0, musical_key="Am", analysis_completed_at=datetime.now(UTC)))
+        session.add(FileMetadata(file_id=uid, artist="Gen", title=f"Pending {i}"))
+    await session.commit()
+
+
 @pytest.mark.asyncio
-async def test_generate_all_confirm_quotes_the_corpus_not_the_filtered_page(
+async def test_generate_all_confirm_quotes_the_generation_pending_set(
     client: AsyncClient,
     session: AsyncSession,
     seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
 ) -> None:
-    """A bulk-enqueue confirm must name the scope the ACTION has, not the rows on screen.
+    """A bulk-enqueue confirm must name the scope the ACTION has, not the review-tab stat (phaze-1aybg).
 
-    GENERATE ALL enqueues over the whole pending set regardless of tab, search or page. Quoting the
-    visible rows would understate the blast radius -- filtered to Approved, the confirm would have
-    promised zero jobs before enqueuing every pending one (paging contract rule 7: enqueue sets are
-    never paged).
+    GENERATE ALL enqueues over ``get_proposal_pending_batches``'s convergence set -- files with
+    metadata + completed analysis and NO proposal row yet -- regardless of tab, search or page.
+    That population is DISJOINT from ``propose_stats.pending`` (RenameProposal rows already
+    generated and awaiting review): ``_seed_mixed`` below seeds 3 pending + 2 approved + 1 rejected
+    proposal (6 files, ALL of which already have a proposal row, so NONE of them are
+    generation-pending), plus 4 files that genuinely ARE generation-pending. The confirm must quote
+    4, never the review-tab's 3 pending -- promising "0 litellm jobs" while enqueuing 4 (or the
+    inverse) is exactly the defect this bead fixes.
     """
     await _seed_mixed(session, seed_pending_proposal)
+    await _seed_generation_pending(session, 4)
     body = (await client.get("/s/propose?status=approved")).text
-    assert "all 3 pending files" in body, "the confirm quotes the pending corpus (3), not the approved page (2)"
+    assert "all 4 pending files" in body, "the confirm quotes the generation-pending set (4), not the review-tab pending stat (3)"
+    assert "all 3 pending files" not in body, "the confirm must not quote propose_stats.pending -- that set excludes every generation-pending file"
 
 
 @pytest.mark.asyncio

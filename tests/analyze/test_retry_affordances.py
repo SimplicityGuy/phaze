@@ -136,6 +136,13 @@ async def test_per_file_retry_reenqueues_one_file_through_guarded_funnel(
     response = await client.post(f"/pipeline/files/{file.id}/analysis-failed/retry")
     assert response.status_code == 200
     assert "re-queued 1 failed file(s) for analysis" in response.text.lower()
+    # phaze-bgz26: the ack OOB-pushes the Files-matrix pill this write invalidated -- the failed
+    # marker is cleared above, so the row must no longer read "failed" without waiting on a poll
+    # tick this bounded/paged surface never receives. Namespaced "files-stage-pill-*", distinct
+    # from the record pane's "stage-pill-*" (they can be on screen simultaneously).
+    assert f'id="files-stage-pill-analyze-{file.id}"' in response.text
+    assert 'hx-swap-oob="true"' in response.text
+    assert "not started" in response.text.lower(), "the OOB pill must reflect the flipped bucket, not still 'failed'"
 
     queue = task_router.queues["test-fileserver-analyze"]
     assert queue.name == "phaze-agent-test-fileserver-analyze"

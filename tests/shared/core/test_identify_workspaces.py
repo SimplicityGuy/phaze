@@ -47,6 +47,7 @@ from phaze.services.pipeline import (
     get_tracklist_sets_page,
     get_untracked_files,
 )
+from tests._queue_fakes import wire_fakes
 
 
 if TYPE_CHECKING:
@@ -251,6 +252,34 @@ async def test_tracklist_workspace_is_the_drain_plus_match(client: AsyncClient) 
     # D-05: NO single run-chain orchestrator button (no backend endpoint runs all three).
     assert "run-chain" not in body
     assert "RUN CHAIN" not in body
+
+
+@pytest.mark.asyncio
+async def test_tracklist_drain_status_refreshes_after_running_a_slice(client: AsyncClient) -> None:
+    """phaze-k2ob4: the drain-status panel refreshes after "Run a drain slice", not just on mount.
+
+    The panel's host div is `hx-trigger="load"`-only (fetched exactly once) and the panel itself
+    carries no self-poll (WORK-05/R-2 forbids a second `hx-trigger="every"` loop on this surface --
+    see `test_identify_single_poll_discipline`), so before this fix Queued/Answered-by-cache/
+    Prioritized/ETA froze at first render for the life of the tab even though
+    `_run_drain_response.html` promised the operator checks the outcome "on its own refresh". The
+    sanctioned fix is an event-driven, bounded, ONE-shot re-fetch per click -- never an interval:
+    POST /pipeline/run-tracklist-drain sets `HX-Trigger: drain-refresh` on its response, and the
+    host div listens for that event bubbling to `<body>`.
+    """
+    workspace = await client.get("/s/tracklist", headers={"HX-Request": "true"})
+    assert workspace.status_code == 200
+    ws_body = workspace.text
+    assert 'hx-trigger="load, drain-refresh from:body"' in ws_body
+    # WORK-05 / R-2: still no interval anywhere on this fragment (the sanctioned fix, not the
+    # rejected one -- see the router endpoint's docstring).
+    assert 'hx-trigger="every' not in ws_body
+    assert "setInterval" not in ws_body
+
+    wire_fakes(client)
+    response = await client.post("/pipeline/run-tracklist-drain")
+    assert response.status_code == 200
+    assert response.headers.get("HX-Trigger") == "drain-refresh"
 
 
 @pytest.mark.asyncio

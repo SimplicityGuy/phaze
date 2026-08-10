@@ -79,6 +79,32 @@ async def test_metadata_failed_filter_returns_only_failed_rows(client: AsyncClie
 
 
 @pytest.mark.asyncio
+async def test_failed_cell_pill_carries_the_oob_targetable_id(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-bgz26: the failed cell's pill wrapper carries the SAME id the per-file retry ack OOB-pushes.
+
+    The Files matrix (files_table_view.html) has no self-poll -- the per-row Retry button's ack
+    must be able to address this exact cell to clear a stale red pill without a full page reload
+    (see tests/analyze/test_retry_affordances.py / tests/metadata/test_retry_affordances.py for the
+    ack side). If this wrapper id ever drifts from ``_stage_pill_oob``'s ``files-stage-pill-*``
+    namespace, the OOB swap silently does nothing -- htmx targets an id that doesn't exist -- and
+    this is the ONLY test that would catch that drift from the render side.
+    """
+    failed = _make_file("pilloob")
+    session.add(failed)
+    await session.commit()
+    session.add(FileMetadata(file_id=failed.id, failed_at=datetime.now(UTC), error_message="boom"))
+    await session.commit()
+
+    resp = await client.get("/pipeline/files")
+    assert resp.status_code == 200
+    body = resp.text
+
+    assert f'id="files-stage-pill-metadata-{failed.id}"' in body
+    # The per-row Retry button targets the SAME file_id/stage this pill wrapper carries.
+    assert f"/pipeline/files/{failed.id}/metadata-failed/retry" in body
+
+
+@pytest.mark.asyncio
 async def test_failed_filter_empty_renders_failed_filter_copy(client: AsyncClient, session: AsyncSession) -> None:
     """A failed filter that matches nothing renders the failed-filter empty-state copy (Copywriting Contract).
 

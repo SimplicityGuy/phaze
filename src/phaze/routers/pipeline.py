@@ -1889,11 +1889,16 @@ async def retry_analysis_failed_file(
     await enqueue_process_file(routed.queue, file, agent_id, settings.models_path)
 
     logger.info("retry_analysis_failed_file re-queued", file_id=str(file_id))
-    return templates.TemplateResponse(
-        request=request,
-        name="pipeline/partials/retry_failed_response.html",
-        context={"request": request, "count": 1, "no_active_agent": False},
-    )
+    # phaze-bgz26: this endpoint's ONLY caller is the Files matrix per-row Retry button
+    # (files_table_view.html), and the bucket genuinely changed (failed -> not_started) by the
+    # `failed_at` clear + commit above -- but nothing re-renders that row without a full poll
+    # this surface never gets (files_table_view.html has NO self-poll by design). Re-derive the
+    # bucket AFTER the commit and OOB-push the single Files-matrix pill this write invalidated,
+    # the same shape force_skip_stage uses for the record pane (see `_stage_pill_oob`).
+    buckets = await get_file_stage_buckets(session, file_id)
+    ack = templates.get_template("pipeline/partials/retry_failed_response.html").render(count=1, no_active_agent=False)
+    pill_oob = _stage_pill_oob(file_id, "analyze", buckets.get("analyze", "not_started"), id_prefix="files-stage-pill")
+    return HTMLResponse(ack + pill_oob)
 
 
 @router.post("/pipeline/files/{file_id}/metadata-failed/retry", response_class=HTMLResponse)
@@ -1951,11 +1956,15 @@ async def retry_metadata_failed_file(
     await _enqueue_extraction_jobs(routed.queue, [file], agent_id)
 
     logger.info("retry_metadata_failed_file re-queued", file_id=str(file_id))
-    return templates.TemplateResponse(
-        request=request,
-        name="pipeline/partials/metadata_retry_response.html",
-        context={"request": request, "count": 1, "no_active_agent": False},
-    )
+    # phaze-bgz26: same shape as retry_analysis_failed_file -- OOB-push the Files-matrix pill this
+    # write invalidated. D-11 means `failed_at` is NOT cleared here, so the re-derived bucket
+    # stays "failed" until `put_metadata`'s clear-on-success later lands real metadata; pushing it
+    # anyway keeps the pill's id fresh in the DOM rather than claiming a bucket flip that has not
+    # happened yet (it will land on the next per-file retry / force-skip / poll-driven action).
+    buckets = await get_file_stage_buckets(session, file_id)
+    ack = templates.get_template("pipeline/partials/metadata_retry_response.html").render(count=1, no_active_agent=False)
+    pill_oob = _stage_pill_oob(file_id, "metadata", buckets.get("metadata", "failed"), id_prefix="files-stage-pill")
+    return HTMLResponse(ack + pill_oob)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -2070,7 +2079,7 @@ async def force_skip_stage(
 _ENRICH_STAGE_LABELS = {"metadata": "Meta", "analyze": "Analyze"}
 
 
-def _stage_pill_oob(file_id: uuid.UUID, stage: str, bucket: str) -> str:
+def _stage_pill_oob(file_id: uuid.UUID, stage: str, bucket: str, *, id_prefix: str = "stage-pill") -> str:
     """Render the shared five-bucket pill as an ``hx-swap-oob`` fragment addressed to ONE (file, stage).
 
     phaze-5p43: ``_force_skip_dialog.html``'s header contract promises the pill flips to ``⊘ skipped``
@@ -2082,13 +2091,18 @@ def _stage_pill_oob(file_id: uuid.UUID, stage: str, bucket: str) -> str:
     it invalidated, and nothing else.
 
     ID UNIQUENESS (load-bearing — this repo has a history of duplicate-id OOB bugs: phaze-gzrd,
-    phaze-op6f, phaze-7j50): ``stage-pill-{stage}-{file_id}`` is emitted from exactly ONE place,
-    ``record_body.html``'s stage loop, once per (stage, file) — six ids for the one open record, and
-    ``record_host.html`` hosts at most one record at a time. The Files matrix / ``_stage_matrix.html``
-    include ``_stage_pill.html`` id-lessly, so no second element in the composed document can collide.
-    The id lives on a WRAPPER span, not on the pill itself, so ``_stage_pill.html`` stays a pure,
-    id-free token shared verbatim with the matrix (a second id-bearing copy there IS the collision
-    this shape avoids).
+    phaze-op6f, phaze-7j50): the default ``stage-pill-{stage}-{file_id}`` id is emitted from exactly
+    ONE place, ``record_body.html``'s stage loop, once per (stage, file) — six ids for the one open
+    record, and ``record_host.html`` hosts at most one record at a time. The id lives on a WRAPPER
+    span, not on the pill itself, so ``_stage_pill.html`` stays a pure, id-free token.
+
+    phaze-bgz26: the Files matrix (``files_table_view.html``) needs the SAME shape for its own
+    per-row pill, but MUST NOT reuse the ``stage-pill-*`` id space — that id is reserved for the
+    (at-most-one) open record pane, and the matrix can render many rows of the same (stage, file)
+    simultaneously with the record pane. ``id_prefix`` namespaces the two: callers targeting the
+    Files matrix pass ``id_prefix="files-stage-pill"`` (matching the wrapper span
+    ``files_table_view.html`` renders around each cell's ``_stage_pill.html`` include), so a
+    per-file retry can safely OOB-push into both surfaces from one response with no id collision.
 
     ``bucket`` is a derived enum value and ``stage`` is allowlisted; the pill template autoescapes.
     """
@@ -2096,7 +2110,7 @@ def _stage_pill_oob(file_id: uuid.UUID, stage: str, bucket: str) -> str:
         stage_label=_ENRICH_STAGE_LABELS.get(stage, stage),
         bucket=bucket,
     )
-    return f'<span id="stage-pill-{stage}-{file_id}" class="inline-flex" hx-swap-oob="true">{pill}</span>'
+    return f'<span id="{id_prefix}-{stage}-{file_id}" class="inline-flex" hx-swap-oob="true">{pill}</span>'
 
 
 async def _force_skip_file_exists(session: AsyncSession, file_id: uuid.UUID) -> bool:
@@ -2886,11 +2900,20 @@ async def run_tracklist_drain_ui(request: Request, session: AsyncSession = Depen
     """
     routed = await enqueue_router.resolve_queue_for_task("drain_tracklists", request.app.state, session)
     await routed.queue.enqueue("drain_tracklists")
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         request=request,
         name="pipeline/partials/_run_drain_response.html",
         context={"request": request},
     )
+    # phaze-k2ob4: the drain-status panel (_tracklist_drain_status.html) is loaded ONCE on mount
+    # (hx-trigger=load) and carries no self-poll (WORK-05/R-2 forbids a second loop here) -- so
+    # without this, Queued/Answered-by-cache/Prioritized/ETA never move after this click, exactly
+    # contradicting the promise in _run_drain_response.html. HX-Trigger fires drain-refresh on the
+    # element that issued this POST; it bubbles to <body>, where
+    # #tracklist-drain-status-view's own hx-trigger (load, drain-refresh from:body) re-GETs the
+    # panel -- one bounded re-fetch per click, never an interval.
+    response.headers["HX-Trigger"] = "drain-refresh"
+    return response
 
 
 # --- Manual recovery endpoint (Phase 42, D-02/D-05) ---

@@ -3,7 +3,12 @@
    Deliberately says "queued", never "found N tracklists" -- the job runs asynchronously on the
    controller worker and this response renders before it starts. The drain progress fragment
    (#tracklist-drain-status, _tracklist_drain_status.html) is where the operator checks the
-   outcome, on its own refresh, not here.
+   outcome, on its own refresh -- phaze-k2ob4: that refresh is fired FROM HERE, via the
+   `HX-Trigger: drain-refresh` response header the router endpoint sets alongside this body (see
+   run_tracklist_drain_ui); `#tracklist-drain-status-view`'s `drain-refresh from:body` listener is
+   what actually re-GETs the panel. Before phaze-k2ob4 that refresh never happened at all -- the
+   panel was fetched once on workspace mount and nothing this response, or anything else, did ever
+   re-fetched it.
 #}
 <span class="text-sm text-green-600 dark:text-green-400 font-medium">
     Queued one drain slice (up to 100 lookups, host budget permitting).

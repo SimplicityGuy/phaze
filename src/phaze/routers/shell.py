@@ -42,6 +42,7 @@ from phaze.routers.response_shape import wants_fragment
 from phaze.routers.view_state import PAGE_SIZE_CHOICES, ListViewState
 from phaze.services.pipeline import (
     analyze_lanes_content_hash,
+    count_proposal_pending_files,
     get_files_page,
     get_match_pending_tracklists,
     get_stage_progress,
@@ -271,6 +272,14 @@ async def build_propose_list_context(request: Request, session: AsyncSession) ->
     # this render and the submit is still correctly SKIPPED rather than rewritten.
     select_ids = [str(row["id"]) for row in page.rows]
     select_locked = [row["status"] not in APPROVE_REJECT_FROM for row in page.rows]
+    # phaze-1aybg: the GENERATE ALL confirm must quote the population the trigger actually
+    # enqueues -- POST /pipeline/proposals batches ``get_proposal_pending_batches``'s convergence
+    # set (files with metadata + completed analysis and NO proposal row yet), which is DISJOINT
+    # from ``propose_stats.pending`` (RenameProposal rows already generated and awaiting review).
+    # ``count_proposal_pending_files`` shares the exact predicate (`_proposal_pending_clauses`)
+    # with the batching producer, so this count and the trigger's enqueue set can never drift
+    # apart. Kept separate from ``propose_stats``, which stays the review-tab counts only.
+    generation_pending = await count_proposal_pending_files(session)
     return {
         "propose_view": view,
         "sort": sort_state,
@@ -280,6 +289,7 @@ async def build_propose_list_context(request: Request, session: AsyncSession) ->
         "select_name": "proposal_ids",
         "propose_pagination": page.pagination,
         "propose_stats": page.stats,
+        "propose_generation_pending": generation_pending,
         "propose_list_id": PROPOSE_LIST_CONTAINER_ID,
         # The pager's destination and page-size choices live in the BASE context (not a template
         # {% with %}) because _propose_list.html has three producers -- the full workspace render,

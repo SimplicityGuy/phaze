@@ -222,12 +222,22 @@
                            is what absorbs a genuinely narrow viewport -- the row scrolls horizontally
                            rather than wrapping, matching the FILE column's own no-wrap contract. #}
                         <div class="flex flex-nowrap items-center gap-2">
+                        {# phaze-bgz26: id'd WRAPPER span (id-space namespaced "files-stage-pill-*",
+                           distinct from the record pane's "stage-pill-*" -- see `_stage_pill_oob`'s
+                           id_prefix docstring) so the per-file retry ack below can OOB-push this
+                           EXACT cell's pill after a write that changes its bucket. The pill itself
+                           (`_stage_pill.html`) stays a pure, id-free token. #}
+                        <span id="files-stage-pill-{{ key }}-{{ row.file.id }}" class="inline-flex">
                         {% with stage_label=stage_label, bucket=row.buckets[key] %}{% include "pipeline/partials/_stage_pill.html" %}{% endwith %}
+                        </span>
                         {# Per-row Retry (D-04): renders ONLY on a failed cell of a MANUALLY-retried enrich stage
                            (metadata/analyze). HTMX POST to the scoped
-                           per-file variant; the ack swaps into this cell's result span. @click.stop keeps the
-                           click off the row's record-slide-in hx-get. The failed pill clears on the NEXT poll
-                           tick (not optimistic). aria-label per the Copywriting Contract.
+                           per-file variant; the ack swaps into this cell's result span AND OOB-pushes this
+                           cell's own #files-stage-pill-<key>-<file_id> wrapper above (phaze-bgz26) --
+                           the failed pill no longer waits on a poll tick this bounded/paged surface never
+                           receives (files_table_view.html has NO self-poll by design; see the header
+                           comment). @click.stop keeps the click off the row's record-slide-in hx-get.
+                           aria-label per the Copywriting Contract.
                            phaze-hyjk: @click.stop alone only covers a MOUSE click. The <tr> also binds
                            hx-trigger="click, keyup[key=='Enter']" (htmx) AND @keydown.enter (Alpine) for
                            keyboard activation (line ~143 below). Keyboard-activating THIS button fires a
