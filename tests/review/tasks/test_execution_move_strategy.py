@@ -479,6 +479,92 @@ async def test_same_fs_move_completes_a_crashed_link_claim_rather_than_no_op_ren
 
 
 # ---------------------------------------------------------------------------
+# phaze-kxnnd -- st_nlink>1 alone is NOT sufficient evidence that the extra link
+# sits AT `proposed`: a case-only rename on a case-insensitive filesystem also
+# makes `original != proposed` true while both name the SAME single directory
+# entry, and an unrelated pre-existing hard link elsewhere in the archive
+# inflates nlink with nothing to do with `proposed`. The fix rules out the
+# case-only-same-entry shape (a pure path comparison) before ever trusting nlink.
+# ---------------------------------------------------------------------------
+
+
+def test_is_case_only_same_entry_true_for_case_variants_in_the_same_directory(tmp_path: Path) -> None:
+    from phaze.tasks.execution import _is_case_only_same_entry
+
+    original = tmp_path / "dir" / "Track.MP3"
+    proposed = tmp_path / "dir" / "track.mp3"
+    assert _is_case_only_same_entry(original, proposed) is True
+
+
+def test_is_case_only_same_entry_false_across_different_directories(tmp_path: Path) -> None:
+    """A same-name (or same-case-fold-name) file in a DIFFERENT directory is a real distinct entry."""
+    from phaze.tasks.execution import _is_case_only_same_entry
+
+    original = tmp_path / "orig" / "Track.MP3"
+    proposed = tmp_path / "moved" / "track.mp3"
+    assert _is_case_only_same_entry(original, proposed) is False
+
+
+def test_is_case_only_same_entry_false_for_genuinely_different_names(tmp_path: Path) -> None:
+    """Names that differ by more than case are never mistaken for a case-only alias."""
+    from phaze.tasks.execution import _is_case_only_same_entry
+
+    original = tmp_path / "dir" / "concert.mp4"
+    proposed = tmp_path / "dir" / "renamed-concert.mp4"
+    assert _is_case_only_same_entry(original, proposed) is False
+
+
+async def test_same_fs_case_only_rename_with_unrelated_hardlink_does_not_delete_the_only_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for phaze-kxnnd.
+
+    A case-only rename (``Track.MP3`` -> ``track.mp3``) of a file that ALSO carries an
+    unrelated pre-existing hard link elsewhere in the archive (``st_nlink == 2``, but
+    neither link is at ``proposed``) must complete the rename via ``original.replace``,
+    never via ``original.unlink()``. Pre-fix, ``st_nlink > 1`` alone was trusted as proof
+    of a crashed same-fs link claim and the executor deleted `original` outright -- the
+    rename to `proposed` never happened, yet the proposal still reported success with a
+    `current_path` that resolved to nothing.
+
+    ``_is_same_file`` is forced to report a match here (this is the one thing a genuinely
+    case-insensitive filesystem gives for free and this repo's test filesystem may not) --
+    this isolates the fix under test (``_is_case_only_same_entry``) from the host
+    filesystem's actual case-sensitivity, which is otherwise unrelated to it.
+    """
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    monkeypatch.setattr(execmod, "_is_same_file", lambda _a, _b: True)
+
+    orig = tmp_path / "dir" / "Track.MP3"
+    orig.parent.mkdir(parents=True, exist_ok=True)
+    orig.write_bytes(b"the only copy in this directory")
+    # The unrelated pre-existing hard link elsewhere in the archive (not at `proposed`).
+    backup_dir = tmp_path / "backup"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    execmod.os.link(orig, backup_dir / "Track.MP3")
+    assert orig.stat().st_nlink == 2
+
+    proposed = tmp_path / "dir" / "track.mp3"
+    # Empty proposed_path == rename in place, so `proposed` lands in the SAME directory
+    # as `original` with only the filename's case changed.
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=[_item(orig, "", "track.mp3")])
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed"
+    assert result["error_count"] == 0
+    # The whole point: the rename actually happened, unlike the pre-fix delete-only outcome.
+    assert proposed.exists()
+    assert proposed.read_bytes() == b"the only copy in this directory"
+    # The unrelated backup hard link is untouched by this proposal's move.
+    assert (backup_dir / "Track.MP3").read_bytes() == b"the only copy in this directory"
+    state_patch = api.patch_proposal_state.await_args.args[1]
+    assert state_patch.proposal_state == "executed"
+    assert state_patch.current_path == str(proposed)
+
+
+# ---------------------------------------------------------------------------
 # phaze-otoqj -- the cross-fs staging file must be unique per attempt AND
 # opened O_EXCL, and the destination is re-verified before the source is
 # unlinked. The old deterministic tmp name let two genuinely concurrent

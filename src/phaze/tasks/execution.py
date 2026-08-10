@@ -320,6 +320,24 @@ def _is_same_file(a: Path, b: Path) -> bool:
         return False
 
 
+def _is_case_only_same_entry(original: Path, proposed: Path) -> bool:
+    """True iff `original`/`proposed` are two case-fold spellings of the SAME single directory entry.
+
+    phaze-kxnnd: on a case-insensitive filesystem (SMB/NAS), a pure case-only rename
+    (``Track.MP3`` -> ``track.mp3``) makes ``original != proposed`` as strings while both
+    name the identical directory slot -- there is no second link anywhere, no matter what
+    ``original.stat().st_nlink`` reports. ``st_nlink`` is a GLOBAL count of every link to
+    the inode on the filesystem, so an unrelated pre-existing hard link elsewhere in the
+    archive (phaze is explicitly a dedup tool over one where those exist) inflates it past
+    1 for a plain case-only rename too, with nothing to do with `proposed`. This check is
+    purely path-shaped -- same parent directory, same name once case-folded, different name
+    as strings -- and needs no filesystem access, so it cannot itself be fooled by nlink:
+    when it is True, the caller must route to the plain rename regardless of nlink, because
+    unlinking `original` in that case deletes the archive's only entry for the file.
+    """
+    return original.parent == proposed.parent and original.name != proposed.name and original.name.casefold() == proposed.name.casefold()
+
+
 def _destination_is_committed_copy(original: Path, proposed: Path, expected_hash: str | None) -> bool:
     """True when `proposed` already holds a byte-identical copy of `original`.
 
@@ -836,7 +854,20 @@ async def _execute_one(
                     # (an extra link exists at a genuinely different path). Renaming a link onto a
                     # sibling link of the same inode is a POSIX no-op, so that residue would
                     # otherwise survive forever with the source never removed. Complete forward.
-                    if original != proposed and original.stat().st_nlink > 1:
+                    #
+                    # phaze-kxnnd correction: ``st_nlink > 1`` alone is NOT sufficient evidence of
+                    # that residue -- it is a global count of every link to the inode anywhere on
+                    # the filesystem, not proof the extra one sits AT ``proposed``. On a
+                    # case-insensitive mount, a pure case-only rename (``Track.MP3`` ->
+                    # ``track.mp3``) also makes ``original != proposed`` true while both name the
+                    # SAME single directory entry; an unrelated pre-existing hard link elsewhere in
+                    # the archive then inflates nlink and used to trigger ``original.unlink()`` --
+                    # deleting the archive's only entry for the file and leaving the rename never
+                    # applied. ``_is_case_only_same_entry`` rules that shape out FIRST, unconditionally
+                    # (regardless of nlink) before trusting nlink as crashed-claim evidence -- exactly
+                    # the "necessary but not sufficient" corroboration shape phaze-i7jo already
+                    # required for the cross-fs residue branch above.
+                    if original != proposed and not _is_case_only_same_entry(original, proposed) and original.stat().st_nlink > 1:
                         current_step = "delete"
                         original.unlink()
                     else:
