@@ -220,14 +220,111 @@ async def test_degrades_to_zero_without_saq_jobs(session: AsyncSession, make_fil
     assert key in await _ledger_keys(session)
 
 
-async def test_non_enrich_ledger_rows_are_untouched(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
-    """``push_file`` / ``s3_upload`` / controller rows have no domain predicate and are out of scope."""
+async def test_controller_ledger_rows_are_untouched(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """A CONTROLLER row is out of scope -- its clear rides ``after_process``, so a survivor is orphaned.
+
+    The scope boundary after phaze-k95r7 is no longer "enrich stages only": it is "a per-file ledger key
+    AND a completion predicate", which now includes the two cloud-lane agent functions. What stays out
+    is the controller side, where a surviving row means genuinely owed work, not a leak.
+    """
     await _saq_table(session)
     file = await make_file()
     await _analyze_done(session, file)
-    session.add(SchedulingLedger(key=f"push_file:{file.id}", function="push_file", routing="agent", payload={"file_id": str(file.id)}))
+    session.add(
+        SchedulingLedger(key=f"submit_cloud_job:{file.id}", function="submit_cloud_job", routing="controller", payload={"file_id": str(file.id)})
+    )
     await session.commit()
 
     await reap_resolved_ledger_rows(_make_ctx())
 
-    assert f"push_file:{file.id}" in await _ledger_keys(session)
+    assert f"submit_cloud_job:{file.id}" in await _ledger_keys(session)
+
+
+# --- phaze-k95r7: the cloud-lane pass -----------------------------------------------------
+
+
+async def test_resolved_s3_upload_row_is_reaped(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """THE 17-ROW REGRESSION: an ``s3_upload`` row for an analyzed file with no ``cloud_job`` is cleared.
+
+    The live shape on 2026-08-08 -- 17 rows dated 2026-07-07/14, every file successfully analyzed,
+    every ``cloud_job`` row long since cleaned up. No reconciler could name them (``s3_upload`` is not a
+    ``Stage``), so they stood for a month while recovery reported them ``unreplayable`` on every run.
+    """
+    await _saq_table(session)
+    file = await make_file()
+    await _analyze_done(session, file)
+    key = f"s3_upload:{file.id}"
+    session.add(SchedulingLedger(key=key, function="s3_upload", routing="agent", payload={"file_id": str(file.id)}))
+    await session.commit()
+
+    assert (await reap_resolved_ledger_rows(_make_ctx()))["s3_upload"] == 1
+    assert key not in await _ledger_keys(session)
+
+
+async def test_resolved_push_file_row_is_reaped_on_a_succeeded_cloud_job(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """The other cloud-lane disjunct: ``cloud_job.status='succeeded'`` alone resolves a ``push_file`` row.
+
+    SUCCEEDED is the landed-but-not-yet-analyzed window -- the push demonstrably ran, so its ledger row
+    is owed nothing, even though the analysis has not landed yet. It is also NOT a busy status, so the
+    liveness half of the predicate does not spare it.
+    """
+    await _saq_table(session)
+    file = await make_file()
+    key = f"push_file:{file.id}"
+    session.add(SchedulingLedger(key=key, function="push_file", routing="agent", payload={"file_id": str(file.id)}))
+    session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, status=CloudJobStatus.SUCCEEDED.value))
+    await session.commit()
+
+    assert (await reap_resolved_ledger_rows(_make_ctx()))["push_file"] == 1
+    assert key not in await _ledger_keys(session)
+
+
+async def test_unfinished_cloud_lane_row_is_never_reaped(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """The safety half: an ``s3_upload`` row for a file with NO analysis and NO cloud_job survives.
+
+    This is the same argument the enrich pass makes -- an orphaned row is genuinely owed work that the
+    ledger is RIGHT to hold. Dropping the completion conjunct here would turn the new pass into a
+    data-loss bug that discards pending staging work instead of stale bookkeeping.
+    """
+    await _saq_table(session)
+    file = await make_file()
+    key = f"s3_upload:{file.id}"
+    session.add(SchedulingLedger(key=key, function="s3_upload", routing="agent", payload={"file_id": str(file.id)}))
+    await session.commit()
+
+    assert (await reap_resolved_ledger_rows(_make_ctx()))["reaped"] == 0
+    assert key in await _ledger_keys(session)
+
+
+async def test_uploading_cloud_lane_row_is_spared(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """A file mid-upload (``cloud_job`` UPLOADING) is BUSY, so its ``s3_upload`` row is spared.
+
+    The upload runs on an agent and is invisible to ``saq_jobs`` once the broker row is swept, so the
+    ``cloud_busy_clause`` disjunct is what stands between this reaper and deleting the ledger row of a
+    transfer that is actively running. Seeded WITH a terminally-failed analysis so the completion half
+    of the predicate is satisfied and liveness is provably the only thing sparing the row.
+    """
+    await _saq_table(session)
+    file = await make_file()
+    session.add(AnalysisResult(file_id=file.id, failed_at=datetime.now(UTC)))  # domain-complete (terminal)
+    key = f"s3_upload:{file.id}"
+    session.add(SchedulingLedger(key=key, function="s3_upload", routing="agent", payload={"file_id": str(file.id)}))
+    session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, status=CloudJobStatus.UPLOADING.value))
+    await session.commit()
+
+    assert (await reap_resolved_ledger_rows(_make_ctx()))["reaped"] == 0
+    assert key in await _ledger_keys(session)
+
+
+async def test_live_broker_row_spares_a_cloud_lane_row(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """The other liveness substrate: a queued/active ``s3_upload`` broker row spares the ledger row."""
+    await _saq_table(session)
+    file = await make_file()
+    await _analyze_done(session, file)
+    key = f"s3_upload:{file.id}"
+    session.add(SchedulingLedger(key=key, function="s3_upload", routing="agent", payload={"file_id": str(file.id)}))
+    await session.commit()
+    await _seed_saq(session, key, "active")
+
+    assert (await reap_resolved_ledger_rows(_make_ctx()))["reaped"] == 0
+    assert key in await _ledger_keys(session)

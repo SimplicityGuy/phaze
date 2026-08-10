@@ -44,9 +44,24 @@ THREE GUARDS, all load-bearing:
 - **Liveness is required to be ABSENT, and it counts BOTH substrates.** ``cloud_job`` busy-ness is
   checked alongside ``saq_jobs`` because compute dispatch has no controller-side broker row at all; on
   ``saq_jobs`` alone every dispatched file would look reapable mid-flight.
-- **Scoped to the enrich stages.** ``resolved_ledger_clause`` is only defined where a per-file
-  ledger key and a domain-completion predicate both exist. ``push_file`` / ``s3_upload`` / the
-  controller functions are deliberately untouched.
+- **Scoped to rows with a per-file ledger key AND a completion predicate.** That is the two enrich
+  stages (via ``resolved_ledger_clause``) plus, since phaze-k95r7, the two CLOUD-LANE functions
+  ``push_file`` / ``s3_upload`` (via ``resolved_cloud_ledger_clause``). The controller functions stay
+  deliberately untouched: their clear rides the broker's own ``after_process``, so a surviving row
+  there is genuinely orphaned, not leaked.
+
+THE CLOUD-LANE PASS (phaze-k95r7). ``push_file`` / ``s3_upload`` are file-keyed AGENT tasks, so they
+leak ledger rows for exactly the same reasons the enrich stages do -- but they are not
+:class:`~phaze.enums.stage.Stage` members, so no stage-keyed reconciler could ever have named them.
+Measured on the live deployment 2026-08-08: 17 ``s3_upload`` rows dated 2026-07-07/14, every file
+successfully analyzed and its ``cloud_job`` row long since cleaned up. Nothing reaped them, and because
+``s3_upload`` also had no recovery-side completion exclusion, every recovery run handed all 17 to the
+regenerator, which could not resolve a bucket (no ``cloud_job`` row to read one from) and reported them
+``unreplayable`` -- permanently unreplayable AND permanently counted. They were deleted by hand to clear
+the noise; this pass is what stops them coming back. The completion half of the predicate is
+``cloud_lane_completed_clause`` -- the SAME builder ``reenqueue._build_done_sets`` derives its
+``cloud_lane_done`` exclusion from, so recovery ignoring a row and this reaper clearing it are two
+consequences of one definition rather than two definitions that must be kept in step.
 
 IDEMPOTENT by construction: the predicate is a pure function of committed state and the action is a
 DELETE of the rows it matched, so a second pass over an unchanged database matches nothing and returns
@@ -64,13 +79,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast as type_cast
 
-from sqlalchemy import Select, String, cast, delete, func, select
+from sqlalchemy import Select, delete, select
 import structlog
 
 from phaze.enums.stage import ELIGIBLE_AFTER_FAILURE, Stage
-from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
-from phaze.services.stage_status import resolved_ledger_clause
+from phaze.services.stage_status import CLOUD_LANE_FUNCTIONS, ledger_key_for_function, resolved_cloud_ledger_clause, resolved_ledger_clause
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
 
@@ -98,17 +112,32 @@ def _resolved_keys_subquery(stage: Stage) -> Select[tuple[str]]:
     ``WHERE key IN (...)``, matching ``pipeline.py``'s existing ledger-delete idiom.
     """
     func_name = STAGE_TO_FUNCTION[stage.value]
-    return select(func.concat(func_name + ":", cast(FileRecord.id, String))).where(resolved_ledger_clause(stage))
+    return select(ledger_key_for_function(func_name)).where(resolved_ledger_clause(stage))
 
 
-async def _reap_stage(session: AsyncSession, stage: Stage) -> int:
-    """Delete ``stage``'s RESOLVED ledger rows; return the count. Degrade-safe (returns 0 on any error)."""
-    stmt = delete(SchedulingLedger).where(SchedulingLedger.key.in_(_resolved_keys_subquery(stage)))
+def _resolved_cloud_keys_subquery(func_name: str) -> Select[tuple[str]]:
+    """Return a SELECT of ``func_name``'s CLOUD-LANE ledger keys that are RESOLVED (phaze-k95r7).
+
+    The function-keyed twin of :func:`_resolved_keys_subquery`, identical in shape -- drive off
+    ``files``, rebuild the deterministic key with the SAME :func:`ledger_key_for_function` spelling the
+    predicate itself uses, and let :func:`resolved_cloud_ledger_clause` supply the correlated
+    ``exists`` conjuncts.
+    """
+    return select(ledger_key_for_function(func_name)).where(resolved_cloud_ledger_clause(func_name))
+
+
+async def _reap_keys(session: AsyncSession, label: str, keys: Select[tuple[str]]) -> int:
+    """Delete the ledger rows named by ``keys``; return the count. Degrade-safe (returns 0 on any error).
+
+    ``label`` names the lane in the degrade log ONLY (a stage value or a keyed-function name); the
+    statement itself is built entirely from ORM columns and bound params.
+    """
+    stmt = delete(SchedulingLedger).where(SchedulingLedger.key.in_(keys))
     try:
         async with session.begin_nested():
             result = await session.execute(stmt)
     except Exception:
-        logger.warning("ledger_reap_degraded", stage=stage.value, exc_info=True)
+        logger.warning("ledger_reap_degraded", lane=label, exc_info=True)
         return 0
     # `session.execute` is typed `Result[Any]`; a DML statement always yields a CursorResult, which is
     # where `rowcount` lives. Same narrowing `services/backends.py` performs on its own DML results.
@@ -116,21 +145,27 @@ async def _reap_stage(session: AsyncSession, stage: Stage) -> int:
 
 
 async def reap_resolved_ledger_rows(ctx: dict[str, Any]) -> dict[str, int]:
-    """Clear ``scheduling_ledger`` rows whose stage has finished and which are running nowhere.
+    """Clear ``scheduling_ledger`` rows whose work has finished and which are running nowhere.
 
-    Returns ``{"reaped": N}`` plus a per-stage breakdown (0 when nothing is stale). Never raises: a
-    degraded probe rolls the SAVEPOINT back alone and that stage contributes 0.
+    Returns ``{"reaped": N}`` plus a per-lane breakdown -- the two enrich stages by stage value
+    (``analyze`` / ``metadata``) and the two cloud-lane producers by keyed-function name
+    (``push_file`` / ``s3_upload``), each 0 when nothing is stale. Never raises: a degraded probe rolls
+    the SAVEPOINT back alone and that lane contributes 0.
     """
-    per_stage: dict[str, int] = {}
+    per_lane: dict[str, int] = {}
     async with ctx["async_session"]() as session:
         for stage in _REAPABLE_STAGES:
-            per_stage[stage.value] = await _reap_stage(session, stage)
+            per_lane[stage.value] = await _reap_keys(session, stage.value, _resolved_keys_subquery(stage))
+        # phaze-k95r7: the cloud-lane pass. Same predicate SHAPE, keyed by function rather than stage,
+        # because these producers have a per-file ledger key but no ``Stage`` to hang off.
+        for func_name in CLOUD_LANE_FUNCTIONS:
+            per_lane[func_name] = await _reap_keys(session, func_name, _resolved_cloud_keys_subquery(func_name))
         await session.commit()
 
-    total = sum(per_stage.values())
+    total = sum(per_lane.values())
     if total:
         # Loud + explicit (the epic's "say so rather than going quiet" rule): these rows had been
         # reporting their files as in-flight, and holding them out of eligibility and the cloud drain.
-        logger.warning("resolved scheduling_ledger rows cleared: stale in-flight state reconciled", reaped=total, **per_stage)
+        logger.warning("resolved scheduling_ledger rows cleared: stale in-flight state reconciled", reaped=total, **per_lane)
 
-    return {"reaped": total, **per_stage}
+    return {"reaped": total, **per_lane}
