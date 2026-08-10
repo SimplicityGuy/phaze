@@ -32,6 +32,9 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `route_control`       | Single-row (`id = 'global'`) force-local routing override switch       |
 | `dedup_resolution`    | Per-file 1:1 sidecar marking a duplicate resolved to a canonical file (marker-row existence = resolved) |
 | `stage_skip`          | Per-`(file_id, stage)` sidecar marking an operator force-skip of an enrich stage      |
+| `filename_convention` | Corpus-learned filename conventions (e.g. date order), keyed generically by `(scope, scope_value, convention_kind)` with a DB-derived confidence (phaze-5fta.2) |
+| `tracklist_lookup_cache` | Persisted per-unique-set record of the last 1001Tracklists lookup outcome, so a drain restart never re-asks an already-answered question (phaze-fq9h.3) |
+| `tracklist_priority_flags` | Persisted operator "answer this file's tracklist lookup next" flag consumed by the drain (phaze-fq9h.8) |
 
 One further table shares the database but is **not** in the list above because it is not an
 Alembic-managed model: **`saq_jobs`**. Since Phase 36 the SAQ broker is a `PostgresQueue`, and
@@ -173,10 +176,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-048)
+### Post-baseline chain (040-058)
 
-`alembic/versions/` holds **10** files: the `039` baseline plus a linear chain to the current
-head, **`048`**.
+`alembic/versions/` holds **20** files: the `039` baseline plus a linear chain to the current
+head, **`058`**.
 
 | Rev | Change |
 |-----|--------|
@@ -188,14 +191,26 @@ head, **`048`**.
 | `045` | `files.original_filename_repaired` |
 | `046` | Drop the fingerprint schema (phaze-0jpe.4) |
 | `047` | Drop `analysis.fingerprint` |
-| `048` | `files (original_filename, id)` btree — **head** |
+| `048` | `files (original_filename, id)` btree |
+| `049` | Convert every remaining naive timestamp column to `timestamptz` (phaze-cz3m) |
+| `050` | Create `tracklist_lookup_cache` — persisted positive/negative 1001TL lookup cache (phaze-fq9h.3) |
+| `051` | Add tracklist propagation columns — one scraped tracklist propagated to a unique set's duplicates (phaze-fq9h.7) |
+| `052` | Create `tracklist_priority_flags` — persisted operator lookup-priority flag (phaze-fq9h.8) |
+| `053` | Create `filename_convention` — generic corpus-learned convention store (phaze-5fta.2) |
+| `054` | Add `cloud_job.node_loss_redrives` — independent node-loss re-drive budget (phaze-1q4g) |
+| `055` | Add the `cloud_budget` table — durable per-file cloud budget that outlives the `cloud_job` sidecar (phaze-2mwyo) |
+| `056` | Rename five double-prefixed CHECK constraints to the names the ORM actually renders (phaze-x8tof) |
+| `057` | Add `cloud_job.node_loss_pending` — durable carry for a verdict lost across the re-drive deferral (phaze-mwbz3) |
+| `058` | `analysis (analysis_completed_at)` partial btree for the lane cards' PROCESSED counts (phaze-5c6i2) — **head** |
 
-**Head `048` is not an ordinary migration; three things about it are load-bearing:**
+**Three migrations in this chain (`048`, `050`, `058`) build an index `CREATE INDEX
+CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares
+the same three load-bearing properties:**
 
-- **`CREATE INDEX CONCURRENTLY` on an autocommit connection.** `files` is the largest table in
-  the deployment, and a plain `CREATE INDEX` would hold a write lock across the whole build.
-  `CONCURRENTLY` cannot run inside a transaction block and Alembic wraps every migration in
-  one, so the statements run inside `op.get_context().autocommit_block()`.
+- **`CREATE INDEX CONCURRENTLY` on an autocommit connection.** The target table is large enough
+  that a plain `CREATE INDEX` would hold a write lock across the whole build. `CONCURRENTLY`
+  cannot run inside a transaction block and Alembic wraps every migration in one, so the
+  statements run inside `op.get_context().autocommit_block()`.
 - **Self-healing against an INVALID leftover.** An interrupted `CONCURRENTLY` build leaves an
   index that exists but is unusable, and `IF NOT EXISTS` would then skip it forever. `upgrade()`
   checks `pg_index.indisvalid` (resolved by name via `to_regclass`, so a first-ever run is
@@ -203,7 +218,7 @@ head, **`048`**.
 - **DDL held as static module-level literals.** The statements are constants, not f-strings —
   interpolating even a module-level constant trips semgrep's formatted-SQL-query rule.
 
-**Production position: `045` as of 2026-07-29.** `046`-`048` are pending; the upgrade is gated
-and tracked as its own operations bead, so a fresh CI or test database (which builds straight to
-`048`) is ahead of production by three revisions. Check the live position with `just db-current`
-before assuming either end of that gap.
+**Production position drifts from `head` over time** — migrations land in the repo before they
+are applied to the live deployment, so a fresh CI or test database (which always builds straight
+to `head`) can be several revisions ahead of production. Check the live position with
+`just db-current` before assuming either end matches `head`; do not assume the two are in sync.
