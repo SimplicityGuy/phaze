@@ -459,6 +459,16 @@ async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: 
     ``failed_ids`` -- restoring its ``failed_at`` would be wrong, because the file's marker
     state is whatever the dead key-holder left, and un-wedging the key is the aborting-reaper's
     job, not this loop's), just makes a blocked file visible in logs.
+
+    phaze-p2qvv: the phaze-ewen probe (``queue.job()`` + ``classify_process_file_collision``)
+    is itself a second await against the SAQ Postgres broker and can raise (pool timeout,
+    connection reset, a version-skewed row failing ``deserialize()``). A merge (537ee6f)
+    stitched the phaze-4ter containment and the phaze-ewen probe with the probe sitting OUTSIDE
+    the per-file ``try``/``except``, so a raise here escaped this function entirely -- aborting
+    every remaining file in the group and, via ``_retry_analysis_group``, skipping the
+    ``failed_ids`` restore write too. The probe is purely diagnostic (it only decides whether to
+    log; it never changes ``failed_ids`` or control flow), so its own failure is contained here
+    and logged instead of being allowed to propagate.
     """
     failed_ids: list[uuid.UUID] = []
     for f in files:
@@ -468,7 +478,18 @@ async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: 
             logger.exception("enqueue_analysis_jobs: failed to enqueue process_file job", file_id=str(f.id))
             failed_ids.append(f.id)
             continue
-        if job is None and classify_process_file_collision(await queue.job(process_file_job_key(f.id))) == "blocked":
+        if job is not None:
+            continue
+        try:
+            blocked = classify_process_file_collision(await queue.job(process_file_job_key(f.id))) == "blocked"
+        except Exception:
+            logger.warning(
+                "_enqueue_analysis_jobs: collision-classification probe failed -- diagnostic only, enqueue outcome unaffected",
+                file_id=str(f.id),
+                key=process_file_job_key(f.id),
+            )
+            continue
+        if blocked:
             logger.warning(
                 "_enqueue_analysis_jobs: deterministic key held by a dead job -- file omitted from this run",
                 file_id=str(f.id),
