@@ -749,6 +749,20 @@ async def bulk_write_no_discrepancies(
                 },
             )
 
+        # phaze-7bjjj: ``_acquire_bulk_tagwrite_lock``'s SELECT is ``lock_conn``'s first statement,
+        # and this engine runs with no AUTOCOMMIT, so it auto-begins a transaction that nothing else
+        # ever ends (no other op touches ``lock_conn`` before its close). Left alone, ``lock_conn``
+        # sits idle-in-transaction for the whole bounded candidate loop below -- tens of seconds to
+        # minutes -- holding back the backend_xmin vacuum horizon and exposed to
+        # ``idle_in_transaction_session_timeout``. ``pg_try_advisory_lock`` is SESSION-, not
+        # transaction-scoped (comment above), so committing here does not release it. Only when we
+        # OWN ``lock_conn`` (a real, dedicated production connection): the test harness's
+        # ``_bulk_tagwrite_lock_connection`` fallback reuses the hermetic per-test connection
+        # (``owns_lock_conn=False``), which is a manually-managed outer transaction the test's own
+        # rollback-based isolation depends on -- committing it here would durably commit test data.
+        if owns_lock_conn:
+            await lock_conn.commit()
+
         queued = 0
         noop = 0
         failed = 0
