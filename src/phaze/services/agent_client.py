@@ -73,6 +73,9 @@ if TYPE_CHECKING:
     from phaze.schemas.agent_s3 import UploadedPart, UploadedResponse, UploadFailedResponse
     from phaze.schemas.agent_scan_batches import ScanBatchPatch, ScanBatchPatchResponse
 
+    # phaze-5cvbz scratch-janitor liveness probe schema.
+    from phaze.schemas.agent_scratch import ScratchLivenessResponse
+
     # phaze-6bkk tag-write result callback; phaze-anrw4 pre-write snapshot callback.
     from phaze.schemas.agent_tag_writes import (
         TagWriteBeforeSnapshotPayload,
@@ -402,6 +405,28 @@ class PhazeAgentClient:
             f"/api/internal/agent/push/{file_id}/mismatch",
         )
         return PushMismatchResponse.model_validate(response.json())
+
+    async def scratch_liveness(self, file_ids: list[uuid.UUID]) -> ScratchLivenessResponse:
+        """POST /api/internal/agent/scratch/live -- compute-scratch janitor liveness probe (phaze-5cvbz).
+
+        The compute agent's startup janitor (``phaze.tasks.agent_worker._maybe_sweep_scratch``)
+        calls this BEFORE deleting an age-eligible scratch entry, asking whether a durable
+        ``process_file`` job still claims it -- a fixed ``min_age_sec`` ceiling alone cannot tell
+        a job merely waiting behind a concurrency-1 clamp, or parked at the pause ``SENTINEL``,
+        from a genuinely orphaned entry (phaze-5cvbz). Also returns ``push_file_active`` (ignores
+        ``file_ids``) to gate the shared ``.rsync-partial`` staging directory. Inherits the
+        tenacity retry policy (D-11) + exception hierarchy (D-12) via the ``_request`` funnel --
+        5xx retries, 4xx surface immediately; the caller treats ANY exception as "unknown,
+        defer this sweep pass" rather than falling back to age-only deletion. httpx-only -- NO
+        database import, keeping the agent worker Postgres-free (tests/shared/core/test_task_split.py)."""
+        from phaze.schemas.agent_scratch import ScratchLivenessRequest, ScratchLivenessResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "POST",
+            "/api/internal/agent/scratch/live",
+            json=ScratchLivenessRequest(file_ids=file_ids).model_dump(mode="json"),
+        )
+        return ScratchLivenessResponse.model_validate(response.json())
 
     async def report_upload_complete(self, file_id: uuid.UUID, parts: list[UploadedPart]) -> UploadedResponse:
         """POST /api/internal/agent/s3/{file_id}/uploaded -- multipart upload success (Phase 53, 53-03).

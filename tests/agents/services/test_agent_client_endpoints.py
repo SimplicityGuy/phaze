@@ -396,3 +396,44 @@ async def test_report_tag_write_before_snapshot_uses_correct_url_and_body(client
     assert "log_id" not in sent, "log_id rides the path only (AUTH-01 shape)"
     assert isinstance(result, TagWriteBeforeSnapshotResponse)
     assert result.applied is True
+
+
+@respx.mock
+async def test_scratch_liveness_posts_correct_url_body_and_parses_response(client):  # type: ignore[no-untyped-def]
+    """phaze-5cvbz: scratch_liveness -> POST /api/internal/agent/scratch/live."""
+    from phaze.schemas.agent_scratch import ScratchLivenessResponse
+
+    live_id = uuid.uuid4()
+    dead_id = uuid.uuid4()
+
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/scratch/live").mock(
+        return_value=httpx.Response(
+            200,
+            json={"live_file_ids": [str(live_id)], "push_file_active": True},
+        ),
+    )
+
+    result = await client.scratch_liveness([live_id, dead_id])
+
+    assert route.called
+    sent = json.loads(route.calls[0].request.content)
+    assert sent["file_ids"] == [str(live_id), str(dead_id)]
+    assert isinstance(result, ScratchLivenessResponse)
+    assert result.live_file_ids == [live_id]
+    assert result.push_file_active is True
+
+
+@respx.mock
+async def test_scratch_liveness_accepts_empty_file_ids(client):  # type: ignore[no-untyped-def]
+    """An empty candidate list still probes push_file_active (the .rsync-partial gate)."""
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/scratch/live").mock(
+        return_value=httpx.Response(200, json={"live_file_ids": [], "push_file_active": False}),
+    )
+
+    result = await client.scratch_liveness([])
+
+    assert route.called
+    sent = json.loads(route.calls[0].request.content)
+    assert sent["file_ids"] == []
+    assert result.live_file_ids == []
+    assert result.push_file_active is False
