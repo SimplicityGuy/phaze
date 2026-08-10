@@ -13,17 +13,16 @@ observable against a live Postgres broker and that the migration depends on
   (``scheduled<=now``) sibling -- even one with a numerically HIGHER priority --
   dequeues ahead of it.
 
-The harness derives the raw libpq broker DSN from ``PHAZE_QUEUE_URL`` or, in the
-integration harness, from ``TEST_DATABASE_URL`` by stripping the SQLAlchemy
-``+asyncpg`` dialect suffix (psycopg3 cannot parse the dialect form). The whole
-``tests/integration/`` package is auto-marked ``integration`` (see
+The harness derives the raw libpq broker DSN via ``tests.db_guard.integration_dsns`` (``PHAZE_QUEUE_URL``
+or, in the integration harness, ``TEST_DATABASE_URL`` with the SQLAlchemy ``+asyncpg`` dialect suffix
+stripped -- psycopg3 cannot parse the dialect form -- and defaulting to the 5433 test harness). The
+whole ``tests/integration/`` package is auto-marked ``integration`` (see
 ``tests/conftest.py``), so ``pytest -m 'not integration'`` excludes it offline.
 """
 
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import TYPE_CHECKING
 import uuid
 
@@ -32,6 +31,8 @@ import pytest_asyncio
 from saq.queue.postgres import PostgresQueue
 from saq.utils import now_seconds
 
+from tests.db_guard import integration_dsns
+
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -39,9 +40,7 @@ if TYPE_CHECKING:
 
 # Raw libpq broker DSN (NOT the +asyncpg dialect form). Derived from the integration
 # harness' TEST_DATABASE_URL the same way the other live-broker tests derive it.
-BROKER_DSN = os.environ.get("PHAZE_QUEUE_URL") or os.environ.get("TEST_DATABASE_URL", "postgresql://phaze:phaze@localhost:5432/phaze").replace(
-    "postgresql+asyncpg://", "postgresql://"
-)
+BROKER_DSN, _ = integration_dsns()
 
 
 @pytest_asyncio.fixture

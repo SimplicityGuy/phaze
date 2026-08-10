@@ -412,7 +412,7 @@ GitHub Actions runs on every push and PR:
 | **Cache**      | Redis                                   | LLM rate-limiting + pipeline counters |
 | **Audio Tags** | mutagen                                 | Read/write audio metadata            |
 | **Analysis**   | essentia-tensorflow                     | BPM, key, mood, style detection      |
-| **AI/LLM**     | litellm (pinned `>=1.85.7,<1.86.0`)    | Unified LLM API for rename proposals (capped after the 1.82.7/1.82.8 supply-chain incident) |
+| **AI/LLM**     | litellm (pinned `>=1.94.1,<1.95.0`)    | Unified LLM API for rename proposals (capped after the 1.82.7/1.82.8 supply-chain incident) |
 | **Scraping**   | BeautifulSoup4 + lxml                   | 1001Tracklists integration           |
 | **Matching**   | rapidfuzz                               | Fuzzy string matching                |
 | **UI**         | Jinja2 + HTMX + Tailwind CSS + Alpine.js| Server-rendered interactive UI       |

@@ -90,6 +90,24 @@ flowchart TD
 | `PHAZE_ENABLE_SAQ_UI` (or `enable_saq_ui`) | No | `true`                                          | Mount SAQ's built-in queue-monitoring dashboard at `/saq` in the `phaze-api` app (reusing the lifespan SAQ `PostgresQueue` instances; no extra broker, no extra port). Set `false` to skip the mount entirely. See [api.md](api.md) → SAQ Monitoring UI. |
 | `PHAZE_SCRAPER_CONTACT_URL` (or `scraper_contact_url`) | No | `https://github.com/SimplicityGuy/phaze` | Contact URL embedded in the honest 1001Tracklists scraper User-Agent (phaze-hu8v). Lives on `BaseSettings`. |
 
+### 1001Tracklists detail-page rendering (phaze-fq9h.1)
+
+1001Tracklists DETAIL pages deliver their track listing via JS behind a Cloudflare Turnstile
+widget, so they are rendered by a real headful browser (`services/tracklist_render.py`) rather
+than fetched with httpx. Headless fails the interstitial outright, and Turnstile is flaky rather
+than deterministic (spike phaze-dmvs measured ~6/8 pages clearing on first navigation), so a
+bounded reload/retry loop is the difference between a usable yield and a quarter of the corpus
+silently unreachable.
+
+| Variable                       | Required | Default | Description                                          |
+|--------------------------------|----------|---------|------------------------------------------------------|
+| `PHAZE_TRACKLIST_RENDER_BROWSER_CHANNEL` (or `tracklist_render_browser_channel`) | No | `chrome` | Patchright browser channel. `chrome` uses a real installed Google Chrome (Patchright's most convincing configuration); empty string falls back to Patchright's bundled patched Chromium. |
+| `PHAZE_TRACKLIST_RENDER_TURNSTILE_ATTEMPTS` (or `tracklist_render_turnstile_attempts`) | No | `4` | Hard cap on navigations per detail page when Turnstile keeps serving its interstitial. Every attempt spends one whole-host request from the crawl-delay budget, so this is a politeness bound as much as a timeout. Range `[1, 10]`. |
+| `PHAZE_TRACKLIST_RENDER_PAGE_TIMEOUT_SECONDS` (or `tracklist_render_page_timeout_seconds`) | No | `90.0` | Hard wall-clock ceiling for rendering ONE detail page, covering every retry attempt and the pacing waits between them, so a hung browser page can never stall a months-long drain. |
+| `PHAZE_TRACKLIST_RENDER_SELECTOR_TIMEOUT_SECONDS` (or `tracklist_render_selector_timeout_seconds`) | No | `20.0` | Per-attempt wait for the track container to appear before the attempt is judged interstitial-or-empty. |
+| `PHAZE_TRACKLIST_RENDER_RETRY_BACKOFF_SECONDS` (or `tracklist_render_retry_backoff_seconds`) | No | `5.0` | Base for the exponential backoff added on top of the shared crawl-delay pacing between Turnstile retries. Zero disables the extra backoff; the crawl-delay floor still applies. |
+| `PHAZE_TRACKLIST_RENDER_XVFB` (or `tracklist_render_xvfb`) | No | `auto` | Whether to start an Xvfb virtual display for the headful browser: `auto` \| `always` \| `never`. `auto` starts one only on Linux with no `DISPLAY` already set — exactly the headless-worker case. |
+
 ## Worker / task queue settings (all roles)
 
 | Variable                       | Required | Default | Description                                          |
@@ -186,7 +204,7 @@ The global tuning knobs below (route threshold, retry budgets, S3 presign/lifecy
 
 ## Cloud-burst settings
 
-> **Superseded in 2026.7.1 (Phase 67):** the flat `cloud_target` / `cloud_max_in_flight` / compute-scratch and flat `s3_*` / `kube_*` knobs in the tables below were **removed with no shim** — backend selection, caps, cluster config, and bucket config now come from the **[Backend registry](#backend-registry-backendstoml)** above. The rows are retained only as a historical field reference; the **global** knobs still marked as kept (`cloud_route_threshold_sec`, `push_max_attempts`, `cloud_submit_max_attempts`, `cloud_spill_to_local_after_seconds`, `cloud_uploading_stale_after_sec` / `cloud_uploaded_stale_after_sec`, the `s3_presign_*` / `s3_lifecycle_ttl_days` / `s3_multipart_part_size_bytes` / `s3_client_timeout_sec` knobs, and the agent-side `cloud_scratch_dir` / push-SSH fields) remain live env vars.
+> **Superseded in 2026.7.1 (Phase 67):** the flat `cloud_target` / `cloud_max_in_flight` / compute-scratch and flat `s3_*` / `kube_*` knobs in the tables below were **removed with no shim** — backend selection, caps, cluster config, and bucket config now come from the **[Backend registry](#backend-registry-backendstoml)** above. The rows are retained only as a historical field reference; the **global** knobs still marked as kept (`cloud_route_threshold_sec`, `push_max_attempts`, `cloud_submit_max_attempts`, `cloud_spill_to_local_after_seconds`, `cloud_uploading_stale_after_sec` / `cloud_uploaded_stale_after_sec` / `cloud_submitted_stale_after_sec`, the `s3_presign_*` / `s3_lifecycle_ttl_days` / `s3_multipart_part_size_bytes` / `s3_client_timeout_sec` knobs, and the agent-side `cloud_scratch_dir` / push-SSH fields) remain live env vars.
 
 Cloud burst (Phase 49/50/51, v5.0) offloads **long** audio sets (duration ≥ the route threshold) to a free OCI A1 arm64 **compute agent** over Tailscale via an rsync push — instead of letting them time out on the local file server. The full feature walkthrough, runbook, and smoke test live in [cloud-burst.md](cloud-burst.md); this section is the canonical knob reference.
 
@@ -201,6 +219,7 @@ Descriptions are sourced from the `Field(...)` text in [`src/phaze/config.py`](.
 | `cloud_spill_to_local_after_seconds` | `PHAZE_CLOUD_SPILL_TO_LOCAL_AFTER_SECONDS` (or `cloud_spill_to_local_after_seconds`) | Control | `900` | no | **Live (Phase 69, D-02) — the tiered-drain staleness gate.** Seconds a long file waits in `AWAITING_CLOUD` while higher-rank backends are online-but-**FULL** before slow local (rank 99) becomes an eligible spill target. Offline backends spill to local immediately (D-03, not staleness-gated). Bounded `gt=0, lt=86400`. |
 | `cloud_uploading_stale_after_sec` | `PHAZE_CLOUD_UPLOADING_STALE_AFTER_SEC` (or `cloud_uploading_stale_after_sec`) | Control | `21600` | no | **Live (phaze-ul2v) — stranded-upload reaper.** Seconds a `cloud_job` may sit `UPLOADING` with no timestamp movement before the reconcile reaper spills it back to awaiting. Generous default (6h) because a multi-GB multipart upload is legitimately slow and bumps no timestamp while it transfers; MUST exceed the largest `s3_upload` SAQ net. Bounded `gt=0, lt=604800`. |
 | `cloud_uploaded_stale_after_sec` | `PHAZE_CLOUD_UPLOADED_STALE_AFTER_SEC` (or `cloud_uploaded_stale_after_sec`) | Control | `900` | no | **Live (phaze-ul2v) — lost-submit reaper.** Seconds a `cloud_job` may sit `UPLOADED` with no submit enqueued before the reconcile reaper spills it back to awaiting. Much tighter than the `UPLOADING` bound: `report_uploaded` enqueues `submit_cloud_job` in the same transaction, so nothing legitimately dwells here. Bounded `gt=0, lt=604800`. |
+| `cloud_submitted_stale_after_sec` | `PHAZE_CLOUD_SUBMITTED_STALE_AFTER_SEC` (or `cloud_submitted_stale_after_sec`) | Control | `21600` | no | **Live (phaze-j7m18) — lost-push reaper.** Seconds a compute `cloud_job` may sit `SUBMITTED` with no live `push_file` broker key before the reconcile reaper spills it back to awaiting. Default 6h, the same as the `UPLOADING` bound it mirrors; MUST exceed the largest `push_file` SAQ net. Bounded `gt=0, lt=604800`. |
 | `compute_scratch_dir` | ~~`PHAZE_COMPUTE_SCRATCH_DIR`~~ (removed) | Control | *n/a* | no | **REMOVED in Phase 67 (superseded), accessor retired in Phase 73/MCOMP-03.** This flat control-side scratch-dir mirror no longer exists as a settings field; the control plane now reads each compute backend's `scratch_dir` from [`backends.toml`](#backend-registry-backendstoml) directly. **MUST match `cloud_scratch_dir`** on the compute agent (a drift surfaces as a sha256/transfer failure). |
 | `cloud_scratch_dir` | `PHAZE_CLOUD_SCRATCH_DIR` (or `cloud_scratch_dir`) | Agent | `None` | no | Remote scratch directory on the compute agent where pushed files land and are later read by `process_file`. **MUST match the control-plane compute backend's `scratch_dir` in [`backends.toml`](#backend-registry-backendstoml)** (the flat control-side `compute_scratch_dir` field was **removed in Phase 67**); it is also the cloud-agent compose's named-volume mount path. |
 | `push_ssh_host` | `PHAZE_PUSH_SSH_HOST` (or `push_ssh_host`) | Agent | `None` | no | Hostname/IP of the rsync-over-SSH push target (the compute agent). Operator-provisioned in Phase 51. |
@@ -358,6 +377,17 @@ These fields exist only on `ControlSettings` (the application server).
 | `LLM_MAX_COMPANION_CHARS` | No       | `3000`                       | Max characters of companion-file content sent per file. |
 
 \* Neither key is required by the config schema, but at least one matching the selected `LLM_MODEL` provider is needed to generate proposals at runtime.
+
+### Rename-proposal date-order fallback (phaze-5fta.4)
+
+A corpus-learned release-group date-order fallback used by the rename-proposal path when the
+LLM itself doesn't return a usable date.
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `PHAZE_CONVENTION_DATE_FALLBACK_ENABLED` (or `convention_date_fallback_enabled`) | No | `true` | Enable the corpus-learned release-group date-order fallback in the rename-proposal path. |
+| `PHAZE_CONVENTION_DATE_MIN_SUPPORTING` (or `convention_date_min_supporting`) | No | `50` | Minimum `supporting_count` before a learned release-group date-order convention is trusted enough to be applied as a fallback. Bounded `ge=1`. |
+| `PHAZE_CONVENTION_DATE_MIN_PURITY` (or `convention_date_min_purity`) | No | `1.0` | Minimum `filename_convention.confidence` (supporting share of the learned convention) required before the fallback applies. Bounded `[0.0, 1.0]`. |
 
 ### Discogs settings
 

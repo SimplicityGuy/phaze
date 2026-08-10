@@ -38,6 +38,7 @@ A direct/bookmark navigation to `/` or `/s/{stage}` renders the full shell chrom
 | POST   | `/pipeline/tracklists/{file_id}/unprioritize` | Clear that flag |
 | POST   | `/pipeline/tracklists/{file_id}/refresh` | On-demand re-read of a file's tracklist page (phaze-2akf) |
 | POST   | `/pipeline/recover`            | HTMX trigger for manual restart/queue-loss recovery across all stages (Phase 42) |
+| GET    | `/pipeline/recover/status`     | Poll the outcome of the most recent `/pipeline/recover` run (`{running, result, failed}`; process-local, non-durable) |
 
 Each stage has a JSON trigger (`/api/v1/*`) and an HTMX twin (`/pipeline/*`) that wraps the same enqueue logic and returns a `trigger_response.html` fragment. Both forms enqueue work in a fire-and-forget background task and return immediately with the expected job count, so a large backlog never blocks the HTTP response.
 
@@ -241,9 +242,10 @@ Operator-facing liveness page for registered worker agents. Read-only; these end
 
 | Method | Path                                | Description                                       |
 |--------|-------------------------------------|----------------------------------------------------|
-| GET    | `/admin/agents`                     | Agent liveness page (HTML)                          |
+| GET    | `/admin/agents`                     | 301-redirects into the shell's Agents pane (`/s/agents`), preserving the query string (phaze-uvmcr.4) |
 | GET    | `/admin/agents/_table`              | Agent liveness table (HTMX poll partial, ~5s)       |
 | GET    | `/admin/agents/{agent_id}/_activity`| Agent-activity detail-pane fragment (per-agent stage counts, lane depths, recent scans) |
+| GET    | `/admin/agents/compute-lanes/{backend_id}` | Compute-lane detail fragment for a non-local backend lane |
 
 ## SAQ Monitoring UI (`/saq`)
 
@@ -284,4 +286,6 @@ The server stores only `sha256(token)` (in `agents.token_hash`) and verifies eac
 | PATCH  | `/api/internal/agent/execution-log/{execution_log_id}`| Update an existing execution-log row                                        |
 | POST   | `/api/internal/agent/exec-batches/{batch_id}/progress`| Report a per-proposal terminal-state event for an execution batch           |
 | PATCH  | `/api/internal/agent/scan-batches/{batch_id}`         | Advance a scan-batch state-machine (with cross-tenant guard)               |
+| POST   | `/api/internal/agent/scratch/live`                    | Compute-scratch janitor liveness probe — answers "is a durable job still claiming this scratch entry?" off `saq_jobs` (phaze-5cvbz) |
+| PATCH  | `/api/internal/agent/tag-writes/{log_id}/before-snapshot` | Durably record the pre-write on-disk tag snapshot, first-write-wins; accepted only while the row is still `queued` (phaze-anrw4) |
 | PATCH  | `/api/internal/agent/tag-writes/{log_id}`             | Terminal outcome of an on-agent tag write — **the only endpoint that resolves a queued `TagWriteLog`** (phaze-6bkk DIST-01) |

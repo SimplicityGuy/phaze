@@ -675,7 +675,7 @@ restored = await undo_resolve(session, parsed_states)                       # dr
 | Abstraction | File | Role |
 | ----------- | ---- | ---- |
 | `FileRecord` | `file.py` | Central file record; **no** stored state column — per-stage status is derived on read (Phase 90 dropped the `state` column / file-state enum; now part of the `039` baseline schema) |
-| `Stage` + `Status` / `resolve_status` | `enums/stage.py` | 7-stage × 5-status derived per-stage status resolver (DB-free twin of `services/stage_status.py`) |
+| `Stage` + `Status` / `resolve_status` | `enums/stage.py` | 6-stage × 5-status derived per-stage status resolver (DB-free twin of `services/stage_status.py`) |
 | `CloudJob` + `CloudJobStatus` | `cloud_job.py` | Cloud-burst / tiered-drain sidecar row tracking the long-file detour off `analyze` |
 | `RenameProposal` + `ProposalStatus` | `proposal.py` | AI rename proposal (one active PENDING row, upserted in place) + approval status; partial unique index `uq_proposals_file_id_pending` |
 | `ExecutionLog` | `execution.py` | Append-only copy-verify-delete audit trail |
@@ -725,10 +725,14 @@ changed (REQUIREMENTS "logic unchanged" rule).
   count and status dot, grouped Discover → Enrich · parallel (Metadata · Analyze) →
   Identify (Tracklist) → Propose → Review & Apply (Rename / Path · Tag write · Move files ·
   Dedupe · Cue sheets · Execute), above them the two plain nav nodes **Summary** and
-  **Files**. Below the line are plain links to the **Audit log** (`/audit/`) and the
-  **Agents/Compute** page (`/admin/agents`). The Enrich group lost its Fingerprint node and
-  the Identify group its Track-ID node when phaze-0jpe removed fingerprinting (2026-07-28);
-  the grouping above matches `templates/shell/partials/rail.html` as of 2026-07-29.
+  **Files**. Below the line are two HTMX-driven rail utility nodes, `/s/audit` (Audit log)
+  and `/s/agents` (Agents/Compute) — both resolved through the shell's `UTILITY_PANES`
+  whitelist (phaze-uvmcr.1/.4) the same way a DAG stage is, so they swap into
+  `#stage-workspace` rather than navigating to the legacy `/audit/` / `/admin/agents` pages
+  (which now 301-redirect into these panes, preserving the query string). The Enrich group
+  lost its Fingerprint node and the Identify group its Track-ID node when phaze-0jpe removed
+  fingerprinting (2026-07-28); the grouping above matches
+  `templates/shell/partials/rail.html`.
 - **Center — stage workspace.** The selected rail node's file queue / lane summary / approval
   diffs.
 - **Right — per-file pane** and, on demand, the full **record slide-in** overlay.

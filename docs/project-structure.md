@@ -44,7 +44,10 @@ phaze/
 │   │   ├── route_control.py    #   RouteControl (single-row force-local routing override)
 │   │   ├── dedup_resolution.py #   DedupResolution (per-file "resolved to canonical file" marker)
 │   │   ├── stage_skip.py       #   StageSkip (per-(file, stage) force-skip marker for enrich stages)
-│   │   └── tag_write_log.py    #   TagWriteLog (append-only tag-write audit trail)
+│   │   ├── tag_write_log.py    #   TagWriteLog (append-only tag-write audit trail)
+│   │   ├── filename_convention.py # FilenameConvention (corpus-learned filename conventions, e.g. date order)
+│   │   ├── tracklist_lookup_cache.py # TracklistLookupCache (persisted per-unique-set 1001TL lookup outcome)
+│   │   └── tracklist_priority_flag.py # TracklistPriorityFlag (operator "answer this next" drain flag)
 │   ├── routers/                # API + UI endpoints
 │   │   ├── health.py           #   GET /health
 │   │   ├── shell.py            #   v7.0 console shell: GET / (Summary landing placeholder, SQ3-02) + GET /s/<stage> workspace swaps
@@ -69,19 +72,20 @@ phaze/
 │   │   ├── response_shape.py   #   THE htmx response-shape contract: what document shape + status a handler owes
 │   │   ├── view_state.py       #   THE list-view state carrier (filter/search/page/sort) for htmx-swapped tables
 │   │   ├── agent_auth.py       #   NOT a router: exports the get_authenticated_agent bearer-token dependency
-│   │   └── agent_*.py          #   Distributed-agent internal API (11 routers under /api/internal/agent):
+│   │   └── agent_*.py          #   Distributed-agent internal API (13 routers under /api/internal/agent):
 │   │       │                   #     files, metadata, execution, heartbeat, identity,
 │   │       │                   #     analysis, push, s3, proposals,
-│   │       │                   #     scan_batches, exec_batches
+│   │       │                   #     scan_batches, exec_batches, scratch (compute-scratch janitor
+│   │       │                   #     liveness probe), tag_writes (result + before-snapshot callbacks)
 │   ├── schemas/                # Pydantic request/response models
 │   │   ├── companion.py        #   Companion/duplicate schemas
 │   │   ├── pipeline_scans.py   #   Pipeline scan-trigger schemas
 │   │   ├── agent_tasks.py      #   Agent task-routing payload schemas
 │   │   ├── wire_bounds.py      #   THE Wire Bounds Contract: every inbound value bounded to fit its column
-│   │   └── agent_*.py          #   Distributed-agent contract schemas (11, DB-free, loaded in agent worker):
+│   │   └── agent_*.py          #   Distributed-agent contract schemas (13, DB-free, loaded in agent worker):
 │   │       │                   #     identity, heartbeat, files, metadata, analysis,
 │   │       │                   #     proposals, execution, exec_batches, scan_batches,
-│   │       │                   #     push, s3
+│   │       │                   #     push, s3, scratch, tag_writes
 │   ├── services/               # Business logic
 │   │   ├── hashing.py          #   Shared hashing utilities
 │   │   ├── metadata.py         #   Tag extraction via mutagen
@@ -92,15 +96,21 @@ phaze/
 │   │   ├── text_repair.py      #   Repair double-encoded UTF-8 ("mojibake") in already-decoded str values
 │   │   ├── text_repair_backfill.py # Idempotent backfill of files.original_filename_repaired for pre-045 rows
 │   │   ├── pg_text.py          #   Sanitize free text for PostgreSQL UTF8 storage (NUL/surrogate stripping)
+│   │   ├── containment.py      #   Path containment check shared by every consumer of agent-supplied paths
 │   │   ├── analysis.py         #   BPM/key/mood via essentia
 │   │   ├── analysis_enqueue.py #   FastAPI-free producer for process_file jobs (deterministic key + payload)
 │   │   ├── analysis_exec.py    #   Shared async subprocess driver for essentia analysis (analysis_child)
+│   │   ├── analysis_sizing.py  #   Host-derived thread + concurrency sizing for the analyze path
 │   │   ├── proposal.py         #   LLM calling + context building
 │   │   ├── proposal_queries.py #   Proposal queries + pagination
+│   │   ├── release_group.py    #   Extract the scene release-group token from a filename
+│   │   ├── filename_convention_learner.py # Learn per-release-group date-order conventions from the corpus
+│   │   ├── date_convention.py  #   Apply learned date-order conventions as a gated fallback in the proposal path
 │   │   ├── execution_queries.py#   Execution log queries + pagination
 │   │   ├── execution_dispatch.py # Dispatch grouping, revoked-agent filter, chunking
 │   │   ├── enqueue_router.py   #   Task-name → consumed-queue routing (avoids consumer-less default queue)
 │   │   ├── companion.py        #   Companion file association
+│   │   ├── companion_read.py   #   Bounded companion-sidecar read — the pure on-disk half
 │   │   ├── dedup.py            #   Duplicate detection + resolution
 │   │   ├── collision.py        #   Destination path collision detection
 │   │   ├── pipeline.py         #   Pipeline stats, per-stage progress (get_stage_progress), file state queries
@@ -108,12 +118,22 @@ phaze/
 │   │   ├── stage_status.py     #   SQL ColumnElement per-stage predicate builders (done/failed/inflight/status CASE)
 │   │   ├── scan_deletion.py    #   Ordered transactional cascade delete of a scan batch + dependent rows
 │   │   ├── tracklist_scraper.py#   1001Tracklists SEARCH + the whole-host request schedule
+│   │   ├── tracklist_query.py  #   Derive a clean 1001Tracklists search query from a messy, scene-tagged filename
+│   │   ├── tracklist_result_scorer.py # Pick and validate the right 1001Tracklists search result
+│   │   ├── tracklist_render.py #   Browser render engine for 1001Tracklists detail pages (headful, Turnstile retry)
+│   │   ├── tracklist_parser.py #   Detail-page parser for 1001Tracklists
+│   │   ├── tracklist_lookup_cache.py # Read/write layer over `tracklist_lookup_cache` — never spend a request twice
+│   │   ├── tracklist_candidates.py # Candidate-set builder for the drain: classify, dedup, identify unique sets
+│   │   ├── tracklist_candidate_queue.py # Turn the corpus into an ordered queue of unique sets the drain should look up
+│   │   ├── tracklist_priority.py # Operator priority flags + the per-file lookup review the admin UI reads
+│   │   ├── tracklist_drain.py  #   The 1001Tracklists drain engine: turns the built pieces into one resumable pass
 │   │   ├── tracklist_matcher.py#   Fuzzy match tracklists to files
 │   │   ├── cue_generator.py    #   CUE sheet generation
 │   │   ├── discogs_matcher.py  #   Discogsography API adapter + fuzzy Discogs matching
 │   │   ├── search_queries.py   #   Cross-entity full-text search (files + tracklists)
 │   │   ├── tag_proposal.py     #   Compute merged tags from multiple sources
 │   │   ├── tag_writer.py       #   Format-aware tag writing with verify-after-write
+│   │   ├── tag_write_disk.py   #   Format-aware tag writing + verify-after-write — the pure on-disk half
 │   │   ├── agent_bootstrap.py  #   Dev-agent seeding for the api lifespan
 │   │   ├── agent_client.py     #   PhazeAgentClient (internal-agent HTTP wrapper)
 │   │   ├── agent_liveness.py   #   Agent liveness classification (status pills)
@@ -126,6 +146,7 @@ phaze/
 │   │   ├── backend_selection.py#   Pure select_backend policy over the Backend substrate
 │   │   ├── analysis_wire.py    #   Shared wire-format converters for essentia analysis features
 │   │   ├── cloud_staging.py    #   Control-plane cloud-staging producer + re-drive helper
+│   │   ├── cloud_budget.py     #   The durable cloud-budget ledger: its one writer + the pure policy that reads it
 │   │   ├── s3_staging.py       #   Control-plane S3 object-staging service (presign/complete/abort)
 │   │   └── kube_staging.py     #   Control-plane Kubernetes (Kueue) Job-staging service
 │   ├── tasks/                  # SAQ async background jobs
@@ -134,18 +155,25 @@ phaze/
 │   │   ├── functions.py        #   process_file (full pipeline per file)
 │   │   ├── metadata_extraction.py # extract_file_metadata
 │   │   ├── proposal.py         #   generate_proposals (batch LLM)
+│   │   ├── filename_convention.py # SAQ entry point for the filename-convention learner
 │   │   ├── execution.py        #   execute_approved_batch
 │   │   ├── scan.py             #   scan_directory (agent-side chunked file discovery)
 │   │   ├── reenqueue.py        #   Control-side recover_orphaned_work: gated all-stages queue-loss recovery (Phase 42)
 │   │   ├── scan_reaper.py      #   Control-side cron: reap stalled RUNNING scans (no-progress)
 │   │   ├── aborting_reaper.py  #   Control-side every-minute cron: reap SAQ rows stuck in status='aborting' (phaze-e57w)
 │   │   ├── active_reaper.py    #   Control-side every-minute cron: reap SAQ rows stranded in status='active' (phaze-o0n6)
+│   │   ├── ledger_reaper.py    #   Control-side cron: clear scheduling_ledger rows whose work is finished
+│   │   ├── stage_park_reconcile.py # Control-side cron: retro-heal stage backlog rows stranded SENTINEL-parked
 │   │   ├── _saq_reap.py        #   The one stranded-row DELETE both key reapers issue (frozen started + per-row timeout + status CAS)
 │   │   ├── tracklist.py        #   on-demand refresh: re-arm the drain for chosen pages
+│   │   ├── tracklist_drain.py  #   SAQ entry point for the 1001Tracklists drain
 │   │   ├── discogs.py          #   match tracklist tracks to Discogs releases
 │   │   ├── heartbeat.py        #   30s agent heartbeat POST, run as a startup asyncio background task (Phase 46, not a cron)
 │   │   ├── push.py             #   push_file: rsync-over-SSH push of media to compute scratch
 │   │   ├── s3_upload.py        #   upload_file_s3: multipart-PUT upload to presigned URLs
+│   │   ├── companion_read.py   #   read_companion_files: bounded sidecar read on the agent's media mount
+│   │   ├── cue_write.py        #   write_cue_sheet: CUE file write on the agent's media mount
+│   │   ├── tag_write.py        #   write_file_tags: mutagen tag write + verify on the agent, reported via HTTP
 │   │   ├── submit_cloud_job.py #   Control-plane fast Kube-submit producer
 │   │   ├── reconcile_cloud_jobs.py # */5 cron: reconcile in-flight K8s cloud jobs
 │   │   ├── release_awaiting_cloud.py # Control-side tiered multi-backend drain (route AWAITING_CLOUD)
@@ -155,6 +183,7 @@ phaze/
 │   │       ├── model_bootstrap.py  # Auto-download essentia weights when /models empty
 │   │       ├── queue_defaults.py   # Shared SAQ before_enqueue Job defaults
 │   │       ├── queue_factory.py    # Single PostgresQueue construction seam for the pipeline
+│   │       ├── replay_safety.py    # The ledger replay-safety invariant: a scheduling_ledger payload must replay
 │   │       └── stage_control.py    # Canonical per-stage control constants (DB-free)
 │   ├── agent_watcher/          # Filesystem watcher service (file-server role, not a SAQ worker)
 │   │   ├── __main__.py         #   Entry point: asyncio.run(main())
@@ -196,12 +225,17 @@ phaze/
 │   ├── integration/               #   End-to-end + Alembic migration tests (test_migrations/)
 │   └── shared/                    #   Config, template-helper, utils, and cross-cutting tests
 ├── alembic/                    # Database migrations (async template)
-│   └── versions/               #   Migration scripts (10): the flattened 039_baseline_schema.py plus the
-│                               #   post-baseline chain 040..048 (tag_write_log timestamptz, tracklist_version
+│   └── versions/               #   Migration scripts (20): the flattened 039_baseline_schema.py plus the
+│                               #   post-baseline chain 040..058 (tag_write_log timestamptz, tracklist_version
 │                               #   unique, scheduling_ledger redrive_attempt, discogs one-accepted-per-track,
 │                               #   scan_batches no-duplicate-running, files.original_filename_repaired,
 │                               #   046 drop fingerprint schema, 047 drop analysis.fingerprint,
-│                               #   048 files (original_filename, id) btree) — head is 048
+│                               #   048 files (original_filename, id) btree, 049 all timestamps timestamptz,
+│                               #   050 tracklist_lookup_cache, 051 tracklists propagation, 052 tracklist
+│                               #   priority flags, 053 filename_convention, 054 cloud_job node-loss
+│                               #   redrives, 055 cloud_budget ledger, 056 fix double-prefixed CHECK
+│                               #   constraints, 057 cloud_job node-loss pending, 058 analysis
+│                               #   completed_at btree) — head is 058; see database.md#migrations
 ├── .github/workflows/          # CI/CD pipelines
 │   ├── ci.yml                  #   Main orchestrator
 │   ├── code-quality.yml        #   Pre-commit hooks
@@ -215,12 +249,16 @@ phaze/
 │   ├── download-models.sh      #   Download essentia ML models
 │   ├── update-project.sh       #   Sync/update project tooling
 │   ├── classify-changed-files.sh # Classify changed files as docs-only vs code (CI doc-only skip gate)
+│   ├── derive-seat-name.sh     #   Derive the safe, collision-free Postgres/Redis identifier for a `test-db-for` seat
+│   ├── ensure-pg-database.sh   #   Idempotently ensure Postgres databases exist on the test harness (TOCTOU-safe)
 │   ├── coverage_floor.py       #   Enforce per-module coverage floor from `coverage json` output
 │   ├── normalize_schema_dump.py #  Normalize a pg_dump schema-only file for migration-chain equivalence
 │   ├── seed_perf_corpus.py     #   Seed a synthetic ~200K-file corpus for perf measurement
 │   ├── perf_explain.py         #   EXPLAIN (ANALYZE, BUFFERS) hot queries + time /pipeline/stats
 │   ├── perf_analyze_workspace.py # Baseline the Analyze-workspace slowdown at 200K scale
 │   ├── analyze_browser_soak.py #   Real-browser verification of the Analyze workspace at 200K scale
+│   ├── capture_tracklist_render.py # Live-capture 1001Tracklists detail pages through the render engine
+│   ├── capture_tracklist_search.py # Live-capture 1001Tracklists SEARCH-RESULT pages
 │   ├── backfill_mojibake_filenames.py # One-shot operator backfill of files.original_filename_repaired (phaze-x4ux)
 │   └── parity/                 #   Essentia-analysis parity fixtures (compare/dump/generate analysis, reference.wav)
 ├── docker-compose.yml          # Service orchestration

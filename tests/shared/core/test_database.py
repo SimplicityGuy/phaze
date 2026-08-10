@@ -109,6 +109,46 @@ async def test_run_migrations_skips_when_auto_migrate_false(monkeypatch: pytest.
     fake_upgrade.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_get_session_yields_and_closes_the_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``get_session`` enters ``async_session()``'s context, yields exactly that session, and closes
+    it on generator exhaustion -- proven against a fake context manager rather than the real
+    ``async_session`` factory (which is bound to ``settings.database_url``, not the test DSN).
+    """
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.entered = False
+            self.exited = False
+
+    class _FakeSessionCtx:
+        def __init__(self, session: _FakeSession) -> None:
+            self._session = session
+
+        async def __aenter__(self) -> _FakeSession:
+            self._session.entered = True
+            return self._session
+
+        async def __aexit__(self, *_exc: object) -> bool:
+            self._session.exited = True
+            return False
+
+    fake_session = _FakeSession()
+    monkeypatch.setattr(db, "async_session", lambda: _FakeSessionCtx(fake_session))
+
+    generator = db.get_session()
+    yielded = await generator.__anext__()
+
+    assert yielded is fake_session
+    assert fake_session.entered is True
+    assert fake_session.exited is False
+
+    with pytest.raises(StopAsyncIteration):
+        await generator.__anext__()
+
+    assert fake_session.exited is True
+
+
 def test_engine_pool_hygiene_sourced_from_config() -> None:
     """quick-260707-ryn: the module-level api engine builds its pool from the config knobs.
 
