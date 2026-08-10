@@ -717,21 +717,198 @@ async def test_startup_janitor_compute_only_gating(tmp_path: Path, monkeypatch: 
     # The fileserver agent runs the SAME module and must NOT sweep (it has no scratch dir).
     aw = _import_agent_worker(monkeypatch)
 
-    calls: list[tuple[Path, float]] = []
-    monkeypatch.setattr(aw, "_sweep_scratch", lambda path, min_age_sec: calls.append((path, min_age_sec)))
+    calls: list[tuple[Path, float, frozenset[str], bool]] = []
 
-    scratch = str(tmp_path / "scratch")
-    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=scratch, push_timeout_sec=600, analysis_inner_timeout_sec=6600)
+    def _fake_sweep(path: Path, min_age_sec: float, *, live_file_ids: frozenset[str] = frozenset(), skip_partial: bool = False) -> None:
+        calls.append((path, min_age_sec, live_file_ids, skip_partial))
+
+    monkeypatch.setattr(aw, "_sweep_scratch", _fake_sweep)
+
+    # A stale entry must exist for the gate to reach _sweep_scratch at all (phaze-5cvbz: an empty
+    # sweep short-circuits before ever calling it, since there is nothing to probe/delete).
+    scratch_dir = tmp_path / "scratch"
+    scratch_dir.mkdir()
+    stale_file = scratch_dir / f"{uuid.uuid4()}.mp3"
+    stale_file.write_bytes(b"a")
+    old_mtime = time.time() - 10_000
+    os.utime(stale_file, (old_mtime, old_mtime))
+
+    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=str(scratch_dir), push_timeout_sec=600, analysis_inner_timeout_sec=6600)
+    # No client passed (unit-test caller) -- documented no-probe default: live_file_ids empty,
+    # skip_partial False, matching the pre-phaze-5cvbz age-only shape.
     await aw._maybe_sweep_scratch(cfg)
-    assert calls == [(Path(scratch), 7200.0)]
+    assert calls == [(scratch_dir, 7200.0, frozenset(), False)]
 
     calls.clear()
-    await aw._maybe_sweep_scratch(SimpleNamespace(kind="fileserver", cloud_scratch_dir=scratch))
+    await aw._maybe_sweep_scratch(SimpleNamespace(kind="fileserver", cloud_scratch_dir=str(scratch_dir)))
     assert calls == []
 
     # compute but no scratch dir configured → no-op.
     await aw._maybe_sweep_scratch(SimpleNamespace(kind="compute", cloud_scratch_dir=None))
     assert calls == []
+
+    # compute + scratch dir configured but EMPTY (nothing stale) → no-op; _sweep_scratch never called.
+    empty_dir = tmp_path / "empty-scratch"
+    empty_dir.mkdir()
+    await aw._maybe_sweep_scratch(
+        SimpleNamespace(kind="compute", cloud_scratch_dir=str(empty_dir), push_timeout_sec=600, analysis_inner_timeout_sec=6600)
+    )
+    assert calls == []
+
+
+class _FakeScratchLivenessClient:
+    """Stand-in for PhazeAgentClient.scratch_liveness -- records the requested ids, returns a fixed result."""
+
+    def __init__(
+        self,
+        *,
+        live_file_ids: list[uuid.UUID] | None = None,
+        push_file_active: bool = False,
+        raise_exc: Exception | None = None,
+    ) -> None:
+        self._live_file_ids = live_file_ids or []
+        self._push_file_active = push_file_active
+        self._raise_exc = raise_exc
+        self.calls: list[list[uuid.UUID]] = []
+
+    async def scratch_liveness(self, file_ids: list[uuid.UUID]) -> SimpleNamespace:
+        self.calls.append(list(file_ids))
+        if self._raise_exc is not None:
+            raise self._raise_exc
+        return SimpleNamespace(live_file_ids=self._live_file_ids, push_file_active=self._push_file_active)
+
+
+async def test_startup_janitor_keeps_entry_the_control_plane_confirms_live(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # phaze-5cvbz core scenario: an age-eligible scratch copy whose durable process_file job is
+    # STILL queued/active (never dequeued, or parked at the pause SENTINEL) must survive the sweep
+    # even though its mtime is well past min_age_sec -- an unconfirmed entry is still swept.
+    aw = _import_agent_worker(monkeypatch)
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    live_id = uuid.uuid4()
+    dead_id = uuid.uuid4()
+    live_file = scratch / f"{live_id}.mp3"
+    dead_file = scratch / f"{dead_id}.flac"
+    live_file.write_bytes(b"a")
+    dead_file.write_bytes(b"b")
+    old_mtime = time.time() - 10_000
+    os.utime(live_file, (old_mtime, old_mtime))
+    os.utime(dead_file, (old_mtime, old_mtime))
+
+    client = _FakeScratchLivenessClient(live_file_ids=[live_id])
+    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=str(scratch), push_timeout_sec=600, analysis_inner_timeout_sec=6600)
+    await aw._maybe_sweep_scratch(cfg, client)
+
+    assert live_file.exists(), "a durable queued/active job's scratch copy must survive the sweep"
+    assert not dead_file.exists(), "an entry the control plane confirms is NOT live is still swept"
+    assert len(client.calls) == 1
+    assert sorted(client.calls[0]) == sorted([live_id, dead_id])
+
+
+async def test_startup_janitor_probe_failure_defers_entire_sweep_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A probe failure (network blip, 5xx after retries) must defer -- NOT fall back to age-only
+    # deletion, which is the exact unsafe behavior phaze-5cvbz fixed.
+    aw = _import_agent_worker(monkeypatch)
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    stale_file = scratch / f"{uuid.uuid4()}.mp3"
+    stale_file.write_bytes(b"a")
+    old_mtime = time.time() - 10_000
+    os.utime(stale_file, (old_mtime, old_mtime))
+
+    client = _FakeScratchLivenessClient(raise_exc=RuntimeError("network blip"))
+    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=str(scratch), push_timeout_sec=600, analysis_inner_timeout_sec=6600)
+    await aw._maybe_sweep_scratch(cfg, client)
+
+    assert stale_file.exists(), "a probe failure must defer deletion to the next sweep, never guess"
+
+
+async def test_startup_janitor_push_file_active_keeps_rsync_partial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # phaze-5cvbz additional site: .rsync-partial's mtime freezes at transfer START, not progress,
+    # so a slow-but-live push must not have its partial dir swept mid-transfer by a restart.
+    aw = _import_agent_worker(monkeypatch)
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    partial = scratch / ".rsync-partial"
+    partial.mkdir()
+    (partial / "in-flight.tmp").write_bytes(b"c")
+    old_mtime = time.time() - 10_000
+    os.utime(partial, (old_mtime, old_mtime))
+
+    client = _FakeScratchLivenessClient(push_file_active=True)
+    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=str(scratch), push_timeout_sec=600, analysis_inner_timeout_sec=6600)
+    await aw._maybe_sweep_scratch(cfg, client)
+
+    assert partial.exists(), "a live push_file job must keep the shared .rsync-partial dir this pass"
+
+
+async def test_startup_janitor_no_live_push_file_sweeps_rsync_partial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    aw = _import_agent_worker(monkeypatch)
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    partial = scratch / ".rsync-partial"
+    partial.mkdir()
+    old_mtime = time.time() - 10_000
+    os.utime(partial, (old_mtime, old_mtime))
+
+    client = _FakeScratchLivenessClient(push_file_active=False)
+    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=str(scratch), push_timeout_sec=600, analysis_inner_timeout_sec=6600)
+    await aw._maybe_sweep_scratch(cfg, client)
+
+    assert not partial.exists()
+
+
+async def test_startup_janitor_non_uuid_entry_swept_without_probing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A stale FILE entry that can't be parsed as <file_id>.<file_type> is not a shape this
+    # pipeline ever wrote -- swept without wasting a probe slot on it.
+    aw = _import_agent_worker(monkeypatch)
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    garbage = scratch / "not-a-uuid.tmp"
+    garbage.write_bytes(b"z")
+    old_mtime = time.time() - 10_000
+    os.utime(garbage, (old_mtime, old_mtime))
+
+    client = _FakeScratchLivenessClient()
+    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=str(scratch), push_timeout_sec=600, analysis_inner_timeout_sec=6600)
+    await aw._maybe_sweep_scratch(cfg, client)
+
+    assert not garbage.exists()
+    assert client.calls == [[]]
+
+
+def test_sweep_scratch_honors_live_file_ids_and_skip_partial_kwargs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Direct unit coverage of _sweep_scratch's new kwargs (the caller-resolved probe result).
+    aw = _import_agent_worker(monkeypatch)
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    live_id = uuid.uuid4()
+    live_file = scratch / f"{live_id}.mp3"
+    live_file.write_bytes(b"a")
+    partial = scratch / ".rsync-partial"
+    partial.mkdir()
+    old_mtime = time.time() - 10_000
+    os.utime(live_file, (old_mtime, old_mtime))
+    os.utime(partial, (old_mtime, old_mtime))
+
+    aw._sweep_scratch(scratch, min_age_sec=100.0, live_file_ids=frozenset({str(live_id)}), skip_partial=True)
+
+    assert live_file.exists()
+    assert partial.exists()
+
+
+def test_parse_scratch_file_id_roundtrips_valid_uuid_and_rejects_garbage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    aw = _import_agent_worker(monkeypatch)
+
+    file_id = uuid.uuid4()
+    assert aw._parse_scratch_file_id(tmp_path / f"{file_id}.mp3") == file_id
+    assert aw._parse_scratch_file_id(tmp_path / "not-a-uuid.mp3") is None
 
 
 def test_push_file_registered_on_agent_worker(monkeypatch: pytest.MonkeyPatch) -> None:

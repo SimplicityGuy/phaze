@@ -42,7 +42,8 @@ import os
 from pathlib import Path
 import shutil
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
+import uuid
 
 import redis.asyncio as redis_async
 import structlog
@@ -71,29 +72,33 @@ from phaze.tasks.scan import scan_directory
 from phaze.tasks.tag_write import write_file_tags
 
 
+if TYPE_CHECKING:
+    from phaze.services.agent_client import PhazeAgentClient
+
+
 logger = structlog.get_logger(__name__)
 
 
-def _sweep_scratch(scratch_dir: Path, min_age_sec: float) -> None:
-    """Remove stale entries (files and the ``.rsync-partial`` dir) under the compute scratch dir (D-14).
+_RSYNC_PARTIAL_DIRNAME = ".rsync-partial"
+"""Mirrors ``push.py``'s ``--partial-dir=.rsync-partial`` -- the single shared staging directory
+name every push transfer resumes into. Not per-``file_id``, so it cannot be liveness-probed the
+same way a scratch FILE entry can (phaze-5cvbz additional site); it is gated by
+``push_file_active`` instead (see :func:`_maybe_sweep_scratch`)."""
 
-    The compute-only startup janitor's worker. Bounds scratch disk to entries that can no longer
-    be live work: a hard-killed worker can leave a half-pushed file or a ``.rsync-partial``
-    directory behind. The original docstring's safety claim -- "any file still genuinely needed is
-    re-pushed by the staging cron" -- predates Phase 36's move to a durable Postgres SAQ broker:
-    queued/active ``process_file`` jobs now SURVIVE a worker restart and each pins ``scratch_path``
-    to a file this sweep would otherwise delete out from under it (phaze-8z4u), and the staging
-    cron never re-pushes an already-PUSHED file regardless. Since this module MUST NOT import
-    phaze.database/SQLAlchemy (D-25 import boundary, module docstring), there is no cheap way to
-    ask "is a durable job still claiming this path?" -- so instead an entry is only swept once its
-    mtime is older than ``min_age_sec``, a ceiling generous enough to outlast both the push
-    transport and one full in-place SAQ retry of the analysis. A young entry is left for the NEXT
-    startup sweep rather than treated as leaked. Tolerates a missing dir so a fresh compute host
-    (scratch volume not yet created) starts cleanly. stdlib-only -- keeps the module Postgres-free
-    (tests/shared/core/test_task_split.py)."""
+
+def _stale_scratch_entries(scratch_dir: Path, min_age_sec: float) -> list[Path]:
+    """Return scratch-dir entries whose mtime is at least ``min_age_sec`` old. Pure stdlib, sync.
+
+    A "candidate for deletion" list ONLY -- the actual delete/keep decision additionally needs a
+    liveness probe result the sync/filesystem layer cannot obtain on its own (D-25 import
+    boundary; see :func:`_maybe_sweep_scratch`), so listing is split from deleting
+    (:func:`_sweep_scratch`). Tolerates a missing dir so a fresh compute host (scratch volume not
+    yet created) starts cleanly.
+    """
     if not scratch_dir.exists():
-        return
+        return []
     now = time.time()
+    stale: list[Path] = []
     for entry in scratch_dir.iterdir():
         try:
             age_sec = now - entry.stat().st_mtime
@@ -101,14 +106,54 @@ def _sweep_scratch(scratch_dir: Path, min_age_sec: float) -> None:
             # Vanished between iterdir() and stat() (e.g. raced by the job that owns it) --
             # nothing to sweep.
             continue
-        if age_sec < min_age_sec:
-            # Too young to safely assume orphaned -- may be a live in-flight push or a durable
-            # queued/active process_file job's scratch_path (phaze-8z4u). Leave it for a later sweep.
-            continue
+        if age_sec >= min_age_sec:
+            stale.append(entry)
+        # else: too young to safely assume orphaned -- may be a live in-flight push or a durable
+        # queued/active process_file job's scratch_path (phaze-8z4u). Leave it for a later sweep.
+    return stale
+
+
+def _sweep_scratch(
+    scratch_dir: Path,
+    min_age_sec: float,
+    *,
+    live_file_ids: frozenset[str] = frozenset(),
+    skip_partial: bool = False,
+) -> None:
+    """Delete age-eligible entries under the compute scratch dir, EXCEPT ones proven still-live (D-14).
+
+    The compute-only startup janitor's worker. Bounds scratch disk to entries that can no longer
+    be live work: a hard-killed worker can leave a half-pushed file or a ``.rsync-partial``
+    directory behind. The original docstring's safety claim -- "any file still genuinely needed is
+    re-pushed by the staging cron" -- predates Phase 36's move to a durable Postgres SAQ broker:
+    queued/active ``process_file`` jobs now SURVIVE a worker restart and each pins ``scratch_path``
+    to a file this sweep would otherwise delete out from under it (phaze-8z4u).
+
+    phaze-5cvbz: a fixed ``min_age_sec`` ceiling ALONE is not a safe liveness proxy -- a durable
+    job can sit ``queued`` far longer than any finite ceiling (never dequeued behind a
+    concurrency-1 clamp, or parked at the pause ``SENTINEL``) while its scratch copy's mtime stays
+    frozen at push-completion. ``min_age_sec`` is kept as the cheap FIRST filter (age-eligible only
+    == a real candidate, keeping this stdlib-only / Postgres-free per D-25), and the caller
+    (:func:`_maybe_sweep_scratch`) additionally resolves ``live_file_ids`` / ``skip_partial`` via
+    an HTTP probe to the control plane BEFORE calling this function -- an age-eligible FILE entry
+    whose ``<file_id>`` (the filename stem -- ``push.py``'s deterministic ``<file_id>.<file_type>``
+    naming) is in ``live_file_ids`` is kept; the ``.rsync-partial`` directory is kept whenever
+    ``skip_partial`` is True (a ``push_file`` job is currently live, ANY file). Both default to the
+    empty/False no-probe-result shape so an entry with no confirmed liveness is swept, matching the
+    pre-phaze-5cvbz age-only behavior for callers (and the age-only test coverage) that don't pass
+    them. Tolerates a missing dir; stdlib-only -- keeps this function itself Postgres-free
+    (tests/shared/core/test_task_split.py)."""
+    for entry in _stale_scratch_entries(scratch_dir, min_age_sec):
         if entry.is_dir():
+            if entry.name == _RSYNC_PARTIAL_DIRNAME and skip_partial:
+                continue
             shutil.rmtree(entry, ignore_errors=True)
-        else:
-            entry.unlink(missing_ok=True)
+            continue
+        if entry.stem in live_file_ids:
+            # A durable queued/active process_file job still claims this scratch copy (phaze-5cvbz)
+            # -- leave it for a later sweep instead of stranding that job's next retry/dequeue.
+            continue
+        entry.unlink(missing_ok=True)
 
 
 _QUEUE_READY_BACKOFF_S: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0)
@@ -166,20 +211,75 @@ async def _wait_for_queue_ready() -> None:
     raise RuntimeError(msg)
 
 
-async def _maybe_sweep_scratch(cfg: AgentSettings) -> None:
+def _parse_scratch_file_id(entry: Path) -> uuid.UUID | None:
+    """Recover the ``file_id`` a scratch FILE entry was named for, or ``None`` if it isn't one.
+
+    ``push.py::_build_rsync_argv`` names every pushed scratch copy deterministically as
+    ``<file_id>.<file_type>`` (the server-generated UUID, never the untrusted original filename).
+    ``Path.stem`` splits on the LAST dot, which is exactly right here since ``file_type`` is a bare
+    extension (``mp3``, ``mp4``, ...) with no embedded dot. An entry whose stem does not parse as a
+    UUID cannot be a legitimate scratch_path this pipeline ever wrote, so it is left unprobed --
+    the caller falls back to the pre-existing age-only deletion for it.
+    """
+    try:
+        return uuid.UUID(entry.stem)
+    except ValueError:
+        return None
+
+
+async def _maybe_sweep_scratch(cfg: AgentSettings, client: PhazeAgentClient | None = None) -> None:
     """Compute-only startup janitor gate (D-14).
 
     Sweeps ONLY when ``cfg.kind == "compute"`` AND a ``cloud_scratch_dir`` is configured. The
     file-server agent runs this SAME module (zero compute-specific worker code) and owns no scratch
     dir, so it must NOT sweep. Runs off the event loop via ``asyncio.to_thread`` (parity with the
-    ``ensure_models_present`` startup step). The age ceiling (phaze-8z4u) is
-    ``push_timeout_sec + analysis_inner_timeout_sec`` -- generous enough to outlast a single push
-    transfer PLUS one full analysis attempt, the longest a legitimately-live scratch entry should
-    go unmodified.
+    ``ensure_models_present`` startup step).
+
+    The age ceiling (phaze-8z4u) -- ``push_timeout_sec + analysis_inner_timeout_sec`` -- is kept as
+    the cheap FIRST filter (a young entry is never even a delete candidate), but phaze-5cvbz proved
+    it is not a SAFE proxy on its own: a durable ``process_file`` job can sit ``queued`` far longer
+    than any finite ceiling (behind a concurrency-1 clamp, or parked at the pause ``SENTINEL`` --
+    both keep ``status = 'queued'``), while its scratch copy's mtime stays frozen at
+    push-completion the whole time. So an age-eligible entry is no longer deleted outright: this
+    function calls ``client.scratch_liveness`` (an HTTP probe to the control plane, the only way to
+    ask "is a durable job still claiming this?" without pulling SQLAlchemy across the D-25 agent
+    import boundary) and only :func:`_sweep_scratch`'s ACTUAL delete honors entries the probe
+    confirms are not live.
+
+    ``client`` is ``None`` only for direct unit-test callers; the real ``startup()`` call site
+    always passes the already-constructed ``PhazeAgentClient``. If the probe raises (network
+    hiccup, 5xx after retries, ...) this sweep pass is skipped ENTIRELY -- deferred to the next
+    restart -- rather than falling back to age-only deletion, which is exactly the unsafe behavior
+    phaze-5cvbz fixed. No stale entries at all is a no-op that never calls the probe.
     """
-    if cfg.kind == "compute" and cfg.cloud_scratch_dir:
-        min_age_sec = cfg.push_timeout_sec + cfg.analysis_inner_timeout_sec
-        await asyncio.to_thread(_sweep_scratch, Path(cfg.cloud_scratch_dir), min_age_sec)
+    if not (cfg.kind == "compute" and cfg.cloud_scratch_dir):
+        return
+    scratch_dir = Path(cfg.cloud_scratch_dir)
+    min_age_sec = cfg.push_timeout_sec + cfg.analysis_inner_timeout_sec
+    stale = await asyncio.to_thread(_stale_scratch_entries, scratch_dir, min_age_sec)
+    if not stale:
+        return
+    live_file_ids: frozenset[str] = frozenset()
+    skip_partial = False
+    if client is not None:
+        candidate_ids = [file_id for entry in stale if not entry.is_dir() if (file_id := _parse_scratch_file_id(entry)) is not None]
+        try:
+            liveness = await client.scratch_liveness(candidate_ids)
+        except Exception:
+            logger.warning(
+                "scratch liveness probe failed; deferring this sweep pass rather than risk deleting a live entry",
+                exc_info=True,
+            )
+            return
+        live_file_ids = frozenset(str(file_id) for file_id in liveness.live_file_ids)
+        skip_partial = liveness.push_file_active
+    await asyncio.to_thread(
+        _sweep_scratch,
+        scratch_dir,
+        min_age_sec,
+        live_file_ids=live_file_ids,
+        skip_partial=skip_partial,
+    )
 
 
 async def startup(ctx: dict[str, Any]) -> None:
@@ -251,7 +351,10 @@ async def startup(ctx: dict[str, Any]) -> None:
     # leak disk. Gated on kind == "compute" + cloud_scratch_dir (the fileserver runs the same
     # module and owns no scratch dir). This is the agent-side analog of the controller's startup
     # reconciliation. Placed after the models check (also off-loop) and before the dispatch loop.
-    await _maybe_sweep_scratch(cfg)
+    # phaze-5cvbz: ``client`` (already constructed + whoami-proven reachable, Step 2/3 above) is
+    # threaded through so an age-eligible entry is only deleted once the control plane confirms no
+    # durable queued/active job still claims it -- see _maybe_sweep_scratch's docstring.
+    await _maybe_sweep_scratch(cfg, client)
 
     # Step 4: Queue-name mismatch guard (Pitfall 1). Compare the BASE (agent-level identity,
     # single across lanes) -- the lane suffix is orthogonal to the token->agent_id binding.
