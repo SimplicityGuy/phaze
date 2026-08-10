@@ -35,7 +35,7 @@ dependencies = [
     # pip-audit and osv-scanner report nothing against it, and the full suite passes. Note
     # this cap is now the ONLY control on this package: the repo-wide `exclude-newer`
     # cooldown was removed the same day, so there is no waiting window behind it.
-    "litellm>=1.94.1,<1.95.0",
+    "litellm>=1.95.0,<1.96.0",
     "lxml>=6.1.1",
     "mutagen>=1.48.1",
     "numpy>=2.5.1",
