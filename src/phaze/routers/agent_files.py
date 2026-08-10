@@ -126,7 +126,19 @@ async def upsert_files(
     deduped: dict[str, dict[str, Any]] = {}
     for rec in raw_records:
         deduped[rec["original_path"]] = rec
-    records = list(deduped.values())
+
+    # phaze-zfxy6: sort the deduped VALUES rows by `original_path` before the multi-row
+    # `ON CONFLICT DO UPDATE` below. Postgres locks each conflicting pre-existing row in
+    # VALUES order, which was previously the agent's directory-walk order -- an order this
+    # statement shares no column with `delete_scan_cascade`'s FOR UPDATE sweep
+    # (services/scan_deletion.py), which locks the same batch's file rows in a different
+    # order. Two multi-row lockers over an overlapping row set (a rescan reassigning a
+    # completed batch's files to the live batch, concurrent with an operator deleting that
+    # completed batch) that acquire locks in different orders is a classic ABBA deadlock.
+    # `original_path` is the only column both sides can sort on (this upsert's natural key
+    # is `(agent_id, original_path)`; the cascade only has `batch_id`), so both now use it,
+    # giving the two lockers one global acquisition order and making the cycle impossible.
+    records = sorted(deduped.values(), key=lambda rec: rec["original_path"])
 
     # 3. UPSERT with insert-detection (RESEARCH Pattern 2; D-12 + D-21).
     # Mirrors services/ingestion.py:103-117. `inserted` (xmax = 0) is retained so the
