@@ -244,6 +244,27 @@ async def push_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
 
             argv = _build_rsync_argv(cfg, payload, key_path=str(key_path), known_hosts_path=str(known_hosts_path))
 
+            # phaze-2qpn: size-derived total wall-clock budget so a healthy long transfer is never killed.
+            # rsync's --timeout (I/O inactivity) is the primary stall kill; this outer guard only reaps a
+            # genuine wedge. A failed stat (rare -- the source is on the local mount) falls back to 0, i.e.
+            # the small-file floor, so we never build a shorter-than-default budget from a missing size.
+            # phaze-2yjf: off-loaded -- same class as the s3_upload.py open() fix. original_path is the
+            # media mount (typically NFS/SMB), so a plain on-loop .stat() can block the event loop (and
+            # the Phase-46 liveness heartbeat with it) for the duration of a stall, same as an on-loop read.
+            # phaze-piqai: this MUST run BEFORE the subprocess spawn below, not after. file_size has no
+            # data dependency on proc, and hoisting it here restores the zero-await invariant between
+            # create_subprocess_exec and the guarded proc.communicate() -- the ONLY region the WR-03
+            # comment above promises is safe from an unreaped SAQ cancellation. A SAQ job-net
+            # cancellation landing on this stat's await (a real risk: the comment above documents it can
+            # block for the duration of a media-mount stall, and a stall is exactly when the SAQ net
+            # timeout fires) bypasses the proc.kill()/proc.wait() reap entirely, leaking a running rsync
+            # child out from under the finally that shreds its SSH secrets.
+            try:
+                file_size = (await asyncio.to_thread(Path(payload.original_path).stat)).st_size
+            except OSError:
+                file_size = 0
+            outer_guard = push_transfer_budget_sec(file_size, io_stall_timeout_sec=cfg.push_timeout_sec)
+
             try:
                 # Fixed list argv, no shell; remote path is the server UUID (T-50-injection): neither
                 # ruff S603 nor bandit B603 flags create_subprocess_exec with a list argv.
@@ -259,18 +280,6 @@ async def push_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
                 msg = f"push_file: required binary {missing!r} not found; cannot push (no local fallback)"
                 raise RuntimeError(msg) from exc
 
-            # phaze-2qpn: size-derived total wall-clock budget so a healthy long transfer is never killed.
-            # rsync's --timeout (I/O inactivity) is the primary stall kill; this outer guard only reaps a
-            # genuine wedge. A failed stat (rare -- the source is on the local mount) falls back to 0, i.e.
-            # the small-file floor, so we never build a shorter-than-default budget from a missing size.
-            # phaze-2yjf: off-loaded -- same class as the s3_upload.py open() fix. original_path is the
-            # media mount (typically NFS/SMB), so a plain on-loop .stat() can block the event loop (and
-            # the Phase-46 liveness heartbeat with it) for the duration of a stall, same as an on-loop read.
-            try:
-                file_size = (await asyncio.to_thread(Path(payload.original_path).stat)).st_size
-            except OSError:
-                file_size = 0
-            outer_guard = push_transfer_budget_sec(file_size, io_stall_timeout_sec=cfg.push_timeout_sec)
             try:
                 _out, err = await asyncio.wait_for(proc.communicate(), timeout=outer_guard)
             except (TimeoutError, asyncio.CancelledError):
