@@ -522,6 +522,129 @@ async def test_generate_cue_no_latest_version(client: AsyncClient, session: Asyn
     assert "timestamps" in response.text.lower()
 
 
+# ---------------------------------------------------------------------------
+# phaze-bg1dk: a vanished tracklist on the v7 cue-card surface must toast, not silently 404.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_generate_cue_not_found_on_cue_card_target_toasts_instead_of_bare_404(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-bg1dk: HX-Target: cue-card-{id} against a vanished tracklist must 200 + toast.
+
+    htmx does not swap non-2xx responses and the shell's only 404 rescue handler is scoped to
+    `#record-body` -- never `cue-card-*` -- so the old bare 404 produced zero feedback on the v7
+    workspace card. The fix must return 200 with an OOB toast so the operator sees why nothing
+    happened, and the empty primary body lets htmx's outerHTML swap remove the stale card.
+    """
+    fake_id = uuid.uuid4()
+    response = await client.post(
+        f"/cue/{fake_id}/generate",
+        headers={"HX-Target": f"cue-card-{fake_id}"},
+    )
+    assert response.status_code == 200
+    assert "not found" in response.text.lower()
+    assert "toast-container" in response.text
+    assert f'id="cue-card-{fake_id}"' not in response.text, "no card left to rebuild -- the primary body must stay empty"
+
+
+@pytest.mark.asyncio
+async def test_generate_cue_not_found_on_default_target_still_404s(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-bg1dk: the non-HX / legacy-row surface (no `cue-card-` target) keeps the honest 404.
+
+    Regression guard for the fix's scope: only the `cue-card-*` target gets the toast rescue.
+    """
+    fake_id = uuid.uuid4()
+    response = await client.post(f"/cue/{fake_id}/generate")
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# phaze-ce65s: the APPROVE version pin -- refuse to write content nobody reviewed.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_generate_cue_stale_version_refuses_write_and_returns_fresh_preview(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """phaze-ce65s: a `version_id` that no longer matches `latest_version_id` must NOT dispatch a write.
+
+    Simulates the race: the operator's card was rendered from v1, a background re-scrape then
+    moved `latest_version_id` to v2 before the APPROVE click. The route must refuse the stale
+    submission, dispatch NOTHING, and hand back a fresh preview of the CURRENT version instead.
+    """
+    tracklist, file_record = await _create_approved_tracklist_with_file(session)
+    stale_version_id = tracklist.latest_version_id
+
+    audio_path = tmp_path / file_record.original_filename
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    # A re-scrape lands a new version before the click.
+    new_version_id = uuid.uuid4()
+    session.add(TracklistVersion(id=new_version_id, tracklist_id=tracklist.id, version_number=2))
+    await session.flush()
+    session.add(
+        TracklistTrack(
+            id=uuid.uuid4(),
+            version_id=new_version_id,
+            position=1,
+            artist="New Artist",
+            title="New Title",
+            timestamp="0:05:00",
+        )
+    )
+    tracklist.latest_version_id = new_version_id
+    await session.commit()
+
+    _controller_queue, router = install_fake_queues(client)
+    response = await client.post(
+        f"/cue/{tracklist.id}/generate",
+        headers={"HX-Target": f"cue-card-{tracklist.id}"},
+        data={"version_id": str(stale_version_id)},
+    )
+    assert response.status_code == 200
+    assert len(router.captures) == 0, "the stale submission must dispatch NOTHING"
+    assert "changed" in response.text.lower()
+    assert f'id="cue-card-{tracklist.id}"' in response.text, "a fresh preview card must still be rendered"
+    assert "New Title" in response.text, "the re-rendered card must reflect the CURRENT (v2) version, not the stale one"
+
+
+@pytest.mark.asyncio
+async def test_generate_cue_matching_version_dispatches_normally(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """phaze-ce65s regression guard: a `version_id` that DOES match `latest_version_id` still writes."""
+    tracklist, file_record = await _create_approved_tracklist_with_file(session)
+
+    audio_path = tmp_path / file_record.original_filename
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    _controller_queue, router = install_fake_queues(client)
+    response = await client.post(
+        f"/cue/{tracklist.id}/generate",
+        headers={"HX-Target": f"cue-card-{tracklist.id}"},
+        data={"version_id": str(tracklist.latest_version_id)},
+    )
+    assert response.status_code == 200
+    assert len(router.captures) == 1, "a matching version pin must still dispatch the write"
+
+
+@pytest.mark.asyncio
+async def test_generate_cue_omitted_version_dispatches_normally(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """phaze-ce65s: omitting `version_id` entirely (the legacy row surface) preserves old behavior."""
+    tracklist, file_record = await _create_approved_tracklist_with_file(session)
+
+    audio_path = tmp_path / file_record.original_filename
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    _controller_queue, router = install_fake_queues(client)
+    response = await client.post(f"/cue/{tracklist.id}/generate")
+    assert response.status_code == 200
+    assert len(router.captures) == 1
+
+
 @pytest.mark.asyncio
 async def test_get_eligible_tracklist_query_respects_sql_limit(session: AsyncSession) -> None:
     """WR-03: ``limit=`` bounds the eligible set at the SQL level; no ``limit`` returns the full set.
