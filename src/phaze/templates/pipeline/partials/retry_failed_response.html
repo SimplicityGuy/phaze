@@ -15,6 +15,16 @@
 <span class="text-sm text-red-600 dark:text-red-400 font-medium">
     Retry failed — could not re-queue the file (see agent logs). It remains marked as failed.
 </span>
+{% elif blocked %}
+{# phaze-k0rv9: enqueue_process_file returned None (deterministic-key collision) and
+   classify_process_file_collision found the key held by a DEAD job (aborting/failed/aborted,
+   or a stuck active row) -- nothing was scheduled and nothing ever will be until the
+   aborting-reaper clears the key. The failure marker was restored before this returned, so the
+   file is honestly back in the failed bucket, not silently vanished. #}
+<span class="text-sm text-red-600 dark:text-red-400 font-medium">
+    Retry not started — a previous analysis attempt for this file is stuck and holding its slot.
+    It remains marked as failed. Try again once it clears, or contact an operator if it persists.
+</span>
 {% elif count == 0 %}
 <span class="text-sm text-gray-600 dark:text-gray-400 font-medium">
     No failed files to retry.

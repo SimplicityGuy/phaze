@@ -26,7 +26,7 @@ from sqlalchemy import select
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
-from tests._queue_fakes import install_fake_queues, make_agent_live
+from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, install_fake_queues, make_agent_live
 
 
 if TYPE_CHECKING:
@@ -112,6 +112,93 @@ async def test_per_file_retry_enqueue_success_leaves_no_trace_of_the_restore_pat
     assert response.status_code == 200
     assert "re-queued 1 failed file(s) for analysis" in response.text.lower()
 
+    row = (await verify.execute(select(AnalysisResult).where(AnalysisResult.file_id == file.id))).scalar_one()
+    assert row.failed_at is None
+    assert row.error_message is None
+
+
+@pytest.mark.asyncio
+async def test_per_file_retry_blocked_collision_restores_marker_and_reports_blocked(
+    client: AsyncClient,
+    session: AsyncSession,
+    verify: AsyncSession,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """phaze-k0rv9: a deterministic-key collision with a DEAD job must not report success.
+
+    Pre-fix, ``enqueue_process_file``'s ``None`` return (SAQ dedup collision) was discarded
+    entirely -- the endpoint unconditionally logged "re-queued" and rendered the green success
+    fragment even though nothing was scheduled and the key is held by a dead job that will never
+    run (``classify_process_file_collision`` -> "blocked"). The already-cleared+committed
+    ``failed_at`` marker must be restored and the fragment must say so honestly.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    file = await _seed_failed_file(session)
+    await make_agent_live(session)
+
+    router = DedupFakeTaskRouter()
+    app = client._transport.app  # type: ignore[union-attr]
+    app.state.controller_queue = DedupFakeQueue("controller")
+    app.state.task_router = router
+
+    # Pre-register the deterministic key as already "live" so this retry's enqueue dedups to
+    # None, then wire the collision probe to report a DEAD (aborting) key-holder.
+    queue = router.queue_for("test-fileserver", "analyze")
+    queue._live_keys.add(f"process_file:{file.id}")
+    queue.job = AsyncMock(return_value=SimpleNamespace(status="aborting", stuck=False))
+
+    with caplog.at_level("WARNING", logger="phaze.routers.pipeline"):
+        response = await client.post(f"/pipeline/files/{file.id}/analysis-failed/retry")
+
+    assert response.status_code == 200
+    assert queue.captured == []  # nothing was ever enqueued -- pure collision
+    assert "stuck and holding its slot" in response.text.lower()
+    assert "re-queued" not in response.text.lower()
+    assert "deterministic key held by a dead job" in caplog.text
+
+    row = (await verify.execute(select(AnalysisResult).where(AnalysisResult.file_id == file.id))).scalar_one()
+    assert row.failed_at is not None, "a blocked retry must restore the failure marker, not vanish"
+    assert row.error_message is not None and "phaze-k0rv9" in row.error_message
+    assert row.analysis_completed_at is None
+
+
+@pytest.mark.asyncio
+async def test_per_file_retry_collision_lookup_broker_error_degrades_to_success_not_500(
+    client: AsyncClient,
+    session: AsyncSession,
+    verify: AsyncSession,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """phaze-k0rv9: a raising collision probe must degrade to benign, not crash the endpoint.
+
+    Mirrors ``deepen_analysis``'s phaze-qim6c degrade: the post-collision ``queue.job()`` lookup
+    is itself a SAQ/Postgres call and can fail transiently. Its failure must not propagate as a
+    raw 500 through this interactive endpoint -- degrade to "in_flight" (benign) and log.
+    """
+    from unittest.mock import AsyncMock
+
+    file = await _seed_failed_file(session)
+    await make_agent_live(session)
+
+    router = DedupFakeTaskRouter()
+    app = client._transport.app  # type: ignore[union-attr]
+    app.state.controller_queue = DedupFakeQueue("controller")
+    app.state.task_router = router
+
+    queue = router.queue_for("test-fileserver", "analyze")
+    queue._live_keys.add(f"process_file:{file.id}")
+    queue.job = AsyncMock(side_effect=ConnectionError("transient broker pool error"))
+
+    with caplog.at_level("WARNING", logger="phaze.routers.pipeline"):
+        response = await client.post(f"/pipeline/files/{file.id}/analysis-failed/retry")
+
+    assert response.status_code == 200
+    assert "re-queued 1 failed file(s) for analysis" in response.text.lower()
+    assert "collision lookup failed" in caplog.text
+
+    # Degraded to "in_flight" -- the marker stays cleared, exactly like the plain success path.
     row = (await verify.execute(select(AnalysisResult).where(AnalysisResult.file_id == file.id))).scalar_one()
     assert row.failed_at is None
     assert row.error_message is None

@@ -1980,7 +1980,7 @@ async def retry_analysis_failed_file(
     # operator honestly instead of a dropped htmx 500.
     try:
         # NORMAL caps: a retry is a fresh re-analysis, not a deepen -- no fine_cap/coarse_cap override.
-        await enqueue_process_file(routed.queue, file, agent_id, settings.models_path)
+        job = await enqueue_process_file(routed.queue, file, agent_id, settings.models_path)
     except Exception:
         logger.exception("retry_analysis_failed_file: failed to enqueue process_file job", file_id=str(file_id))
         await session.execute(
@@ -1994,6 +1994,48 @@ async def retry_analysis_failed_file(
             name="pipeline/partials/retry_failed_response.html",
             context={"request": request, "count": 0, "no_active_agent": False, "enqueue_failed": True},
         )
+
+    if job is None:
+        # phaze-k0rv9: a None return is a deterministic-key collision, not a raised exception --
+        # but per classify_process_file_collision (services.analysis_enqueue) a key held by a DEAD
+        # job (aborting/failed/aborted, or a stuck active row) blocks the enqueue FOREVER: nothing
+        # was scheduled and nothing ever will be until the aborting-reaper clears the key. Every
+        # other process_file producer classifies this (deepen_analysis phaze-ewen/phaze-qim6c,
+        # _enqueue_analysis_jobs phaze-ewen/phaze-p2qvv) -- this endpoint was the one gap, silently
+        # reporting success on a marker that was already cleared+committed above. Mirror
+        # deepen_analysis: classify before claiming success, and degrade a raising probe (the
+        # lookup is itself a Postgres-backed SAQ call and can fail transiently) to "in_flight"
+        # (benign) rather than letting a diagnostic-only lookup crash this interactive endpoint.
+        try:
+            collision = classify_process_file_collision(await routed.queue.job(process_file_job_key(file_id)))
+        except Exception:
+            logger.warning(
+                "retry_analysis_failed_file: collision lookup failed -- degrading to already-in-flight",
+                file_id=str(file_id),
+                key=process_file_job_key(file_id),
+                exc_info=True,
+            )
+            collision = "in_flight"
+        if collision == "blocked":
+            logger.warning(
+                "retry_analysis_failed_file: deterministic key held by a dead job -- retry dropped",
+                file_id=str(file_id),
+                key=process_file_job_key(file_id),
+            )
+            # Restore the failure marker: it was cleared+committed above but no replacement job
+            # exists, so leaving it clear would silently drop the file from the failed bucket with
+            # nothing running and nothing recording that the retry never happened.
+            await session.execute(
+                update(AnalysisResult)
+                .where(AnalysisResult.file_id == file_id)
+                .values(failed_at=func.now(), error_message="retry_analysis_failed_file: blocked by a dead job holding the key (phaze-k0rv9)"),
+            )
+            await session.commit()
+            return templates.TemplateResponse(
+                request=request,
+                name="pipeline/partials/retry_failed_response.html",
+                context={"request": request, "count": 0, "no_active_agent": False, "blocked": True},
+            )
 
     logger.info("retry_analysis_failed_file re-queued", file_id=str(file_id))
     # phaze-bgz26: this endpoint's ONLY caller is the Files matrix per-row Retry button
