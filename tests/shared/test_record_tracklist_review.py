@@ -119,6 +119,25 @@ async def test_a_propagated_tracklist_never_reads_as_scraped(client: AsyncClient
 
 
 @pytest.mark.asyncio
+async def test_a_cache_suppressed_negative_hides_prioritize_and_says_so(client: AsyncClient, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """phaze-z8xq7: a definitive negative still inside its 180-day TTL renders NO Prioritize
+    button (it would be inert -- the drain keeps a cache-suppressed set out of the queue even
+    force-flagged) and states the suppression plainly instead of leaving the operator to guess."""
+    file_rec = await _seed_live_set(make_file, session)
+    key = await _set_key_for(file_rec, duration=7200.0)
+    await record_outcome(session, set_key=key, query_text="coldwave deep field", outcome=LookupOutcome.NOT_FOUND, now=NOW)
+    await session.commit()
+
+    body = (await client.get(f"/record/{file_rec.id}")).text
+
+    assert "No confident match on 1001Tracklists" in body
+    assert "Suppressed until" in body
+    assert "will not queue a lookup" in body
+    assert "Prioritize lookup" not in body
+    assert f"/pipeline/tracklists/{file_rec.id}/prioritize" not in body
+
+
+@pytest.mark.asyncio
 async def test_a_scraped_tracklist_reads_as_scraped(client: AsyncClient, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
     file_rec = await _seed_live_set(make_file, session)
     tracklist = Tracklist(

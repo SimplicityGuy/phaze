@@ -2830,6 +2830,17 @@ async def prioritize_tracklist_lookup_ui(
     ``limit=1`` slice spent its one request on whatever UNRELATED set actually sits at the front
     of the queue -- a wasted, misattributed lookup. The review renders the honest reason instead.
 
+    phaze-z8xq7: ``eligible`` alone is NOT the gate -- it says nothing about the drain's OWN cache
+    verdict for this set. A cache-suppressed set (a definitive negative still inside its 180-day
+    TTL, a transient failure inside its backoff window, or one parked after
+    ``TRANSIENT_MAX_ATTEMPTS``) is still ``eligible`` by classification, but
+    :func:`~phaze.services.tracklist_candidate_queue.build_queue_from_signals` keeps a forced file
+    out of the queue when its cache row was not cleared -- so flagging it would upsert an inert
+    flag, claim "a lookup has been dispatched" that will never happen, and still spend the enqueued
+    ``limit=1`` slice's one request on whatever UNRELATED set sits at the front of the real queue.
+    ``FileTracklistReview.actionable`` is ``eligible`` AND the cache verdict says it would actually
+    be queried now -- that is the real gate here.
+
     Renders the review fragment IMMEDIATELY, before the enqueued job runs -- it can only ever say
     "queued", never "found", because the lookup has not happened yet (mirrors the record page's
     snapshot discipline, D-02: no poll here either).
@@ -2839,7 +2850,7 @@ async def prioritize_tracklist_lookup_ui(
         raise HTTPException(status_code=404, detail="file not found")
 
     queued = False
-    if review.tracklist is None and review.eligible:
+    if review.tracklist is None and review.actionable:
         await flag_file_for_lookup(session, file_id)
         await session.commit()
         routed = await enqueue_router.resolve_queue_for_task("drain_tracklists", request.app.state, session)

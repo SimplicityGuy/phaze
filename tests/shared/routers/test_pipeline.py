@@ -2405,6 +2405,41 @@ async def test_prioritize_already_tracklisted_file_is_a_noop(client: AsyncClient
 
 
 @pytest.mark.asyncio
+async def test_prioritize_a_cache_suppressed_negative_flags_nothing_and_enqueues_nothing(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-z8xq7: a live set whose lookup cached NOT_FOUND (still inside its 180-day TTL) is
+    ``eligible`` by classification but must NOT be flagged or enqueued -- the drain keeps a
+    cache-suppressed set out of the queue even when force-flagged, so doing either would upsert an
+    inert flag and spend the enqueued limit=1 slice's one request on an unrelated set while
+    falsely claiming a lookup was dispatched.
+    """
+    from dataclasses import replace
+
+    from phaze.enums.tracklist_candidate import LookupOutcome
+    from phaze.services.tracklist_candidates import CandidateSignals, group_unique_sets
+    from phaze.services.tracklist_lookup_cache import record_outcome
+    from phaze.services.tracklist_priority import load_flagged_file_ids
+    from phaze.services.tracklist_query import derive_query
+
+    file_rec = await _seed_live_set_file(session)
+    signals = CandidateSignals(file_id=file_rec.id, filename=file_rec.original_filename, sha256_hash=file_rec.sha256_hash, duration_seconds=7200.0)
+    derived = derive_query(signals.filename)
+    signals = replace(signals, derived_query=derived.query)
+    key = group_unique_sets([signals])[0].key
+    await record_outcome(session, set_key=key, query_text="prioritize suppressed test", outcome=LookupOutcome.NOT_FOUND)
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post(f"/pipeline/tracklists/{file_rec.id}/prioritize")
+    assert response.status_code == 200
+    assert "Prioritized and queued" not in response.text
+    assert "will not queue a lookup" in response.text
+
+    assert await load_flagged_file_ids(session) == set()
+    await _drain_background()
+    assert capture == []
+
+
+@pytest.mark.asyncio
 async def test_refresh_rearms_the_drain_for_an_already_tracklisted_file(client: AsyncClient, session: AsyncSession) -> None:
     """phaze-2akf: REFRESH is what Prioritize is for a file that already HAS a tracklist.
 
