@@ -15,13 +15,23 @@
 # code-changed=true, so a code change can never skip the security/test/docker jobs.
 # A change set that mixes docs and code is therefore always classified as code.
 #
+# Anything under a shipped-source tree (src/, tests/, scripts/, services/) is code
+# REGARDLESS of its extension, checked ahead of the doc patterns below (phaze-tlo10).
+# A bare `\.md$`/`\.txt$` match is unanchored to any directory, so it used to treat
+# src/phaze/prompts/naming.md — read at runtime by load_prompt_template() and
+# structurally depended on for its exact `{files_json}`/`{date_convention_guidance}`
+# placeholder lines — as "documentation", letting a prompt-only PR skip the entire
+# test/quality/docker pipeline. The fix is this directory-anchored precedence rule,
+# not a one-off exception for that single path: any other doc-extension file that
+# later lands under one of these trees is covered the same way.
+#
 # An EMPTY / absent file list is also treated as code-changed=true (fail safe):
 # a spurious-empty diff (e.g. a broken diff base) must never silently skip CI.
 # "code-changed=false" is reserved for the case where at least one path changed
 # AND every changed path is documentation.
 #
-# Skippable (documentation) patterns:
-#   *.md            any Markdown file, anywhere in the tree
+# Skippable (documentation) patterns — outside src/, tests/, scripts/, services/:
+#   *.md            any Markdown file
 #   .planning/**    GSD planning artifacts
 #   LICENSE         the top-level licence file
 #   docs/**         the documentation tree
@@ -46,9 +56,20 @@ if [[ -z "${changed_paths}" ]]; then
   exit 0
 fi
 
-# At least one path changed. Keep only the NON-documentation paths; `grep -vE`
-# drops every line matching a doc pattern.
-code_files="$(printf '%s\n' "${changed_paths}" | grep -vE '(\.md$|^\.planning/|^LICENSE$|^docs/|\.txt$)' || true)"
+# At least one path changed.
+#
+# 1) Anything under a shipped-source tree is code no matter its extension — checked
+#    FIRST so no doc-extension pattern can ever override it.
+source_tree_files="$(printf '%s\n' "${changed_paths}" | grep -E '^(src|tests|scripts|services)/' || true)"
+
+# 2) Everything else: code unless it matches a doc pattern.
+other_paths="$(printf '%s\n' "${changed_paths}" | grep -vE '^(src|tests|scripts|services)/' || true)"
+other_code_files=""
+if [[ -n "${other_paths}" ]]; then
+  other_code_files="$(printf '%s\n' "${other_paths}" | grep -vE '(\.md$|^\.planning/|^LICENSE$|^docs/|\.txt$)' || true)"
+fi
+
+code_files="$(printf '%s\n%s\n' "${source_tree_files}" "${other_code_files}" | grep -v '^[[:space:]]*$' || true)"
 
 if [[ -z "${code_files}" ]]; then
   # Every changed path is documentation -> skip the heavy jobs.
