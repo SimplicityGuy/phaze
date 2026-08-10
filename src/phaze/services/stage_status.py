@@ -543,12 +543,58 @@ def running_clause(stage: Stage) -> ColumnElement[bool]:
     return live_job_clause(stage)
 
 
+def _metadata_orphaned_retry_clause() -> ColumnElement[bool]:
+    """True iff METADATA's ledger row is a lost OPERATOR RETRY of a terminally-failed file (D-10, phaze-hr627).
+
+    The SQL twin of the ONE call-site refinement ``tasks.reenqueue.is_domain_completed`` applies on top
+    of ``domain_completed_clause(METADATA)`` and that ``domain_completed_clause`` deliberately does NOT
+    fold in itself (D-11 REJECTED OPTION, ``tests/integration/test_stage_status_equivalence.py`` --
+    ``domain_completed_clause`` must stay the raw, call-site-independent, inflight-orthogonal predicate
+    so its OTHER consumers -- ``eligible_clause``, ``cloud_lane_completed_clause`` -- never silently
+    change scope). ``retry_metadata_failed`` LEAVES ``FileMetadata.failed_at`` set (81 D-11: clearing it
+    would make a zero-metadata file read DONE forever) and then re-enqueues, so a fresh
+    ``extract_file_metadata:<file_id>`` ledger row with ``enqueued_at > failed_at`` is that retry, not a
+    stale terminal clear -- it is genuinely pending work, not domain-complete.
+
+    Correlated to :class:`~phaze.models.file.FileRecord` like its siblings: pins the ledger row via the
+    SAME deterministic-key spelling :func:`ledger_key_for_function` builds elsewhere, and the metadata
+    row via ``FileMetadata.file_id``, so it can only ever match THIS file's own rows.
+    """
+    ledger_key = ledger_key_for_function(STAGE_TO_FUNCTION[Stage.METADATA.value])
+    return exists(
+        select(SchedulingLedger.key).where(
+            SchedulingLedger.key == ledger_key,
+            FileMetadata.file_id == FileRecord.id,
+            FileMetadata.failed_at.isnot(None),
+            SchedulingLedger.enqueued_at > FileMetadata.failed_at,
+        )
+    )
+
+
+def _recovery_domain_completed_clause(stage: Stage) -> ColumnElement[bool]:
+    """``domain_completed_clause(stage)``, refined by recovery's D-10 gate for METADATA (phaze-hr627).
+
+    The shared, call-site-independent :func:`domain_completed_clause` stays untouched (D-11). This
+    wrapper is for the two RECOVERY-ADJACENT consumers only -- :func:`orphaned_clause` and
+    :func:`resolved_ledger_clause` -- which must agree with ``recover_orphaned_work``'s own
+    ``is_domain_completed`` about which METADATA rows are genuinely finished vs. a lost operator
+    retry, exactly mirroring how ``is_domain_completed`` applies the SAME gate at ITS call site rather
+    than inside the shared predicate. A no-op for every stage but METADATA (analyze's retry clears
+    ``failed_at`` first, CR-01, so it has no such ambiguous cell -- D-10).
+    """
+    complete = domain_completed_clause(stage)
+    if stage is not Stage.METADATA:
+        return complete
+    return and_(complete, not_(_metadata_orphaned_retry_clause()))
+
+
 def orphaned_clause(stage: Stage) -> ColumnElement[bool]:
     """Return the ORPHANED predicate (D-01a): previously scheduled, running nowhere, not domain-complete.
 
-    ``inflight_clause ∧ ¬running_clause ∧ ¬domain_completed_clause`` -- the per-file twin of the
-    ledger-set arithmetic ``_compute_stage_orphan_counts`` performs in Python, and therefore of exactly
-    the set :func:`~phaze.tasks.reenqueue.recover_orphaned_work` would re-enqueue for the stage. Composed
+    ``inflight_clause ∧ ¬running_clause ∧ ¬domain_completed_clause`` (METADATA: D-10-refined via
+    :func:`_recovery_domain_completed_clause`, phaze-hr627) -- the per-file twin of the ledger-set
+    arithmetic ``_compute_stage_orphan_counts`` performs in Python, and therefore of exactly the set
+    :func:`~phaze.tasks.reenqueue.recover_orphaned_work` would re-enqueue for the stage. Composed
     ENTIRELY from LOCKED builders plus the one new broker probe, so it can never re-derive a predicate
     the equivalence test owns.
 
@@ -558,24 +604,32 @@ def orphaned_clause(stage: Stage) -> ColumnElement[bool]:
     the two enrich stages (``domain_completed_clause`` raises otherwise), and kept OUT of the ``Stage``
     dispatch ladder (D-13).
     """
-    return and_(inflight_clause(stage), not_(running_clause(stage)), not_(domain_completed_clause(stage)))
+    return and_(inflight_clause(stage), not_(running_clause(stage)), not_(_recovery_domain_completed_clause(stage)))
 
 
 def resolved_ledger_clause(stage: Stage) -> ColumnElement[bool]:
     """Return the RESOLVED-but-uncleared ledger predicate (D-01a) -- the reaper's target set.
 
-    ``inflight_clause ∧ ¬running_clause ∧ domain_completed_clause``: the stage reached a terminal domain
-    state, nothing is running it, yet the ledger row is still standing -- i.e. its terminal clear was
-    lost (a reaped ``aborting`` row, a crashed callback, ``clear_ledger_entry``'s documented residual
-    window, a broker truncate). Pure stale state: the row is invisible to recovery (which excludes
-    domain-completed rows) while still reporting ``in_flight`` and still blocking the file from
-    :func:`eligible_clause` and :func:`awaiting_candidate_clause` forever.
+    ``inflight_clause ∧ ¬running_clause ∧ domain_completed_clause`` (METADATA: D-10-refined via
+    :func:`_recovery_domain_completed_clause`, phaze-hr627): the stage reached a terminal domain state,
+    nothing is running it, yet the ledger row is still standing -- i.e. its terminal clear was lost (a
+    reaped ``aborting`` row, a crashed callback, ``clear_ledger_entry``'s documented residual window, a
+    broker truncate). Pure stale state: the row is invisible to recovery (which excludes
+    domain-completed rows -- ``is_domain_completed`` applies the SAME D-10 gate this clause now does)
+    while still reporting ``in_flight`` and still blocking the file from :func:`eligible_clause` and
+    :func:`awaiting_candidate_clause` forever.
+
+    Before phaze-hr627 this used the RAW ``domain_completed_clause(METADATA)`` and so also matched a
+    lost OPERATOR RETRY (``enqueued_at > failed_at``, 81 D-11) that ``recover_orphaned_work`` still owed
+    a replay -- the reaper deleted the retry's ledger row out from under it, silently discarding the
+    retry with no attempt ever run. The D-10 refinement closes that: such a row now reads
+    domain-INCOMPLETE here too, so the reaper leaves it for recovery.
 
     The exact complement of :func:`orphaned_clause` on the domain-completion axis -- the two share the
     ``¬running_clause`` core, so a row can never be BOTH and can never be NEITHER while unresolved.
     Consumed by :mod:`phaze.tasks.ledger_reaper`. Kept OUT of the ``Stage`` dispatch ladder (D-13).
     """
-    return and_(inflight_clause(stage), not_(running_clause(stage)), domain_completed_clause(stage))
+    return and_(inflight_clause(stage), not_(running_clause(stage)), _recovery_domain_completed_clause(stage))
 
 
 # phaze-k95r7. The file-keyed AGENT producers that serve the cloud analyze lane. They own a per-file
