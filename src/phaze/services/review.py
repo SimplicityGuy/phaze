@@ -101,11 +101,15 @@ _MAX_REVIEW_SCAN_BATCHES = 40
 
 
 class TagwriteReviewPage(NamedTuple):
-    """The tag-write queue's rows plus the honesty flag the subcount needs (phaze-bto9).
+    """The tag-write queue's rows plus the honesty flag the subcount needs (phaze-bto9, phaze-a2ytu).
 
-    ``partial`` is True when the scan hit :data:`_MAX_REVIEW_SCAN_BATCHES` with candidates still
-    unexamined -- the render is a bounded prefix of the queue, not the whole of it. The workspace
-    subcount says so rather than printing a number that silently understates the backlog.
+    ``partial`` is True whenever the scan stopped with candidates possibly still unexamined --
+    whether that's hitting :data:`_MAX_REVIEW_SCAN_BATCHES` with the walk incomplete, or hitting
+    ``_MAX_REVIEW_ROWS`` before the candidate set was provably exhausted (phaze-a2ytu: the
+    row-cap exit used to leave ``partial`` at its default False even though a full or
+    mid-iterated batch could still hold unexamined candidates). The render is a bounded prefix
+    of the queue, not the whole of it, and the workspace subcount says so rather than printing a
+    number that silently understates the backlog.
     """
 
     rows: list[dict[str, Any]]
@@ -350,7 +354,8 @@ async def get_tagwrite_review_page(session: AsyncSession) -> TagwriteReviewPage:
                 # phaze-bto9: the same batching, extended to the two lookups that were still per-row.
                 tracklists = await _get_tracklists_for_files(session, batch_ids)
                 discogs_links = await _get_accepted_discogs_links_for_files(session, tracklists)
-                for fr in batch:
+                row_cap_hit_mid_batch = False
+                for i, fr in enumerate(batch):
                     proposed = compute_proposed_tags(
                         fr.file_metadata,
                         tracklists.get(fr.id),
@@ -373,7 +378,18 @@ async def get_tagwrite_review_page(session: AsyncSession) -> TagwriteReviewPage:
                         }
                     )
                     if len(rows) >= _MAX_REVIEW_ROWS:
+                        # phaze-a2ytu: hitting the row cap mid-scan means candidates may remain --
+                        # unless this batch was BOTH fully consumed (no unexamined tail, i.e. the cap
+                        # landed on the batch's last member) AND short (< _REVIEW_SCAN_BATCH, so the
+                        # candidate set itself just ran out here). Any other shape -- an unexamined
+                        # tail in this batch, or a full-sized batch that a later keyset page might
+                        # follow -- means the render is a bounded prefix, not the whole queue.
+                        row_cap_hit_mid_batch = i < len(batch) - 1
                         break
+                if len(rows) >= _MAX_REVIEW_ROWS:
+                    if row_cap_hit_mid_batch or len(batch) == _REVIEW_SCAN_BATCH:
+                        partial = True
+                    break
                 if len(batch) < _REVIEW_SCAN_BATCH:
                     break  # candidate set exhausted
             return TagwriteReviewPage(rows=rows, partial=partial)

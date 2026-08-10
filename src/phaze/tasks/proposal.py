@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import uuid
 
 from sqlalchemy import select
@@ -16,9 +16,14 @@ from phaze.services.proposal import (
     ProposalService,
     build_file_context,
     check_rate_limit,
-    load_companion_contents,
+    fetch_companion_contents,
+    load_companion_targets,
     store_proposals,
 )
+
+
+if TYPE_CHECKING:
+    from phaze.schemas.agent_tasks import CompanionReadItem
 
 
 async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_index: int) -> dict[str, Any]:
@@ -45,11 +50,20 @@ async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_
     # reproducing the documented pool-exhaustion incident. Nothing DB-side is needed between the reads
     # and the writes, and build_file_context returns plain dicts (no live ORM refs), so split the work
     # into two short sessions with the network I/O in between.
+    #
+    # phaze-potg5: the SAME rule applies to the per-file companion read. Since phaze-6bkk it is NOT a
+    # local read -- it is a `queue.apply("read_companion_files", timeout=30, ...)` request/response
+    # job dispatched to the owning agent's meta lane. Only the DB portion that resolves WHICH agent
+    # owns each companion path (`load_companion_targets`) runs inside the read session below; the
+    # agent round-trip itself (`fetch_companion_contents`) is deferred to step 1b, after the session
+    # has closed, exactly like the LLM call and rate-limit backoff.
+    task_router = ctx.get("task_router")
 
     # 1. Build context for each file, then RELEASE the connection (the `async with` closes the
     #    session -- and its read transaction -- before any network I/O).
     files_context: list[dict[str, Any]] = []
     valid_file_ids: list[str] = []
+    companion_targets: list[dict[str, list[CompanionReadItem]]] = []
     async with ctx["async_session"]() as session:
         for fid in file_ids:
             uid = uuid.UUID(fid)
@@ -66,12 +80,16 @@ async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_
 
             # phaze-6bkk: the controller is fileless (DIST-01), so the companion read is dispatched
             # to the owning agent through the shared task router the controller already holds.
-            companions = await load_companion_contents(session, uid, settings.llm_max_companion_chars, task_router=ctx.get("task_router"))
+            # phaze-potg5: only the TARGETS (which agent owns which companion path) are resolved
+            # here, from the read session -- the agent round-trip that fetches the actual text
+            # happens in step 1b below, with no session held open across it.
+            by_agent = await load_companion_targets(session, uid, task_router=task_router)
 
-            ctx_dict = build_file_context(file_record, analysis, companions, metadata=metadata)
+            ctx_dict = build_file_context(file_record, analysis, [], metadata=metadata)
             ctx_dict["index"] = len(files_context)
             files_context.append(ctx_dict)
             valid_file_ids.append(fid)
+            companion_targets.append(by_agent)
 
         # phaze-5fta.4: resolve each file's scene date and attach its provenance, in the SAME read
         # session (one batched store query, no extra connection). This is a no-op returning 0 --
@@ -89,6 +107,12 @@ async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_
 
     if not files_context:
         return {"batch": batch_index, "count": 0, "status": "empty"}
+
+    # 1b. Fetch companion CONTENTS from each owning agent -- network I/O, deliberately AFTER the
+    #     read session above has closed (phaze-potg5), mirroring how the LLM call and rate-limit
+    #     backoff were moved out of the read session in phaze-6fvu.
+    for fid, ctx_dict, by_agent in zip(valid_file_ids, files_context, companion_targets, strict=True):
+        ctx_dict["companions"] = await fetch_companion_contents(by_agent, settings.llm_max_companion_chars, task_router, uuid.UUID(fid))
 
     # 2. Rate limit via Redis counter on the DEDICATED cache-redis handle. Phase 36: the
     # broker is Postgres now, so `ctx["queue"]` (a PostgresQueue) has no `.redis`. The

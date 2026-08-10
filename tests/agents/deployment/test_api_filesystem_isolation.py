@@ -21,6 +21,7 @@ the source-file invariant, not the post-interpolation runtime value.
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 
@@ -154,19 +155,84 @@ def _env_list(service: dict[str, Any]) -> list[str]:
     return [str(e) for e in env]
 
 
-def test_app_services_assemble_authenticated_redis_url() -> None:
-    """phaze-hti8: api + worker inject an authenticated REDIS_URL via compose interpolation.
+def test_app_services_pass_through_raw_redis_password() -> None:
+    """phaze-hti8 / phaze-1g89i: api + worker forward RAW REDIS_PASSWORD, not a pre-built URL.
 
     Redis runs with ``--requirepass``, so the app-server's own Redis clients must
-    authenticate. Because ``env_file`` does not interpolate, the authenticated URL
-    is assembled in each service's ``environment:`` block with a ``${REDIS_PASSWORD}``
-    token — making the NOAUTH drift impossible.
+    authenticate. Because ``env_file`` does not interpolate, the credential used to be
+    assembled into a full DSN in each service's ``environment:`` block
+    (``REDIS_URL=redis://default:${REDIS_PASSWORD}@redis:6379/0``) — but compose's raw string
+    interpolation embeds the password's bytes UNENCODED into the URL, and
+    ``redis.asyncio.Redis.from_url`` RFC-3986-parses + percent-DECODES the result: a password
+    containing ``/``, ``#``, or ``?`` truncated the netloc and crashed the api/worker at
+    startup, and one containing a ``%XX`` sequence silently decoded to the wrong bytes
+    (phaze-1g89i). Passing the raw password through its OWN var instead lets
+    ``config.py``'s ``_apply_redis_password`` percent-encode it into ``redis_url``'s userinfo
+    in Python, where the byte string is still intact — no shell/URL round-trip to mangle it.
+
+    phaze-qu5ne (superseded by phaze-1g89i): the OLD DSN-assembly shape also had an
+    alias-priority bug — it used to inject under the bare ``REDIS_URL`` name, which
+    ``redis_url``'s ``AliasChoices("PHAZE_REDIS_URL", "REDIS_URL", "redis_url")`` ranks BELOW
+    an operator's own ``.env`` ``PHAZE_REDIS_URL``, so a passwordless ``.env`` value could
+    silently outrank and defeat it. ``_apply_redis_password`` closes that gap too, as a side
+    effect of applying AFTER alias resolution regardless of which alias won — see
+    ``test_compose_authenticated_redis_url_outranks_dotenv_alias`` below.
     """
     data = _load_compose()
     for svc_name in ("api", "worker"):
         env = _env_list(data["services"][svc_name])
-        redis_entries = [e for e in env if e.startswith("REDIS_URL=")]
-        assert redis_entries, f"{svc_name} must set REDIS_URL in its environment block to authenticate against requirepass Redis"
-        entry = redis_entries[0]
-        assert "REDIS_PASSWORD" in entry, f"{svc_name} REDIS_URL must interpolate ${{REDIS_PASSWORD}}; got {entry!r}"
-        assert "default:" in entry, f"{svc_name} REDIS_URL must use the `default:` ACL user for the password; got {entry!r}"
+        assert not any(e.startswith("REDIS_URL=") for e in env), (
+            f"{svc_name} must NOT pre-assemble REDIS_URL in compose (phaze-1g89i — breaks on a password containing /, #, ? or %XX); got {env!r}"
+        )
+        password_entries = [e for e in env if e.startswith("REDIS_PASSWORD=")]
+        assert password_entries, f"{svc_name} must pass REDIS_PASSWORD through in its environment block; got {env!r}"
+        assert "${REDIS_PASSWORD:?" in password_entries[0], (
+            f"{svc_name} REDIS_PASSWORD must keep the fail-fast ${{REDIS_PASSWORD:?...}} form; got {password_entries[0]!r}"
+        )
+
+
+def test_compose_authenticated_redis_url_outranks_dotenv_alias(monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-qu5ne regression, end to end (superseded mechanism, same closed gap): simulate
+    compose's `environment:` REDIS_PASSWORD + `env_file: .env` both landing in the SAME process
+    env (as they do inside a running container), with an operator's .env-style passwordless
+    PHAZE_REDIS_URL ALSO present, and prove ControlSettings still resolves an AUTHENTICATED
+    redis_url — not the operator's passwordless one.
+
+    phaze-qu5ne originally reported this gap against the OLD compose shape, which assembled a
+    full authenticated DSN under the bare ``REDIS_URL`` name (outranked by ``PHAZE_REDIS_URL``
+    via ``AliasChoices`` first-match-wins). phaze-1g89i replaced that shape entirely: compose now
+    passes a RAW ``REDIS_PASSWORD`` (see ``test_app_services_pass_through_raw_redis_password``
+    above), and ``_apply_redis_password`` (config.py) percent-encodes it into whatever
+    ``redis_url`` resolved to AFTER alias resolution — so the password lands correctly
+    regardless of which alias (``PHAZE_REDIS_URL``, ``REDIS_URL``, or the field default) won,
+    closing the exact same NOAUTH drift by construction rather than by out-ranking an alias.
+    """
+    from phaze.config import ControlSettings
+
+    # The operator's own .env-style value — top-priority alias, passwordless, wins resolution.
+    monkeypatch.setenv("PHAZE_REDIS_URL", "redis://redis:6379/0")
+    # What compose now injects (phaze-1g89i) — a raw password, not a competing redis_url alias.
+    monkeypatch.setenv("REDIS_PASSWORD", "supersecret")
+
+    settings = ControlSettings()
+
+    assert settings.redis_url == "redis://default:supersecret@redis:6379/0", (
+        f"REDIS_PASSWORD must be applied to redis_url regardless of which alias resolved it; got {settings.redis_url!r}"
+    )
+
+
+def test_api_service_pins_container_side_models_path() -> None:
+    """phaze-bvkah: api has no models volume (DIST-01) but must still pin MODELS_PATH=/models.
+
+    ``config.py``'s aliasless ``models_path`` field resolves from ``env_file: .env`` here,
+    and the api forwards that value VERBATIM to the agent as the model-load path in every
+    ``process_file`` payload (``enqueue_process_file(..., cfg.models_path)``). Leaving
+    MODELS_PATH unset lets the HOST-side compose bind value (e.g. ``./models``) leak into the
+    payload -- a path relative to the AGENT's filesystem that has nothing to do with the
+    archive's actual bind mount. Compose ``environment:`` wins over ``env_file:``, so pinning
+    it here keeps the payload correct regardless of what the operator's ``.env`` MODELS_PATH
+    resolves to on the host.
+    """
+    data = _load_compose()
+    env = _env_list(data["services"]["api"])
+    assert "MODELS_PATH=/models" in env, f"api must pin MODELS_PATH=/models in environment (phaze-bvkah); got {env!r}"

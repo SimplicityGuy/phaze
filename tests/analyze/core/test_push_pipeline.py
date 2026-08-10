@@ -671,6 +671,9 @@ def _import_agent_worker(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setenv("PHAZE_AGENT_QUEUE", "phaze-agent-test-id")
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/var/empty")
     monkeypatch.setenv("PHAZE_REDIS_URL", "redis://localhost:6379/0")
+    # phaze-27myl: fileserver-kind (the default) AgentSettings now fail-fasts on the default
+    # (docker-service-name) queue_url.
+    monkeypatch.setenv("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@app-server.example:5432/phaze")
     import phaze.tasks.agent_worker as aw
 
     return aw

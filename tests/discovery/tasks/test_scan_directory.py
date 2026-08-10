@@ -47,6 +47,9 @@ def _agent_env(monkeypatch: pytest.MonkeyPatch) -> Generator[None]:
     monkeypatch.setenv("PHAZE_AGENT_API_URL", "http://test:8000")
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-TOKEN-1234567890ab")
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/tmp")  # noqa: S108 -- validator only checks non-empty list
+    # phaze-27myl: fileserver-kind (the default) AgentSettings now fail-fasts on the default
+    # (docker-service-name) queue_url.
+    monkeypatch.setenv("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@app-server.example:5432/phaze")
 
     from phaze.config import get_settings
 
@@ -219,6 +222,62 @@ async def test_scan_directory_honors_agent_settings_chunk_size(tmp_path: Path, m
     assert ctx["api_client"].upsert_files.await_count == 3
     sizes = [len(call.args[0].files) for call in ctx["api_client"].upsert_files.await_args_list]
     assert sizes == [3, 3, 1]
+
+
+def test_resolve_chunk_size_clamps_to_agent_file_chunk_max(monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-flxrz regression: PHAZE_SCAN_CHUNK_SIZE above AGENT_FILE_CHUNK_MAX is clamped.
+
+    ``FileUpsertChunk.files`` enforces ``max_length=agent_file_chunk_max`` at construction
+    time. Before this fix, an operator setting PHAZE_SCAN_CHUNK_SIZE above the cap made
+    ``_resolve_chunk_size`` return the unclamped (too-large) value, which crashed the very
+    first ``FileUpsertChunk(...)`` construction in ``scan_directory`` with an uncaught
+    pydantic ValidationError -- see ``test_scan_directory_chunk_size_above_cap_does_not_raise``
+    below for the end-to-end version. ``_resolve_chunk_size`` must never return a value
+    greater than ``agent_file_chunk_max``, whether at, under, or (this test) over the cap.
+    """
+    from phaze.config import get_settings
+    from phaze.tasks import scan as scan_mod
+
+    monkeypatch.setenv("AGENT_FILE_CHUNK_MAX", "10")
+    monkeypatch.setenv("PHAZE_SCAN_CHUNK_SIZE", "2000")
+    get_settings.cache_clear()
+
+    assert scan_mod._resolve_chunk_size() == 10
+
+
+async def test_scan_directory_chunk_size_above_cap_does_not_raise(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-flxrz regression: scan_directory must not crash-loop when
+    PHAZE_SCAN_CHUNK_SIZE > AGENT_FILE_CHUNK_MAX.
+
+    Before the clamp in ``_resolve_chunk_size``, this configuration made the first full
+    ``FileUpsertChunk(files=batch, ...)`` construction at scan.py:263 raise a client-side
+    pydantic ValidationError (list length > max_length) -- escaping scan_directory's only
+    handler (``except AgentApiServerError``) uncaught, so the ScanBatch never received its
+    terminal 'failed' PATCH and stayed stranded RUNNING under SAQ's crash-loop retries.
+    Uses a cap (5) small enough to also exercise the final-partial-flush site
+    (scan.py:269-270), which independently reproduces the same defect (verifier detail on
+    phaze-flxrz) when the whole batch never hits a mid-loop chunk boundary.
+    """
+    from phaze.config import get_settings
+    from phaze.tasks.scan import scan_directory
+
+    monkeypatch.setenv("AGENT_FILE_CHUNK_MAX", "5")
+    monkeypatch.setenv("PHAZE_SCAN_CHUNK_SIZE", "2000")  # far above the cap
+    get_settings.cache_clear()
+
+    # 12 files, cap 5 -> chunks of 5, 5, 2. Every chunk (including the 2-record final
+    # partial flush) must respect the cap; none may exceed it.
+    for i in range(12):
+        _touch(tmp_path / f"f{i:04d}.mp3")
+
+    ctx = _make_ctx()
+    result = await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
+
+    assert result["status"] == "completed"
+    assert result["files_posted"] == 12
+    sizes = [len(call.args[0].files) for call in ctx["api_client"].upsert_files.await_args_list]
+    assert sizes == [5, 5, 2]
+    assert all(size <= 5 for size in sizes)
 
 
 async def test_scan_directory_patches_progress_after_each_chunk(tmp_path: Path) -> None:
@@ -663,6 +722,9 @@ def test_scan_directory_registered_in_agent_worker_settings(monkeypatch: pytest.
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
     monkeypatch.setenv("PHAZE_AGENT_QUEUE", "phaze-agent-test-agent")
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/tmp")  # noqa: S108  # validator only checks non-empty list
+    # phaze-27myl: fileserver-kind (the default) AgentSettings now fail-fasts on the default
+    # (docker-service-name) queue_url.
+    monkeypatch.setenv("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@app-server.example:5432/phaze")
 
     from phaze.tasks.agent_worker import settings as agent_settings
 

@@ -853,6 +853,9 @@ def test_analysis_progress_interval_sec_config_default(monkeypatch: pytest.Monke
     monkeypatch.setenv("PHAZE_AGENT_API_URL", "http://test")
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test")
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", str(tmp_path))
+    # phaze-27myl: fileserver-kind (the default) AgentSettings now fail-fasts on the default
+    # (docker-service-name) queue_url.
+    monkeypatch.setenv("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@app-server.example:5432/phaze")
     cfg = AgentSettings()
     assert cfg.analysis_progress_interval_sec == 5.0
 

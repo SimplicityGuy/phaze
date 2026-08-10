@@ -133,10 +133,26 @@ async def report_uploaded(
         # phaze-1v37: run the S3 abort + delete AFTER the commit (best-effort, lifecycle TTL backstop),
         # so the spill CAS + ledger clear are durable and no transaction/row lock is held across the S3
         # round-trip (mirrors the /failed over-cap branch and _delete_staged_object_if_cloud).
+        #
+        # phaze-z0eur: wrap it in try/except -- the state transition just committed is ALREADY durable,
+        # so an S3 fault here (e.g. a 503 SlowDown mid-burst) must not turn a successful, already-committed
+        # transition into an unhandled 500 the agent retries against a no-op. Best-effort, TTL-backstopped
+        # (KSTAGE-04 / T-53-17), matching the block's own documented intent -- bare Exception mirrors
+        # drop_pending_s3_enqueues / stage_file_to_s3's compensation catches, which also see a raw
+        # network/DNS error surface before the SDK call reaches botocore's ClientError wrapping.
         if cleared and bucket is not None:
-            if upload_id:
-                await s3_staging.abort_multipart_upload(file_id, upload_id, bucket)
-            await s3_staging.delete_staged_object(file_id, bucket)
+            try:
+                if upload_id:
+                    await s3_staging.abort_multipart_upload(file_id, upload_id, bucket)
+                await s3_staging.delete_staged_object(file_id, bucket)
+            except Exception:
+                logger.warning(
+                    "report_uploaded: best-effort post-commit multipart abort/object delete failed "
+                    "(state already committed; the lifecycle TTL backstop is the last resort)",
+                    file_id=str(file_id),
+                    agent_id=agent.id,
+                    exc_info=True,
+                )
         logger.warning(
             "report_uploaded: empty parts list (zero-byte/degenerate upload) -> cloud_job spilled to awaiting (routes local) + cleaned up",
             file_id=str(file_id),
@@ -345,10 +361,25 @@ async def report_upload_failed(
         upload_id = cloud_job.upload_id if cloud_job is not None else None
         await clear_ledger_entry(session, ledger_key)
         await session.commit()
+        # phaze-z0eur: wrap the post-commit best-effort cleanup in try/except -- the spill CAS + ledger
+        # clear above are already durable, so an S3 fault here (e.g. a 503 SlowDown mid-burst) must not
+        # turn a successful, already-committed transition into an unhandled 500 the agent retries against
+        # a no-op. TTL-backstopped (KSTAGE-04 / T-53-17); bare Exception mirrors the sibling cleanup paths
+        # (drop_pending_s3_enqueues / stage_file_to_s3), which also see a raw network/DNS error surface
+        # before the SDK call reaches botocore's ClientError wrapping.
         if bucket is not None:
-            if upload_id:
-                await s3_staging.abort_multipart_upload(file_id, upload_id, bucket)
-            await s3_staging.delete_staged_object(file_id, bucket)
+            try:
+                if upload_id:
+                    await s3_staging.abort_multipart_upload(file_id, upload_id, bucket)
+                await s3_staging.delete_staged_object(file_id, bucket)
+            except Exception:
+                logger.warning(
+                    "report_upload_failed: best-effort post-commit multipart abort/object delete failed "
+                    "(state already committed; the lifecycle TTL backstop is the last resort)",
+                    file_id=str(file_id),
+                    agent_id=agent.id,
+                    exc_info=True,
+                )
         logger.warning(
             "report_upload_failed: re-drive cap reached -> cloud_job re-stamped to awaiting + cleaned up + spill to AWAITING_CLOUD (routes to local)",
             file_id=str(file_id),
@@ -391,6 +422,24 @@ async def report_upload_failed(
         await session.commit()
         logger.warning("report_upload_failed held: no fileserver agent online", file_id=str(file_id), agent_id=agent.id, attempt=next_attempt)
         return UploadFailedResponse(file_id=file_id, cleared=False)
+    except s3_staging.S3StagingError:
+        # phaze-kuhbu: redrive_upload's OWN setup leg raises S3StagingError on two reachable paths --
+        # NoCloudJobToRedriveError (a subclass) when the cloud_job row vanished, or the base class when
+        # the recorded staging_bucket no longer resolves (an operator removed it) or create_multipart_upload
+        # hits the very S3 outage that made the agent's PUT fail and POST /failed in the first place. All
+        # three legs raise BEFORE _stage_file_to_s3 parks an s3_upload enqueue, so there is nothing to
+        # drop -- this is the SAME clean 200 hold the NoActiveAgentError branch above already takes,
+        # matching the endpoint's documented never-500 posture (T-53-19) instead of 500ing the agent AND
+        # losing the redrive_attempt stamp for every /failed callback during the outage.
+        await session.commit()
+        logger.warning(
+            "report_upload_failed held: redrive_upload could not stage a fresh multipart",
+            file_id=str(file_id),
+            agent_id=agent.id,
+            attempt=next_attempt,
+            exc_info=True,
+        )
+        return UploadFailedResponse(file_id=file_id, cleared=False)
 
     # Stamp the incremented attempt into the DEDICATED `redrive_attempt` column. redrive_upload ->
     # stage_file_to_s3 commits a FRESH payload (new presigned part_urls) to THIS same ledger row via
@@ -400,8 +449,23 @@ async def report_upload_failed(
     # dance is unnecessary; and (2) if a crash lands between the hook's commit and this commit, the
     # column keeps its prior value (un-incremented at `current_attempt`) instead of being reset to 0,
     # so the bounded upload budget survives the crash window (phaze-y0j0).
-    await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == ledger_key).values(redrive_attempt=next_attempt))
-    await session.commit()
+    #
+    # phaze-hi3ix: wrap the stamp + commit in try/except BaseException so a failure here still drops
+    # the s3_upload enqueue redrive_upload just parked on the session -- mirroring stage_file_to_s3's own
+    # `except BaseException: await drop_pending_s3_enqueues(session); raise`. Without this, a failure at
+    # either the UPDATE or the commit let the request-scoped session be discarded with the parked entry
+    # silently GC'd, skipping the phaze-cws5 abort compensation for the FRESH multipart redrive_upload
+    # just created -- since that multipart's upload_id was never persisted anywhere (the redrive's own
+    # cloud_job upsert rolled back too), no later cleanup path could ever find it to abort it. The
+    # explicit rollback puts the aborted-transaction session back into a usable state before the S3-only
+    # drop call (which issues no SQL of its own).
+    try:
+        await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == ledger_key).values(redrive_attempt=next_attempt))
+        await session.commit()
+    except BaseException:
+        await session.rollback()
+        await cloud_staging.drop_pending_s3_enqueues(session)
+        raise
     # phaze-grzo: redrive_upload PARKS its fresh s3_upload enqueue on the session; fire it ONLY now
     # that the re-driven cloud_job (still UPLOADING) and the attempt stamp are durably committed, so the
     # re-driven job (and its report_uploaded callback) can never precede the committed row it reads. A

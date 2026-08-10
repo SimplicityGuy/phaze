@@ -371,27 +371,44 @@ class PatchrightLauncher:
         return self._user_agent
 
     async def launch(self) -> RenderBrowser:
-        """Start the browser (once) and return it. Subsequent calls reuse the same process."""
+        """Start the browser (once) and return it. Subsequent calls reuse the same process.
+
+        Atomic on failure (phaze-ccm02): everything after the early-return guard runs inside a
+        try/except that rolls back through `shutdown()` before re-raising. Without this, an
+        exception from `chromium.launch()` (a misconfigured browser channel, an Xvfb hiccup) that
+        lands AFTER `self._display.start()` and `async_playwright().start()` have already
+        succeeded left `self._browser` at `None` while the just-started Xvfb process and
+        Playwright Node driver were never terminated -- `TracklistRenderer.render()` swallows a
+        browser error into a retryable `NAVIGATION_FAILED` outcome without calling `shutdown()`
+        itself, so the next candidate re-entered this body and overwrote (orphaned) both handles.
+        On a deterministically-failing environment that leaked one Xvfb + one Node driver process
+        per candidate for the rest of the drain slice. `shutdown()` is idempotent and safe to call
+        against any partial state, including "nothing started yet".
+        """
         if self._browser is not None:
             return self._browser
 
         from patchright.async_api import async_playwright  # noqa: PLC0415
 
-        env = dict(os.environ)
-        if XvfbDisplay.is_required(self._settings.tracklist_render_xvfb, platform=sys.platform):
-            env["DISPLAY"] = await self._display.start()
+        try:
+            env = dict(os.environ)
+            if XvfbDisplay.is_required(self._settings.tracklist_render_xvfb, platform=sys.platform):
+                env["DISPLAY"] = await self._display.start()
 
-        self._playwright = await async_playwright().start()
-        channel = self._settings.tracklist_render_browser_channel.strip()
-        # headless=False is NOT a preference -- headless Patchright does not clear Turnstile
-        # (phaze-dmvs). Never "optimize" this to True for CI; CI never renders (tests mock the
-        # browser boundary), and a headless worker gets its screen from Xvfb above.
-        self._browser = await self._playwright.chromium.launch(
-            headless=False,
-            channel=channel or None,
-            env=env,
-        )
-        self._user_agent = await self._derive_user_agent()
+            self._playwright = await async_playwright().start()
+            channel = self._settings.tracklist_render_browser_channel.strip()
+            # headless=False is NOT a preference -- headless Patchright does not clear Turnstile
+            # (phaze-dmvs). Never "optimize" this to True for CI; CI never renders (tests mock the
+            # browser boundary), and a headless worker gets its screen from Xvfb above.
+            self._browser = await self._playwright.chromium.launch(
+                headless=False,
+                channel=channel or None,
+                env=env,
+            )
+            self._user_agent = await self._derive_user_agent()
+        except BaseException:
+            await self.shutdown()
+            raise
         return self._browser
 
     async def _derive_user_agent(self) -> str | None:

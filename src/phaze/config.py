@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 import tomllib
 from typing import Annotated, Any, ClassVar, Literal
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse, urlunparse
 
 from dotenv import dotenv_values
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
@@ -185,6 +185,54 @@ class BaseSettings(PydanticBaseSettings):
         default="redis://redis:6379/0",
         validation_alias=AliasChoices("PHAZE_REDIS_URL", "REDIS_URL", "redis_url"),
     )
+
+    # phaze-1g89i: the RAW (un-encoded) Redis AUTH password. Mirrors the SAME env var that
+    # docker-compose.yml's `redis-server --requirepass "${REDIS_PASSWORD}"` and its
+    # `redis-cli -a "${REDIS_PASSWORD}"` healthcheck consume verbatim -- both accept ANY byte
+    # sequence, no URL parsing involved. `redis.asyncio.Redis.from_url(redis_url)`, by
+    # contrast, RFC-3986-parses the DSN and percent-DECODES the userinfo: a password
+    # containing `/`, `#`, or `?` used to break compose's raw string interpolation into
+    # `redis://default:${REDIS_PASSWORD}@redis:6379/0` (truncated netloc -> `ValueError: Port
+    # could not be cast to integer`), and one containing a `%XX` sequence parsed cleanly but
+    # decoded to the WRONG bytes, so every AUTH silently sent the wrong password. Setting
+    # REDIS_PASSWORD here (instead of pre-assembling the URL in compose) lets
+    # `_apply_redis_password` below `urllib.parse.quote` it into `redis_url`'s userinfo AFTER
+    # Python -- not a shell -- has the full, unmangled byte string.
+    redis_password: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("REDIS_PASSWORD", "redis_password"),
+        description="Raw Redis AUTH password; percent-encoded into redis_url by _apply_redis_password.",
+    )
+
+    @model_validator(mode="after")
+    def _apply_redis_password(self) -> "BaseSettings":
+        """phaze-1g89i: safely inject `redis_password` into `redis_url`'s userinfo.
+
+        Runs whenever `redis_password` is set, regardless of what `redis_url` already
+        contains -- mirroring the precedence compose's own interpolation used to have
+        (`REDIS_URL=redis://default:${REDIS_PASSWORD}@redis:6379/0` always overrode the
+        passwordless `.env` default). The password is percent-encoded with
+        `safe=""` so every RFC-3986 reserved byte (`/`, `#`, `?`, `%`, `@`, `:`, ...) round-trips
+        through `Redis.from_url`'s parser exactly, instead of corrupting the URL shape or
+        silently decoding to different bytes.
+
+        A `redis_url` that fails to parse (e.g. still carries a raw-embedded special-character
+        password from an old-style `${REDIS_PASSWORD}` interpolation) is left untouched --
+        this validator repairs the DSN going forward, it does not attempt to recover an
+        already-mangled one.
+        """
+        if self.redis_password is None:
+            return self
+        parsed = urlparse(self.redis_url)
+        if not parsed.hostname:
+            return self
+        user = parsed.username or "default"
+        encoded_password = quote(self.redis_password.get_secret_value(), safe="")
+        netloc = f"{quote(user, safe='')}:{encoded_password}@{parsed.hostname}"
+        if parsed.port is not None:
+            netloc += f":{parsed.port}"
+        self.redis_url = urlunparse(parsed._replace(netloc=netloc))
+        return self
 
     # Phase 36: PostgresQueue broker DSN. psycopg3's AsyncConnectionPool needs a RAW
     # libpq DSN (`postgresql://`), NOT the SQLAlchemy dialect form (`postgresql+asyncpg://`)
@@ -635,6 +683,19 @@ class ControlSettings(BaseSettings):
             missing = [bid for bid in be.buckets if bid not in bucket_by_id]
             if missing:
                 raise ValueError(f"backend {be.id!r} references unknown bucket ids {missing} (D-08)")
+            # phaze-ru9oe: fail fast on a duplicate bucket id WITHIN one backend's own `buckets`
+            # list (a copy-paste duplicate, not a cross-backend share). Left unchecked, resolving
+            # `be.buckets` positionally below appends `be.id` once per LIST ENTRY into
+            # `cluster_specific_refs`, so a single backend listing the same cluster-specific bucket
+            # twice falsely trips the D-09 cross-backend cardinality guard below — it reports the
+            # SAME backend id twice as if two distinct backends shared the bucket. For scope=shared
+            # the same duplicate silently double-weights the bucket in pick_bucket's candidates.
+            # Mirror the existing duplicate-id idiom (Counter over entries) used at 612/624.
+            within_backend_dupes = sorted(bid for bid, count in Counter(be.buckets).items() if count > 1)
+            if within_backend_dupes:
+                raise ValueError(
+                    f"backend {be.id!r} lists duplicate bucket ids {within_backend_dupes} in its own buckets list — each id must appear once"
+                )
             resolved = [bucket_by_id[bid] for bid in be.buckets]
             if not resolved:
                 raise ValueError(f"backend {be.id!r} (kueue) resolves to an empty bucket set (D-08)")
@@ -1020,6 +1081,27 @@ class ControlSettings(BaseSettings):
         validation_alias=AliasChoices("PHAZE_CLOUD_UPLOADED_STALE_AFTER_SEC", "cloud_uploaded_stale_after_sec"),
         description="Seconds a cloud_job may sit UPLOADED with no submit enqueued before the reconcile reaper spills it back to awaiting (phaze-ul2v). Default 900 (15 min).",
     )
+    # phaze-j7m18: the compute-lane twin of the two STAGING bounds above. A compute ``cloud_job`` row's
+    # ONLY in-flight status is SUBMITTED (D-08) -- it is terminalized ONLY by the ``/pushed`` agent HTTP
+    # callback (``ComputeAgentBackend.reconcile`` is a documented no-op, §4.2/D-08). A dead fileserver
+    # agent host mid-rsync, a lost ``push_file`` SAQ job after its retries exhaust while the agent is
+    # down, or an enqueue failure in ``flush_pending_push_file_enqueues`` (its own docstring admits the
+    # gap) all leave the row SUBMITTED forever with no callback ever coming -- permanently consuming a
+    # compute lane cap slot (the exact "N/N busy with zero real workloads" failure phaze-ul2v fixed for
+    # the staging half). Mirrors ``cloud_uploading_stale_after_sec``'s discipline exactly: the live
+    # ``push_file:<file_id>`` broker key (``get_live_job_keys``) is the PRECISE live-vs-lost
+    # discriminator and is checked FIRST; this bound is only the coarse backstop for when even that
+    # broker row is gone. MUST comfortably exceed the largest real ``push_file_saq_timeout_sec`` net (a
+    # multi-GB rsync push over a slow link is legitimately slow and bumps no timestamp while it
+    # transfers) -- default 21600 (6h), same as the UPLOADING bound it mirrors. Bounded (gt=0, lt=604800)
+    # so an out-of-range operator value fails fast at startup rather than reaping a live push.
+    cloud_submitted_stale_after_sec: int = Field(
+        default=21600,
+        gt=0,
+        lt=604800,
+        validation_alias=AliasChoices("PHAZE_CLOUD_SUBMITTED_STALE_AFTER_SEC", "cloud_submitted_stale_after_sec"),
+        description="Seconds a compute cloud_job may sit SUBMITTED with no live push_file broker key before the reconcile reaper spills it back to awaiting (phaze-j7m18). Default 21600 (6h); MUST exceed the largest push_file SAQ net.",
+    )
     # Phase 67 (REG-04, D-12): the flat compute scratch-dir field and the flat S3
     # connection/credential surface (endpoint / bucket / region / addressing-style / access-key /
     # secret-key) were REMOVED with no shim. Compute scratch dir now comes from the compute
@@ -1325,6 +1407,27 @@ class AgentSettings(BaseSettings):
         # bearer over HTTP.
         if self.kind != "compute" and not self.scan_roots:
             raise ValueError("AgentSettings.scan_roots is required when PHAZE_ROLE=agent (set PHAZE_AGENT_SCAN_ROOTS=/path1,/path2)")
+        # phaze-27myl: queue_url's shared-base default is the docker-compose service-name DSN
+        # (`postgres:5432`, BaseSettings.queue_url above) — it only resolves on the APP-SERVER
+        # compose network. docker-compose.agent.yml's own invariant is "No postgres or redis
+        # service here", so on a file-server host that hostname never resolves. Unlike redis_url,
+        # queue_url has no production-only validator to catch this (see
+        # _enforce_redis_password_in_production), so it is the one shared-base field whose
+        # docker-network default silently survives into an agent process. Fail fast here instead
+        # of crash-looping every lane worker (tasks/agent_worker.py, the docker-compose.agent.yml
+        # SAQ worker loop) at PostgresQueue connection time.
+        #
+        # Scoped to kind != "compute" like the scan_roots relaxation above: the k8s one-shot
+        # analyze pod's entrypoint (job_runner.py) constructs AgentSettings and calls back over
+        # HTTP directly -- it never imports tasks/agent_worker.py's PostgresQueue and never reads
+        # queue_url, and its documented agent-env ConfigMap (docs/k8s-burst.md §6) does not carry
+        # PHAZE_QUEUE_URL. Enforcing this for compute agents too would crash-loop every burst pod.
+        if self.kind != "compute" and urlparse(self.queue_url).hostname == "postgres":
+            raise ValueError(
+                "PHAZE_QUEUE_URL is required when PHAZE_ROLE=agent — the default queue_url points at the "
+                "docker-compose service name 'postgres', which does not resolve on an agent host "
+                "(set PHAZE_QUEUE_URL to a Postgres DSN reachable from this host)"
+            )
         return self
 
     @model_validator(mode="after")

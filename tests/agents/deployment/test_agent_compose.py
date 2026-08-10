@@ -706,3 +706,22 @@ def test_read_only_lanes_stay_read_only() -> None:
     for name in ("worker-analyze", "worker-io", "watcher"):
         mode = _scan_path_mode(data["services"][name])
         assert mode == "ro", f"{name} only ever reads the archive; SCAN_PATH must stay ro, got {mode!r}"
+
+
+def test_every_agent_service_pins_container_side_models_path() -> None:
+    """phaze-bvkah: every worker + watcher must pin MODELS_PATH=/models in `environment:`.
+
+    MODELS_PATH is ALSO the compose bind-source var (``${MODELS_PATH:-./models}`` on the
+    ``volumes:`` line) -- one name serving two coordinate systems: a HOST path for the bind
+    mount and a CONTAINER path for ``config.py``'s aliasless ``models_path`` field. Because
+    ``env_file: .env`` injects the SAME host-side value into every container, an operator's
+    host MODELS_PATH silently overrode the fixed ``/models`` mount target unless it happened
+    to equal it -- crash-looping every lane worker with ``PermissionError`` on the shipped
+    ``.env.example`` value of ``./models``. Compose ``environment:`` wins over ``env_file:``,
+    so an explicit ``MODELS_PATH=/models`` here re-pins the container reader regardless of
+    what the operator sets on the host side.
+    """
+    data = _load_agent_compose()
+    for svc_name in _ALL_WORKERS | {"watcher"}:
+        env = _env_to_strs(data["services"][svc_name].get("environment", []))
+        assert "MODELS_PATH=/models" in env, f"{svc_name} must pin MODELS_PATH=/models in environment (phaze-bvkah); got {env!r}"

@@ -76,9 +76,14 @@
        the pager (phaze-a6hm.9) and the bulk bar (phaze-a6hm.11): anything that must reflect the
        swap's own state has to be re-rendered BY that swap. The search box stays out here -- unlike
        the tabs it holds a focused input mid-keystroke, and re-rendering it on every debounce tick
-       would destroy focus and caret position (see search_box.html's own contract, point 3). #}
+       would destroy focus and caret position (see search_box.html's own contract, point 3).
+
+       phaze-a6gsw: `search_state_id` names the hidden state-carrier _propose_list.html renders
+       INSIDE #propose-workspace-list (search_box.html's hx-include reads it on every request).
+       Deriving it from propose_list_id, the same way search_target does, keeps the two ids
+       impossible to drift apart if a second caller of search_box.html is ever added. #}
     <div class="px-6 pt-4">
-        {% with view = propose_view, search_url = "/s/propose", search_target = "#" ~ propose_list_id, search_id = "propose-search" %}
+        {% with view = propose_view, search_url = "/s/propose", search_target = "#" ~ propose_list_id, search_id = "propose-search", search_state_id = propose_list_id ~ "-search-state" %}
             {% include "proposals/partials/search_box.html" %}
         {% endwith %}
     </div>

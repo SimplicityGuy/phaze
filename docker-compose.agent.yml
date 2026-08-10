@@ -54,6 +54,17 @@
 #     errors at parse time on a misconfigured host (WARNING-2/-3).
 #   - SCAN_PATH is rw on the meta + drain workers and ro everywhere else (phaze-6bkk).
 #   - MODELS_PATH bind mount is rw on every worker + watcher (D-21 auto-download).
+#   - Every worker + watcher pins container-side MODELS_PATH=/models in its own
+#     `environment:` block (phaze-bvkah). MODELS_PATH is ALSO the compose bind-source var
+#     (`${MODELS_PATH:-./models}` above) — one name serving two coordinate systems, a HOST
+#     path for the bind mount and a CONTAINER path for src/phaze/config.py's `models_path`
+#     field (env_file: .env injects the SAME host-side value into every container, and the
+#     field has no alias, so an operator's HOST-side MODELS_PATH silently overrode the
+#     container's fixed /models unless it happened to equal it — crash-looping every lane
+#     worker with `PermissionError: mkdir '/app/models'` on the shipped `.env.example`
+#     value of `./models`). Compose `environment:` wins over `env_file:`, so this line
+#     re-pins the container reader to the fixed mount target regardless of what the
+#     operator sets MODELS_PATH to on the host side.
 #   - CA_PATH bind mount is ro everywhere (operator-distributed CA cert).
 #
 # Image tag pinning (D-16): default `latest` is convenient for first-time
@@ -89,6 +100,10 @@ services:
       - OMP_NUM_THREADS
       - TF_NUM_INTRAOP_THREADS
       - TF_NUM_INTEROP_THREADS
+      # phaze-bvkah: pin the CONTAINER-side reader to the fixed mount target. MODELS_PATH is
+      # also the HOST-side bind-source var below; `environment:` wins over `env_file: .env`,
+      # so this stops the operator's host path from shadowing config.py's models_path field.
+      - MODELS_PATH=/models
     volumes:
       - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
       - "${MODELS_PATH:-./models}:/models:rw"
@@ -104,6 +119,8 @@ services:
       - PHAZE_AGENT_LANE=meta
       - PHAZE_LANE_META_CONCURRENCY=${PHAZE_LANE_META_CONCURRENCY:-2}
       - PHAZE_AGENT_HEARTBEAT=true
+      # phaze-bvkah: see worker-analyze above — pins the container-side reader to /models.
+      - MODELS_PATH=/models
     volumes:
       # rw, NOT ro (phaze-6bkk; see the header note). Every meta-lane task that mutates the archive
       # lives behind this mount: execute_approved_batch (move/rename), write_file_tags (mutagen
@@ -123,6 +140,8 @@ services:
       - PHAZE_LANE_IO_CONCURRENCY=${PHAZE_LANE_IO_CONCURRENCY:-4}
       - PHAZE_AGENT_HEARTBEAT=true
       # Network-bound (httpx multipart PUT + rsync-over-SSH): off the CPU budget, no thread pinning.
+      # phaze-bvkah: see worker-analyze above — pins the container-side reader to /models.
+      - MODELS_PATH=/models
     volumes:
       - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
       - "${MODELS_PATH:-./models}:/models:rw"
@@ -152,6 +171,8 @@ services:
       - OMP_NUM_THREADS
       - TF_NUM_INTRAOP_THREADS
       - TF_NUM_INTEROP_THREADS
+      # phaze-bvkah: see worker-analyze above — pins the container-side reader to /models.
+      - MODELS_PATH=/models
     volumes:
       # rw for the same reason as worker-meta: all-mode registers EVERY function, including the
       # three archive-mutating meta-lane tasks, so a :ro mount here silently fails legacy-queue
@@ -167,6 +188,8 @@ services:
     env_file: .env
     environment:
       - PHAZE_ROLE=agent
+      # phaze-bvkah: see worker-analyze above — pins the container-side reader to /models.
+      - MODELS_PATH=/models
     volumes:
       - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
       - "${MODELS_PATH:-./models}:/models:rw"

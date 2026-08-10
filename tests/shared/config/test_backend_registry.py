@@ -89,6 +89,20 @@ def test_compute_backend_clean_dispatch_fields_construct() -> None:
     assert be.ssh_user == "bursty"
 
 
+def test_compute_backend_relative_scratch_dir_fails_fast_with_id() -> None:
+    """phaze-xoxvt: a relative scratch_dir must fail at config-load (mirrors PushFilePayload._dest_scratch_absolute),
+    instead of validating here and then blowing up as a ValidationError on every dispatch."""
+    with pytest.raises(ValidationError, match=r"backend 'compute-r'.*scratch_dir must be an absolute path"):
+        ComputeBackend(kind="compute", id="compute-r", rank=10, cap=2, agent_ref="r-node", scratch_dir="scratch/phaze", push_host="r.push")
+
+
+def test_compute_backend_unsafe_scratch_dir_fails_fast_with_id() -> None:
+    """phaze-xoxvt (WR-03): scratch_dir lands in the same ssh remote spec as push_host/ssh_user, so a
+    space/shell-metacharacter must fail id-tagged at config-load, not deep inside push_file dispatch."""
+    with pytest.raises(ValidationError, match=r"backend 'compute-s'.*scratch_dir must not contain"):
+        ComputeBackend(kind="compute", id="compute-s", rank=10, cap=2, agent_ref="s-node", scratch_dir="/mnt/phaze scratch", push_host="s.push")
+
+
 def test_kueue_backend_parses() -> None:
     """A kueue entry carries a nested kube config + explicit bucket id-list (D-08/D-13)."""
     be = KueueBackend(kind="kueue", id="kueue-1", rank=5, cap=4, kube=KubeConfig(api_url="https://kube.example.com"), buckets=["b1"])

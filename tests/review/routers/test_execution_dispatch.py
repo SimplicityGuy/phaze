@@ -383,15 +383,30 @@ async def test_second_dispatch_rejected_while_active(
     first = await ac.post("/execution/start")
     assert first.status_code == 200, first.text
     assert mock_router.enqueue_for_agent.await_count == 1
-    assert await redis_client.get(execution.ACTIVE_DISPATCH_KEY) is not None
+    active_batch_id = await redis_client.get(execution.ACTIVE_DISPATCH_KEY)
+    assert active_batch_id is not None
 
     # The proposals are still APPROVED (no worker has run), so a second POST would re-select and
     # double-dispatch them -- but the sentinel is held, so it must be refused instead.
     second = await ac.post("/execution/start")
     assert second.status_code == 200, second.text
-    assert "Execution already in progress" in second.text
+    # phaze-2tsw9: the refusal must RE-ATTACH to the batch that is actually running (same
+    # batch_id, live sse-connect) rather than render a dead-end alert that evicts the caller's
+    # progress card -- the live batch's hash still exists, so reattachment must succeed.
+    assert f'sse-connect="/execution/progress/{active_batch_id}"' in second.text, second.text
+    assert "Execution already in progress" not in second.text
     # No additional enqueue happened: still exactly one.
     assert mock_router.enqueue_for_agent.await_count == 1
+
+
+# Note: a held sentinel whose exec:{batch_id} hash has already reaped is NOT a claim_result==0
+# case end-to-end -- ``_CLAIM_DISPATCH_LUA`` treats a missing held-key as a leaked claim and
+# RECONCILES it (grants the new dispatch, claim_result==2) rather than refusing it, so that
+# fallback path can't be driven through the real Lua script. It's covered directly instead:
+# ``test_reattach_active_progress_returns_none_when_hash_already_reaped`` (unit, no Lua) and
+# ``test_start_execution_rejected_when_dispatch_already_active`` /
+# ``test_start_execution_refused_reattaches_to_the_live_progress_card`` (mocked claim script,
+# both branches of ``_reattach_active_progress``) in test_execution_helpers.py.
 
 
 # ---------------------------------------------------------------------------

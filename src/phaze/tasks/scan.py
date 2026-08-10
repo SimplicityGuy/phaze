@@ -125,11 +125,25 @@ def _count_ingestible(scan_root: Path) -> tuple[int, list[OSError]]:
 
 
 def _resolve_chunk_size() -> int:
-    """Read AgentSettings.scan_chunk_size if available; fall back to 500."""
+    """Read AgentSettings.scan_chunk_size if available; fall back to 500.
+
+    Clamped to ``agent_file_chunk_max`` (phaze-flxrz): ``FileUpsertChunk.files`` enforces
+    ``max_length=agent_file_chunk_max`` (schemas/agent_files.py) at construction time --
+    client-side, before any HTTP call. ``scan_chunk_size`` has no upper bound of its own
+    (config.py), so an operator setting PHAZE_SCAN_CHUNK_SIZE above the server's chunk cap
+    made the very first full ``FileUpsertChunk(...)`` construction below raise an uncaught
+    pydantic ValidationError -- scan_directory's only handler is ``except AgentApiServerError``
+    -- crash-looping the SAQ job without ever sending the terminal 'failed' PATCH, so the
+    ScanBatch was stranded RUNNING. Clamping here at the one place the two knobs meet keeps
+    every downstream chunk (including the final partial flush, which only ever holds
+    ``< chunk_size`` records) at or under the cap regardless of which knob moved.
+    ``agent_file_chunk_max`` lives on the shared ``BaseSettings``, so it is available on
+    both ``AgentSettings`` and ``ControlSettings`` -- the clamp applies to the fallback
+    default too.
+    """
     cfg = get_settings()
-    if isinstance(cfg, AgentSettings):
-        return cfg.scan_chunk_size
-    return _DEFAULT_SCAN_CHUNK_SIZE
+    raw_chunk_size = cfg.scan_chunk_size if isinstance(cfg, AgentSettings) else _DEFAULT_SCAN_CHUNK_SIZE
+    return min(raw_chunk_size, cfg.agent_file_chunk_max)
 
 
 async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
