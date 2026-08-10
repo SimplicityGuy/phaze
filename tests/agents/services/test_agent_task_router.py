@@ -211,6 +211,35 @@ async def test_connect_failure_propagates_unwrapped() -> None:
     queue.enqueue.assert_not_awaited()
 
 
+async def test_close_continues_after_one_queue_raises_and_clears_cache() -> None:
+    """phaze-sbpj3: a raise from one queue's cleanup must not abandon the rest of close().
+
+    Regression guard: close() previously had no per-iteration try/except, so a raise from
+    queue #1's ``cache_redis.aclose()`` / ``queue.disconnect()`` (a redis client on a dropped
+    connection, a psycopg3 pool close error) propagated straight out of close(), leaving every
+    later queue's cleanup un-attempted and ``self._queues.clear()`` (which sat unconditionally
+    AFTER the loop) never reached -- contradicting the 'Idempotent' docstring. Two cached
+    queues; BOTH the first queue's cache_redis.aclose() and its disconnect() raise. Assert the
+    SECOND queue's cleanup still ran and the cache was cleared regardless.
+    """
+    router = AgentTaskRouter(queue_url="postgresql://u:p@h:5432/d", cache_redis_url="redis://c:6379/0")
+    queue_a = router._queue_for("agent-close-raises", "meta")
+    queue_b = router._queue_for("agent-close-ok", "meta")
+
+    queue_a.cache_redis.aclose = AsyncMock(side_effect=RuntimeError("redis connection dropped"))
+    queue_a.disconnect = AsyncMock(side_effect=RuntimeError("psycopg3 pool close error"))
+    queue_b.cache_redis.aclose = AsyncMock()
+    queue_b.disconnect = AsyncMock()
+
+    await router.close()  # must not raise
+
+    queue_a.cache_redis.aclose.assert_awaited_once()
+    queue_a.disconnect.assert_awaited_once()
+    queue_b.cache_redis.aclose.assert_awaited_once()
+    queue_b.disconnect.assert_awaited_once()
+    assert router._queues == {}
+
+
 def test_queue_for_sizes_dispatch_pool_from_config() -> None:
     """quick-260707-ryn: each per-(agent,lane) dispatch queue builds min_size=0/max_size=2 from config.
 
