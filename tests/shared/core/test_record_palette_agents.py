@@ -221,23 +221,48 @@ async def test_cmdk_commands_and_artist_nav(client: AsyncClient, seed_distinct_a
 
 
 # ---------------------------------------------------------------------------
-# RECORD-03 — the Agents page (heartbeating section + live compute lanes, never DEAD)
+# RECORD-03 — the Agents page (heartbeating agent rows + live compute-lane rows, never DEAD)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_agents_two_sections_never_dead(client: AsyncClient) -> None:
-    """RECORD-03: /admin/agents renders Section 1 (heartbeating) + Section 2 (compute lanes), never DEAD."""
+async def test_agents_table_renders_lane_rows_never_dead(client: AsyncClient, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """RECORD-03 (phaze-rdxfu): /admin/agents renders lane rows in the merged table, never DEAD.
+
+    phaze-rdxfu merged the former Section 2 "Compute / burst lanes" card grid into the SAME table as
+    heartbeating agents — a lane now renders as a ROW (``compute-lane-trigger-{backend_id}``) rather
+    than a separate section, so this seeds a real non-local backend to prove a lane row renders one
+    of its 3 real states and never the agent 5-state DEAD pill (KDEPLOY-04).
+    """
+    backends_toml_env("""
+    [[backends]]
+    kind = "kueue"
+    id = "burst-record03"
+    rank = 10
+    cap = 3
+    buckets = ["burst-record03-bucket"]
+
+    [backends.kube]
+    api_url = "https://kube.example.com"
+    namespace = "phaze"
+    local_queue = "phaze-burst"
+
+    [[buckets]]
+    id = "burst-record03-bucket"
+    scope = "cluster-specific"
+    endpoint_url = "https://s3.example.com"
+    bucket = "phaze-burst"
+    """)
     r = await client.get("/admin/agents")
     assert r.status_code == 200
     body = r.text
-    # Section 2: the live compute-lane block.
-    assert 'id="compute-lanes"' in body
+    # The lane renders as a row in the merged table.
+    assert 'id="compute-lane-trigger-burst-record03"' in body
     # It shows an Active/Waiting/Idle liveness state...
     assert any(state in body for state in ("ACTIVE", "WAITING", "IDLE"))
-    # ...and NEVER a perpetual DEAD/rose state (KDEPLOY-04 — k8s bursts are ephemeral Jobs).
-    compute_section = body.split('id="compute-lanes"', 1)[1]
-    assert "DEAD" not in compute_section
+    # ...and NEVER a perpetual DEAD/rose state (KDEPLOY-04 — k8s bursts are ephemeral Jobs). No dead
+    # agent is seeded here either, so this holds page-wide.
+    assert "DEAD" not in body
 
 
 # NOTE (COMPUTE-01): the former ``test_compute_lane_liveness_states`` exercised the retired

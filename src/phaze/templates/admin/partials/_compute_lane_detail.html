@@ -1,10 +1,14 @@
-{# phaze-2u8v.5: the burst-lane workload drill-down body slot.
+{# phaze-2u8v.5 (retargeted by phaze-rdxfu): the burst-lane workload drill-down body slot.
 
-   Served by GET /admin/agents/compute-lanes/{backend_id} and innerHTML-swapped into the dedicated
-   #compute-lane-pane host (admin/partials/_compute_lane_pane.html — its OWN fixed/slide-in shell, a
-   dedicated sibling of the Analyze workspace's shared pipeline/partials/_detail_pane.html, not a reuse
-   of it). This body renders inside that shell's <section x-data> scope, so it reads the shell's Alpine
-   `open` state for the own-tick lifecycle below — mirrors pipeline/partials/_lane_detail.html verbatim.
+   Served by GET /admin/agents/compute-lanes/{backend_id} and innerHTML-swapped into a lane's EXPANDED
+   ROW body slot (admin/partials/_compute_lane_detail_row.html's #compute-lane-activity-{backend_id} —
+   the SAME expanded-row shape _agent_detail_row.html uses for an agent). phaze-rdxfu deletes the
+   dedicated side-panel shell this body used to swap into (admin/partials/_compute_lane_pane.html's
+   #compute-lane-pane); this body is REUSED UNCHANGED apart from the own-tick's hx-target at the bottom
+   of this file. It renders inside the expanded row's <tr x-data> scope, so it still reads that
+   ancestor's Alpine `open` state for the own-tick lifecycle below — mirrors
+   pipeline/partials/_lane_detail.html verbatim (that file's own #detail-pane host is untouched by this
+   bead; see CLAUDE.md's out-of-scope note on /s/analyze).
 
    Context:
      * lane         -- one ComputeLane (services.agent_liveness.derive_compute_lane_identities) dataclass
@@ -54,6 +58,10 @@
             </span>
             {% endif %}
         </div>
+        {# The ephemerality Section 2's retired NOTE prose used to convey (phaze-2u8v.5) — a lane must
+           never read as a perpetually-dead agent, so it says so plainly right in its own detail header
+           rather than in a page-level note that vanished with the merge (acceptance rule 1). #}
+        <p class="text-xs text-gray-500 dark:text-gray-400">{{ lane.kind }} · ephemeral · no heartbeat</p>
 
         {# Quota-pending count — mirrors _lane_detail.html's kueue-only quota_wait row, but here it is
            kind-agnostic: any lane can carry waiting-on-quota jobs while ComputeLane.waiting > 0. #}
@@ -85,12 +93,14 @@
         <p class="text-xs text-gray-400 dark:text-gray-500">Updated {{ refreshed_at.strftime('%H:%M:%S') if refreshed_at else '—' }}</p>
 
         {# D-03 own-tick: the loaded body carries its OWN bounded 5s self-refresh scoped to this lane,
-           re-swapping itself into #compute-lane-pane. Removed on dismiss (no orphan loop) — verbatim
-           _lane_detail.html idiom: once the pane has opened (armed), if the shell's `open` flips false
-           (✕/Esc), the tick element removes itself so it can never re-open a dismissed pane. #}
+           re-swapping itself into its EXPANDED ROW's per-lane slot (phaze-rdxfu retargets this from the
+           deleted #compute-lane-pane host to #compute-lane-activity-{backend_id},
+           admin/partials/_compute_lane_detail_row.html). Removed on dismiss (no orphan loop) — verbatim
+           _lane_detail.html idiom: once the row has opened (armed), if the enclosing x-data's `open`
+           flips false (✕/Esc), the tick element removes itself so it can never re-open a dismissed row. #}
         <div hx-get="/admin/agents/compute-lanes/{{ lane.backend_id }}"
              hx-trigger="every 5s"
-             hx-target="#compute-lane-pane"
+             hx-target="#compute-lane-activity-{{ lane.backend_id }}"
              hx-swap="innerHTML"
              x-data="{ armed: false }"
              x-init="$nextTick(() => { armed = true })"
