@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import CursorResult, DateTime, delete, func, literal, select
+from sqlalchemy import CursorResult, DateTime, case, delete, func, literal, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from phaze.enums.tracklist_candidate import TRANSIENT_MAX_ATTEMPTS, CacheDecision, LookupOutcome
@@ -25,7 +25,7 @@ from phaze.models.tracklist_lookup_cache import TracklistLookupCache
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterator, Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,6 +49,28 @@ short enough that a set failing early in a months-long drain is not effectively 
 TRANSIENT_BACKOFF_MAX_HOURS: int = 24
 """Ceiling on the doubling. Beyond a day the attempt cap (``TRANSIENT_MAX_ATTEMPTS``) is the
 mechanism that stops the retries, not an ever-growing sleep that hides the problem."""
+
+IN_CLAUSE_CHUNK_SIZE: int = 10_000
+"""Keys per ``SELECT ... WHERE set_key IN (...)`` statement (phaze-1x31w).
+
+An unchunked ``.in_(list(verdicts))`` renders one bind parameter per key, and asyncpg's wire
+protocol caps a single statement at 32767 bind parameters (the same PostgreSQL extended-protocol
+limit ``phaze.services.bulk_insert`` chunks INSERTs against, phaze-syxv). :func:`lookup_many` is
+called with every unique set key the drain currently cares about in ONE call -- tens of thousands
+at the measured corpus size, and the module's own docstring sizes it "tens of thousands of keys"
+at the ~250,000-file target. 10k keeps comfortably under the bind cap with headroom, and splitting
+across statements is invisible to the caller: the merged verdict dict is identical to what one
+(impossible, over the cap) unbounded statement would have returned."""
+
+
+def chunked[T](items: Sequence[T], size: int) -> Iterator[list[T]]:
+    """Yield ``items`` in consecutive slices of at most ``size`` elements.
+
+    Shared by :func:`lookup_many` and (for the sibling ``FileRecord.id.in_(...)`` bind-count
+    cluster site, phaze-1x31w) ``tracklist_drain._load_added_at``.
+    """
+    for start in range(0, len(items), size):
+        yield list(items[start : start + size])
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,25 +163,68 @@ def compute_expires_at(outcome: LookupOutcome, attempts: int, now: datetime, *, 
 
 
 async def lookup_many(session: AsyncSession, set_keys: Sequence[str], *, now: datetime | None = None) -> dict[str, CacheVerdict]:
-    """Return a verdict for every key in ``set_keys`` -- one round trip, keys absent = ``MISS``.
+    """Return a verdict for every key in ``set_keys`` -- keys absent from the cache = ``MISS``.
 
     Batched on purpose: the queue builder holds tens of thousands of keys, and a per-key SELECT
-    would make the cache lookup more expensive than the crawl it protects.
+    would make the cache lookup more expensive than the crawl it protects. Chunked into multiple
+    round trips of at most :data:`IN_CLAUSE_CHUNK_SIZE` keys each (phaze-1x31w) -- past that count
+    a single ``IN (...)`` statement would exceed asyncpg's 32767 bind-parameter cap; see
+    :data:`IN_CLAUSE_CHUNK_SIZE` for the full explanation. Splitting is transparent to the caller:
+    the merged dict below is what one unbounded statement would have returned.
     """
     moment = now or datetime.now(UTC)
     verdicts = {key: CacheVerdict(set_key=key, decision=CacheDecision.MISS) for key in set_keys}
     if not verdicts:
         return verdicts
 
-    result = await session.execute(select(TracklistLookupCache).where(TracklistLookupCache.set_key.in_(list(verdicts))))
-    for entry in result.scalars():
-        verdicts[entry.set_key] = CacheVerdict(set_key=entry.set_key, decision=_decide(entry, moment), entry=entry)
+    for chunk in chunked(list(verdicts), IN_CLAUSE_CHUNK_SIZE):
+        result = await session.execute(select(TracklistLookupCache).where(TracklistLookupCache.set_key.in_(chunk)))
+        for entry in result.scalars():
+            verdicts[entry.set_key] = CacheVerdict(set_key=entry.set_key, decision=_decide(entry, moment), entry=entry)
     return verdicts
 
 
 async def lookup(session: AsyncSession, set_key: str, *, now: datetime | None = None) -> CacheVerdict:
     """Single-key convenience wrapper over :func:`lookup_many`."""
     return (await lookup_many(session, [set_key], now=now))[set_key]
+
+
+_NON_TRANSIENT_OUTCOME_VALUES: frozenset[str] = frozenset({LookupOutcome.FOUND.value, LookupOutcome.NOT_FOUND.value})
+"""The stored ``outcome`` values that end a transient streak: everything NOT in
+``TRANSIENT_OUTCOMES``. Spelled as a literal set (mirroring that frozenset) because it needs to
+appear inside a SQL ``case()``/``in_()`` expression, which the enum's own ``is_transient`` -- a
+Python-only computed property -- cannot generate."""
+
+
+def _next_attempts_on_conflict(outcome: LookupOutcome) -> Any:
+    """The ``attempts`` value the ON CONFLICT UPDATE should write for this write's ``outcome``.
+
+    ``attempts`` must count the CURRENT CONSECUTIVE TRANSIENT streak, not a lifetime total
+    (phaze-w1c25): both ``TRANSIENT_MAX_ATTEMPTS`` (park after 5) and the backoff exponent below
+    are calibrated against "N INDEPENDENT attempts at the CURRENT problem" -- a claim that only
+    holds if a definitive answer (``FOUND``/``NOT_FOUND``) resets the counter. Without this, a set
+    that fails transiently a few times, resolves cleanly to ``NOT_FOUND`` (180-day TTL), then
+    re-enters the queue after the TTL and hits ONE transient failure on the new streak inherits the
+    OLD attempts count and can park (or over-back-off) on that single failure.
+
+    Resets to 1 when either:
+
+    * THIS write's outcome is ``FOUND``/``NOT_FOUND`` -- a definitive answer ends whatever streak
+      preceded it, so the next transient failure (if any) starts a fresh one; or
+    * the STORED row's outcome is non-transient (``_NON_TRANSIENT_OUTCOME_VALUES``) -- this write
+      is the FIRST transient failure of a brand-new streak, on top of an unrelated definitive
+      history.
+
+    Otherwise this write continues an existing transient streak: increment the STORED value (never
+    a Python-read value -- see :func:`record_outcome`'s docstring for why that matters under
+    concurrent writers).
+    """
+    if outcome in (LookupOutcome.FOUND, LookupOutcome.NOT_FOUND):
+        return 1
+    return case(
+        (TracklistLookupCache.outcome.in_(_NON_TRANSIENT_OUTCOME_VALUES), 1),
+        else_=TracklistLookupCache.attempts + 1,
+    )
 
 
 async def record_outcome(
@@ -175,14 +240,15 @@ async def record_outcome(
     now: datetime | None = None,
     negative_ttl_days: int = NEGATIVE_TTL_DAYS,
 ) -> TracklistLookupCache:
-    """Upsert the result of one lookup attempt, incrementing ``attempts``.
+    """Upsert the result of one lookup attempt.
 
     ``ON CONFLICT (set_key) DO UPDATE`` rather than read-modify-write: the drain is resumable and
     may briefly run two workers over the same key after a restart, and a check-then-insert there
     raises a UNIQUE violation that rolls back the surrounding transaction -- losing a result we
-    just spent one of the day's ~4,300 requests to obtain. ``attempts`` is incremented from the
-    STORED value inside the UPDATE (not from a value read earlier in Python) so a concurrent
-    writer cannot make two attempts look like one and defeat the ``TRANSIENT_EXHAUSTED`` park.
+    just spent one of the day's ~4,300 requests to obtain. ``attempts`` -- the current consecutive
+    transient streak, see :func:`_next_attempts_on_conflict` -- is computed from the STORED value
+    inside the UPDATE (not from a value read earlier in Python) so a concurrent writer cannot make
+    two attempts look like one and defeat the ``TRANSIENT_EXHAUSTED`` park.
 
     ``expires_at`` follows the same rule: on the UPDATE path the transient backoff is computed IN
     SQL from the stored ``attempts``, so it matches :func:`compute_expires_at` exactly rather than
@@ -214,7 +280,7 @@ async def record_outcome(
             "source_url": source_url,
             "result_confidence": result_confidence,
             "detail": detail,
-            "attempts": TracklistLookupCache.attempts + 1,
+            "attempts": _next_attempts_on_conflict(outcome),
             "last_attempted_at": moment,
             "expires_at": _update_expires_at(outcome, moment, negative_ttl_days),
         },
@@ -235,11 +301,14 @@ def _update_expires_at(outcome: LookupOutcome, moment: datetime, negative_ttl_da
 
     Positives (never) and definitive negatives (a fixed TTL) do not depend on the attempt count and
     are plain Python values. The transient backoff DOES depend on it, and the UPDATE cannot read
-    its own ``attempts + 1`` from Python without re-introducing the read-modify-write race the
-    upsert exists to avoid -- so it is computed in SQL from the STORED column. The stored value is
-    the pre-increment count, and :func:`_backoff_delay` is ``base * 2**(attempts - 1)``, so
-    ``base * 2**stored`` is exactly the post-increment delay: the SQL and the Python policy agree
-    by construction, which ``test_backoff_sql_matches_python_policy`` pins.
+    its own post-write ``attempts`` from Python without re-introducing the read-modify-write race
+    the upsert exists to avoid -- so it is computed in SQL from the same
+    :func:`_next_attempts_on_conflict` expression the ``attempts`` column itself is written from
+    (phaze-w1c25: BOTH must agree on what this write's attempts count IS, or a streak reset would
+    write a consistent ``attempts`` column next to a backoff computed from the old, un-reset
+    count). :func:`_backoff_delay` is ``base * 2**(attempts - 1)``, so the exponent here is
+    ``_next_attempts_on_conflict(outcome) - 1`` -- the SQL and the Python policy agree by
+    construction, which ``test_backoff_sql_matches_python_policy_across_attempts`` pins.
 
     ``make_interval`` rather than a text interval literal: it takes bound parameters, so no SQL is
     ever assembled from a formatted string (semgrep's ``formatted-sql-query`` rule blocks that in
@@ -249,8 +318,9 @@ def _update_expires_at(outcome: LookupOutcome, moment: datetime, negative_ttl_da
         return None
     if outcome is LookupOutcome.NOT_FOUND:
         return moment + timedelta(days=negative_ttl_days)
+    exponent = _next_attempts_on_conflict(outcome) - 1
     backoff_seconds = func.least(
-        float(TRANSIENT_BACKOFF_BASE_MINUTES * 60) * func.power(2.0, TracklistLookupCache.attempts),
+        float(TRANSIENT_BACKOFF_BASE_MINUTES * 60) * func.power(2.0, exponent),
         float(TRANSIENT_BACKOFF_MAX_HOURS * 3600),
     )
     return literal(moment, DateTime(timezone=True)) + func.make_interval(0, 0, 0, 0, 0, 0, backoff_seconds)

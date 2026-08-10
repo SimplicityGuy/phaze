@@ -671,6 +671,27 @@ class TestDrainPass:
         assert "GRVMSTR" not in entry.derived.query
         assert entry.added_at is not None
 
+    async def test_added_at_is_correct_when_load_added_at_is_chunked(
+        self,
+        session: AsyncSession,
+        make_file,
+        monkeypatch: pytest.MonkeyPatch,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """phaze-1x31w: ``_load_added_at`` chunks its ``FileRecord.id.in_(...)`` the same way
+        ``lookup_many`` chunks ``set_key.in_(...)`` -- forced here to a chunk size of 1 (several
+        files, several SELECTs) to prove the merged result is unaffected by the split."""
+        import phaze.services.tracklist_drain as drain_module
+
+        monkeypatch.setattr(drain_module, "IN_CLAUSE_CHUNK_SIZE", 1)
+
+        for index in range(3):
+            await self._seed(make_file, session, f"Artist{index} - Live @ Event 2024-04-1{index}.mp3")
+
+        queue = await build_drain_queue(session, now=NOW)
+
+        assert len(queue.entries) == 3
+        assert all(entry.added_at is not None for entry in queue.entries)
+
     async def test_flagged_files_reach_the_front_of_the_queue(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
         for index in range(4):
             await self._seed(make_file, session, f"Artist{index} - Live @ Event 2024-04-1{index}.mp3")
