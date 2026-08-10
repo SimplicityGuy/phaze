@@ -252,6 +252,56 @@ def test_download_models_classifier_count_matches_bash() -> None:
     assert GENRE_MODELS == ("discogs-effnet-bs64-1",)
 
 
+def test_ensure_models_present_waits_out_a_sibling_holding_the_lock(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-mb8d: a non-blocking flock denial (sibling lane worker mid-download) waits, logs, then
+    re-validates with zero network once the lock is free.
+
+    A separate fd (mirroring a sibling OS process's independent open file description) holds the
+    exclusive lock FIRST; ``ensure_models_present`` in a background thread must hit the
+    ``BlockingIOError`` branch, log the "waiting for it to finish" line, then block on the
+    subsequent blocking ``LOCK_EX`` until the main thread releases -- proven by the thread still
+    being alive immediately after the non-blocking denial, and finishing (with ``download_to``
+    called) only after the lock is released.
+    """
+    import fcntl
+    import threading
+    import time
+
+    import phaze.tasks._shared.model_bootstrap as mb
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    lock_path = tmp_path / mb._LOCK_FILENAME
+    holder_fh = lock_path.open("a")
+    fcntl.flock(holder_fh.fileno(), fcntl.LOCK_EX)  # simulates a sibling process's in-flight download
+
+    mock = MagicMock(return_value=(0, 0))
+    monkeypatch.setattr(mb, "download_to", mock)
+
+    result: dict[str, bool] = {}
+
+    def _run() -> None:
+        mb.ensure_models_present(tmp_path)
+        result["completed"] = True
+
+    with caplog.at_level(logging.INFO, logger="phaze.tasks._shared.model_bootstrap"):
+        thread = threading.Thread(target=_run)
+        thread.start()
+        time.sleep(0.2)  # give the thread time to hit the non-blocking denial and start waiting
+        assert thread.is_alive(), "the waiter must still be blocked on LOCK_EX while the holder has it"
+        assert "waiting for it to finish before re-validating" in caplog.text
+
+        fcntl.flock(holder_fh.fileno(), fcntl.LOCK_UN)
+        holder_fh.close()
+        thread.join(timeout=10)
+
+    assert result.get("completed") is True
+    mock.assert_called_once_with(tmp_path)
+
+
 def test_download_to_creates_pb_and_json_pairs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
