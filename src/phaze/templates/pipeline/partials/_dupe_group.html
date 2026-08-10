@@ -17,6 +17,9 @@
 <div id="dupe-group-{{ group.sha256_hash }}" class="rounded-xl border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel">
     <div class="mb-2 font-jura text-[11px] font-medium uppercase tracking-wider text-gray-700 dark:text-gray-200">
         {{ group.group_name }} <span class="normal-case text-gray-500 dark:text-gray-500">· {{ group.count }} copies</span>
+        {% if group.truncated %}
+        <span class="normal-case text-amber-600 dark:text-amber-400" title="This group has more than {{ group.count }} copies -- only the first {{ group.count }} are shown.">· showing first {{ group.count }} only</span>
+        {% endif %}
     </div>
     <div class="space-y-1.5">
         {% for f in group.files %}
