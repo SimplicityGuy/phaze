@@ -359,7 +359,16 @@ test-db:
     fi
     echo "⏳ Waiting for Postgres to accept connections..."
     for _ in $(seq 1 30); do
-        if docker exec "$container" pg_isready -U phaze -d phaze_test >/dev/null 2>&1; then
+        # phaze-cbf1r: probe over TCP (`-h 127.0.0.1`), not the default unix socket. The
+        # postgres entrypoint's first-boot sequence runs a TEMPORARY, socket-only server
+        # (`listen_addresses=''`) to create phaze_test and run init scripts before starting
+        # the real server -- a socket probe reports OK against that temp server too (PQping
+        # only distinguishes "no server answering" from "a server answered"), so the
+        # unqualified probe could break out of this loop before phaze_test genuinely exists,
+        # intermittently failing the next step (scripts/ensure-pg-database.sh). The temp
+        # server never listens on TCP, so `-h 127.0.0.1` is exactly the discriminator between
+        # "a server is up" and "the final server, with phaze_test, is up".
+        if docker exec "$container" pg_isready -h 127.0.0.1 -U phaze -d phaze_test >/dev/null 2>&1; then
             db_ready=1
             break
         fi
