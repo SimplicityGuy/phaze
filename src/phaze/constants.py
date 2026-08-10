@@ -78,3 +78,29 @@ deltas ``>= AGENT_LIVENESS_STALE_SECONDS`` classify as 'dead'.
 5 minutes of missed heartbeats (~10 beats) is the LOCKED threshold for treating
 a worker as ineffective. Shared by the classifier and the matrix tests.
 """
+
+AGENT_BROKER_UNHEALTHY_BEATS: int = 3
+"""phaze-xuec1: consecutive failed/timed-out broker probes (``queue.info()``) before a
+heartbeat beat withholds its POST instead of reporting the agent alive.
+
+The 2026-08-08 nox incident: the analyze-lane worker beat every 30s for 1h41m while unable
+to dequeue a single job -- the heartbeat POST is independent HTTP traffic to the control
+plane and proves nothing about the worker's Postgres broker connection. ``queue.info()``
+exercises the SAME psycopg3 pool the SAQ dispatch loop's ``_dequeue()`` needs, so repeated
+failures there are real evidence the worker cannot currently consume its queue.
+
+3 beats at the 30s cadence (``AGENT_HEARTBEAT_INTERVAL_SECONDS``) is ~90s -- deliberately
+equal to ``AGENT_LIVENESS_ALIVE_SECONDS`` so a single bad tick (or two) never flips an
+otherwise-healthy agent to non-alive, mirroring the existing "a single missed beat must not
+flip 'alive'" reasoning for the interval/threshold ratio above.
+"""
+
+AGENT_BROKER_EXIT_BEATS: int = 10
+"""phaze-xuec1: consecutive failed broker probes before the worker exits loudly (SIGTERM)
+rather than sitting wedged indefinitely.
+
+Matches ``AGENT_LIVENESS_STALE_SECONDS`` (5 minutes at the 30s cadence): by the time an
+operator's UI would show this agent 'dead' anyway, the worker stops waiting for the psycopg3
+pool to self-heal and asks the container's restart policy for a fresh process -- the same
+recovery a manual ``docker restart`` provided in the 2026-08-08 nox incident, now automatic.
+"""

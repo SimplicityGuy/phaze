@@ -37,11 +37,16 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 import os
+import signal
 from typing import Any
 
 import structlog
 
-from phaze.constants import AGENT_HEARTBEAT_INTERVAL_SECONDS
+from phaze.constants import (
+    AGENT_BROKER_EXIT_BEATS,
+    AGENT_BROKER_UNHEALTHY_BEATS,
+    AGENT_HEARTBEAT_INTERVAL_SECONDS,
+)
 from phaze.schemas.agent_heartbeat import HeartbeatRequest
 from phaze.services.agent_client import AgentApiError
 
@@ -77,6 +82,19 @@ apart. At the 30s cadence this is ~1 line / 10 min: readable, not a flood.
 """
 
 
+def _terminate_worker_process() -> None:
+    """Ask the current process to shut down loudly (phaze-xuec1).
+
+    SIGTERM -- not ``os._exit`` -- so the SAQ worker's own signal handler
+    (``saq.worker.Worker.start``, ``loop.add_signal_handler``) drives the EXISTING
+    graceful-shutdown path: ``phaze.tasks.agent_worker.shutdown`` still runs (closing the
+    api client and cache-redis handle) rather than a hard kill skipping it, and the
+    container's restart policy gets a clean non-zero-exit process to replace. A dedicated,
+    patchable function so tests can assert the call without terminating the test process.
+    """
+    os.kill(os.getpid(), signal.SIGTERM)  # pragma: no cover -- exercised via the patched form in tests
+
+
 async def send_heartbeat(ctx: dict[str, Any]) -> None:
     """POST one agent heartbeat from the current worker state.
 
@@ -84,9 +102,26 @@ async def send_heartbeat(ctx: dict[str, Any]) -> None:
     Defensive against:
 
     * ctx not yet initialised (worker restart race) -> WARNING, return.
-    * ctx["worker"] absent OR queue.info() transient failure -> default
+    * ctx["worker"] absent (startup race, not a broker signal) -> default
       queue_depth=0, still POST.
+    * queue.info() transient failure -> default queue_depth=0, still POST --
+      UNLESS it has now failed ``AGENT_BROKER_UNHEALTHY_BEATS`` times in a row
+      (phaze-xuec1): see below.
     * AgentApiError (any subclass) -> WARNING, return; the loop retries next tick.
+
+    phaze-xuec1 -- liveness must reflect the ability to CONSUME the queue, not just that
+    the process can reach the control-plane API. The 2026-08-08 nox incident: the
+    heartbeat POST is independent HTTP traffic and kept succeeding every 30s for 1h41m
+    while the worker's psycopg3 broker pool was unusable and it dequeued nothing.
+    ``queue.info()`` exercises that SAME pool ``_dequeue()`` needs, so this function now
+    tracks consecutive probe failures in ``ctx["_broker_probe_failures"]`` (reset to 0 on
+    any success) and, once the count reaches ``AGENT_BROKER_UNHEALTHY_BEATS``, WITHHOLDS
+    the POST entirely instead of reporting the agent alive -- ``last_seen_at`` goes stale
+    and the EXISTING ``phaze.services.agent_liveness.classify`` thresholds degrade the
+    agent through stale -> dead exactly as if the process had died. If the pool never
+    recovers, ``AGENT_BROKER_EXIT_BEATS`` later the worker terminates itself loudly
+    (SIGTERM) so the container's restart policy can replace it, rather than sitting
+    wedged until an operator notices and runs ``docker restart`` by hand.
     """
     client = ctx.get("api_client")
     identity = ctx.get("agent_identity")
@@ -97,25 +132,49 @@ async def send_heartbeat(ctx: dict[str, Any]) -> None:
     # Queue depth from SAQ Queue.info()["queued"] via ctx["worker"].queue.
     # Pitfall 8: ctx["queue"] is NOT a valid key -- SAQ exposes the Queue on the
     # Worker instance only. The Worker may not be attached yet when the loop first
-    # ticks, so read ctx["worker"] lazily INSIDE the try and degrade to 0.
-    try:
-        queue = ctx["worker"].queue
-        # phaze-kaf2: `queue.info()` is UNBOUNDED without this deadline. A hung psycopg
-        # pool acquire/query blocks here forever; the except-Exception below only fires
-        # on a RAISE, never on a hang, so the beat silently never completes and the agent
-        # is classified DEAD while still processing jobs.
-        info = await asyncio.wait_for(queue.info(), timeout=QUEUE_INFO_TIMEOUT_SECONDS)
-        queue_depth = int(info.get("queued", 0))
-    except TimeoutError:
-        # Distinct from the generic failure below: a HANG is the phaze-kaf2 signature and
-        # an operator needs to see it named, not folded into "queue.info() failed".
-        logger.warning("heartbeat: queue.info() timed out after %.1fs; defaulting depth to 0", QUEUE_INFO_TIMEOUT_SECONDS)
+    # ticks; that is a startup race, not evidence the broker is unreachable, so it is
+    # handled separately from a probe that actually ran and failed (phaze-xuec1).
+    worker = ctx.get("worker")
+    if worker is None:
         queue_depth = 0
-    except Exception:
-        # Defensive: any queue error (worker not attached, SAQ internal change,
-        # broker blip) must NOT crash the heartbeat. Default to 0; log + still POST.
-        logger.warning("heartbeat_tick: queue.info() failed; defaulting to 0", exc_info=True)
-        queue_depth = 0
+    else:
+        try:
+            # phaze-kaf2: `queue.info()` is UNBOUNDED without this deadline. A hung psycopg
+            # pool acquire/query blocks here forever; the except-Exception below only fires
+            # on a RAISE, never on a hang, so the beat silently never completes and the agent
+            # is classified DEAD while still processing jobs.
+            info = await asyncio.wait_for(worker.queue.info(), timeout=QUEUE_INFO_TIMEOUT_SECONDS)
+            queue_depth = int(info.get("queued", 0))
+            ctx["_broker_probe_failures"] = 0
+        except TimeoutError:
+            # Distinct from the generic failure below: a HANG is the phaze-kaf2 signature and
+            # an operator needs to see it named, not folded into "queue.info() failed".
+            logger.warning("heartbeat: queue.info() timed out after %.1fs; defaulting depth to 0", QUEUE_INFO_TIMEOUT_SECONDS)
+            queue_depth = 0
+            ctx["_broker_probe_failures"] = ctx.get("_broker_probe_failures", 0) + 1
+        except Exception:
+            # Defensive: any queue error (SAQ internal change, broker blip) must NOT crash
+            # the heartbeat. Default to 0; log + still POST -- unless sustained, see below.
+            logger.warning("heartbeat_tick: queue.info() failed; defaulting to 0", exc_info=True)
+            queue_depth = 0
+            ctx["_broker_probe_failures"] = ctx.get("_broker_probe_failures", 0) + 1
+
+    broker_probe_failures = ctx.get("_broker_probe_failures", 0)
+    if broker_probe_failures >= AGENT_BROKER_UNHEALTHY_BEATS:
+        logger.error(
+            "heartbeat: broker unreachable for %s consecutive probes (~%ss); worker cannot "
+            "verify it can dequeue -- withholding this beat so liveness degrades instead of "
+            "reporting alive",
+            broker_probe_failures,
+            broker_probe_failures * AGENT_HEARTBEAT_INTERVAL_SECONDS,
+        )
+        if broker_probe_failures >= AGENT_BROKER_EXIT_BEATS:
+            logger.error(
+                "heartbeat: broker unreachable for %s consecutive probes; exiting so the container restart policy can recover a fresh worker",
+                broker_probe_failures,
+            )
+            _terminate_worker_process()
+        return
 
     payload = HeartbeatRequest(
         agent_version=importlib.metadata.version("phaze"),
