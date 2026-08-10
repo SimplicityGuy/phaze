@@ -261,21 +261,57 @@ def test_no_revoked_banner_when_zero_skipped() -> None:
 
 
 # ---------------------------------------------------------------------------
-# progress.html — Dual sse-close listeners + sse event slot wiring
+# progress.html — sse-close placement + sse event slot wiring (phaze-047gd)
 # ---------------------------------------------------------------------------
 
 
-def test_progress_has_dual_sse_close_listeners() -> None:
-    """Both 'complete' and 'complete_with_errors' close the SSE per UI-SPEC C1 step 5."""
-    # phaze-5zyv: the close listeners are gated on a connected stream (agents present), so render
-    # with an agent -- the empty-state card has no stream and therefore no close listeners.
+def test_sse_close_lives_on_the_sse_connect_element() -> None:
+    """``sse-close`` MUST be on the same element as ``sse-connect`` (phaze-047gd).
+
+    htmx-ext-sse@2.2.4's ``ensureEventSource`` reads ``sse-close`` only from the
+    element it located via ``sse-connect``; ``registerSSE`` (which walks
+    descendants) never reads ``sse-close`` at all. A regression check that only
+    substring-matches ``sse-close="..."`` anywhere in the document (as this test
+    used to) passes on the broken markup -- putting the attribute on a child
+    ``<span>`` -- just as readily as on the fix, so it must anchor to the actual
+    ``sse-connect`` element to mean anything.
+    """
     html = _render_progress(
         total=10,
         subjobs_expected=2,
         agents=[{"agent_id": "agent-a", "name": "Alpha", "completed": 0, "failed": 0, "total": 10}],
     )
-    assert 'sse-close="complete"' in html
-    assert 'sse-close="complete_with_errors"' in html
+    connect_idx = html.index("sse-connect=")
+    # The same opening tag must carry sse-close: no "<" between sse-connect and sse-close means
+    # they're still attributes of one element (a "<" would mean we walked into a child/next tag).
+    close_idx = html.index("sse-close=", connect_idx)
+    between = html[connect_idx:close_idx]
+    assert "<" not in between, (
+        f"sse-close is not on the sse-connect element; found {close_idx - connect_idx} chars / tag boundary between them: {between!r}"
+    )
+    assert 'sse-close="close"' in html
+    # The old (dead) per-status placement must be gone -- these must NOT be findable as attributes
+    # anywhere, since htmx-ext-sse never reads sse-close off a descendant.
+    assert 'sse-close="complete"' not in html
+    assert 'sse-close="complete_with_errors"' not in html
+
+
+def test_sse_close_absent_when_no_agents_connected() -> None:
+    """phaze-5zyv: the empty-state card has no ``sse-connect``, so no ``sse-close`` either."""
+    html = _render_progress(total=0, subjobs_expected=0, agents=[])
+    assert "sse-connect" not in html
+    assert "sse-close" not in html
+
+
+def test_progress_still_has_status_swap_slots() -> None:
+    """The status-specific message spans stay in place for ``complete``/``complete_with_errors``."""
+    html = _render_progress(
+        total=10,
+        subjobs_expected=2,
+        agents=[{"agent_id": "agent-a", "name": "Alpha", "completed": 0, "failed": 0, "total": 10}],
+    )
+    assert 'sse-swap="complete"' in html
+    assert 'sse-swap="complete_with_errors"' in html
 
 
 def test_progress_has_agents_table_swap_slot() -> None:
