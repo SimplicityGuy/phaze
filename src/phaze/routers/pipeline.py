@@ -19,7 +19,7 @@ import uuid  # noqa: TC003
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import ARRAY, String, bindparam, delete, exists, func, select, tuple_, update
+from sqlalchemy import ARRAY, DateTime, String, bindparam, delete, exists, func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import UUID as PGUUID, insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 import structlog
@@ -363,7 +363,7 @@ async def _build_dag_context(
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -397,6 +397,32 @@ def _analysis_file_ids_scope(file_ids: list[uuid.UUID], name: str) -> Any:
 def _ledger_keys_scope(keys: list[str], name: str) -> Any:
     """``SchedulingLedger.key = ANY(:name)`` -- the same array-bind idiom, string keys (phaze-r7j9)."""
     return SchedulingLedger.key == func.any(bindparam(name, value=keys, type_=ARRAY(String())))
+
+
+def _scheduling_ledger_cas_delete_stmt(observed_rows: Sequence[Any]) -> Any:
+    """CAS-guarded ``DELETE ... WHERE (key, enqueued_at) IN (observed_rows)`` at CONSTANT bind cost.
+
+    phaze-krzz5: a bare ``tuple_(SchedulingLedger.key, SchedulingLedger.enqueued_at).in_(observed_rows)``
+    renders a composite ``(key, enqueued_at) IN ((p1, p2), (p3, p4), ...)`` -- SQLAlchemy expands
+    each row of a composite IN-list individually, so this is TWO bind parameters per row, hitting
+    asyncpg's 32767-parameter cap at roughly HALF the row count the sibling single-column
+    ``_analysis_file_ids_scope`` / ``_ledger_keys_scope`` array-bind idiom tolerates (the phaze-r7j9
+    fix those two apply, one column short of covering this composite-key DELETE).
+
+    Binds the observed rows as TWO parallel Postgres arrays and matches them via ``unnest`` run in
+    lockstep (multiple set-returning functions in one SELECT list iterate together in Postgres),
+    extending the same array-bind idiom to a composite key: exactly 2 bind parameters regardless of
+    how many rows were observed, same as the single-column helpers above.
+    """
+    observed_keys = [key for key, _ in observed_rows]
+    observed_enqueued_ats = [enqueued_at for _, enqueued_at in observed_rows]
+    observed_pairs = select(
+        func.unnest(bindparam("cas_delete_keys", value=observed_keys, type_=ARRAY(String()))).label("key"),
+        func.unnest(bindparam("cas_delete_enqueued_ats", value=observed_enqueued_ats, type_=ARRAY(DateTime(timezone=True)))).label("enqueued_at"),
+    ).subquery()
+    return delete(SchedulingLedger).where(
+        tuple_(SchedulingLedger.key, SchedulingLedger.enqueued_at).in_(select(observed_pairs.c.key, observed_pairs.c.enqueued_at)),
+    )
 
 
 async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: str, models_path: str) -> list[uuid.UUID]:
@@ -1597,9 +1623,7 @@ async def trigger_backfill_cloud(
             await session.execute(select(SchedulingLedger.key, SchedulingLedger.enqueued_at).where(_ledger_keys_scope(ledger_keys, "ledger_keys")))
         ).all()
         if observed_ledger_rows:
-            await session.execute(
-                delete(SchedulingLedger).where(tuple_(SchedulingLedger.key, SchedulingLedger.enqueued_at).in_(observed_ledger_rows)),
-            )
+            await session.execute(_scheduling_ledger_cas_delete_stmt(observed_ledger_rows))
 
     counts = await _route_discovered_by_duration(
         request.app.state,
