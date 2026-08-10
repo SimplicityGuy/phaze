@@ -235,11 +235,13 @@
 
             {# CUT-02 (Phase 62 / D-04a): the legacy tab-bar nav block (Search/Pipeline/
                Proposals/Preview/Duplicates/Tracklists/Tags/CUE + Audit/Agents links) was
-               removed -- the DAG-centric shell (SHELL-03) replaced it. base.html survives
-               because the two KEPT standalone pages (execution/audit_log.html + admin/
-               agents.html) still extend it; the wave-logo home link above + the theme
-               toggle below are retained so those pages navigate back to the shell and are
-               not dead-ends. #}
+               removed -- the DAG-centric shell (SHELL-03) replaced it. base.html survived
+               because two standalone pages still extended it; phaze-uvmcr.3 retired
+               execution/audit_log.html's fork (it is now a shell-hosted UTILITY_PANES
+               partial at /s/audit, no {% extends %} left), leaving admin/agents.html as
+               the LAST caller (retired in its own turn by phaze-uvmcr.4). The wave-logo
+               home link above + the theme toggle below are retained so that page still
+               navigates back to the shell and is not a dead-end. #}
 
             <!-- Theme toggle -->
             <div class="ml-auto" x-data>

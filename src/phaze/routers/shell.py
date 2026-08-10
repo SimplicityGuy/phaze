@@ -39,11 +39,13 @@ from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
 from phaze.models.proposal import APPROVE_REJECT_FROM
+from phaze.routers.execution import build_audit_log_context
 from phaze.routers.pipeline import FILES_SORT
 from phaze.routers.pipeline_scans import RECENT_SCANS_SORT, build_recent_scans
 from phaze.routers.proposal_sort import PROPOSE_SORT
 from phaze.routers.response_shape import wants_fragment
 from phaze.routers.view_state import PAGE_SIZE_CHOICES, ListViewState
+from phaze.services.pagination import DEFAULT_PAGE_SIZE, clamp_page, clamp_page_size
 from phaze.services.pipeline import (
     analyze_lanes_content_hash,
     count_proposal_pending_files,
@@ -167,11 +169,11 @@ STAGE_PARTIALS: dict[str, str] = {
 # matched against these keys and NEVER spliced into a template path, and the literals double as
 # dead-template-guard entry roots (test_dead_template_guard.py) exactly like STAGE_PARTIALS'.
 #
-# phaze-uvmcr.1 lands both keys with placeholder/thin content so this bead is independently
-# mergeable; phaze-uvmcr.3 (audit) and phaze-uvmcr.4 (agents) replace the values with the real
-# hosted panes once their content has settled.
+# phaze-uvmcr.1 landed both keys with placeholder/thin content so that bead was independently
+# mergeable; phaze-uvmcr.3 (audit) replaces its value with the real hosted pane below, once its
+# content settled. phaze-uvmcr.4 (agents) does the same for "agents" in its own change.
 UTILITY_PANES: dict[str, str] = {
-    "audit": "shell/partials/audit_placeholder.html",
+    "audit": "execution/audit_log.html",
     "agents": "shell/partials/agents_placeholder.html",
 }
 
@@ -539,6 +541,41 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # useful half of the deleted proposals/partials/stats_bar.html. No enqueue, no write, no new
         # query path; oob_counts stays False (Pitfall 5) like every other review stage.
         context["stats"] = await get_proposal_stats(session)
+    elif stage == "audit":
+        # phaze-uvmcr.3: the /s/audit utility-pane host (UTILITY_PANES, not STAGE_PARTIALS -- it
+        # is not a DAG pipeline stage). ``execution.audit_log``'s non-fragment branch now redirects
+        # a plain request / bookmark / history-restore of GET /audit/ HERE, carrying the request's
+        # whole query string, so the status/page/page_size/sort/order the redirect arrives with
+        # must resolve to the SAME filtered view on this side -- not silently reset to page 1 / all
+        # statuses. Parsed straight off ``request.query_params`` (not threaded through
+        # ``shell_stage``'s signature, which stays generic across every rail node, DAG or utility
+        # alike) and clamped with the SAME ``phaze.services.pagination`` helpers every other paged
+        # read in this router composes, so an absurd/unparseable value degrades to the same safe
+        # default a hand-edited URL gets everywhere else (never a 422 on a render path).
+        #
+        # The context itself comes from :func:`build_audit_log_context`, the SAME function the
+        # GET /audit/ fragment endpoint (the filter tab / pager / column-sort swap target, still at
+        # its own path, unchanged) calls -- so the two producers of "what audit log content looks
+        # like" cannot independently drift (phaze-a6hm.11's build_propose_list_context discipline,
+        # applied here).
+        audit_params = request.query_params
+        audit_status = audit_params.get("status")
+        try:
+            audit_page_num = clamp_page(int(audit_params.get("page", "1")))
+        except ValueError:
+            audit_page_num = clamp_page(1)
+        try:
+            audit_page_size = clamp_page_size(int(audit_params.get("page_size", str(DEFAULT_PAGE_SIZE))))
+        except ValueError:
+            audit_page_size = clamp_page_size(DEFAULT_PAGE_SIZE)
+        context |= await build_audit_log_context(
+            session,
+            status=audit_status,
+            page=audit_page_num,
+            page_size=audit_page_size,
+            sort=audit_params.get("sort"),
+            order=audit_params.get("order"),
+        )
 
     if wants_fragment(request):
         # phaze-a6hm.2 / .9: a live htmx swap has TWO shapes on this route, distinguished by what the

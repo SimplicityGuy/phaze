@@ -32,6 +32,7 @@ import pytest
 
 if TYPE_CHECKING:
     from httpx import AsyncClient
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 # The DAG pipeline rail-node ids (VERBATIM prototype RAIL order, with the quick-260707-sq3
@@ -469,6 +470,169 @@ async def test_stage_live_htmx_swap_still_returns_bare_fragment(client: AsyncCli
     assert "<html" not in body.lower(), "a live rail swap must get a fragment, not a full document"
     assert 'aria-label="Pipeline navigation"' not in body, "the fragment must not carry a second rail"
     assert 'id="stage-workspace"' not in body, "the fragment swaps INTO #stage-workspace, not around it"
+
+
+@pytest.mark.asyncio
+async def test_audit_rail_node_carries_aria_current_on_direct_nav(client: AsyncClient) -> None:
+    """Acceptance #2 (phaze-uvmcr.3) -- the Audit rail node shows aria-current="page" on /s/audit.
+
+    Mirrors ``test_analyze_still_reachable_at_s_analyze``'s equivalent assertion for the DAG rail;
+    ``audit`` is a UTILITY_PANES node (phaze-uvmcr.1) but is wired into the SAME rail active-state
+    idiom (rail.html:404), so a direct navigation there marks it, not any DAG stage.
+    """
+    response = await client.get("/s/audit")
+    assert response.status_code == 200
+    body = response.text
+    assert 'data-stage="audit"' in body
+    assert re.search(r'data-rail-stage="audit"[^>]*aria-current="page"', body), 'audit rail node must carry aria-current="page" on /s/audit'
+
+
+async def _seed_execution_log(session: AsyncSession, *, status: str, source_path: str) -> None:
+    """Seed ONE ExecutionLog row (with its prerequisite FileRecord + approved RenameProposal).
+
+    A local, minimal cousin of ``tests/review/routers/test_execution.py``'s
+    ``create_test_execution_log`` -- this module tests the SHELL side of the audit pane, not the
+    execution router, so it seeds only what :func:`build_audit_log_context`'s read actually needs.
+    """
+    from datetime import UTC, datetime
+    import uuid
+
+    from phaze.models.execution import ExecutionLog
+    from phaze.models.file import FileRecord
+    from phaze.models.proposal import ProposalStatus, RenameProposal
+
+    file_id = uuid.uuid4()
+    session.add(
+        FileRecord(
+            agent_id="test-fileserver",
+            id=file_id,
+            sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+            original_path=f"/music/{uuid.uuid4().hex}/test.mp3",
+            original_filename="test.mp3",
+            current_path=source_path,
+            file_type="music",
+            file_size=1_000_000,
+        )
+    )
+    await session.flush()
+    proposal_id = uuid.uuid4()
+    session.add(
+        RenameProposal(
+            id=proposal_id,
+            file_id=file_id,
+            proposed_filename="new.mp3",
+            confidence=0.9,
+            status=ProposalStatus.APPROVED,
+            context_used={"artist": "Test"},
+            reason="Test",
+        )
+    )
+    await session.flush()
+    session.add(
+        ExecutionLog(
+            id=uuid.uuid4(),
+            proposal_id=proposal_id,
+            operation="move",
+            source_path=source_path,
+            destination_path=source_path.replace("old", "new"),
+            sha256_verified=True,
+            status=status,
+            executed_at=datetime.now(UTC).replace(tzinfo=None),
+        )
+    )
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_audit_stage_resolves_query_params_the_redirect_from_audit_arrives_with(client: AsyncClient, session: AsyncSession) -> None:
+    """The /s/audit branch actually READS status/sort/order off the query string, not just /audit/.
+
+    ``execution.audit_log``'s non-fragment branch 301-redirects a bookmarked/filtered
+    ``/audit/?...`` URL to ``/s/audit?...`` (acceptance #3), carrying the WHOLE query string. That
+    round trip is only meaningful if ``/s/audit`` itself resolves those same parameters into the
+    same filtered/sorted view -- otherwise a bookmark of a filtered audit URL would silently reset
+    to page 1 / all statuses / default order on arrival. Seeds one COMPLETED and one FAILED log,
+    then hits ``/s/audit?status=failed`` directly (as the redirect would) and asserts the response
+    reflects the FAILED-only, active-tab-marked view.
+    """
+    from phaze.models.execution import ExecutionStatus
+
+    await _seed_execution_log(session, status=ExecutionStatus.COMPLETED, source_path="/music/old-completed.mp3")
+    await _seed_execution_log(session, status=ExecutionStatus.FAILED, source_path="/music/old-failed.mp3")
+
+    response = await client.get("/s/audit?status=failed")
+    assert response.status_code == 200
+    body = response.text
+    assert "/music/old-failed.mp3" in body
+    assert "/music/old-completed.mp3" not in body
+    # The active tab reflects the resolved status, not the "all" default.
+    assert 'hx-get="/audit/?status=all' in body
+
+
+@pytest.mark.asyncio
+async def test_audit_stage_degrades_a_malformed_page_and_page_size_instead_of_500ing(client: AsyncClient) -> None:
+    """A hand-edited/truncated ``/s/audit`` URL degrades page/page_size to a safe default, never 500s.
+
+    Mirrors the ``pagination.py`` contract's rule 5 (out-of-range/unparseable inputs clamp, they
+    never raise) -- the SAME discipline every other paged read in this router already gets via
+    ``Query(..., ge=..., le=...)``. ``/s/audit`` parses these itself (off ``request.query_params``,
+    not FastAPI's per-field validation, since ``shell_stage`` stays generic across every rail node),
+    so it needs its OWN degrade-safe parsing, pinned here.
+    """
+    response = await client.get("/s/audit?page=not-a-number&page_size=also-not-a-number")
+    assert response.status_code == 200
+    assert 'id="audit-content"' in response.text
+
+
+@pytest.mark.asyncio
+async def test_audit_pane_filter_tabs_pager_and_sort_still_wired_from_inside_the_shell(client: AsyncClient) -> None:
+    """Acceptance #6 (phaze-uvmcr.3) -- the filter tabs, pager, and column-sort headers still swap
+    into their targets now that their host lives inside #stage-workspace, not a standalone page.
+
+    The swap wiring itself (``#audit-content`` target, ``GET /audit/`` endpoint) is UNCHANGED by
+    this bead -- these ids/attributes are the proof it survived being re-hosted, not a new feature.
+    """
+    response = await client.get("/s/audit")
+    assert response.status_code == 200
+    body = response.text
+    # The filter tabs' swap target and endpoint.
+    assert 'id="audit-content"' in body
+    assert 'hx-get="/audit/?status=all' in body
+    assert 'hx-target="#audit-content"' in body
+    # The column-sort headers resolve against the SAME target (AUDIT_SORT.target == "#audit-content").
+    assert re.search(r'hx-get="/audit/\?[^"]*sort=', body), "no column-sort header hx-get found inside the shell-hosted pane"
+
+
+@pytest.mark.asyncio
+async def test_audit_pane_carries_no_poller_and_away_navigation_leaves_nothing_behind(client: AsyncClient) -> None:
+    """H3 (phaze-uvmcr.3 epic design) -- the audit pane starts no timer of its own, and swapping
+    away to another rail node leaves no orphaned poller, listener, or dangling swap target behind.
+
+    Unlike its below-the-line sibling (the agents pane, phaze-uvmcr.4), audit carries NO self-poll:
+    the filter tabs, pager, and column-sort headers are all operator-triggered ``hx-get`` on click,
+    never ``hx-trigger="every ...s"`` or a ``setInterval``. This proves that directly (there is
+    nothing here that COULD leak), then proves the other half of H3: an innerHTML swap of
+    ``#stage-workspace`` to another stage is self-cleaning -- none of audit's own ids survive it.
+    """
+    audit_fragment = await client.get("/s/audit", headers={"HX-Request": "true"})
+    assert audit_fragment.status_code == 200
+    audit_body = audit_fragment.text
+    assert 'id="audit-content"' in audit_body, "sanity: this is really the audit pane"
+    # No self-poll of any kind -- every control here is operator-triggered.
+    assert 'hx-trigger="every' not in audit_body
+    assert "setInterval" not in audit_body
+
+    # Swap AWAY to a sibling rail node, the same innerHTML swap of #stage-workspace a real rail
+    # click performs.
+    away_fragment = await client.get("/s/files", headers={"HX-Request": "true"})
+    assert away_fragment.status_code == 200
+    away_body = away_fragment.text
+    # None of audit's ids/hooks survive the swap: htmx cancels any element-scoped trigger when its
+    # element leaves the DOM, and an innerHTML replace carries none of the old subtree forward, so
+    # nothing from the audit pane is still present -- or listening -- after this swap.
+    assert 'id="audit-content"' not in away_body
+    assert 'id="audit-table-container"' not in away_body
+    assert "audit-details-trigger-" not in away_body
 
 
 @pytest.mark.asyncio
