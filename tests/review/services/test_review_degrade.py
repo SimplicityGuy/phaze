@@ -9,6 +9,7 @@ stub session (no D-08 seam needed).
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 import logging
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -197,6 +198,53 @@ async def test_get_tagwrite_review_rows_admits_applied_excludes_completed(sessio
     assert admitted_id in offered_ids
     # D-02: the completed_subq anti-join excludes the already-written file (idempotency preserved).
     assert completed_id not in offered_ids
+
+
+@pytest.mark.asyncio
+async def test_get_tagwrite_review_rows_readmits_file_after_a_completed_undo(session: AsyncSession) -> None:
+    """phaze-vwyco: the shared anti-join must re-admit a file whose latest terminal write is a
+    completed UNDO, not evict it forever.
+
+    D-02 correctly excludes a file with an un-reverted COMPLETED write. But the undo itself is ALSO
+    a COMPLETED ``TagWriteLog`` row (``source="undo"``) -- the anti-join this builder shares with
+    ``bulk_write_no_discrepancies`` (:func:`phaze.routers.tags._terminal_tagwrite_subq`) used to
+    match it identically to a genuine forward completion, permanently dropping every reverted file
+    out of review coverage even though its disk tags are (again) changed.
+    """
+    file_id = await _seed_applied_tagwrite_file(session)
+    base = datetime(2026, 8, 1, 12, 0, 0)
+    session.add(
+        TagWriteLog(
+            id=uuid.uuid4(),
+            file_id=file_id,
+            before_tags={},
+            after_tags={"title": "Some Title"},
+            source="review",
+            status=TagWriteStatus.COMPLETED.value,
+            written_at=base,
+        )
+    )
+    await session.commit()
+
+    assert file_id not in {row["file_id"] for row in await get_tagwrite_review_rows(session)}, (
+        "an un-reverted COMPLETED write must still be excluded (D-02 unchanged)"
+    )
+
+    session.add(
+        TagWriteLog(
+            id=uuid.uuid4(),
+            file_id=file_id,
+            before_tags={"title": "Some Title"},
+            after_tags={},
+            source="undo",
+            status=TagWriteStatus.COMPLETED.value,
+            written_at=base + timedelta(seconds=30),
+        )
+    )
+    await session.commit()
+
+    offered_ids = {row["file_id"] for row in await get_tagwrite_review_rows(session)}
+    assert file_id in offered_ids, "a reverted file must re-enter the candidate window, not stay evicted forever"
 
 
 @pytest.mark.asyncio
