@@ -899,6 +899,113 @@ class TestPatchrightLauncherLaunch:
         assert launcher._browser is None
         assert launcher._playwright is None
 
+    async def test_chromium_launch_failure_rolls_back_display_and_driver(self):
+        """A `chromium.launch()` failure after Xvfb + the driver have started must leak neither
+        (phaze-ccm02): otherwise every retried candidate orphans one Xvfb process and one
+        Playwright Node driver, exhausting the worker's PIDs/memory over a long drain.
+        """
+
+        class _FailingChromium:
+            async def launch(self, **_kwargs: Any) -> Any:
+                raise BrowserError("Executable doesn't exist at /bad/channel")
+
+        class _FailingDriver:
+            def __init__(self) -> None:
+                self.chromium = _FailingChromium()
+                self.stopped = 0
+
+            async def stop(self) -> None:
+                self.stopped += 1
+
+        driver = _FailingDriver()
+
+        class _Starter:
+            async def start(self) -> Any:
+                return driver
+
+        class FakeDisplay:
+            def __init__(self) -> None:
+                self.started = 0
+                self.stopped = 0
+
+            async def start(self) -> str:
+                self.started += 1
+                return ":99"
+
+            def stop(self) -> None:
+                self.stopped += 1
+
+        display = FakeDisplay()
+        launcher = PatchrightLauncher(_settings(tracklist_render_xvfb="always"), display=display)  # type: ignore[arg-type]
+
+        with patch("patchright.async_api.async_playwright", lambda: _Starter()), pytest.raises(BrowserError):
+            await launcher.launch()
+
+        assert display.started == 1
+        assert display.stopped == 1, "the just-started Xvfb process must be terminated on failure"
+        assert driver.stopped == 1, "the just-started Playwright driver must be stopped on failure"
+        assert launcher._browser is None
+        assert launcher._playwright is None
+
+    async def test_retry_after_a_failed_launch_starts_a_fresh_display_and_driver(self):
+        """After a rolled-back failure, the next `launch()` call must start over cleanly rather
+        than reuse or leak the previous (already-stopped) handles.
+        """
+        good_browser = TestPatchrightLauncherUserAgent._UABrowser("Chrome/1")
+
+        class _FlakyChromium:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def launch(self, **_kwargs: Any) -> Any:
+                self.calls += 1
+                if self.calls == 1:
+                    raise BrowserError("Xvfb hiccup")
+                return good_browser
+
+        chromium = _FlakyChromium()
+        drivers: list[Any] = []
+
+        class _FlakyDriver:
+            def __init__(self) -> None:
+                self.chromium = chromium
+                self.stopped = 0
+                drivers.append(self)
+
+            async def stop(self) -> None:
+                self.stopped += 1
+
+        class _Starter:
+            async def start(self) -> Any:
+                return _FlakyDriver()
+
+        class FakeDisplay:
+            def __init__(self) -> None:
+                self.started = 0
+                self.stopped = 0
+
+            async def start(self) -> str:
+                self.started += 1
+                return ":99"
+
+            def stop(self) -> None:
+                self.stopped += 1
+
+        display = FakeDisplay()
+        launcher = PatchrightLauncher(_settings(tracklist_render_xvfb="always"), display=display)  # type: ignore[arg-type]
+
+        with patch("patchright.async_api.async_playwright", lambda: _Starter()):
+            with pytest.raises(BrowserError):
+                await launcher.launch()
+            launched = await launcher.launch()
+
+        assert launched is good_browser
+        assert display.started == 2
+        assert display.stopped == 1, "only the failed attempt's display should have been stopped so far"
+        assert len(drivers) == 2
+        assert drivers[0].stopped == 1
+        assert drivers[1].stopped == 0, "the successful attempt's driver must still be live"
+
 
 # --- Recorded live captures ---
 
