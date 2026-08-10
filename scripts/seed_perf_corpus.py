@@ -35,7 +35,7 @@ head`` and the derived readers -- which never consulted ``state`` -- see the cor
 Usage::
 
     uv run python scripts/seed_perf_corpus.py --n 200000 \\
-        --dsn postgresql://phaze:phaze@localhost:5433/phaze_perf82 --reseed
+        --dsn postgresql://phaze:phaze@localhost:5545/phaze_perf82 --reseed
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ _MUSIC_VIDEO = ("mp3", "m4a", "ogg", "flac", "wav", "aiff", "wma", "aac", "opus"
 _NON_MEDIA = "txt"
 
 _LEGACY_AGENT = "legacy-application-server"
-_DEFAULT_DSN = "postgresql://phaze:phaze@localhost:5433/phaze_perf82"
+_DEFAULT_DSN = "postgresql://phaze:phaze@localhost:5545/phaze_perf82"
 
 # Stage label -> SAQ function name for the scheduling_ledger in-flight key prefix. MUST match
 # phaze.tasks._shared.stage_control.STAGE_TO_FUNCTION (the real ledger PK builder).
