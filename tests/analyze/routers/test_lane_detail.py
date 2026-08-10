@@ -522,6 +522,14 @@ async def test_lane_detail_known_lane_renders_fields(client: AsyncClient, sessio
     assert 'hx-trigger="every 5s"' in body
     assert f'hx-get="/pipeline/lanes/{lane["id"]}"' in body
     assert 'hx-target="#detail-pane"' in body
+    # phaze-d80hf: the own-tick element itself carries the failure handlers -- a failed tick swaps
+    # nothing, so #detail-pane's after-swap handler (which is what used to be documented as "the
+    # wave-2 tick handler") never fires and never sets `refreshError`. These are the ONLY assignment
+    # sites for that flag now that _detail_pane.html's own comment used to (falsely) claim the wave-2
+    # body set it with no code anywhere doing so.
+    assert "hx-on::response-error=" in body
+    assert "hx-on::send-error=" in body
+    assert "refreshError = true" in body
 
 
 @pytest.mark.asyncio

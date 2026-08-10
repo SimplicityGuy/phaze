@@ -54,6 +54,20 @@
        focus to the originating trigger by STABLE id, since the 5s poll may have replaced the original
        node but the re-rendered trigger keeps the same id.
 
+   phaze-d80hf: `refreshError` used to be declared + rendered here with a comment claiming "set by
+   the wave-2 tick handler" -- but no such handler existed anywhere (_lane_detail.html had no
+   htmx:responseError/sendError listener), so a failing own-tick swapped nothing, surfaced nothing,
+   and the pane silently pinned stale lane data for the life of an incident with no caption ever
+   firing. It is now genuinely wired: the own-tick element in _lane_detail.html carries
+   `hx-on::response-error` / `hx-on::send-error`, which flips `refreshError` true on a failed tick;
+   `onLoaded()` below clears it on the next SUCCESSFUL swap (unchanged -- it already did this).
+   The sibling `degraded` caption/flag is REMOVED (not wired to a lie): "a whole section returned
+   None/0 this cycle" is not a distinguishable signal at the service layer today -- the per-section
+   reads it would gate on (`get_lane_recent_completions`, `get_lane_queue_depths`) already treat a
+   real degrade and a genuinely-empty result as the SAME `[]`/`None` by deliberate, documented
+   design (see their docstrings), so no per-section fallback exists for a body to "flip" `degraded`
+   on. A flag nothing can ever truthfully set is this exact bug, not a fix for it.
+
    Context (all optional):
      * selected_lane  -- the ?lane= id (server-seeded on a reload). #}
 {% set _trigger_prefix = 'lane-trigger-' %}
@@ -70,7 +84,6 @@
              basePath: '{{ _base_path }}',
              param: '{{ _param }}',
              refreshError: false,
-             degraded: false,
              onLoaded() {
                  const id = new URLSearchParams(location.search).get(this.param);
                  if (!id) {
@@ -182,14 +195,10 @@
        in the shell fragment), and the countdown rides the swapped body (not part of the fragment at
        first render). Defining the placeholder here keeps the contract single-sourced for plans 02/03. #}
 
-    {# Degrade caption (a whole section returned None/0 this cycle) — static, never a blank pane, never
-       a 500. The wave-2 body flips `degraded` on a per-section fallback. #}
-    <p class="mt-3 text-xs text-gray-500 dark:text-gray-400" x-show="degraded" x-cloak>
-        Live data unavailable — retrying on the next tick.
-    </p>
-
     {# D-03 refresh-error caption (the body's own-tick fetch failed) — red role="alert", prior values
-       retained. Mirrors the agents_table.html red banner. `refreshError` is set by the wave-2 tick handler. #}
+       retained. Mirrors the agents_table.html red banner. `refreshError` is set by the own-tick
+       element's `hx-on::response-error` / `hx-on::send-error` handlers in _lane_detail.html
+       (phaze-d80hf) and cleared by onLoaded() above on the next successful swap. #}
     <p class="mt-1 text-xs font-semibold text-red-700 dark:text-red-400"
        role="alert"
        x-show="refreshError"
