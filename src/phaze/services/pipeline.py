@@ -548,6 +548,16 @@ async def get_agent_lane_depths(app_state: Any, agent_id: str) -> dict[str, int]
     client skips the lifespan, so the queue handles are absent) or a broker hiccup degrades the whole
     dict to all-zero; a single dead lane degrades THAT lane to 0 without zeroing the others. It NEVER
     raises into the 5s ``/admin/agents/{id}/_activity`` poll (D-00b).
+
+    phaze-en7s7: connect-before-count (#217), mirrored from :func:`get_queue_activity` --
+    SAQ's ``PostgresQueue`` constructs its psycopg pool with ``open=False`` and only
+    ``connect()`` opens it; ``main.py``'s lifespan pre-opens pools only for agents present at
+    boot, so a runtime-registered agent's lanes raise ``PoolClosed`` on ``count()`` until
+    something else connects them first. Without this, every lane's ``PoolClosed`` was silently
+    swallowed by the per-lane ``except`` below and rendered as 0 -- a systematic (every-poll),
+    not transient, false "idle" read for a runtime-registered agent's activity pane.
+    ``connect()`` is idempotent (SAQ guards on ``self._connected``), so this is a no-op once
+    something else (the dashboard poll, an API-side enqueue) has already opened the pool.
     """
     out: dict[str, int] = dict.fromkeys(LANES, 0)
     try:
@@ -559,6 +569,7 @@ async def get_agent_lane_depths(app_state: Any, agent_id: str) -> dict[str, int]
         return out
     for lane, q in zip(LANES, queues, strict=False):
         try:
+            await q.connect()
             out[lane] = await q.count("queued") + await q.count("active")
         except Exception:
             logger.warning("agent_lane_depth_degraded", agent_id=agent_id, lane=lane, exc_info=True)
