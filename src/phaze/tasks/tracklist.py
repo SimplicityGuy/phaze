@@ -63,7 +63,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 import uuid
 
-from sqlalchemy import CursorResult, delete, or_, select
+from sqlalchemy import CursorResult, delete, select
 import structlog
 
 from phaze.enums.tracklist_candidate import LookupOutcome
@@ -110,19 +110,43 @@ async def _resolve_targets(session: AsyncSession, tracklist_ids: list[uuid.UUID]
 
     Canonical only (``propagated_from_set_key IS NULL``, phaze-fq9h.7): a propagated projection is
     a copy of a page some other file's lookup fetched, and refreshing it directly would either
-    re-fetch the same page once per duplicate or leave the canonical row untouched. Naming a
-    duplicate's file id still works -- :func:`_affected_file_ids` walks back out to every file the
-    page serves once the canonical row is resolved.
+    re-fetch the same page once per duplicate or leave the canonical row untouched.
+
+    The two clauses are resolved differently (phaze-vtovq), because a NAMED id is not necessarily
+    the CANONICAL row's id:
+
+    * ``tracklist_ids`` are matched directly against the canonical filter, unchanged. Naming a
+      projection's OWN id resolves to nothing here, deliberately -- that is "right", not a gap.
+    * ``file_ids`` need an extra hop. A duplicate file's own ``Tracklist`` row IS a projection --
+      ``file_id`` is the duplicate's, ``propagated_from_set_key`` is set -- so ANDing the
+      canonical filter directly onto ``file_id.in_(file_ids)`` matched nothing for every
+      duplicate, which is exactly backwards from what this docstring used to claim ("naming a
+      duplicate's file id still works"). Resolve it in two steps instead: find whichever row(s)
+      the named file ids actually own (canonical or projection), read off their ``external_id``
+      (the same page, shared by every projection), then load the canonical row for each of those
+      pages. :func:`_affected_file_ids` already walks this edge in the other direction
+      (``external_id`` -> every file it serves), which is why the docstring read as plausible.
+
+    Results are de-duplicated by row id, so a caller naming both a tracklist id and a file id that
+    resolve to the same canonical row gets it back once.
     """
     if not tracklist_ids and not file_ids:
         return []
-    clauses = []
+    by_id: dict[uuid.UUID, Tracklist] = {}
     if tracklist_ids:
-        clauses.append(Tracklist.id.in_(tracklist_ids))
+        direct = await session.execute(select(Tracklist).where(Tracklist.id.in_(tracklist_ids), Tracklist.propagated_from_set_key.is_(None)))
+        for row in direct.scalars():
+            by_id[row.id] = row
     if file_ids:
-        clauses.append(Tracklist.file_id.in_(file_ids))
-    result = await session.execute(select(Tracklist).where(or_(*clauses), Tracklist.propagated_from_set_key.is_(None)))
-    return list(result.scalars().all())
+        named = await session.execute(select(Tracklist.external_id).where(Tracklist.file_id.in_(file_ids)))
+        external_ids = set(named.scalars().all())
+        if external_ids:
+            canonical = await session.execute(
+                select(Tracklist).where(Tracklist.external_id.in_(external_ids), Tracklist.propagated_from_set_key.is_(None))
+            )
+            for row in canonical.scalars():
+                by_id[row.id] = row
+    return list(by_id.values())
 
 
 async def _affected_file_ids(session: AsyncSession, external_id: str) -> set[uuid.UUID]:
