@@ -69,6 +69,9 @@ async def test_startup_launches_heartbeat_background_task(monkeypatch: pytest.Mo
     fake_client.whoami = AsyncMock(return_value=fake_identity)
     monkeypatch.setattr(aw, "construct_agent_client", lambda _cfg: fake_client)
     monkeypatch.setattr(aw, "ensure_models_present", lambda _p: None)
+    # phaze-xuec1: startup() now probes real broker reachability before "startup complete";
+    # this test is about the heartbeat task wiring, not the broker, so short-circuit it.
+    monkeypatch.setattr(aw, "_wait_for_queue_ready", AsyncMock())
 
     ctx: dict[str, Any] = {}
     try:
@@ -104,6 +107,9 @@ async def test_startup_skips_heartbeat_when_disabled(monkeypatch: pytest.MonkeyP
     fake_client.whoami = AsyncMock(return_value=fake_identity)
     monkeypatch.setattr(aw, "construct_agent_client", lambda _cfg: fake_client)
     monkeypatch.setattr(aw, "ensure_models_present", lambda _p: None)
+    # phaze-xuec1: startup() now probes real broker reachability before "startup complete";
+    # this test is about the heartbeat task wiring, not the broker, so short-circuit it.
+    monkeypatch.setattr(aw, "_wait_for_queue_ready", AsyncMock())
 
     ctx: dict[str, Any] = {}
     try:

@@ -54,6 +54,10 @@ async def test_agent_worker_startup_logs_role_banner_with_token_preview(
     # triggers a partial-state re-download. Patch the bootstrap directly --
     # these tests are about the banner / queue-mismatch logic, not models.
     monkeypatch.setattr(aw, "ensure_models_present", lambda _models_dir: None)
+    # phaze-xuec1: startup() now probes real broker reachability (queue.info()) before
+    # logging "startup complete" -- these tests are about the banner, not the broker, so
+    # short-circuit the probe rather than hitting a real (absent) Postgres.
+    monkeypatch.setattr(aw, "_wait_for_queue_ready", AsyncMock())
 
     # PR3: the banner now renders through the central structlog pipeline to stdout
     # (startup() calls configure_logging, which clears caplog's root handler).

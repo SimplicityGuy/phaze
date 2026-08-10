@@ -8,7 +8,10 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -172,8 +175,19 @@ async def test_agent_startup_invokes_ensure_models_present_after_whoami(tmp_path
         assert models_path == models_dir, "ensure_models_present must receive cfg.models_path"
 
     monkeypatch.setattr(aw, "ensure_models_present", fake_ensure)
+    # phaze-xuec1: startup() now probes real broker reachability before "startup complete";
+    # this test is about the whoami/ensure_models_present ordering, not the broker.
+    monkeypatch.setattr(aw, "_wait_for_queue_ready", AsyncMock())
 
-    await aw.startup({})
+    ctx: dict[str, Any] = {}
+    try:
+        await aw.startup(ctx)
+    finally:
+        heartbeat_task = ctx.get("heartbeat_task")
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat_task
 
     assert call_order == ["whoami", "ensure_models_present"], f"expected whoami then ensure_models_present, got: {call_order}"
 
