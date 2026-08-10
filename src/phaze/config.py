@@ -639,11 +639,13 @@ class ControlSettings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_registry(self) -> "ControlSettings":
-        """Enforce whole-registry invariants the per-variant submodels can't see (REG-04/05, D-08/D-09).
+        """Enforce whole-registry invariants the per-variant submodels can't see (REG-04/05, D-04/D-08/D-09).
 
         Cross-entry checks, in order:
           * A resolved-empty registry (present-but-empty `backends = []`) fails fast rather than
             booting with no backend — the Phase-30 silent-wedge failure mode (REG-04, Pitfall 2).
+          * Duplicate `[[buckets]]` ids fail fast (REG-05).
+          * Duplicate `[[backends]]` ids fail fast, kind-agnostic (phaze-1sgee, see below).
           * Each KueueBackend's `buckets` id-list must resolve against `self.buckets`: an unknown id
             (D-08) or an empty resolved set (D-08) fails fast, naming the offending backend id.
           * A `scope="cluster-specific"` bucket referenced by >1 kueue backend fails fast, naming the
@@ -660,6 +662,20 @@ class ControlSettings(BaseSettings):
         dupes = sorted(bid for bid, count in Counter(b.id for b in self.buckets).items() if count > 1)
         if dupes:
             raise ValueError(f"duplicate bucket ids in registry: {dupes} — each [[buckets]] id must be unique (REG-05)")
+        # phaze-1sgee: fail fast on a duplicate [[backends]] id, mirroring the WR-03 bucket-id Counter
+        # above. `resolve_compute_backend` (services/backends.py) builds a `{backend.id: backend}` dict
+        # over self.backends — the exact silently-collapses-to-LAST shape WR-03 guards against for
+        # buckets — and every backend's cap accounting scopes `COUNT(cloud_job WHERE backend_id ==
+        # self.id)`, so two entries sharing an id double-count each other's in-flight rows. Deliberately
+        # KIND-AGNOSTIC: a compute and a kueue entry sharing an id is the nastiest variant, because
+        # resolve_compute_backend (kind=="compute" filter) and the drain snapshot / non_local_backend_kinds
+        # (whichever came last) would then resolve genuinely inconsistent views of "the backend named
+        # <id>". Report both the offending ids and their kinds so the operator can find the copy-paste.
+        backend_id_counts = Counter(be.id for be in self.backends)
+        backend_dupes = sorted(bid for bid, count in backend_id_counts.items() if count > 1)
+        if backend_dupes:
+            id_kinds = {bid: sorted(be.kind for be in self.backends if be.id == bid) for bid in backend_dupes}
+            raise ValueError(f"duplicate backend ids in registry: {backend_dupes} (kinds: {id_kinds}) — each [[backends]] id must be unique")
         # D-04: fail fast on a duplicate compute agent_ref. Plan 02 retired the ≤1-compute blanket
         # fail-fast so N distinct compute agents dispatch in parallel; without this guard two compute
         # backends naming the SAME agent_ref would silently double-bind (a copy-paste id typo routing two
