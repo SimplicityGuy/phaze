@@ -2322,12 +2322,22 @@ async def get_proposal_pending_batches(session: AsyncSession, batch_size: int) -
     Phase 90 (PR-A, Pitfall 4): the propose-exclusion replaces the retired ``files.state`` membership,
     so an already-proposed file is never re-batched.
 
-    Sorting BEFORE chunking is load-bearing (D-04, 42-RESEARCH Pitfall 2): ``generate_proposals``
-    is keyed on ``generate_proposals:<sha256(sorted file_ids)>`` (an order-independent SET hash),
-    so the manual trigger and recovery MUST produce the IDENTICAL batch MEMBERSHIP to land on the
-    IDENTICAL key and dedup against an in-flight batch. Both paths call THIS helper, so their
-    batches -- and therefore their set-hash keys -- are guaranteed to match. Pure ORM / bound
+    Sorting BEFORE chunking makes a SINGLE call's batches deterministic (order-independent), which
+    matters because ``generate_proposals`` is keyed on ``generate_proposals:<sha256(sorted
+    file_ids)>`` (an order-independent SET hash, D-04, 42-RESEARCH Pitfall 2). Pure ORM / bound
     params, NO f-string SQL (T-42-03).
+
+    phaze-8qheu CORRECTION: this does NOT make two SEPARATE calls dedup against each other, and
+    recovery does not call this helper at all (it replays by stored scheduling-ledger key, not by
+    re-deriving the pending set -- see ``tasks/reenqueue.py``). The pending set this query reads is
+    a MOVING target: as soon as one file's proposal lands, ``~done_clause(PROPOSE)`` excludes it,
+    every later chunk's boundary shifts, and every recomputed batch hashes to a KEY that shares
+    nothing with the in-flight batches it overlaps. A second manual trigger mid-drain therefore
+    dedups nothing and can re-propose files whose first proposal already landed (including
+    already-approved/executed files, since the store's dedup is scoped to PENDING proposals only).
+    Callers MUST NOT trigger a second drain while a ``generate_proposals`` batch from a prior
+    trigger is still in flight -- see :func:`get_proposal_busy_count`, which both trigger routes
+    gate on for exactly this reason.
 
     phaze-ceuvd: ``batch_size`` is used as the ``range()`` step below, so it degrades rather
     than crashes on a misconfigured value -- ``llm_batch_size`` now carries ``gt=0`` at the
@@ -2343,6 +2353,44 @@ async def get_proposal_pending_batches(session: AsyncSession, batch_size: int) -
     result = await session.execute(stmt)
     file_ids = sorted(str(f.id) for f in result.scalars().all())
     return [file_ids[i : i + batch_size] for i in range(0, len(file_ids), batch_size)]
+
+
+# Bulk proposal in-flight gate (phaze-8qheu). generate_proposals is a CONTROLLER task whose
+# dedup key is a SET hash over the pending file-id snapshot (deterministic_key.py's
+# ``_hash_ids``), not a per-member key like ``process_file:<file_id>`` -- so, unlike the agent
+# stages and match_tracklist_to_discogs, a re-trigger CANNOT rely on SAQ's key dedup to collapse
+# onto an in-flight batch (see the CORRECTION note on :func:`get_proposal_pending_batches`).
+# Mirrors :func:`get_match_busy_count`'s shape verbatim (same ``_STAGE_BUSY_SQL`` grouped scan,
+# same SAVEPOINT degrade-to-0): a second trigger while proposals are queued/active must be
+# REFUSED server-side rather than silently re-proposing the still-pending backlog.
+_PROPOSALS_BUSY_FUNCTION = "generate_proposals"
+
+
+async def get_proposal_busy_count(session: AsyncSession) -> int:
+    """Return the in-flight ``generate_proposals`` job count (``queued`` + ``active``), degrade-safe.
+
+    Counts ``saq_jobs`` rows whose deterministic key prefix is ``generate_proposals`` (status
+    ``IN ('queued', 'active')``). Both proposal trigger routes (``trigger_proposals`` and
+    ``trigger_proposals_ui``) gate on this being 0 before recomputing + enqueuing a fresh batch
+    set, closing the set-hash dedup gap phaze-8qheu describes: refusing a second trigger while a
+    first is live is strictly safer than letting the two batch snapshots race, because their
+    set-hash keys are NOT guaranteed to overlap even though they largely overlap in membership.
+
+    Failure isolation mirrors :func:`get_match_busy_count`: the read runs inside a SAVEPOINT
+    (``session.begin_nested()``); on ANY DB error the nested scope is rolled back ALONE and this
+    degrades to 0 (never raises) -- a degrade-to-0 false negative just re-opens the same window
+    this gate closes, it never blocks the operator's first trigger.
+    """
+    try:
+        async with session.begin_nested():
+            rows = (await session.execute(_STAGE_BUSY_SQL)).all()
+    except Exception:
+        logger.warning("proposal_busy_degraded", exc_info=True)
+        return 0
+    for row in rows:
+        if row[0] == _PROPOSALS_BUSY_FUNCTION:
+            return int(row[1])
+    return 0
 
 
 # --- Queue-loss detector (Phase 42, REQ-42-2) -------------------------------------------

@@ -42,6 +42,7 @@ from phaze.services.pipeline import (
     get_match_busy_count,
     get_match_pending_tracklists,
     get_metadata_pending_files,
+    get_proposal_busy_count,
     get_proposal_pending_batches,
     get_pushed_count,
     get_pushing_count,
@@ -559,6 +560,52 @@ async def test_get_match_busy_count_degrade_does_not_poison_session(session: Asy
     """The SAVEPOINT degrade leaves the outer transaction usable (mirrors the search-busy guard)."""
     await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
     assert await get_match_busy_count(session) == 0
+    follow_up = await get_stage_progress(session)
+    assert follow_up["discovery"]["done"] == 0
+
+
+# ---------------------------------------------------------------------------
+# get_proposal_busy_count (phaze-8qheu) — the generate_proposals in-flight gate over the
+# saq_jobs table, degrade-safe. Mirrors get_match_busy_count's shape verbatim.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_busy_count_buckets_by_generate_proposals_prefix() -> None:
+    """Returns ONLY the ``generate_proposals`` in-flight count; other prefixes are ignored."""
+    rows = [
+        ("generate_proposals", 5),
+        ("match_tracklist_to_discogs", 6),  # not proposals → ignored
+        ("process_file", 7),  # not proposals → ignored
+    ]
+    assert await get_proposal_busy_count(_BusySession(rows)) == 5  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_busy_count_zero_when_no_proposal_rows() -> None:
+    """With no ``generate_proposals`` rows the in-flight count is 0 (not an error)."""
+    assert await get_proposal_busy_count(_BusySession([("match_tracklist_to_discogs", 6)])) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_busy_count_degrades_on_db_error() -> None:
+    """get_proposal_busy_count returns 0 and never raises when the saq_jobs read fails."""
+
+    class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError('relation "saq_jobs" does not exist')
+
+    assert await get_proposal_busy_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_busy_count_degrade_does_not_poison_session(session: AsyncSession) -> None:
+    """The SAVEPOINT degrade leaves the outer transaction usable (mirrors the match-busy guard)."""
+    await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
+    assert await get_proposal_busy_count(session) == 0
     follow_up = await get_stage_progress(session)
     assert follow_up["discovery"]["done"] == 0
 
