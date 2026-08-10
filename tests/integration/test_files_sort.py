@@ -89,7 +89,7 @@ async def test_files_headers_are_sortable_and_announce_state(client: AsyncClient
     session.add(_make_file("/music/a.mp3"))
     await session.commit()
 
-    body = (await client.get("/pipeline/files")).text
+    body = (await client.get("/pipeline/files", headers={"HX-Request": "true"})).text
     head = body[body.index("<thead") : body.index("<tbody")]
 
     # Every whitelisted header is a real server-side sort control aimed at this table's own endpoint.
@@ -118,7 +118,7 @@ async def test_every_rendered_header_label_is_whitelisted_and_vice_versa(client:
     session.add(_make_file("/music/a.mp3"))
     await session.commit()
 
-    body = (await client.get("/pipeline/files")).text
+    body = (await client.get("/pipeline/files", headers={"HX-Request": "true"})).text
     head = body[body.index("<thead") : body.index("<tbody")]
 
     assert _header_labels(head) == {column.label for column in FILES_SORT.columns}
@@ -136,7 +136,7 @@ async def test_stage_header_labels_match_the_stage_matrix_cells(client: AsyncCli
     session.add(_make_file("/music/a.mp3"))
     await session.commit()
 
-    body = (await client.get("/pipeline/files")).text
+    body = (await client.get("/pipeline/files", headers={"HX-Request": "true"})).text
     head = body[body.index("<thead") : body.index("<tbody")]
 
     stage_columns = [column for column in FILES_SORT.columns if column.key not in {"file", "type"}]
@@ -159,8 +159,8 @@ async def test_files_sort_reorders_the_set_server_side(client: AsyncClient, sess
         session.add(_make_file(path))
     await session.commit()
 
-    asc = (await client.get("/pipeline/files?sort=file&order=asc")).text
-    desc = (await client.get("/pipeline/files?sort=file&order=desc")).text
+    asc = (await client.get("/pipeline/files?sort=file&order=asc", headers={"HX-Request": "true"})).text
+    desc = (await client.get("/pipeline/files?sort=file&order=desc", headers={"HX-Request": "true"})).text
 
     def order_of(body: str) -> list[str]:
         rows = body[body.index("<tbody") :]
@@ -178,7 +178,7 @@ async def test_type_sort_reorders_the_set_server_side(client: AsyncClient, sessi
     session.add(_make_file("/music/three.ogg", file_type="ogg"))
     await session.commit()
 
-    asc = (await client.get("/pipeline/files?sort=type&order=asc")).text
+    asc = (await client.get("/pipeline/files?sort=type&order=asc", headers={"HX-Request": "true"})).text
     rows = asc[asc.index("<tbody") :]
     assert rows.index("flac") < rows.index("mp3") < rows.index("ogg")
 
@@ -197,7 +197,7 @@ async def test_unwhitelisted_sort_is_rejected_at_the_http_boundary(client: Async
     session.add(_make_file("/music/apple.mp3"))
     await session.commit()
 
-    resp = await client.get(f"/pipeline/files?sort={hostile}&order=asc")
+    resp = await client.get(f"/pipeline/files?sort={hostile}&order=asc", headers={"HX-Request": "true"})
     assert resp.status_code == 200
     rows = resp.text[resp.text.index("<tbody") :]
     assert rows.index("/music/apple.mp3") < rows.index("/music/banana.mp3")  # the default (file asc) order
@@ -215,7 +215,7 @@ async def test_sorting_preserves_view_state_and_the_pager_preserves_the_sort(cli
         session.add(_make_file(f"/music/file-{index:02d}.mp3"))
     await session.commit()
 
-    body = (await client.get("/pipeline/files?sort=file&order=desc&page_size=10")).text
+    body = (await client.get("/pipeline/files?sort=file&order=desc&page_size=10", headers={"HX-Request": "true"})).text
     head = body[body.index("<thead") : body.index("<tbody")]
 
     # A header click re-emits page_size, and resets to page 1 rather than holding a stale offset.
@@ -239,7 +239,7 @@ async def test_sort_preserves_the_active_stage_and_bucket_filter(client: AsyncCl
     session.add(FileMetadata(file_id=failed.id, failed_at=datetime.now(UTC), error_message="boom"))
     await session.commit()
 
-    body = (await client.get("/pipeline/files?stage=metadata&bucket=failed&sort=file&order=asc")).text
+    body = (await client.get("/pipeline/files?stage=metadata&bucket=failed&sort=file&order=asc", headers={"HX-Request": "true"})).text
     head = body[body.index("<thead") : body.index("<tbody")]
 
     assert "stage=metadata" in head
@@ -327,8 +327,8 @@ async def test_stage_column_sorts_by_the_documented_operational_order(client: As
         rows = body[body.index("<tbody") :]
         return sorted(by_bucket.values(), key=rows.index)
 
-    asc = (await client.get("/pipeline/files?sort=metadata&order=asc")).text
-    desc = (await client.get("/pipeline/files?sort=metadata&order=desc")).text
+    asc = (await client.get("/pipeline/files?sort=metadata&order=asc", headers={"HX-Request": "true"})).text
+    desc = (await client.get("/pipeline/files?sort=metadata&order=desc", headers={"HX-Request": "true"})).text
 
     assert order_of(asc) == expected
     assert order_of(desc) == list(reversed(expected))
@@ -358,10 +358,10 @@ async def test_stage_sort_orders_the_whole_set_not_the_loaded_page(client: Async
 
     # Sanity: under the DEFAULT order that file is genuinely NOT on page 1, so the assertion below
     # cannot be satisfied by a page-local reordering.
-    default_page_one = (await client.get(f"/pipeline/files?page_size={page_size}")).text
+    default_page_one = (await client.get(f"/pipeline/files?page_size={page_size}", headers={"HX-Request": "true"})).text
     assert last_by_default not in default_page_one[default_page_one.index("<tbody") :]
 
-    sorted_page_one = (await client.get(f"/pipeline/files?sort=metadata&order=asc&page_size={page_size}")).text
+    sorted_page_one = (await client.get(f"/pipeline/files?sort=metadata&order=asc&page_size={page_size}", headers={"HX-Request": "true"})).text
     rows = sorted_page_one[sorted_page_one.index("<tbody") :]
     assert last_by_default in rows
     # And it is the FIRST row: `done` is rank 0, every other seeded file is `not_started` (rank 2).
@@ -383,7 +383,7 @@ async def test_stage_sort_survives_the_pager_and_keeps_the_filter(client: AsyncC
         session.add(_make_file(f"/music/track-{index:02d}.mp3"))
     await session.commit()
 
-    body = (await client.get("/pipeline/files?sort=apply&order=desc&page_size=10")).text
+    body = (await client.get("/pipeline/files?sort=apply&order=desc&page_size=10", headers={"HX-Request": "true"})).text
     pager = body[body.index("</table>") :]
 
     assert "sort=apply" in pager
