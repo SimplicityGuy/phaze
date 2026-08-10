@@ -3,6 +3,7 @@
 import html as html_mod
 import json
 import re
+from urllib.parse import quote
 import uuid
 
 from httpx import AsyncClient
@@ -1089,3 +1090,200 @@ async def test_bulk_undo_without_group_hashes_still_undoes(session: AsyncSession
     undo_all = await client.post("/duplicates/undo-all", data={"file_states": payload})
     assert undo_all.status_code == 200
     assert "1 file restored" in undo_all.text
+
+
+# ---------------------------------------------------------------------------
+# phaze-i0jqu: PostgreSQL cannot bind a NUL (U+0000) or a lone Unicode surrogate in a UTF8 text
+# parameter -- asyncpg raises CharacterNotInRepertoireError and aborts the transaction. Every
+# duplicates endpoint that takes a group_hash (path or form) must reject it BEFORE it reaches any
+# query or pg_advisory_xact_lock(hashtext(...)) call, never 500.
+# ---------------------------------------------------------------------------
+
+_NUL_HASH = "a" * 30 + "\x00" + "a" * 33  # 64 chars, matches every other test hash's shape
+_SURROGATE_HASH = "a" * 30 + "\ud800" + "a" * 33
+
+
+def _quote_hash(bad_hash: str) -> str:
+    """Percent-encode a group_hash that may contain a lone surrogate.
+
+    ``urllib.parse.quote`` UTF-8-encodes its input, which raises ``UnicodeEncodeError`` on a lone
+    surrogate (by definition -- that is exactly why PostgreSQL cannot store one either). Encoding
+    with ``surrogatepass`` first (WTF-8) and quoting the resulting bytes reproduces what a raw
+    socket actually puts on the wire for a crafted/corrupted request; ``quote`` accepts ``bytes``
+    directly and skips its own ``str.encode`` step in that case.
+    """
+    return quote(bad_hash.encode("utf-8", "surrogatepass"), safe="")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_hash", [_NUL_HASH, _SURROGATE_HASH])
+async def test_compare_rejects_invalid_group_hash_never_500(client: AsyncClient, bad_hash: str) -> None:
+    """GET /duplicates/{hash}/compare with a NUL/lone-surrogate hash degrades to 'Group not found'."""
+    response = await client.get(f"/duplicates/{_quote_hash(bad_hash)}/compare")
+
+    assert response.status_code == 200
+    assert "Group not found" in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_hash", [_NUL_HASH, _SURROGATE_HASH])
+async def test_resolve_rejects_invalid_group_hash_never_500(client: AsyncClient, bad_hash: str) -> None:
+    """POST /duplicates/{hash}/resolve with a NUL/lone-surrogate hash never reaches
+    ``pg_advisory_xact_lock(hashtext(group_hash))`` -- it degrades to the honest 0-resolved no-op,
+    never a 500.
+    """
+    response = await client.post(
+        f"/duplicates/{_quote_hash(bad_hash)}/resolve",
+        data={"canonical_id": str(uuid.uuid4())},
+    )
+
+    assert response.status_code == 200
+    assert "Group resolved" not in response.text
+    assert "Nothing to resolve" in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_hash", [_NUL_HASH, _SURROGATE_HASH])
+async def test_undo_rejects_invalid_group_hash_never_500(client: AsyncClient, bad_hash: str) -> None:
+    """POST /duplicates/{hash}/undo with a NUL/lone-surrogate hash still undoes (the undo itself
+    never references group_hash) but skips the post-undo re-fetch, never a 500.
+    """
+    response = await client.post(
+        f"/duplicates/{_quote_hash(bad_hash)}/undo",
+        data={"file_states": "[]"},
+    )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_bulk_resolve_drops_invalid_hash_never_500(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /duplicates/resolve-all with a NUL/lone-surrogate hash mixed into group_hashes still
+    resolves the real hashes and never 500s on the whole batch.
+    """
+    f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A)
+    session.add_all([f1, f2])
+    await session.flush()
+
+    response = await client.post(
+        "/duplicates/resolve-all",
+        data={"group_hashes": [HASH_A, _NUL_HASH]},
+    )
+
+    assert response.status_code == 200
+    assert "Resolved 1 groups" in response.text
+
+
+@pytest.mark.asyncio
+async def test_bulk_undo_drops_invalid_hash_never_500(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /duplicates/undo-all with a NUL/lone-surrogate hash mixed into group_hashes still
+    restores the real hash's card and never 500s.
+    """
+    f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A, file_size=2000)
+    f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A, file_size=1000)
+    session.add_all([f1, f2])
+    await session.flush()
+
+    resolve_all = await client.post("/duplicates/resolve-all", data={"group_hashes": [HASH_A]})
+    payload = _extract_server_file_states(resolve_all.text)
+
+    response = await client.post(
+        "/duplicates/undo-all",
+        data={"file_states": payload, "group_hashes": [HASH_A, _NUL_HASH]},
+    )
+
+    assert response.status_code == 200
+    assert f'id="dupe-group-{HASH_A}"' in response.text
+
+
+# ---------------------------------------------------------------------------
+# phaze-ptzse: resolve_group returning 0 on a NON-empty group (a stale resubmit of an
+# already-resolved card, or a concurrent resolve that already claimed the canonical) must render an
+# honest "nothing changed" toast, never "Group resolved" -- and must not remove the still-live card.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_of_an_already_resolved_group_is_an_honest_noop(session: AsyncSession, client: AsyncClient) -> None:
+    """A second /resolve against an already-fully-resolved group (e.g. the hidden group_hashes
+    inputs on a stale card surviving its own outerHTML swap and being resubmitted) must not report
+    success.
+    """
+    f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/dup.mp3", "mp3", HASH_A)
+    session.add_all([f1, f2])
+    await session.flush()
+
+    first = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(f1.id)})
+    assert first.status_code == 200
+    assert "Group resolved" in first.text
+
+    replay = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(f1.id)})
+
+    assert replay.status_code == 200
+    assert "Group resolved" not in replay.text
+    assert "Nothing to resolve" in replay.text
+
+
+@pytest.mark.asyncio
+async def test_resolve_reachable_without_concurrency_single_member_group_is_honest_noop(session: AsyncSession, client: AsyncClient) -> None:
+    """Verifier-found repro: resolve a group singly, then resubmit its (now-stale) hidden
+    ``group_hashes`` input via AUTO-KEEP -- the sha256_hash still names a real FileRecord (the
+    surviving canonical), so ``find_duplicate_groups_by_hashes`` returns it as a 1-file 'group' with
+    NO group-size filter, unlike its ``count > 1``-enforcing sibling. resolve_group must still no-op
+    honestly (0 resolved), not silently succeed against a group of one.
+    """
+    f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/dup.mp3", "mp3", HASH_A)
+    session.add_all([f1, f2])
+    await session.flush()
+
+    first = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(f1.id)})
+    assert first.status_code == 200
+
+    # f1 is now the sole unresolved member of HASH_A -- resubmit the same (stale) hash via bulk.
+    bulk = await client.post("/duplicates/resolve-all", data={"group_hashes": [HASH_A]})
+
+    assert bulk.status_code == 200
+    assert "Resolved 0 groups" in bulk.text
+
+
+# ---------------------------------------------------------------------------
+# phaze-cvjby: find_duplicate_groups_by_hashes has no count>1 filter -- bulk_undo's re-hydration
+# loop must not OOB-append a bogus single-file "group" card for a hash whose group is still (or is
+# once again) resolved down to one file.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bulk_undo_does_not_resurrect_a_single_member_group_card(session: AsyncSession, client: AsyncClient) -> None:
+    """Verifier-found repro, no concurrency needed: single-resolve group A, bulk-resolve group B,
+    then Undo All with BOTH hashes (A's hidden group_hashes input survives its own card's outerHTML
+    swap and is resubmitted wholesale, exactly as AUTO-KEEP HIGHEST QUALITY -> UNDO ALL would send
+    it). A must NOT get a bogus 1-file card; only B's real 2-file group may be restored.
+    """
+    a1 = _make_file("/dir/a-keep.mp3", "mp3", HASH_A)
+    a2 = _make_file("/dir/a-dup.mp3", "mp3", HASH_A)
+    b1 = _make_file("/dir/b1.mp3", "mp3", HASH_B, file_size=2000)
+    b2 = _make_file("/dir/b2.mp3", "mp3", HASH_B, file_size=1000)
+    session.add_all([a1, a2, b1, b2])
+    await session.flush()
+
+    # A is resolved singly and stays resolved -- only its lone canonical (a1) remains unresolved.
+    resolve_a = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(a1.id)})
+    assert resolve_a.status_code == 200
+
+    resolve_b = await client.post("/duplicates/resolve-all", data={"group_hashes": [HASH_B]})
+    b_payload = _extract_server_file_states(resolve_b.text)
+
+    undo_all = await client.post(
+        "/duplicates/undo-all",
+        data={"file_states": b_payload, "group_hashes": [HASH_A, HASH_B]},
+    )
+
+    assert undo_all.status_code == 200
+    assert f'id="dupe-group-{HASH_B}"' in undo_all.text, "B's real 2-file group must be restored"
+    assert f'id="dupe-group-{HASH_A}"' not in undo_all.text, (
+        "A has only ONE unresolved member (its surviving canonical) -- it must not get a bogus keeper-select card"
+    )

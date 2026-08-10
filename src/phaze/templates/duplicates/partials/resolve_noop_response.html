@@ -1,0 +1,31 @@
+{# phaze-ptzse: resolve_group reported 0 transitions -- the operator's card must not disappear and
+   the toast must not claim success (response_shape.py contract rule 3: a renderable failure is a
+   200 whose body carries the honest answer, never a status-line lie). If the group still exists
+   (a stale resubmit, a concurrent resolve, or the phaze-a3if1 delete-race no-op), it swaps back in
+   live and re-resolvable at its ORIGINAL "dupe-group-{hash}" id -- unlike the success path in
+   resolve_response.html, which deliberately swaps to a DIFFERENT "group-{hash}" placeholder id to
+   set up its own undo round-trip. Nothing was undoable here, so there is nothing to set up. If the
+   group is genuinely gone (every other member vanished since, or -- phaze-i0jqu -- group_hash was
+   never valid to query at all), an inert placeholder takes its place at the SAME id so the outerHTML
+   swap this endpoint's keeper radio issues always lands on a real element. #}
+{% if group %}
+    {% include "pipeline/partials/_dupe_group.html" %}
+{% else %}
+    <div id="dupe-group-{{ group_hash }}" style="display:none;"></div>
+{% endif %}
+
+{# OOB: an honest, non-dismissive-of-failure toast -- role="alert" so assistive tech announces it,
+   no Undo control (nothing was written, so nothing to reverse). #}
+<div hx-swap-oob="beforeend:#toast-container">
+    <div x-data="{ show: true }"
+         x-init="setTimeout(() => show = false, 10000)"
+         x-show="show"
+         x-transition:leave="transition ease-in duration-200"
+         x-transition:leave-start="opacity-100"
+         x-transition:leave-end="opacity-0"
+         @transitionend="$el.remove()"
+         role="alert"
+         class="bg-slate-800 text-white rounded-lg shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg px-4 py-3 flex items-center gap-3 text-sm">
+        <span>Nothing to resolve -- this group may have changed since it was shown. Refresh to see the current state.</span>
+    </div>
+</div>
