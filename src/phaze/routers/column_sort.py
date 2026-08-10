@@ -133,8 +133,18 @@ Wiring a new table is three edits. First, declare the contract next to the handl
         endpoint="/pipeline/tracklist-sets",
         target="#tracklist-sets-view",
         columns=(
-            SortableColumn(key="artist", label="Set", expression=Tracklist.artist),
-            SortableColumn(key="event", label="Tracklist", expression=Tracklist.event),
+            # phaze-6not3: the expression must match what the cell RENDERS, not merely a same-named
+            # column on the model -- "Set" shows the matched file's name (falling back to
+            # artist/event/external_id), never bare `Tracklist.artist`; "Tracklist" shows only the
+            # matched/candidate state, never `Tracklist.event`. This example used to pair both columns
+            # with the wrong expression and was the origin of that exact defect -- see routers/pipeline.py's
+            # real ``TRACKLIST_SETS_SORT`` for the corrected pairing and the full rationale.
+            SortableColumn(
+                key="artist",
+                label="Set",
+                expression=func.coalesce(FileRecord.original_filename, Tracklist.artist, Tracklist.event, Tracklist.external_id),
+            ),
+            SortableColumn(key="event", label="Tracklist", expression=Tracklist.file_id.is_not(None)),
         ),
         default_key="artist",
     )

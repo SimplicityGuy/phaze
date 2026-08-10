@@ -9,6 +9,7 @@ import uuid
 
 import pytest
 from sqlalchemy import delete, select, text, update
+from sqlalchemy.dialects import postgresql
 
 from phaze.config import settings
 from phaze.config_backends import ComputeBackend, KubeConfig, KueueBackend, LocalBackend
@@ -1300,6 +1301,54 @@ async def test_backfill_ledger_delete_is_cas_guarded_against_a_concurrent_reenqu
     # The CAS-guarded delete missed the row (its enqueued_at no longer matched what was observed) -- the
     # concurrently-refreshed ledger row survives instead of being removed out from under the live job.
     assert len(await _process_file_ledger_rows(session, candidate.id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_backfill_cas_delete_removes_every_candidates_ledger_row(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-krzz5: the CAS delete must still remove EVERY candidate's ledger row for N > 1 rows.
+
+    The `unnest`-based rewrite replaces a per-row composite ``tuple_(...).in_(...)`` with two
+    array-bound parameters; this pins the functional behavior (every observed (key, enqueued_at)
+    pair is matched and deleted) is unchanged by that rewrite, not just its bind-parameter shape.
+    """
+    candidates = await _persist_failed_with_duration(session, [_LONG, _LONG, _LONG, _LONG, _LONG])
+    await seed_active_agent(session, "nox", kind="fileserver")
+    wire_fakes(client)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+    await _drain_background()
+
+    for candidate in candidates:
+        assert await _process_file_ledger_rows(session, candidate.id) == [], (
+            f"ledger row for {candidate.id} survived the CAS delete -- the unnest rewrite dropped a row"
+        )
+
+
+def test_scheduling_ledger_cas_delete_stmt_uses_a_constant_bind_count_regardless_of_row_count() -> None:
+    """phaze-krzz5: THE regression pin -- bind-parameter count must be constant (2), never O(N).
+
+    A bare ``tuple_(key, enqueued_at).in_(rows)`` renders TWO literal bind parameters PER ROW,
+    which is exactly the shape that re-crosses asyncpg's 32767-parameter cap this module's sibling
+    array-bind helpers (``_analysis_file_ids_scope`` / ``_ledger_keys_scope``) were hardened to
+    avoid. Compiling the statement and counting its bind parameters -- independent of how many
+    ledger rows were observed -- is the direct, fast (no live DB, no 16K-row fixture) assertion
+    that the fix actually changed the PARAMETER SHAPE, not merely that a small-N delete still works
+    (the functional test above would pass against the un-fixed code too, since the bug only
+    manifests at ~16,383+ rows).
+    """
+    from phaze.routers.pipeline import _scheduling_ledger_cas_delete_stmt
+
+    small = [(f"process_file:{i}", datetime(2026, 1, 1, tzinfo=UTC)) for i in range(3)]
+    large = [(f"process_file:{i}", datetime(2026, 1, 1, tzinfo=UTC)) for i in range(5000)]
+
+    small_compiled = _scheduling_ledger_cas_delete_stmt(small).compile(dialect=postgresql.dialect())
+    large_compiled = _scheduling_ledger_cas_delete_stmt(large).compile(dialect=postgresql.dialect())
+
+    # Exactly the two array bind params (`cas_delete_keys`, `cas_delete_enqueued_ats`) -- NOT one
+    # pair of literal params per row, and NOT growing with the row count.
+    assert set(small_compiled.params) == {"cas_delete_keys", "cas_delete_enqueued_ats"}
+    assert len(small_compiled.params) == len(large_compiled.params) == 2
 
 
 @pytest.mark.asyncio
