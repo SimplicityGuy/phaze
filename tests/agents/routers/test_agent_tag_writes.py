@@ -141,6 +141,47 @@ async def test_nul_in_error_message_is_sanitized_before_persist(session: AsyncSe
 
 
 @pytest.mark.asyncio
+async def test_nul_in_before_tags_value_is_rejected_422(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
+    """phaze-hvve5 (site 2): unlike ``error_message``, ``before_tags``/``discrepancies`` land
+    straight into JSONB with no per-value sanitization -- a NUL in a dict field used to abort the
+    commit AFTER the disk write already landed, stranding the row. REJECT (422) rather than
+    silently drop the poisoned key/value: that would make the persisted snapshot disagree with what
+    the agent actually read off disk, corrupting the undo anchor."""
+    _agent, token = seed_test_agent
+    log = await _seed_queued_log(session)
+
+    async with _make_client(session, token) as client:
+        resp = await client.patch(
+            f"/api/internal/agent/tag-writes/{log.id}",
+            json=_body(before_tags={"artist": "bad\x00value"}),
+        )
+
+    assert resp.status_code == 422, resp.text
+    await session.refresh(log)
+    assert log.status == TagWriteStatus.QUEUED, "the rejected PATCH must not have mutated the row"
+
+
+@pytest.mark.asyncio
+async def test_nul_in_discrepancies_key_is_rejected_422(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
+    """Same hazard, nested one level deeper: a NUL in a `discrepancies` inner dict KEY."""
+    _agent, token = seed_test_agent
+    log = await _seed_queued_log(session)
+
+    async with _make_client(session, token) as client:
+        resp = await client.patch(
+            f"/api/internal/agent/tag-writes/{log.id}",
+            json=_body(
+                status=TagWriteStatus.DISCREPANCY.value,
+                discrepancies={"artist": {"expected\x00": "A", "actual": "B"}},
+            ),
+        )
+
+    assert resp.status_code == 422, resp.text
+    await session.refresh(log)
+    assert log.status == TagWriteStatus.QUEUED
+
+
+@pytest.mark.asyncio
 async def test_replay_is_an_idempotent_no_op(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
     """A SAQ retry whose callback already landed gets a 200 with ``applied=false``, not a duplicate.
 
@@ -385,6 +426,24 @@ async def test_before_snapshot_records_on_a_queued_row(session: AsyncSession, se
     await session.refresh(log)
     assert log.before_tags == {"artist": "Original Artist"}
     assert log.status == TagWriteStatus.QUEUED, "the snapshot report must not advance the row's status"
+
+
+@pytest.mark.asyncio
+async def test_before_snapshot_nul_in_before_tags_is_rejected_422(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
+    """phaze-hvve5 (site 2): same hazard, same fix, on the SEPARATE before-snapshot endpoint --
+    `TagWriteBeforeSnapshotPayload.before_tags` is the same unsanitized JSONB sink."""
+    _agent, token = seed_test_agent
+    log = await _seed_queued_log(session)
+
+    async with _make_client(session, token) as client:
+        resp = await client.patch(
+            f"/api/internal/agent/tag-writes/{log.id}/before-snapshot",
+            json=_snapshot_body(before_tags={"artist": "bad\x00value"}),
+        )
+
+    assert resp.status_code == 422, resp.text
+    await session.refresh(log)
+    assert log.before_tags == {}, "the rejected PATCH must not have written a snapshot"
 
 
 @pytest.mark.asyncio

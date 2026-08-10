@@ -35,6 +35,7 @@ from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_proposals import ProposalStatePatch, ProposalStateResponse
+from phaze.services.pg_text import sanitize_pg_text
 
 
 router = APIRouter(prefix="/api/internal/agent/proposals", tags=["agent-internal"])
@@ -44,6 +45,13 @@ router = APIRouter(prefix="/api/internal/agent/proposals", tags=["agent-internal
 _PROPOSAL_TRANSITIONS: dict[ProposalStatus, frozenset[ProposalStatus]] = {
     ProposalStatus.APPROVED: frozenset({ProposalStatus.EXECUTED, ProposalStatus.FAILED}),
 }
+
+# phaze-d55hu: bound the persisted failure detail to the same wire bound the sibling failure
+# writers use (agent_metadata.py / agent_analysis.py `_ERROR_MESSAGE_MAX`). `RenameProposal.reason`
+# is unbounded `Text` (wire_bounds rule 2 forbids a wire `max_length` cap on it --
+# `tests/shared/schemas/test_wire_bounds_contract.py` registers this exact field as a deliberate
+# exception), so this is the DoS-via-huge-string guard, not a column-width echo.
+_ERROR_MESSAGE_MAX = 2000
 
 
 @router.patch("/{proposal_id}/state", status_code=status.HTTP_200_OK, response_model=ProposalStateResponse)
@@ -110,7 +118,15 @@ async def patch_proposal_state(
     # Apply joint mutation in one transaction (Pitfall 6: ONE commit only).
     proposal.status = new.value
     if body.error_message is not None:
-        proposal.reason = body.error_message
+        # phaze-d55hu: unlike every sibling failure writer (agent_metadata.py:162,
+        # agent_analysis.py:456, agent_tag_writes.py:109), this assignment used to write
+        # `body.error_message` straight into `proposal.reason` (Text). A NUL passes Pydantic
+        # string validation (only lone surrogates are rejected there) but PostgreSQL rejects it
+        # with `CharacterNotInRepertoireError`, aborting this handler's ONE joint commit (Pitfall
+        # 6) -- rolling back BOTH the proposal.status transition and the FileRecord.current_path
+        # update below, and 500ing every identical retry. Sanitize BEFORE truncating (stripping
+        # can only shorten, so the bound still holds).
+        proposal.reason = sanitize_pg_text(body.error_message)[:_ERROR_MESSAGE_MAX]
 
     response_file_state: str | None = None
     response_current_path: str | None = None

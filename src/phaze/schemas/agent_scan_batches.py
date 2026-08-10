@@ -18,9 +18,10 @@ comes from the bearer-token resolver, never from the wire.
 from typing import Literal
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from phaze.schemas.wire_bounds import INT32_MAX
+from phaze.services.pg_text import sanitize_pg_text
 
 
 class ScanBatchPatch(BaseModel):
@@ -44,6 +45,18 @@ class ScanBatchPatch(BaseModel):
     processed_files: int | None = Field(default=None, ge=0, le=INT32_MAX)
     status: Literal["running", "completed", "failed"] | None = None
     error_message: str | None = None
+
+    # phaze-hvve5 (site 1): this is the ONE agent PATCH endpoint that did not sanitize
+    # `error_message` before the router's generic `setattr(batch, field, value)` loop writes it
+    # into `ScanBatch.error_message` (Text) and commits -- unlike agent_metadata.py:162,
+    # agent_analysis.py:456, agent_tag_writes.py:109. A NUL/lone-surrogate 500s the commit and
+    # permanently loses the terminal FAILED report (the batch stays RUNNING with no way to
+    # retry -- the identical PATCH replay 500s forever). Sanitize at the wire boundary so the
+    # router's shared setattr loop needs no special-casing per field.
+    @field_validator("error_message", mode="after")
+    @classmethod
+    def _sanitize_error_message(cls, v: str | None) -> str | None:
+        return sanitize_pg_text(v) if v is not None else v
 
 
 class ScanBatchPatchResponse(BaseModel):

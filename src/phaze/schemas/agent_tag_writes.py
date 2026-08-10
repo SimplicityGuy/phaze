@@ -13,9 +13,28 @@ from __future__ import annotations
 
 import uuid  # noqa: TC003 -- pydantic resolves annotations at runtime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from phaze.enums.tag_write import TagWriteStatus  # noqa: TC001  -- pydantic resolves this annotation at runtime
+from phaze.services.pg_text import find_pg_unsafe_json_reason
+
+
+def _reject_pg_unsafe_json(v: dict[str, object] | None, info: ValidationInfo) -> dict[str, object] | None:
+    """Shared field_validator body for a ``dict`` field bound for a ``jsonb`` column (phaze-hvve5).
+
+    ``before_tags``/``discrepancies`` land straight into JSONB columns with no per-key/value
+    sanitization -- unlike a scalar ``error_message`` field, :func:`sanitize_pg_text` cannot run on
+    a whole dict, and a NUL/lone-surrogate nested in a key or value passes Pydantic validation but
+    aborts the callback's ``session.commit()`` with ``CharacterNotInRepertoireError`` AFTER the
+    on-disk tag write already landed (compounds phaze-anrw4 / phaze-yy9bk: the row is stranded, not
+    just delayed). REJECT (422) rather than silently strip a key/value out of a snapshot dict --
+    that would make the persisted ``before_tags`` disagree with what the agent actually read off
+    disk, corrupting the undo anchor the docstrings above describe.
+    """
+    reason = find_pg_unsafe_json_reason(v)
+    if reason is not None:
+        raise ValueError(f"{info.field_name} {reason}")
+    return v
 
 
 # Bound the persisted failure detail to the same wire bound the metadata failure callback uses.
@@ -40,6 +59,8 @@ class TagWriteResultPayload(BaseModel):
     before_tags: dict[str, str | int | None] = Field(default_factory=dict)
     discrepancies: dict[str, dict[str, str | None]] | None = None
     error_message: str | None = Field(default=None, max_length=_ERROR_MESSAGE_MAX)
+
+    _reject_pg_unsafe_before_tags = field_validator("before_tags", "discrepancies", mode="after")(_reject_pg_unsafe_json)
 
 
 class TagWriteResultResponse(BaseModel):
@@ -75,6 +96,9 @@ class TagWriteBeforeSnapshotPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     before_tags: dict[str, str | int | None] = Field(default_factory=dict)
+
+    # Same sink, same hazard as `TagWriteResultPayload.before_tags` -- see `_reject_pg_unsafe_json`.
+    _reject_pg_unsafe_before_tags = field_validator("before_tags", mode="after")(_reject_pg_unsafe_json)
 
 
 class TagWriteBeforeSnapshotResponse(BaseModel):

@@ -12,9 +12,10 @@ monotonic; the router enforces the ladder + terminal-state guard at PATCH time.
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from phaze.enums.execution import ExecutionStatus
+from phaze.services.pg_text import contains_pg_invalid_chars, sanitize_pg_text
 
 
 class ExecutionLogCreate(BaseModel):
@@ -37,6 +38,31 @@ class ExecutionLogCreate(BaseModel):
     status: ExecutionStatus
     error_message: str | None = None
 
+    # phaze-hvve5 (site 3): `source_path`/`destination_path` land straight into
+    # `ExecutionLog.{source_path,destination_path}` (Text, NOT NULL) via `pg_insert(...).values(...)`
+    # (routers/agent_execution.py). REJECT rather than sanitize -- these are filesystem paths, and
+    # silently stripping a NUL (services.pg_text.sanitize_pg_text) would point the row at a
+    # DIFFERENT path than the agent actually operated on (same rationale as the
+    # pipeline_scans.py:497 subpath guard). `min_length=1` already runs first; this only rejects a
+    # PG-unstorable byte within an otherwise non-empty path.
+    @field_validator("source_path", "destination_path", mode="after")
+    @classmethod
+    def _reject_pg_unsafe_path(cls, v: str, info: ValidationInfo) -> str:
+        if contains_pg_invalid_chars(v):
+            raise ValueError(f"{info.field_name} must not contain a NUL byte or a lone Unicode surrogate")
+        return v
+
+    # phaze-hvve5 (site 3) / phaze-d55hu (additional site): `error_message` lands in
+    # `ExecutionLog.error_message` (Text) via the same `pg_insert(...).values(...)` -- a NUL/lone
+    # surrogate passes Pydantic (only lone surrogates are rejected there) but aborts the INSERT at
+    # `session.commit()` with `CharacterNotInRepertoireError`. Sanitize (strip), not reject: unlike
+    # a path, free text losing an invalid byte does not change its meaning -- mirrors the sibling
+    # writers (agent_metadata.py:162, agent_analysis.py:456, agent_tag_writes.py:109).
+    @field_validator("error_message", mode="after")
+    @classmethod
+    def _sanitize_error_message(cls, v: str | None) -> str | None:
+        return sanitize_pg_text(v) if v is not None else v
+
 
 class ExecutionLogPatch(BaseModel):
     """Partial-update body for PATCH /execution-log/{id}.
@@ -53,6 +79,33 @@ class ExecutionLogPatch(BaseModel):
     status: ExecutionStatus
     error_message: str | None = None
     sha256_verified: bool | None = None
+
+    # phaze-hvve5 (site 3) / phaze-d55hu (additional site): same sink, same sanitize -- see
+    # `ExecutionLogCreate._sanitize_error_message`. `patch_execution_log`'s `setattr` loop applies
+    # `body.model_dump(exclude_unset=True)` verbatim, so an unsanitized value here 500s the PATCH
+    # identically to the POST path.
+    @field_validator("error_message", mode="after")
+    @classmethod
+    def _sanitize_error_message(cls, v: str | None) -> str | None:
+        return sanitize_pg_text(v) if v is not None else v
+
+    # phaze-e2b36: `bool | None = None` is Pydantic's idiom for an OPTIONAL field (may be absent),
+    # not a NULLABLE one -- but `ExecutionLog.sha256_verified` is `Boolean, nullable=False`. The
+    # router's `exclude_unset=True` dump only filters OMITTED fields; an explicitly-sent JSON
+    # `null` is in `model_fields_set`, passes `bool | None` validation, and the subsequent
+    # `setattr(existing, "sha256_verified", None)` + commit raises an unhandled IntegrityError (NOT
+    # NULL violation) -- 500 instead of a clean 422. Reject it here, at the wire boundary, rather
+    # than in the router (request_guards rule 4 forbids laundering a validation bug into a
+    # try/except IntegrityError). `error_message` on this same schema is correctly `| None` as
+    # written -- its column IS nullable, so an explicit null there is a legitimate clear -- this
+    # validator intentionally does NOT touch it. `mode="after"` + `model_fields_set` is required
+    # (not a plain `field_validator`) because distinguishing "explicitly sent null" from "omitted,
+    # defaulted to None" needs the fully-parsed model's set-fields bookkeeping.
+    @model_validator(mode="after")
+    def _reject_explicit_sha256_verified_null(self) -> "ExecutionLogPatch":
+        if self.sha256_verified is None and "sha256_verified" in self.model_fields_set:
+            raise ValueError("sha256_verified must not be explicitly null; omit the field to leave it unchanged")
+        return self
 
 
 class ExecutionLogCreateResponse(BaseModel):
