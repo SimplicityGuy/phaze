@@ -32,6 +32,16 @@ services:
       # (overriding the passwordless `.env`/default REDIS_URL) makes the NOAUTH
       # drift impossible for the app-server's own Redis clients.
       - "REDIS_URL=redis://default:${REDIS_PASSWORD:?REDIS_PASSWORD required}@redis:6379/0"
+      # phaze-bvkah: the api service has NO models volume (DIST-01) but still reads
+      # config.py's `models_path` field via `env_file: .env`, and that value is forwarded
+      # VERBATIM to the agent as the model-load path in every process_file payload
+      # (enqueue_process_file(..., cfg.models_path) in services/backends.py /
+      # routers/pipeline.py). Leaving MODELS_PATH unset here lets the HOST-side compose bind
+      # value (e.g. `./models`) leak into the payload, sending the agent a path relative to
+      # ITS OWN filesystem that has nothing to do with the archive's actual bind mount.
+      # Pinning it to the agent's fixed mount target keeps the payload correct regardless of
+      # what the operator's `.env` MODELS_PATH resolves to on the host.
+      - MODELS_PATH=/models
     # Backend execution registry (control-plane-only, ControlSettings) is declared in a
     # backends.toml mounted at PHAZE_BACKENDS_CONFIG_FILE (default /etc/phaze/backends.toml);
     # an absent file resolves to the zero-config implicit all-local registry (cloud off).

@@ -82,6 +82,12 @@ services:
       # compute agent runs a SINGLE process_file at a time (each peaks ~8 GB); relying on
       # WORKER_MAX_JOBS=1 alone is inert in lane mode.
       - PHAZE_LANE_ANALYZE_CONCURRENCY=1
+      # phaze-bvkah: MODELS_PATH is ALSO the compose bind-source var below
+      # (`${MODELS_PATH:-./models}`) — one name serving two coordinate systems, a HOST path
+      # for the bind mount and a CONTAINER path for config.py's `models_path` field.
+      # `environment:` wins over `env_file: .env`, so this re-pins the container-side reader
+      # to the fixed mount target regardless of what MODELS_PATH resolves to on the host.
+      - MODELS_PATH=/models
     volumes:
       # HOST BIND (phaze-cri2): the scratch dir MUST be the SAME host path that
       # sshd/rsync writes each pushed file into (push.py:152 targets

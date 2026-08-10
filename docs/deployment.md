@@ -363,7 +363,10 @@ Edit `.env` to set the required variables. The agent stack uses `${VAR:?msg}` in
 - `PHAZE_AGENT_CA_FILE=/certs/phaze-ca.crt`
 - `PHAZE_AGENT_ENV=production`
 - `SCAN_PATH=/path/to/your/music/library`
-- `MODELS_PATH=./models`
+- `MODELS_PATH=./models` — a HOST path only; it picks the bind-mount source. Every worker +
+  watcher service pins its own container-side `MODELS_PATH=/models` (phaze-bvkah), so this
+  value never changes where the container looks for models — only which host directory
+  backs `/models`.
 - `CA_PATH=./certs`
 - `PHAZE_AGENT_SCAN_ROOTS=/data/music,/data/concerts`
 - `PHAZE_IMAGE_TAG=2026.7.1` (or `latest` for first-time setup)
