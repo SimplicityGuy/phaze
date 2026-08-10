@@ -434,14 +434,19 @@ def build_dupe_group_card(group: dict[str, Any]) -> dict[str, Any]:
     Assumes ``score_group`` has already run on ``group`` (sets ``group["canonical_id"]`` and sorts
     ``group["files"]`` keeper-first). Returns ``sha256_hash`` (the group key the keeper radio
     resolves against -- ``POST /duplicates/{sha256_hash}/resolve`` with Form ``canonical_id``), a
-    short ``group_name`` label, ``count``, and ``files`` (each ``id`` · ``name`` · ``quality`` ·
-    ``keeper`` where ``keeper == (id == canonical_id)``).
+    short ``group_name`` label, ``count``, ``truncated``, and ``files`` (each ``id`` · ``name`` ·
+    ``quality`` · ``keeper`` where ``keeper == (id == canonical_id)``).
 
     Shared by :func:`get_dedupe_groups` (the whole-list Dedupe workspace read) and the
     ``POST /duplicates/{hash}/undo`` router (phaze-be1j): undo must swap a restored group back
     into the live workspace using this SAME shell shape -- rendering the legacy
     ``group_card.html`` accordion row there left the toast's Undo unable to hand the restored
     group a working keeper-select card.
+
+    phaze-z4p5q: ``group["truncated"]`` (set by ``services/dedup.py``'s per-member cap on the
+    underlying read) rides straight through to the card so ``_dupe_group.html`` can flag a group
+    whose real membership is larger than what's actually shown here. Missing on ``group`` (a caller
+    that built the dict some other way) degrades to ``False`` rather than raising.
     """
     canonical_id = group["canonical_id"]
     files = group["files"]
@@ -449,6 +454,7 @@ def build_dupe_group_card(group: dict[str, Any]) -> dict[str, Any]:
         "sha256_hash": group["sha256_hash"],
         "group_name": Path(files[0]["original_path"]).name if files else group["sha256_hash"][:12],
         "count": len(files),
+        "truncated": group.get("truncated", False),
         "files": [
             {
                 "id": f["id"],

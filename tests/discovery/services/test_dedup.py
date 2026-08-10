@@ -742,6 +742,111 @@ async def test_find_duplicate_group_by_hash_ignores_resolved_files(session: Asyn
     assert await find_duplicate_group_by_hash(session, HASH_A) is None
 
 
+@pytest.mark.asyncio
+async def test_find_duplicate_group_by_hash_reports_untruncated_below_the_cap(session: AsyncSession) -> None:
+    """A group well under the per-member cap is not flagged truncated."""
+    f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A)
+    session.add_all([f1, f2])
+    await session.flush()
+
+    group = await find_duplicate_group_by_hash(session, HASH_A)
+
+    assert group is not None
+    assert group["truncated"] is False
+    assert group["count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# phaze-z4p5q: find_duplicate_group_by_hash, find_duplicate_groups_with_metadata and
+# find_duplicate_groups_by_hashes all fetched EVERY unresolved member of a duplicate group with no
+# per-member LIMIT -- a pathological group (many byte-identical files sharing one hash) would
+# materialize its whole membership, and one metadata dict each, into the API process. Below: each
+# reader is capped at ``_MAX_GROUP_MEMBERS`` members per group, flags ``truncated`` when it hit that
+# cap, and -- because a plain global LIMIT would have starved whichever hash sorts last -- the cap
+# applies PER GROUP even when several groups share one query.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_find_duplicate_group_by_hash_truncates_at_the_cap(session: AsyncSession) -> None:
+    """A group with MORE than the per-member cap is truncated to the cap and flagged."""
+    from phaze.services.dedup import _MAX_GROUP_MEMBERS
+
+    files = [_make_file(f"/dir/dup{i:04d}.mp3", "mp3", HASH_A) for i in range(_MAX_GROUP_MEMBERS + 1)]
+    session.add_all(files)
+    await session.flush()
+
+    group = await find_duplicate_group_by_hash(session, HASH_A)
+
+    assert group is not None
+    assert group["truncated"] is True
+    assert group["count"] == _MAX_GROUP_MEMBERS
+    assert len(group["files"]) == _MAX_GROUP_MEMBERS
+
+
+@pytest.mark.asyncio
+async def test_find_duplicate_groups_with_metadata_truncates_at_the_cap(session: AsyncSession) -> None:
+    """The list reader's per-member cap is independent of its group-count LIMIT/OFFSET."""
+    from phaze.services.dedup import _MAX_GROUP_MEMBERS
+
+    files = [_make_file(f"/dir/dup{i:04d}.mp3", "mp3", HASH_A) for i in range(_MAX_GROUP_MEMBERS + 1)]
+    session.add_all(files)
+    await session.flush()
+
+    groups = await find_duplicate_groups_with_metadata(session)
+
+    assert len(groups) == 1
+    assert groups[0]["truncated"] is True
+    assert groups[0]["count"] == _MAX_GROUP_MEMBERS
+    assert len(groups[0]["files"]) == _MAX_GROUP_MEMBERS
+
+
+@pytest.mark.asyncio
+async def test_find_duplicate_groups_by_hashes_truncates_at_the_cap(session: AsyncSession) -> None:
+    """The exact-hash-set reader's per-member cap matches the other two readers."""
+    from phaze.services.dedup import _MAX_GROUP_MEMBERS
+
+    files = [_make_file(f"/dir/dup{i:04d}.mp3", "mp3", HASH_A) for i in range(_MAX_GROUP_MEMBERS + 1)]
+    session.add_all(files)
+    await session.flush()
+
+    groups = await find_duplicate_groups_by_hashes(session, [HASH_A])
+
+    assert len(groups) == 1
+    assert groups[0]["truncated"] is True
+    assert groups[0]["count"] == _MAX_GROUP_MEMBERS
+    assert len(groups[0]["files"]) == _MAX_GROUP_MEMBERS
+
+
+@pytest.mark.asyncio
+async def test_per_member_cap_applies_per_group_not_globally(session: AsyncSession) -> None:
+    """A pathological group's cap must not starve a smaller, well-behaved group sharing the query.
+
+    A single global LIMIT on the joined query -- rather than a PARTITION BY sha256_hash cap -- would
+    have applied across BOTH groups combined, so whichever hash sorts last could lose members (or
+    vanish outright) to an unrelated group's overflow. HASH_A (over the cap) and HASH_B (a normal
+    2-member group) sort adjacently either way; HASH_B must come through intact regardless.
+    """
+    from phaze.services.dedup import _MAX_GROUP_MEMBERS
+
+    files = [_make_file(f"/dir/a/dup{i:04d}.mp3", "mp3", HASH_A) for i in range(_MAX_GROUP_MEMBERS + 1)]
+    files.append(_make_file("/dir/b/b1.mp3", "mp3", HASH_B))
+    files.append(_make_file("/dir/b/b2.mp3", "mp3", HASH_B))
+    session.add_all(files)
+    await session.flush()
+
+    groups = await find_duplicate_groups_with_metadata(session)
+
+    by_hash = {g["sha256_hash"]: g for g in groups}
+    assert set(by_hash) == {HASH_A, HASH_B}
+    assert by_hash[HASH_A]["truncated"] is True
+    assert by_hash[HASH_A]["count"] == _MAX_GROUP_MEMBERS
+    assert by_hash[HASH_B]["truncated"] is False
+    assert by_hash[HASH_B]["count"] == 2
+    assert {f["original_path"] for f in by_hash[HASH_B]["files"]} == {"/dir/b/b1.mp3", "/dir/b/b2.mp3"}
+
+
 # phaze-wkqk: undo_resolve's docstring promises "no HTTP 500 on any payload shape". Contract rule 6
 # says such a promise is a test obligation, so the ELEMENT half is pinned here at the service layer
 # (the router's 422 ENVELOPE half is pinned in tests/review/routers/test_duplicates.py).
