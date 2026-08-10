@@ -304,6 +304,93 @@ async def test_concurrent_double_submit_insert_conflict_is_a_noop(db_session: As
     assert markers == {dup.id}  # ...but first-writer-wins: still exactly one marker, no IntegrityError
 
 
+@pytest.mark.asyncio
+async def test_resolve_group_member_deleted_between_select_and_insert_is_a_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-a3if1: a group member deleted by a concurrent scan-batch delete AFTER resolve_group's own
+    non-canonical SELECT has already returned it, but BEFORE the DedupResolution INSERT runs, must not
+    raise IntegrityError out of resolve_group. `delete_scan_cascade`'s own comment documents the
+    expected outcome as "the losing writer simply FK-fails against the already-deleted file" --
+    request_guards.py contract rule 4 (catch the race, not the typo) makes that the router's/service's
+    obligation, not an unhandled 500.
+
+    Uses a REAL second connection to delete-and-commit `dup` mid-``resolve_group`` (wrapping the
+    resolving session's own `execute` to fire the side effect right after the non-canonical SELECT
+    returns, before the INSERT), so the INSERT genuinely FK-fails against Postgres -- not a mocked
+    exception.
+
+    Deliberately does NOT take the shared ``db_session`` fixture: it flushes but never commits its
+    seed rows, so a genuinely independent second connection cannot see (or delete) `dup` at all --
+    the exact reason ``test_concurrent_resolve_with_disjoint_canonicals_leaves_exactly_one_keeper``
+    below provisions its own engine/schema/seed end-to-end instead.
+    """
+    import psycopg
+
+    try:
+        probe = await psycopg.AsyncConnection.connect(BROKER_DSN)
+    except psycopg.OperationalError as exc:
+        pytest.skip(f"Postgres broker unavailable: {exc}")
+    else:
+        await probe.close()
+
+    engine = create_async_engine(SA_DSN)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    keeper: FileRecord | None = None
+    dup: FileRecord | None = None
+    try:
+        async with session_factory() as seed_session:
+            if await seed_session.get(Agent, _LEGACY_AGENT_ID) is None:
+                seed_session.add(Agent(id=_LEGACY_AGENT_ID, name="legacy"))
+                await seed_session.flush()
+            keeper = await _file(seed_session)
+            dup = await _file(seed_session)
+            await seed_session.commit()
+
+        async with session_factory() as resolving_session:
+            original_execute = resolving_session.execute
+            call_count = 0
+
+            async def patched_execute(*args, **kwargs):
+                nonlocal call_count
+                result = await original_execute(*args, **kwargs)
+                call_count += 1
+                if call_count == 3:
+                    # Call 1: pg_advisory_xact_lock. Call 2: canonical membership SELECT. Call 3:
+                    # the "files in this group except canonical" SELECT -- it has just returned
+                    # `dup`. Delete it on a REAL second connection and commit, so resolve_group's
+                    # own INSERT (call 4) below FK-fails against a row that genuinely no longer
+                    # exists by the time it runs.
+                    async with session_factory() as other:
+                        await other.execute(delete(FileRecord).where(FileRecord.id == dup.id))  # type: ignore[union-attr]
+                        await other.commit()
+                return result
+
+            monkeypatch.setattr(resolving_session, "execute", patched_execute)
+
+            count, payload = await resolve_group(resolving_session, HASH_A, keeper.id)
+            await resolving_session.commit()
+
+            assert count == 0
+            assert payload == []
+            assert await _marker_file_ids(resolving_session) == set()  # the SAVEPOINT unwound the failed insert
+            # The nested SAVEPOINT rollback (not a full session.rollback()) must leave the outer
+            # transaction -- and the already-loaded `keeper` row -- usable for the rest of the
+            # request (contract rule 5).
+            assert await resolving_session.get(FileRecord, keeper.id) is not None
+    finally:
+        async with session_factory() as cleanup_session:
+            if keeper is not None:
+                await cleanup_session.execute(delete(DedupResolution).where(DedupResolution.file_id == keeper.id))
+                await cleanup_session.execute(delete(FileRecord).where(FileRecord.id == keeper.id))
+            if dup is not None:
+                await cleanup_session.execute(delete(DedupResolution).where(DedupResolution.file_id == dup.id))
+                await cleanup_session.execute(delete(FileRecord).where(FileRecord.id == dup.id))
+            await cleanup_session.commit()
+        await engine.dispose()
+
+
 # ---------------------------------------------------------------------------
 # phaze-v0iy: TRUE concurrency -- two independent connections/transactions resolving the SAME group
 # with DIFFERENT keepers. This is the shape ``test_concurrent_double_submit_insert_conflict_is_a_noop``
