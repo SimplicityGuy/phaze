@@ -9,7 +9,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
-from phaze.routers.response_shape import wants_fragment
+from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_fragment
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.search_queries import SearchResult, distinct_artists, search
@@ -51,7 +51,11 @@ async def search_page(
     # check was not reachable-broken. It is converted so that adding ``hx-push-url`` to the
     # palette later cannot silently re-introduce the defect.
     if not wants_fragment(request):
-        return RedirectResponse(url="/?palette=1", status_code=302)
+        # phaze-r6e5m (response_shape.py contract rule 6): this same URL also answers with the
+        # palette-results fragment below depending on request headers alone (guarded against
+        # today only because nothing yet pushes a /search/ URL -- see the phaze-64uy note above),
+        # so the redirect must be as browser-uncacheable as the fragment is.
+        return RedirectResponse(url="/?palette=1", status_code=302, headers=DUAL_SHAPE_RESPONSE_HEADERS)
 
     # phaze-qiwc: q/artist/genre are predicate operands (tsquery text, ILIKE pattern), never
     # persisted, so silently stripping an unstorable char changes neither meaning nor a stored
@@ -97,4 +101,6 @@ async def search_page(
         "artist": artist,
     }
 
-    return templates.TemplateResponse(request=request, name="search/partials/palette_results.html", context=context)
+    return templates.TemplateResponse(
+        request=request, name="search/partials/palette_results.html", context=context, headers=DUAL_SHAPE_RESPONSE_HEADERS
+    )

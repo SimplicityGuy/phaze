@@ -13,6 +13,7 @@ from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS
 
 
 if TYPE_CHECKING:
@@ -99,6 +100,24 @@ async def test_search_page_loads(client: AsyncClient, session: AsyncSession) -> 
     response = await client.get("/search/", follow_redirects=False)
     assert response.status_code == 302
     assert response.headers["location"] == "/?palette=1"
+
+
+@pytest.mark.asyncio
+async def test_search_redirect_and_fragment_both_mark_the_response_uncacheable(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-r6e5m (response_shape.py contract rule 6) -- ``/search/`` forks on request headers
+    alone into a 302 redirect OR a palette-results fragment, so the browser's URL-only HTTP cache
+    could otherwise replay one shape's cached bytes for a request that wanted the other. Both
+    branches must carry DUAL_SHAPE_RESPONSE_HEADERS.
+    """
+    redirect = await client.get("/search/", follow_redirects=False)
+    assert redirect.status_code == 302
+    for name, value in DUAL_SHAPE_RESPONSE_HEADERS.items():
+        assert redirect.headers.get(name) == value, f"redirect branch missing/wrong {name!r}"
+
+    fragment = await client.get("/search/", headers={"HX-Request": "true"})
+    assert fragment.status_code == 200
+    for name, value in DUAL_SHAPE_RESPONSE_HEADERS.items():
+        assert fragment.headers.get(name) == value, f"fragment branch missing/wrong {name!r}"
 
 
 @pytest.mark.asyncio

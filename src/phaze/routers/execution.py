@@ -58,7 +58,7 @@ from phaze.routers.agent_exec_batches import (
     _get_release_dispatch_script,
 )
 from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract
-from phaze.routers.response_shape import wants_fragment
+from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_fragment
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
 from phaze.services.agent_task_router import AmbiguousEnqueueError
 from phaze.services.collision import detect_collisions
@@ -984,14 +984,21 @@ async def audit_log(
     this -- it is a fragment endpoint, not a bookmarkable page, and stays exactly where it is.
     """
     if not wants_fragment(request):
+        # phaze-r6e5m (response_shape.py contract rule 6): this same URL also answers with the
+        # fragment below depending on request headers alone, so the redirect must be as
+        # browser-uncacheable as the fragment is -- otherwise a cached 301 (redirects are
+        # heuristically cacheable by default) could be replayed for a live htmx swap that wanted
+        # the fragment, or vice versa.
         query = request.url.query
-        return RedirectResponse(url=f"/s/audit?{query}" if query else "/s/audit", status_code=301)
+        return RedirectResponse(url=f"/s/audit?{query}" if query else "/s/audit", status_code=301, headers=DUAL_SHAPE_RESPONSE_HEADERS)
 
     context: dict[str, Any] = {
         "request": request,
         **(await build_audit_log_context(session, status=status, page=page, page_size=page_size, sort=sort, order=order)),
     }
-    return templates.TemplateResponse(request=request, name="execution/partials/audit_content.html", context=context)
+    return templates.TemplateResponse(
+        request=request, name="execution/partials/audit_content.html", context=context, headers=DUAL_SHAPE_RESPONSE_HEADERS
+    )
 
 
 @router.get("/audit/{log_id}/detail", response_class=HTMLResponse)

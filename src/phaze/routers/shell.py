@@ -44,7 +44,7 @@ from phaze.routers.execution import build_audit_log_context
 from phaze.routers.pipeline import FILES_SORT
 from phaze.routers.pipeline_scans import RECENT_SCANS_SORT, build_recent_scans
 from phaze.routers.proposal_sort import PROPOSE_SORT
-from phaze.routers.response_shape import wants_fragment
+from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_fragment
 from phaze.routers.view_state import PAGE_SIZE_CHOICES, ListViewState
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, clamp_page, clamp_page_size
 from phaze.services.pipeline import (
@@ -629,8 +629,10 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # here or anywhere else in this module.
         target = request.headers.get("HX-Target", "")
         if stage == "propose" and target == PROPOSE_LIST_CONTAINER_ID:
-            return templates.TemplateResponse(request=request, name="pipeline/partials/_propose_list.html", context=context)
-        return templates.TemplateResponse(request=request, name="shell/_stage_fragment.html", context=context)
+            return templates.TemplateResponse(
+                request=request, name="pipeline/partials/_propose_list.html", context=context, headers=DUAL_SHAPE_RESPONSE_HEADERS
+            )
+        return templates.TemplateResponse(request=request, name="shell/_stage_fragment.html", context=context, headers=DUAL_SHAPE_RESPONSE_HEADERS)
     # A direct navigation, a bookmark, OR A HISTORY RESTORE lands here and gets the full shell. That
     # third case is phaze-a6hm.2's acceptance criterion and it needs NO extra code: because the filter
     # tabs, search box and pager all push /s/propose?... URLs (never a bare fragment endpoint), a restore
@@ -638,7 +640,12 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
     # ListViewState above, and re-renders the same slice inside full chrome. The alternative design --
     # pushing a dedicated fragment endpoint's URL -- would have made every restore a fragment served into
     # <body>, i.e. the exact phaze-64uy defect response_shape.py rule 2 exists to prevent.
-    return templates.TemplateResponse(request=request, name="shell/shell.html", context=context)
+    #
+    # phaze-r6e5m (response_shape.py contract rule 6): this URL legitimately serves THREE bodies
+    # (the two fragment branches above plus this full document), so every branch -- this one
+    # included -- carries DUAL_SHAPE_RESPONSE_HEADERS to keep the browser's HTTP cache from ever
+    # substituting one shape's cached bytes for another on a Back/Forward navigation.
+    return templates.TemplateResponse(request=request, name="shell/shell.html", context=context, headers=DUAL_SHAPE_RESPONSE_HEADERS)
 
 
 @router.get("/", response_class=HTMLResponse)
