@@ -821,6 +821,68 @@ async def test_failed_under_cap_redrive_no_fileserver_holds_uploading(
     assert job.status == CloudJobStatus.UPLOADING.value  # slot kept
 
 
+async def test_failed_under_cap_redrive_s3_staging_error_holds_uploading(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-kuhbu: redrive_upload's OWN S3StagingError (a removed staging bucket, or
+    create_multipart_upload hitting the exact S3 outage that made the agent's PUT fail and POST
+    /failed in the first place) must be the SAME clean 200 hold as NoActiveAgentError above, not an
+    unhandled 500 that also loses the redrive_attempt stamp for the callback.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
+    await _seed_ledger(session, file_id, attempt=0)
+
+    async def _raise_staging_error(*_args: Any, **_kwargs: Any) -> None:
+        raise s3_staging.S3StagingError("redrive_upload could not resolve a staging bucket")
+
+    monkeypatch.setattr(cloud_staging, "redrive_upload", _raise_staging_error)
+
+    async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/failed", json={"detail": "s3 outage"})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["cleared"] is False
+    job = await _cloud_job(session, file_id)
+    assert job is not None
+    assert job.status == CloudJobStatus.UPLOADING.value  # slot kept for the reaper / a later re-drive
+    row = await _ledger_row(session, f"s3_upload:{file_id}")
+    assert row is not None
+    assert row.redrive_attempt == 0  # NOT stamped: the S3StagingError path never reaches the stamp
+
+
+async def test_failed_under_cap_redrive_no_cloud_job_to_redrive_holds_cleanly(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-kuhbu: NoCloudJobToRedriveError (phaze-k95r7's S3StagingError subclass) is caught by the
+    same except clause -- it is still a clean 200 hold, not a 500, even though its cause (a vanished
+    cloud_job row) is unrelated to a bucket/outage problem."""
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
+    await _seed_ledger(session, file_id, attempt=0)
+
+    async def _raise_no_cloud_job(*_args: Any, **_kwargs: Any) -> None:
+        raise cloud_staging.NoCloudJobToRedriveError(f"redrive_upload has no cloud_job row for {file_id}")
+
+    monkeypatch.setattr(cloud_staging, "redrive_upload", _raise_no_cloud_job)
+
+    async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/failed", json={"detail": "race"})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["cleared"] is False
+
+
 async def test_failed_under_cap_redrive_keeps_fresh_part_urls(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,

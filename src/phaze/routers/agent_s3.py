@@ -422,6 +422,24 @@ async def report_upload_failed(
         await session.commit()
         logger.warning("report_upload_failed held: no fileserver agent online", file_id=str(file_id), agent_id=agent.id, attempt=next_attempt)
         return UploadFailedResponse(file_id=file_id, cleared=False)
+    except s3_staging.S3StagingError:
+        # phaze-kuhbu: redrive_upload's OWN setup leg raises S3StagingError on two reachable paths --
+        # NoCloudJobToRedriveError (a subclass) when the cloud_job row vanished, or the base class when
+        # the recorded staging_bucket no longer resolves (an operator removed it) or create_multipart_upload
+        # hits the very S3 outage that made the agent's PUT fail and POST /failed in the first place. All
+        # three legs raise BEFORE _stage_file_to_s3 parks an s3_upload enqueue, so there is nothing to
+        # drop -- this is the SAME clean 200 hold the NoActiveAgentError branch above already takes,
+        # matching the endpoint's documented never-500 posture (T-53-19) instead of 500ing the agent AND
+        # losing the redrive_attempt stamp for every /failed callback during the outage.
+        await session.commit()
+        logger.warning(
+            "report_upload_failed held: redrive_upload could not stage a fresh multipart",
+            file_id=str(file_id),
+            agent_id=agent.id,
+            attempt=next_attempt,
+            exc_info=True,
+        )
+        return UploadFailedResponse(file_id=file_id, cleared=False)
 
     # Stamp the incremented attempt into the DEDICATED `redrive_attempt` column. redrive_upload ->
     # stage_file_to_s3 commits a FRESH payload (new presigned part_urls) to THIS same ledger row via
