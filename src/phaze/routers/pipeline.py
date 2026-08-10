@@ -2900,11 +2900,20 @@ async def run_tracklist_drain_ui(request: Request, session: AsyncSession = Depen
     """
     routed = await enqueue_router.resolve_queue_for_task("drain_tracklists", request.app.state, session)
     await routed.queue.enqueue("drain_tracklists")
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         request=request,
         name="pipeline/partials/_run_drain_response.html",
         context={"request": request},
     )
+    # phaze-k2ob4: the drain-status panel (_tracklist_drain_status.html) is loaded ONCE on mount
+    # (hx-trigger=load) and carries no self-poll (WORK-05/R-2 forbids a second loop here) -- so
+    # without this, Queued/Answered-by-cache/Prioritized/ETA never move after this click, exactly
+    # contradicting the promise in _run_drain_response.html. HX-Trigger fires drain-refresh on the
+    # element that issued this POST; it bubbles to <body>, where
+    # #tracklist-drain-status-view's own hx-trigger (load, drain-refresh from:body) re-GETs the
+    # panel -- one bounded re-fetch per click, never an interval.
+    response.headers["HX-Trigger"] = "drain-refresh"
+    return response
 
 
 # --- Manual recovery endpoint (Phase 42, D-02/D-05) ---

@@ -35,7 +35,20 @@
 {% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
 {% call ws.workspace(title="TRACKLIST", subcount=subcount) %}
     {# (a) 1 · LOOKUP -- the drain. An EMPTY host div hx-gets the fragment on load, mirroring the
-       per-set table's own load-on-mount pattern below. The fragment carries its own trigger. #}
+       per-set table's own load-on-mount pattern below. "The fragment carries its own trigger"
+       refers to the Run-a-slice BUTTON inside it (_tracklist_drain_status.html), not a self-poll
+       -- WORK-05/R-2 forbids a second `hx-trigger="every"` loop here (test_identify_workspaces.py
+       asserts its absence on this exact fragment).
+
+       phaze-k2ob4: `load` alone means this view is fetched EXACTLY ONCE per mount and never
+       again -- Queued/Answered-by-cache/Prioritized/ETA froze at first render for the life of the
+       tab, contradicting _run_drain_response.html's promise that the operator checks the outcome
+       here "on its own refresh". The sanctioned fix (NOT a poll interval, which would fight the
+       R-2 rule above even though it technically dodges this fragment's own assertion) is the
+       action's-own-response re-fetch every other bulk trigger in this app already uses: the
+       `drain-refresh` event, fired via the `HX-Trigger` response header on POST
+       /pipeline/run-tracklist-drain (see that endpoint), bubbles to `<body>` and this listener
+       re-GETs the panel exactly once per "Run a drain slice" click -- no interval, no second loop. #}
     <div class="px-6 pt-6">
         <div class="mb-2 flex items-baseline gap-2">
             <span class="text-sm text-gray-700 dark:text-gray-200">1 · 🛰 LOOKUP</span>
@@ -44,7 +57,7 @@
         </div>
         <div id="tracklist-drain-status-view"
              hx-get="/pipeline/tracklist-drain-status"
-             hx-trigger="load"
+             hx-trigger="load, drain-refresh from:body"
              hx-swap="innerHTML">
             <p class="px-6 py-8 text-center text-sm text-gray-500 dark:text-gray-400">Loading drain status…</p>
         </div>
