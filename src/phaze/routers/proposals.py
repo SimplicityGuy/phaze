@@ -116,6 +116,18 @@ _BULK_HIGH_CONFIDENCE_TARGETS: dict[str, tuple[str, str]] = {
     "move-trigger-response": ("move-row", "path"),
 }
 
+# phaze-mlrwl: bulk_approve_high_confidence has no client id-list to intersect against (REVIEW-02 --
+# the whole point is a server-evaluated predicate with no selection to trust), so it cannot ask "which
+# of these are actually on screen?" the way a selection-driven bulk action could. What it CAN bound is
+# how many OOB row fragments it ever builds: rename_workspace.html / move_workspace.html render at
+# most 200 rows (get_pending_proposal_rows's page_size=200, phaze-rw14), so any OOB fragment beyond
+# that is guaranteed to target an id no longer (or never) on screen and htmx silently discards it
+# (htmx:oobErrorNoTarget). Capping the hydration SELECT + the rendered fragment list at this same 200
+# keeps the response bounded even when approved_ids runs into the tens of thousands, without changing
+# which rows the browser ends up updating: everything past 200 was already being thrown away, just
+# after a full ORM hydration and Jinja render of it first.
+_BULK_APPROVE_OOB_ROW_CAP = 200
+
 # phaze-3tj4: map a proposal's real status to the v7 diff-row lifecycle string so a mutation route
 # renders the row's actual affordances instead of hardcoding "pending". The reject route names its
 # state "skipped" (see reject_proposal above), so REJECTED maps there.
@@ -472,13 +484,26 @@ async def bulk_approve_high_confidence(
 
     approved_ids = await approve_pending_above_confidence(session, threshold=threshold)
     count = len(approved_ids)
-    toast_message = f"{count} proposals approved." if count else "Nothing matched -- no pending rows meet the >=90% confidence predicate right now."
+    # phaze-zbgi9: reuse the module's own pluralization (_bulk_toast), the same helper
+    # /proposals/bulk already uses -- this route just has one number instead of two (no client
+    # id-list to diverge from the applied count), which is exactly _bulk_toast's requested==applied
+    # branch.
+    toast_message = (
+        _bulk_toast("approve", requested=count, applied=count)
+        if count
+        else "Nothing matched -- no pending rows meet the >=90% confidence predicate right now."
+    )
 
     if v7_target is not None:
         row_id_prefix, facet = v7_target
         approved_rows: list[dict[str, object]] = []
         if approved_ids:
-            rows_stmt = select(RenameProposal).options(selectinload(RenameProposal.file)).where(_proposal_ids_scope(approved_ids, "approved_ids"))
+            # phaze-mlrwl: cap hydration + OOB-fragment rendering at the 200-row render cap -- see
+            # _BULK_APPROVE_OOB_ROW_CAP's docstring. `count`/`toast_message` above are computed from
+            # the FULL `approved_ids` list, so the toast keeps reporting the true total even when the
+            # OOB row set is capped.
+            capped_ids = approved_ids[:_BULK_APPROVE_OOB_ROW_CAP]
+            rows_stmt = select(RenameProposal).options(selectinload(RenameProposal.file)).where(_proposal_ids_scope(capped_ids, "approved_ids"))
             proposals = (await session.execute(rows_stmt)).scalars().all()
             approved_rows = [_diff_row_context(p, row_id_prefix, facet, "approved", oob=True) for p in proposals]
         return templates.TemplateResponse(

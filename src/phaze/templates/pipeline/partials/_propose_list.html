@@ -63,6 +63,26 @@
 {% with view = propose_view, stats = propose_stats, tabs_url = "/s/propose", tabs_target = "#" ~ propose_list_id %}
     {% include "proposals/partials/filter_tabs.html" %}
 {% endwith %}
+{# phaze-a6gsw: the search box's state carrier. search_box.html lives OUTSIDE this container (its
+   own contract, point 3 -- re-rendering a focused input mid-keystroke destroys the caret), so it is
+   the one search-adjacent control that is never re-rendered by a narrow swap of this partial. That
+   used to mean its hx-get URL carried whatever status/page_size/sort/order were current at the last
+   FULL workspace render, silently reverting a tab/sort/page-size change made since (phaze-a6gsw).
+   This hidden carrier is the fix: it renders HERE, inside the container, so every one of this
+   partial's three producers (full workspace render, narrow HX swap, bulk response) refreshes it
+   exactly like the tabs above -- and search_box.html's hx-include reads it fresh on every
+   keystroke. `q` is deliberately absent (search_box.html's own hx-include="this, ..." already
+   serialises the live-typed value; duplicating it here would send `q` twice and Starlette would
+   read the stale first occurrence). `page` is a literal `1`, not `propose_view.page`, mirroring the
+   pre-fix `page=1` reset: a search narrows the result set, so staying on the previous page would
+   routinely show an empty table for a query that matched plenty. #}
+<div id="{{ propose_list_id }}-search-state" class="hidden" aria-hidden="true">
+    <input type="hidden" name="status" value="{{ propose_view.status }}">
+    <input type="hidden" name="page" value="1">
+    <input type="hidden" name="page_size" value="{{ propose_view.page_size }}">
+    <input type="hidden" name="sort" value="{{ propose_view.sort }}">
+    <input type="hidden" name="order" value="{{ propose_view.order }}">
+</div>
 {% set columns = ["File", "Proposed name", "Proposed path", "Model", "Conf"] %}
 {% set ns = namespace(rows=[]) %}
 {% for p in propose_proposals %}

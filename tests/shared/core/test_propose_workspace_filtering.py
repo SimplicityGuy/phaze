@@ -167,6 +167,94 @@ async def test_search_narrows_within_the_active_filter(
     assert "Approved 0.mp3" not in crossed
 
 
+# ---------------------------------------------------------------------------
+# phaze-a6gsw -- the search box's hx-get must not bake render-time view state
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_search_box_hx_get_is_bare_and_reads_a_state_carrier(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """The search input's hx-get must carry NO query string -- the mutable state must come from
+    hx-include reading a separate, in-container element instead of a static attribute baked at
+    workspace-render time (phaze-a6gsw).
+    """
+    await _seed_mixed(session, seed_pending_proposal)
+    body = (await client.get("/s/propose?status=approved&sort=confidence&order=desc&page_size=50")).text
+
+    search_block = body.split('name="q"')[1].split("</div>")[0]
+    assert 'hx-get="/s/propose"' in search_block, "hx-get must be bare -- no baked query string"
+    assert 'hx-get="/s/propose?' not in search_block, "hx-get must not carry a static query string"
+    assert 'hx-include="this, #' in search_block, "hx-include must union the search input with the state carrier"
+
+
+@pytest.mark.asyncio
+async def test_search_box_state_carrier_reflects_the_active_tab_after_a_tab_swap(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """Regression (phaze-a6gsw): after a tab click re-renders the container, the search box's state
+    carrier -- which lives INSIDE that container -- must report the NEWLY active tab, not whatever
+    was active when the workspace was last fully rendered. Before the fix nothing re-emitted the
+    search box's state on a narrow swap at all: a keystroke right after this response would have
+    resubmitted the OLD status and silently reverted the operator's tab change.
+    """
+    await _seed_mixed(session, seed_pending_proposal)
+
+    # Full render defaults to the "pending" tab.
+    full = (await client.get("/s/propose")).text
+    assert '<input type="hidden" name="status" value="pending">' in full
+
+    # A narrow swap to the "approved" tab must re-render the carrier with the NEW status.
+    swapped = (await client.get("/s/propose?status=approved", headers=_LIST_TARGET)).text
+    assert '<input type="hidden" name="status" value="approved">' in swapped
+    assert '<input type="hidden" name="status" value="pending">' not in swapped
+
+
+@pytest.mark.asyncio
+async def test_search_box_state_carrier_page_is_always_one(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """The carrier's `page` field is a literal 1 even on page 2+, mirroring the pre-fix `page=1`
+    reset: a search narrows the result set, so resubmitting the current page would routinely show an
+    empty table for a query that matched plenty.
+    """
+    await _seed_mixed(session, seed_pending_proposal)
+    body = (await client.get("/s/propose?status=all&page_size=25&page=1")).text
+    assert '<input type="hidden" name="page" value="1">' in body
+
+
+@pytest.mark.asyncio
+async def test_a_search_request_composed_from_the_state_carrier_preserves_the_active_tab(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """End-to-end proof of the failure scenario the bead describes: build the request the browser
+    would actually send -- the search box's bare hx-get URL plus the query string htmx would
+    serialise from `this` (q) unioned with the state carrier (status/page/page_size/sort/order) --
+    and confirm it lands on the tab the operator actually had active, not whatever was active at the
+    last full render.
+    """
+    await _seed_mixed(session, seed_pending_proposal)
+
+    # Simulates: operator opens /s/propose (defaults to pending), clicks Approved, then types.
+    # htmx would compose this exact query from the bare hx-get + hx-include="this, #...-state".
+    response = await client.get(
+        "/s/propose?status=approved&page=1&page_size=25&sort=confidence&order=asc&q=Approved",
+        headers=_LIST_TARGET,
+    )
+    body = response.text
+    assert "Approved 0.mp3" in body
+    assert "Pending 0.mp3" not in body, "a stale baked status=pending must never leak back in"
+
+
 @pytest.mark.asyncio
 async def test_filter_and_search_state_survives_a_swap_and_reaches_the_url(
     client: AsyncClient,

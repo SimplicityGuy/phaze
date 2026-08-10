@@ -6,33 +6,53 @@
    the v7 cutover replaced that page.
 
    Context contract (all required):
-     * view          -- a ListViewState (routers/view_state.py); supplies the current text
-                        (view.q) and the rest of the state for the URL.
-     * search_url    -- the path to query (e.g. "/s/propose").
-     * search_target -- css selector of the swap target (e.g. "#propose-workspace-list").
-     * search_id     -- OPTIONAL id for the input, defaulting to "list-search". It is a parameter
-                        rather than a literal because the label's `for` must point at THIS input:
-                        two search boxes on one page sharing an id would give both labels the same
-                        target, so the second control would be mislabelled to assistive tech. One
-                        caller exists today (the propose workspace), so the default is safe now and
-                        the seam is there before it is needed.
+     * view            -- a ListViewState (routers/view_state.py); supplies the current text
+                          (view.q) for the input's `value`. It no longer supplies the URL -- see
+                          phaze-a6gsw below.
+     * search_url      -- the BARE path to query (e.g. "/s/propose"), carrying no query string.
+     * search_target   -- css selector of the swap target (e.g. "#propose-workspace-list").
+     * search_state_id -- id of the hidden state-carrier rendered INSIDE search_target (see
+                          phaze-a6gsw). This box's hx-include reads it on every request, so the
+                          mutable part of the URL always reflects the last swap, not the render
+                          that created this input.
+     * search_id       -- OPTIONAL id for the input, defaulting to "list-search". It is a parameter
+                          rather than a literal because the label's `for` must point at THIS input:
+                          two search boxes on one page sharing an id would give both labels the same
+                          target, so the second control would be mislabelled to assistive tech. One
+                          caller exists today (the propose workspace), so the default is safe now and
+                          the seam is there before it is needed.
 
    THREE things here are load-bearing and easy to break:
 
-   1. `omit=("q",)`. The input carries `name="q"` and `hx-include="this"`, so htmx APPENDS the
-      typed value to the query string. If the URL also carried the previous q, the server would
-      receive `?q=old&q=new` and Starlette's query_params.get would return `old` -- the box would
-      lag one keystroke forever, and the bug would look like a debounce problem. See
-      ListViewState.query's `omit` docs.
+   1. `q` stays off the state carrier. This input carries `name="q"` and is itself part of
+      hx-include ("this"), so htmx serialises the LIVE typed value. If the state carrier also had a
+      `q` field the server would receive `?q=old&q=new` and Starlette's query_params.get would
+      return `old` -- the box would lag one keystroke forever, and the bug would look like a
+      debounce problem.
 
-   2. `page=1`. Every keystroke narrows the result set, so staying on page 7 would routinely land
-      the operator past the end of their own search and show an empty table for a query that
-      matched plenty.
+   2. The state carrier's `page` is a literal `1`, not the current page. Every keystroke narrows
+      the result set, so staying on page 7 would routinely land the operator past the end of their
+      own search and show an empty table for a query that matched plenty.
 
    3. search_target must be the LIST container, never a target enclosing this input. The response
       must not replace the element the operator is typing into: doing so destroys focus and caret
       position mid-word on every debounce tick. This is why /s/propose serves a narrow list-only
       fragment for this swap (see _render_stage) instead of re-rendering the whole workspace.
+
+   phaze-a6gsw -- WHY hx-get IS BARE AND hx-include READS A SEPARATE ELEMENT. This input used to
+   bake status/page_size/sort/order into hx-get at WORKSPACE-render time (`view.query(omit=('q',),
+   page=1)` as a static attribute), because -- unlike every other state-changing control -- it lives
+   OUTSIDE search_target (point 3 above) and so is never re-rendered by a narrow swap. Every other
+   control (filter_tabs.html, the sort headers, the pager, the page-size selector) lives INSIDE the
+   container and re-spells its URL on every swap, so its state is always current; this one kept the
+   state from whenever the workspace itself last fully rendered. The result: click the "Approved"
+   tab (container re-renders, URL becomes ?status=approved), then type a letter -- the search
+   request still carried the OLD ?status=pending baked in at page load, silently reverting the tab
+   (and any sort/page_size change since) with no indication to the operator. The fix keeps this
+   input where it must stay (outside the container, so typing never loses focus) but moves the
+   MUTABLE state into a hidden carrier that DOES live inside the container (rendered by the caller,
+   e.g. _propose_list.html) -- so the carrier is exactly as current as the tabs are, and this input
+   only ever contributes `q`.
 
    hx-push-url="true" keeps the search in the address bar so it is bookmarkable and survives Back;
    safe because search_url is a full-page route that answers a history restore with a whole
@@ -47,10 +67,10 @@
            placeholder="Search by filename..."
            autocomplete="off"
            class="w-full rounded-md border border-gray-300 dark:border-phaze-border px-4 py-2 text-sm focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-blue-500 dark:focus:border-blue-400"
-           hx-get="{{ search_url }}?{{ view.query(omit=('q',), page=1) }}"
+           hx-get="{{ search_url }}"
            hx-trigger="keyup changed delay:300ms"
            hx-target="{{ search_target }}"
            hx-swap="innerHTML"
            hx-push-url="true"
-           hx-include="this">
+           hx-include="this, #{{ search_state_id }}">
 </div>

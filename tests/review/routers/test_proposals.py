@@ -890,6 +890,23 @@ async def test_bulk_approve_high_confidence_v7_response_omits_nonexistent_stats_
 
 
 @pytest.mark.asyncio
+async def test_bulk_approve_high_confidence_pluralizes_a_single_v7_approval(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-zbgi9: exactly one pending proposal clears the predicate -- the toast must read
+    '1 proposal approved.', not '1 proposals approved.' (_bulk_toast's own pluralization, reused
+    here rather than a second hand-rolled string). Covers the v7-target response path; the
+    no-target path is covered by ``test_bulk_approve_high_confidence_without_v7_target_returns_the_toast_alone``.
+    """
+    await create_test_proposal(session, confidence=0.95)
+    response = await client.patch(
+        "/proposals/bulk-approve-high-confidence",
+        headers={"HX-Request": "true", "HX-Target": "rename-trigger-response"},
+    )
+    assert response.status_code == 200
+    assert "1 proposal approved." in response.text
+    assert "1 proposals approved." not in response.text
+
+
+@pytest.mark.asyncio
 async def test_bulk_approve_high_confidence_zero_matches_returns_toast_with_no_oob_rows(client: AsyncClient, session: AsyncSession) -> None:
     """No pending row meets the predicate: a toast is returned but no OOB row fragment is emitted."""
     await create_test_proposal(session, confidence=0.5)
@@ -914,7 +931,9 @@ async def test_bulk_approve_high_confidence_without_v7_target_returns_the_toast_
     response = await client.patch("/proposals/bulk-approve-high-confidence")
     assert response.status_code == 200
     assert "stats-bar" not in response.text
-    assert "1 proposals approved." in response.text
+    # phaze-zbgi9: singular, matching the module's own _bulk_toast pluralization -- was
+    # "1 proposals approved." before the fix, which this test used to pin rather than catch.
+    assert "1 proposal approved." in response.text
     assert 'hx-swap-oob="true"' not in response.text
 
 
