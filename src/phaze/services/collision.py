@@ -27,19 +27,31 @@ def _owning_root_expr() -> ScalarSelect[str]:
     order-independent and deterministic. Returns NULL when no scan_root matches
     (an unconfigured/legacy agent) -- callers keep the absolute dirname in that
     case rather than fabricating a root-relative path.
+
+    ``scan_roots`` is stored verbatim as the operator typed it (``validate_scan_roots``
+    only requires a non-empty absolute path -- nothing normalizes it), so a
+    trailing-slash root like ``/archive/`` is a real, storable value. Matching against
+    the RAW root previously turned that trailing slash into a doubled ``//`` prefix
+    (``value || '/'``) that ``starts_with`` never matches, silently nulling
+    ``owning_root`` for every file under that root (phaze-wlp4l). Right-trimming
+    trailing ``/`` off the root before both comparisons -- and before selecting it as
+    the returned value -- makes the match (and the value handed to callers, e.g.
+    ``_dest_key_columns``'s prefix-stripping below) independent of how the root was
+    formatted when it was entered.
     """
     roots = func.jsonb_array_elements_text(Agent.scan_roots).table_valued("value").lateral()
+    root = func.rtrim(roots.c.value, "/")
     return (
-        select(roots.c.value)
+        select(root)
         .select_from(Agent, roots)
         .where(Agent.id == FileRecord.agent_id)
         .where(
             or_(
-                FileRecord.original_path == roots.c.value,
-                func.starts_with(FileRecord.original_path, roots.c.value.op("||")("/")),
+                FileRecord.original_path == root,
+                func.starts_with(FileRecord.original_path, root.op("||")("/")),
             ),
         )
-        .order_by(func.length(roots.c.value).desc())
+        .order_by(func.length(root).desc())
         .limit(1)
         .correlate(FileRecord)
         .scalar_subquery()

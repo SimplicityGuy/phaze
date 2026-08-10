@@ -418,6 +418,75 @@ class TestCollisionKeyNormalization:
         ids = await get_collision_ids(session)
         assert ids == set()
 
+    @pytest.mark.asyncio
+    async def test_trailing_slash_scan_root_still_detects_collision(self, session: AsyncSession) -> None:
+        """phaze-wlp4l: a trailing-slash scan_root must not defeat owning-root matching.
+
+        ``validate_scan_roots`` accepts (and stores verbatim) a root like ``/archive/``.
+        Pre-fix, ``value || '/'`` produced a doubled ``//`` prefix that ``starts_with``
+        never matched, so ``owning_root`` resolved NULL and this cross-form collision
+        (identical to ``test_inplace_and_path_proposal_to_same_dest_collide`` but with a
+        trailing-slash root) went undetected.
+        """
+        from phaze.services.collision import detect_collisions
+
+        await _ensure_agent(session, "srv-trailing-slash", ["/data/music/"])
+        await _create_proposal(
+            session,
+            proposed_filename="b.mp3",
+            proposed_path=None,  # in-place rename
+            original_filename="a.mp3",
+            original_dir="/data/music/X",
+            agent_id="srv-trailing-slash",
+        )
+        await _create_proposal(
+            session,
+            proposed_filename="b.mp3",
+            proposed_path="X",  # path proposal into the same dir
+            original_filename="c.mp3",
+            original_dir="/data/music/Y",
+            agent_id="srv-trailing-slash",
+        )
+
+        result = await detect_collisions(session)
+        assert len(result) == 1
+        assert result[0][1] == 2
+        assert result[0][0] == "X/b.mp3"
+
+    @pytest.mark.asyncio
+    async def test_trailing_slash_and_bare_scan_roots_of_one_agent_share_ownership(self, session: AsyncSession) -> None:
+        """A root stored with a trailing slash still yields the SAME owning_root as its bare form.
+
+        Two scan_roots that are the "same" root differently formatted (``/mnt/archive``
+        and ``/mnt/archive/``) must not be treated as two distinct owning roots -- a
+        relative dest shared between files under each collides just like the
+        single-scan-root positive control (``test_same_agent_same_scan_root_same_relative_path_collides``).
+        """
+        from phaze.services.collision import detect_collisions
+
+        await _ensure_agent(session, "srv-dup-root", ["/mnt/archive", "/mnt/archive/"])
+        await _create_proposal(
+            session,
+            proposed_filename="set.mp3",
+            proposed_path="Coachella 2024",
+            original_filename="f.mp3",
+            original_dir="/mnt/archive/A",
+            agent_id="srv-dup-root",
+        )
+        await _create_proposal(
+            session,
+            proposed_filename="set.mp3",
+            proposed_path="Coachella 2024",
+            original_filename="g.mp3",
+            original_dir="/mnt/archive/B",
+            agent_id="srv-dup-root",
+        )
+
+        result = await detect_collisions(session)
+        assert len(result) == 1
+        assert result[0][1] == 2
+        assert result[0][0] == "Coachella 2024/set.mp3"
+
 
 # ---------------------------------------------------------------------------
 # phaze-p46n4 — a collision confined to a REVOKED agent's own proposals must
