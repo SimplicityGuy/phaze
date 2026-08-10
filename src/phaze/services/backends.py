@@ -1313,6 +1313,21 @@ async def _probe_one(session: AsyncSession, backend: Backend) -> tuple[str, bool
     by ``_PROBE_TIMEOUT_SEC``; a timeout OR any probe exception degrades THAT lane to offline and logs the
     ``backend_id`` ONLY (never a SecretStr / kube token, T-71-01). A single hung Kueue cluster can
     therefore never stall the shared read (T-71-02).
+
+    phaze-ntr8s: a compute probe's DB read (``select_agent_by_id`` -> ``session.execute``) cancelled
+    mid-flight by the ``asyncio.wait_for`` timeout can leave the SHARED session unusable for the next
+    statement -- SQLAlchemy raises ``PendingRollbackError`` on the following ``execute`` until the
+    session is rolled back. ``_probe_availability`` runs every backend's probe SEQUENTIALLY on this ONE
+    session (Pitfall 1), so without an immediate roll back HERE that poison outlives this probe: the very
+    next backend's probe (or, for a Kueue probe that ignores the session, whichever LATER probe next
+    touches it) inherits a broken session and fails immediately -- a single slow compute lane cascading
+    every SUBSEQUENT lane in the SAME sweep to a false "offline", which then reports a false "no cloud
+    backend reachable" hold reason for a transient DB blip that has nothing to do with reachability. Roll
+    back HERE, inside the per-probe except, not just once after the whole fan-out (the pre-existing
+    post-fan-out rollback in :func:`get_backend_lane_snapshot` only protected the NEXT poll's snapshot,
+    never a sibling lane within THIS one). ``session.rollback()`` is a safe no-op when there is nothing to
+    roll back, and any failure rolling back is itself swallowed -- a cleanup failure must never mask the
+    real probe failure this branch is already reporting.
     """
     if isinstance(backend, LocalBackend):
         return (backend.id, True)
@@ -1320,6 +1335,10 @@ async def _probe_one(session: AsyncSession, backend: Backend) -> tuple[str, bool
         available = await asyncio.wait_for(backend.is_available(session), _PROBE_TIMEOUT_SEC)
     except Exception:
         logger.info("backend_lane_probe_offline", backend_id=backend.id)
+        try:
+            await session.rollback()
+        except Exception:
+            logger.warning("backend_lane_probe_rollback_failed", backend_id=backend.id, exc_info=True)
         return (backend.id, False)
     return (backend.id, bool(available))
 
@@ -1333,13 +1352,15 @@ async def _probe_availability(session: AsyncSession, backends: list[Backend]) ->
     single-active-compute assumption, N≥2 compute backends are legal and each compute probe touches the
     shared ``session`` via ``select_agent_by_id`` (``session.execute``); serializing the fan-out guarantees
     those ``session.execute`` calls can never overlap (SQLAlchemy forbids concurrent operations on one
-    session). Each ``_probe_one`` is individually capped by ``asyncio.wait_for(..., _PROBE_TIMEOUT_SEC)``;
-    because the probes now run one at a time the worst-case aggregate wait is ``N x _PROBE_TIMEOUT_SEC``
-    (not the old ``asyncio.gather`` ~1x bound) -- a deliberate D-01 trade-off, acceptable because N is small
-    (registry-declared local + N-Kueue + N-compute) and session-safety takes priority over probe latency on
-    the 5s ``/pipeline/stats`` poll. The post-fan-out ``session.rollback`` in
-    :func:`get_backend_lane_snapshot` clears any single-probe DB poison before the ``in_flight_count``
-    reads. Kueue probes ignore the session (kr8s I/O) and local is short-circuited (no I/O).
+    session). Each ``_probe_one`` is individually capped by ``asyncio.wait_for(..., _PROBE_TIMEOUT_SEC)``
+    AND rolls the session back itself on a timeout/exception (phaze-ntr8s), so one poisoned probe can
+    never cascade to the NEXT backend probed in this same loop. Because the probes now run one at a time
+    the worst-case aggregate wait is ``N x _PROBE_TIMEOUT_SEC`` (not the old ``asyncio.gather`` ~1x
+    bound) -- a deliberate D-01 trade-off, acceptable because N is small (registry-declared local +
+    N-Kueue + N-compute) and session-safety takes priority over probe latency on the 5s
+    ``/pipeline/stats`` poll. The post-fan-out ``session.rollback`` in :func:`get_backend_lane_snapshot`
+    is retained as a second, harmless line of defense before the ``in_flight_count`` reads. Kueue probes
+    ignore the session (kr8s I/O) and local is short-circuited (no I/O).
     """
     results: dict[str, bool] = {}
     for backend in backends:
