@@ -654,6 +654,57 @@ async def test_start_execution_agents_table_default_sort_is_name_ascending(clien
 
 
 @pytest.mark.asyncio
+async def test_start_execution_releases_read_txn_before_enqueue_loop(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-266lc: the reader session is committed before the per-(agent, chunk) enqueue loop.
+
+    Nothing on the request session is read after the ``agent_names`` query, so the reads that
+    autobegan a transaction (``detect_collisions`` / grouped-proposals / ``agent_names``) must be
+    committed BEFORE ``task_router.enqueue_for_agent`` -- otherwise the connection sits idle-in-
+    transaction across the whole enqueue loop, which "spans many suspension points and real wall
+    time on a large approved set" (the code's own comment). Spy on both calls and assert a commit
+    is recorded strictly before the first enqueue.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
+
+    await create_approved_proposal_for_agent(session, agent_id="alpha-agent", agent_name="Alpha Agent", proposed_filename="a.mp3")
+
+    order: list[str] = []
+    real_commit = _AsyncSession.commit
+
+    async def _spy_commit(self: _AsyncSession) -> None:
+        await real_commit(self)
+        order.append("commit")
+
+    async def _enqueue_recording(*_args: object, **_kwargs: object) -> None:
+        order.append("enqueue")
+
+    mock_task_router = AsyncMock()
+    mock_task_router.enqueue_for_agent = AsyncMock(side_effect=_enqueue_recording)
+    mock_redis = AsyncMock()
+    mock_pipe = MagicMock()
+    mock_pipe.hset = MagicMock()
+    mock_pipe.expire = MagicMock()
+    mock_pipe.execute = AsyncMock()
+    mock_pipe.__aenter__ = AsyncMock(return_value=mock_pipe)
+    mock_pipe.__aexit__ = AsyncMock(return_value=None)
+    mock_redis.pipeline = MagicMock(return_value=mock_pipe)
+    client._transport.app.state.task_router = mock_task_router  # type: ignore[union-attr]
+    client._transport.app.state.redis = mock_redis  # type: ignore[union-attr]
+
+    claim = AsyncMock(return_value=1)
+    with (
+        patch.object(_AsyncSession, "commit", _spy_commit),
+        patch("phaze.routers.execution._get_claim_dispatch_script", MagicMock(return_value=claim)),
+    ):
+        response = await client.post("/execution/start")
+    assert response.status_code == 200, response.text
+    assert "enqueue" in order
+    assert "commit" in order
+    enqueue_index = order.index("enqueue")
+    assert "commit" in order[:enqueue_index], f"expected a commit before the first enqueue, got order={order}"
+
+
+@pytest.mark.asyncio
 async def test_agents_table_sort_reorders_by_completed_descending(client: AsyncClient) -> None:
     """GET /execution/agents-table?sort=completed&order=desc reorders the WHOLE rollup server-side."""
     batch_id = str(uuid.uuid4())

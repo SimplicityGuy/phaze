@@ -318,6 +318,15 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
         result = await session.execute(select(Agent.id, Agent.name).where(Agent.id.in_(groups.keys())))
         agent_names = {row.id: row.name for row in result.all()}
 
+    # phaze-266lc: nothing below this point reads or writes ``session`` again -- the rest of the
+    # handler is Redis (seed/claim) and the per-(agent, chunk) SAQ enqueue loop, which the code's
+    # own comment (below, phaze-0t2c) says "spans many suspension points and real wall time on a
+    # large approved set". Commit here to release the read-only transaction the reads above
+    # autobegan (READ COMMITTED, no row locks, nothing written) BEFORE that loop, rather than
+    # sitting idle-in-transaction across it -- the same phaze-1v37 pool-drain class fixed at the
+    # other request-scoped-session sites (agent_analysis.py phaze-7jfgi, tags.py phaze-7bjjj).
+    await session.commit()
+
     # 5. Seed exec:{batch_id} Redis hash (D-04). HSET + EXPIRE atomic via pipeline.
     dispatch_summary = [
         {
