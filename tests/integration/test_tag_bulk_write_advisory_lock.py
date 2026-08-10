@@ -35,7 +35,7 @@ connection that never held the lock.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
 from fastapi import FastAPI
@@ -50,6 +50,7 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog
+from phaze.routers import tags as tags_module
 from phaze.routers.tags import (
     _BULK_TAGWRITE_LOCK_KEY,
     _acquire_bulk_tagwrite_lock,
@@ -267,6 +268,90 @@ async def test_bulk_write_endpoint_releases_lock_over_a_real_pool(async_engine) 
         async with engine.connect() as verify_conn:
             count = (await verify_conn.execute(_ADVISORY_LOCK_COUNT_SQL, {"classid": _LOCK_CLASSID, "objid": _LOCK_OBJID})).scalar()
         assert count == 0, "the live endpoint must never leave the bulk-tagwrite advisory lock held"
+    finally:
+        await _delete_seeded_files(engine, file_ids)
+        await _force_unlock_all(engine)
+        await engine.dispose()
+
+
+# phaze-ieqg / phaze-7bjjj: `pg_stat_activity` is CLUSTER-wide too, exactly like `pg_locks` above --
+# scope by exact backend `pid` (unique cluster-wide) AND `datname = current_database()` so this can
+# never read another concurrent worktree's backend by coincidence.
+_BACKEND_STATE_SQL = text("select state from pg_stat_activity where pid = :pid and datname = current_database()")
+
+
+@pytest.mark.asyncio
+async def test_bulk_write_lock_connection_not_idle_in_transaction_once_the_loop_is_running() -> None:
+    """phaze-7bjjj: ``lock_conn`` must leave its auto-begun transaction (commit) before the bounded
+    per-file loop runs, so it does not sit idle-in-transaction for the whole scan -- holding back the
+    backend_xmin vacuum horizon and exposed to ``idle_in_transaction_session_timeout``.
+    ``pg_try_advisory_lock`` is SESSION-, not transaction-scoped (see the comment above
+    ``_BULK_TAGWRITE_LOCK_KEY``), so committing right after acquire does not release it -- the lock
+    is still held (and the loop still serialized) for the whole request.
+
+    Drives the REAL ``/tags/bulk-write-no-discrepancies`` route over a real, dedicated connection
+    (so ``_bulk_tagwrite_lock_connection`` takes the ``owns_lock_conn=True`` branch this fix
+    targets -- the hermetic per-test fixture always takes the OTHER branch, see that function's own
+    docstring) and captures ``lock_conn``'s backend pid right as the lock is acquired, then checks
+    ``pg_stat_activity.state`` for that pid from a second connection once the per-file loop has
+    actually started.
+    """
+    require_test_database(SA_DSN, context="tag-write advisory lock regression")
+    engine = create_async_engine(SA_DSN, pool_size=3, max_overflow=0)
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    file_ids: list[uuid.UUID] = []
+
+    real_acquire = tags_module._acquire_bulk_tagwrite_lock
+    captured_pid: list[int] = []
+
+    async def _acquire_and_capture_pid(conn):  # type: ignore[no-untyped-def]
+        acquired = await real_acquire(conn)
+        captured_pid.append((await conn.execute(select(func.pg_backend_pid()))).scalar())
+        return acquired
+
+    real_has_terminal = tags_module._has_terminal_tagwrite
+    checked = {"done": False}
+
+    async def _has_terminal_and_check(inner_session, file_id):  # type: ignore[no-untyped-def]
+        if not checked["done"]:
+            checked["done"] = True
+            assert captured_pid, "lock_conn's backend pid must be captured before the per-file loop starts"
+            async with engine.connect() as verify_conn:
+                state = (await verify_conn.execute(_BACKEND_STATE_SQL, {"pid": captured_pid[0]})).scalar()
+            assert state != "idle in transaction", "lock_conn must not be idle-in-transaction once the per-file loop is running"
+        return await real_has_terminal(inner_session, file_id)
+
+    try:
+        async with session_factory() as seed_session:
+            if await seed_session.get(Agent, "test-fileserver") is None:
+                seed_session.add(Agent(id="test-fileserver", name="test-fileserver", kind="fileserver", scan_roots=[]))
+                await seed_session.commit()
+            file_ids.append(await _seed_bulk_qualifying_file(seed_session, filename="Idle Lock Artist - Idle Lock Title.mp3"))
+
+        app = FastAPI(title="smoke", version="test")
+        app.include_router(tags_router)
+        fake_router = MagicMock()
+        fake_router.enqueue_for_agent = AsyncMock()
+        app.state.task_router = fake_router
+
+        async def _get_session():  # type: ignore[no-untyped-def]
+            async with session_factory() as s:
+                yield s
+
+        app.dependency_overrides[get_session] = _get_session
+
+        with (
+            patch.object(tags_module, "_acquire_bulk_tagwrite_lock", new=_acquire_and_capture_pid),
+            patch.object(tags_module, "_has_terminal_tagwrite", new=_has_terminal_and_check),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/tags/bulk-write-no-discrepancies")
+        assert resp.status_code == 200
+        assert checked["done"], "the per-file loop must have run for the idle-in-transaction assertion to have executed"
+
+        async with engine.connect() as verify_conn:
+            count = (await verify_conn.execute(_ADVISORY_LOCK_COUNT_SQL, {"classid": _LOCK_CLASSID, "objid": _LOCK_OBJID})).scalar()
+        assert count == 0, "the commit-after-acquire must not leak the session-scoped advisory lock"
     finally:
         await _delete_seeded_files(engine, file_ids)
         await _force_unlock_all(engine)
