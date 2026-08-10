@@ -472,7 +472,15 @@ async def bulk_approve_high_confidence(
 
     approved_ids = await approve_pending_above_confidence(session, threshold=threshold)
     count = len(approved_ids)
-    toast_message = f"{count} proposals approved." if count else "Nothing matched -- no pending rows meet the >=90% confidence predicate right now."
+    # phaze-zbgi9: reuse the module's own pluralization (_bulk_toast), the same helper
+    # /proposals/bulk already uses -- this route just has one number instead of two (no client
+    # id-list to diverge from the applied count), which is exactly _bulk_toast's requested==applied
+    # branch.
+    toast_message = (
+        _bulk_toast("approve", requested=count, applied=count)
+        if count
+        else "Nothing matched -- no pending rows meet the >=90% confidence predicate right now."
+    )
 
     if v7_target is not None:
         row_id_prefix, facet = v7_target
