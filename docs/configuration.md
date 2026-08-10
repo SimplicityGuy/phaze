@@ -79,6 +79,7 @@ flowchart TD
 | `PHAZE_ROLE`                      | No       | `control`                                                | Selects the settings subclass: `control` or `agent`.                        |
 | `PHAZE_DATABASE_URL` (or `DATABASE_URL`) | No | `postgresql+asyncpg://phaze:phaze@postgres:5432/phaze`    | PostgreSQL connection string. Use `localhost` when running on the host instead of in Compose. |
 | `PHAZE_REDIS_URL` (or `REDIS_URL`)| No       | `redis://redis:6379/0`                                    | Redis connection string. **Cache / rate-limit / counters only** — no longer the SAQ broker (see `PHAZE_QUEUE_URL`). In production agent mode, a password is required (see Per-environment overrides). |
+| `REDIS_PASSWORD` (or `redis_password`) | No | (none) | Raw (un-encoded) Redis AUTH password (phaze-1g89i). When set, percent-encoded into `redis_url`'s userinfo at construction time — safe for a password containing `/`, `#`, `?`, or `%`, which would otherwise break `redis.asyncio.Redis.from_url`'s RFC-3986 parser if embedded raw into the URL. Wins over any password already present in `redis_url`/`PHAZE_REDIS_URL`. Under docker compose, `REDIS_PASSWORD` is the SAME value `redis-server --requirepass` uses, passed through as its own env var rather than pre-assembled into a DSN. |
 | `PHAZE_QUEUE_URL` (or `queue_url`)| No       | `postgresql://phaze:phaze@postgres:5432/phaze`            | SAQ Postgres broker DSN (Phase 36). Must be the **raw libpq** form (`postgresql://…`), NOT the SQLAlchemy `postgresql+asyncpg://` dialect — psycopg3's pool cannot parse the `+driver` suffix (an `+asyncpg`/`+psycopg` value is auto-normalized). Carries DB credentials, so it is secret-bearing (`PHAZE_QUEUE_URL_FILE`). On agent hosts it points at the app-server Postgres LAN IP:5432 — agents open a psycopg3 pool to it (new firewall edge, relaxes D-25). |
 | `DEBUG`                           | No       | `false`                                                  | Enable debug mode.                                                          |
 | `API_HOST`                        | No       | `0.0.0.0`                                                | API server bind address.                                                    |
@@ -459,7 +460,7 @@ D-03 zero-config registry), so the two knobs cannot drift apart on a host with n
 
 ## Docker Compose-only variables
 
-These are consumed by the Compose stack (`docker-compose.yml`, `docker-compose.agent.yml`), not by `phaze.config`.
+These are consumed by the Compose stack (`docker-compose.yml`, `docker-compose.agent.yml`), not by `phaze.config` — with one exception noted below.
 
 | Variable           | Required | Default       | Description                                                                 |
 |--------------------|----------|---------------|-----------------------------------------------------------------------------|
@@ -467,7 +468,7 @@ These are consumed by the Compose stack (`docker-compose.yml`, `docker-compose.a
 | `POSTGRES_PASSWORD`| **Yes**  | (none)        | PostgreSQL password for the `postgres` service. Compose fails at parse time if unset (`${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}`, `docker-compose.yml:99`) — there is **no** default. |
 | `POSTGRES_DB`      | No       | `phaze`       | PostgreSQL database name created on first boot.                            |
 | `POSTGRES_BIND_IP` | No       | `127.0.0.1`   | Host interface to bind Postgres `:5432` on (`docker-compose.yml:134`). Production overrides to the app-server's LAN IP so off-host agents can connect. **Never set this to `0.0.0.0`** — that exposes the database on every interface. Mirrors `REDIS_BIND_IP`. |
-| `REDIS_PASSWORD`   | **Yes**  | (none)        | Password for `redis-server --requirepass`. Compose fails at parse time if unset (`${REDIS_PASSWORD:?...}`). `.env.example` ships a `changeme` placeholder for dev. |
+| `REDIS_PASSWORD`   | **Yes**  | (none)        | Password for `redis-server --requirepass`. Compose fails at parse time if unset (`${REDIS_PASSWORD:?...}`). `.env.example` ships a `changeme` placeholder for dev. **Also read by `phaze.config`** (see the Core settings table above, phaze-1g89i) — the api + worker services now pass it through unchanged instead of pre-assembling it into `REDIS_URL`. |
 | `REDIS_BIND_IP`    | No       | `127.0.0.1`   | Host interface to bind Redis `:6379` on. Production overrides to a LAN IP so off-host agents can connect. |
 | `UID`              | No       | `1000`        | Host user ID for volume permissions.                                       |
 | `GID`              | No       | `1000`        | Host group ID for volume permissions.                                      |
