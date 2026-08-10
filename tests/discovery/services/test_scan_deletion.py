@@ -341,6 +341,36 @@ async def test_null_file_id_tracklist_is_never_touched(session: AsyncSession) ->
 
 
 @pytest.mark.asyncio
+async def test_cascade_locks_file_rows_in_original_path_order(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-zfxy6: the file-row FOR UPDATE sweep must sort by ``original_path``.
+
+    ``delete_scan_cascade``'s file-row lock query and ``upsert_files``' (routers/agent_files.py)
+    concurrent multi-row ``ON CONFLICT DO UPDATE`` are two independent lockers over an
+    overlapping row set (a rescan reassigning a completed batch's files to the agent's live
+    batch, racing an operator deleting that completed batch). With no shared, deterministic
+    lock-acquisition order, the two sides could lock the same rows in different orders --
+    the classic ABBA deadlock. ``original_path`` is the only column both sides can sort on, so
+    the cascade's lock query must carry an explicit ``ORDER BY files.original_path``.
+    """
+    batch_id = await _seed_full_graph(session)
+
+    captured: list[str] = []
+    real_execute = session.execute
+
+    async def _capturing_execute(stmt: object, *args: object, **kwargs: object) -> object:
+        captured.append(str(stmt))
+        return await real_execute(stmt, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(session, "execute", _capturing_execute)
+
+    await delete_scan_cascade(session, batch_id)
+
+    file_lock_stmts = [s for s in captured if "FOR UPDATE" in s and "FROM files" in s]
+    assert file_lock_stmts, "expected a FOR UPDATE statement against files"
+    assert "ORDER BY files.original_path" in file_lock_stmts[0]
+
+
+@pytest.mark.asyncio
 async def test_cascade_purges_scheduling_ledger_rows_for_its_files(session: AsyncSession) -> None:
     """phaze-u5dn: scheduling_ledger rows keyed on a deleted batch's files are purged, not stranded.
 

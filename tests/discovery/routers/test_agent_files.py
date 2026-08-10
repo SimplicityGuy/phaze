@@ -36,7 +36,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
 import pytest_asyncio
-from sqlalchemy import func as sa_func, select, update
+from sqlalchemy import func as sa_func, select, text, update
 
 from phaze.database import get_session
 from phaze.models.file import FileRecord
@@ -323,6 +323,32 @@ async def test_same_chunk_duplicate_paths_dedup(authenticated_client: AsyncClien
     assert response.status_code == 200, response.text
     result = await session.execute(select(sa_func.count()).select_from(FileRecord))
     assert result.scalar_one() == 1
+
+
+@pytest.mark.asyncio
+async def test_upsert_files_locks_in_original_path_order_not_request_order(
+    authenticated_client: AsyncClient, seed_test_agent: tuple[Agent, str], session: AsyncSession
+) -> None:
+    """phaze-zfxy6: the multi-row ``ON CONFLICT DO UPDATE`` must lock rows in ``original_path``
+    order, not chunk/directory-walk order.
+
+    ``delete_scan_cascade`` (services/scan_deletion.py) locks a batch's file rows FOR UPDATE
+    sorted by ``original_path`` -- the only column both sides of this cascade-vs-upsert race can
+    share (the cascade only has ``batch_id``; this endpoint's natural key is
+    ``(agent_id, original_path)``). If this statement's VALUES rows are NOT sorted the same way,
+    the two multi-row lockers can acquire locks over an overlapping row set in different orders
+    -- the classic ABBA deadlock. The request below is deliberately reverse-alphabetical to
+    prove the handler sorts rather than passing chunk order straight to Postgres: for a
+    same-table INSERT with no parallel workers, physical (``ctid``) insertion order follows
+    VALUES processing order, so it stands in for lock-acquisition order here.
+    """
+    reverse_alpha_paths = ["/test/music/z.mp3", "/test/music/m.mp3", "/test/music/b.mp3", "/test/music/a.mp3"]
+    records = [_make_record(path=p) for p in reverse_alpha_paths]
+    response = await authenticated_client.post("/api/internal/agent/files", json={"files": records})
+    assert response.status_code == 200, response.text
+
+    physical_order = (await session.execute(text("SELECT original_path FROM files ORDER BY ctid"))).scalars().all()
+    assert physical_order == sorted(reverse_alpha_paths)
 
 
 @pytest.mark.asyncio
