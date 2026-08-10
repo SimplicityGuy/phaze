@@ -683,6 +683,19 @@ class ControlSettings(BaseSettings):
             missing = [bid for bid in be.buckets if bid not in bucket_by_id]
             if missing:
                 raise ValueError(f"backend {be.id!r} references unknown bucket ids {missing} (D-08)")
+            # phaze-ru9oe: fail fast on a duplicate bucket id WITHIN one backend's own `buckets`
+            # list (a copy-paste duplicate, not a cross-backend share). Left unchecked, resolving
+            # `be.buckets` positionally below appends `be.id` once per LIST ENTRY into
+            # `cluster_specific_refs`, so a single backend listing the same cluster-specific bucket
+            # twice falsely trips the D-09 cross-backend cardinality guard below — it reports the
+            # SAME backend id twice as if two distinct backends shared the bucket. For scope=shared
+            # the same duplicate silently double-weights the bucket in pick_bucket's candidates.
+            # Mirror the existing duplicate-id idiom (Counter over entries) used at 612/624.
+            within_backend_dupes = sorted(bid for bid, count in Counter(be.buckets).items() if count > 1)
+            if within_backend_dupes:
+                raise ValueError(
+                    f"backend {be.id!r} lists duplicate bucket ids {within_backend_dupes} in its own buckets list — each id must appear once"
+                )
             resolved = [bucket_by_id[bid] for bid in be.buckets]
             if not resolved:
                 raise ValueError(f"backend {be.id!r} (kueue) resolves to an empty bucket set (D-08)")
