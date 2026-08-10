@@ -741,6 +741,19 @@ async def _execute_one(
                 msg = f"sha256 mismatch for {item.original_path}: expected {item.sha256_hash}, got {actual} (already-moved replay check against {proposed})"
                 raise ValueError(msg)
 
+        if already_moved:
+            # phaze-v3b1e: a confirmed replay means the move is durably done, so THIS
+            # proposal's cross-fs commit marker (if any) has no further job to do. The two
+            # sites below that normally unlink it (the complete-forward residue branch and
+            # the fresh-copy branch further down) both require `original` to still exist,
+            # so a crash between `original.unlink()` and the marker's own unlink there
+            # permanently skips them on every subsequent replay -- `already_moved` is now
+            # True and corroborated by the very marker file this call would otherwise never
+            # clean up, orphaning `<dest>.phaze-committed.<proposal_id>` in the archive
+            # forever. Cleaning it up here, once, on every already-moved replay closes that
+            # window regardless of which crash edge produced it.
+            _committed_copy_marker_path(proposed, item.proposal_id).unlink(missing_ok=True)
+
         if not already_moved:
             # 3. Optional sha256 verify (caller may supply None to skip)
             if item.sha256_hash is not None:
