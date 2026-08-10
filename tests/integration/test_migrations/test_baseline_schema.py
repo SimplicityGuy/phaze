@@ -1092,3 +1092,98 @@ async def test_migration_048_upgrade_heals_invalid_leftover_index() -> None:
         if blocker_conn is not None:
             await blocker_conn.close()
         await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+
+
+@pytest.mark.asyncio
+async def test_migration_051_downgrade_deletes_discogs_links_before_tracklist_tracks() -> None:
+    """051's downgrade must clear ``discogs_links`` for propagated rows before deleting
+    ``tracklist_tracks``, or it aborts with a ForeignKeyViolation on any database where Discogs
+    matching ran over a propagated tracklist (phaze-psa96).
+
+    Seeds a propagated tracklist (``propagated_from_set_key`` set) with a version, a track, and a
+    ``discogs_links`` row against that track -- the exact state ``POST /pipeline/match-tracklists``
+    produces once it starts including propagated rows -- then downgrades to 050 and asserts:
+    * the downgrade completes without raising (the regression this bead fixes);
+    * the propagated tracklist/version/track/discogs_links rows are all gone;
+    * a co-existing CANONICAL tracklist (and its own discogs_links row) survives untouched.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    cfg = _build_alembic_config(MIGRATIONS_TEST_DATABASE_URL)
+    engine = None
+    try:
+        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+        await asyncio.to_thread(upgrade_to, cfg, "051")
+
+        engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
+        canonical_id, canonical_version_id, canonical_track_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        propagated_id, propagated_version_id, propagated_track_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        async with engine.begin() as conn:
+            # A canonical (non-propagated) tracklist with its own accepted discogs_links row --
+            # must survive the downgrade untouched.
+            await conn.execute(
+                text(
+                    "INSERT INTO tracklists (id, external_id, source_url, auto_linked, source, status, created_at, updated_at) "
+                    "VALUES (:id, :ext, :url, false, '1001tracklists', 'approved', NOW(), NOW())"
+                ),
+                {"id": canonical_id, "ext": f"psa96-canon-{canonical_id}", "url": "https://example.com/tl-canon"},
+            )
+            await conn.execute(
+                text("INSERT INTO tracklist_versions (id, tracklist_id, version_number, scraped_at) VALUES (:id, :tid, 1, NOW())"),
+                {"id": canonical_version_id, "tid": canonical_id},
+            )
+            await conn.execute(
+                text("INSERT INTO tracklist_tracks (id, version_id, position) VALUES (:id, :vid, 1)"),
+                {"id": canonical_track_id, "vid": canonical_version_id},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO discogs_links (id, track_id, discogs_release_id, confidence, status) VALUES (:id, :tid, 'r-canon', 90.0, 'accepted')"
+                ),
+                {"id": uuid.uuid4(), "tid": canonical_track_id},
+            )
+
+            # A propagated tracklist -- the exact chain get_match_pending_tracklists surfaces to
+            # POST /pipeline/match-tracklists once discogs matching has run over it.
+            await conn.execute(
+                text(
+                    "INSERT INTO tracklists (id, external_id, source_url, auto_linked, source, status, "
+                    "propagated_from_set_key, propagation_confidence, created_at, updated_at) "
+                    "VALUES (:id, :ext, :url, false, '1001tracklists', 'approved', :set_key, 'exact', NOW(), NOW())"
+                ),
+                {"id": propagated_id, "ext": f"psa96-canon-{canonical_id}", "url": "https://example.com/tl-prop", "set_key": "set-psa96"},
+            )
+            await conn.execute(
+                text("INSERT INTO tracklist_versions (id, tracklist_id, version_number, scraped_at) VALUES (:id, :tid, 1, NOW())"),
+                {"id": propagated_version_id, "tid": propagated_id},
+            )
+            await conn.execute(
+                text("INSERT INTO tracklist_tracks (id, version_id, position) VALUES (:id, :vid, 1)"),
+                {"id": propagated_track_id, "vid": propagated_version_id},
+            )
+            # The discogs_links row against the PROPAGATED track -- without deleting this first,
+            # downgrade's DELETE FROM tracklist_tracks violates fk_discogs_links_track_id_tracklist_tracks.
+            await conn.execute(
+                text(
+                    "INSERT INTO discogs_links (id, track_id, discogs_release_id, confidence, status) VALUES (:id, :tid, 'r-prop', 85.0, 'candidate')"
+                ),
+                {"id": uuid.uuid4(), "tid": propagated_track_id},
+            )
+        await engine.dispose()
+        engine = None
+
+        # The regression this bead fixes: downgrade must not raise ForeignKeyViolation.
+        await asyncio.to_thread(downgrade_to, cfg, "050")
+
+        engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
+        async with engine.connect() as conn:
+            remaining_tracklists = (await conn.execute(text("SELECT id FROM tracklists"))).scalars().all()
+            remaining_tracks = (await conn.execute(text("SELECT id FROM tracklist_tracks"))).scalars().all()
+            remaining_links = (await conn.execute(text("SELECT track_id FROM discogs_links"))).scalars().all()
+        assert remaining_tracklists == [canonical_id], "downgrade must delete only the propagated tracklist"
+        assert remaining_tracks == [canonical_track_id], "downgrade must delete the propagated tracklist_tracks row too"
+        assert remaining_links == [canonical_track_id], "downgrade must delete discogs_links for the propagated track, keeping the canonical one"
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
