@@ -1647,20 +1647,85 @@ async def test_get_awaiting_cloud_count_degrades_to_zero_on_db_error() -> None:
     assert await get_awaiting_cloud_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
 
 
-async def _seed_cloud_job(session: AsyncSession, file_index: int, status: CloudJobStatus) -> None:
-    """Seed a ``(FileRecord, cloud_job)`` pair; the cloud_job carries ``status`` (Phase 90 D-12)."""
+async def _seed_cloud_job(session: AsyncSession, file_index: int, status: CloudJobStatus, *, backend_id: str | None = None) -> None:
+    """Seed a ``(FileRecord, cloud_job)`` pair; the cloud_job carries ``status`` (Phase 90 D-12) + an
+    optional ``backend_id`` (phaze-zyoag: the per-backend-kind seam)."""
     f = _file(file_index)
     session.add(f)
     await session.flush()
-    session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, status=status.value))
+    session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, status=status.value, backend_id=backend_id))
+
+
+# phaze-zyoag: a kueue-only registry (mirrors the bug report's "vox" lane) and a kueue+compute
+# registry (acceptance 3: one row of each kind must land correctly SIMULTANEOUSLY). Both reuse the
+# exact shape `tests/analyze/routers/test_lane_detail.py` already establishes for a kueue backend.
+_KUEUE_ONLY_TOML = """
+[[backends]]
+kind = "kueue"
+id = "vox"
+rank = 10
+cap = 3
+buckets = ["burst-vox"]
+
+  [backends.kube]
+  api_url = "https://kube.example:6443"
+  namespace = "phaze"
+  local_queue = "phaze-burst"
+
+[[backends]]
+kind = "local"
+id = "local"
+rank = 99
+cap = 1
+
+[[buckets]]
+id = "burst-vox"
+scope = "cluster-specific"
+bucket = "phaze-burst"
+endpoint_url = "https://s3.example"
+"""
+
+_KUEUE_AND_COMPUTE_TOML = """
+[[backends]]
+kind = "kueue"
+id = "vox"
+rank = 10
+cap = 3
+buckets = ["burst-vox"]
+
+  [backends.kube]
+  api_url = "https://kube.example:6443"
+  namespace = "phaze"
+  local_queue = "phaze-burst"
+
+[[backends]]
+kind = "compute"
+id = "a1"
+rank = 20
+cap = 2
+agent_ref = "a1-node"
+scratch_dir = "/scratch/a1"
+push_host = "a1.push"
+
+[[backends]]
+kind = "local"
+id = "local"
+rank = 99
+cap = 1
+
+[[buckets]]
+id = "burst-vox"
+scope = "cluster-specific"
+bucket = "phaze-burst"
+endpoint_url = "https://s3.example"
+"""
 
 
 @pytest.mark.asyncio
 async def test_get_pushing_count_happy_path(session: AsyncSession) -> None:
-    """DERIVED "pushing" count (Phase 90 D-12): cloud_job status IN (uploading, submitted).
-
-    Sources from the ``cloud_job`` sidecar, NOT ``files.state == PUSHING``. An ``uploaded`` (pushed)
-    and an ``awaiting`` cloud_job are excluded, proving the status membership.
+    """DERIVED "staged" count (phaze-zyoag): STAGING (uploading/uploaded) + SUBMITTED with no registered
+    kueue attribution (the historical/no-cloud-registry reading -- see the backend-kind tests below for
+    the kueue-attributed carve-out). An ``awaiting`` cloud_job is excluded, proving the status membership.
     """
     await _seed_cloud_job(session, 40, CloudJobStatus.UPLOADING)
     await _seed_cloud_job(session, 41, CloudJobStatus.SUBMITTED)
@@ -1668,15 +1733,15 @@ async def test_get_pushing_count_happy_path(session: AsyncSession) -> None:
     await _seed_cloud_job(session, 43, CloudJobStatus.AWAITING)
     await session.commit()
 
-    assert await get_pushing_count(session) == 2
+    assert await get_pushing_count(session) == 3
 
 
 @pytest.mark.asyncio
 async def test_get_pushed_count_happy_path(session: AsyncSession) -> None:
-    """DERIVED "pushed / analyzing" count (Phase 90 D-12): cloud_job status IN (uploaded, running).
-
-    Sources from the ``cloud_job`` sidecar, NOT ``files.state == PUSHED``. An ``uploading`` (pushing)
-    cloud_job is excluded, proving the status membership.
+    """DERIVED "analyzing" count (phaze-zyoag): RUNNING only, absent a registered kueue backend to
+    attribute a SUBMITTED row to (see the backend-kind tests below). Both ``uploaded`` rows moved OFF
+    this card in the phaze-zyoag re-seam -- an uploaded-not-yet-submitted row is pre-submit/staged, never
+    "analyzing (landed)".
     """
     await _seed_cloud_job(session, 44, CloudJobStatus.UPLOADED)
     await _seed_cloud_job(session, 45, CloudJobStatus.RUNNING)
@@ -1684,7 +1749,7 @@ async def test_get_pushed_count_happy_path(session: AsyncSession) -> None:
     await _seed_cloud_job(session, 47, CloudJobStatus.UPLOADING)
     await session.commit()
 
-    assert await get_pushed_count(session) == 3
+    assert await get_pushed_count(session) == 1
 
 
 @pytest.mark.asyncio
@@ -1713,6 +1778,88 @@ async def test_get_pushed_count_degrades_to_zero_on_db_error() -> None:
             raise RuntimeError("files table unavailable")
 
     assert await get_pushed_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# phaze-zyoag acceptance 1/2/3: the per-backend-kind seam. SUBMITTED means opposite things on kueue
+# (post-upload, admitted-or-queued, D-10) vs compute (mid-rsync, D-10) -- the two window-count cards
+# must split it by the row's OWN ``backend_id``, resolved through the SAME registry projection
+# (``non_local_backend_kinds``) the per-file lane badges already use.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_kueue_submitted_row_is_never_staged_mid_transfer(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """Acceptance 1: a kueue SUBMITTED row (upload done, Job created, waiting on quota) renders 0 in Staged.
+
+    Reproduces the exact bug report shape: one ``vox`` (kueue) row at status=submitted, upload long
+    finished, parked on cluster quota. It must NOT be counted as "Staged (pushing) -- mid-transfer".
+    """
+    backends_toml_env(_KUEUE_ONLY_TOML)
+    await _seed_cloud_job(session, 50, CloudJobStatus.SUBMITTED, backend_id="vox")
+    await session.commit()
+
+    assert await get_pushing_count(session) == 0, "a kueue SUBMITTED row must never render under the staged/mid-transfer card"
+    assert await get_pushed_count(session) == 1, "it belongs in Analyzing (cloud) -- post-submit, in the cloud window"
+
+
+@pytest.mark.asyncio
+async def test_kueue_uploaded_row_is_never_analyzing_landed(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """Acceptance 2: a kueue UPLOADED row (upload finished, submit_cloud_job not yet run) counts as staged.
+
+    ``KueueBackend._reap_stranded_staging`` exists precisely because this window is not necessarily
+    brief -- a dead agent or a lost ``s3_upload`` job can strand a row here for hours. It must never be
+    counted "Analyzing (cloud) -- landed" while nothing is actually analyzing it.
+    """
+    backends_toml_env(_KUEUE_ONLY_TOML)
+    await _seed_cloud_job(session, 51, CloudJobStatus.UPLOADED, backend_id="vox")
+    await session.commit()
+
+    assert await get_pushed_count(session) == 0, "an UPLOADED row must never render under the analyzing/landed card"
+    assert await get_pushing_count(session) == 1, "it is still pre-submit -- staged"
+
+
+@pytest.mark.asyncio
+async def test_compute_submitted_row_stays_staged_alongside_a_kueue_submitted_row(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """Acceptance 3: fixing kueue must not break compute. One row of EACH kind, same registry, same poll.
+
+    ``a1`` (compute) SUBMITTED is genuinely mid-rsync (D-10, ``ComputeAgentBackend.dispatch`` writes it
+    at dispatch time) and must stay staged; ``vox`` (kueue) SUBMITTED is post-upload and must move to
+    analyzing. Seeding both under ONE registry proves the split is per-row, not a global kueue-vs-compute
+    toggle.
+    """
+    backends_toml_env(_KUEUE_AND_COMPUTE_TOML)
+    await _seed_cloud_job(session, 52, CloudJobStatus.SUBMITTED, backend_id="a1")
+    await _seed_cloud_job(session, 53, CloudJobStatus.SUBMITTED, backend_id="vox")
+    await session.commit()
+
+    assert await get_pushing_count(session) == 1, "the compute SUBMITTED row (mid-rsync) must stay staged"
+    assert await get_pushed_count(session) == 1, "the kueue SUBMITTED row (post-upload) must move to analyzing"
+
+
+@pytest.mark.asyncio
+async def test_cloud_window_partition_matches_in_flight_exactly(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """Acceptance 4: Staged + Analyzing partition backends.IN_FLIGHT EXACTLY -- no row in neither, none in both.
+
+    Pins the invariant the phaze-zyoag design doc requires: for every :data:`phaze.services.backends.IN_FLIGHT`
+    status, on EITHER backend kind, the row is counted by EXACTLY ONE of the two cards. A future status-enum
+    member landing in ``IN_FLIGHT`` without an update here would leave this sum short of the total.
+    """
+    from phaze.services.backends import IN_FLIGHT
+
+    backends_toml_env(_KUEUE_AND_COMPUTE_TOML)
+    idx = 60
+    for status in IN_FLIGHT:
+        for backend_id in ("a1", "vox"):
+            await _seed_cloud_job(session, idx, status, backend_id=backend_id)
+            idx += 1
+    await session.commit()
+
+    total_rows = len(IN_FLIGHT) * 2
+    staged = await get_pushing_count(session)
+    analyzing = await get_pushed_count(session)
+
+    assert staged + analyzing == total_rows, "every in-flight row must land in EXACTLY one of the two cards"
 
 
 @pytest.mark.asyncio

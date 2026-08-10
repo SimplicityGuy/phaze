@@ -27,16 +27,24 @@
     x-data="{
         open: true,
         hide() {
-            // Full dismiss, mirroring _agent_detail_row.html's hide(): clear the fetched body (also
+            // Full dismiss, mirroring _agent_detail_row.html's hide() (phaze-trof4 + phaze-fg8vq apply
+            // identically here -- same shape, same bugs, same fix): clear the fetched body (also
             // removes its own-tick poller — htmx cancels a trigger on an element once it leaves the
-            // DOM), drop the ?clane= selection so the NEXT table poll stops rendering this row at all,
-            // then return focus to the trigger row by STABLE id ({{ row.trigger_id }} survives
-            // every poll's outerHTML swap).
+            // DOM), drop the ?clane= selection so the NEXT table poll stops rendering this row at all
+            // while KEEPING the operator's chosen sort/order (a bare '/admin/agents' discarded them,
+            // so a reload after dismissing silently reset the table to the default order), then return
+            // focus to the trigger row by STABLE id ({{ row.trigger_id }} survives every poll's
+            // outerHTML swap) and remove THIS row from the DOM outright (x-show-hiding it left a dead
+            // node with this same id in place, so a re-click on the same lane inside the ≤5s poll
+            // window lost to it under hx-preserve's id match, wedging the row open=false/empty
+            // forever). Focus MUST move before removal — removing the focused element's ancestor first
+            // drops focus to <body> instead.
             this.open = false;
             const el = document.getElementById('compute-lane-activity-{{ row.id }}');
             if (el) el.innerHTML = '';
-            try { history.replaceState({}, '', '/admin/agents'); } catch (e) { /* history unavailable: degrade */ }
-            this.$nextTick(() => { document.getElementById('{{ row.trigger_id }}')?.focus(); });
+            try { history.replaceState({}, '', '/admin/agents?{{ sort.query_params() }}'); } catch (e) { /* history unavailable: degrade */ }
+            document.getElementById('{{ row.trigger_id }}')?.focus();
+            this.$el.remove();
         }
     }"
     x-init="$nextTick(() => { document.getElementById('compute-lane-detail-heading-{{ row.id }}')?.focus(); })"

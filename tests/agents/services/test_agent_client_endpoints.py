@@ -367,3 +367,32 @@ async def test_patch_tag_write_uses_correct_url_and_body(client):  # type: ignor
     assert "log_id" not in sent, "log_id rides the path only (AUTH-01 shape)"
     assert isinstance(result, TagWriteResultResponse)
     assert result.applied is True
+
+
+@respx.mock
+async def test_report_tag_write_before_snapshot_uses_correct_url_and_body(client):  # type: ignore[no-untyped-def]
+    """phaze-anrw4: report_tag_write_before_snapshot -> PATCH .../tag-writes/{log_id}/before-snapshot.
+
+    A separate, EARLIER call than ``patch_tag_write`` -- the pre-write undo anchor, reported before
+    the mutating write. ``log_id`` rides the PATH only, same AUTH-01 shape as the result callback.
+    """
+    from phaze.schemas.agent_tag_writes import TagWriteBeforeSnapshotPayload, TagWriteBeforeSnapshotResponse
+
+    log_id = uuid.uuid4()
+
+    route = respx.patch(f"{_BASE_URL}/api/internal/agent/tag-writes/{log_id}/before-snapshot").mock(
+        return_value=httpx.Response(
+            200,
+            json={"agent_id": "fileserver-01", "log_id": str(log_id), "applied": True},
+        ),
+    )
+
+    payload = TagWriteBeforeSnapshotPayload(before_tags={"artist": "Original Artist"})
+    result = await client.report_tag_write_before_snapshot(log_id, payload)
+
+    assert route.called
+    sent = json.loads(route.calls[0].request.content)
+    assert sent["before_tags"] == {"artist": "Original Artist"}
+    assert "log_id" not in sent, "log_id rides the path only (AUTH-01 shape)"
+    assert isinstance(result, TagWriteBeforeSnapshotResponse)
+    assert result.applied is True

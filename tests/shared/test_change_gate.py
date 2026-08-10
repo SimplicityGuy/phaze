@@ -14,6 +14,15 @@ a change set mixing docs with a single ``.py`` file MUST classify as
 can never ride a doc-only skip past the security scans — so it gets an explicit,
 non-parametrised positive test rather than hiding in a table.
 
+phaze-tlo10: a bare ``*.md``/``*.txt`` pattern is unanchored to any directory, so it
+used to also swallow doc-extension files that live INSIDE a shipped-source tree —
+most importantly ``src/phaze/prompts/naming.md``, which is read at runtime by
+``load_prompt_template()`` and is structurally depended on for its exact
+placeholder lines. The classifier now checks ``^(src|tests|scripts|services)/``
+ahead of the doc patterns, so anything under those trees is code no matter its
+extension; :func:`test_source_tree_md_file_is_code` and
+:func:`test_naming_prompt_is_code` are the regression tests for that fix.
+
 An empty or whitespace-only file list is treated as ``code-changed=true`` (fail
 safe): a spurious-empty diff (e.g. a broken diff base) must never silently skip
 CI. ``code-changed=false`` is reserved for "at least one path changed, all docs".
@@ -56,11 +65,18 @@ def _classify(changed_files: str) -> str:
         (".planning/STATE.md\n.planning/phases/63/63-04-PLAN.md\n", "code-changed=false"),
         ("LICENSE\n", "code-changed=false"),
         ("docs/architecture.md\ndocs/notes.txt\nrelease-notes.txt\n", "code-changed=false"),
-        ("README.md\nsrc/phaze/foo.md\n", "code-changed=false"),
+        ("README.md\n", "code-changed=false"),
         # Code shapes -> run the full pipeline (code-changed=true).
         ("src/phaze/main.py\n", "code-changed=true"),
         (".github/workflows/ci.yml\n", "code-changed=true"),
         ("pyproject.toml\n", "code-changed=true"),
+        # phaze-tlo10: a doc-extension file INSIDE a shipped-source tree is code, not
+        # documentation — src/, tests/, scripts/, services/ are all anchored ahead of
+        # the extension-based doc patterns, regardless of the file's own extension.
+        ("README.md\nsrc/phaze/foo.md\n", "code-changed=true"),
+        ("src/phaze/prompts/naming.md\n", "code-changed=true"),
+        ("tests/BUCKETS.md\n", "code-changed=true"),
+        ("scripts/some-notes.txt\n", "code-changed=true"),
         # Empty / whitespace-only file list -> fail safe, run everything (WR-01).
         # A spurious-empty diff must never silently skip CI.
         ("", "code-changed=true"),
@@ -81,3 +97,27 @@ def test_mixed_doc_and_code_is_conservative() -> None:
     assertion here proves the conservative classifier is not vacuously permissive.
     """
     assert _classify(".planning/STATE.md\nLICENSE\nsrc/phaze/pipeline.py\n") == "code-changed=true"
+
+
+def test_naming_prompt_is_code() -> None:
+    """A PR touching ONLY src/phaze/prompts/naming.md must run the full pipeline (phaze-tlo10).
+
+    naming.md is runtime-loaded content (load_prompt_template(), src/phaze/services/
+    proposal.py) whose exact placeholder lines (``{date_convention_guidance}``,
+    ``{files_json}``) the code depends on structurally. Classifying it as
+    "documentation" let a prompt-only PR skip the entire test/quality/docker
+    pipeline. This is a dedicated, non-parametrised assertion (not just a table row)
+    because it is the exact regression the bug report was filed against.
+    """
+    assert _classify("src/phaze/prompts/naming.md\n") == "code-changed=true"
+
+
+def test_source_tree_md_file_is_code() -> None:
+    """ANY doc-extension file under src/tests/scripts/services is code (phaze-tlo10).
+
+    The fix is a directory-anchored precedence rule, not a one-off exception for
+    naming.md — this proves the rule generalizes to a path the bug report never
+    named specifically.
+    """
+    assert _classify("src/phaze/agent_watcher/README.md\n") == "code-changed=true"
+    assert _classify("tests/identify/fixtures/tracklist_render/README.md\n") == "code-changed=true"

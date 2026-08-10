@@ -40,19 +40,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pre-commit-
 
-      # PINNED, and it must stay pinned (phaze-b67d). The `hadolint` pre-commit hook is a `system`
-      # hook: it lints with whatever `hadolint` is on PATH, so `.pre-commit-config.yaml`'s frozen
-      # SHA pins the hook DEFINITION and not the binary. `hadolint: latest` here therefore defeated
-      # that pin entirely -- CI silently ran an unpinned linter, and when 2.15.0 shipped on
-      # 2026-07-30 it promoted DL3066 and reddened every open PR while a local
-      # `pre-commit run --all-files` stayed green against 2.14.0.
+      # PINNED, and it must stay pinned (phaze-b67d, recurred once already as phaze-ny3du).
+      # The `hadolint` pre-commit hook is a `system` hook: it lints with whatever `hadolint` is on
+      # PATH, so `.pre-commit-config.yaml`'s frozen SHA pins the hook DEFINITION and not the
+      # binary. `hadolint: latest` here therefore defeated that pin entirely -- CI silently ran an
+      # unpinned linter, and when 2.15.0 shipped on 2026-07-30 it promoted DL3066 and reddened
+      # every open PR while a local `pre-commit run --all-files` stayed green against 2.14.0.
       #
       # Keep this version equal to the hadolint release that `.pre-commit-config.yaml`'s frozen rev
-      # corresponds to (currently v2.15.0 / f177f71); bump BOTH together or the two disagree again.
+      # corresponds to (currently v2.15.1 / 2eece55); bump BOTH together or the two disagree again.
+      # tests/shared/test_hadolint_version_pin.py is the mechanical guard for this invariant --
+      # it failed silent once already (phaze-ny3du: a pre-commit rev bump to v2.15.1 left this
+      # step on v2.15.0 for an entire dependency-refresh cycle with no test catching it).
       - name: 🔧 Install hadolint
         uses: alexellis/arkade-get@1eef818e467c387d3f50cfe0d2c565d1cbe82b03  # master
         with:
-          hadolint: v2.15.0  # arkade uses this verbatim as the release tag -- the `v` is required
+          hadolint: v2.15.1  # arkade uses this verbatim as the release tag -- the `v` is required
 
       - name: 📦 Install dependencies
         run: just install

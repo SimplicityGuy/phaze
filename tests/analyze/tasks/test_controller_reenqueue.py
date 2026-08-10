@@ -192,7 +192,13 @@ async def test_shutdown_closes_task_router(monkeypatch: pytest.MonkeyPatch) -> N
 
 @pytest.mark.asyncio
 async def test_startup_survives_raising_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A recovery failure must NEVER abort controller boot (boot resilience)."""
+    """A recovery failure must NEVER abort controller boot (boot resilience).
+
+    phaze-sekvl: a non-``DBAPIError`` failure (a real bug, not the schema-race this bead fixes) is
+    NOT retried -- it is logged once and boot proceeds, exactly as before ``_run_boot_reconcile_with_retry``
+    was introduced. The retry budget is reserved for the specific "schema not ready yet" shape,
+    covered separately by ``test_startup_recovery_retries_transient_dbapi_errors_then_succeeds``.
+    """
     _patch_startup_constructors(monkeypatch)
 
     router_stub = _make_router_stub()
@@ -210,3 +216,38 @@ async def test_startup_survives_raising_recovery(monkeypatch: pytest.MonkeyPatch
     recover_mock.assert_awaited_once_with(ctx)
     # The router is still stashed (built before the guarded call), so shutdown can close it.
     assert ctx["task_router"] is router_stub
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_retries_transient_dbapi_errors_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The exact race this bead fixes: the schema isn't ready yet on the first attempt(s), but the
+    api's migration lands before the bounded retry budget is exhausted (phaze-sekvl).
+
+    A missing table/column surfaces through SQLAlchemy as a ``DBAPIError`` subclass (asyncpg's
+    ``UndefinedTableError`` arrives wrapped as ``ProgrammingError``) -- fail ``recover_orphaned_work``
+    with exactly that shape twice (simulating the worker racing ahead of the api's
+    ``alembic upgrade head``), then succeed on the third attempt, and assert startup surfaces the
+    eventual success rather than giving up after one try. The retry delay is zeroed so the test
+    doesn't actually sleep.
+    """
+    from sqlalchemy.exc import ProgrammingError
+
+    _patch_startup_constructors(monkeypatch)
+    monkeypatch.setattr("phaze.tasks.controller._BOOT_RECONCILE_RETRY_DELAY_SECONDS", 0.0)
+
+    router_stub = _make_router_stub()
+    monkeypatch.setattr("phaze.tasks.controller.AgentTaskRouter", lambda *_a, **_kw: router_stub)
+
+    def _schema_not_ready() -> ProgrammingError:
+        return ProgrammingError("SELECT 1 FROM saq_jobs", {}, Exception('relation "saq_jobs" does not exist'))
+
+    success_result = {"detected_loss": False, "forced": False, "stages": {}}
+    recover_mock = AsyncMock(side_effect=[_schema_not_ready(), _schema_not_ready(), success_result])
+    monkeypatch.setattr("phaze.tasks.controller.recover_orphaned_work", recover_mock)
+
+    from phaze.tasks import controller
+
+    ctx: dict[str, Any] = {}
+    await controller.startup(ctx)
+
+    assert recover_mock.await_count == 3, "must retry past the transient DBAPIError failures and stop once it succeeds"

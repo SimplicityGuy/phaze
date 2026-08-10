@@ -39,6 +39,22 @@ _BACKFILL = (
     "WHERE payload ? 'push_attempt' OR payload ? 's3_upload_attempt'"
 )
 _DROP_COLUMN = "ALTER TABLE public.scheduling_ledger DROP COLUMN redrive_attempt"
+# Mirror-image of _BACKFILL: this is a REPRESENTATION migration (the counter moves between two
+# storage locations, not an additive column with nothing to move back), so the downgrade must
+# write the dedicated column's current value back into the legacy payload key before dropping it
+# -- else the DROP silently discards the only live copy of the counter (post-042 code writes
+# ONLY redrive_attempt; nothing writes push_attempt/s3_upload_attempt into payload anymore), and
+# a rollback resets every in-flight push/upload re-drive budget to zero (phaze-dt2cx). Keyed on
+# `function` because that is what pre-042 code branched on to choose which payload key to read.
+_BACKFILL_PAYLOAD_FROM_COLUMN = (
+    "UPDATE public.scheduling_ledger "
+    "SET payload = jsonb_set("
+    "  payload,"
+    "  CASE WHEN function = 'push_file' THEN '{push_attempt}'::text[] ELSE '{s3_upload_attempt}'::text[] END,"
+    "  to_jsonb(redrive_attempt)"
+    ") "
+    "WHERE redrive_attempt IS NOT NULL"
+)
 
 
 def upgrade() -> None:
@@ -48,5 +64,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop the ``redrive_attempt`` column (counters revert to the payload-JSONB scheme)."""
+    """Back-fill ``redrive_attempt`` into the legacy payload JSONB keys, then drop the column.
+
+    Without the back-fill, dropping the column destroys the only live copy of the re-drive
+    counter (post-042 code never writes the legacy payload keys) and a rollback silently resets
+    every in-flight push/upload re-drive budget to zero -- the exact failure mode 042 exists to
+    eliminate, reintroduced by its own downgrade (phaze-dt2cx).
+    """
+    op.execute(_BACKFILL_PAYLOAD_FROM_COLUMN)
     op.execute(_DROP_COLUMN)

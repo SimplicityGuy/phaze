@@ -19,7 +19,7 @@ import uuid  # noqa: TC003
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import ARRAY, String, bindparam, delete, exists, func, select, tuple_, update
+from sqlalchemy import ARRAY, DateTime, String, bindparam, delete, exists, func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import UUID as PGUUID, insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 import structlog
@@ -363,7 +363,7 @@ async def _build_dag_context(
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -397,6 +397,32 @@ def _analysis_file_ids_scope(file_ids: list[uuid.UUID], name: str) -> Any:
 def _ledger_keys_scope(keys: list[str], name: str) -> Any:
     """``SchedulingLedger.key = ANY(:name)`` -- the same array-bind idiom, string keys (phaze-r7j9)."""
     return SchedulingLedger.key == func.any(bindparam(name, value=keys, type_=ARRAY(String())))
+
+
+def _scheduling_ledger_cas_delete_stmt(observed_rows: Sequence[Any]) -> Any:
+    """CAS-guarded ``DELETE ... WHERE (key, enqueued_at) IN (observed_rows)`` at CONSTANT bind cost.
+
+    phaze-krzz5: a bare ``tuple_(SchedulingLedger.key, SchedulingLedger.enqueued_at).in_(observed_rows)``
+    renders a composite ``(key, enqueued_at) IN ((p1, p2), (p3, p4), ...)`` -- SQLAlchemy expands
+    each row of a composite IN-list individually, so this is TWO bind parameters per row, hitting
+    asyncpg's 32767-parameter cap at roughly HALF the row count the sibling single-column
+    ``_analysis_file_ids_scope`` / ``_ledger_keys_scope`` array-bind idiom tolerates (the phaze-r7j9
+    fix those two apply, one column short of covering this composite-key DELETE).
+
+    Binds the observed rows as TWO parallel Postgres arrays and matches them via ``unnest`` run in
+    lockstep (multiple set-returning functions in one SELECT list iterate together in Postgres),
+    extending the same array-bind idiom to a composite key: exactly 2 bind parameters regardless of
+    how many rows were observed, same as the single-column helpers above.
+    """
+    observed_keys = [key for key, _ in observed_rows]
+    observed_enqueued_ats = [enqueued_at for _, enqueued_at in observed_rows]
+    observed_pairs = select(
+        func.unnest(bindparam("cas_delete_keys", value=observed_keys, type_=ARRAY(String()))).label("key"),
+        func.unnest(bindparam("cas_delete_enqueued_ats", value=observed_enqueued_ats, type_=ARRAY(DateTime(timezone=True)))).label("enqueued_at"),
+    ).subquery()
+    return delete(SchedulingLedger).where(
+        tuple_(SchedulingLedger.key, SchedulingLedger.enqueued_at).in_(select(observed_pairs.c.key, observed_pairs.c.enqueued_at)),
+    )
 
 
 async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: str, models_path: str) -> list[uuid.UUID]:
@@ -482,9 +508,20 @@ async def _retry_analysis_group(queue: Any, group: list[FileRecord], agent_id: s
         from phaze.database import async_session  # noqa: PLC0415
 
         async with async_session() as restore_session:
+            # phaze-6ib1n: guard on `analysis_completed_at IS NULL`, mirroring
+            # `report_analysis_failed`'s own conflict predicate (routers/agent_analysis.py) and its
+            # documented reason -- "guard the failure stamp so it NEVER downgrades a row that already
+            # reads DONE". Without it, a file that raced this loop (its own enqueue landed and
+            # `put_analysis` stamped `analysis_completed_at` WHILE this background task was still
+            # grinding through the rest of the group) trips the `analysis_completed_xor_failed` CHECK.
+            # That is a STATEMENT-level violation: this multi-row UPDATE aborts as a whole, the `except`
+            # below only logs, and every OTHER id in `failed_ids` -- whose enqueue genuinely never
+            # happened -- permanently loses its failure marker with no replacement job. A completed row
+            # needs no restore (it is done, not failed), so excluding it here is correct independent of
+            # the crash, and it means one raced id can never void the restore for the whole group.
             await restore_session.execute(
                 update(AnalysisResult)
-                .where(_analysis_file_ids_scope(failed_ids, "restore_ids"))
+                .where(_analysis_file_ids_scope(failed_ids, "restore_ids"), AnalysisResult.analysis_completed_at.is_(None))
                 .values(failed_at=func.now(), error_message="retry_analysis_failed: enqueue error, see agent logs (phaze-4ter)"),
             )
             await restore_session.commit()
@@ -794,9 +831,10 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # added here -- same service-owns-degrade wiring idiom as the straggler/failed counts above.
     awaiting_cloud_count = await get_awaiting_cloud_count(session)
 
-    # Phase 50 (50-07, D-09): the two bounded cloud-window count cards -- "Staged (pushing)"
-    # (FileState.PUSHING, mid-rsync) and "Analyzing (cloud)" (FileState.PUSHED, landed/within
-    # analysis). Both service reads own the never-500 _safe_count degrade (return 0 on any DB
+    # Phase 50 (50-07, D-09; re-seamed phaze-zyoag): the two bounded cloud-window count cards --
+    # "Staged (pushing)" (pre-submit / mid-transfer, per-backend-kind aware) and "Analyzing (cloud)"
+    # (post-submit, in the cloud window -- includes a kueue row waiting on cluster quota, NOT just
+    # "landed"). Both service reads own the never-500 _safe_count degrade (return 0 on any DB
     # error), so NO try/except here -- same service-owns-degrade idiom as awaiting_cloud_count.
     pushing_count = await get_pushing_count(session)
     analyzing_cloud_count = await get_pushed_count(session)
@@ -1140,12 +1178,27 @@ _PENDING_SORTS: dict[str, SortContract] = {
     ),
 }
 
+# phaze-6not3: sort what is shown -- FILES_SORT's own "sort what you show" precedent (see its comment
+# below) was violated on BOTH of these columns. `_tracklist_sets_page_stmt` already outerjoins
+# `FileRecord`, so both expressions below can reach it directly (no additional join needed).
+#   - "Set" renders `set_name = filename if matched else (artist or event or external_id)`
+#     (services/pipeline.py::get_tracklist_sets_page) -- NOT bare `Tracklist.artist`, which put a
+#     matched row's audio filename in a column that ordered by a value never shown for that row.
+#   - "Tracklist" renders ONLY the two-value `tracklist_state` ("matched"/"candidate") derived from
+#     `Tracklist.file_id IS NOT NULL` -- NOT `Tracklist.event`, a column that appears nowhere on
+#     screen. `Tracklist.file_id.is_not(None)` groups matched apart from candidate exactly like the
+#     rendered state does; a boolean ORDER BY sorts False-then-True (or the reverse on desc), which is
+#     the grouping the header promises.
 TRACKLIST_SETS_SORT = SortContract(
     endpoint="/pipeline/tracklist-sets",
     target="#tracklist-sets-view",
     columns=(
-        SortableColumn(key="artist", label="Set", expression=Tracklist.artist),
-        SortableColumn(key="event", label="Tracklist", expression=Tracklist.event),
+        SortableColumn(
+            key="artist",
+            label="Set",
+            expression=func.coalesce(FileRecord.original_filename, Tracklist.artist, Tracklist.event, Tracklist.external_id),
+        ),
+        SortableColumn(key="event", label="Tracklist", expression=Tracklist.file_id.is_not(None)),
     ),
     default_key="artist",
 )
@@ -1597,9 +1650,7 @@ async def trigger_backfill_cloud(
             await session.execute(select(SchedulingLedger.key, SchedulingLedger.enqueued_at).where(_ledger_keys_scope(ledger_keys, "ledger_keys")))
         ).all()
         if observed_ledger_rows:
-            await session.execute(
-                delete(SchedulingLedger).where(tuple_(SchedulingLedger.key, SchedulingLedger.enqueued_at).in_(observed_ledger_rows)),
-            )
+            await session.execute(_scheduling_ledger_cas_delete_stmt(observed_ledger_rows))
 
     counts = await _route_discovered_by_duration(
         request.app.state,
@@ -1896,8 +1947,29 @@ async def retry_analysis_failed_file(
     )
     await session.commit()
 
-    # NORMAL caps: a retry is a fresh re-analysis, not a deepen -- no fine_cap/coarse_cap override.
-    await enqueue_process_file(routed.queue, file, agent_id, settings.models_path)
+    # phaze-gcdih: the marker-clear above is ALREADY committed, so an exception raised by the enqueue
+    # itself (SAQ's job insert runs on its OWN psycopg3 pool, independent of this session -- see the
+    # two-pool analysis at ADR-0003 / pipeline.py:1576-1583) must not be allowed to propagate bare: that
+    # would leave the file with no failure marker AND no replacement job, invisible to both the
+    # ANALYSIS_FAILED bucket and recover_orphaned_work (ANALYZE is manual-only, D-00b). Mirror the bulk
+    # twin's restore (`_retry_analysis_group`): re-stamp the marker on a failed enqueue and tell the
+    # operator honestly instead of a dropped htmx 500.
+    try:
+        # NORMAL caps: a retry is a fresh re-analysis, not a deepen -- no fine_cap/coarse_cap override.
+        await enqueue_process_file(routed.queue, file, agent_id, settings.models_path)
+    except Exception:
+        logger.exception("retry_analysis_failed_file: failed to enqueue process_file job", file_id=str(file_id))
+        await session.execute(
+            update(AnalysisResult)
+            .where(AnalysisResult.file_id == file_id)
+            .values(failed_at=func.now(), error_message="retry_analysis_failed_file: enqueue error, see agent logs (phaze-gcdih)"),
+        )
+        await session.commit()
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/retry_failed_response.html",
+            context={"request": request, "count": 0, "no_active_agent": False, "enqueue_failed": True},
+        )
 
     logger.info("retry_analysis_failed_file re-queued", file_id=str(file_id))
     # phaze-bgz26: this endpoint's ONLY caller is the Files matrix per-row Retry button

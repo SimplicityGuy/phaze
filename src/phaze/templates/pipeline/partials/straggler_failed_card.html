@@ -56,6 +56,27 @@
                 Retry failed
             </button>
             <span id="retry-failed-result" class="block mt-2"></span>
+            {# phaze-7x0lf: the Phase-62 cutover deleted dag_canvas.html -- the ONLY host of
+               POST /pipeline/backfill-cloud (trigger_backfill_cloud) -- and the trigger was never
+               re-homed into any v7 workspace, leaving the timed-out-long-file cloud recovery path
+               unreachable from any served page. Re-homed here, the fix hint's natural home: beside
+               the Retry control on the SAME ANALYSIS_FAILED tile it draws its candidates from
+               (`ANALYSIS_FAILED ∧ duration >= threshold`, a subset of `analysis_failed_count`). The
+               response lands in its own sibling sink so a click never clobbers the Retry ack, and
+               backfill_response.html already degrades cleanly (disabled / nothing-to-backfill / count)
+               so no extra gating is needed here beyond "there is something failed to look at". #}
+            <button type="button"
+                    hx-post="/pipeline/backfill-cloud"
+                    hx-target="#backfill-response"
+                    hx-swap="innerHTML"
+                    hx-confirm="Backfill the timed-out long failed files to the cloud?"
+                    class="mt-3 ml-2 inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-md
+                           bg-blue-600 hover:bg-blue-700 text-white
+                           focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2
+                           dark:focus:ring-offset-blue-950">
+                Backfill to cloud
+            </button>
+            <span id="backfill-response" class="block mt-2"></span>
             {% endif %}
         </div>
     </div>

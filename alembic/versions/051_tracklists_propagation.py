@@ -90,12 +90,25 @@ def downgrade() -> None:
 
     The delete is scoped to ``propagated_from_set_key IS NOT NULL``, i.e. exactly the rows this
     migration made possible, and it runs BEFORE the column is dropped so the predicate still exists.
-    Their versions/tracks go first, in the child -> parent order ``services/scan_deletion`` uses,
-    since ``tracklist_versions.tracklist_id`` and ``tracklist_tracks.version_id`` are real FKs.
+    LEAF-TO-ROOT, mirroring 046: no FK in this chain is ON DELETE CASCADE, so any other order aborts
+    on a foreign-key violation wherever rows actually exist. ``discogs_links.track_id`` ->
+    ``tracklist_tracks`` -> ``tracklist_versions`` -> ``tracklists`` are ALL real, NO ACTION FKs
+    (``fk_discogs_links_track_id_tracklist_tracks`` included -- the 039 baseline never gives it an
+    ``ON DELETE`` clause), so ``discogs_links`` must be cleared before ``tracklist_tracks`` or the
+    delete aborts against any propagated row a later Discogs-match pass has linked.
     """
     # Written out as literals rather than interpolated from _PROPAGATED: ruff S608 / semgrep's
     # formatted-sql-query rule block ANY f-string-assembled SQL in this repo, and a migration is
     # exactly the wrong place to argue that this particular interpolation happens to be a constant.
+    op.execute(
+        sa.text(
+            "DELETE FROM discogs_links WHERE track_id IN ("
+            "  SELECT tt.id FROM tracklist_tracks tt"
+            "  JOIN tracklist_versions tv ON tv.id = tt.version_id"
+            "  JOIN tracklists t ON t.id = tv.tracklist_id"
+            "  WHERE t.propagated_from_set_key IS NOT NULL)"
+        )
+    )
     op.execute(
         sa.text(
             "DELETE FROM tracklist_tracks WHERE version_id IN ("

@@ -9,6 +9,7 @@ import uuid
 
 import pytest
 from sqlalchemy import delete, select, text, update
+from sqlalchemy.dialects import postgresql
 
 from phaze.config import settings
 from phaze.config_backends import ComputeBackend, KubeConfig, KueueBackend, LocalBackend
@@ -1300,6 +1301,54 @@ async def test_backfill_ledger_delete_is_cas_guarded_against_a_concurrent_reenqu
     # The CAS-guarded delete missed the row (its enqueued_at no longer matched what was observed) -- the
     # concurrently-refreshed ledger row survives instead of being removed out from under the live job.
     assert len(await _process_file_ledger_rows(session, candidate.id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_backfill_cas_delete_removes_every_candidates_ledger_row(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-krzz5: the CAS delete must still remove EVERY candidate's ledger row for N > 1 rows.
+
+    The `unnest`-based rewrite replaces a per-row composite ``tuple_(...).in_(...)`` with two
+    array-bound parameters; this pins the functional behavior (every observed (key, enqueued_at)
+    pair is matched and deleted) is unchanged by that rewrite, not just its bind-parameter shape.
+    """
+    candidates = await _persist_failed_with_duration(session, [_LONG, _LONG, _LONG, _LONG, _LONG])
+    await seed_active_agent(session, "nox", kind="fileserver")
+    wire_fakes(client)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+    await _drain_background()
+
+    for candidate in candidates:
+        assert await _process_file_ledger_rows(session, candidate.id) == [], (
+            f"ledger row for {candidate.id} survived the CAS delete -- the unnest rewrite dropped a row"
+        )
+
+
+def test_scheduling_ledger_cas_delete_stmt_uses_a_constant_bind_count_regardless_of_row_count() -> None:
+    """phaze-krzz5: THE regression pin -- bind-parameter count must be constant (2), never O(N).
+
+    A bare ``tuple_(key, enqueued_at).in_(rows)`` renders TWO literal bind parameters PER ROW,
+    which is exactly the shape that re-crosses asyncpg's 32767-parameter cap this module's sibling
+    array-bind helpers (``_analysis_file_ids_scope`` / ``_ledger_keys_scope``) were hardened to
+    avoid. Compiling the statement and counting its bind parameters -- independent of how many
+    ledger rows were observed -- is the direct, fast (no live DB, no 16K-row fixture) assertion
+    that the fix actually changed the PARAMETER SHAPE, not merely that a small-N delete still works
+    (the functional test above would pass against the un-fixed code too, since the bug only
+    manifests at ~16,383+ rows).
+    """
+    from phaze.routers.pipeline import _scheduling_ledger_cas_delete_stmt
+
+    small = [(f"process_file:{i}", datetime(2026, 1, 1, tzinfo=UTC)) for i in range(3)]
+    large = [(f"process_file:{i}", datetime(2026, 1, 1, tzinfo=UTC)) for i in range(5000)]
+
+    small_compiled = _scheduling_ledger_cas_delete_stmt(small).compile(dialect=postgresql.dialect())
+    large_compiled = _scheduling_ledger_cas_delete_stmt(large).compile(dialect=postgresql.dialect())
+
+    # Exactly the two array bind params (`cas_delete_keys`, `cas_delete_enqueued_ats`) -- NOT one
+    # pair of literal params per row, and NOT growing with the row count.
+    assert set(small_compiled.params) == {"cas_delete_keys", "cas_delete_enqueued_ats"}
+    assert len(small_compiled.params) == len(large_compiled.params) == 2
 
 
 @pytest.mark.asyncio
@@ -3316,6 +3365,33 @@ async def test_dashboard_admission_card_finished_is_green_not_alert(client: Asyn
 
 
 @pytest.mark.asyncio
+async def test_dashboard_admission_card_finished_is_a_lifetime_total_not_a_live_snapshot(client: AsyncClient, session: AsyncSession) -> None:
+    """Acceptance 6 (phaze-zyoag): Finished renders OUTSIDE the "per reconcile" live grid, captioned as cumulative.
+
+    ``cloud_phase == FINISHED`` counts EVERY succeeded row ever, unbounded -- unlike its three siblings
+    it is not a live-at-this-instant snapshot. The template must make that explicit rather than
+    implying, via the shared "per reconcile, updates ~5 min" caption, that all four counts share one
+    clock.
+    """
+    await _seed_cloud_phase(session, cloud_phase=CloudPhase.FINISHED.value)
+
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    import re
+
+    card = re.search(r'id="admission-state-card".*?</section>', response.text, re.DOTALL)
+    assert card is not None
+    card_html = card.group(0)
+    assert "lifetime total" in card_html, "the Finished tile must say it is cumulative, not live"
+    # The live-grid caption must not sit above a lone Finished tile implying it shares that clock.
+    live_caption_pos = card_html.find("live — per reconcile")
+    finished_pos = card_html.find("Finished")
+    assert live_caption_pos == -1, "with only Finished non-zero, the live-snapshot caption must not render"
+    assert finished_pos != -1
+
+
+@pytest.mark.asyncio
 async def test_dashboard_admission_card_quiet_for_null_cloud_phase(client: AsyncClient, session: AsyncSession) -> None:
     """An a1/local row (NULL cloud_phase) counts toward no phase → empty carrier, no heading."""
     await _seed_cloud_phase(session, cloud_phase=None)
@@ -3419,6 +3495,91 @@ async def test_dashboard_count_grid_holds_four_cards_outside_alert_carriers(clie
     assert inadmissible_pos < grid_open
     assert localqueue_pos < grid_open
     assert grid_open < admission_pos < awaiting_pos < staged_pos < analyzing_pos
+
+
+# ---------------------------------------------------------------------------
+# phaze-zyoag acceptance 5: a kueue cloud_job row in each of {uploading, uploaded, submitted, running}
+# must describe ITSELF consistently across the Staged / Analyzing / Admission panels on the SAME
+# rendered page -- no row may be claimed by two contradictory captions (the original bug report's
+# shape: one SUBMITTED row was simultaneously "Queued (quota)" on Admission AND "mid-transfer" on
+# Staged).
+# ---------------------------------------------------------------------------
+
+_VOX_KUEUE_ONLY_TOML = """
+[[backends]]
+kind = "kueue"
+id = "vox"
+rank = 10
+cap = 5
+buckets = ["burst-vox"]
+
+  [backends.kube]
+  api_url = "https://kube.example:6443"
+  namespace = "phaze"
+  local_queue = "phaze-burst"
+
+[[backends]]
+kind = "local"
+id = "local"
+rank = 99
+cap = 1
+
+[[buckets]]
+id = "burst-vox"
+scope = "cluster-specific"
+bucket = "phaze-burst"
+endpoint_url = "https://s3.example"
+"""
+
+
+@pytest.mark.asyncio
+async def test_staged_analyzing_and_admission_agree_per_row(client: AsyncClient, session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """One ``vox`` (kueue) row per {uploading, uploaded, submitted, running} renders consistently everywhere.
+
+    uploading/uploaded -> Staged only (never Analyzing, never an Admission tile -- cloud_phase is NULL
+    pre-submit). submitted -> Analyzing + Admission's "Queued (quota)", NEVER Staged (the exact bug
+    report shape). running -> Analyzing + Admission's "Running", never Staged.
+    """
+    backends_toml_env(_VOX_KUEUE_ONLY_TOML)
+
+    async def _seed(i: int, status: CloudJobStatus, cloud_phase: str | None) -> None:
+        f = _make_file()
+        session.add(f)
+        await session.flush()
+        session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, status=status.value, backend_id="vox", cloud_phase=cloud_phase))
+
+    await _seed(1, CloudJobStatus.UPLOADING, None)
+    await _seed(2, CloudJobStatus.UPLOADED, None)
+    await _seed(3, CloudJobStatus.SUBMITTED, CloudPhase.QUEUED_BEHIND_QUOTA.value)
+    await _seed(4, CloudJobStatus.RUNNING, CloudPhase.RUNNING.value)
+    await session.commit()
+
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    text = response.text
+
+    import re
+
+    def _card(section_id: str) -> str:
+        card = re.search(rf'id="{section_id}".*?</section>', text, re.DOTALL)
+        assert card is not None, f"{section_id} carrier must always render"
+        return card.group(0)
+
+    staged_card = _card("staged-pushing-card")
+    analyzing_card = _card("analyzing-cloud-card")
+    admission_card = _card("admission-state-card")
+
+    # Staged counts EXACTLY the two pre-submit rows (uploading + uploaded); the submitted row must
+    # NEVER inflate it -- the exact bug this bead fixes.
+    assert re.search(r"text-2xl[^>]*>\s*2\s*<", staged_card), staged_card
+
+    # Analyzing counts EXACTLY the two post-submit rows (submitted-on-kueue + running).
+    assert re.search(r"text-2xl[^>]*>\s*2\s*<", analyzing_card), analyzing_card
+
+    # Admission agrees: the SAME submitted row is "Queued (quota)" 1, the SAME running row is "Running" 1.
+    assert "Queued (quota)" in admission_card
+    assert "Running" in admission_card
+    assert re.search(r"Queued \(quota\)", admission_card)
 
 
 # ---------------------------------------------------------------------------

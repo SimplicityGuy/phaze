@@ -73,8 +73,13 @@ if TYPE_CHECKING:
     from phaze.schemas.agent_s3 import UploadedPart, UploadedResponse, UploadFailedResponse
     from phaze.schemas.agent_scan_batches import ScanBatchPatch, ScanBatchPatchResponse
 
-    # phaze-6bkk tag-write result callback.
-    from phaze.schemas.agent_tag_writes import TagWriteResultPayload, TagWriteResultResponse
+    # phaze-6bkk tag-write result callback; phaze-anrw4 pre-write snapshot callback.
+    from phaze.schemas.agent_tag_writes import (
+        TagWriteBeforeSnapshotPayload,
+        TagWriteBeforeSnapshotResponse,
+        TagWriteResultPayload,
+        TagWriteResultResponse,
+    )
 
 
 logger = structlog.get_logger(__name__)
@@ -473,6 +478,26 @@ class PhazeAgentClient:
             json=payload.model_dump(mode="json"),
         )
         return TagWriteResultResponse.model_validate(response.json())
+
+    async def report_tag_write_before_snapshot(self, log_id: uuid.UUID, payload: TagWriteBeforeSnapshotPayload) -> TagWriteBeforeSnapshotResponse:
+        """PATCH /api/internal/agent/tag-writes/{log_id}/before-snapshot -- pre-write undo anchor (phaze-anrw4).
+
+        Called BEFORE the mutating mutagen write in ``write_file_tags``, separate from (and prior
+        to) :meth:`patch_tag_write`'s terminal report -- the control plane records it first-write
+        -wins, so a SAQ retry's re-extraction of an ALREADY-WRITTEN disk can never overwrite the
+        true original captured by an earlier attempt. Best-effort from the caller's perspective:
+        a failure here must not abort the write itself (the terminal callback still carries its own
+        ``before_tags`` as a single-attempt fallback). ``log_id`` rides the path only (AUTH-01).
+        httpx-only -- NO database import, keeping the agent worker Postgres-free
+        (tests/shared/core/test_task_split.py)."""
+        from phaze.schemas.agent_tag_writes import TagWriteBeforeSnapshotResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "PATCH",
+            f"/api/internal/agent/tag-writes/{log_id}/before-snapshot",
+            json=payload.model_dump(mode="json"),
+        )
+        return TagWriteBeforeSnapshotResponse.model_validate(response.json())
 
     async def post_execution_log(self, payload: ExecutionLogCreate) -> ExecutionLogCreateResponse:
         """POST /api/internal/agent/execution-log -- INSERT-on-conflict-do-nothing."""

@@ -207,7 +207,15 @@ array_length() {
   eval "echo \${#${array_name}[@]}" 2>/dev/null || echo 0
 }
 
-# Diff uv.lock before/after to populate the package-change summary
+# Diff uv.lock before/after to populate the package-change summary.
+#
+# phaze-gxnal: a naive `grep "^name = |^version = " | paste -d' ' - -` pipeline assumes a
+# strict alternation of top-level `name = ` / `version = ` lines. uv.lock's document
+# preamble (`version = 1`, the lock-FORMAT version on line 1, unrelated to any package)
+# is exactly such an unpaired top-level `version` key, so `paste - -` pairs every package
+# off by one against the NEXT package's name and the summary silently stays empty forever.
+# Scoping the extraction to `[[package]]` table bodies (below) removes the ambiguity at
+# the source instead of trying to filter the preamble line back out after the fact.
 capture_package_changes() {
   if [[ "$DRY_RUN" == true ]]; then
     return
@@ -216,21 +224,48 @@ capture_package_changes() {
   if [[ -f "$BACKUP_DIR/uv.lock.backup" ]]; then
     print_info "$EMOJI_CHANGES Analyzing package changes..."
 
-    local old_packages new_packages
-    old_packages=$(grep -E "^name = |^version = " "$BACKUP_DIR/uv.lock.backup" | paste -d' ' - - | sed 's/name = "\(.*\)" version = "\(.*\)"/\1==\2/')
-    new_packages=$(grep -E "^name = |^version = " "uv.lock" | paste -d' ' - - | sed 's/name = "\(.*\)" version = "\(.*\)"/\1==\2/')
+    local diff_output
+    diff_output=$(
+      OLD_LOCK="$BACKUP_DIR/uv.lock.backup" NEW_LOCK="uv.lock" uv run python - <<'PY'
+import os
+import re
+from pathlib import Path
 
-    while IFS= read -r old_pkg; do
-      local pkg_name old_version new_version
-      pkg_name=$(echo "$old_pkg" | cut -d'=' -f1)
-      old_version=$(echo "$old_pkg" | cut -d'=' -f3)
-      new_version=$(echo "$new_packages" | grep "^$pkg_name==" | cut -d'=' -f3 || echo "")
 
-      if [[ -n "$new_version" ]] && [[ "$old_version" != "$new_version" ]]; then
-        PACKAGE_CHANGES+=("$pkg_name: $old_version → $new_version")
+def package_versions(path: str) -> dict[str, str]:
+    """Return {name: version} scoped to `[[package]]` table bodies only.
+
+    Unlike a flat name=/version= grep, splitting on the `[[package]]` table marker
+    means the lock-format preamble (`version = 1`, before the first table) can never
+    be mistaken for a package's version -- it simply isn't inside any block.
+    """
+    text = Path(path).read_text()
+    versions: dict[str, str] = {}
+    for block in text.split("\n[[package]]"):
+        name_match = re.search(r'^name = "([^"]*)"', block, re.MULTILINE)
+        version_match = re.search(r'^version = "([^"]*)"', block, re.MULTILINE)
+        if name_match and version_match:
+            versions[name_match.group(1)] = version_match.group(1)
+    return versions
+
+
+old_versions = package_versions(os.environ["OLD_LOCK"])
+new_versions = package_versions(os.environ["NEW_LOCK"])
+
+for pkg_name in sorted(old_versions):
+    old_version = old_versions[pkg_name]
+    new_version = new_versions.get(pkg_name)
+    if new_version and new_version != old_version:
+        print(f"{pkg_name}: {old_version} → {new_version}")
+PY
+    )
+
+    if [[ -n "$diff_output" ]]; then
+      while IFS= read -r change_line; do
+        PACKAGE_CHANGES+=("$change_line")
         CHANGES_MADE=true
-      fi
-    done <<<"$old_packages"
+      done <<<"$diff_output"
+    fi
   fi
 }
 
@@ -453,20 +488,30 @@ update_precommit_hooks() {
 
 # === Supply-Chain Cooldown Window ===
 
-# Keep the relative `exclude-newer` cooldown uniform across every pyproject.toml.
+# Keep the relative `exclude-newer` cooldown uniform across every pyproject.toml --
+# OR, when COOLDOWN_DAYS is 0, keep the key ABSENT (phaze-d4eiq).
 #
 # semgrep's uv-missing-dependency-cooldown rule wants a `[tool.uv] exclude-newer`
-# cooldown. We use the relative `"<COOLDOWN_DAYS> days"` form so the window rolls
-# forward on its own and `uv lock` only ever resolves releases at least that old. A
-# relative window stays satisfiable only while every dependency floor is already
-# older than the window, so it is paired with Dependabot's matching
-# `cooldown.default-days` (.github/dependabot.yml): Dependabot never opens a PR that
-# would pin a floor younger than the window, so the two never fight.
+# cooldown. When COOLDOWN_DAYS is positive we use the relative `"<COOLDOWN_DAYS>
+# days"` form so the window rolls forward on its own and `uv lock` only ever
+# resolves releases at least that old. A relative window stays satisfiable only
+# while every dependency floor is already older than the window, so it is paired
+# with Dependabot's matching `cooldown.default-days` (.github/dependabot.yml):
+# Dependabot never opens a PR that would pin a floor younger than the window, so
+# the two never fight.
 #
-# This function just re-asserts `exclude-newer = "<COOLDOWN_DAYS> days"` in the root
-# and every service pyproject.toml (adding a [tool.uv] table when absent) and then
-# refreshes the lockfiles. If a manifest drifts (value removed or changed), it is
-# restored — keeping the cooldown present and uniform.
+# COOLDOWN_DAYS defaults to 0, which is NOT "a zero-length window" -- it is the
+# operator's 2026-08-03 decision to run with no cooldown at all (see the `[tool.uv]`
+# comment in pyproject.toml). Writing `exclude-newer = "0 days"` for that case
+# reverts the decision, re-arms the semgrep gate the paired `# nosemgrep`
+# suppression exists to satisfy, and had already recurred three times before this
+# fix (a branch, a merge artifact, and this very function -- phaze-d4eiq). So:
+# when disabled (COOLDOWN_DAYS <= 0) this function only ever REMOVES a stray key
+# it finds; it never inserts one. When enabled it behaves as before, re-asserting
+# `exclude-newer = "<COOLDOWN_DAYS> days"` in the root and every service
+# pyproject.toml (adding a [tool.uv] table when absent) and refreshing the
+# lockfiles. Either way, a drifted manifest is restored to the intended state --
+# keeping the cooldown (or its deliberate absence) uniform.
 ensure_cooldown_window() {
   print_section "$EMOJI_VERIFY" "Ensuring Supply-Chain Cooldown Window"
 
@@ -490,23 +535,36 @@ cooldown_days = int(os.environ.get("COOLDOWN_DAYS", "7"))
 service_dirs = [s.strip() for s in os.environ.get("SERVICE_DIRS_NL", "").splitlines() if s.strip()]
 pyproject_paths = [Path("pyproject.toml")] + [Path(s) / "pyproject.toml" for s in service_dirs]
 
+# Operator decision 2026-08-03 (phaze-d4eiq): COOLDOWN_DAYS<=0 means "no cooldown, by
+# design" -- this function must only ever REMOVE a stray key in that state, never write
+# a fresh "0 days" window.
+disabled = cooldown_days <= 0
 want = f'exclude-newer = "{cooldown_days} days"\n'
 excl_re = re.compile(r'^\s*exclude-newer\s*=\s*"[^"]*"\s*$')
 header_re = re.compile(r"^\[tool\.uv\]\s*$")
 changed = 0
+removed = 0
 for pp in pyproject_paths:
     if not pp.exists():
         continue
     original = pp.read_text()
     new_lines = []
     replaced = False
+    found_existing = False
     for line in original.splitlines(keepends=True):
-        if not replaced and excl_re.match(line):
-            new_lines.append(want)
-            replaced = True
-            continue
+        if excl_re.match(line):
+            found_existing = True
+            if disabled:
+                # Drop the stray key outright -- do not replace it with a fresh window.
+                replaced = True
+                continue
+            if not replaced:
+                new_lines.append(want)
+                replaced = True
+                continue
         new_lines.append(line)
-    if not replaced:
+
+    if not disabled and not replaced:
         # No exclude-newer yet: insert after [tool.uv], or append a fresh table.
         inserted = False
         rebuilt = []
@@ -524,25 +582,40 @@ for pp in pyproject_paths:
     joined = "".join(new_lines)
     if joined != original:
         changed += 1
-        print(f"WROTE {pp}")
+        if disabled and found_existing:
+            removed += 1
+            print(f"REMOVED exclude-newer from {pp}")
+        else:
+            print(f"WROTE {pp}")
         if apply:
             pp.write_text(joined)
 
 print(f"PYPROJECTS_CHANGED={changed}")
+print(f"PYPROJECTS_REMOVED={removed}")
 PY
   )
 
-  local changed
+  local changed removed
   changed=$(echo "$output" | sed -n 's/^PYPROJECTS_CHANGED=//p')
   changed=${changed:-0}
+  removed=$(echo "$output" | sed -n 's/^PYPROJECTS_REMOVED=//p')
+  removed=${removed:-0}
 
-  print_info "Cooldown window: exclude-newer = \"${COOLDOWN_DAYS} days\" (relative, rolls forward)"
+  if [[ "$COOLDOWN_DAYS" -le 0 ]]; then
+    print_info "Cooldown window: disabled (operator decision 2026-08-03) — exclude-newer stays absent from [tool.uv]"
+  else
+    print_info "Cooldown window: exclude-newer = \"${COOLDOWN_DAYS} days\" (relative, rolls forward)"
+  fi
 
   if [[ "$DRY_RUN" == true ]]; then
     if [[ "$changed" -gt 0 ]]; then
-      print_info "[DRY RUN] Would set the cooldown window in $changed pyproject.toml file(s) and re-lock"
+      if [[ "$COOLDOWN_DAYS" -le 0 ]]; then
+        print_info "[DRY RUN] Would remove a stray exclude-newer from $changed pyproject.toml file(s) (operator decision 2026-08-03: no cooldown)"
+      else
+        print_info "[DRY RUN] Would set the cooldown window in $changed pyproject.toml file(s) and re-lock"
+      fi
     else
-      print_success "[DRY RUN] All pyproject.toml already carry the cooldown window"
+      print_success "[DRY RUN] All pyproject.toml already match the intended cooldown state"
     fi
     return
   fi
@@ -555,10 +628,19 @@ PY
       (cd "$svc_dir" && { uv lock >/dev/null 2>&1 || uv lock; })
     done
     CHANGES_MADE=true
-    FILE_CHANGES+=("pyproject.toml (root + services): set cooldown window to ${COOLDOWN_DAYS} days")
-    print_success "Set cooldown window (\"${COOLDOWN_DAYS} days\") across $changed pyproject.toml file(s)"
+    if [[ "$COOLDOWN_DAYS" -le 0 ]]; then
+      FILE_CHANGES+=("pyproject.toml (root + services): removed a stray exclude-newer cooldown — operator decision 2026-08-03 keeps this key absent")
+      print_warning "Removed a stray exclude-newer cooldown from $changed pyproject.toml file(s) — see the [tool.uv] comment (operator decision 2026-08-03)"
+    else
+      FILE_CHANGES+=("pyproject.toml (root + services): set cooldown window to ${COOLDOWN_DAYS} days")
+      print_success "Set cooldown window (\"${COOLDOWN_DAYS} days\") across $changed pyproject.toml file(s)"
+    fi
   else
-    print_success "Cooldown window already set (\"${COOLDOWN_DAYS} days\") in all manifests"
+    if [[ "$COOLDOWN_DAYS" -le 0 ]]; then
+      print_success "No exclude-newer cooldown present (operator decision 2026-08-03) — nothing to do"
+    else
+      print_success "Cooldown window already set (\"${COOLDOWN_DAYS} days\") in all manifests"
+    fi
   fi
 }
 

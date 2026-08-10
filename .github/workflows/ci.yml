@@ -75,10 +75,13 @@ jobs:
           # Delegate the doc-vs-code classification to the versioned, unit-tested
           # scripts/classify-changed-files.sh via `just` (D-10). The script prints
           # `code-changed=false` when EVERY changed path is documentation
-          # (*.md, .planning/**, LICENSE, docs/**, *.txt) and `code-changed=true`
-          # otherwise — conservative by construction, so any code/test/workflow
-          # change still runs the full pipeline. Its stdout is already in
-          # GitHub Actions name=value form, appended straight to the job output.
+          # (*.md, .planning/**, LICENSE, docs/**, *.txt) OUTSIDE src/, tests/,
+          # scripts/, and services/ — those trees are always code regardless of
+          # extension (phaze-tlo10: src/phaze/prompts/naming.md is runtime-loaded,
+          # not documentation) — and `code-changed=true` otherwise, conservative by
+          # construction so any code/test/workflow change still runs the full
+          # pipeline. Its stdout is already in GitHub Actions name=value form,
+          # appended straight to the job output.
           CODE_CHANGED=$(echo "${CHANGED_FILES}" | just detect-code-changes)
           echo "${CODE_CHANGED}" >> "${GITHUB_OUTPUT}"
 

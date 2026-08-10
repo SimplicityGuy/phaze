@@ -23,10 +23,17 @@
    elements by id BEFORE applying an incoming swap: as long as the poll's fresh response still contains
    a node with THIS id (i.e. the selection still resolves to this agent), the OLD node — Alpine state,
    in-flight own-tick, fetched content, all of it — is kept in place, untouched, in preference to the
-   newly-rendered one. The moment the selection stops resolving to this agent (a different row
-   selected, or dismissed via ✕/Esc, which clears the ?agent= URL param this render is keyed on) the
-   next poll's response simply omits a node with this id, so there is nothing left to preserve and this
-   row is torn down cleanly with the rest of the old content — no separate teardown plumbing needed.
+   newly-rendered one. The moment a DIFFERENT row is selected the next poll's response simply omits a
+   node with this id, so there is nothing left to preserve and this row is torn down cleanly with the
+   rest of the old content — no separate teardown plumbing needed for that path.
+
+   Dismissal (✕/Esc) is NOT left to that poll-driven path, deliberately (phaze-fg8vq): hide() below
+   removes this node from the DOM itself, synchronously, rather than only x-show-hiding it and waiting
+   up to 5s for a poll response that omits the id. A stale x-show-hidden node with this SAME id would
+   otherwise win the hx-preserve id match against a fresh, freshly-`open:true` row rendered by a
+   re-click on the same agent inside that window — hx-preserve cannot tell "still selected, untouched
+   on purpose" apart from "was dismissed, hasn't been swept yet" by id alone, so the only node-identity
+   state that is safe to leave lying around is "does not exist".
 
    Kept minimal + extensible (phaze-2u8v.8 fixes the SKIPPED-column clipping on top of this shape): the
    activity swap target (#agent-activity-{{ row.id }}) is a plain child div sized to the table's FULL
@@ -38,14 +45,25 @@
         hide() {
             // Full dismiss, mirroring _detail_pane.html's wipe()+hide(): clear the fetched body (also
             // removes its own-tick poller — htmx cancels a trigger on an element once it leaves the
-            // DOM), drop the ?agent= selection so the NEXT table poll stops rendering this row at all,
-            // then return focus to the trigger row by STABLE id ({{ row.trigger_id }} survives
-            // every poll's outerHTML swap).
+            // DOM), drop the ?agent= selection so the NEXT table poll stops rendering this row at all
+            // while KEEPING the operator's chosen sort/order (phaze-trof4: a bare '/admin/agents'
+            // discarded them, so a reload after dismissing silently reset the table to the default
+            // order — the same reset the poll fix already closes, arriving by a different route; the
+            // `sort` object is always resolved server-side by this render, so it is never empty here
+            // even when the operator never clicked a header), then return focus to the trigger row by
+            // STABLE id ({{ row.trigger_id }} survives every poll's outerHTML swap) and remove THIS
+            // row from the DOM outright (phaze-fg8vq: x-show-hiding it left a dead node with this
+            // same id in place, so a re-click on the same agent inside the ≤5s poll window lost to it
+            // under hx-preserve's id match — htmx keeps the OLD node over a fresh incoming one
+            // whenever both carry the same id, wedging the row open=false/empty forever). Focus MUST
+            // move before removal — removing the focused element's ancestor first drops focus to
+            // <body> instead.
             this.open = false;
             const el = document.getElementById('agent-activity-{{ row.id }}');
             if (el) el.innerHTML = '';
-            try { history.replaceState({}, '', '/admin/agents'); } catch (e) { /* history unavailable: degrade */ }
-            this.$nextTick(() => { document.getElementById('{{ row.trigger_id }}')?.focus(); });
+            try { history.replaceState({}, '', '/admin/agents?{{ sort.query_params() }}'); } catch (e) { /* history unavailable: degrade */ }
+            document.getElementById('{{ row.trigger_id }}')?.focus();
+            this.$el.remove();
         }
     }"
     {# Focus the heading exactly once: x-init fires only when Alpine first initializes this

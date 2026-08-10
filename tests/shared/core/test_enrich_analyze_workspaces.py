@@ -304,6 +304,37 @@ async def test_analyze_workspace_hosts_the_real_analysis_health_card(client: Asy
 
 
 @pytest.mark.asyncio
+async def test_analysis_health_card_hosts_the_backfill_to_cloud_trigger(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-7x0lf: 'Backfill to cloud' is re-homed onto the Analysis Health card.
+
+    The Phase-62 cutover deleted dag_canvas.html, the ONLY host of POST /pipeline/backfill-cloud
+    (trigger_backfill_cloud) -- and unlike every other dag_canvas trigger, it was never re-homed
+    into any v7 workspace, leaving the timed-out-long-file cloud recovery path unreachable from
+    any served page. This asserts the re-homed trigger exists beside the existing 'Retry failed'
+    control (the fix hint's natural home), wired to the real endpoint with a confirming guard and
+    its own sibling response sink -- never clobbering the Retry ack's sink.
+    """
+    file = await _seed_file(session)
+    await _seed_analysis(session, file.id, None, None, completed=False)
+    failed = await _seed_file(session, original_filename="terminal.mp3")
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=failed.id, failed_at=datetime.now(UTC), error_message="boom", analysis_completed_at=None))
+    await session.commit()
+
+    frag = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert frag.status_code == 200
+    body = frag.text
+    card = body.split('id="straggler-failed-card"')[1].split("</section>")[0]
+
+    assert 'hx-post="/pipeline/backfill-cloud"' in card
+    assert "Backfill to cloud" in card
+    # A SIBLING sink, not the Retry control's own #retry-failed-result (so a click never clobbers
+    # the other control's ack).
+    assert 'id="backfill-response"' in card
+    assert 'hx-target="#backfill-response"' in card
+    assert "hx-confirm" in card
+
+
+@pytest.mark.asyncio
 async def test_other_workspaces_still_sink_the_analysis_health_card_hidden(client: AsyncClient) -> None:
     """Regression (phaze-tyt3): every OTHER stage still needs the hidden OOB sink.
 

@@ -1,12 +1,16 @@
-{# Phase 50 (50-07, D-09): "Staged (pushing)" cloud-window count card.
+{# Phase 50 (50-07, D-09; re-seamed phaze-zyoag): "Staged (pushing)" cloud-window count card.
 
-   pushing_count = files in FileState.PUSHING: the left half of the bounded ≤N cloud window --
-   long files whose payload is mid-rsync to the single compute agent's scratch dir. Paired with
-   the "Analyzing (cloud)" card (PUSHED) it makes the "one ahead" window visible at a glance,
-   alongside the "Awaiting cloud" backlog card (CLOUDPIPE-01 observability).
+   pushing_count = the PRE-SUBMIT half of the bounded ≤N cloud window: cloud_job rows in
+   backends.STAGING (mid-upload / uploaded-not-yet-submitted) PLUS a SUBMITTED row on a COMPUTE
+   backend (D-10: compute writes SUBMITTED at dispatch and stays there for the whole rsync push,
+   so it genuinely IS mid-transfer there). A SUBMITTED row on a KUEUE backend is EXCLUDED -- on
+   kueue the upload is long finished by the time a Job exists; that row is admitted-or-queued, not
+   mid-transfer, and belongs in "Analyzing (cloud)" instead (phaze-zyoag: it used to render here,
+   contradicting the Cloud · Admission card's own "Queued (quota)" tile for the SAME row). See
+   phaze.services.pipeline._cloud_window_clauses for the full per-backend-kind derivation.
 
-   The count arrives in the context from the Plan-07 degrade-safe service read (get_pushing_count);
-   a degraded read surfaces as 0, so the card always renders a (possibly zero) number and NEVER
+   The count arrives in the context from the degrade-safe service read (get_pushing_count); a
+   degraded read surfaces as 0, so the card always renders a (possibly zero) number and NEVER
    raises into the 5s poll. The value is a plain int rendered through Jinja autoescape.
 
    Rendered inline in dashboard.html on first load (#staged-pushing-card lives OUTSIDE the
@@ -26,6 +30,6 @@
     <div class="bg-amber-50 dark:bg-amber-950 rounded-lg p-4 text-center">
         <p class="text-2xl font-bold text-amber-700 dark:text-amber-400">{{ pushing_count }}</p>
         <p class="text-sm text-amber-600 dark:text-amber-400">Staged (pushing)</p>
-        <p class="text-xs text-amber-500 dark:text-amber-500 mt-1">mid-transfer — counts toward busy lane slots</p>
+        <p class="text-xs text-amber-500 dark:text-amber-500 mt-1">pre-submit or mid-transfer — counts toward busy lane slots</p>
     </div>
 </section>

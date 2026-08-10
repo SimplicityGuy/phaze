@@ -601,8 +601,10 @@ def _window_file(i: int) -> FileRecord:
 async def _seed_window(session: AsyncSession, i: int, status: CloudJobStatus) -> None:
     """Seed a ``(FileRecord, cloud_job)`` pair for the bounded-window count cards (Phase 90 D-12).
 
-    The pushing / analyzing-cloud counts now DERIVE from ``cloud_job.status`` (pushing = uploading /
-    submitted; analyzing-cloud = uploaded / running), NOT ``files.state`` -- so seed the sidecar row.
+    The pushing / analyzing-cloud counts DERIVE from ``cloud_job.status`` (+ ``backend_id`` since
+    phaze-zyoag), NOT ``files.state`` -- so seed the sidecar row. No ``backend_id`` here (no registered
+    cloud backend in these tests' default settings), so a SUBMITTED row falls to the historical
+    "staged" reading (see ``phaze.services.pipeline._cloud_window_clauses``'s NULL-backend_id fallback).
     """
     f = _window_file(i)
     session.add(f)
@@ -640,28 +642,38 @@ async def _capture_context(client: AsyncClient, monkeypatch: pytest.MonkeyPatch,
 
 @pytest.mark.asyncio
 async def test_dashboard_context_carries_window_counts(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """GET /pipeline/ context carries pushing_count + analyzing_cloud_count (Phase 90 D-12: derived)."""
+    """GET /pipeline/ context carries pushing_count + analyzing_cloud_count (phaze-zyoag: re-seamed).
+
+    All three rows carry no ``backend_id`` (no registered cloud backend), so the UPLOADING/UPLOADED/
+    SUBMITTED rows all fall on the staged side of the phaze-zyoag seam (STAGING + the NULL-backend_id
+    SUBMITTED fallback) -- 0 rows are left for "analyzing" (RUNNING, or a kueue-attributed SUBMITTED,
+    neither of which is present here).
+    """
     await _seed_window(session, 1, CloudJobStatus.UPLOADING)
     await _seed_window(session, 2, CloudJobStatus.SUBMITTED)
     await _seed_window(session, 3, CloudJobStatus.UPLOADED)
     await session.commit()
 
     ctx = await _capture_context(client, monkeypatch, "/s/analyze")
-    assert ctx["pushing_count"] == 2
-    assert ctx["analyzing_cloud_count"] == 1
+    assert ctx["pushing_count"] == 3
+    assert ctx["analyzing_cloud_count"] == 0
 
 
 @pytest.mark.asyncio
 async def test_stats_poll_context_carries_window_counts(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """GET /pipeline/stats context re-pushes pushing_count + analyzing_cloud_count on the 5s poll."""
+    """GET /pipeline/stats context re-pushes pushing_count + analyzing_cloud_count on the 5s poll.
+
+    UPLOADING/UPLOADED are unconditionally staged (STAGING); RUNNING is unconditionally analyzing
+    (phaze-zyoag: RUNNING never carries the compute-vs-kueue ambiguity SUBMITTED does).
+    """
     await _seed_window(session, 4, CloudJobStatus.UPLOADING)
     await _seed_window(session, 5, CloudJobStatus.UPLOADED)
     await _seed_window(session, 6, CloudJobStatus.RUNNING)
     await session.commit()
 
     ctx = await _capture_context(client, monkeypatch, "/pipeline/stats")
-    assert ctx["pushing_count"] == 1
-    assert ctx["analyzing_cloud_count"] == 2
+    assert ctx["pushing_count"] == 2
+    assert ctx["analyzing_cloud_count"] == 1
 
 
 @pytest.mark.asyncio

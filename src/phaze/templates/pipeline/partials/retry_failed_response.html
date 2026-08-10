@@ -8,6 +8,13 @@
 <span class="text-sm text-amber-600 dark:text-amber-400 font-medium">
     No active agent — nothing re-queued.
 </span>
+{% elif enqueue_failed %}
+{# phaze-gcdih: the enqueue itself raised AFTER the failure marker was already cleared+committed.
+   The handler re-stamped the marker before returning here, so the file is honestly back in the
+   failed bucket (not silently vanished) -- surface that instead of a dropped 500. #}
+<span class="text-sm text-red-600 dark:text-red-400 font-medium">
+    Retry failed — could not re-queue the file (see agent logs). It remains marked as failed.
+</span>
 {% elif count == 0 %}
 <span class="text-sm text-gray-600 dark:text-gray-400 font-medium">
     No failed files to retry.
