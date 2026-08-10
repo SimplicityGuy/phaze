@@ -1885,8 +1885,29 @@ async def retry_analysis_failed_file(
     )
     await session.commit()
 
-    # NORMAL caps: a retry is a fresh re-analysis, not a deepen -- no fine_cap/coarse_cap override.
-    await enqueue_process_file(routed.queue, file, agent_id, settings.models_path)
+    # phaze-gcdih: the marker-clear above is ALREADY committed, so an exception raised by the enqueue
+    # itself (SAQ's job insert runs on its OWN psycopg3 pool, independent of this session -- see the
+    # two-pool analysis at ADR-0003 / pipeline.py:1576-1583) must not be allowed to propagate bare: that
+    # would leave the file with no failure marker AND no replacement job, invisible to both the
+    # ANALYSIS_FAILED bucket and recover_orphaned_work (ANALYZE is manual-only, D-00b). Mirror the bulk
+    # twin's restore (`_retry_analysis_group`): re-stamp the marker on a failed enqueue and tell the
+    # operator honestly instead of a dropped htmx 500.
+    try:
+        # NORMAL caps: a retry is a fresh re-analysis, not a deepen -- no fine_cap/coarse_cap override.
+        await enqueue_process_file(routed.queue, file, agent_id, settings.models_path)
+    except Exception:
+        logger.exception("retry_analysis_failed_file: failed to enqueue process_file job", file_id=str(file_id))
+        await session.execute(
+            update(AnalysisResult)
+            .where(AnalysisResult.file_id == file_id)
+            .values(failed_at=func.now(), error_message="retry_analysis_failed_file: enqueue error, see agent logs (phaze-gcdih)"),
+        )
+        await session.commit()
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/retry_failed_response.html",
+            context={"request": request, "count": 0, "no_active_agent": False, "enqueue_failed": True},
+        )
 
     logger.info("retry_analysis_failed_file re-queued", file_id=str(file_id))
     # phaze-bgz26: this endpoint's ONLY caller is the Files matrix per-row Retry button
