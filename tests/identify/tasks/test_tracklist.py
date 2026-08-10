@@ -243,6 +243,29 @@ class TestRearmsTheDrain:
         assert (await refresh_tracklists(ctx_for(session), file_ids=[str(file_id)]))["refreshed"] == 1
         assert await _flagged_file_ids(session) == {file_id}
 
+    async def test_addressable_by_a_duplicates_file_id_not_just_the_canonicals(self, session: AsyncSession) -> None:
+        """phaze-vtovq: naming a DUPLICATE's file id must resolve the CANONICAL row, not nothing.
+
+        A duplicate file's own ``Tracklist`` row is itself a propagated projection --
+        ``file_id`` is the duplicate's, ``propagated_from_set_key`` is set -- so the record
+        page's "Refresh from 1001Tracklists" button (which renders for any file with a tracklist,
+        including projections) named the projection's file id. Before the fix, ANDing the
+        canonical filter directly onto that file-id clause matched nothing: ``refreshed`` stayed
+        0, no cache row was cleared, no file was flagged, and the button silently did nothing.
+        """
+        canonical_file = await _seed_file(session, "canonical.mp3")
+        duplicate_file = await _seed_file(session, "duplicate.mp3")
+        await _seed_tracklist(session, external_id="page-9", file_id=canonical_file)
+        await _seed_tracklist(session, external_id="page-9", file_id=duplicate_file, set_key="set-9")
+        await record_outcome(session, set_key="set-9", query_text="q", outcome=LookupOutcome.FOUND, external_id="page-9")
+
+        result = await refresh_tracklists(ctx_for(session), file_ids=[str(duplicate_file)])
+
+        assert result["refreshed"] == 1
+        assert result["cache_entries_cleared"] == 1
+        assert await _cache_rows(session, "page-9") == []
+        assert await _flagged_file_ids(session) == {canonical_file, duplicate_file}
+
     async def test_a_propagated_row_named_directly_is_not_treated_as_canonical(self, session: AsyncSession) -> None:
         """phaze-fq9h.7: only canonical rows are refresh targets.
 
