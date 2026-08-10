@@ -686,3 +686,27 @@ async def test_concurrent_terminal_patches_serialize_on_the_row_lock(async_engin
             await s.commit()
         # NOTE: do NOT dispose ``engine`` -- it is the session-scoped ``async_engine`` fixture,
         # owned (and disposed) by conftest.
+
+
+@pytest.mark.asyncio
+async def test_running_to_failed_error_message_with_nul_is_sanitized_not_500(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """phaze-hvve5 (site 1): this was the ONE agent PATCH endpoint that did not sanitize
+    `error_message` before the generic `setattr` loop writes it and commits -- a NUL used to abort
+    the commit with CharacterNotInRepertoireError, permanently losing the terminal FAILED report."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.patch(
+            f"/api/internal/agent/scan-batches/{batch_id}",
+            json={"status": "failed", "error_message": "disk I/O error: \x00 corrupted sector"},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "\x00" not in body["error_message"]
+
+    await session.commit()
+    session.expire_all()
+    b = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    assert b.status == ScanStatus.FAILED.value
+    assert b.error_message == "disk I/O error:  corrupted sector"
+    assert "\x00" not in (b.error_message or "")
