@@ -44,12 +44,34 @@
 {% set subcount = '`${$store.pipeline.analyzeActive} files in the analyze stage`' %}
 {% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
 {% set actions %}
+    {# phaze-pix6g: RUN ANALYSIS -- the Phase-62 cutover deleted dag_canvas.html, the ONLY host of
+       POST /pipeline/analyze (trigger_analysis_ui). Every other dag_canvas trigger was re-homed
+       (extract-metadata -> metadata_workspace EXTRACT ALL, proposals -> propose_workspace GENERATE
+       ALL, recover -> discover_workspace RECOVER, execute -> apply_workspace EXECUTE APPROVED via
+       phaze-vvmh) but analyze never was, leaving DISCOVERED files with no way to enter the pipeline
+       (no auto-advance cron -- tasks/controller.py). Re-homed here VERBATIM to the same shape:
+       R-4 bulk-enqueue guard (hx-confirm + hx-disabled-elt + the seeded analyzeBusy busy-gate,
+       _workspace_poll_seeds.html:32) posting into a sibling response sink rendering
+       trigger_response.html, matching metadata/propose/apply exactly. #}
+    <button type="button"
+            hx-post="/pipeline/analyze" hx-target="#analyze-trigger-response" hx-swap="innerHTML"
+            hx-confirm="Route all discovered files into analysis? Long files are held awaiting cloud capacity; short files run locally."
+            hx-disabled-elt="this"
+            hx-indicator="#analyze-trigger-spinner"
+            :disabled="$store.pipeline.analyzeBusy > 0"
+            aria-label="Run analysis on all discovered files"
+            class="{{ _btn }}">RUN ANALYSIS</button>
+    <span id="analyze-trigger-spinner" class="htmx-indicator text-xs text-gray-500 dark:text-gray-400">Enqueuing…</span>
     {# UI-SPEC Copywriting: ROUTE RULES + PAUSE (PAUSE is reversible -- no confirm, R-4). Presentation
        row per the prototype; the live per-stage pause/route controls remain on the DAG canvas. #}
     <button type="button" class="{{ _btn }}">ROUTE RULES</button>
     <button type="button" class="{{ _btn }}">PAUSE</button>
 {% endset %}
 {% call ws.workspace(title="ANALYZE", subcount=subcount, actions=actions, cloud_cards=true) %}
+    {# Trigger response lands here (trigger_response.html branches: no_active_agent / split_counts / none
+       ready). A SIBLING of the RUN ANALYSIS button, never its ancestor (phaze-thd6 shape) -- see
+       metadata_workspace.html / apply_workspace.html for the same pattern. #}
+    <div id="analyze-trigger-response" class="px-6 pt-4 empty:hidden"></div>
     {# (a) the N-lane grid (BEUI-01 / D-05/D-06): _analyze_lanes.html loops _lane_card.html over the seeded
        `lanes` list, rank-ascending. NO `oob` here -> the initial full-page grid (the #analyze-lanes id host
        is present so the poll's OOB grid-swap lands). The stats poll re-includes the SAME partial with

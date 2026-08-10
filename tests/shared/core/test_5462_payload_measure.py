@@ -51,4 +51,9 @@ async def test_enrich_tab_payloads_are_same_order_of_magnitude(session: AsyncSes
     print(f"  inline-render equivalent for all 500: ~{per_row * 500 / 1024:.0f} KiB (the retired behaviour)")
     assert rows_on_page <= 50, f"the fragment page is unbounded ({rows_on_page} rows)"
     baseline = sizes["metadata"]
-    assert sizes["analyze"] < baseline * 3, f"analyze payload {sizes['analyze']} dwarfs sibling {baseline} -- the inline render is back"
+    # phaze-pix6g: the RUN ANALYSIS trigger (re-homed from the deleted dag_canvas.html -- a real,
+    # necessary control, not renewed inline-render bloat) pushed a 500-file payload from ~3.0x to
+    # ~3.1x the metadata baseline. The multiplier is explicitly NOT a byte budget (see the module
+    # docstring) -- it exists to catch the 180x unbounded-inline-render regression this bead fixed,
+    # and a single button is nowhere near that scale. Bumped to 4x for headroom.
+    assert sizes["analyze"] < baseline * 4, f"analyze payload {sizes['analyze']} dwarfs sibling {baseline} -- the inline render is back"

@@ -400,6 +400,39 @@ async def test_metadata_trigger_all_wired(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_analyze_run_trigger_wired(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-pix6g -- RUN ANALYSIS is re-homed to the analyze workspace, wired to POST /pipeline/analyze.
+
+    The Phase-62 cutover deleted dag_canvas.html, the ONLY host of POST /pipeline/analyze
+    (trigger_analysis_ui) -- every other dag_canvas trigger was re-homed into its v7 workspace
+    (EXTRACT ALL / GENERATE ALL / RECOVER / EXECUTE APPROVED) but analyze never was, leaving
+    DISCOVERED files with no way into the pipeline. This asserts the re-homed trigger exists with
+    the same R-4 bulk-enqueue guard shape (hx-confirm + hx-disabled-elt + a seeded busy-gate) and a
+    sibling response sink, matching metadata/propose/apply -- and that it starts no second poll.
+
+    A file must be seeded: with a zero-file corpus, shell._render_stage swaps `stage_partial` to
+    the RECORD-04 first-run empty-state guide instead of analyze_workspace.html, which would make
+    this test pass or fail on the WRONG template.
+    """
+    await _seed_file(session)
+    az = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert az.status_code == 200
+    az_body = az.text
+    # RUN ANALYSIS wired VERBATIM to the existing endpoint (byte-for-byte the phaze-vvmh shape).
+    assert 'hx-post="/pipeline/analyze"' in az_body
+    assert "RUN ANALYSIS" in az_body
+    # Trigger-response landing target present, a SIBLING of the trigger (phaze-thd6 shape).
+    assert 'id="analyze-trigger-response"' in az_body
+    # R-4 bulk-enqueue guard: confirm + hx-disabled-elt + busy-disable on the SEEDED analyzeBusy key.
+    assert "hx-confirm" in az_body
+    assert 'hx-disabled-elt="this"' in az_body
+    assert "$store.pipeline.analyzeBusy" in az_body
+    # WORK-05 / R-2: no second poll loop.
+    assert 'hx-trigger="every' not in az_body
+    assert "setInterval" not in az_body
+
+
+@pytest.mark.asyncio
 async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """BEUI-01 / D-04/D-05/D-06 -- N registry lane cards render rank-ascending; word-labelled states; global roll-up intact.
 
