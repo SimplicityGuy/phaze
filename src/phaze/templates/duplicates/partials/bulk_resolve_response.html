@@ -1,7 +1,12 @@
-{# Primary response: empty group list with empty state #}
+{# phaze-yc1qk: primary response -- a status strip above the card list in the v7 Dedupe workspace
+   (dedupe_workspace.html:44 #dedupe-bulk-response, rendered before #dedupe-group-list), NOT the
+   paginated duplicates/list.html-era empty state this copy was originally written for. The v7
+   workspace has no pagination at all (duplicates.py:93-96 renders every dupe_group card inline,
+   capped by find_duplicate_groups_with_metadata's default limit), and the "next page" affordance
+   this text pointed operators at was deleted in the Phase-62 cutover. #}
 <div class="py-12 text-center">
-    <h2 class="text-xl font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500">All groups on this page resolved</h2>
-    <p class="text-sm text-gray-400 dark:text-gray-500 mt-2">Use the undo toast to reverse, or navigate to the next page.</p>
+    <h2 class="text-xl font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500">All shown groups resolved</h2>
+    <p class="text-sm text-gray-400 dark:text-gray-500 mt-2">Use the undo toast to reverse, or re-open the Dedupe stage to load remaining groups.</p>
 </div>
 
 {# phaze-nt8f: the `#stats-header` OOB block that used to sit here is GONE (see
