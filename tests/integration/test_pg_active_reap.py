@@ -217,6 +217,28 @@ async def test_terminal_status_is_not_as_strong_a_release_as_delete(
     assert await queue.enqueue("process_file", key=reaped_key, timeout=_PROCESS_FILE_TIMEOUT) is not None
 
 
+async def test_reaper_leaves_a_timeout_zero_scan_directory_row_alone(
+    broker: tuple[PostgresQueue, async_sessionmaker[AsyncSession]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """phaze-mllxc REGRESSION, against the real broker: ``timeout=0`` means UNBOUNDED, never stranded.
+
+    ``scan_directory`` enqueues with ``timeout=0`` because a full SHA-256 walk of a large
+    network-mounted archive legitimately runs 1-2h (``routers/pipeline_scans.py``). SAQ's own
+    ``Job.stuck`` treats 0 as falsy -- never sweep-eligible -- and the reaper must mirror that: a
+    ``timeout: 0`` row aged well past ``active_reap_slack_seconds`` must still hold its key.
+    """
+    queue, session_factory = broker
+    key = f"scan_directory:{uuid.uuid4()}"
+    assert await queue.enqueue("scan_directory", key=key, timeout=0) is not None
+    # An hour past slack -- far beyond any finite bound -- to prove the exemption is unconditional.
+    await _strand(queue, key, age_seconds=_SLACK + 3600)
+
+    assert await _reap(session_factory, monkeypatch) == {"reaped": 0}
+    assert await _status(session_factory, key) == "active"
+    # ...and the deterministic key is still held, exactly as it should be for a running scan.
+    assert await queue.enqueue("scan_directory", key=key, timeout=0) is None
+
+
 async def test_reaper_degrades_when_saq_jobs_is_unreadable(monkeypatch: pytest.MonkeyPatch) -> None:
     """A reaper hiccup returns ``reaped=0`` instead of aborting the controller's cron tick."""
     engine = create_async_engine(SA_DSN)
