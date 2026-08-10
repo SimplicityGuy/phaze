@@ -1369,28 +1369,40 @@ def _analyze_status_where(status: str | None) -> Any:
     )
 
 
+def derive_file_lane(cloud_job_id: Any, backend_id: str | None, kinds: dict[str, str]) -> tuple[str, str]:
+    """The COMPUTE-03 lane derivation off a file's (possibly absent) ``CloudJob`` -- the ONE place
+    "which lane did this file run on" is answered, so every per-file lane badge (analyze rows,
+    RECORD-01's facts grid, ...) reads the same truth instead of each growing its own copy
+    (phaze-lljfx: ``record_body.html`` hardcoded ``local`` because this derivation was inlined only
+    in :func:`_project_analyze_rows` and never reused).
+
+    No ``cloud_job`` -> local; a stamped ``backend_id`` -> the id + its registry ``lane_kind`` via
+    ``non_local_backend_kinds`` (falling back to ``"cloud"`` for a deregistered cluster); a NULL
+    ``backend_id`` on a stamped job -> the truthful unattributed ``"cloud"`` fallback, NEVER the
+    stale ``"a1"`` heuristic. ``kinds`` is the caller's once-per-call registry projection (never a
+    per-row lookup).
+    """
+    if cloud_job_id is None:
+        return "local", "local"
+    if backend_id is not None:
+        return backend_id, kinds.get(backend_id, "cloud")
+    # Stamped cloud_job with no backend_id yet (not attributed to a registry cluster) -- the
+    # truthful "cloud, unattributed" fallback. NEVER the stale "a1" heuristic label.
+    return "cloud", "cloud"
+
+
 def _project_analyze_rows(rows: Sequence[Any], kinds: dict[str, str]) -> list[dict[str, Any]]:
     """Project raw :func:`_analyze_files_select` rows into the per-file dict the template renders.
 
     The IDENTICAL shape the Phase-58 ``get_analyze_stage_files`` produced (so ``analyze_workspace.html``
     row-building is unchanged): the RECORD-01 ``file_id`` opener key, the DERIVED boolean flags
     (``awaiting_cloud`` / ``analysis_failed`` / ``completed`` -- never a raw ``files.state``), the
-    COMPUTE-03 lane derivation off the stamped ``CloudJob.backend_id`` (no ``cloud_job`` -> local; a
-    stamped ``backend_id`` -> the id + its registry ``lane_kind`` via ``non_local_backend_kinds``,
-    falling back to ``"cloud"`` for a deregistered cluster; a NULL ``backend_id`` -> the truthful
-    unattributed ``"cloud"`` fallback, NEVER the stale ``"a1"`` heuristic), and the 57.1 windowed
-    coverage. ``kinds`` is the once-per-call registry projection (never a per-row lookup).
+    COMPUTE-03 lane derivation (:func:`derive_file_lane`), and the 57.1 windowed coverage. ``kinds``
+    is the once-per-call registry projection (never a per-row lookup).
     """
     files: list[dict[str, Any]] = []
     for file_id, filename, path, cloud_job_id, cloud_status, backend_id, fine_done, fine_total, completed_at, failed_at, duration in rows:
-        if cloud_job_id is None:
-            lane, lane_kind = "local", "local"
-        elif backend_id is not None:
-            lane, lane_kind = backend_id, kinds.get(backend_id, "cloud")
-        else:
-            # Stamped cloud_job with no backend_id yet (not attributed to a registry cluster) --
-            # the truthful "cloud, unattributed" fallback. NEVER the stale "a1" heuristic label.
-            lane, lane_kind = "cloud", "cloud"
+        lane, lane_kind = derive_file_lane(cloud_job_id, backend_id, kinds)
         files.append(
             {
                 # Phase 61 (RECORD-01): the row->record slide-in opener keys on this file_id
