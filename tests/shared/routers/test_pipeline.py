@@ -2527,14 +2527,26 @@ async def test_refresh_on_a_file_with_no_tracklist_does_nothing(client: AsyncCli
 
 
 @pytest.mark.asyncio
-async def test_refresh_unknown_file_is_404(client: AsyncClient) -> None:
-    assert (await client.post(f"/pipeline/tracklists/{uuid.uuid4()}/refresh")).status_code == 404
+async def test_refresh_unknown_file_renders_fragment_not_dropped_404(client: AsyncClient) -> None:
+    """phaze-9xyjp: an unknown file renders the review fragment (200), never a 404 htmx drops.
+
+    This handler's response swaps into ``#tracklist-review-{file_id}`` and htmx 2.x's stock
+    ``responseHandling`` does not swap a 4xx body (response_shape.py rule 3) -- a bare 404
+    here is silently discarded and the pane sits unchanged with no operator feedback. A
+    status-only assertion would have passed against that exact bug, so this asserts the body
+    htmx actually swaps: the fragment's own "File not found." rendering.
+    """
+    response = await client.post(f"/pipeline/tracklists/{uuid.uuid4()}/refresh")
+    assert response.status_code == 200, response.text
+    assert "file not found" in response.text.lower()
 
 
 @pytest.mark.asyncio
-async def test_prioritize_unknown_file_is_404(client: AsyncClient) -> None:
+async def test_prioritize_unknown_file_renders_fragment_not_dropped_404(client: AsyncClient) -> None:
+    """phaze-9xyjp: same vanished-file race as refresh -- see that test's rationale."""
     response = await client.post(f"/pipeline/tracklists/{uuid.uuid4()}/prioritize")
-    assert response.status_code == 404
+    assert response.status_code == 200, response.text
+    assert "file not found" in response.text.lower()
 
 
 @pytest.mark.asyncio
@@ -2553,9 +2565,11 @@ async def test_unprioritize_clears_a_flag(client: AsyncClient, session: AsyncSes
 
 
 @pytest.mark.asyncio
-async def test_unprioritize_unknown_file_is_404(client: AsyncClient) -> None:
+async def test_unprioritize_unknown_file_renders_fragment_not_dropped_404(client: AsyncClient) -> None:
+    """phaze-9xyjp: same vanished-file race as refresh/prioritize -- see that test's rationale."""
     response = await client.post(f"/pipeline/tracklists/{uuid.uuid4()}/unprioritize")
-    assert response.status_code == 404
+    assert response.status_code == 200, response.text
+    assert "file not found" in response.text.lower()
 
 
 @pytest.mark.asyncio
