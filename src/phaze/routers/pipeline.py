@@ -2480,8 +2480,25 @@ async def deepen_analysis(
             if job is None:
                 # Deterministic-key collision -- classify it rather than assuming "in flight"
                 # (phaze-ewen). A dead job holding the key means this deepen was silently dropped.
-                existing = await routed.queue.job(process_file_job_key(file.id))
-                if classify_process_file_collision(existing) == "blocked":
+                try:
+                    existing = await routed.queue.job(process_file_job_key(file.id))
+                    collision = classify_process_file_collision(existing)
+                except Exception:
+                    # phaze-qim6c: the lookup itself (a Postgres pool query via SAQ's
+                    # PostgresQueue) can raise transiently -- a broker/pool hiccup must NOT
+                    # escape this interactive endpoint as a raw 500; the docstring above
+                    # promises T-44-10 ("never a raw 500") for exactly this collision path.
+                    # Degrade the same way classify_process_file_collision already treats an
+                    # unlookupable job (``job is None`` -> "in_flight", benign rather than
+                    # crying wolf) instead of leaving the exception to propagate.
+                    logger.warning(
+                        "deepen_analysis: collision lookup failed -- degrading to already-in-flight",
+                        file_id=str(file.id),
+                        key=process_file_job_key(file.id),
+                        exc_info=True,
+                    )
+                    collision = "in_flight"
+                if collision == "blocked":
                     blocked = True
                     logger.warning(
                         "deepen_analysis: deterministic key held by a dead job -- deepen dropped",
