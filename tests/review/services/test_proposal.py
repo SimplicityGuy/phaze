@@ -372,6 +372,23 @@ class TestClampConfidence:
 
         assert ProposalService._clamp_confidence(1.0) == 1.0
 
+    def test_nan_is_untrusted_not_maximal(self):
+        """NaN must not survive min(1.0, value) and clamp to the maximum."""
+        from phaze.services.proposal import ProposalService
+
+        assert ProposalService._clamp_confidence(float("nan")) == 0.0
+
+    def test_positive_infinity_is_untrusted_not_maximal(self):
+        """+inf must not survive min(1.0, value) and clamp to the maximum."""
+        from phaze.services.proposal import ProposalService
+
+        assert ProposalService._clamp_confidence(float("inf")) == 0.0
+
+    def test_negative_infinity_is_untrusted(self):
+        from phaze.services.proposal import ProposalService
+
+        assert ProposalService._clamp_confidence(float("-inf")) == 0.0
+
 
 class TestGenerateBatch:
     """Tests for ProposalService.generate_batch."""

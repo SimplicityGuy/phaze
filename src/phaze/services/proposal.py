@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from pathlib import Path
 import re
 from typing import TYPE_CHECKING, Any
@@ -289,7 +290,15 @@ class ProposalService:
 
     @staticmethod
     def _clamp_confidence(value: float) -> float:
-        """Clamp a confidence value to the 0.0-1.0 range."""
+        """Clamp a confidence value to the 0.0-1.0 range.
+
+        Non-finite values (NaN, +inf, -inf) are treated as untrusted rather than
+        maximal: ``min(1.0, value)`` keeps its initial 1.0 whenever the comparison
+        is False, which it is for both NaN and +inf, so a garbage confidence would
+        otherwise clamp to the maximum instead of being rejected.
+        """
+        if not math.isfinite(value):
+            return 0.0
         return max(0.0, min(1.0, value))
 
 
