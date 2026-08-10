@@ -140,10 +140,17 @@ async def _delete_staged_object_if_cloud(session: AsyncSession, file_id: uuid.UU
     result lands, so it is deleted (the delete half of KSTAGE-04). phaze-uoiw: both callers invoke this
     AFTER their ``session.commit()`` -- the analysis result is already DURABLY recorded (record-first
     discipline made literally true at the commit boundary, T-53-21), so a transient cleanup error is
-    logged-and-swallowed and never risks the committed result; running it post-commit also keeps the S3
-    round-trip out of the transaction's lock window. The bucket-lifecycle TTL (Plan 02) is the backstop
-    for a missed delete; Phase 54's reconcile may invoke the same delete for an evicted Job. ``file_id``
-    is the PATH value only (AUTH-01).
+    logged-and-swallowed and never risks the committed result. The bucket-lifecycle TTL (Plan 02) is
+    the backstop for a missed delete; Phase 54's reconcile may invoke the same delete for an evicted
+    Job. ``file_id`` is the PATH value only (AUTH-01).
+
+    phaze-7jfgi: the guard SELECT below autobegins a NEW transaction on this session (SQLAlchemy's
+    default autobegin), separate from the caller's already-committed one. Under PgBouncer SESSION
+    mode the upstream server slot is pinned by the CHECKOUT, not by transaction state, so that new
+    transaction must also be committed -- BEFORE the S3 call -- to release the connection. Mirrors
+    agent_s3.py's phaze-1v37 capture-then-commit-then-S3 ordering: capture the values this function
+    needs into locals, commit to release the connection, THEN make the S3 call, so a wedged S3
+    endpoint never pins a pooled connection idle-in-transaction.
     """
     row = (await session.execute(select(CloudJob.id, CloudJob.staging_bucket).where(CloudJob.file_id == file_id))).first()
     if row is None:
@@ -153,6 +160,9 @@ async def _delete_staged_object_if_cloud(session: AsyncSession, file_id: uuid.UU
     if bucket is None:
         # Compute / unstaged row: no S3 object was staged -> skip the S3 op cleanly (no client build).
         return
+    # phaze-7jfgi: release the connection BEFORE the S3 round-trip -- the SELECT above took no row
+    # lock (READ COMMITTED) and wrote nothing, so committing here just returns the pooled connection.
+    await session.commit()
     try:
         await s3_staging.delete_staged_object(file_id, bucket)
     except Exception:
