@@ -1519,6 +1519,16 @@ async def derive_cloud_hold_reason(session: AsyncSession) -> str:
             return "held — cloud routing paused (force-local)"
 
         lanes = await get_backend_lane_snapshot(session)
+        # phaze-2nomn: get_backend_lane_snapshot swallows ANY top-level error (e.g. a transient DB
+        # error inside one backend's in_flight_count read) and returns [] -- indistinguishable, by
+        # value alone, from an OBSERVED registry of zero non-local lanes. resolve_backends is pure
+        # (no I/O, reads only cfg.backends) and the snapshot's normal path always emits exactly one
+        # lane dict per resolved backend (unavailable backends still get an entry, just
+        # available=False) -- so an EMPTY lanes list against a NON-empty resolved registry can only
+        # mean the snapshot's try/except fired, not that every lane was actually probed and found
+        # unreachable. Fall through to the degrade belt instead of asserting a gate never observed.
+        if not lanes and resolve_backends(cfg):
+            return _HOLD_REASON_DEGRADED
         # phaze-g4fh: restrict reachability/capacity math to CLOUD lanes. A local lane is always
         # `available=True` with `in_flight=0` (LocalBackend.is_available/in_flight_count), so
         # including it here made `available_lanes` never empty and `free_slots` always ≥1 -- both
