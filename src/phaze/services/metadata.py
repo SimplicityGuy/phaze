@@ -186,7 +186,7 @@ def _parse_track(val: Any) -> int | None:
         first = val[0]
         if isinstance(first, tuple) and len(first) >= 1:
             try:
-                return _bounded_track(int(first[0])) if first[0] else None
+                return _bounded_track(int(first[0])) if first[0] is not None else None
             except (ValueError, TypeError):
                 return None
         val = first
@@ -194,7 +194,7 @@ def _parse_track(val: Any) -> int | None:
     # Handle tuple directly
     if isinstance(val, tuple) and len(val) >= 1:
         try:
-            return _bounded_track(int(val[0])) if val[0] else None
+            return _bounded_track(int(val[0])) if val[0] is not None else None
         except (ValueError, TypeError):
             return None
 
@@ -247,6 +247,13 @@ def _raw_track_text(val: Any) -> str | None:
     suffix), this preserves the total for an undo snapshot. Handles the same shapes
     ``_parse_track`` does: a plain string ("3", "3/12"), an MP4 ``trkn`` tuple/list-of-tuple
     (``(3, 12)`` / ``[(3, 12)]``), and ``None``.
+
+    phaze-6p7fz: the track-number component (``val[0]``) is checked with ``is not None``, not
+    truthiness, so an in-domain track 0 (e.g. ``(0, 12)``) round-trips to raw text ("0/12") the
+    same way :func:`_parse_track` now parses it (0, not None) -- keeping the phaze-2zl7 "raw is
+    None iff normalized is None" contract intact. The total component (``val[1]``) keeps its
+    truthiness check deliberately: MP4 rippers use a total of 0 to mean "no total" (e.g.
+    ``(3, 0)``), so a 0 total is still omitted from the "/total" suffix.
     """
     if val is None:
         return None
@@ -257,7 +264,7 @@ def _raw_track_text(val: Any) -> str | None:
     if isinstance(val, tuple):
         if len(val) >= 2 and val[1]:
             return f"{val[0]}/{val[1]}"
-        if len(val) >= 1 and val[0]:
+        if len(val) >= 1 and val[0] is not None:
             return str(val[0])
         return None
     text = _sanitize_pg_text(str(val)).strip()

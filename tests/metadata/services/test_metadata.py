@@ -10,6 +10,7 @@ from phaze.services.metadata import (
     _first_str,
     _parse_track,
     _parse_year,
+    _raw_track_text,
     _sanitize_pg_text,
     _serialize_tags,
     extract_tags,
@@ -97,6 +98,59 @@ class TestParseTrack:
 
     def test_boundary_10000_rejected(self):
         assert _parse_track("10000") is None
+
+    # phaze-6p7fz: track 0 is in-domain (mirrors test_boundary_zero_accepted's string-branch
+    # assertion above) and must not be short-circuited to None by a truthiness check on the
+    # tuple's track element -- rippers legitimately use track 0 for hidden/unset-with-total
+    # tracks in the MP4 ``trkn`` atom, e.g. ``(0, 12)``.
+    def test_tuple_zero_track_accepted(self):
+        assert _parse_track((0, 12)) == 0
+
+    def test_list_of_tuples_zero_track_accepted(self):
+        assert _parse_track([(0, 12)]) == 0
+
+    def test_bare_tuple_zero_track_no_total_accepted(self):
+        assert _parse_track((0, 0)) == 0
+
+    def test_tuple_and_string_branches_agree_on_zero(self):
+        """The write/verify round-trip re-reads an MP4 tag as a tuple; the pre-write undo
+        snapshot is text. Both branches must parse a track-0 value identically or
+        tag_write_disk.verify_write's semantic comparison reports a false discrepancy
+        (phaze-6p7fz)."""
+        assert _parse_track((0, 12)) == _parse_track("0/12")
+        assert _parse_track([(0, 12)]) == _parse_track("0/12")
+
+
+class TestRawTrackText:
+    """Tests for _raw_track_text helper (phaze-2zl7 undo-snapshot raw text)."""
+
+    def test_tuple_with_total(self):
+        assert _raw_track_text((3, 12)) == "3/12"
+
+    def test_tuple_zero_track_with_total(self):
+        assert _raw_track_text((0, 12)) == "0/12"
+
+    def test_bare_track_number_no_total(self):
+        assert _raw_track_text((3, 0)) == "3"
+
+    # phaze-6p7fz: track 0 with no total must still round-trip to raw text "0", not None --
+    # the total (val[1]) keeps its truthiness check (0 means "no total" per MP4 convention),
+    # but the track number itself (val[0]) must use an `is not None` check so it agrees with
+    # _parse_track's now-consistent handling of the same value.
+    def test_zero_track_zero_total_returns_zero_text(self):
+        assert _raw_track_text((0, 0)) == "0"
+
+    def test_list_of_tuples_zero_track(self):
+        assert _raw_track_text([(0, 12)]) == "0/12"
+
+    def test_none_returns_none(self):
+        assert _raw_track_text(None) is None
+
+    def test_raw_and_parsed_agree_on_zero_track(self):
+        """phaze-2zl7 contract: raw_track_number is None iff track_number is also None. A track-0
+        MP4 tuple is in-domain for both, so neither should collapse to None (phaze-6p7fz)."""
+        assert (_raw_track_text((0, 12)) is None) == (_parse_track((0, 12)) is None)
+        assert (_raw_track_text((0, 0)) is None) == (_parse_track((0, 0)) is None)
 
 
 class TestSerializeTags:
