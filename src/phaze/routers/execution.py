@@ -272,8 +272,10 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
     """Dispatch approved proposals as per-agent SAQ sub-jobs (Phase 28 D-09).
 
     Sequence:
-      1. Pre-check collisions (unchanged from Phase 25) -- destinations collide
-         GLOBALLY, not per-agent, so the check fires before any grouping.
+      1. Pre-check collisions -- fires before any grouping, but (phaze-p46n4) the
+         collision key is already agent-scoped (``FileRecord.agent_id`` is the
+         first component of ``_dest_key_columns``) and ``detect_collisions``
+         excludes revoked-agent proposals, matching step 2's population exactly.
       2. SELECT + GROUP BY ``FileRecord.agent_id``, filter revoked agents
          (services/execution_dispatch.py).
       3. Generate parent ``batch_id``; compute ``subjobs_expected`` from
@@ -285,7 +287,8 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
       6. INFO log line per D-11.
       7. Return the progress card with first-render context.
     """
-    # 1. Pre-check collision (unchanged) -- collision_block short-circuits dispatch.
+    # 1. Pre-check collision -- collision_block short-circuits dispatch. Revoked-agent proposals
+    # are excluded here too (phaze-p46n4), so this gate's population matches step 2's exactly.
     collisions = await detect_collisions(session)
     if collisions:
         return templates.TemplateResponse(

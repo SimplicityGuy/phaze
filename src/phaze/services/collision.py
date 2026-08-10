@@ -97,13 +97,24 @@ async def detect_collisions(session: AsyncSession) -> list[tuple[str, int]]:
     resolving to one on-disk file) while cross-agent / cross-scan-root phantoms
     are not (phaze-dqx8). Covers both path-relative renames and NULL-path
     (rename-in-place) proposals (phaze-7czn).
+
+    Excludes proposals whose Agent is revoked (``Agent.revoked_at IS NOT
+    NULL``), matching :func:`phaze.services.execution_dispatch.get_approved_proposals_grouped_by_agent`
+    (phaze-p46n4). The collision key is agent-scoped (``_dest_key_columns``
+    groups on ``agent_id`` first), so a collision confined entirely to a
+    revoked agent's own proposals involves only rows dispatch already skips --
+    without this filter it still vetoed every OTHER agent's dispatch.
     """
     agent_id, owning_root, dest_path = _dest_key_columns()
     stmt = (
         select(dest_path.label("dest"), func.count().label("cnt"))
         .select_from(RenameProposal)
         .join(FileRecord, RenameProposal.file_id == FileRecord.id)
-        .where(RenameProposal.status == ProposalStatus.APPROVED)
+        .join(Agent, FileRecord.agent_id == Agent.id)
+        .where(
+            RenameProposal.status == ProposalStatus.APPROVED,
+            Agent.revoked_at.is_(None),
+        )
         .group_by(agent_id, owning_root, dest_path)
         .having(func.count() > 1)
     )
@@ -119,6 +130,9 @@ async def get_collision_ids(session: AsyncSession) -> set[str]:
     proposal is flagged iff another approved proposal shares its agent, owning
     scan_root, and root-relative destination (phaze-dqx8) -- including NULL-path
     (in-place) proposals (phaze-7czn).
+
+    Excludes revoked-agent proposals, matching :func:`detect_collisions`
+    (phaze-p46n4).
     """
     agent_id, owning_root, dest_path = _dest_key_columns()
     cnt = func.count().over(partition_by=[agent_id, owning_root, dest_path])
@@ -126,7 +140,11 @@ async def get_collision_ids(session: AsyncSession) -> set[str]:
         select(RenameProposal.id.label("pid"), cnt.label("cnt"))
         .select_from(RenameProposal)
         .join(FileRecord, RenameProposal.file_id == FileRecord.id)
-        .where(RenameProposal.status == ProposalStatus.APPROVED)
+        .join(Agent, FileRecord.agent_id == Agent.id)
+        .where(
+            RenameProposal.status == ProposalStatus.APPROVED,
+            Agent.revoked_at.is_(None),
+        )
         .subquery()
     )
     stmt = select(scoped.c.pid).where(scoped.c.cnt > 1)

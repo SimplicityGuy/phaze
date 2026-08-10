@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 import uuid
@@ -23,10 +24,18 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-async def _ensure_agent(session: AsyncSession, agent_id: str, scan_roots: list[str]) -> None:
+async def _ensure_agent(session: AsyncSession, agent_id: str, scan_roots: list[str], *, revoked: bool = False) -> None:
     """Create an agent with the given scan_roots if it does not already exist."""
     if await session.get(Agent, agent_id) is None:
-        session.add(Agent(id=agent_id, name=agent_id, kind="fileserver", scan_roots=scan_roots))
+        session.add(
+            Agent(
+                id=agent_id,
+                name=agent_id,
+                kind="fileserver",
+                scan_roots=scan_roots,
+                revoked_at=datetime.now(UTC) if revoked else None,
+            )
+        )
         await session.flush()
 
 
@@ -404,6 +413,119 @@ class TestCollisionKeyNormalization:
             original_filename="g.mp3",
             original_dir="/data/music/B",
             agent_id="srv-y",
+        )
+
+        ids = await get_collision_ids(session)
+        assert ids == set()
+
+
+# ---------------------------------------------------------------------------
+# phaze-p46n4 — a collision confined to a REVOKED agent's own proposals must
+# not veto dispatch of every other (live) agent's work. The collision key is
+# agent-scoped (agent_id is the first component), so detect_collisions and
+# get_collision_ids must exclude revoked-agent proposals, matching the
+# population get_approved_proposals_grouped_by_agent actually dispatches.
+# ---------------------------------------------------------------------------
+
+
+class TestRevokedAgentCollisionExclusion:
+    """phaze-p46n4: the collision gate must match dispatch's revoked-agent filter."""
+
+    @pytest.mark.asyncio
+    async def test_collision_confined_to_revoked_agent_is_not_reported(self, session: AsyncSession) -> None:
+        """Two colliding proposals belonging ONLY to a revoked agent must not appear."""
+        from phaze.services.collision import detect_collisions
+
+        await _ensure_agent(session, "srv-revoked", ["/data/music"], revoked=True)
+        await _create_proposal(
+            session,
+            proposed_filename="dupe.mp3",
+            proposed_path="Coachella 2024",
+            original_filename="f.mp3",
+            original_dir="/data/music/A",
+            agent_id="srv-revoked",
+        )
+        await _create_proposal(
+            session,
+            proposed_filename="dupe.mp3",
+            proposed_path="Coachella 2024",
+            original_filename="g.mp3",
+            original_dir="/data/music/B",
+            agent_id="srv-revoked",
+        )
+
+        result = await detect_collisions(session)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_revoked_agent_collision_does_not_block_live_agent_collision_detection(self, session: AsyncSession) -> None:
+        """A revoked agent's self-collision must not mask a REAL collision on a live agent."""
+        from phaze.services.collision import detect_collisions
+
+        await _ensure_agent(session, "srv-revoked", ["/data/music"], revoked=True)
+        await _ensure_agent(session, "srv-live", ["/data/music"])
+
+        # Revoked agent: two proposals colliding on the same dest -- must be excluded.
+        await _create_proposal(
+            session,
+            proposed_filename="dupe.mp3",
+            proposed_path="Coachella 2024",
+            original_filename="f.mp3",
+            original_dir="/data/music/A",
+            agent_id="srv-revoked",
+        )
+        await _create_proposal(
+            session,
+            proposed_filename="dupe.mp3",
+            proposed_path="Coachella 2024",
+            original_filename="g.mp3",
+            original_dir="/data/music/B",
+            agent_id="srv-revoked",
+        )
+        # Live agent: a genuine collision that must still be reported.
+        await _create_proposal(
+            session,
+            proposed_filename="live.mp3",
+            proposed_path="Coachella 2024",
+            original_filename="h.mp3",
+            original_dir="/data/music/C",
+            agent_id="srv-live",
+        )
+        await _create_proposal(
+            session,
+            proposed_filename="live.mp3",
+            proposed_path="Coachella 2024",
+            original_filename="i.mp3",
+            original_dir="/data/music/D",
+            agent_id="srv-live",
+        )
+
+        result = await detect_collisions(session)
+        assert len(result) == 1
+        assert result[0][0] == "Coachella 2024/live.mp3"
+        assert result[0][1] == 2
+
+    @pytest.mark.asyncio
+    async def test_get_collision_ids_excludes_revoked_agent_proposals(self, session: AsyncSession) -> None:
+        """get_collision_ids must not badge proposals belonging solely to a revoked agent."""
+        from phaze.services.collision import get_collision_ids
+
+        await _ensure_agent(session, "srv-revoked-ids", ["/data/music"], revoked=True)
+        await _create_proposal(
+            session,
+            proposed_filename="dupe.mp3",
+            proposed_path="Coachella 2024",
+            original_filename="f.mp3",
+            original_dir="/data/music/A",
+            agent_id="srv-revoked-ids",
+        )
+        await _create_proposal(
+            session,
+            proposed_filename="dupe.mp3",
+            proposed_path="Coachella 2024",
+            original_filename="g.mp3",
+            original_dir="/data/music/B",
+            agent_id="srv-revoked-ids",
         )
 
         ids = await get_collision_ids(session)
