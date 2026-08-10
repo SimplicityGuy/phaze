@@ -145,9 +145,10 @@ async def get_pending_proposal_rows(session: AsyncSession, *, confidence_thresho
     Reuses ``get_proposals_page(status="pending")`` inside a ``session.begin_nested()`` SAVEPOINT and
     maps each proposal (plus its ``selectinload``'d file) to a plain dict keyed for both diff facets:
     ``id`` · ``filename`` (``file.original_filename``) · ``original_path`` (``file.current_path``) ·
-    ``proposed_filename`` · ``proposed_path`` · ``confidence`` · ``status``. Returns an all-empty/zero
-    :class:`PendingProposalRows` on any DB error so the render/poll path degrades instead of 500ing
-    (no router try/except needed).
+    ``proposed_filename`` · ``proposed_path`` · ``confidence`` · ``status`` · ``updated_at``
+    (phaze-exivg -- the row's optimistic-concurrency token, round-tripped by the APPROVE button).
+    Returns an all-empty/zero :class:`PendingProposalRows` on any DB error so the render/poll path
+    degrades instead of 500ing (no router try/except needed).
 
     phaze-rw14: ``get_proposals_page`` already runs a real ``COUNT(*)`` for its ``Pagination.total``
     on every call -- that total used to be fetched and immediately discarded (bound to ``_pagination``
@@ -170,6 +171,9 @@ async def get_pending_proposal_rows(session: AsyncSession, *, confidence_thresho
                     "proposed_path": proposal.proposed_path,
                     "confidence": proposal.confidence,
                     "status": proposal.status,
+                    # phaze-exivg: the optimistic-concurrency token the Rename/Move workspaces'
+                    # APPROVE button round-trips back to /proposals/{id}/approve.
+                    "updated_at": proposal.updated_at,
                 }
                 for proposal in proposals
             ]

@@ -63,7 +63,8 @@
                     undo_url="/proposals/" ~ p.id ~ "/undo",
                     edit_url="/proposals/" ~ p.id ~ "/edit",
                     edit_facet="filename",
-                    row_state="pending" %}
+                    row_state="pending",
+                    updated_at=p.updated_at %}
                 {% include "pipeline/partials/_diff_row.html" %}
             {% endwith %}
         {% endfor %}

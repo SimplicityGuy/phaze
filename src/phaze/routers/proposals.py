@@ -1,6 +1,7 @@
 """Proposal review UI router -- serves the approval workflow pages."""
 
 from collections.abc import Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 import uuid
@@ -24,6 +25,7 @@ from phaze.routers.shell import build_propose_list_context
 from phaze.services.proposal_queries import (
     ProposalEditRefusedError,
     ProposalPendingConflictError,
+    ProposalStaleWriteError,
     ProposalTransitionError,
     approve_pending_above_confidence,
     bulk_update_status,
@@ -89,14 +91,36 @@ async def _guarded_status_update(
     proposal_id: uuid.UUID,
     new_status: ProposalStatus,
     allowed_from: frozenset[ProposalStatus],
+    expected_updated_at: datetime | None = None,
 ) -> RenameProposal | None:
     """Call update_proposal_status, translating state-machine errors into 409 responses."""
     try:
-        return await update_proposal_status(session, proposal_id, new_status, allowed_from=allowed_from)
+        return await update_proposal_status(session, proposal_id, new_status, allowed_from=allowed_from, expected_updated_at=expected_updated_at)
     except ProposalTransitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ProposalPendingConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ProposalStaleWriteError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _parse_updated_at_token(token: str | None) -> datetime | None:
+    """Parse the APPROVE button's optimistic-concurrency token (phaze-exivg).
+
+    Empty/missing means "no token supplied" (``None``) -- every caller that predates this token
+    (API clients, tests, a bare hand-built PATCH) keeps the pre-phaze-exivg status-only guard with
+    no behavior change. A token that fails to parse is treated the SAME way rather than 400ing: an
+    operator's browser always sends a well-formed ``isoformat()`` value (it round-trips the row's
+    own ``updated_at``, minted server-side by :func:`_diff_row_context`), so a malformed one only
+    originates from something outside this guard's job to police -- and refusing to approve
+    outright over a malformed token would be a worse failure mode than folding the check out.
+    """
+    if not token:
+        return None
+    try:
+        return datetime.fromisoformat(token)
+    except ValueError:
+        return None
 
 
 # phaze-3a2j: the v7 diff-row workspaces (Rename / Move / Record slide-in) render rows from the
@@ -198,6 +222,11 @@ def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, 
         "edit_facet": edit_facet,
         "row_state": row_state,
         "oob": oob,
+        # phaze-exivg: the optimistic-concurrency token the APPROVE button round-trips back via
+        # hx-vals. Always the row's LIVE updated_at at render time -- after an undo/edit/re-propose
+        # the next render of this same partial carries the row's NEW value, so a stale button never
+        # lingers on screen past its own re-render.
+        "updated_at": proposal.updated_at,
     }
 
 
@@ -308,9 +337,26 @@ async def approve_proposal(
     request: Request,
     proposal_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
+    expected_updated_at: str | None = Form(default=None),
 ) -> HTMLResponse:
-    """Approve a proposal and return the updated row (phaze-vvmh: one response shape, no OOB stats)."""
-    proposal = await _guarded_status_update(session, proposal_id, ProposalStatus.APPROVED, _APPROVE_REJECT_FROM)
+    """Approve a proposal and return the updated row (phaze-vvmh: one response shape, no OOB stats).
+
+    phaze-exivg: ``expected_updated_at`` is the optimistic-concurrency token the row's own render
+    carried (``_diff_row_context``'s ``updated_at``, round-tripped by the APPROVE button's
+    hx-vals). Folded into the conditional UPDATE's WHERE clause
+    (:func:`~phaze.services.proposal_queries.update_proposal_status`), so a row a concurrent
+    ``store_proposals`` upsert rewrote after the page render -- same id, same PENDING status,
+    different ``proposed_filename`` / ``proposed_path`` / ``confidence`` -- fails the guard and
+    409s instead of being approved sight-unseen. Absent/blank (no token from the browser, e.g. a
+    bare API PATCH) skips the check -- the pre-existing status-only guard applies on its own.
+    """
+    proposal = await _guarded_status_update(
+        session,
+        proposal_id,
+        ProposalStatus.APPROVED,
+        _APPROVE_REJECT_FROM,
+        expected_updated_at=_parse_updated_at_token(expected_updated_at),
+    )
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found")
     row_id_prefix, facet = _row_target(request, proposal_id)
