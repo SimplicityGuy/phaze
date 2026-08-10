@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import ProgrammingError
 import structlog
 
 from phaze.models.scheduling_ledger import SchedulingLedger
@@ -177,19 +178,32 @@ async def clear_ledger_entry(session: AsyncSession, key: str) -> None:
     need the ledger upsert and the saq_jobs insert to share one transaction, which SAQ's queue API
     does not expose.
 
-    Degrade-safe (mirrors ``aborting_reaper._REAP_ABORTING_SQL`` / ``get_live_job_keys``): the
-    guarded statement runs inside a SAVEPOINT. On ANY error probing ``saq_jobs`` (a missing table
-    in a pre-migration/test env is the only expected case) the nested scope rolls back ALONE and
-    this falls back to the pre-phaze-3yln unconditional delete-by-key, so an environment without a
-    live ``saq_jobs`` table keeps exactly today's behavior (a row is never left permanently
-    un-clearable because the liveness probe itself is unavailable).
+    Degrade-safe, but ONLY for the failure the fallback's safety proof actually covers (phaze-jf7xt,
+    tightening the original phaze-3yln degrade): the guarded statement runs inside a SAVEPOINT, and
+    a missing ``saq_jobs`` table -- a pre-migration/test env, the only case named in the original
+    design -- is the ONE error shape where an unconditional delete-by-key is provably safe: with no
+    ``saq_jobs`` table there can be no live same-key row to protect. asyncpg surfaces that as
+    ``UndefinedTableError`` wrapped in SQLAlchemy's :class:`~sqlalchemy.exc.ProgrammingError` (mirrors
+    ``tasks.controller``'s boot-reconcile retry scoping), so ONLY that exception takes the fallback.
+
+    Any OTHER probe failure (a transient ``statement_timeout``/``QueryCanceled``, a lock-related
+    cancel, ...) is NOT proof that no live ``saq_jobs`` row exists for ``key`` -- taking the
+    unconditional-delete fallback there would reopen the exact phaze-3yln race this guard closes
+    (load bursts that produce transient DB errors correlate with the same recovery-replay storms
+    that produce same-key re-enqueues). The nested scope rolls back ALONE and the clear is SKIPPED
+    entirely -- the same never-delete-on-uncertainty posture ``get_live_job_keys`` already applies
+    (it degrades to an empty live-set rather than guessing) and that the calling hooks already apply
+    to their own failures. A skipped clear leaves a stale ledger row that the next recovery pass
+    reconciles harmlessly; it never risks deleting a live row out from under a racing re-enqueue.
     """
     try:
         async with session.begin_nested():
             await session.execute(_GUARDED_CLEAR_SQL, {"key": key})
-    except Exception:
-        logger.warning("scheduling_ledger_clear_liveness_probe_degraded", key=key, exc_info=True)
+    except ProgrammingError:
+        logger.warning("scheduling_ledger_clear_liveness_probe_missing_table", key=key, exc_info=True)
         await session.execute(delete(SchedulingLedger).where(SchedulingLedger.key == key))
+    except Exception:
+        logger.warning("scheduling_ledger_clear_liveness_probe_degraded_skipped", key=key, exc_info=True)
 
 
 async def get_ledger_rows(session: AsyncSession) -> Sequence[SchedulingLedger]:
