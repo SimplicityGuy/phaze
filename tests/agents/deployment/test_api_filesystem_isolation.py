@@ -170,3 +170,20 @@ def test_app_services_assemble_authenticated_redis_url() -> None:
         entry = redis_entries[0]
         assert "REDIS_PASSWORD" in entry, f"{svc_name} REDIS_URL must interpolate ${{REDIS_PASSWORD}}; got {entry!r}"
         assert "default:" in entry, f"{svc_name} REDIS_URL must use the `default:` ACL user for the password; got {entry!r}"
+
+
+def test_api_service_pins_container_side_models_path() -> None:
+    """phaze-bvkah: api has no models volume (DIST-01) but must still pin MODELS_PATH=/models.
+
+    ``config.py``'s aliasless ``models_path`` field resolves from ``env_file: .env`` here,
+    and the api forwards that value VERBATIM to the agent as the model-load path in every
+    ``process_file`` payload (``enqueue_process_file(..., cfg.models_path)``). Leaving
+    MODELS_PATH unset lets the HOST-side compose bind value (e.g. ``./models``) leak into the
+    payload -- a path relative to the AGENT's filesystem that has nothing to do with the
+    archive's actual bind mount. Compose ``environment:`` wins over ``env_file:``, so pinning
+    it here keeps the payload correct regardless of what the operator's ``.env`` MODELS_PATH
+    resolves to on the host.
+    """
+    data = _load_compose()
+    env = _env_list(data["services"]["api"])
+    assert "MODELS_PATH=/models" in env, f"api must pin MODELS_PATH=/models in environment (phaze-bvkah); got {env!r}"

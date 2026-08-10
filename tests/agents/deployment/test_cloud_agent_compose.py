@@ -284,3 +284,17 @@ def test_worker_uses_host_networking() -> None:
     data = _load_cloud_agent_compose()
     network_mode = data["services"]["worker"].get("network_mode")
     assert network_mode == "host", f"worker must set network_mode: host (D-05 host tailscaled); got {network_mode!r}"
+
+
+def test_worker_pins_container_side_models_path() -> None:
+    """phaze-bvkah: worker must pin MODELS_PATH=/models in `environment:`.
+
+    MODELS_PATH is ALSO the bind-source var on the ``volumes:`` line
+    (``${MODELS_PATH:-./models}``) -- the same host/container name collision fixed on
+    ``docker-compose.agent.yml``'s lane workers + watcher. ``environment:`` wins over
+    ``env_file: .env``, so this re-pins the container reader to the fixed mount target
+    regardless of what MODELS_PATH resolves to on the host.
+    """
+    data = _load_cloud_agent_compose()
+    env = _env_to_strs(data["services"]["worker"].get("environment", []))
+    assert "MODELS_PATH=/models" in env, f"worker must pin MODELS_PATH=/models in environment (phaze-bvkah); got {env!r}"
