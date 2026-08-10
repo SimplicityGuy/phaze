@@ -1,10 +1,17 @@
-"""GET /admin/agents (full page) + GET /admin/agents/_table (HTMX partial) — Phase 29 D-11..D-14.
+"""GET /admin/agents (redirect) + GET /admin/agents/_table (HTMX partial) — Phase 29 D-11..D-14.
 
 Operator-facing read-only admin page that lists every non-revoked registered
 file-server agent with a status pill (alive/stale/dead/never). Revoked agents
 are filtered out entirely (see ``_load_agents``). The page polls
 ``/admin/agents/_table`` every 5 seconds via an HTMX self-replacing
 ``<section>`` (UI-SPEC §Polling LOCKED — never halts).
+
+phaze-uvmcr.4: the full-page render itself moved into the shell (``routers/shell.py``
+``UTILITY_PANES["agents"]``, reachable at ``GET /s/agents`` with the rail intact). ``GET
+/admin/agents`` now 301-redirects there, preserving its query string; see :func:`page` and
+:func:`build_agents_pane_context`, the context-builder now SHARED by the shell's ``agents`` stage.
+Every fragment endpoint below this module's prefix (``/_table``, ``/{agent_id}/_activity``,
+``/compute-lanes/{backend_id}``) is UNCHANGED, in path and behavior.
 
 Server-side classification: ``_load_agents`` queries non-revoked Agent rows
 (``revoked_at IS NULL``), computes ``classify(a, now)`` for each and injects the
@@ -45,7 +52,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import BigInteger, DateTime, cast, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002 — FastAPI needs runtime import to resolve Annotated[AsyncSession, Depends(...)]
@@ -55,12 +62,10 @@ from phaze.database import get_session
 from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
 from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract, SortState
-from phaze.routers.response_shape import wants_fragment
 from phaze.services.agent_liveness import ComputeLane, classify, derive_compute_lane_identities, get_compute_lane_running_jobs
 from phaze.services.pg_text import contains_pg_invalid_chars
 from phaze.services.pipeline import _agent_stage_buckets, get_agent_lane_depths, get_agent_recent_scans
 from phaze.utils.humanize import relative_time
-from phaze.web.static import static_asset_url
 
 
 if TYPE_CHECKING:
@@ -142,9 +147,6 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # Expose the relative-time helper to all templates rendered through this
 # router. The agents_table partial uses it via {{ humanize_relative_time(...) }}.
 templates.env.globals["humanize_relative_time"] = relative_time
-# phaze-315t: fingerprinted, cache-forever static asset URLs. `admin/agents.html` extends
-# `base.html`, which carries the app.css link + favicon set.
-templates.env.globals["static_url"] = static_asset_url
 
 router = APIRouter(prefix="/admin/agents", tags=["admin"])
 
@@ -450,30 +452,28 @@ async def _load_agents(session: AsyncSession, sort: SortState) -> tuple[list[Age
     return rows, now
 
 
-@router.get("", response_class=HTMLResponse)
-async def page(
-    request: Request,
-    session: Annotated[AsyncSession, Depends(get_session)],
-    agent: Annotated[str | None, Query()] = None,
-    clane: Annotated[str | None, Query()] = None,
-    sort: Annotated[str | None, Query()] = None,
-    order: Annotated[str | None, Query()] = None,
-) -> HTMLResponse:
-    """Render either the full ``admin/agents.html`` page or the partial.
+async def build_agents_pane_context(request: Request, session: AsyncSession) -> dict[str, Any]:
+    """Build every context key ``admin/agents.html`` needs, from ``request.query_params`` alone (phaze-uvmcr.4).
 
-    Shape decided by ``response_shape.wants_fragment`` (contract rule 1): a LIVE htmx swap
-    gets only the partial so the response stays under a kilobyte. Otherwise the dedicated
-    ``/_table`` route is the canonical polling target — this page handler exists primarily
-    for the first-load full-page render and direct navigation.
+    Extracted out of the former ``page()`` full-page branch so ``routers/shell.py``'s ``agents``
+    stage can build the IDENTICAL context ``page()`` used to -- one assembly, two callers, so the
+    shell-hosted pane and the (now-redirecting) legacy route can never quietly diverge on what a
+    render of this content actually needs.
 
-    phaze-64uy replaced a local ``_is_htmx`` helper here, which re-derived the decision from
-    the raw ``HX-Request`` header (banned by contract rule 1) and so got the restore case
-    wrong. ``admin/partials/agents_table.html`` sets ``hx-push-url="/admin/agents?agent=<id>"``
-    on each drill-in row, so that URL enters history; a Back with the snapshot evicted arrives
-    here as a restore carrying BOTH headers, and htmx swaps a restore into ``<body>`` while
-    ignoring ``hx-target``. The old helper answered that with the chrome-less table partial,
-    replacing the whole admin page with a bare table. A restore now gets ``admin/agents.html``.
+    ``agent``/``clane``/``sort``/``order`` are read straight off ``request.query_params`` rather
+    than declared as typed ``Query()`` parameters -- mirroring ``shell._render_stage``'s existing
+    ``analyze`` branch, which resolves its own ``?lane=`` the same way. This keeps the wire-bounds
+    contract (``tests/shared/schemas/test_wire_bounds_contract.py``) scoped to the routes that
+    actually declare these as FastAPI parameters (``/admin/agents/_table``, unchanged) rather than
+    minting a second, redundant classification for ``GET /s/{stage}``.
+
+    The returned mapping is merged into the caller's base shell context; it is never a whole
+    context on its own (it carries no ``request``/``stage``/``oob_counts`` keys).
     """
+    agent = request.query_params.get("agent")
+    clane = request.query_params.get("clane")
+    sort = request.query_params.get("sort")
+    order = request.query_params.get("order")
     sort_state = AGENTS_SORT.resolve(sort=sort, order=order)
     agents, now = await _load_agents(session, sort_state)
     # phaze-rdxfu (was Section 2 / RECORD-03 / D-07 → COMPUTE-01): one ephemeral compute-lane identity
@@ -485,20 +485,48 @@ async def page(
     # phaze-2u8v.5 lookup-in-known-set idiom, kept verbatim: unknown/absent id highlights nothing.
     selected_compute_lane = _resolve_selected_compute_lane(clane, compute_lanes)
     rows = _build_table_rows(agents, compute_lanes, sort_state, selected_agent=selected_agent, selected_compute_lane=selected_compute_lane)
-    template = "admin/partials/agents_table.html" if wants_fragment(request) else "admin/agents.html"
-    return templates.TemplateResponse(
-        request=request,
-        name=template,
-        context={
-            "request": request,
-            "rows": rows,
-            "now": now,
-            "current_page": "admin_agents",
-            "refreshed_at_iso": now.isoformat(),
-            "sort": sort_state,
-            "enable_saq_ui": get_settings().enable_saq_ui,  # CLEAN-01: gate the discreet /saq footer link (presentation-only)
-        },
-    )
+    return {
+        "rows": rows,
+        "now": now,
+        "refreshed_at_iso": now.isoformat(),
+        "sort": sort_state,
+        "enable_saq_ui": get_settings().enable_saq_ui,  # CLEAN-01: gate the discreet /saq footer link (presentation-only)
+    }
+
+
+@router.get("", response_class=HTMLResponse)
+async def page(request: Request) -> Response:
+    """GET /admin/agents -- redirect (301) to /s/agents, preserving the query string (phaze-uvmcr.4).
+
+    ``"agents"`` is now a registered shell utility pane (``routers/shell.py`` ``UTILITY_PANES``),
+    reachable with the rail intact at ``/s/agents``, which renders the SAME content this handler used
+    to (``admin/agents.html``, converted to a content-only partial -- see
+    :func:`build_agents_pane_context`, now shared by both). Rendering a second, rail-less copy of
+    that content here would be exactly the redundant fork ``phaze-uvmcr.2`` retired for
+    ``/pipeline/files`` -- this route is the last remaining full-page one.
+
+    The redirect is UNCONDITIONAL, not shape-forked through ``wants_fragment`` the way the
+    ``/pipeline/files`` precedent was: no in-tree caller ever issues a live htmx swap against this
+    bare path (the 5s poll and every sort/drill-in click target ``/admin/agents/_table`` directly),
+    so there is no fragment-wanting shape left to preserve here. A history-restore request also
+    redirects -- following the redirect a second time lands it on the real full document
+    (``shell.shell_stage``), which is what a restore needs regardless of which URL it started from.
+
+    301 (permanent), per acceptance: this path is being retired in favor of ``/s/agents``, not
+    merely temporarily rerouted while both stay canonical.
+
+    The query string carries ``?agent=``/``?clane=``/``?sort=``/``?order=`` verbatim -- phaze-rdxfu's
+    ``?clane=`` deep-link acceptance depends on the round trip, so this passes the RAW string through
+    rather than re-serializing individually-typed params that could drop or reorder one.
+
+    SCOPE (do not "tidy" this later): the fragment endpoints below --
+    ``GET /admin/agents/_table`` (the 5s poll target), ``GET /admin/agents/{agent_id}/_activity``,
+    ``GET /admin/agents/compute-lanes/{backend_id}`` -- are UNCHANGED, in path and behavior. They are
+    swap targets referenced by many templates and tests, not bookmarkable pages, and moving them
+    would multiply this bead's diff for no operator-visible gain.
+    """
+    query = request.url.query
+    return RedirectResponse(url=f"/s/agents?{query}" if query else "/s/agents", status_code=301)
 
 
 @router.get("/_table", response_class=HTMLResponse)

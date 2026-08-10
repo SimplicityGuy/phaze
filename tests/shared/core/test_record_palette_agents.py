@@ -253,7 +253,7 @@ async def test_agents_table_renders_lane_rows_never_dead(client: AsyncClient, ba
     endpoint_url = "https://s3.example.com"
     bucket = "phaze-burst"
     """)
-    r = await client.get("/admin/agents")
+    r = await client.get("/s/agents")
     assert r.status_code == 200
     body = r.text
     # The lane renders as a row in the merged table.
