@@ -55,6 +55,7 @@ from phaze.routers.agent_exec_batches import (
 from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract
 from phaze.routers.response_shape import wants_fragment
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
+from phaze.services.agent_task_router import AmbiguousEnqueueError
 from phaze.services.collision import detect_collisions
 from phaze.services.execution_dispatch import (
     chunk_proposals,
@@ -381,13 +382,31 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
     # or one crash in the claim window costs the operator the whole execute stage for 24h.
     if groups:
         claim_dispatch = _get_claim_dispatch_script(redis_client)
-        claim_result = int(
-            await claim_dispatch(
-                keys=[ACTIVE_DISPATCH_KEY],
-                args=[str(batch_id), str(DISPATCH_CLAIM_TTL_SECONDS), BATCH_KEY_PREFIX],
-                client=redis_client,
-            ),
-        )
+        try:
+            claim_result = int(
+                await claim_dispatch(
+                    keys=[ACTIVE_DISPATCH_KEY],
+                    args=[str(batch_id), str(DISPATCH_CLAIM_TTL_SECONDS), BATCH_KEY_PREFIX],
+                    client=redis_client,
+                ),
+            )
+        except BaseException:
+            # phaze-tnp06: unlike the enqueue loop below, this await was NOT inside the
+            # BaseException-settled span (phaze-0t2c) -- a redis client TimeoutError after the
+            # EVALSHA already landed server-side, or Starlette cancelling the handler on client
+            # disconnect while suspended here, left ``execdispatch:active`` durably claimed with
+            # NO way to release it: no chunk was ever enqueued, so no sub-job will ever POST a
+            # terminal event to promote/release it, and the hash this claim would reconcile
+            # against (``key``, seeded just above per phaze-0t2c's seed-first order) makes the
+            # NEXT dispatch's claim-reconcile see a live-looking hash and refuse for the full 24h
+            # TTL -- the exact wedge phaze-j7u8 was built to close, reopened through this one
+            # await. Delete our own just-seeded hash before re-raising: if the claim actually
+            # landed server-side, the sentinel now names a hash-less batch and the next click's
+            # claim-reconcile (shape 1, ``EXISTS(held_key) == 0``) takes it over outright; if it
+            # never landed, deleting a hash nobody was ever handed is a no-op. Shielded so a
+            # cancellation already in flight cannot abort the cleanup half-done.
+            await asyncio.shield(redis_client.delete(key))
+            raise
         if claim_result == 0:
             # Refused. Drop the hash seeded above -- this batch_id is never returned to anyone, so
             # the hash would otherwise sit unread for 24h and, worse, look like a live 'running'
@@ -442,6 +461,29 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
                     ),
                 )
                 enqueued_ok += 1
+            except AmbiguousEnqueueError:
+                # phaze-19u7g: ``enqueue_for_agent`` raised AFTER the broker connection was
+                # already live (see ``AmbiguousEnqueueError``'s docstring) -- the ``saq_jobs``
+                # INSERT may already be durably committed even though this call never got its
+                # ack. Counting it into ``undispatched_by_agent`` (as a plain ``Exception`` does,
+                # below) would roll it into the batch's ``failed`` counters AND lower
+                # ``subjobs_expected`` past what actually landed, so ``sc >= se`` could promote
+                # the batch terminal and release the ``execdispatch:active`` sentinel WHILE the
+                # phantom sub-job is still executing -- an operator retry then double-dispatches
+                # the same proposals (phaze-19u7g's failure scenario). Count it as landed instead:
+                # a genuinely-lost enqueue then just leaves the batch running until the 24h TTL
+                # reaps it, the same non-terminal fate a dispatched-but-never-reported sub-job
+                # already has -- the same trade-off phaze-9f82r made for tag-write enqueues.
+                logger.error(
+                    "dispatch: enqueue ambiguous for agent=%s chunk=%s batch_id=%s -- broker "
+                    "connection was live, chunk may have landed; keeping it inside "
+                    "subjobs_expected rather than risking a duplicate dispatch",
+                    agent_id,
+                    chunk_index,
+                    batch_id,
+                    exc_info=True,
+                )
+                enqueued_ok += 1
             except Exception:
                 logger.exception(
                     "dispatch: enqueue failed for agent=%s chunk=%s batch_id=%s",
@@ -460,6 +502,29 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
         # undispatched, exactly as an enqueue exception would have counted them, and the same
         # reconcile runs. BaseException (not Exception) so a CancelledError settles too; the settle
         # itself is shielded so a cancellation already in flight cannot abort it half-done.
+        #
+        # phaze-19u7g: ``attempted`` is only incremented AFTER a chunk's inner try/except finishes
+        # (line ~453 above), so a BaseException escaping the ``await enqueue_for_agent(...)`` itself
+        # -- a CancelledError landing between the broker commit and this coroutine's resume, e.g. a
+        # client disconnect cancelling the handler mid-await -- lands here with ``pending[attempted]``
+        # naming THAT in-flight chunk, not one that was never started. Its enqueue may have already
+        # committed on the Postgres broker, so it is ambiguous in exactly the same sense as
+        # ``AmbiguousEnqueueError`` above: count it as landed (kept inside ``subjobs_expected``)
+        # rather than rolling it into ``undispatched_by_agent``, which would let the batch promote
+        # terminal and release the sentinel while that phantom sub-job is still executing. Only the
+        # chunks strictly AFTER it were genuinely never attempted at all.
+        if attempted < len(pending):
+            in_flight_agent_id, in_flight_chunk_index, _in_flight_chunk = pending[attempted]
+            logger.error(
+                "dispatch: enqueue ambiguous (interrupted mid-await) for agent=%s chunk=%s "
+                "batch_id=%s -- keeping it inside subjobs_expected rather than risking a "
+                "duplicate dispatch",
+                in_flight_agent_id,
+                in_flight_chunk_index,
+                batch_id,
+            )
+            enqueued_ok += 1
+            attempted += 1
         for agent_id, _chunk_index, chunk in pending[attempted:]:
             undispatched_by_agent[agent_id] = undispatched_by_agent.get(agent_id, 0) + len(chunk)
         if groups:
