@@ -681,3 +681,35 @@ async def test_distinct_artists_backslash_artist_round_trips_into_search(session
     file_results = [r for r in results if r.result_type == "file"]
     assert len(file_results) == 1
     assert file_results[0].artist == "AC\\DC"
+
+
+# ---------------------------------------------------------------------------
+# distinct_artists() -- deterministic ORDER BY before LIMIT (phaze-p0ytz)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_distinct_artists_truncation_is_deterministic_and_alphabetical(session: AsyncSession) -> None:
+    """DISTINCT + LIMIT with no ORDER BY lets Postgres return an arbitrary, plan-dependent
+    subset of the matches -- a matching artist can silently (and unstably) drop out of a
+    truncated result. Seed more matches than `limit` and assert the truncated result is
+    always the same alphabetically-first slice, across repeated calls."""
+    matching = [f"Zeta Artist {i:02d}" for i in range(15)]
+    for i, artist in enumerate(matching):
+        await create_test_file(session, original_filename=f"zeta-{i}.mp3", artist=artist)
+
+    expected = sorted(matching)[:10]
+    for _ in range(5):
+        artists = await distinct_artists(session, "Zeta Artist", limit=10)
+        assert artists == expected
+
+
+@pytest.mark.asyncio
+async def test_distinct_artists_orders_alphabetically_across_tables(session: AsyncSession) -> None:
+    """The ORDER BY applies across the FileMetadata/Tracklist union, not per-source."""
+    await create_test_file(session, original_filename="c.mp3", artist="Charlie Artist")
+    await create_test_tracklist(session, artist="Alpha Artist", event="Alpha Fest")
+    await create_test_file(session, original_filename="b.mp3", artist="Bravo Artist")
+
+    artists = await distinct_artists(session, "Artist")
+    assert artists == ["Alpha Artist", "Bravo Artist", "Charlie Artist"]

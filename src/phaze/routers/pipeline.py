@@ -17,9 +17,9 @@ from typing import TYPE_CHECKING, Annotated, Any, cast
 import uuid  # noqa: TC003
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import ARRAY, String, bindparam, delete, exists, func, select, tuple_, update
+from sqlalchemy import ARRAY, DateTime, String, bindparam, delete, exists, func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import UUID as PGUUID, insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 import structlog
@@ -39,7 +39,7 @@ from phaze.models.tracklist import Tracklist
 from phaze.routers.column_sort import SortableColumn, SortContract
 from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.routers.request_guards import MALFORMED_PAYLOAD_STATUS
-from phaze.routers.response_shape import wants_fragment
+from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, RENDERABLE_ALERT_STATUS, wants_fragment
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
 from phaze.services import enqueue_router
 from phaze.services.agent_liveness import derive_compute_lane_identities
@@ -48,6 +48,7 @@ from phaze.services.backends import (
     LANE_RECENT_N,
     derive_cloud_hold_reason,
     derive_localqueue_unreachable,
+    get_analyze_queue_totals,
     get_backend_lane_snapshot,
     get_lane_queue_depths,
     get_lane_recent_completions,
@@ -81,6 +82,7 @@ from phaze.services.pipeline import (
     get_metadata_failed_files,
     get_metadata_pending_files,
     get_pending_files_page,
+    get_proposal_busy_count,
     get_proposal_pending_batches,
     get_pushed_count,
     get_pushing_count,
@@ -363,15 +365,15 @@ async def _build_dag_context(
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-# phaze-315t: fingerprinted, cache-forever static asset URLs. `pipeline/files.html` extends
-# `base.html`, which carries the app.css link + favicon set.
+# phaze-315t: fingerprinted, cache-forever static asset URLs (app.css link + favicon set), used by
+# any template rendered through this env that pulls in `base.html`/`shell.html` chrome.
 templates.env.globals["static_url"] = static_asset_url
 router = APIRouter(tags=["pipeline"])
 
@@ -397,6 +399,32 @@ def _analysis_file_ids_scope(file_ids: list[uuid.UUID], name: str) -> Any:
 def _ledger_keys_scope(keys: list[str], name: str) -> Any:
     """``SchedulingLedger.key = ANY(:name)`` -- the same array-bind idiom, string keys (phaze-r7j9)."""
     return SchedulingLedger.key == func.any(bindparam(name, value=keys, type_=ARRAY(String())))
+
+
+def _scheduling_ledger_cas_delete_stmt(observed_rows: Sequence[Any]) -> Any:
+    """CAS-guarded ``DELETE ... WHERE (key, enqueued_at) IN (observed_rows)`` at CONSTANT bind cost.
+
+    phaze-krzz5: a bare ``tuple_(SchedulingLedger.key, SchedulingLedger.enqueued_at).in_(observed_rows)``
+    renders a composite ``(key, enqueued_at) IN ((p1, p2), (p3, p4), ...)`` -- SQLAlchemy expands
+    each row of a composite IN-list individually, so this is TWO bind parameters per row, hitting
+    asyncpg's 32767-parameter cap at roughly HALF the row count the sibling single-column
+    ``_analysis_file_ids_scope`` / ``_ledger_keys_scope`` array-bind idiom tolerates (the phaze-r7j9
+    fix those two apply, one column short of covering this composite-key DELETE).
+
+    Binds the observed rows as TWO parallel Postgres arrays and matches them via ``unnest`` run in
+    lockstep (multiple set-returning functions in one SELECT list iterate together in Postgres),
+    extending the same array-bind idiom to a composite key: exactly 2 bind parameters regardless of
+    how many rows were observed, same as the single-column helpers above.
+    """
+    observed_keys = [key for key, _ in observed_rows]
+    observed_enqueued_ats = [enqueued_at for _, enqueued_at in observed_rows]
+    observed_pairs = select(
+        func.unnest(bindparam("cas_delete_keys", value=observed_keys, type_=ARRAY(String()))).label("key"),
+        func.unnest(bindparam("cas_delete_enqueued_ats", value=observed_enqueued_ats, type_=ARRAY(DateTime(timezone=True)))).label("enqueued_at"),
+    ).subquery()
+    return delete(SchedulingLedger).where(
+        tuple_(SchedulingLedger.key, SchedulingLedger.enqueued_at).in_(select(observed_pairs.c.key, observed_pairs.c.enqueued_at)),
+    )
 
 
 async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: str, models_path: str) -> list[uuid.UUID]:
@@ -433,6 +461,16 @@ async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: 
     ``failed_ids`` -- restoring its ``failed_at`` would be wrong, because the file's marker
     state is whatever the dead key-holder left, and un-wedging the key is the aborting-reaper's
     job, not this loop's), just makes a blocked file visible in logs.
+
+    phaze-p2qvv: the phaze-ewen probe (``queue.job()`` + ``classify_process_file_collision``)
+    is itself a second await against the SAQ Postgres broker and can raise (pool timeout,
+    connection reset, a version-skewed row failing ``deserialize()``). A merge (537ee6f)
+    stitched the phaze-4ter containment and the phaze-ewen probe with the probe sitting OUTSIDE
+    the per-file ``try``/``except``, so a raise here escaped this function entirely -- aborting
+    every remaining file in the group and, via ``_retry_analysis_group``, skipping the
+    ``failed_ids`` restore write too. The probe is purely diagnostic (it only decides whether to
+    log; it never changes ``failed_ids`` or control flow), so its own failure is contained here
+    and logged instead of being allowed to propagate.
     """
     failed_ids: list[uuid.UUID] = []
     for f in files:
@@ -442,7 +480,18 @@ async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: 
             logger.exception("enqueue_analysis_jobs: failed to enqueue process_file job", file_id=str(f.id))
             failed_ids.append(f.id)
             continue
-        if job is None and classify_process_file_collision(await queue.job(process_file_job_key(f.id))) == "blocked":
+        if job is not None:
+            continue
+        try:
+            blocked = classify_process_file_collision(await queue.job(process_file_job_key(f.id))) == "blocked"
+        except Exception:
+            logger.warning(
+                "_enqueue_analysis_jobs: collision-classification probe failed -- diagnostic only, enqueue outcome unaffected",
+                file_id=str(f.id),
+                key=process_file_job_key(f.id),
+            )
+            continue
+        if blocked:
             logger.warning(
                 "_enqueue_analysis_jobs: deterministic key held by a dead job -- file omitted from this run",
                 file_id=str(f.id),
@@ -482,9 +531,20 @@ async def _retry_analysis_group(queue: Any, group: list[FileRecord], agent_id: s
         from phaze.database import async_session  # noqa: PLC0415
 
         async with async_session() as restore_session:
+            # phaze-6ib1n: guard on `analysis_completed_at IS NULL`, mirroring
+            # `report_analysis_failed`'s own conflict predicate (routers/agent_analysis.py) and its
+            # documented reason -- "guard the failure stamp so it NEVER downgrades a row that already
+            # reads DONE". Without it, a file that raced this loop (its own enqueue landed and
+            # `put_analysis` stamped `analysis_completed_at` WHILE this background task was still
+            # grinding through the rest of the group) trips the `analysis_completed_xor_failed` CHECK.
+            # That is a STATEMENT-level violation: this multi-row UPDATE aborts as a whole, the `except`
+            # below only logs, and every OTHER id in `failed_ids` -- whose enqueue genuinely never
+            # happened -- permanently loses its failure marker with no replacement job. A completed row
+            # needs no restore (it is done, not failed), so excluding it here is correct independent of
+            # the crash, and it means one raced id can never void the restore for the whole group.
             await restore_session.execute(
                 update(AnalysisResult)
-                .where(_analysis_file_ids_scope(failed_ids, "restore_ids"))
+                .where(_analysis_file_ids_scope(failed_ids, "restore_ids"), AnalysisResult.analysis_completed_at.is_(None))
                 .values(failed_at=func.now(), error_message="retry_analysis_failed: enqueue error, see agent logs (phaze-4ter)"),
             )
             await restore_session.commit()
@@ -635,9 +695,32 @@ async def _route_discovered_by_duration(
 
 
 async def _enqueue_proposal_jobs(queue: Any, batches: list[list[str]]) -> None:
-    """Background coroutine to enqueue generate_proposals jobs for batched file IDs."""
+    """Background coroutine to enqueue generate_proposals jobs for batched file IDs.
+
+    phaze-ysz16: each batch's enqueue is individually contained, mirroring phaze-4ter's
+    ``_enqueue_analysis_jobs`` containment. Pre-fix this was a bare loop with no per-item
+    try/except -- every caller spawns it via ``asyncio.create_task`` with only a bare
+    ``_background_tasks.discard`` done-callback (``task.result()`` never called), so the FIRST
+    exception (a transient broker/pool error) aborted every remaining batch AND surfaced only as
+    asyncio's uncorrelated GC-time "Task exception was never retrieved" log -- never tied to this
+    request -- while the HTTP response had already reported the FULL batch count as enqueued.
+    Nothing here mutates durable state before the enqueue, so a dropped batch just stays in the
+    derived pending set and an idempotent re-click re-enqueues it; this fix is purely about making
+    the drop visible in a correlated log instead of losing every remaining batch to one failure.
+    """
+    dropped = 0
     for idx, batch in enumerate(batches):
-        await queue.enqueue("generate_proposals", file_ids=batch, batch_index=idx)
+        try:
+            await queue.enqueue("generate_proposals", file_ids=batch, batch_index=idx)
+        except Exception:
+            dropped += 1
+            logger.exception("_enqueue_proposal_jobs: failed to enqueue generate_proposals batch", batch_index=idx, batch_size=len(batch))
+    if dropped:
+        logger.warning(
+            "_enqueue_proposal_jobs: batches dropped from this run -- pending set unaffected, re-click will retry",
+            dropped=dropped,
+            total=len(batches),
+        )
 
 
 @router.post("/api/v1/analyze")
@@ -711,10 +794,25 @@ async def trigger_proposals(
     """Enqueue generate_proposals jobs for files with both metadata and analysis (per D-02 convergence gate).
 
     Uses settings.llm_batch_size (default 10) for batch chunking.
+
+    phaze-8qheu: gated on :func:`get_proposal_busy_count` -- a second trigger while a prior
+    batch set is still queued/active is REFUSED (zero enqueued) rather than recomputing the
+    pending set. The set-hash dedup key (``generate_proposals:<sha256(sorted file_ids)>``) is
+    NOT robust to the pending set moving between the two triggers (see
+    :func:`get_proposal_pending_batches`'s docstring), so this server-side gate -- not the SAQ
+    key dedup -- is what prevents a mid-drain re-trigger from double-proposing the backlog.
     """
+    busy = await get_proposal_busy_count(session)
+    if busy > 0:
+        return {
+            "enqueued_batches": 0,
+            "total_files": 0,
+            "message": f"Proposal generation already in progress ({busy} batch job(s) queued/active); try again once it finishes.",
+        }
+
     # Per D-02: convergence gate via the shared, deterministically-sorted pending-set helper
-    # (D-03 anti-drift): recovery and this manual trigger build the SAME sorted batches, so their
-    # generate_proposals:<sha256(sorted file_ids)> keys align and dedup (42-RESEARCH Pitfall 2).
+    # (D-03 anti-drift) -- see the busy gate above for why this alone is not enough to make a
+    # re-trigger dedup-safe.
     batches = await get_proposal_pending_batches(session, settings.llm_batch_size)
     total_files = sum(len(b) for b in batches)
     if not batches:
@@ -794,9 +892,10 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # added here -- same service-owns-degrade wiring idiom as the straggler/failed counts above.
     awaiting_cloud_count = await get_awaiting_cloud_count(session)
 
-    # Phase 50 (50-07, D-09): the two bounded cloud-window count cards -- "Staged (pushing)"
-    # (FileState.PUSHING, mid-rsync) and "Analyzing (cloud)" (FileState.PUSHED, landed/within
-    # analysis). Both service reads own the never-500 _safe_count degrade (return 0 on any DB
+    # Phase 50 (50-07, D-09; re-seamed phaze-zyoag): the two bounded cloud-window count cards --
+    # "Staged (pushing)" (pre-submit / mid-transfer, per-backend-kind aware) and "Analyzing (cloud)"
+    # (post-submit, in the cloud window -- includes a kueue row waiting on cluster quota, NOT just
+    # "landed"). Both service reads own the never-500 _safe_count degrade (return 0 on any DB
     # error), so NO try/except here -- same service-owns-degrade idiom as awaiting_cloud_count.
     pushing_count = await get_pushing_count(session)
     analyzing_cloud_count = await get_pushed_count(session)
@@ -829,13 +928,21 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     recon = await get_global_reconciliation(session)
 
     # Phase 71 (71-03, BEUI-01 / D-04): the N-lane grid snapshot -- one rank-ascending, secret-free dict
-    # per registry backend {id, kind, rank, cap, in_flight, available, quota_wait, inadmissible}. Seeded
-    # IDENTICALLY in pipeline_stats_partial() below so the WHOLE #analyze-lanes grid OOB-swaps on the SAME
-    # existing 5s poll (no second loop, no new read endpoint -- Pitfall 2: N is dynamic, no per-lane store
-    # keys). The snapshot helper owns the never-500 degrade (-> [] on any error), so NO try/except here --
+    # per registry backend {id, kind, rank, cap, in_flight, available, quota_wait, inadmissible, queued,
+    # working, processed_24h, processed_lifetime} (the last four added phaze-5c6i2). Seeded IDENTICALLY
+    # in pipeline_stats_partial() below so the WHOLE #analyze-lanes grid OOB-swaps on the SAME existing
+    # 5s poll (no second loop, no new read endpoint -- Pitfall 2: N is dynamic, no per-lane store keys).
+    # The snapshot helper owns the never-500 degrade (-> [] on any error), so NO try/except here --
     # same service-owns-degrade idiom as the cloud counts above. This SUPERSEDES the transitional single
     # non-local lane-kind key (retired); resolved_non_local_kind stays for the :811 callers.
-    lanes = await get_backend_lane_snapshot(session)
+    lanes = await get_backend_lane_snapshot(session, app_state)
+
+    # phaze-5c6i2 (acceptance rule 2): the global "TOTAL QUEUED (analyze)" figure + its unrouted
+    # remainder, derived from the SAME lane snapshot above (each lane's own ``queued``) plus the
+    # Stage.ANALYZE not_started bucket. Seeded IDENTICALLY in pipeline_stats_partial() below so the
+    # OOB-swapped card re-push agrees with this first-load render (the OOB swap contract). Degrade-safe
+    # at the service layer, so NO router try/except -- mirrors the lanes wiring immediately above.
+    analyze_queue_totals = await get_analyze_queue_totals(session, lanes)
 
     # phaze-6r39 (retires 56-02/D-05/D-06's cross-process Redis flag): the K8s LocalQueue-unreachable
     # amber alert, derived from the SAME lane snapshot above rather than a separate boot-time Redis key.
@@ -879,6 +986,10 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
         # Phase 71 (71-03, BEUI-01 / D-04): the N-lane grid snapshot (seeded above, mirrored identically
         # in pipeline_stats_partial). Retires the transitional single non-local lane-kind context key.
         "lanes": lanes,
+        # phaze-5c6i2 (acceptance rule 2): the global TOTAL QUEUED (analyze) figure + its unrouted
+        # remainder (seeded above, mirrored identically in pipeline_stats_partial).
+        "total_queued_analyze": analyze_queue_totals["total_queued"],
+        "unrouted_queued_analyze": analyze_queue_totals["unrouted_queued"],
         **activity,
         **dag_ctx,
         "queue_progress_percent": queue_progress,
@@ -994,7 +1105,7 @@ async def pipeline_stats_partial(
             # 5s poll so the WHOLE #analyze-lanes grid OOB-swaps as a unit (stats_bar.html includes _analyze_lanes
             # with oob=True inside the oob_counts gate). Seeded IDENTICALLY to build_dashboard_context (degrade-safe
             # -> [], never 500) -- one existing poll, no second loop, no new read endpoint.
-            _read_in_own_session(fanout, lambda s: get_backend_lane_snapshot(s), cast("list[dict[str, Any]]", [])),
+            _read_in_own_session(fanout, lambda s: get_backend_lane_snapshot(s, request.app.state), cast("list[dict[str, Any]]", [])),
             # The SAME hold-reason derivation build_dashboard_context seeds on first load, re-pushed on every 5s
             # poll so the awaiting_cloud_card sub-caption stays live via its OOB swap (the OOB swap contract:
             # both render paths must agree). Degrade-safe at the service layer, so NO router try/except -- mirrors
@@ -1008,6 +1119,11 @@ async def pipeline_stats_partial(
     # render paths must agree). Pure function over the `lanes` snapshot just resolved above -- no I/O,
     # cannot raise -- so NO router try/except, mirroring the lanes wiring immediately above it.
     localqueue_unreachable = derive_localqueue_unreachable(lanes)
+    # phaze-5c6i2 (acceptance rule 2): the same TOTAL QUEUED (analyze) derivation build_dashboard_context
+    # seeds on first load, re-pushed on every 5s poll so the total-queued card stays live via its OOB
+    # swap (the OOB swap contract: both render paths must agree). Depends on the JUST-resolved `lanes`
+    # value, so it runs sequentially here rather than inside the gather above.
+    analyze_queue_totals = await get_analyze_queue_totals(session, lanes)
     queue_progress = queue_progress_percent(stats["analyzed"], activity["agent_busy"])
     # Phase 35 (35-04): same per-node reconcile as dashboard(), re-pushed on every 5s
     # poll via the OOB x-init seeds in stats_bar.html (gated behind oob_counts). The store
@@ -1050,6 +1166,8 @@ async def pipeline_stats_partial(
             "lanes": lanes,
             "selected_lane": selected_lane,
             "lanes_hash": lanes_hash,
+            "total_queued_analyze": analyze_queue_totals["total_queued"],
+            "unrouted_queued_analyze": analyze_queue_totals["unrouted_queued"],
             **activity,
             **dag_ctx,
             "queue_progress_percent": queue_progress,
@@ -1075,7 +1193,7 @@ async def lane_detail(
     carries its own bounded 5s tick (D-03). Read-only -- no commit. Only secret-free filename/timestamp/id
     scalars leave here (T-88-04); ``backend_id``/``kind`` stay Jinja-autoescaped (T-88-05).
     """
-    lanes = await get_backend_lane_snapshot(session)  # degrade-safe -> []
+    lanes = await get_backend_lane_snapshot(session, request.app.state)  # degrade-safe -> []
     lane = next((one for one in lanes if one["id"] == backend_id), None)
     if lane is None:
         return templates.TemplateResponse(
@@ -1140,12 +1258,27 @@ _PENDING_SORTS: dict[str, SortContract] = {
     ),
 }
 
+# phaze-6not3: sort what is shown -- FILES_SORT's own "sort what you show" precedent (see its comment
+# below) was violated on BOTH of these columns. `_tracklist_sets_page_stmt` already outerjoins
+# `FileRecord`, so both expressions below can reach it directly (no additional join needed).
+#   - "Set" renders `set_name = filename if matched else (artist or event or external_id)`
+#     (services/pipeline.py::get_tracklist_sets_page) -- NOT bare `Tracklist.artist`, which put a
+#     matched row's audio filename in a column that ordered by a value never shown for that row.
+#   - "Tracklist" renders ONLY the two-value `tracklist_state` ("matched"/"candidate") derived from
+#     `Tracklist.file_id IS NOT NULL` -- NOT `Tracklist.event`, a column that appears nowhere on
+#     screen. `Tracklist.file_id.is_not(None)` groups matched apart from candidate exactly like the
+#     rendered state does; a boolean ORDER BY sorts False-then-True (or the reverse on desc), which is
+#     the grouping the header promises.
 TRACKLIST_SETS_SORT = SortContract(
     endpoint="/pipeline/tracklist-sets",
     target="#tracklist-sets-view",
     columns=(
-        SortableColumn(key="artist", label="Set", expression=Tracklist.artist),
-        SortableColumn(key="event", label="Tracklist", expression=Tracklist.event),
+        SortableColumn(
+            key="artist",
+            label="Set",
+            expression=func.coalesce(FileRecord.original_filename, Tracklist.artist, Tracklist.event, Tracklist.external_id),
+        ),
+        SortableColumn(key="event", label="Tracklist", expression=Tracklist.file_id.is_not(None)),
     ),
     default_key="artist",
 )
@@ -1201,7 +1334,7 @@ async def pipeline_files(
     sort: str | None = Query(None),
     order: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
+) -> Response:
     """Render the paginated, per-row-derived files table (UI-01 / D-02).
 
     The scannable "where's this file at?" overview: each row carries the six-pill stage matrix
@@ -1225,10 +1358,28 @@ async def pipeline_files(
     ``HX-Request: true`` too but IGNORES ``hx-target`` and swaps into ``<body>``, so the fragment
     replaced the whole page with an orphaned filter bar + table; a plain reload/bookmark of the
     pushed URL (no htmx headers at all) hit the exact same branch and served a raw fragment with no
-    ``<html>``, CSS, htmx, or Alpine. Mirroring ``audit_log`` (``execution.py``): a live htmx swap
-    (``wants_fragment`` True) still gets the same bare fragment, unchanged; anything else -- a plain
-    request or a restore -- gets the full ``pipeline/files.html`` page instead.
+    ``<html>``, CSS, htmx, or Alpine. A live htmx swap (``wants_fragment`` True) still gets the same
+    bare fragment, unchanged.
+
+    phaze-uvmcr.2: anything else -- a plain request or a restore -- used to get a rail-less full
+    page (``pipeline/files.html``, its own extends-base.html fork of this same content --
+    base.html itself was deleted by phaze-uvmcr.5, its last live caller gone).
+    That page was redundant: ``"files"`` is a registered shell stage (``routers/shell.py``
+    ``STAGE_PARTIALS``), reachable with the rail intact at ``/s/files``, which composes the SAME
+    ``files_table_view.html`` fragment via ``pipeline/partials/files_workspace.html``. So the
+    non-fragment branch now REDIRECTS there instead of rendering a second copy of the page, carrying
+    the request's query string across (the filter/sort/pager state the URL-carried-lens idiom above
+    rides on) so the redirected URL at least reads the same as the one that was bookmarked --
+    ``/s/files`` itself is unchanged and does not re-derive a filtered page from it. This is the last
+    caller of ``pipeline/files.html``, which phaze-uvmcr.2 deletes alongside this change.
     """
+    if not wants_fragment(request):
+        # phaze-r6e5m (response_shape.py contract rule 6): this same URL also answers with the
+        # fragment below depending on request headers alone, so the redirect must be as
+        # browser-uncacheable as the fragment is (see the corresponding note on execution.audit_log).
+        query = request.url.query
+        return RedirectResponse(url=f"/s/files?{query}" if query else "/s/files", status_code=302, headers=DUAL_SHAPE_RESPONSE_HEADERS)
+
     stage_enum: Stage | None = None
     if stage:
         try:
@@ -1248,10 +1399,9 @@ async def pipeline_files(
         "active_bucket": bucket_val,
         "sort": sort_state,
     }
-    if wants_fragment(request):
-        return templates.TemplateResponse(request=request, name="pipeline/partials/files_table_view.html", context=context)
-
-    return templates.TemplateResponse(request=request, name="pipeline/files.html", context=context)
+    return templates.TemplateResponse(
+        request=request, name="pipeline/partials/files_table_view.html", context=context, headers=DUAL_SHAPE_RESPONSE_HEADERS
+    )
 
 
 @router.get("/pipeline/analyze-files", response_class=HTMLResponse)
@@ -1586,9 +1736,7 @@ async def trigger_backfill_cloud(
             await session.execute(select(SchedulingLedger.key, SchedulingLedger.enqueued_at).where(_ledger_keys_scope(ledger_keys, "ledger_keys")))
         ).all()
         if observed_ledger_rows:
-            await session.execute(
-                delete(SchedulingLedger).where(tuple_(SchedulingLedger.key, SchedulingLedger.enqueued_at).in_(observed_ledger_rows)),
-            )
+            await session.execute(_scheduling_ledger_cas_delete_stmt(observed_ledger_rows))
 
     counts = await _route_discovered_by_duration(
         request.app.state,
@@ -1885,15 +2033,83 @@ async def retry_analysis_failed_file(
     )
     await session.commit()
 
-    # NORMAL caps: a retry is a fresh re-analysis, not a deepen -- no fine_cap/coarse_cap override.
-    await enqueue_process_file(routed.queue, file, agent_id, settings.models_path)
+    # phaze-gcdih: the marker-clear above is ALREADY committed, so an exception raised by the enqueue
+    # itself (SAQ's job insert runs on its OWN psycopg3 pool, independent of this session -- see the
+    # two-pool analysis at ADR-0003 / pipeline.py:1576-1583) must not be allowed to propagate bare: that
+    # would leave the file with no failure marker AND no replacement job, invisible to both the
+    # ANALYSIS_FAILED bucket and recover_orphaned_work (ANALYZE is manual-only, D-00b). Mirror the bulk
+    # twin's restore (`_retry_analysis_group`): re-stamp the marker on a failed enqueue and tell the
+    # operator honestly instead of a dropped htmx 500.
+    try:
+        # NORMAL caps: a retry is a fresh re-analysis, not a deepen -- no fine_cap/coarse_cap override.
+        job = await enqueue_process_file(routed.queue, file, agent_id, settings.models_path)
+    except Exception:
+        logger.exception("retry_analysis_failed_file: failed to enqueue process_file job", file_id=str(file_id))
+        await session.execute(
+            update(AnalysisResult)
+            .where(AnalysisResult.file_id == file_id)
+            .values(failed_at=func.now(), error_message="retry_analysis_failed_file: enqueue error, see agent logs (phaze-gcdih)"),
+        )
+        await session.commit()
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/retry_failed_response.html",
+            context={"request": request, "count": 0, "no_active_agent": False, "enqueue_failed": True},
+        )
+
+    if job is None:
+        # phaze-k0rv9: a None return is a deterministic-key collision, not a raised exception --
+        # but per classify_process_file_collision (services.analysis_enqueue) a key held by a DEAD
+        # job (aborting/failed/aborted, or a stuck active row) blocks the enqueue FOREVER: nothing
+        # was scheduled and nothing ever will be until the aborting-reaper clears the key. Every
+        # other process_file producer classifies this (deepen_analysis phaze-ewen/phaze-qim6c,
+        # _enqueue_analysis_jobs phaze-ewen/phaze-p2qvv) -- this endpoint was the one gap, silently
+        # reporting success on a marker that was already cleared+committed above. Mirror
+        # deepen_analysis: classify before claiming success, and degrade a raising probe (the
+        # lookup is itself a Postgres-backed SAQ call and can fail transiently) to "in_flight"
+        # (benign) rather than letting a diagnostic-only lookup crash this interactive endpoint.
+        try:
+            collision = classify_process_file_collision(await routed.queue.job(process_file_job_key(file_id)))
+        except Exception:
+            logger.warning(
+                "retry_analysis_failed_file: collision lookup failed -- degrading to already-in-flight",
+                file_id=str(file_id),
+                key=process_file_job_key(file_id),
+                exc_info=True,
+            )
+            collision = "in_flight"
+        if collision == "blocked":
+            logger.warning(
+                "retry_analysis_failed_file: deterministic key held by a dead job -- retry dropped",
+                file_id=str(file_id),
+                key=process_file_job_key(file_id),
+            )
+            # Restore the failure marker: it was cleared+committed above but no replacement job
+            # exists, so leaving it clear would silently drop the file from the failed bucket with
+            # nothing running and nothing recording that the retry never happened.
+            await session.execute(
+                update(AnalysisResult)
+                .where(AnalysisResult.file_id == file_id)
+                .values(failed_at=func.now(), error_message="retry_analysis_failed_file: blocked by a dead job holding the key (phaze-k0rv9)"),
+            )
+            await session.commit()
+            return templates.TemplateResponse(
+                request=request,
+                name="pipeline/partials/retry_failed_response.html",
+                context={"request": request, "count": 0, "no_active_agent": False, "blocked": True},
+            )
 
     logger.info("retry_analysis_failed_file re-queued", file_id=str(file_id))
-    return templates.TemplateResponse(
-        request=request,
-        name="pipeline/partials/retry_failed_response.html",
-        context={"request": request, "count": 1, "no_active_agent": False},
-    )
+    # phaze-bgz26: this endpoint's ONLY caller is the Files matrix per-row Retry button
+    # (files_table_view.html), and the bucket genuinely changed (failed -> not_started) by the
+    # `failed_at` clear + commit above -- but nothing re-renders that row without a full poll
+    # this surface never gets (files_table_view.html has NO self-poll by design). Re-derive the
+    # bucket AFTER the commit and OOB-push the single Files-matrix pill this write invalidated,
+    # the same shape force_skip_stage uses for the record pane (see `_stage_pill_oob`).
+    buckets = await get_file_stage_buckets(session, file_id)
+    ack = templates.get_template("pipeline/partials/retry_failed_response.html").render(count=1, no_active_agent=False)
+    pill_oob = _stage_pill_oob(file_id, "analyze", buckets.get("analyze", "not_started"), id_prefix="files-stage-pill")
+    return HTMLResponse(ack + pill_oob)
 
 
 @router.post("/pipeline/files/{file_id}/metadata-failed/retry", response_class=HTMLResponse)
@@ -1951,11 +2167,15 @@ async def retry_metadata_failed_file(
     await _enqueue_extraction_jobs(routed.queue, [file], agent_id)
 
     logger.info("retry_metadata_failed_file re-queued", file_id=str(file_id))
-    return templates.TemplateResponse(
-        request=request,
-        name="pipeline/partials/metadata_retry_response.html",
-        context={"request": request, "count": 1, "no_active_agent": False},
-    )
+    # phaze-bgz26: same shape as retry_analysis_failed_file -- OOB-push the Files-matrix pill this
+    # write invalidated. D-11 means `failed_at` is NOT cleared here, so the re-derived bucket
+    # stays "failed" until `put_metadata`'s clear-on-success later lands real metadata; pushing it
+    # anyway keeps the pill's id fresh in the DOM rather than claiming a bucket flip that has not
+    # happened yet (it will land on the next per-file retry / force-skip / poll-driven action).
+    buckets = await get_file_stage_buckets(session, file_id)
+    ack = templates.get_template("pipeline/partials/metadata_retry_response.html").render(count=1, no_active_agent=False)
+    pill_oob = _stage_pill_oob(file_id, "metadata", buckets.get("metadata", "failed"), id_prefix="files-stage-pill")
+    return HTMLResponse(ack + pill_oob)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -2070,7 +2290,7 @@ async def force_skip_stage(
 _ENRICH_STAGE_LABELS = {"metadata": "Meta", "analyze": "Analyze"}
 
 
-def _stage_pill_oob(file_id: uuid.UUID, stage: str, bucket: str) -> str:
+def _stage_pill_oob(file_id: uuid.UUID, stage: str, bucket: str, *, id_prefix: str = "stage-pill") -> str:
     """Render the shared five-bucket pill as an ``hx-swap-oob`` fragment addressed to ONE (file, stage).
 
     phaze-5p43: ``_force_skip_dialog.html``'s header contract promises the pill flips to ``⊘ skipped``
@@ -2082,13 +2302,18 @@ def _stage_pill_oob(file_id: uuid.UUID, stage: str, bucket: str) -> str:
     it invalidated, and nothing else.
 
     ID UNIQUENESS (load-bearing — this repo has a history of duplicate-id OOB bugs: phaze-gzrd,
-    phaze-op6f, phaze-7j50): ``stage-pill-{stage}-{file_id}`` is emitted from exactly ONE place,
-    ``record_body.html``'s stage loop, once per (stage, file) — six ids for the one open record, and
-    ``record_host.html`` hosts at most one record at a time. The Files matrix / ``_stage_matrix.html``
-    include ``_stage_pill.html`` id-lessly, so no second element in the composed document can collide.
-    The id lives on a WRAPPER span, not on the pill itself, so ``_stage_pill.html`` stays a pure,
-    id-free token shared verbatim with the matrix (a second id-bearing copy there IS the collision
-    this shape avoids).
+    phaze-op6f, phaze-7j50): the default ``stage-pill-{stage}-{file_id}`` id is emitted from exactly
+    ONE place, ``record_body.html``'s stage loop, once per (stage, file) — six ids for the one open
+    record, and ``record_host.html`` hosts at most one record at a time. The id lives on a WRAPPER
+    span, not on the pill itself, so ``_stage_pill.html`` stays a pure, id-free token.
+
+    phaze-bgz26: the Files matrix (``files_table_view.html``) needs the SAME shape for its own
+    per-row pill, but MUST NOT reuse the ``stage-pill-*`` id space — that id is reserved for the
+    (at-most-one) open record pane, and the matrix can render many rows of the same (stage, file)
+    simultaneously with the record pane. ``id_prefix`` namespaces the two: callers targeting the
+    Files matrix pass ``id_prefix="files-stage-pill"`` (matching the wrapper span
+    ``files_table_view.html`` renders around each cell's ``_stage_pill.html`` include), so a
+    per-file retry can safely OOB-push into both surfaces from one response with no id collision.
 
     ``bucket`` is a derived enum value and ``stage`` is allowlisted; the pill template autoescapes.
     """
@@ -2096,7 +2321,7 @@ def _stage_pill_oob(file_id: uuid.UUID, stage: str, bucket: str) -> str:
         stage_label=_ENRICH_STAGE_LABELS.get(stage, stage),
         bucket=bucket,
     )
-    return f'<span id="stage-pill-{stage}-{file_id}" class="inline-flex" hx-swap-oob="true">{pill}</span>'
+    return f'<span id="{id_prefix}-{stage}-{file_id}" class="inline-flex" hx-swap-oob="true">{pill}</span>'
 
 
 async def _force_skip_file_exists(session: AsyncSession, file_id: uuid.UUID) -> bool:
@@ -2394,8 +2619,25 @@ async def deepen_analysis(
             if job is None:
                 # Deterministic-key collision -- classify it rather than assuming "in flight"
                 # (phaze-ewen). A dead job holding the key means this deepen was silently dropped.
-                existing = await routed.queue.job(process_file_job_key(file.id))
-                if classify_process_file_collision(existing) == "blocked":
+                try:
+                    existing = await routed.queue.job(process_file_job_key(file.id))
+                    collision = classify_process_file_collision(existing)
+                except Exception:
+                    # phaze-qim6c: the lookup itself (a Postgres pool query via SAQ's
+                    # PostgresQueue) can raise transiently -- a broker/pool hiccup must NOT
+                    # escape this interactive endpoint as a raw 500; the docstring above
+                    # promises T-44-10 ("never a raw 500") for exactly this collision path.
+                    # Degrade the same way classify_process_file_collision already treats an
+                    # unlookupable job (``job is None`` -> "in_flight", benign rather than
+                    # crying wolf) instead of leaving the exception to propagate.
+                    logger.warning(
+                        "deepen_analysis: collision lookup failed -- degrading to already-in-flight",
+                        file_id=str(file.id),
+                        key=process_file_job_key(file.id),
+                        exc_info=True,
+                    )
+                    collision = "in_flight"
+                if collision == "blocked":
                     blocked = True
                     logger.warning(
                         "deepen_analysis: deterministic key held by a dead job -- deepen dropped",
@@ -2540,9 +2782,29 @@ async def trigger_proposals_ui(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """HTMX endpoint: trigger proposal generation and return response fragment."""
+    """HTMX endpoint: trigger proposal generation and return response fragment.
+
+    phaze-8qheu: gated on :func:`get_proposal_busy_count` -- see ``trigger_proposals`` (the API
+    twin) for why the set-hash dedup key alone cannot make a re-trigger safe.
+    """
+    busy = await get_proposal_busy_count(session)
+    if busy > 0:
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/trigger_response.html",
+            context={
+                "request": request,
+                "action": "proposal generation",
+                "count": 0,
+                "no_active_agent": False,
+                "already_running": True,
+                "busy": busy,
+            },
+        )
+
     # Per D-02: convergence gate via the shared, deterministically-sorted pending-set helper
-    # (D-03 anti-drift) -- same sorted batches as the API trigger + recovery, so keys align.
+    # (D-03 anti-drift) -- see the busy gate above for why this alone is not enough to make a
+    # re-trigger dedup-safe.
     batches = await get_proposal_pending_batches(session, settings.llm_batch_size)
     count = sum(len(b) for b in batches)
     batches_count = 0
@@ -2574,7 +2836,18 @@ async def _enqueue_extraction_jobs(queue: Any, files: list[FileRecord], agent_id
     worker's ``model_validate`` accepts it. The deterministic key
     (``extract_file_metadata:<file_id>``) is applied centrally by the ``before_enqueue`` hook
     (35-01), so no explicit ``key=`` is set here.
+
+    phaze-ysz16: each file's enqueue is individually contained, mirroring phaze-4ter's
+    ``_enqueue_analysis_jobs`` containment. Pre-fix a bare loop with no per-item try/except meant
+    the FIRST transient broker/pool error aborted every remaining file in the group, surfacing
+    only as asyncio's uncorrelated GC-time "Task exception was never retrieved" log (every caller
+    detaches this via ``asyncio.create_task`` + a bare ``_background_tasks.discard`` done-callback
+    that never calls ``task.result()``) while the response had already reported the full count.
+    Nothing here mutates durable state before the enqueue, so a dropped file stays in the derived
+    pending set for an idempotent re-click; this fix makes the drop visible in a correlated log
+    instead of losing every remaining file to one failure.
     """
+    dropped = 0
     for f in files:
         payload = ExtractMetadataPayload(
             file_id=f.id,
@@ -2582,7 +2855,17 @@ async def _enqueue_extraction_jobs(queue: Any, files: list[FileRecord], agent_id
             file_type=f.file_type,
             agent_id=agent_id,
         )
-        await queue.enqueue("extract_file_metadata", **payload.model_dump(mode="json"))
+        try:
+            await queue.enqueue("extract_file_metadata", **payload.model_dump(mode="json"))
+        except Exception:
+            dropped += 1
+            logger.exception("_enqueue_extraction_jobs: failed to enqueue extract_file_metadata job", file_id=str(f.id))
+    if dropped:
+        logger.warning(
+            "_enqueue_extraction_jobs: files dropped from this run -- pending set unaffected, re-click will retry",
+            dropped=dropped,
+            total=len(files),
+        )
 
 
 @router.post("/api/v1/extract-metadata")
@@ -2676,9 +2959,30 @@ async def _enqueue_match_jobs(queue: Any, tracklists: list[Tracklist]) -> None:
     ``match_tracklist_to_discogs:<tracklist_id>`` is applied centrally by the ``before_enqueue`` hook
     (Phase 35), so a double-click / refresh dedups in flight (D, T-41-02). Set NO explicit ``key=``.
     Background-enqueued to avoid HTTP timeout on a large pending set (Pitfall 2).
+
+    phaze-ysz16: each tracklist's enqueue is individually contained, mirroring phaze-4ter's
+    ``_enqueue_analysis_jobs`` containment. Pre-fix a bare loop with no per-item try/except meant
+    the FIRST transient broker/pool error aborted every remaining tracklist, surfacing only as
+    asyncio's uncorrelated GC-time "Task exception was never retrieved" log (this is detached via
+    ``asyncio.create_task`` + a bare ``_background_tasks.discard`` done-callback that never calls
+    ``task.result()``) while the response had already reported the full count. Nothing here
+    mutates durable state before the enqueue, so a dropped tracklist stays in the derived pending
+    set for an idempotent re-click; this fix makes the drop visible in a correlated log instead of
+    losing every remaining tracklist to one failure.
     """
+    dropped = 0
     for tl in tracklists:
-        await queue.enqueue("match_tracklist_to_discogs", tracklist_id=str(tl.id))
+        try:
+            await queue.enqueue("match_tracklist_to_discogs", tracklist_id=str(tl.id))
+        except Exception:
+            dropped += 1
+            logger.exception("_enqueue_match_jobs: failed to enqueue match_tracklist_to_discogs job", tracklist_id=str(tl.id))
+    if dropped:
+        logger.warning(
+            "_enqueue_match_jobs: tracklists dropped from this run -- pending set unaffected, re-click will retry",
+            dropped=dropped,
+            total=len(tracklists),
+        )
 
 
 @router.post("/pipeline/match-tracklists", response_class=HTMLResponse)
@@ -2744,16 +3048,38 @@ async def prioritize_tracklist_lookup_ui(
     ``limit=1`` slice spent its one request on whatever UNRELATED set actually sits at the front
     of the queue -- a wasted, misattributed lookup. The review renders the honest reason instead.
 
+    phaze-z8xq7: ``eligible`` alone is NOT the gate -- it says nothing about the drain's OWN cache
+    verdict for this set. A cache-suppressed set (a definitive negative still inside its 180-day
+    TTL, a transient failure inside its backoff window, or one parked after
+    ``TRANSIENT_MAX_ATTEMPTS``) is still ``eligible`` by classification, but
+    :func:`~phaze.services.tracklist_candidate_queue.build_queue_from_signals` keeps a forced file
+    out of the queue when its cache row was not cleared -- so flagging it would upsert an inert
+    flag, claim "a lookup has been dispatched" that will never happen, and still spend the enqueued
+    ``limit=1`` slice's one request on whatever UNRELATED set sits at the front of the real queue.
+    ``FileTracklistReview.actionable`` is ``eligible`` AND the cache verdict says it would actually
+    be queried now -- that is the real gate here.
+
     Renders the review fragment IMMEDIATELY, before the enqueued job runs -- it can only ever say
     "queued", never "found", because the lookup has not happened yet (mirrors the record page's
     snapshot discipline, D-02: no poll here either).
     """
     review = await get_file_tracklist_review(session, file_id)
     if review is None:
-        raise HTTPException(status_code=404, detail="file not found")
+        # phaze-9xyjp: the file vanished (a concurrent delete_scan cascade or duplicate
+        # resolve) between the button render and this click. htmx 2.x's stock
+        # responseHandling never swaps a 4xx body (response_shape.py rule 3), so a raw 404
+        # here would be silently dropped and the slide-in would sit unchanged with no
+        # feedback. The fragment already renders "File not found." for review is None --
+        # answer with that at RENDERABLE_ALERT_STATUS instead of raising.
+        return templates.TemplateResponse(
+            request=request,
+            name="record/partials/_tracklist_review_body.html",
+            context={"request": request, "file_id": file_id, "review": None, "just_queued": False, "just_refreshed": False},
+            status_code=RENDERABLE_ALERT_STATUS,
+        )
 
     queued = False
-    if review.tracklist is None and review.eligible:
+    if review.tracklist is None and review.actionable:
         await flag_file_for_lookup(session, file_id)
         await session.commit()
         routed = await enqueue_router.resolve_queue_for_task("drain_tracklists", request.app.state, session)
@@ -2794,7 +3120,15 @@ async def refresh_tracklist_lookup_ui(
     """
     review = await get_file_tracklist_review(session, file_id)
     if review is None:
-        raise HTTPException(status_code=404, detail="file not found")
+        # phaze-9xyjp: same vanished-file race as prioritize_tracklist_lookup_ui -- answer
+        # with the renderable fragment at RENDERABLE_ALERT_STATUS rather than a 404 htmx
+        # would silently drop.
+        return templates.TemplateResponse(
+            request=request,
+            name="record/partials/_tracklist_review_body.html",
+            context={"request": request, "file_id": file_id, "review": None, "just_queued": False, "just_refreshed": False},
+            status_code=RENDERABLE_ALERT_STATUS,
+        )
 
     refreshed = False
     if review.tracklist is not None:
@@ -2829,7 +3163,15 @@ async def unprioritize_tracklist_lookup_ui(
     """
     file = await session.get(FileRecord, file_id)
     if file is None:
-        raise HTTPException(status_code=404, detail="file not found")
+        # phaze-9xyjp: same vanished-file race as the other two tracklist buttons -- render
+        # the fragment (get_file_tracklist_review also returns None for a missing file) at
+        # RENDERABLE_ALERT_STATUS instead of a 404 htmx would silently drop.
+        return templates.TemplateResponse(
+            request=request,
+            name="record/partials/_tracklist_review_body.html",
+            context={"request": request, "file_id": file_id, "review": None, "just_queued": False, "just_refreshed": False},
+            status_code=RENDERABLE_ALERT_STATUS,
+        )
 
     await unflag_file(session, file_id)
     await session.commit()
@@ -2886,11 +3228,20 @@ async def run_tracklist_drain_ui(request: Request, session: AsyncSession = Depen
     """
     routed = await enqueue_router.resolve_queue_for_task("drain_tracklists", request.app.state, session)
     await routed.queue.enqueue("drain_tracklists")
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         request=request,
         name="pipeline/partials/_run_drain_response.html",
         context={"request": request},
     )
+    # phaze-k2ob4: the drain-status panel (_tracklist_drain_status.html) is loaded ONCE on mount
+    # (hx-trigger=load) and carries no self-poll (WORK-05/R-2 forbids a second loop here) -- so
+    # without this, Queued/Answered-by-cache/Prioritized/ETA never move after this click, exactly
+    # contradicting the promise in _run_drain_response.html. HX-Trigger fires drain-refresh on the
+    # element that issued this POST; it bubbles to <body>, where
+    # #tracklist-drain-status-view's own hx-trigger (load, drain-refresh from:body) re-GETs the
+    # panel -- one bounded re-fetch per click, never an interval.
+    response.headers["HX-Trigger"] = "drain-refresh"
+    return response
 
 
 # --- Manual recovery endpoint (Phase 42, D-02/D-05) ---

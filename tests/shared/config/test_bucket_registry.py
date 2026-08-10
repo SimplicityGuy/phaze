@@ -253,6 +253,65 @@ def test_two_kueue_sharing_shared_bucket_accepted(backends_toml_env) -> None:  #
     assert [b.id for b in settings.backends] == ["kueue-a", "kueue-b"]
 
 
+def test_duplicate_bucket_id_within_one_kueue_backend_cluster_specific_rejected(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """phaze-ru9oe: a copy-paste duplicate WITHIN one backend's own buckets list fails fast naming
+    that one backend — it must NOT be misreported as the cross-backend D-09 sharing-cardinality
+    error (which would falsely blame two backends when only one exists).
+    """
+    backends_toml_env(
+        """
+        [[backends]]
+        kind = "kueue"
+        id = "burst"
+        rank = 10
+        cap = 4
+        buckets = ["minio-a", "minio-a"]
+
+        [backends.kube]
+        api_url = "https://a.example.com"
+        namespace = "phaze"
+        local_queue = "lq-a"
+
+        [[buckets]]
+        id = "minio-a"
+        scope = "cluster-specific"
+        endpoint_url = "https://s3.example.com"
+        bucket = "phaze-a"
+        """
+    )
+    with pytest.raises(ValueError, match=r"burst.*duplicate bucket ids.*minio-a"):
+        ControlSettings()
+
+
+def test_duplicate_bucket_id_within_one_kueue_backend_shared_rejected(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """phaze-ru9oe: the same within-backend duplicate on a scope=shared bucket previously booted
+    silently and double-weighted the bucket in pick_bucket's candidates — now fails fast too.
+    """
+    backends_toml_env(
+        """
+        [[backends]]
+        kind = "kueue"
+        id = "burst"
+        rank = 10
+        cap = 4
+        buckets = ["shared-bucket", "shared-bucket"]
+
+        [backends.kube]
+        api_url = "https://a.example.com"
+        namespace = "phaze"
+        local_queue = "lq-a"
+
+        [[buckets]]
+        id = "shared-bucket"
+        scope = "shared"
+        endpoint_url = "https://s3.example.com"
+        bucket = "phaze-shared"
+        """
+    )
+    with pytest.raises(ValueError, match=r"burst.*duplicate bucket ids.*shared-bucket"):
+        ControlSettings()
+
+
 # --------------------------------------------------------------------------- #
 # Task 3: cloud_enabled + transitional accessors + secret-free startup log
 # --------------------------------------------------------------------------- #

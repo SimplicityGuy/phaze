@@ -355,7 +355,11 @@ files.
 Edit `.env` to set the required variables. The agent stack uses `${VAR:?msg}` interpolation on `SCAN_PATH`, so docker compose fails fast at parse time if it is unset:
 
 - `PHAZE_AGENT_API_URL=https://<app-server-lan-ip>:8000`
-- `PHAZE_REDIS_URL=redis://default:<REDIS_PASSWORD>@<app-server-lan-ip>:6379/0` (cache only — no longer the SAQ broker)
+- `PHAZE_REDIS_URL=redis://<app-server-lan-ip>:6379/0` + `REDIS_PASSWORD=<the app-server's REDIS_PASSWORD>` (cache only — no longer the SAQ broker). **Prefer this split form over hand-typing
+  `redis://default:<REDIS_PASSWORD>@<app-server-lan-ip>:6379/0`**: `config.py`'s `_apply_redis_password`
+  percent-encodes `REDIS_PASSWORD` into the URL for you (phaze-1g89i), so a strong password
+  containing `/`, `#`, `?`, or `%` can't corrupt the DSN the way pasting it directly into the URL
+  would.
 - `PHAZE_QUEUE_URL=postgresql://<user>:<password>@<app-server-lan-ip>:5432/phaze` — the SAQ Postgres broker DSN (**raw libpq form**, NOT `postgresql+asyncpg://`). The agent now opens a psycopg3 pool to the app-server Postgres, so its host must be reachable on 5432 (new firewall edge relaxing D-25). Treat it as a secret — prefer `PHAZE_QUEUE_URL_FILE=/run/secrets/phaze_queue_url`.
 - `PHAZE_AGENT_ID=fileserver-east`
 - `PHAZE_AGENT_TOKEN=<the plaintext token from Step 3>`
@@ -363,7 +367,10 @@ Edit `.env` to set the required variables. The agent stack uses `${VAR:?msg}` in
 - `PHAZE_AGENT_CA_FILE=/certs/phaze-ca.crt`
 - `PHAZE_AGENT_ENV=production`
 - `SCAN_PATH=/path/to/your/music/library`
-- `MODELS_PATH=./models`
+- `MODELS_PATH=./models` — a HOST path only; it picks the bind-mount source. Every worker +
+  watcher service pins its own container-side `MODELS_PATH=/models` (phaze-bvkah), so this
+  value never changes where the container looks for models — only which host directory
+  backs `/models`.
 - `CA_PATH=./certs`
 - `PHAZE_AGENT_SCAN_ROOTS=/data/music,/data/concerts`
 - `PHAZE_IMAGE_TAG=2026.7.1` (or `latest` for first-time setup)

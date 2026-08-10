@@ -59,12 +59,33 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     container:
-      image: semgrep/semgrep
+      # PINNED, and it must stay pinned (phaze-0qctk, same class of incident as
+      # phaze-b67d's hadolint drift). Every other tool in this CI is frozen to an exact
+      # version (every `uses:` is a 40-hex SHA; TruffleHog carries `# frozen: vX.Y.Z`
+      # below) -- semgrep was the one unpinned executable, resolving to whatever
+      # `semgrep/semgrep` last published on Docker Hub. A new engine release can promote
+      # a new default rule or change match/severity behavior and redden every open PR
+      # (including docs-only ones, since --error fails the job on any finding) with zero
+      # repo change, irreproducibly (no local semgrep runs in pre-commit to catch it
+      # first). Bump this deliberately, matching the frozen-SHA policy for every other
+      # scanner -- never let it float back to a bare tag.
+      #
+      # Digest resolved from the semgrep/semgrep:1.172.0 manifest index (linux/amd64 +
+      # linux/arm64) via the Docker Hub registry v2 API, 2026-08-09.
+      image: semgrep/semgrep@sha256:65dcd4408adda7c183a6b4550cb1e9b19f7f627a6fbb7e0559bd466bedc44d7b  # frozen: v1.172.0
     if: inputs.code-changed && github.actor != 'dependabot[bot]'
     steps:
       - name: 🔀 Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      # `--config auto` is a SECOND floating axis, independent of the engine pin above:
+      # it resolves the ruleset from the semgrep.dev registry over the network at scan
+      # time, so a digest-pinned engine still gets whatever ruleset the registry serves
+      # that morning -- a newly-promoted default rule reddens CI identically either way.
+      # Accepted as a known, documented risk rather than fixed here: pinning to a
+      # committed ruleset snapshot (`--config .semgrep.yml`) is real future work but is
+      # a materially larger change (vetting + maintaining an in-repo ruleset) than this
+      # bead's scope (phaze-0qctk pins the engine only).
       - name: 🔬 Run semgrep scan
         run: >-
           semgrep scan --config auto --error

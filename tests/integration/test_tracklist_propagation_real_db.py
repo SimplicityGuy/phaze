@@ -195,11 +195,20 @@ async def test_the_drain_resolves_the_canonical_row_when_a_projection_exists(asy
 
 
 async def test_the_refresh_sweep_resolves_only_the_canonical_row(async_engine: AsyncEngine) -> None:
-    """``_resolve_targets`` never hands a projection back as a refresh target (phaze-2akf).
+    """``_resolve_targets`` never hands a projection back as a refresh target BY ITS OWN id
+    (phaze-2akf), but a duplicate's FILE id does reach the canonical row (phaze-vtovq).
 
-    Refreshing a projection directly would either re-fetch the same page once per duplicate -- N
-    requests against a whole-host budget of ~1 per 8 s, for bytes the canonical row's own re-read
-    already fetched -- or leave the canonical row untouched while reporting success.
+    Refreshing a projection directly BY TRACKLIST ID would either re-fetch the same page once per
+    duplicate -- N requests against a whole-host budget of ~1 per 8 s, for bytes the canonical
+    row's own re-read already fetched -- or leave the canonical row untouched while reporting
+    success. That is why naming a projection's own id stays a no-op.
+
+    A duplicate's FILE id is different: it is the only handle the record page has (the operator
+    does not know a tracklist id), and the projection IS the row that carries it -- so ANDing the
+    canonical filter directly onto that clause used to match nothing for every duplicate, making
+    the page's "Refresh from 1001Tracklists" button a silent no-op. ``_resolve_targets`` now walks
+    the extra hop (file id -> its row, canonical or projection -> external_id -> canonical row),
+    so this resolves to the SAME canonical row as naming it directly.
     """
     from phaze.tasks.tracklist import _resolve_targets
 
@@ -216,11 +225,12 @@ async def test_the_refresh_sweep_resolves_only_the_canonical_row(async_engine: A
             canonical_id, projection_id = canonical.id, projection.id
 
         async with factory() as session:
-            # Naming the projection by id resolves to NOTHING...
+            # Naming the projection by ITS OWN id resolves to nothing -- deliberate, unchanged.
             assert await _resolve_targets(session, [projection_id], []) == []
-            # ...and naming the duplicate's FILE resolves to nothing either, because the projection
-            # is what carries that file_id. The canonical row is reached by its own id.
-            assert await _resolve_targets(session, [], [file_id]) == []
+            # Naming the duplicate's FILE resolves to the CANONICAL row (phaze-vtovq): the
+            # projection is what carries that file_id, and the fix's extra hop reaches through it.
+            by_file_id = await _resolve_targets(session, [], [file_id])
+            assert [t.id for t in by_file_id] == [canonical_id]
             targets = await _resolve_targets(session, [canonical_id], [])
         assert [t.id for t in targets] == [canonical_id]
     finally:

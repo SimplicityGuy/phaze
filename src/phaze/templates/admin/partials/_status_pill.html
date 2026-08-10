@@ -1,19 +1,39 @@
-{# Phase 29: 5-state agent liveness pill. Mirrors scan_status_pill.html geometry
+{# Phase 29 + phaze-rdxfu: liveness pill. Mirrors scan_status_pill.html geometry
    (text-xs font-semibold px-2 py-0.5 rounded-full — project-wide pill ladder).
-   Expects `agent` in context (loop variable from agents_table.html) with the
-   transient `_status` attribute set by routers/admin_agents._load_agents per
-   UI-SPEC §Status Pill Component LOCKED. Tailwind class palette LOCKED:
-   alive=green-100/950, stale=amber-100/950, dead=red-100/950, revoked/never
-   share the gray-100/800 "no signal" hue (visually unified, semantically
-   distinct via label text + aria-label). #}
-{% if agent._status == 'alive' %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400" aria-label="Status: alive">ALIVE</span>
-{% elif agent._status == 'stale' %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400" aria-label="Status: stale">STALE</span>
-{% elif agent._status == 'dead' %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-400" aria-label="Status: dead">DEAD</span>
-{% elif agent._status == 'revoked' %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300" aria-label="Status: revoked">REVOKED</span>
-{% elif agent._status == 'never' %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300" aria-label="Status: never seen">NEVER</span>
+
+   Two callers, distinguished by which context variable is in scope (mirrors _kind_badge.html):
+     * agents_table.html's merged-row loop passes `row` (a TableRow view-model, admin_agents.py) —
+       an agent-status row (5-state) OR a lane-status row (3-state), discriminated by
+       `row.status_kind`. STRUCTURAL never-DEAD (KDEPLOY-04): the lane branch below has exactly 3
+       arms — ACTIVE / WAITING / IDLE — so there is no code path from a lane row to a DEAD pill.
+     * _agent_activity.html's expanded-row body passes the raw `agent` ORM object (with its transient
+       `_status` attribute set by routers/admin_agents._load_agents), unchanged — it never defines a
+       name called `row`, so the ORIGINAL agent-only branch below (unchanged markup) is what renders. #}
+{% if row is defined and row.status_kind == 'lane' %}
+    {% if row.status == 'ACTIVE' %}
+    <span class="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300"><span class="w-2 h-2 rounded-full bg-emerald-400" aria-hidden="true"></span><span aria-label="Status: active">ACTIVE</span></span>
+    {% elif row.status == 'WAITING' %}
+    <span class="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300" role="alert"><span class="w-2 h-2 rounded-full bg-amber-400" aria-hidden="true"></span><span aria-label="Status: waiting on quota">WAITING</span></span>
+    {% else %}
+    <span class="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-500"><span class="w-2 h-2 rounded-full bg-gray-400 dark:bg-gray-600" aria-hidden="true"></span><span aria-label="Status: idle">IDLE</span></span>
+    {% endif %}
+{% else %}
+    {# Expects `agent` in context (loop variable from agents_table.html pre-merge, or _agent_activity.html
+       today) with the transient `_status` attribute set by routers/admin_agents._load_agents per
+       UI-SPEC §Status Pill Component LOCKED. Tailwind class palette LOCKED:
+       alive=green-100/950, stale=amber-100/950, dead=red-100/950, revoked/never
+       share the gray-100/800 "no signal" hue (visually unified, semantically
+       distinct via label text + aria-label). #}
+    {% set _status = row.status if row is defined else agent._status %}
+    {% if _status == 'alive' %}
+    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400" aria-label="Status: alive">ALIVE</span>
+    {% elif _status == 'stale' %}
+    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400" aria-label="Status: stale">STALE</span>
+    {% elif _status == 'dead' %}
+    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-400" aria-label="Status: dead">DEAD</span>
+    {% elif _status == 'revoked' %}
+    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300" aria-label="Status: revoked">REVOKED</span>
+    {% elif _status == 'never' %}
+    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300" aria-label="Status: never seen">NEVER</span>
+    {% endif %}
 {% endif %}

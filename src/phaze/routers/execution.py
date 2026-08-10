@@ -5,8 +5,13 @@ proposals by ``FileRecord.agent_id``, chunks each group at 500, seeds the
 ``exec:{batch_id}`` Redis hash (D-04), and enqueues one sub-job per
 (agent, chunk) via ``AgentTaskRouter.enqueue_for_agent``. ``execution_progress``
 emits three SSE event types every tick (``progress``, ``agents_table``,
-plus a one-shot ``dispatch_summary`` on first connect) and closes on either
-``complete`` or ``complete_with_errors``.
+plus a one-shot ``dispatch_summary`` on first connect), yields a status
+event on either ``complete`` or ``complete_with_errors``, and then (phaze-047gd)
+a final canonical ``close`` event that the ``sse-close`` listener on the
+template's ``sse-connect`` element uses to actually stop the browser's
+EventSource -- htmx-ext-sse never reads ``sse-close`` from a descendant, so a
+status-named close event alone (the pre-phaze-047gd markup) registers no
+listener and the client auto-reconnects forever.
 
 The application server is the sole writer of the ``exec:{batch_id}`` hash via
 HSET at dispatch; HINCRBY mutations come exclusively from the Plan 28-02 POST
@@ -30,11 +35,11 @@ import json
 import math
 from operator import itemgetter
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from redis.exceptions import ResponseError
 from sqlalchemy import select
@@ -53,8 +58,9 @@ from phaze.routers.agent_exec_batches import (
     _get_release_dispatch_script,
 )
 from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract
-from phaze.routers.response_shape import wants_fragment
+from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_fragment
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
+from phaze.services.agent_task_router import AmbiguousEnqueueError
 from phaze.services.collision import detect_collisions
 from phaze.services.execution_dispatch import (
     chunk_proposals,
@@ -81,8 +87,11 @@ logger = structlog.get_logger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-# phaze-315t: fingerprinted, cache-forever static asset URLs. `execution/audit_log.html`
-# extends `base.html`, which carries the app.css link + favicon set.
+# phaze-315t: fingerprinted, cache-forever static asset URLs, registered as a Jinja global for
+# every template this router renders. `execution/audit_log.html` no longer needs it directly
+# (phaze-uvmcr.3 made it a content-only fragment, hosted directly by the asset links in shell.html), but the
+# global stays -- harmless if unused by the current template set, and cheap insurance against a
+# future template rendered through this same `templates` instance needing it.
 templates.env.globals["static_url"] = static_asset_url
 router = APIRouter(tags=["execution"])
 
@@ -272,8 +281,10 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
     """Dispatch approved proposals as per-agent SAQ sub-jobs (Phase 28 D-09).
 
     Sequence:
-      1. Pre-check collisions (unchanged from Phase 25) -- destinations collide
-         GLOBALLY, not per-agent, so the check fires before any grouping.
+      1. Pre-check collisions -- fires before any grouping, but (phaze-p46n4) the
+         collision key is already agent-scoped (``FileRecord.agent_id`` is the
+         first component of ``_dest_key_columns``) and ``detect_collisions``
+         excludes revoked-agent proposals, matching step 2's population exactly.
       2. SELECT + GROUP BY ``FileRecord.agent_id``, filter revoked agents
          (services/execution_dispatch.py).
       3. Generate parent ``batch_id``; compute ``subjobs_expected`` from
@@ -285,7 +296,8 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
       6. INFO log line per D-11.
       7. Return the progress card with first-render context.
     """
-    # 1. Pre-check collision (unchanged) -- collision_block short-circuits dispatch.
+    # 1. Pre-check collision -- collision_block short-circuits dispatch. Revoked-agent proposals
+    # are excluded here too (phaze-p46n4), so this gate's population matches step 2's exactly.
     collisions = await detect_collisions(session)
     if collisions:
         return templates.TemplateResponse(
@@ -310,6 +322,15 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
     if groups:
         result = await session.execute(select(Agent.id, Agent.name).where(Agent.id.in_(groups.keys())))
         agent_names = {row.id: row.name for row in result.all()}
+
+    # phaze-266lc: nothing below this point reads or writes ``session`` again -- the rest of the
+    # handler is Redis (seed/claim) and the per-(agent, chunk) SAQ enqueue loop, which the code's
+    # own comment (below, phaze-0t2c) says "spans many suspension points and real wall time on a
+    # large approved set". Commit here to release the read-only transaction the reads above
+    # autobegan (READ COMMITTED, no row locks, nothing written) BEFORE that loop, rather than
+    # sitting idle-in-transaction across it -- the same phaze-1v37 pool-drain class fixed at the
+    # other request-scoped-session sites (agent_analysis.py phaze-7jfgi, tags.py phaze-7bjjj).
+    await session.commit()
 
     # 5. Seed exec:{batch_id} Redis hash (D-04). HSET + EXPIRE atomic via pipeline.
     dispatch_summary = [
@@ -375,18 +396,43 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
     # or one crash in the claim window costs the operator the whole execute stage for 24h.
     if groups:
         claim_dispatch = _get_claim_dispatch_script(redis_client)
-        claim_result = int(
-            await claim_dispatch(
-                keys=[ACTIVE_DISPATCH_KEY],
-                args=[str(batch_id), str(DISPATCH_CLAIM_TTL_SECONDS), BATCH_KEY_PREFIX],
-                client=redis_client,
-            ),
-        )
+        try:
+            claim_result = int(
+                await claim_dispatch(
+                    keys=[ACTIVE_DISPATCH_KEY],
+                    args=[str(batch_id), str(DISPATCH_CLAIM_TTL_SECONDS), BATCH_KEY_PREFIX],
+                    client=redis_client,
+                ),
+            )
+        except BaseException:
+            # phaze-tnp06: unlike the enqueue loop below, this await was NOT inside the
+            # BaseException-settled span (phaze-0t2c) -- a redis client TimeoutError after the
+            # EVALSHA already landed server-side, or Starlette cancelling the handler on client
+            # disconnect while suspended here, left ``execdispatch:active`` durably claimed with
+            # NO way to release it: no chunk was ever enqueued, so no sub-job will ever POST a
+            # terminal event to promote/release it, and the hash this claim would reconcile
+            # against (``key``, seeded just above per phaze-0t2c's seed-first order) makes the
+            # NEXT dispatch's claim-reconcile see a live-looking hash and refuse for the full 24h
+            # TTL -- the exact wedge phaze-j7u8 was built to close, reopened through this one
+            # await. Delete our own just-seeded hash before re-raising: if the claim actually
+            # landed server-side, the sentinel now names a hash-less batch and the next click's
+            # claim-reconcile (shape 1, ``EXISTS(held_key) == 0``) takes it over outright; if it
+            # never landed, deleting a hash nobody was ever handed is a no-op. Shielded so a
+            # cancellation already in flight cannot abort the cleanup half-done.
+            await asyncio.shield(redis_client.delete(key))
+            raise
         if claim_result == 0:
             # Refused. Drop the hash seeded above -- this batch_id is never returned to anyone, so
             # the hash would otherwise sit unread for 24h and, worse, look like a live 'running'
             # batch to anything that enumerates the namespace.
             await redis_client.delete(key)
+            # phaze-2tsw9: re-attach to the batch that's ACTUALLY running instead of a dead-end
+            # alert -- both land in the same #apply-execute-response sink (hx-swap="innerHTML"), so
+            # the refusal would otherwise evict the live progress card and its only sse-connect
+            # mount, with the running batch_id unrecoverable from the UI afterwards.
+            reattached = await _reattach_active_progress(request, redis_client)
+            if reattached is not None:
+                return reattached
             return templates.TemplateResponse(
                 request=request,
                 name="execution/partials/dispatch_in_progress.html",
@@ -429,6 +475,29 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
                     ),
                 )
                 enqueued_ok += 1
+            except AmbiguousEnqueueError:
+                # phaze-19u7g: ``enqueue_for_agent`` raised AFTER the broker connection was
+                # already live (see ``AmbiguousEnqueueError``'s docstring) -- the ``saq_jobs``
+                # INSERT may already be durably committed even though this call never got its
+                # ack. Counting it into ``undispatched_by_agent`` (as a plain ``Exception`` does,
+                # below) would roll it into the batch's ``failed`` counters AND lower
+                # ``subjobs_expected`` past what actually landed, so ``sc >= se`` could promote
+                # the batch terminal and release the ``execdispatch:active`` sentinel WHILE the
+                # phantom sub-job is still executing -- an operator retry then double-dispatches
+                # the same proposals (phaze-19u7g's failure scenario). Count it as landed instead:
+                # a genuinely-lost enqueue then just leaves the batch running until the 24h TTL
+                # reaps it, the same non-terminal fate a dispatched-but-never-reported sub-job
+                # already has -- the same trade-off phaze-9f82r made for tag-write enqueues.
+                logger.error(
+                    "dispatch: enqueue ambiguous for agent=%s chunk=%s batch_id=%s -- broker "
+                    "connection was live, chunk may have landed; keeping it inside "
+                    "subjobs_expected rather than risking a duplicate dispatch",
+                    agent_id,
+                    chunk_index,
+                    batch_id,
+                    exc_info=True,
+                )
+                enqueued_ok += 1
             except Exception:
                 logger.exception(
                     "dispatch: enqueue failed for agent=%s chunk=%s batch_id=%s",
@@ -447,6 +516,29 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
         # undispatched, exactly as an enqueue exception would have counted them, and the same
         # reconcile runs. BaseException (not Exception) so a CancelledError settles too; the settle
         # itself is shielded so a cancellation already in flight cannot abort it half-done.
+        #
+        # phaze-19u7g: ``attempted`` is only incremented AFTER a chunk's inner try/except finishes
+        # (line ~453 above), so a BaseException escaping the ``await enqueue_for_agent(...)`` itself
+        # -- a CancelledError landing between the broker commit and this coroutine's resume, e.g. a
+        # client disconnect cancelling the handler mid-await -- lands here with ``pending[attempted]``
+        # naming THAT in-flight chunk, not one that was never started. Its enqueue may have already
+        # committed on the Postgres broker, so it is ambiguous in exactly the same sense as
+        # ``AmbiguousEnqueueError`` above: count it as landed (kept inside ``subjobs_expected``)
+        # rather than rolling it into ``undispatched_by_agent``, which would let the batch promote
+        # terminal and release the sentinel while that phantom sub-job is still executing. Only the
+        # chunks strictly AFTER it were genuinely never attempted at all.
+        if attempted < len(pending):
+            in_flight_agent_id, in_flight_chunk_index, _in_flight_chunk = pending[attempted]
+            logger.error(
+                "dispatch: enqueue ambiguous (interrupted mid-await) for agent=%s chunk=%s "
+                "batch_id=%s -- keeping it inside subjobs_expected rather than risking a "
+                "duplicate dispatch",
+                in_flight_agent_id,
+                in_flight_chunk_index,
+                batch_id,
+            )
+            enqueued_ok += 1
+            attempted += 1
         for agent_id, _chunk_index, chunk in pending[attempted:]:
             undispatched_by_agent[agent_id] = undispatched_by_agent.get(agent_id, 0) + len(chunk)
         if groups:
@@ -550,6 +642,69 @@ async def _hgetall_or_empty(redis_client: Redis, key: str) -> dict[str, str]:
     return data
 
 
+async def _reattach_active_progress(request: Request, redis_client: Redis) -> HTMLResponse | None:
+    """Re-render ``progress.html`` for the CURRENTLY RUNNING batch, or ``None`` if there isn't one.
+
+    phaze-2tsw9: a refused dispatch (the ``exec:active`` sentinel already held) used to render the
+    static ``dispatch_in_progress.html`` alert straight into ``#apply-execute-response`` -- the same
+    ``hx-swap="innerHTML"`` sink the LIVE progress card already occupies (the button's only trigger,
+    ``pipeline/partials/apply_workspace.html``, targets that one node for all three response shapes).
+    That swap evicted the running batch's progress card and, with it, its only ``sse-connect``
+    mount -- the batch's ``batch_id`` is not surfaced anywhere else in the UI, so there was no way to
+    reattach and the operator's only remaining visibility was the audit log.
+
+    ``ACTIVE_DISPATCH_KEY``'s VALUE *is* the running batch_id (the promote script only releases the
+    sentinel ``if GET(active_key) == batch_id``), so it can be read back here and used to rebuild the
+    SAME context ``start_execution``'s first render and the SSE ``agents_table`` re-sort endpoint
+    already build from the ``exec:{batch_id}`` hash. Returns ``None`` (never raises) when there is no
+    active batch, or the batch's hash has already reaped out from under a very tight race -- either
+    way the caller falls back to the static refusal card, which is still correct in that case.
+    """
+    # The shared client is wired with decode_responses=True (main.lifespan, Phase 26 D-27), so this
+    # really is str | None; redis-py's own stub types GET as the undecoded union.
+    active_batch_id: str | None = await redis_client.get(ACTIVE_DISPATCH_KEY)  # type: ignore[assignment]
+    if not active_batch_id:
+        return None
+    batch_key = f"{BATCH_KEY_PREFIX}{active_batch_id}"
+    data = await _hgetall_or_empty(redis_client, batch_key)
+    if not data:
+        return None
+
+    total = int(data.get("total", 0))
+    completed = int(data.get("completed", 0))
+    failed = int(data.get("failed", 0))
+    status = data.get("status", "running")
+    try:
+        dispatch_summary: list[dict[str, object]] = json.loads(data.get("dispatch_summary", "[]"))
+    except json.JSONDecodeError:
+        dispatch_summary = []
+
+    agents_view = _agents_view_from_hash(data, dispatch_summary)
+    sort_state = EXEC_AGENTS_SORT.resolve(
+        sort=data.get("agents_sort"),
+        order=data.get("agents_order"),
+        view_state={"batch_id": str(active_batch_id)},
+    )
+
+    return templates.TemplateResponse(
+        request=request,
+        name="execution/partials/progress.html",
+        context={
+            "request": request,
+            "batch_id": str(active_batch_id),
+            # skipped_revoked is a first-render-only figure (never persisted to the hash) --
+            # omitted here, same as every SSE re-render already does.
+            "total": total,
+            "completed": completed,
+            "failed": failed,
+            "subjobs_expected": int(data.get("subjobs_expected", 0)),
+            "agents": _sort_agents_view(agents_view, sort_state),
+            "sort": sort_state,
+            "status": status,
+        },
+    )
+
+
 def _render_partial(request: Request, name: str, context: dict[str, object]) -> str:
     """Render a Jinja partial through FastAPI's ``Jinja2Templates`` wrapper.
 
@@ -577,7 +732,12 @@ async def execution_progress(request: Request, batch_id: uuid.UUID) -> EventSour
 
     On terminal status (``complete`` or ``complete_with_errors``) the generator
     yields the final ``progress`` + ``agents_table`` events for that state,
-    then emits the matching close event and returns.
+    the matching status event, then a canonical ``close`` event (phaze-047gd)
+    before returning -- the ``close`` event is what the template's
+    ``sse-close="close"`` listener actually reacts to; the status-named event
+    alone does not close the browser's EventSource (htmx-ext-sse only reads
+    ``sse-close`` from the ``sse-connect`` element, and only one listener can
+    live there).
 
     phaze-5zyv: the ``not data`` (empty-hash) branch is bounded by
     ``_MAX_EMPTY_POLLS``. A batch that never seeds a hash (empty dispatch), one
@@ -609,8 +769,13 @@ async def execution_progress(request: Request, batch_id: uuid.UUID) -> EventSour
                     # batch_id). Close the stream with a terminal event rather than polling forever.
                     yield {
                         "event": "complete",
-                        "data": 'This execution is no longer available. <a href="/audit/" class="text-blue-600 hover:underline ml-2">View Audit Log</a>',
+                        "data": 'This execution is no longer available. <a href="/s/audit" class="text-blue-600 hover:underline ml-2">View Audit Log</a>',
                     }
+                    # phaze-047gd: the browser's EventSource only stops reconnecting on an
+                    # sse-close-registered event; htmx-ext-sse reads sse-close exclusively from the
+                    # element carrying sse-connect (progress.html), never from a descendant, so both
+                    # terminal paths emit this same canonical close event for that listener to catch.
+                    yield {"event": "close", "data": ""}
                     return
                 yield {"event": "progress", "data": "Waiting for execution to start..."}
                 await asyncio.sleep(1)
@@ -674,10 +839,14 @@ async def execution_progress(request: Request, batch_id: uuid.UUID) -> EventSour
             # (CONTEXT specifics line 264 widens the existing single-status check).
             if status in {"complete", "complete_with_errors"}:
                 if failed == 0:
-                    msg = f'Execution complete. All {total} files renamed successfully. <a href="/audit/" class="text-blue-600 hover:underline ml-2">View Audit Log</a>'
+                    msg = f'Execution complete. All {total} files renamed successfully. <a href="/s/audit" class="text-blue-600 hover:underline ml-2">View Audit Log</a>'
                 else:
-                    msg = f'Execution complete. {completed} succeeded, {failed} failed. <a href="/audit/" class="text-blue-600 hover:underline ml-2">View Audit Log</a>'
+                    msg = f'Execution complete. {completed} succeeded, {failed} failed. <a href="/s/audit" class="text-blue-600 hover:underline ml-2">View Audit Log</a>'
                 yield {"event": status, "data": msg}
+                # phaze-047gd: see the empty-hash terminal path above for why this second yield is
+                # required -- the sse-close listener lives on the sse-connect element and only ever
+                # fires on this canonical "close" event name.
+                yield {"event": "close", "data": ""}
                 return
 
             await asyncio.sleep(1)
@@ -743,17 +912,28 @@ async def execution_agents_table_sort(
     )
 
 
-@router.get("/audit/", response_class=HTMLResponse)
-async def audit_log(
-    request: Request,
-    status: str | None = Query(None),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
-    sort: str | None = Query(None),
-    order: str | None = Query(None),
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """Render the audit log page, or an HTMX table fragment."""
+async def build_audit_log_context(
+    session: AsyncSession,
+    *,
+    status: str | None,
+    page: int,
+    page_size: int,
+    sort: str | None,
+    order: str | None,
+) -> dict[str, Any]:
+    """Build every context key the audit log content needs, from the resolved view inputs alone.
+
+    Extracted (phaze-uvmcr.3) so BOTH producers of "what the audit log pane looks like" derive it
+    identically: the ``GET /audit/`` fragment endpoint below (the filter tab / pager / column-sort
+    swap target -- unchanged in path and behavior) and ``shell._render_stage``'s ``"audit"``
+    branch (the ``/s/audit`` direct-nav + rail-swap host, where ``GET /audit/`` now redirects a
+    full-page request). Two independently-drifting descriptions of this content is exactly the
+    phaze-7j50 class of defect ``build_propose_list_context`` (``routers/shell.py``) already paid
+    to avoid for the propose workspace; this follows the same discipline.
+
+    Does NOT include ``request`` -- callers merge that (and any stage-shell keys) into the base
+    context themselves, the same split ``build_propose_list_context`` uses.
+    """
     # phaze-a6hm.5: resolve BEFORE the read, same as every other sortable table (column_sort.py
     # USING IT). ``status`` rides view_state so a header click keeps the operator on their active
     # filter tab (contract rule 4); ``page`` deliberately does not -- a re-sort returns to page 1.
@@ -771,8 +951,7 @@ async def audit_log(
     # that branch so the normal, populated page pays no extra query.
     proposal_ready_count = await count_proposal_pending_files(session) if stats["total"] == 0 else 0
 
-    context = {
-        "request": request,
+    return {
         "logs": audit_page.rows,
         "pagination": audit_page,
         "stats": stats,
@@ -782,13 +961,53 @@ async def audit_log(
         "proposal_ready_count": proposal_ready_count,
     }
 
-    # Tabs + table fragment for a live htmx swap only (so tab active state updates). A history
-    # restore falls through to the full page: htmx ignores hx-target there and swaps the response
-    # into <body>, so a fragment would replace the whole page. See routers/response_shape.py.
-    if wants_fragment(request):
-        return templates.TemplateResponse(request=request, name="execution/partials/audit_content.html", context=context)
 
-    return templates.TemplateResponse(request=request, name="execution/audit_log.html", context=context)
+@router.get("/audit/", response_class=HTMLResponse)
+async def audit_log(
+    request: Request,
+    status: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
+    sort: str | None = Query(None),
+    order: str | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Render the audit-content fragment for a live htmx swap; redirect everything else to /s/audit.
+
+    phaze-uvmcr.3: "audit" is now a registered ``UTILITY_PANES`` shell stage
+    (``routers/shell.py``), reachable with the rail intact at ``/s/audit`` -- which composes the
+    SAME ``execution/audit_log.html`` content (now a content-only fragment, no ``{% extends %}``)
+    this route used to render standalone via its own ``base.html`` fork. That full-page branch was
+    therefore redundant, same shape as ``pipeline.pipeline_files``'s phaze-uvmcr.2 fix: a plain
+    request, a bookmark/reload, or a history restore (``response_shape.wants_fragment`` is False
+    for all three, per contract rule 2 -- a restore ignores ``hx-target`` and swaps into ``<body>``,
+    so it is a full-document request too) now 301-redirects to ``/s/audit``, carrying the request's
+    WHOLE query string across so a bookmarked/filtered ``/audit/`` URL still reads the same on the
+    other side.
+
+    The live htmx swap branch -- the filter tabs, the pager, and the column-sort headers, which all
+    target ``#audit-content`` and hit THIS route unchanged -- is untouched: it still returns the
+    chrome-less ``execution/partials/audit_content.html`` fragment, now sourced from the shared
+    :func:`build_audit_log_context` so it cannot drift from ``/s/audit``'s own render of the same
+    view. ``GET /audit/{log_id}/detail`` is a separate route entirely and is unaffected by any of
+    this -- it is a fragment endpoint, not a bookmarkable page, and stays exactly where it is.
+    """
+    if not wants_fragment(request):
+        # phaze-r6e5m (response_shape.py contract rule 6): this same URL also answers with the
+        # fragment below depending on request headers alone, so the redirect must be as
+        # browser-uncacheable as the fragment is -- otherwise a cached 301 (redirects are
+        # heuristically cacheable by default) could be replayed for a live htmx swap that wanted
+        # the fragment, or vice versa.
+        query = request.url.query
+        return RedirectResponse(url=f"/s/audit?{query}" if query else "/s/audit", status_code=301, headers=DUAL_SHAPE_RESPONSE_HEADERS)
+
+    context: dict[str, Any] = {
+        "request": request,
+        **(await build_audit_log_context(session, status=status, page=page, page_size=page_size, sort=sort, order=order)),
+    }
+    return templates.TemplateResponse(
+        request=request, name="execution/partials/audit_content.html", context=context, headers=DUAL_SHAPE_RESPONSE_HEADERS
+    )
 
 
 @router.get("/audit/{log_id}/detail", response_class=HTMLResponse)

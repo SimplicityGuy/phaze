@@ -41,7 +41,7 @@ cluster on whitespace or case.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import re
 from typing import TYPE_CHECKING, Any
@@ -93,8 +93,15 @@ KEY_DURATION_BUCKET_SECONDS: float = 300.0
 
 Grouping uses the tolerance band above; the key needs a discrete value. A cluster whose median
 duration sits on a bucket boundary can shift buckets between runs if its membership changes,
-which costs ONE duplicate lookup. It can never produce a wrong cache HIT, because a shifted key
-simply misses. That asymmetry is why a coarse bucket is acceptable here."""
+which costs ONE duplicate lookup. It can never produce a wrong cache HIT for THAT cluster, because
+a shifted key simply misses. That asymmetry is why a coarse bucket is acceptable here.
+
+Being coarser than :data:`DURATION_ABS_TOLERANCE_SECONDS` does mean two DIFFERENT clusters that
+grouping legitimately left unmerged (durations >45s apart) can floor-divide into the same bucket
+and collide on this key WITHIN one run (phaze-3t8kc) -- a distinct hazard from the cross-run
+shift above, and one this constant cannot avoid by itself. :func:`group_unique_sets` closes it
+structurally via :func:`_disambiguate_key_collisions`, which re-keys every collision it finds
+before any :class:`UniqueSet` reaches the cache or the drain."""
 
 
 # --------------------------------------------------------------------------------------------
@@ -700,6 +707,7 @@ def group_unique_sets(candidates: Sequence[CandidateSignals]) -> list[UniqueSet]
         clusters.setdefault(union.find(index), []).append(index)
 
     unique_sets = [_build_unique_set([prepared[i] for i in members]) for members in clusters.values()]
+    unique_sets = _disambiguate_key_collisions(unique_sets)
     unique_sets.sort(key=lambda s: (-s.file_count, s.key))
     return unique_sets
 
@@ -811,6 +819,45 @@ def _build_unique_set(members: Sequence[_Prepared]) -> UniqueSet:
         classification=canonical.classification,
         members=scored,
     )
+
+
+def _disambiguate_key_collisions(unique_sets: Sequence[UniqueSet]) -> list[UniqueSet]:
+    """Re-key any UniqueSets that collided on ``set_key`` despite being genuinely distinct clusters.
+
+    phaze-3t8kc: :data:`KEY_DURATION_BUCKET_SECONDS` (300s) is coarser than
+    :data:`DURATION_ABS_TOLERANCE_SECONDS` (45s), so grouping can legitimately leave two clusters
+    in the same query bucket UNMERGED (their durations are more than 45s apart, so
+    :func:`durations_match` is False) whose cluster durations nonetheless floor-divide into the
+    SAME 300s bucket -- producing two :class:`UniqueSet` objects with a byte-identical ``key``.
+    The persisted cache and the drain's per-candidate re-check both key solely on that value, so a
+    collision here silently suppresses the second set's lookup: whichever set the drain reaches
+    first writes the cache row, and the second's pre-spend re-check sees a HIT and is skipped
+    forever, indistinguishable from "already answered".
+
+    Grouping by key isolates collisions without touching the (overwhelming) common case: a group
+    of exactly one keeps its key unchanged, so cache identity and warmth are unaffected for sets
+    that never collided. A colliding group is ordered deterministically by canonical file id (so
+    the same corpus state always assigns the same salted keys) and every member after the first
+    gets its ordinal position folded into a re-hashed key -- guaranteeing every UniqueSet this
+    function returns has a key none of its siblings share.
+    """
+    by_key: dict[str, list[UniqueSet]] = {}
+    for unique_set in unique_sets:
+        by_key.setdefault(unique_set.key, []).append(unique_set)
+
+    result: list[UniqueSet] = []
+    for key, group in by_key.items():
+        if len(group) == 1:
+            result.append(group[0])
+            continue
+        ordered = sorted(group, key=lambda s: str(s.canonical_file_id))
+        for ordinal, unique_set in enumerate(ordered):
+            if ordinal == 0:
+                result.append(unique_set)
+                continue
+            salted_key = hashlib.sha256(f"{key}\x00collision\x00{ordinal}".encode()).hexdigest()
+            result.append(replace(unique_set, key=salted_key))
+    return result
 
 
 def _cluster_query(members: Sequence[_Prepared]) -> str:

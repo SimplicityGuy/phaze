@@ -226,6 +226,35 @@ async def test_reaper_falls_back_to_saq_default_timeout_when_blob_has_none(sessi
     assert await _count(session, key) == 0
 
 
+async def test_reaper_exempts_timeout_zero_rows_as_unbounded(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-mllxc REGRESSION: a ``timeout: 0`` row (SAQ's UNBOUNDED sentinel) is never reaped.
+
+    ``scan_directory`` enqueues with ``timeout=0`` deliberately (``routers/pipeline_scans.py``) because
+    a full SHA-256 walk of a large network-mounted archive legitimately runs 1-2h. Pre-fix, the reaper's
+    ``COALESCE((...->>'timeout')::bigint, :default_timeout_seconds)`` only substitutes the default when
+    the ``timeout`` key is ABSENT -- a PRESENT ``0`` produced a bound of ``0 + slack``, so a healthy
+    scan only 15 minutes into a 90-minute run was DELETEd out from under its worker. Aged here to a full
+    hour past ``active_reap_slack_seconds`` -- far beyond any finite bound -- to prove the exemption is
+    unconditional, not just "not yet due".
+    """
+    await session.execute(_CREATE_SAQ_JOBS)
+    slack = 900
+    key = f"scan_directory:{uuid.uuid4()}"
+    await _seed_job(
+        session,
+        key=key,
+        status="active",
+        started_ms=_now_ms() - (slack + 3600) * 1000,
+        timeout=0,
+    )
+    await session.commit()
+
+    _patch_slack(monkeypatch, slack)
+
+    assert await reap_stranded_active_jobs(_make_ctx()) == {"reaped": 0}
+    assert await _count(session, key) == 1  # the still-running scan's key is left alone
+
+
 async def test_reaper_reaps_a_row_that_was_picked_up_then_abandoned(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """``attempts >= 1`` does NOT exempt a row -- it was picked up and then abandoned mid-flight.
 

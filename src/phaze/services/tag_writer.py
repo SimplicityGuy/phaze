@@ -30,6 +30,7 @@ import structlog
 
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.schemas.agent_tasks import WriteFileTagsPayload
+from phaze.services.agent_task_router import AmbiguousEnqueueError
 from phaze.services.stage_status import is_applied
 
 # Re-exported for back-compat: the disk-side helpers now live in the agent-importable module.
@@ -96,7 +97,7 @@ async def enqueue_tag_write(
     session: AsyncSession,
     task_router: AgentTaskRouter,
     file_record: TagWriteTarget,
-    proposed_tags: dict[str, str | int | None],
+    proposed_tags: dict[str, str | int | list[str] | None],
     source: str,
 ) -> TagWriteLog:
     """Create the audit row and dispatch the write to the file's OWNING agent.
@@ -190,11 +191,34 @@ async def enqueue_tag_write(
                 tags=proposed_tags,
             ),
         )
+    except AmbiguousEnqueueError:
+        # phaze-9f82r: the broker connection was already live when this raised, so the
+        # ``saq_jobs`` INSERT (and the scheduling-ledger row the before_enqueue hook writes ahead
+        # of it) may already be durably committed even though this call never got its ack --
+        # SAQ's Postgres broker forces autocommit and runs a separate NOTIFY round trip after the
+        # INSERT (see ``AmbiguousEnqueueError``). Downgrading to FAILED here would let the
+        # phaze-lwqk guard wave through an operator retry (FAILED is not QUEUED), minting a
+        # SECOND queued row + job for the SAME file while a possibly-live ghost job from THIS
+        # attempt is still queued behind it -- two concurrent mutagen rewrites of one archive
+        # file, exactly what phaze-lwqk exists to prevent. Leave the row QUEUED instead: a retry
+        # is refused by that same guard, and the row surfaces as visibly-stuck -- the same
+        # non-terminal contract an agent that dispatched fine but never reported already has. A
+        # genuinely-lost enqueue (no ghost job ever landed) self-heals through
+        # ``recover_orphaned_work``, which re-drives an orphaned ledger row exactly like this one.
+        logger.error(
+            "tag write enqueue ambiguous -- leaving row queued rather than risk a duplicate dispatch",
+            file_id=str(file_record.id),
+            log_id=str(log_entry.id),
+            agent_id=file_record.agent_id,
+            exc_info=True,
+        )
+        return log_entry
     except Exception as exc:
-        # The audit row already exists (and is durable -- see above); downgrade it to FAILED in
-        # place rather than leaving a ``queued`` row no agent will ever answer for. FAILED is
-        # non-terminal, so the file stays in the queue and the operator can retry once the broker is
-        # healthy.
+        # Anything else (e.g. ``queue.connect()`` failing, above -- provably BEFORE the broker
+        # connection existed) is unambiguous: nothing was ever created for this dispatch, so it is
+        # safe to downgrade in place rather than leaving a ``queued`` row no agent will ever answer
+        # for. FAILED is non-terminal, so the file stays in the queue and the operator can retry
+        # once the broker is healthy.
         logger.warning("tag write enqueue failed", file_id=str(file_record.id), agent_id=file_record.agent_id, exc_info=True)
         log_entry.status = TagWriteStatus.FAILED.value
         log_entry.error_message = f"could not dispatch the tag write to agent {file_record.agent_id!r}: {exc}"

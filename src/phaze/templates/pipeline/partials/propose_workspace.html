@@ -11,7 +11,7 @@
    the enrich/analyze workspaces use (columns File / Proposed name / Proposed path / Model / Conf).
 
    Trigger (D-01, reused VERBATIM): ONE GENERATE ALL button posting to the EXISTING
-   POST /pipeline/proposals (routers/pipeline.py:913 trigger_proposals_ui), which enqueues the
+   POST /pipeline/proposals (routers/pipeline.py:2538 trigger_proposals_ui), which enqueues the
    proposal-pending batches and returns pipeline/partials/trigger_response.html into
    #propose-trigger-response. R-4 bulk-enqueue guard: hx-confirm naming the scope + hx-disabled-elt
    + a :disabled busy-gate on $store.pipeline.controllerBusy (the SEEDED SAQ queue-depth key that
@@ -36,14 +36,17 @@
     {# R-4 bulk-enqueue guard: hx-confirm + hx-disabled-elt + :disabled busy-gate (don't double-enqueue litellm jobs). #}
     <button type="button"
             hx-post="/pipeline/proposals" hx-target="#propose-trigger-response" hx-swap="innerHTML"
-            {# The confirm quotes propose_stats.pending -- the corpus-wide pending count -- NOT the
-               rendered row count. GENERATE ALL enqueues over the whole pending set and is entirely
-               unaffected by the tab, the search or the page, so quoting the visible rows would
-               understate the blast radius: filtered to Approved, or searched down to two hits, the
-               old `propose_proposals | length` would have promised "2 litellm jobs" before
-               enqueuing thousands. A bulk-enqueue confirm must name the scope the ACTION has
-               (paging contract rule 7 -- enqueue sets are never paged). #}
-            hx-confirm="Generate AI proposals for all {{ propose_stats.pending }} pending files? This enqueues {{ propose_stats.pending }} litellm jobs."
+            {# The confirm quotes propose_generation_pending -- the GENERATION pending set
+               (count_proposal_pending_files, sharing `_proposal_pending_clauses` with
+               get_proposal_pending_batches, the exact query POST /pipeline/proposals enqueues) --
+               NOT the rendered row count and NOT propose_stats.pending (phaze-1aybg). The two
+               "pending" populations are DISJOINT: propose_stats.pending is RenameProposal rows
+               already GENERATED and awaiting human review, which GENERATE ALL explicitly excludes
+               (`~done_clause(PROPOSE)`). Quoting that count promised "0 litellm jobs" and enqueued
+               thousands (and vice versa) -- a bulk-enqueue confirm must name the scope the ACTION
+               actually has (paging contract rule 7 -- enqueue sets are never paged), which is this
+               count, not the review-tab stat. #}
+            hx-confirm="Generate AI proposals for all {{ propose_generation_pending }} pending files? This enqueues {{ propose_generation_pending }} litellm jobs."
             hx-indicator="#propose-trigger-spinner"
             hx-disabled-elt="this"
             :disabled="$store.pipeline.controllerBusy > 0"
@@ -73,9 +76,14 @@
        the pager (phaze-a6hm.9) and the bulk bar (phaze-a6hm.11): anything that must reflect the
        swap's own state has to be re-rendered BY that swap. The search box stays out here -- unlike
        the tabs it holds a focused input mid-keystroke, and re-rendering it on every debounce tick
-       would destroy focus and caret position (see search_box.html's own contract, point 3). #}
+       would destroy focus and caret position (see search_box.html's own contract, point 3).
+
+       phaze-a6gsw: `search_state_id` names the hidden state-carrier _propose_list.html renders
+       INSIDE #propose-workspace-list (search_box.html's hx-include reads it on every request).
+       Deriving it from propose_list_id, the same way search_target does, keeps the two ids
+       impossible to drift apart if a second caller of search_box.html is ever added. #}
     <div class="px-6 pt-4">
-        {% with view = propose_view, search_url = "/s/propose", search_target = "#" ~ propose_list_id, search_id = "propose-search" %}
+        {% with view = propose_view, search_url = "/s/propose", search_target = "#" ~ propose_list_id, search_id = "propose-search", search_state_id = propose_list_id ~ "-search-state" %}
             {% include "proposals/partials/search_box.html" %}
         {% endwith %}
     </div>

@@ -132,6 +132,13 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/proposals/{proposal_id}/edit", "proposed"): _TEXT,
     ("/proposals/{proposal_id}/edit", "facet"): _WHITELIST,
     ("/proposals/bulk", "action"): _WHITELIST,
+    # phaze-exivg: the APPROVE button's optimistic-concurrency token (the row render's own
+    # ``updated_at``, round-tripped via hx-vals). ``_parse_updated_at_token`` parses it before it
+    # goes anywhere near SQL -- malformed collapses to None, same as absent -- and the parsed
+    # datetime is only ever COMPARED in the conditional UPDATE's WHERE clause, never written to a
+    # column. A length bound would police a value FastAPI hands to ``datetime.fromisoformat``, not
+    # a value Postgres stores.
+    ("/proposals/{proposal_id}/approve", "expected_updated_at"): _NOT_STORED,
     # phaze-y4s6: ``GET /proposals/`` (status/q/sort/order) and the matching four params on
     # ``PATCH /proposals/bulk`` were removed along with the legacy ``#proposal-list-container``
     # surface (``proposal_list.html``/``proposal_table.html``/``pagination.html``/
@@ -181,11 +188,14 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/pipeline/tracklist-sets", "sort"): _WHITELIST,
     ("/pipeline/tracklist-sets", "order"): _WHITELIST,
     # phaze-a6hm.4 wired the same contract into the /admin/agents table (AGENTS_SORT). Identical
-    # posture: both routes resolve through SortContract.resolve() before any column is reached, and
-    # BOTH are polled every 5s -- which is exactly why they degrade an unknown value to the default
+    # posture: the route resolves through SortContract.resolve() before any column is reached, and
+    # it is polled every 5s -- which is exactly why it degrades an unknown value to the default
     # rather than 422-ing (contract rule 3). A 422 here would blank the operator's page on a tick.
-    ("/admin/agents", "sort"): _WHITELIST,
-    ("/admin/agents", "order"): _WHITELIST,
+    # phaze-uvmcr.4: GET /admin/agents itself (the bare, un-suffixed page route) no longer declares
+    # sort/order/agent/clane as typed Query() params at all -- it is now an unconditional redirect to
+    # /s/agents, which reads them off request.query_params directly (mirroring the existing ?lane=
+    # idiom on the "analyze" stage) rather than minting a second FastAPI-param classification for
+    # GET /s/{stage}. Only /admin/agents/_table (the unchanged 5s poll target) still declares them.
     ("/admin/agents/_table", "sort"): _WHITELIST,
     ("/admin/agents/_table", "order"): _WHITELIST,
     # phaze-a6hm.6 extends that same contract to the Recent Scans table: RECENT_SCANS_SORT in
@@ -243,13 +253,13 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # itself rather than a classification.
     ("/pipeline/scans", "scan_root"): "must be literal member of agent.scan_roots (WR-05)",
     ("/pipeline/scans", "subpath"): "NFC-normalized + prefix-validated against agent.scan_roots (D-06)",
-    ("/admin/agents", "agent"): "selector resolved against the loaded agent list, not stored",
+    # phaze-uvmcr.4: bare GET /admin/agents no longer declares ?agent=/?clane= as typed Query()
+    # params (see the sort/order comment above) -- only /admin/agents/_table still does.
     ("/admin/agents/_table", "agent"): "selector resolved against the loaded agent list, not stored",
     ("/admin/agents/{agent_id}/_activity", "agent_id"): "lookup key only; a miss renders the empty state",
     # phaze-2u8v.5: the burst-lane workload drill-down's ?clane= selector, resolved by
     # lookup-in-known-set against derive_compute_lane_identities() the same way ?agent= is resolved
     # against the loaded agent list above -- never stored raw.
-    ("/admin/agents", "clane"): "selector resolved against the derived compute-lane list, not stored",
     ("/admin/agents/_table", "clane"): "selector resolved against the derived compute-lane list, not stored",
     ("/admin/agents/compute-lanes/{backend_id}", "backend_id"): "lookup key only; an unknown id renders the offline empty state",
 }

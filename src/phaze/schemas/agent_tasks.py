@@ -210,8 +210,10 @@ class WriteFileTagsPayload(BaseModel):
     file_id: uuid.UUID
     agent_id: str
     file_path: str
-    # Values may be str / int / None -- ``None`` DELETES the frame (phaze-52qd undo semantics).
-    tags: dict[str, str | int | None]
+    # Values may be str / int / list[str] / None -- ``None`` DELETES the frame (phaze-52qd undo
+    # semantics); ``list[str]`` (phaze-z2u08) writes a multi-value genre undo snapshot back as
+    # separate frame/comment/atom values instead of collapsing it to one.
+    tags: dict[str, str | int | list[str] | None]
 
 
 class WriteCueSheetPayload(BaseModel):

@@ -320,6 +320,28 @@ class TestSettingsLlmFields:
         s = Settings()
         assert s.llm_batch_size == 10
 
+    def test_llm_batch_size_rejects_zero(self):
+        """phaze-ceuvd: batch_size is a range() step in get_proposal_pending_batches, so a
+        non-positive value must fail validation (gt=0) at config-construction time rather than
+        booting green and only detonating (ValueError: range() arg 3 must not be zero) when
+        GENERATE ALL is clicked."""
+        from pydantic import ValidationError
+
+        from phaze.config import Settings
+
+        with pytest.raises(ValidationError, match="llm_batch_size"):
+            Settings(llm_batch_size=0)
+
+    def test_llm_batch_size_rejects_negative(self):
+        """phaze-ceuvd: a negative value used to silently no-op (empty range()), enqueuing zero
+        batches while reporting success. It must now fail validation instead."""
+        from pydantic import ValidationError
+
+        from phaze.config import Settings
+
+        with pytest.raises(ValidationError, match="llm_batch_size"):
+            Settings(llm_batch_size=-5)
+
     def test_llm_max_companion_chars_default(self):
         from phaze.config import Settings
 
@@ -371,6 +393,23 @@ class TestClampConfidence:
         from phaze.services.proposal import ProposalService
 
         assert ProposalService._clamp_confidence(1.0) == 1.0
+
+    def test_nan_is_untrusted_not_maximal(self):
+        """NaN must not survive min(1.0, value) and clamp to the maximum."""
+        from phaze.services.proposal import ProposalService
+
+        assert ProposalService._clamp_confidence(float("nan")) == 0.0
+
+    def test_positive_infinity_is_untrusted_not_maximal(self):
+        """+inf must not survive min(1.0, value) and clamp to the maximum."""
+        from phaze.services.proposal import ProposalService
+
+        assert ProposalService._clamp_confidence(float("inf")) == 0.0
+
+    def test_negative_infinity_is_untrusted(self):
+        from phaze.services.proposal import ProposalService
+
+        assert ProposalService._clamp_confidence(float("-inf")) == 0.0
 
 
 class TestGenerateBatch:

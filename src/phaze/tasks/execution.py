@@ -64,6 +64,21 @@ success-reporting path used by a first-time success -- already idempotent via th
 ``execution_log_id``/``progress_request_id`` -- which also self-heals ``current_path`` (the
 success PATCH sets it from ``str(proposed)``).
 
+phaze-ebb46 correction: "conclusive replay evidence" above overstated it. ``not original.exists()
+and proposed.exists()`` plus a matching content hash proves ``proposed`` is byte-identical to what
+``original`` used to be -- it does NOT prove `proposed` is THIS proposal's own move. phaze is a
+dedup tool, so an archive full of exact duplicates means a byte-identical `proposed` can just as
+easily be a DIFFERENT proposal's already-completed move to the same destination, whose own source
+has since gone missing for an unrelated reason. That gap is exactly the one phaze-i7jo already
+closed for the cross-fs residue branch below (content identity alone was ruled insufficient there
+too); the already-moved branch got no equivalent guard until now. The fix requires per-proposal
+corroboration -- this proposal's own "moved" flag (``_moved_flag_key``, persisted in ``job.meta``
+right after ITS move commits, retry-stable exactly like ``execution_log_id``/``progress_request_id``)
+or its cross-fs commit marker (``_committed_copy_marker_path``) -- before trusting the fast path.
+Uncorroborated, ``_execute_one`` falls through to the normal move/verify code, which fails loudly
+on the missing `original` instead of silently reporting a stranger's move as this proposal's own
+success.
+
 Cross-filesystem crash-state model (phaze-k23z / phaze-q2lg / phaze-qx8z / phaze-i7jo): a cross-fs
 move is a non-atomic copy-then-delete, so it has TWO durable committed states the executor must
 treat coherently:
@@ -89,6 +104,17 @@ then ``Path.replace``s it -- phaze-k23z), so a copy that ABORTS mid-stream leave
 file at ``proposed`` nor state (1); ``original`` is never unlinked until a full copy lands, so no
 path here loses data. A genuinely foreign file at ``proposed`` (hash mismatch), or a byte-identical
 one this proposal never itself started copying to (no marker), is still refused.
+
+phaze-otoqj: the staging side of that copy used to be the unguarded half. ``dst.with_name(dst.name
++ _COPY_TMP_SUFFIX)`` was DETERMINISTIC (derived only from the destination) and opened via a
+truncating, non-exclusive write, so two genuinely concurrent attempts at the same destination --
+the meta lane runs sub-batches at concurrency 2, and a case-insensitive collision key can split
+same-destination proposals across two of them -- staged into ONE shared inode and could publish
+interleaved bytes as a "successful" move while deleting a source that was never actually copied
+intact. The fix gives every attempt its own staging name (``_unique_tmp_path``, pid+uuid4) opened
+O_EXCL (``_streamed_copy``), plus an optional post-publish sha256 re-verify against the
+already-trusted expected hash before ``original.unlink()`` -- see ``_execute_one``'s cross-fs
+branch.
 
 NOTE on schema mapping: Phase 25's ExecutionLog schema is per-proposal (one row per file op),
 not per-batch. Plan 11 invariants (one POST at start, per-proposal state PATCH, one PATCH at
@@ -188,11 +214,18 @@ def _sha256_of_file(path: Path) -> str:
 _COPY_CHUNK_BYTES = 16 * 1024 * 1024
 
 # Suffix for the sibling temp file used by the cross-filesystem copy. The bytes
-# stream into ``<dest><suffix>`` and are ``os.replace``d onto the real
+# stream into ``<dest><suffix><per-attempt token>`` and are published onto the real
 # destination only after a full, fsynced copy -- so the destination appears
 # atomically and a mid-copy abort never orphans a partial file at the final path
 # (phaze-k23z). Kept on the SAME directory (hence a name suffix, not /tmp) so the
-# replace stays within one filesystem and is atomic.
+# publish stays within one filesystem and is atomic.
+#
+# phaze-otoqj: the suffix alone is NOT the tmp filename -- see `_unique_tmp_path`. A name
+# derived only from `dst` used to be shared by every concurrent attempt at that destination
+# (two sub-batches racing on a case-insensitive collision, or a retry overlapping a still-live
+# prior attempt), and `_streamed_copy`'s truncating open let a second writer share/reset the
+# same inode a first writer was still appending to -- interleaved bytes published as a
+# "successful" move with the losing writer's source already deleted.
 _COPY_TMP_SUFFIX = ".phaze-tmp"
 
 # phaze-i7jo: suffix for the per-PROPOSAL sibling marker that corroborates a cross-fs
@@ -216,6 +249,48 @@ def _committed_copy_marker_path(proposed: Path, proposal_id: uuid.UUID) -> Path:
     identity alone stops being sufficient evidence of a resumable move.
     """
     return proposed.with_name(f"{proposed.name}{_COMMIT_MARKER_SUFFIX}.{proposal_id}")
+
+
+def _unique_tmp_path(dst: Path) -> Path:
+    """Sibling staging path for `dst`, unique to THIS copy attempt.
+
+    phaze-otoqj: the old ``dst.with_name(dst.name + _COPY_TMP_SUFFIX)`` was a DETERMINISTIC
+    name derived only from the destination, so every concurrent attempt at the same `dst` --
+    two sub-batches racing on a case-insensitive collision key, or a SAQ retry overlapping a
+    still-live prior attempt -- staged into ONE shared inode. Appending both the pid and a
+    fresh uuid4 closes that: pid alone reuses across process restarts (a stale orphan from a
+    killed worker could collide with a later attempt sharing the recycled pid), and a bare
+    uuid4 alone is still a single unclaimed name if something else raced to create it first --
+    see `_streamed_copy`'s O_EXCL open for the other half of this fix. Two attempts choosing
+    the same (pid, uuid4) pair is not a real-world possibility.
+    """
+    return dst.with_name(f"{dst.name}{_COPY_TMP_SUFFIX}.{os.getpid()}.{uuid.uuid4().hex}")
+
+
+# phaze-ebb46: prefix for the per-proposal "moved" corroboration flag persisted in
+# ``ctx['job'].meta`` (see ``_moved_flag_key``). Mirrors the retry-stable
+# ``log_id:``/``req_id:`` key convention from `_load_or_seed_uuids` -- same dict, same
+# survive-a-SAQ-retry guarantee, just a boolean-shaped flag instead of a UUID.
+_MOVED_FLAG_PREFIX = "moved:"
+
+
+def _moved_flag_key(proposal_id: uuid.UUID) -> str:
+    """``job.meta`` key proving `proposal_id` itself already committed its move.
+
+    phaze-ebb46: the ``already_moved`` fast path (``not original.exists() and
+    proposed.exists()``) is conclusive evidence of a REPLAY only when corroborated
+    per-proposal -- phaze is a dedup tool, so a byte-identical `proposed` can just as
+    easily be a DIFFERENT proposal's already-completed move to the same destination
+    (the same insufficiency the phaze-i7jo cross-fs commit marker exists to close, one
+    level up). The same-fs move path has no residue window to inspect the way the
+    cross-fs copy does (a single atomic syscall, not a copy-then-delete with a
+    durable intermediate state), so this flag is the same-fs equivalent: written to
+    ``job.meta`` -- retry-stable like ``log_id:``/``req_id:`` (D-15) -- immediately
+    after THIS proposal's own move commits, so a later SAQ retry of the SAME job can
+    tell "my own prior move" apart from "someone else's already-completed move that
+    happens to sit at my destination".
+    """
+    return f"{_MOVED_FLAG_PREFIX}{proposal_id}"
 
 
 def _same_filesystem(src: Path, dst_dir: Path) -> bool:
@@ -243,6 +318,24 @@ def _is_same_file(a: Path, b: Path) -> bool:
         return os.path.samestat(a.stat(), b.stat())
     except OSError:
         return False
+
+
+def _is_case_only_same_entry(original: Path, proposed: Path) -> bool:
+    """True iff `original`/`proposed` are two case-fold spellings of the SAME single directory entry.
+
+    phaze-kxnnd: on a case-insensitive filesystem (SMB/NAS), a pure case-only rename
+    (``Track.MP3`` -> ``track.mp3``) makes ``original != proposed`` as strings while both
+    name the identical directory slot -- there is no second link anywhere, no matter what
+    ``original.stat().st_nlink`` reports. ``st_nlink`` is a GLOBAL count of every link to
+    the inode on the filesystem, so an unrelated pre-existing hard link elsewhere in the
+    archive (phaze is explicitly a dedup tool over one where those exist) inflates it past
+    1 for a plain case-only rename too, with nothing to do with `proposed`. This check is
+    purely path-shaped -- same parent directory, same name once case-folded, different name
+    as strings -- and needs no filesystem access, so it cannot itself be fooled by nlink:
+    when it is True, the caller must route to the plain rename regardless of nlink, because
+    unlinking `original` in that case deletes the archive's only entry for the file.
+    """
+    return original.parent == proposed.parent and original.name != proposed.name and original.name.casefold() == proposed.name.casefold()
 
 
 def _destination_is_committed_copy(original: Path, proposed: Path, expected_hash: str | None) -> bool:
@@ -285,8 +378,20 @@ def _streamed_copy(src: Path, dst: Path) -> None:
     (which keeps it for free). The fsync durably lands the bytes on disk before
     the caller unlinks the original, so a crash between copy and unlink cannot
     lose data.
+
+    phaze-otoqj: `dst` is opened ``O_CREAT | O_EXCL`` -- never the truncating
+    ``Path.open("wb")`` (``O_TRUNC``) this replaces. A truncating open silently shares or
+    resets whatever inode already sat at `dst`; O_EXCL instead raises ``FileExistsError`` the
+    instant two writers ever aim at the same path, so this stays a hard write-time guarantee
+    rather than relying solely on the caller's tmp path being unique (`_unique_tmp_path`) --
+    belt AND suspenders, since a unique name alone still has a (vanishingly unlikely but
+    real) reuse window a crashed-then-recycled attempt could hit.
+
+    Raises:
+        FileExistsError: `dst` was already occupied.
     """
-    with src.open("rb") as fsrc, dst.open("wb") as fdst:
+    fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    with src.open("rb") as fsrc, os.fdopen(fd, "wb") as fdst:
         shutil.copyfileobj(fsrc, fdst, length=_COPY_CHUNK_BYTES)
         fdst.flush()
         os.fsync(fdst.fileno())
@@ -328,13 +433,25 @@ def _claim_destination_by_link(src: Path, dst: Path) -> bool:
 def _atomic_cross_fs_copy(src: Path, dst: Path) -> None:
     """Copy `src` -> `dst` across filesystems so `dst` appears atomically, without clobbering it.
 
-    Streams `src` into a sibling temp file (``<dst><_COPY_TMP_SUFFIX>``), fsyncs
-    it durably, then publishes the temp at `dst` -- within the destination
+    Streams `src` into a sibling temp file unique to this attempt (`_unique_tmp_path`),
+    fsyncs it durably, then publishes the temp at `dst` -- within the destination
     filesystem, so the publish is atomic. Because bytes never land at the final
     path incrementally, a mid-copy abort (ENOSPC on a multi-GB concert video, an
     I/O error on the destination mount, or a flush/fsync failure) can never leave
     a truncated/corrupt fragment at `dst`. On ANY failure the temp file is
     removed (``missing_ok=True``) so nothing is orphaned either (phaze-k23z).
+
+    phaze-otoqj: the staging file used to be named DETERMINISTICALLY from `dst` alone
+    (``dst.name + _COPY_TMP_SUFFIX``) and opened with a truncating, non-exclusive write. Two
+    genuinely concurrent attempts at the same `dst` -- the meta lane runs sub-batches at
+    concurrency 2, and a case-insensitive collision key can let two same-destination proposals
+    land in different sub-batches -- staged into ONE shared inode: the second writer's open
+    truncated mid-stream while the first kept appending at its own offset, interleaving both
+    sources' bytes. Whichever finished first published that shared, possibly-still-being-written
+    inode at `dst` and unlinked ITS source, silently reporting success with the other source
+    about to be deleted too. `_unique_tmp_path` gives every attempt its own inode, and
+    `_streamed_copy`'s O_EXCL open refuses to write into one that (impossibly) already exists --
+    so the race this used to lose is now structurally impossible rather than merely narrowed.
 
     Contrast the pre-fix behavior, which wrote straight into `dst` via
     ``dst.open("wb")`` and, on a raise partway through, left a partial file at the
@@ -359,7 +476,7 @@ def _atomic_cross_fs_copy(src: Path, dst: Path) -> None:
     Raises:
         FileExistsError: `dst` was occupied by the time the copy completed.
     """
-    tmp = dst.with_name(dst.name + _COPY_TMP_SUFFIX)
+    tmp = _unique_tmp_path(dst)
     try:
         _streamed_copy(src, tmp)
         if _claim_destination_by_link(tmp, dst):
@@ -372,6 +489,10 @@ def _atomic_cross_fs_copy(src: Path, dst: Path) -> None:
             # and strictly better than refusing to move files on such a mount at all.
             tmp.replace(dst)
     except BaseException:
+        # phaze-otoqj: safe to unconditionally clean up now that `tmp` is unique to THIS
+        # attempt (`_unique_tmp_path`) -- pre-fix, with a deterministic tmp name, this same
+        # line let a losing concurrent writer delete a WINNING writer's still-live staging
+        # file out from under it, mid-copy.
         tmp.unlink(missing_ok=True)
         raise
 
@@ -514,6 +635,7 @@ async def _execute_one(
     is_last: bool,
     execution_log_id: uuid.UUID,
     progress_request_id: uuid.UUID,
+    job: Any | None,
 ) -> bool:
     """Execute one proposal. Returns True on success, False on any failure.
 
@@ -529,6 +651,10 @@ async def _execute_one(
     The two UUID arguments (``execution_log_id`` and ``progress_request_id``)
     come from ``execute_approved_batch`` which loaded them from ``ctx['job'].meta``
     so SAQ retries reuse the same per-proposal values (closes L6/L22; delivers D-15).
+
+    ``job`` (the SAQ job, or ``None`` for a legacy ctx with no ``'job'`` key) is threaded
+    through so this function can read and persist the phaze-ebb46 per-proposal "moved"
+    replay-corroboration flag in ``job.meta`` -- see the ``already_moved`` block below.
     """
     sha_verified = item.sha256_hash is not None
     # Relative destination for the audit trail (source_path is absolute, but the
@@ -590,7 +716,35 @@ async def _execute_one(
         # entirely and fall through to the success-reporting path, which is already
         # idempotent (retry-stable execution_log_id/progress_request_id) and also
         # self-heals current_path (the success PATCH sets it from `str(proposed)`).
+        #
+        # phaze-ebb46: content identity (a hash check below) plus a missing source is
+        # NOT, on its own, conclusive that `proposed` is THIS proposal's own replayed
+        # move -- phaze is a dedup tool, so an archive full of exact duplicates means a
+        # byte-identical `proposed` can just as easily be a DIFFERENT proposal's
+        # already-completed move to the same destination, whose OWN source has since
+        # gone missing for an unrelated reason (deleted by hand, external tooling, a
+        # prior partial failure). The already-moved branch used to trust content
+        # identity alone -- exactly the inference phaze-i7jo already rejected for the
+        # cross-fs residue branch one function down. Require the SAME kind of
+        # per-proposal corroboration here: either this proposal's own "moved" flag
+        # (`_moved_flag_key`, persisted in job.meta right after ITS move committed) or
+        # its cross-fs commit marker (the copy-committed-pending-unlink residue,
+        # phaze-i7jo/qx8z -- a genuine cross-fs replay can reach this same branch too).
+        # Absent both, this is not conclusive replay evidence: fall through to the
+        # normal move/verify path below, which fails LOUDLY on the now-missing
+        # `original` instead of silently reporting a stranger's move as this
+        # proposal's own success.
         already_moved = not original.exists() and proposed.exists()
+        if already_moved:
+            job_meta = dict(getattr(job, "meta", None) or {}) if job is not None else {}
+            corroborated = (
+                job_meta.get(_moved_flag_key(item.proposal_id)) is not None
+                or _committed_copy_marker_path(
+                    proposed,
+                    item.proposal_id,
+                ).exists()
+            )
+            already_moved = corroborated
         if already_moved and item.sha256_hash is not None:
             # Confirm `proposed` is actually the expected file before trusting the
             # replay -- a hash mismatch means this isn't the already-moved file (e.g.
@@ -604,6 +758,19 @@ async def _execute_one(
             if actual != item.sha256_hash:
                 msg = f"sha256 mismatch for {item.original_path}: expected {item.sha256_hash}, got {actual} (already-moved replay check against {proposed})"
                 raise ValueError(msg)
+
+        if already_moved:
+            # phaze-v3b1e: a confirmed replay means the move is durably done, so THIS
+            # proposal's cross-fs commit marker (if any) has no further job to do. The two
+            # sites below that normally unlink it (the complete-forward residue branch and
+            # the fresh-copy branch further down) both require `original` to still exist,
+            # so a crash between `original.unlink()` and the marker's own unlink there
+            # permanently skips them on every subsequent replay -- `already_moved` is now
+            # True and corroborated by the very marker file this call would otherwise never
+            # clean up, orphaning `<dest>.phaze-committed.<proposal_id>` in the archive
+            # forever. Cleaning it up here, once, on every already-moved replay closes that
+            # window regardless of which crash edge produced it.
+            _committed_copy_marker_path(proposed, item.proposal_id).unlink(missing_ok=True)
 
         if not already_moved:
             # 3. Optional sha256 verify (caller may supply None to skip)
@@ -687,7 +854,20 @@ async def _execute_one(
                     # (an extra link exists at a genuinely different path). Renaming a link onto a
                     # sibling link of the same inode is a POSIX no-op, so that residue would
                     # otherwise survive forever with the source never removed. Complete forward.
-                    if original != proposed and original.stat().st_nlink > 1:
+                    #
+                    # phaze-kxnnd correction: ``st_nlink > 1`` alone is NOT sufficient evidence of
+                    # that residue -- it is a global count of every link to the inode anywhere on
+                    # the filesystem, not proof the extra one sits AT ``proposed``. On a
+                    # case-insensitive mount, a pure case-only rename (``Track.MP3`` ->
+                    # ``track.mp3``) also makes ``original != proposed`` true while both name the
+                    # SAME single directory entry; an unrelated pre-existing hard link elsewhere in
+                    # the archive then inflates nlink and used to trigger ``original.unlink()`` --
+                    # deleting the archive's only entry for the file and leaving the rename never
+                    # applied. ``_is_case_only_same_entry`` rules that shape out FIRST, unconditionally
+                    # (regardless of nlink) before trusting nlink as crashed-claim evidence -- exactly
+                    # the "necessary but not sufficient" corroboration shape phaze-i7jo already
+                    # required for the cross-fs residue branch above.
+                    if original != proposed and not _is_case_only_same_entry(original, proposed) and original.stat().st_nlink > 1:
                         current_step = "delete"
                         original.unlink()
                     else:
@@ -713,6 +893,26 @@ async def _execute_one(
                 # in the (awaited) window between copy and unlink lands in the recoverable
                 # "copy committed, original present" state the replay logic completes forward.
                 await asyncio.to_thread(_atomic_cross_fs_copy, original, proposed)
+                # phaze-otoqj: re-verify the PUBLISHED destination against the already-trusted
+                # expected hash before unlinking `original` -- belt-and-suspenders on top of the
+                # `_unique_tmp_path`/O_EXCL fix above, not a substitute for it. `original` is
+                # still present here, so a mismatch fails loudly (raises, current_step="verify")
+                # with the source untouched, instead of deleting it on the strength of a copy
+                # that (via a bug this bead didn't anticipate, or bit-level media corruption in
+                # transit) never actually landed byte-for-byte. Only runs when a hash was
+                # supplied -- without one there is nothing to corroborate against, matching the
+                # pre-copy verify's same opt-in.
+                if item.sha256_hash is not None:
+                    current_step = "verify"
+                    # phaze-timy: hash off-loop, same rationale as the other _sha256_of_file calls
+                    # in this function -- a multi-GB file must not block the meta-lane event loop.
+                    published_hash = await asyncio.to_thread(_sha256_of_file, proposed)
+                    if published_hash != item.sha256_hash:
+                        msg = (
+                            f"sha256 mismatch for published destination {proposed}: "
+                            f"expected {item.sha256_hash}, got {published_hash} (post-publish re-verify)"
+                        )
+                        raise ValueError(msg)
                 # phaze-i7jo: write THIS proposal's own commit marker now that the copy is
                 # durably landed at `proposed` -- before the unlink, so a crash in the
                 # window below leaves corroborating evidence a replay can trust (see the
@@ -725,6 +925,21 @@ async def _execute_one(
                 # The move completed in full within this same call -- the marker's only
                 # job was to survive a crash between the two lines above; clean it up.
                 _committed_copy_marker_path(proposed, item.proposal_id).unlink(missing_ok=True)
+
+            # phaze-ebb46: persist THIS proposal's own "moved" corroboration flag now that
+            # its move is fully committed -- retry-stable in job.meta, same idempotent
+            # convention as `log_id:`/`req_id:` (D-15). This is the fresh-execution half of
+            # the corroboration check above: a same-fs move is one atomic syscall with no
+            # cross-fs-style residue window to inspect on replay, so this flag is what lets
+            # a LATER SAQ retry of this same job tell "my own prior move" apart from a
+            # different proposal's already-completed move that happens to sit at this exact
+            # destination (the phaze-i7jo insufficiency this bead closes for the same-fs
+            # path too). Only reached on a FRESH commit -- an already-moved replay skips
+            # this whole block, so the flag is never redundantly re-persisted.
+            if job is not None:
+                updated_job_meta = dict(getattr(job, "meta", None) or {})
+                updated_job_meta[_moved_flag_key(item.proposal_id)] = "1"
+                await job.update(meta=updated_job_meta)
 
         # 6a. PATCH execution log to completed.
         # phaze-87ba: heal the row first if its write-ahead POST never landed -- otherwise this
@@ -970,6 +1185,7 @@ async def execute_approved_batch(ctx: dict[str, Any], **kwargs: Any) -> dict[str
             is_last,
             log_ids[item.proposal_id],
             req_ids[item.proposal_id],
+            job,
         )
         processed += 1
         if not ok:

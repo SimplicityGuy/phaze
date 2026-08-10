@@ -22,8 +22,10 @@ from sqlalchemy import select
 from phaze.database import get_session
 from phaze.enums.tag_write import TagWriteStatus
 from phaze.models.file import FileRecord
+from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.routers.agent_tag_writes import router as agent_tag_writes_router
+from phaze.services.scheduling_ledger import upsert_ledger_entry
 
 
 if TYPE_CHECKING:
@@ -136,6 +138,47 @@ async def test_nul_in_error_message_is_sanitized_before_persist(session: AsyncSe
     assert log.status == TagWriteStatus.FAILED
     assert log.error_message is not None
     assert "\x00" not in log.error_message
+
+
+@pytest.mark.asyncio
+async def test_nul_in_before_tags_value_is_rejected_422(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
+    """phaze-hvve5 (site 2): unlike ``error_message``, ``before_tags``/``discrepancies`` land
+    straight into JSONB with no per-value sanitization -- a NUL in a dict field used to abort the
+    commit AFTER the disk write already landed, stranding the row. REJECT (422) rather than
+    silently drop the poisoned key/value: that would make the persisted snapshot disagree with what
+    the agent actually read off disk, corrupting the undo anchor."""
+    _agent, token = seed_test_agent
+    log = await _seed_queued_log(session)
+
+    async with _make_client(session, token) as client:
+        resp = await client.patch(
+            f"/api/internal/agent/tag-writes/{log.id}",
+            json=_body(before_tags={"artist": "bad\x00value"}),
+        )
+
+    assert resp.status_code == 422, resp.text
+    await session.refresh(log)
+    assert log.status == TagWriteStatus.QUEUED, "the rejected PATCH must not have mutated the row"
+
+
+@pytest.mark.asyncio
+async def test_nul_in_discrepancies_key_is_rejected_422(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
+    """Same hazard, nested one level deeper: a NUL in a `discrepancies` inner dict KEY."""
+    _agent, token = seed_test_agent
+    log = await _seed_queued_log(session)
+
+    async with _make_client(session, token) as client:
+        resp = await client.patch(
+            f"/api/internal/agent/tag-writes/{log.id}",
+            json=_body(
+                status=TagWriteStatus.DISCREPANCY.value,
+                discrepancies={"artist": {"expected\x00": "A", "actual": "B"}},
+            ),
+        )
+
+    assert resp.status_code == 422, resp.text
+    await session.refresh(log)
+    assert log.status == TagWriteStatus.QUEUED
 
 
 @pytest.mark.asyncio
@@ -356,3 +399,175 @@ async def test_concurrent_duplicate_callbacks_do_not_clobber_before_tags(async_e
             await s.commit()
         # NOTE: do NOT dispose ``engine`` -- it is the session-scoped ``async_engine`` fixture,
         # owned (and disposed) by conftest.
+
+
+# ---------------------------------------------------------------------------
+# phaze-anrw4: the pre-write snapshot endpoint + the first-write-wins guard it shares with the
+# result callback.
+# ---------------------------------------------------------------------------
+
+
+def _snapshot_body(**overrides: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {"before_tags": {"artist": "Original Artist"}}
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_before_snapshot_records_on_a_queued_row(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
+    _agent, token = seed_test_agent
+    log = await _seed_queued_log(session)
+
+    async with _make_client(session, token) as client:
+        resp = await client.patch(f"/api/internal/agent/tag-writes/{log.id}/before-snapshot", json=_snapshot_body())
+
+    assert resp.status_code == 200
+    assert resp.json()["applied"] is True
+    await session.refresh(log)
+    assert log.before_tags == {"artist": "Original Artist"}
+    assert log.status == TagWriteStatus.QUEUED, "the snapshot report must not advance the row's status"
+
+
+@pytest.mark.asyncio
+async def test_before_snapshot_nul_in_before_tags_is_rejected_422(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
+    """phaze-hvve5 (site 2): same hazard, same fix, on the SEPARATE before-snapshot endpoint --
+    `TagWriteBeforeSnapshotPayload.before_tags` is the same unsanitized JSONB sink."""
+    _agent, token = seed_test_agent
+    log = await _seed_queued_log(session)
+
+    async with _make_client(session, token) as client:
+        resp = await client.patch(
+            f"/api/internal/agent/tag-writes/{log.id}/before-snapshot",
+            json=_snapshot_body(before_tags={"artist": "bad\x00value"}),
+        )
+
+    assert resp.status_code == 422, resp.text
+    await session.refresh(log)
+    assert log.before_tags == {}, "the rejected PATCH must not have written a snapshot"
+
+
+@pytest.mark.asyncio
+async def test_before_snapshot_first_write_wins_against_a_second_snapshot_report(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
+    """phaze-anrw4: a SAQ retry's re-extraction (a second snapshot report) must never win.
+
+    Simulates the corrupted case: the first report carries the TRUE original; a later report
+    (standing in for a retry that re-extracted from the already-written disk) carries the WRONG,
+    post-write snapshot. Only the first must persist.
+    """
+    _agent, token = seed_test_agent
+    log = await _seed_queued_log(session)
+
+    async with _make_client(session, token) as client:
+        first = await client.patch(f"/api/internal/agent/tag-writes/{log.id}/before-snapshot", json=_snapshot_body())
+        second = await client.patch(
+            f"/api/internal/agent/tag-writes/{log.id}/before-snapshot",
+            json=_snapshot_body(before_tags={"artist": "Proposed Value"}),
+        )
+
+    assert first.json()["applied"] is True
+    assert second.json()["applied"] is False
+    await session.refresh(log)
+    assert log.before_tags == {"artist": "Original Artist"}, "a later snapshot must never clobber the first"
+
+
+@pytest.mark.asyncio
+async def test_result_callback_keeps_the_before_snapshot_already_recorded(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
+    """The end-to-end phaze-anrw4 sequence: snapshot lands first, then the (corrupted) result callback.
+
+    Mirrors the real failure this closes: attempt 1's write lands but its result callback never
+    reaches the control plane, so the row is still ``queued`` when attempt 2's callback arrives
+    carrying a ``before_tags`` re-extracted from the ALREADY-WRITTEN disk (equal to the proposed
+    value). The genuine, pre-write snapshot reported earlier must win.
+    """
+    _agent, token = seed_test_agent
+    log = await _seed_queued_log(session)
+
+    async with _make_client(session, token) as client:
+        await client.patch(f"/api/internal/agent/tag-writes/{log.id}/before-snapshot", json=_snapshot_body())
+        resp = await client.patch(
+            f"/api/internal/agent/tag-writes/{log.id}",
+            json=_body(before_tags={"artist": "New Artist"}),  # the corrupted, post-write re-extraction
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["applied"] is True
+    await session.refresh(log)
+    assert log.status == TagWriteStatus.COMPLETED
+    assert log.before_tags == {"artist": "Original Artist"}, "the undo anchor must be the true original, not the retry's re-extraction"
+
+
+@pytest.mark.asyncio
+async def test_before_snapshot_no_op_once_the_row_is_terminal(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
+    _agent, token = seed_test_agent
+    log = await _seed_queued_log(session)
+
+    async with _make_client(session, token) as client:
+        await client.patch(f"/api/internal/agent/tag-writes/{log.id}", json=_body())
+        resp = await client.patch(f"/api/internal/agent/tag-writes/{log.id}/before-snapshot", json=_snapshot_body())
+
+    assert resp.status_code == 200
+    assert resp.json()["applied"] is False
+    await session.refresh(log)
+    assert log.before_tags == {"artist": "Old Artist", "title": None}, "a late snapshot must not touch an already-terminal row"
+
+
+@pytest.mark.asyncio
+async def test_before_snapshot_unknown_log_id_404s(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
+    _agent, token = seed_test_agent
+
+    async with _make_client(session, token) as client:
+        resp = await client.patch(f"/api/internal/agent/tag-writes/{uuid.uuid4()}/before-snapshot", json=_snapshot_body())
+
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_before_snapshot_unauthenticated_is_refused(session: AsyncSession) -> None:
+    log = await _seed_queued_log(session)
+
+    async with _make_client(session) as client:
+        resp = await client.patch(f"/api/internal/agent/tag-writes/{log.id}/before-snapshot", json=_snapshot_body())
+
+    assert resp.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+# phaze-yy9bk: the result callback must clear the write_file_tags:<log_id> scheduling-ledger row
+# it left orphaned forever -- the deeper root cause behind the callback-discard bug (every tag
+# write, not just a retried one, leaked a row ``recover_orphaned_work`` would replay without limit).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_result_callback_clears_its_scheduling_ledger_row(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
+    _agent, token = seed_test_agent
+    log = await _seed_queued_log(session)
+    await upsert_ledger_entry(
+        session,
+        key=f"write_file_tags:{log.id}",
+        function="write_file_tags",
+        kwargs={"log_id": str(log.id)},
+    )
+    await session.commit()
+
+    async with _make_client(session, token) as client:
+        resp = await client.patch(f"/api/internal/agent/tag-writes/{log.id}", json=_body())
+
+    assert resp.status_code == 200
+    row = await session.get(SchedulingLedger, f"write_file_tags:{log.id}")
+    assert row is None, "a terminal callback must clear its own ledger row, or recover_orphaned_work replays it forever"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_callback_does_not_error_when_ledger_row_is_already_gone(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
+    """A replay (the row already left ``queued``) short-circuits before the ledger clear -- no row, no error."""
+    _agent, token = seed_test_agent
+    log = await _seed_queued_log(session)
+
+    async with _make_client(session, token) as client:
+        first = await client.patch(f"/api/internal/agent/tag-writes/{log.id}", json=_body())
+        second = await client.patch(f"/api/internal/agent/tag-writes/{log.id}", json=_body())
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["applied"] is False

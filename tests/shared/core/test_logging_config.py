@@ -42,6 +42,9 @@ def reset_logging() -> Iterator[None]:
             logger.removeHandler(handler)
         logger.setLevel(logging.NOTSET)
         logger.propagate = True
+    psycopg_pool_logger = logging.getLogger("psycopg.pool")
+    for log_filter in psycopg_pool_logger.filters[:]:
+        psycopg_pool_logger.removeFilter(log_filter)
 
 
 def _last_json_line(text: str) -> dict[str, object]:
@@ -261,6 +264,45 @@ def test_friendly_disabled_explicit_overrides_env(monkeypatch: pytest.MonkeyPatc
     configure_logging(level="INFO", json_logs=True, friendly=False)
 
     assert len(logging.getLogger().handlers) == 1
+
+
+@pytest.mark.usefixtures("reset_logging")
+def test_psycopg_pool_connect_error_elevated_to_error(capsys: pytest.CaptureFixture[str]) -> None:
+    """phaze-xuec1: psycopg_pool's dead-broker WARNING ('error connecting in ...') renders
+    at ERROR, not WARNING -- the 2026-08-08 nox incident's only broker-side symptom sat at
+    WARNING, unnoticed, for 73 of the 1h41m the worker silently dequeued nothing."""
+    configure_logging(level="INFO", json_logs=True)
+    logging.getLogger("psycopg.pool").warning("error connecting in %r: %s", "pool-1", "Network is unreachable")
+
+    payload = _last_json_line(capsys.readouterr().out)
+    assert payload["level"] == "error"
+    assert "error connecting in" in payload["event"]
+
+
+@pytest.mark.usefixtures("reset_logging")
+def test_psycopg_pool_other_warnings_are_not_elevated(capsys: pytest.CaptureFixture[str]) -> None:
+    """Only the exact 'error connecting in ...' message is elevated -- other psycopg.pool
+    warnings (e.g. an individual connection check) keep their original level."""
+    configure_logging(level="INFO", json_logs=True)
+    logging.getLogger("psycopg.pool").warning("some unrelated pool warning")
+
+    payload = _last_json_line(capsys.readouterr().out)
+    assert payload["level"] == "warning"
+
+
+@pytest.mark.usefixtures("reset_logging")
+def test_psycopg_pool_filter_not_duplicated_on_reconfigure(capsys: pytest.CaptureFixture[str]) -> None:
+    """Re-calling configure_logging() must not stack duplicate filters (would double-elevate
+    or, more subtly, just be silently wasteful -- mirrors the single-handler idempotency
+    guarantee already asserted for handlers above)."""
+    configure_logging(level="INFO", json_logs=True)
+    configure_logging(level="INFO", json_logs=True)
+    configure_logging(level="DEBUG", json_logs=True)
+
+    logging.getLogger("psycopg.pool").warning("error connecting in %r: %s", "pool-1", "boom")
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert len(lines) == 1, f"filter applied more than once, or handler stacked: {lines!r}"
+    assert json.loads(lines[0])["level"] == "error"
 
 
 @pytest.mark.usefixtures("reset_logging")

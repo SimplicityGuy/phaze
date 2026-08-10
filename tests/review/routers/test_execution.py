@@ -16,6 +16,7 @@ from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS
 from phaze.services.pagination import MIN_PAGE_SIZE
 
 
@@ -118,13 +119,40 @@ async def create_approved_proposal_for_agent(session: AsyncSession, *, agent_id:
 
 
 @pytest.mark.asyncio
-async def test_audit_log_page(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /audit/ returns 200 with HTML containing Audit Log heading."""
+async def test_audit_log_page_plain_request_redirects_to_shell(client: AsyncClient, session: AsyncSession) -> None:
+    """Regression (phaze-uvmcr.3): a plain (non-htmx) GET /audit/ redirects to /s/audit.
+
+    "audit" is a registered shell stage (``routers/shell.py`` ``UTILITY_PANES``), reachable with
+    the rail intact at ``/s/audit`` -- which composes the SAME ``execution/audit_log.html`` content
+    (now a content-only fragment) this route used to render standalone via its own ``base.html``
+    fork (the same phaze-uvmcr.2 shape as ``pipeline.pipeline_files``). A plain request now
+    redirects there instead of rendering a second, rail-less copy of the page.
+    """
     await create_test_execution_log(session)
-    response = await client.get("/audit/")
+    response = await client.get("/audit/", follow_redirects=False)
+    assert response.status_code == 301
+    assert response.headers["location"] == "/s/audit"
+
+
+@pytest.mark.asyncio
+async def test_audit_log_plain_request_redirect_preserves_a_non_empty_query(client: AsyncClient, session: AsyncSession) -> None:
+    """Acceptance #3: the redirect carries the FULL query string across, verbatim, non-empty."""
+    await create_test_execution_log(session, status=ExecutionStatus.COMPLETED, source_path="/music/completed.mp3")
+    response = await client.get("/audit/?status=completed&page=2&page_size=25", follow_redirects=False)
+    assert response.status_code == 301
+    assert response.headers["location"] == "/s/audit?status=completed&page=2&page_size=25"
+
+
+@pytest.mark.asyncio
+async def test_audit_log_plain_request_redirect_lands_on_full_shell_document(client: AsyncClient, session: AsyncSession) -> None:
+    """The redirect target is a real, navigable page -- following it lands on the full shell."""
+    await create_test_execution_log(session)
+    response = await client.get("/audit/", follow_redirects=True)
     assert response.status_code == 200
-    assert "text/html" in response.headers["content-type"]
-    assert "Audit Log" in response.text
+    body = response.text
+    assert "<html" in body.lower(), "the redirect target must be a full document, not a fragment"
+    assert 'id="stage-workspace"' in body, "the shell swap target must be present on the redirected page"
+    assert 'id="audit-content"' in body, "the audit pane's own content must be present on the redirected page"
 
 
 @pytest.mark.asyncio
@@ -138,11 +166,31 @@ async def test_audit_log_page_htmx(client: AsyncClient, session: AsyncSession) -
 
 
 @pytest.mark.asyncio
+async def test_audit_log_redirect_and_fragment_both_mark_the_response_uncacheable(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-r6e5m (response_shape.py contract rule 6) -- ``/audit/`` forks on request headers
+    alone into a 301 redirect OR a fragment, so the browser's URL-only HTTP cache could otherwise
+    replay one shape's cached bytes for a request that wanted the other. Both branches must carry
+    DUAL_SHAPE_RESPONSE_HEADERS.
+    """
+    await create_test_execution_log(session)
+
+    redirect = await client.get("/audit/", follow_redirects=False)
+    assert redirect.status_code == 301
+    for name, value in DUAL_SHAPE_RESPONSE_HEADERS.items():
+        assert redirect.headers.get(name) == value, f"redirect branch missing/wrong {name!r}"
+
+    fragment = await client.get("/audit/", headers={"HX-Request": "true"})
+    assert fragment.status_code == 200
+    for name, value in DUAL_SHAPE_RESPONSE_HEADERS.items():
+        assert fragment.headers.get(name) == value, f"fragment branch missing/wrong {name!r}"
+
+
+@pytest.mark.asyncio
 async def test_audit_log_filter(client: AsyncClient, session: AsyncSession) -> None:
     """GET /audit/?status=completed returns filtered results."""
     await create_test_execution_log(session, status=ExecutionStatus.COMPLETED, source_path="/music/completed.mp3")
     await create_test_execution_log(session, status=ExecutionStatus.FAILED, source_path="/music/failed.mp3", error_message="Hash mismatch")
-    response = await client.get("/audit/?status=completed")
+    response = await client.get("/audit/?status=completed", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "/music/completed.mp3" in response.text
     assert "/music/failed.mp3" not in response.text
@@ -192,7 +240,7 @@ async def test_audit_log_never_run_empty_state_explains_nothing_proposed(client:
     because ``generate_proposals`` has never been invoked, not because a query dropped rows, and
     the page must state that rather than leaving a zero table to be read as a defect.
     """
-    response = await client.get("/audit/")
+    response = await client.get("/audit/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "No renames have been executed yet" in response.text
     assert "Nothing has been proposed for rename yet" in response.text
@@ -214,7 +262,7 @@ async def test_audit_log_never_run_surfaces_convergence_gate_count_and_generate_
     await _seed_proposal_eligible_file(session)
     await _seed_proposal_eligible_file(session)
 
-    response = await client.get("/audit/")
+    response = await client.get("/audit/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "2 files ready for proposal generation" in response.text
     assert 'href="/s/propose"' in response.text
@@ -245,7 +293,7 @@ async def test_audit_log_never_run_with_nothing_eligible_says_so(client: AsyncCl
     session.add(AnalysisResult(id=uuid.uuid4(), file_id=file_id, analysis_completed_at=None))
     await session.commit()
 
-    response = await client.get("/audit/")
+    response = await client.get("/audit/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "No files are ready for proposal generation yet" in response.text
     assert "file ready for proposal generation" not in response.text
@@ -262,7 +310,7 @@ async def test_audit_log_filtered_empty_state_is_distinct_from_never_run(client:
     """
     await create_test_execution_log(session, status=ExecutionStatus.COMPLETED, source_path="/music/done.mp3")
 
-    response = await client.get("/audit/?status=failed")
+    response = await client.get("/audit/?status=failed", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "No entries match this filter" in response.text
     assert "1 operation is recorded" in response.text
@@ -276,7 +324,7 @@ async def test_audit_log_empty_state_tab_counts_stay_truthful(client: AsyncClien
     """The empty-state copy never inflates the tab counts -- a filtered-empty tab still reads (0)."""
     await create_test_execution_log(session, status=ExecutionStatus.COMPLETED, source_path="/music/done.mp3")
 
-    response = await client.get("/audit/?status=failed")
+    response = await client.get("/audit/?status=failed", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "All (1)" in response.text
     assert "Completed (1)" in response.text
@@ -359,7 +407,7 @@ async def test_audit_log_stats_in_filter_tabs(client: AsyncClient, session: Asyn
     await create_test_execution_log(session, status=ExecutionStatus.COMPLETED, source_path="/a.mp3")
     await create_test_execution_log(session, status=ExecutionStatus.COMPLETED, source_path="/b.mp3")
     await create_test_execution_log(session, status=ExecutionStatus.FAILED, source_path="/c.mp3", error_message="err")
-    response = await client.get("/audit/")
+    response = await client.get("/audit/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     # Should show total of 3 and 2 completed
     assert "All (3)" in response.text
@@ -412,27 +460,27 @@ async def test_no_collision_proceeds_normally(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_audit_log_history_restore_returns_full_page(client: AsyncClient, session: AsyncSession) -> None:
-    """A history-restore GET returns the FULL page, chrome included (phaze-qi9j).
+async def test_audit_log_history_restore_also_redirects_to_shell(client: AsyncClient, session: AsyncSession) -> None:
+    """Regression (phaze-uvmcr.3), updated from phaze-qi9j: a history-restore GET also redirects.
 
     The filter tabs push ``/audit/?status=...`` via ``hx-push-url``. On a history-cache miss htmx
     re-fetches that URL with BOTH ``HX-Request`` and ``HX-History-Restore-Request`` set, ignores
-    ``hx-target``, and swaps the response into ``<body>``. A fragment here replaces the whole page
-    with an orphaned tab bar and table.
-
-    Asserts the CHROME, not merely a 200 -- the buggy handler returned 200 too.
+    ``hx-target``, and swaps the response into ``<body>`` (response_shape.py rule 2) -- so it falls
+    on the SAME non-fragment branch as a plain request, per ``wants_fragment``, and must redirect
+    too rather than regressing to the header-only check phaze-64uy already fixed twice elsewhere.
+    The redirect TARGET is proven to be a real full-shell document by
+    ``tests/shared/core/test_shell_routes.py::test_stage_history_restore_returns_full_shell``
+    (parametrized over ``stage="audit"``), so this test's job is narrower: prove THIS route still
+    answers a restore with a redirect, not a fragment.
     """
     await create_test_execution_log(session, status=ExecutionStatus.FAILED, error_message="Hash mismatch")
     response = await client.get(
         "/audit/?status=failed",
         headers={"HX-Request": "true", "HX-History-Restore-Request": "true"},
+        follow_redirects=False,
     )
-    assert response.status_code == 200
-    body = response.text
-    assert "<html" in body.lower(), "history restore must return a full document, not a fragment"
-    assert "<h1" in body, "the <h1> page heading must survive a history restore"
-    assert 'aria-label="Main navigation"' in body, "the app nav must survive a history restore"
-    assert 'id="audit-content"' in body, "the swap target itself must be present in the full page"
+    assert response.status_code == 301
+    assert response.headers["location"] == "/s/audit?status=failed"
 
 
 @pytest.mark.asyncio
@@ -503,7 +551,7 @@ async def test_audit_log_sorts_server_side_by_source_path(client: AsyncClient, s
     await create_test_execution_log(session, source_path="/music/a-first.mp3")
     await create_test_execution_log(session, source_path="/music/b-second.mp3")
 
-    response = await client.get("/audit/?sort=source_path&order=asc")
+    response = await client.get("/audit/?sort=source_path&order=asc", headers={"HX-Request": "true"})
     assert response.status_code == 200
     body = response.text
     first, second, third = (body.index(name) for name in ("a-first.mp3", "b-second.mp3", "c-third.mp3"))
@@ -514,16 +562,16 @@ async def test_audit_log_sorts_server_side_by_source_path(client: AsyncClient, s
 async def test_audit_log_unwhitelisted_sort_degrades_to_default_instead_of_422(client: AsyncClient, session: AsyncSession) -> None:
     """Contract rule 3: an unrecognised sort key never 422s the render, it just uses the default."""
     await create_test_execution_log(session)
-    response = await client.get("/audit/?sort=proposal_id&order=sideways")
+    response = await client.get("/audit/?sort=proposal_id&order=sideways", headers={"HX-Request": "true"})
     assert response.status_code == 200
-    assert "Audit Log" in response.text
+    assert "audit-table-container" in response.text
 
 
 @pytest.mark.asyncio
 async def test_audit_log_headers_announce_sort_state_via_aria_sort(client: AsyncClient, session: AsyncSession) -> None:
     """Contract rule 5: the active column's header carries the ARIA state, inactive ones say 'none'."""
     await create_test_execution_log(session)
-    response = await client.get("/audit/?sort=status&order=asc")
+    response = await client.get("/audit/?sort=status&order=asc", headers={"HX-Request": "true"})
     assert response.status_code == 200
     body = response.text
     assert 'aria-sort="ascending"' in body
@@ -563,23 +611,21 @@ async def test_audit_log_pager_preserves_the_active_sort(client: AsyncClient, se
 
 
 @pytest.mark.asyncio
-async def test_audit_log_history_restore_of_a_sorted_url_returns_a_full_document(client: AsyncClient, session: AsyncSession) -> None:
-    """response_shape.py rule 2: a history restore returns the full document even when SORTED.
+async def test_audit_log_history_restore_of_a_sorted_url_also_redirects(client: AsyncClient, session: AsyncSession) -> None:
+    """response_shape.py rule 2: a history restore redirects even when the URL is SORTED, and the
+    sort/order pair rides the redirect's query string alongside the filter.
 
     Guards the exact composition this bead was assigned: sorting must not reopen the phaze-qi9j
-    defect for a URL that also carries ``sort``/``order``.
+    defect for a URL that also carries ``sort``/``order`` -- updated for phaze-uvmcr.3's redirect.
     """
     await create_test_execution_log(session, status=ExecutionStatus.FAILED, error_message="Hash mismatch")
     response = await client.get(
         "/audit/?status=failed&sort=status&order=desc",
         headers={"HX-Request": "true", "HX-History-Restore-Request": "true"},
+        follow_redirects=False,
     )
-    assert response.status_code == 200
-    body = response.text
-    assert "<html" in body.lower(), "history restore of a sorted url must return a full document, not a fragment"
-    assert "<h1" in body, "the <h1> page heading must survive a sorted history restore"
-    assert 'aria-label="Main navigation"' in body, "the app nav must survive a sorted history restore"
-    assert 'id="audit-content"' in body, "the swap target itself must be present in the full page"
+    assert response.status_code == 301
+    assert response.headers["location"] == "/s/audit?status=failed&sort=status&order=desc"
 
 
 # --- phaze-a6hm.8: execution agents table sort ---------------------------------------------------
@@ -626,6 +672,57 @@ async def test_start_execution_agents_table_default_sort_is_name_ascending(clien
     body = response.text
     assert body.index("Alpha Agent") < body.index("Zeta Agent"), "default sort is name ascending"
     assert 'aria-sort="ascending"' in body, "the default-active Agent header announces its own state"
+
+
+@pytest.mark.asyncio
+async def test_start_execution_releases_read_txn_before_enqueue_loop(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-266lc: the reader session is committed before the per-(agent, chunk) enqueue loop.
+
+    Nothing on the request session is read after the ``agent_names`` query, so the reads that
+    autobegan a transaction (``detect_collisions`` / grouped-proposals / ``agent_names``) must be
+    committed BEFORE ``task_router.enqueue_for_agent`` -- otherwise the connection sits idle-in-
+    transaction across the whole enqueue loop, which "spans many suspension points and real wall
+    time on a large approved set" (the code's own comment). Spy on both calls and assert a commit
+    is recorded strictly before the first enqueue.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
+
+    await create_approved_proposal_for_agent(session, agent_id="alpha-agent", agent_name="Alpha Agent", proposed_filename="a.mp3")
+
+    order: list[str] = []
+    real_commit = _AsyncSession.commit
+
+    async def _spy_commit(self: _AsyncSession) -> None:
+        await real_commit(self)
+        order.append("commit")
+
+    async def _enqueue_recording(*_args: object, **_kwargs: object) -> None:
+        order.append("enqueue")
+
+    mock_task_router = AsyncMock()
+    mock_task_router.enqueue_for_agent = AsyncMock(side_effect=_enqueue_recording)
+    mock_redis = AsyncMock()
+    mock_pipe = MagicMock()
+    mock_pipe.hset = MagicMock()
+    mock_pipe.expire = MagicMock()
+    mock_pipe.execute = AsyncMock()
+    mock_pipe.__aenter__ = AsyncMock(return_value=mock_pipe)
+    mock_pipe.__aexit__ = AsyncMock(return_value=None)
+    mock_redis.pipeline = MagicMock(return_value=mock_pipe)
+    client._transport.app.state.task_router = mock_task_router  # type: ignore[union-attr]
+    client._transport.app.state.redis = mock_redis  # type: ignore[union-attr]
+
+    claim = AsyncMock(return_value=1)
+    with (
+        patch.object(_AsyncSession, "commit", _spy_commit),
+        patch("phaze.routers.execution._get_claim_dispatch_script", MagicMock(return_value=claim)),
+    ):
+        response = await client.post("/execution/start")
+    assert response.status_code == 200, response.text
+    assert "enqueue" in order
+    assert "commit" in order
+    enqueue_index = order.index("enqueue")
+    assert "commit" in order[:enqueue_index], f"expected a commit before the first enqueue, got order={order}"
 
 
 @pytest.mark.asyncio
@@ -783,7 +880,7 @@ async def test_audit_sha256_verified_check_shown_for_completed_move(client: Asyn
         sha256_verified=True,
         source_path="/music/verified.mp3",
     )
-    response = await client.get("/audit/")
+    response = await client.get("/audit/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert 'aria-label="SHA256 verified"' in response.text
     assert 'aria-label="Not applicable"' not in response.text
@@ -799,7 +896,7 @@ async def test_audit_sha256_cross_shown_for_completed_move_unverified(client: As
         sha256_verified=False,
         source_path="/music/unverified.mp3",
     )
-    response = await client.get("/audit/")
+    response = await client.get("/audit/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert 'aria-label="SHA256 not verified"' in response.text
     assert 'aria-label="Not applicable"' not in response.text
@@ -815,7 +912,7 @@ async def test_audit_sha256_not_applicable_for_in_progress_move(client: AsyncCli
         sha256_verified=False,
         source_path="/music/inflight.mp3",
     )
-    response = await client.get("/audit/")
+    response = await client.get("/audit/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert 'aria-label="Not applicable"' in response.text
     assert 'aria-label="SHA256 verified"' not in response.text
@@ -837,7 +934,7 @@ async def test_audit_sha256_not_applicable_for_in_progress_move(client: AsyncCli
 async def test_audit_row_renders_a_details_trigger(client: AsyncClient, session: AsyncSession) -> None:
     """Every audit row carries a keyboard-reachable Details trigger for its own entry."""
     log_entry = await create_test_execution_log(session, source_path="/music/old-name.mp3")
-    response = await client.get("/audit/")
+    response = await client.get("/audit/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert f'id="audit-details-trigger-{log_entry.id}"' in response.text
     assert f'hx-get="/audit/{log_entry.id}/detail"' in response.text

@@ -12,17 +12,20 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from phaze.enums.tracklist_candidate import TRANSIENT_MAX_ATTEMPTS, CacheDecision, LookupOutcome
 from phaze.models.tracklist_lookup_cache import TracklistLookupCache
 from phaze.services.tracklist_lookup_cache import (
+    IN_CLAUSE_CHUNK_SIZE,
     NEGATIVE_TTL_DAYS,
     TRANSIENT_BACKOFF_BASE_MINUTES,
     TRANSIENT_BACKOFF_MAX_HOURS,
     _backoff_delay,
+    chunked,
     compute_expires_at,
     lookup,
+    lookup_by_query_text,
     lookup_many,
     purge_expired_negatives,
     record_outcome,
@@ -166,6 +169,42 @@ class TestRecordAndLookup:
             assert entry.attempts == attempt
             assert entry.expires_at == compute_expires_at(LookupOutcome.SEARCH_FAILED, attempt, NOW)
 
+    async def test_attempts_resets_after_a_definitive_outcome_ends_a_transient_streak(self, session: AsyncSession) -> None:
+        """phaze-w1c25: a definitive answer (FOUND/NOT_FOUND) must end any transient streak that
+        preceded it, so the counter starts fresh -- not keep accumulating toward
+        ``TRANSIENT_MAX_ATTEMPTS`` across an unrelated definitive history."""
+        for _ in range(3):
+            entry = await record_outcome(session, set_key="k-reset", query_text="q", outcome=LookupOutcome.BLOCKED, now=NOW)
+        assert entry.attempts == 3
+
+        found = await record_outcome(session, set_key="k-reset", query_text="q", outcome=LookupOutcome.FOUND, external_id="x", now=NOW)
+        assert found.attempts == 1, "a definitive FOUND must reset the streak, not extend it to 4"
+
+    async def test_attempts_resets_on_the_first_transient_of_a_new_streak_after_not_found(self, session: AsyncSession) -> None:
+        """phaze-w1c25 failure scenario: a set that failed transiently a few times, then resolved
+        cleanly to NOT_FOUND, must NOT inherit those old attempts when it re-enters the queue
+        after the TTL and hits a single new transient failure -- that single failure must not
+        look like the 4th/5th independent attempt (park risk) or get an inflated 4h backoff."""
+        for _ in range(3):
+            await record_outcome(session, set_key="k-streak", query_text="q", outcome=LookupOutcome.BLOCKED, now=NOW)
+        not_found = await record_outcome(session, set_key="k-streak", query_text="q", outcome=LookupOutcome.NOT_FOUND, now=NOW)
+        assert not_found.attempts == 1
+
+        # Re-enters the queue (e.g. after NEGATIVE_TTL_DAYS) and hits ONE transient failure.
+        first_of_new_streak = await record_outcome(session, set_key="k-streak", query_text="q", outcome=LookupOutcome.SEARCH_FAILED, now=NOW)
+        assert first_of_new_streak.attempts == 1, "the first transient failure of a NEW streak must not inherit the old count"
+        assert first_of_new_streak.expires_at == NOW + _backoff_delay(1), "backoff must be the 30-min base, not inflated by the old streak"
+
+    async def test_attempts_continues_incrementing_within_one_transient_streak(self, session: AsyncSession) -> None:
+        """The reset must be selective -- consecutive transient failures with no definitive
+        outcome in between still accumulate normally toward TRANSIENT_MAX_ATTEMPTS."""
+        first = await record_outcome(session, set_key="k-continue", query_text="q", outcome=LookupOutcome.RENDER_FAILED, now=NOW)
+        assert first.attempts == 1
+        second = await record_outcome(session, set_key="k-continue", query_text="q", outcome=LookupOutcome.PARSE_FAILED, now=NOW)
+        assert second.attempts == 2
+        third = await record_outcome(session, set_key="k-continue", query_text="q", outcome=LookupOutcome.BLOCKED, now=NOW)
+        assert third.attempts == 3
+
     async def test_a_later_positive_overwrites_an_earlier_negative(self, session: AsyncSession) -> None:
         await record_outcome(session, set_key="k-flip", query_text="q", outcome=LookupOutcome.NOT_FOUND, now=NOW)
         await record_outcome(session, set_key="k-flip", query_text="q", outcome=LookupOutcome.FOUND, external_id="1001-xyz", now=NOW)
@@ -219,6 +258,101 @@ class TestRecordAndLookup:
 
     async def test_lookup_many_with_no_keys_touches_nothing(self, session: AsyncSession) -> None:
         assert await lookup_many(session, [], now=NOW) == {}
+
+    async def test_lookup_many_chunks_past_the_bind_parameter_cap(self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+        """phaze-1x31w: a key count past ``IN_CLAUSE_CHUNK_SIZE`` must be split across multiple
+        SELECTs, and the merged result must be identical to what one (impossible) unbounded
+        statement would have returned -- proven here against a small chunk size so the test does
+        not need tens of thousands of real rows to exercise the split."""
+        import phaze.services.tracklist_lookup_cache as lookup_cache_module
+
+        monkeypatch.setattr(lookup_cache_module, "IN_CLAUSE_CHUNK_SIZE", 2)
+
+        await record_outcome(session, set_key="c-1", query_text="q", outcome=LookupOutcome.FOUND, external_id="x1", now=NOW)
+        await record_outcome(session, set_key="c-3", query_text="q", outcome=LookupOutcome.FOUND, external_id="x3", now=NOW)
+
+        keys = ["c-1", "c-2", "c-3", "c-4", "c-5"]  # 5 keys over a chunk size of 2 -> 3 SELECTs
+        verdicts = await lookup_many(session, keys, now=NOW)
+
+        assert set(verdicts) == set(keys)
+        assert verdicts["c-1"].decision is CacheDecision.HIT_POSITIVE
+        assert verdicts["c-1"].external_id == "x1"
+        assert verdicts["c-3"].decision is CacheDecision.HIT_POSITIVE
+        assert verdicts["c-3"].external_id == "x3"
+        assert verdicts["c-2"].decision is CacheDecision.MISS
+        assert verdicts["c-4"].decision is CacheDecision.MISS
+        assert verdicts["c-5"].decision is CacheDecision.MISS
+
+
+class TestLookupByQueryText:
+    """phaze-3dwsp: the fallback probe for a caller whose own cache key misses.
+
+    ``tracklist_priority.get_file_tracklist_review`` computes a SINGLETON key from one file's own
+    query and duration; the drain writes cluster rows keyed by the cluster's query and MEDIAN
+    duration, which can land in a different bucket. This is the recovery path -- match on the
+    readable ``query_text`` column, ignoring the duration bucket entirely.
+    """
+
+    async def test_none_when_nothing_matches(self, session: AsyncSession) -> None:
+        assert await lookup_by_query_text(session, "never seen", now=NOW) is None
+
+    async def test_finds_a_row_written_under_a_different_key(self, session: AsyncSession) -> None:
+        """The whole point: a query-text match must succeed even when the caller's own key doesn't."""
+        await record_outcome(session, set_key="cluster-key", query_text="artist event 2024", outcome=LookupOutcome.NOT_FOUND, now=NOW)
+
+        verdict = await lookup_by_query_text(session, "artist event 2024", now=NOW)
+
+        assert verdict is not None
+        assert verdict.set_key == "cluster-key"
+        assert verdict.decision is CacheDecision.SUPPRESSED_NEGATIVE
+        assert verdict.entry is not None
+        assert verdict.entry.query_text == "artist event 2024"
+
+    async def test_matches_on_query_text_only_not_the_key(self, session: AsyncSession) -> None:
+        """A query-text match must not require any relationship between the two set_keys."""
+        await record_outcome(
+            session, set_key="totally-unrelated-key", query_text="shared query", outcome=LookupOutcome.FOUND, external_id="x", now=NOW
+        )
+
+        verdict = await lookup_by_query_text(session, "shared query", now=NOW)
+
+        assert verdict is not None
+        assert verdict.decision is CacheDecision.HIT_POSITIVE
+        assert verdict.external_id == "x"
+
+    async def test_most_recently_updated_row_wins_when_several_share_the_text(self, session: AsyncSession) -> None:
+        """``updated_at`` is a server-side ``func.now()``, constant for the whole test transaction
+        (the ``session`` fixture wraps every test in one outer transaction, never committed) -- so
+        the two rows' timestamps are forced apart explicitly rather than by real elapsed time."""
+        await record_outcome(session, set_key="old", query_text="shared query", outcome=LookupOutcome.NOT_FOUND)
+        await record_outcome(session, set_key="new", query_text="shared query", outcome=LookupOutcome.FOUND, external_id="fresh")
+        await session.execute(update(TracklistLookupCache).where(TracklistLookupCache.set_key == "old").values(updated_at=NOW - timedelta(days=10)))
+        await session.execute(update(TracklistLookupCache).where(TracklistLookupCache.set_key == "new").values(updated_at=NOW))
+        await session.commit()
+
+        verdict = await lookup_by_query_text(session, "shared query", now=NOW)
+
+        assert verdict is not None
+        assert verdict.set_key == "new"
+        assert verdict.external_id == "fresh"
+
+
+class TestChunked:
+    """Direct coverage of the shared chunking helper (phaze-1x31w)."""
+
+    def test_chunked_splits_into_slices_of_at_most_size(self) -> None:
+        assert list(chunked([1, 2, 3, 4, 5], 2)) == [[1, 2], [3, 4], [5]]
+
+    def test_chunked_of_empty_sequence_yields_nothing(self) -> None:
+        assert list(chunked([], 10)) == []
+
+    def test_chunked_with_size_larger_than_input_yields_one_chunk(self) -> None:
+        assert list(chunked([1, 2, 3], 100)) == [[1, 2, 3]]
+
+    def test_in_clause_chunk_size_is_comfortably_under_the_asyncpg_bind_cap(self) -> None:
+        """32767 is asyncpg's hard wire-protocol cap (phaze-syxv); the chunk size must leave
+        headroom under it, not sit right at the edge."""
+        assert IN_CLAUSE_CHUNK_SIZE < 32767
 
     async def test_lookup_defaults_to_wall_clock(self, session: AsyncSession) -> None:
         await record_outcome(session, set_key="k-clock", query_text="q", outcome=LookupOutcome.FOUND, external_id="x")

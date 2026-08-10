@@ -1,6 +1,7 @@
 """Proposal review UI router -- serves the approval workflow pages."""
 
 from collections.abc import Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 import uuid
@@ -24,6 +25,7 @@ from phaze.routers.shell import build_propose_list_context
 from phaze.services.proposal_queries import (
     ProposalEditRefusedError,
     ProposalPendingConflictError,
+    ProposalStaleWriteError,
     ProposalTransitionError,
     approve_pending_above_confidence,
     bulk_update_status,
@@ -89,14 +91,36 @@ async def _guarded_status_update(
     proposal_id: uuid.UUID,
     new_status: ProposalStatus,
     allowed_from: frozenset[ProposalStatus],
+    expected_updated_at: datetime | None = None,
 ) -> RenameProposal | None:
     """Call update_proposal_status, translating state-machine errors into 409 responses."""
     try:
-        return await update_proposal_status(session, proposal_id, new_status, allowed_from=allowed_from)
+        return await update_proposal_status(session, proposal_id, new_status, allowed_from=allowed_from, expected_updated_at=expected_updated_at)
     except ProposalTransitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ProposalPendingConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ProposalStaleWriteError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _parse_updated_at_token(token: str | None) -> datetime | None:
+    """Parse the APPROVE button's optimistic-concurrency token (phaze-exivg).
+
+    Empty/missing means "no token supplied" (``None``) -- every caller that predates this token
+    (API clients, tests, a bare hand-built PATCH) keeps the pre-phaze-exivg status-only guard with
+    no behavior change. A token that fails to parse is treated the SAME way rather than 400ing: an
+    operator's browser always sends a well-formed ``isoformat()`` value (it round-trips the row's
+    own ``updated_at``, minted server-side by :func:`_diff_row_context`), so a malformed one only
+    originates from something outside this guard's job to police -- and refusing to approve
+    outright over a malformed token would be a worse failure mode than folding the check out.
+    """
+    if not token:
+        return None
+    try:
+        return datetime.fromisoformat(token)
+    except ValueError:
+        return None
 
 
 # phaze-3a2j: the v7 diff-row workspaces (Rename / Move / Record slide-in) render rows from the
@@ -115,6 +139,18 @@ _BULK_HIGH_CONFIDENCE_TARGETS: dict[str, tuple[str, str]] = {
     "rename-trigger-response": ("rename-row", "filename"),
     "move-trigger-response": ("move-row", "path"),
 }
+
+# phaze-mlrwl: bulk_approve_high_confidence has no client id-list to intersect against (REVIEW-02 --
+# the whole point is a server-evaluated predicate with no selection to trust), so it cannot ask "which
+# of these are actually on screen?" the way a selection-driven bulk action could. What it CAN bound is
+# how many OOB row fragments it ever builds: rename_workspace.html / move_workspace.html render at
+# most 200 rows (get_pending_proposal_rows's page_size=200, phaze-rw14), so any OOB fragment beyond
+# that is guaranteed to target an id no longer (or never) on screen and htmx silently discards it
+# (htmx:oobErrorNoTarget). Capping the hydration SELECT + the rendered fragment list at this same 200
+# keeps the response bounded even when approved_ids runs into the tens of thousands, without changing
+# which rows the browser ends up updating: everything past 200 was already being thrown away, just
+# after a full ORM hydration and Jinja render of it first.
+_BULK_APPROVE_OOB_ROW_CAP = 200
 
 # phaze-3tj4: map a proposal's real status to the v7 diff-row lifecycle string so a mutation route
 # renders the row's actual affordances instead of hardcoding "pending". The reject route names its
@@ -186,6 +222,11 @@ def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, 
         "edit_facet": edit_facet,
         "row_state": row_state,
         "oob": oob,
+        # phaze-exivg: the optimistic-concurrency token the APPROVE button round-trips back via
+        # hx-vals. Always the row's LIVE updated_at at render time -- after an undo/edit/re-propose
+        # the next render of this same partial carries the row's NEW value, so a stale button never
+        # lingers on screen past its own re-render.
+        "updated_at": proposal.updated_at,
     }
 
 
@@ -296,9 +337,26 @@ async def approve_proposal(
     request: Request,
     proposal_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
+    expected_updated_at: str | None = Form(default=None),
 ) -> HTMLResponse:
-    """Approve a proposal and return the updated row (phaze-vvmh: one response shape, no OOB stats)."""
-    proposal = await _guarded_status_update(session, proposal_id, ProposalStatus.APPROVED, _APPROVE_REJECT_FROM)
+    """Approve a proposal and return the updated row (phaze-vvmh: one response shape, no OOB stats).
+
+    phaze-exivg: ``expected_updated_at`` is the optimistic-concurrency token the row's own render
+    carried (``_diff_row_context``'s ``updated_at``, round-tripped by the APPROVE button's
+    hx-vals). Folded into the conditional UPDATE's WHERE clause
+    (:func:`~phaze.services.proposal_queries.update_proposal_status`), so a row a concurrent
+    ``store_proposals`` upsert rewrote after the page render -- same id, same PENDING status,
+    different ``proposed_filename`` / ``proposed_path`` / ``confidence`` -- fails the guard and
+    409s instead of being approved sight-unseen. Absent/blank (no token from the browser, e.g. a
+    bare API PATCH) skips the check -- the pre-existing status-only guard applies on its own.
+    """
+    proposal = await _guarded_status_update(
+        session,
+        proposal_id,
+        ProposalStatus.APPROVED,
+        _APPROVE_REJECT_FROM,
+        expected_updated_at=_parse_updated_at_token(expected_updated_at),
+    )
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found")
     row_id_prefix, facet = _row_target(request, proposal_id)
@@ -472,13 +530,26 @@ async def bulk_approve_high_confidence(
 
     approved_ids = await approve_pending_above_confidence(session, threshold=threshold)
     count = len(approved_ids)
-    toast_message = f"{count} proposals approved." if count else "Nothing matched -- no pending rows meet the >=90% confidence predicate right now."
+    # phaze-zbgi9: reuse the module's own pluralization (_bulk_toast), the same helper
+    # /proposals/bulk already uses -- this route just has one number instead of two (no client
+    # id-list to diverge from the applied count), which is exactly _bulk_toast's requested==applied
+    # branch.
+    toast_message = (
+        _bulk_toast("approve", requested=count, applied=count)
+        if count
+        else "Nothing matched -- no pending rows meet the >=90% confidence predicate right now."
+    )
 
     if v7_target is not None:
         row_id_prefix, facet = v7_target
         approved_rows: list[dict[str, object]] = []
         if approved_ids:
-            rows_stmt = select(RenameProposal).options(selectinload(RenameProposal.file)).where(_proposal_ids_scope(approved_ids, "approved_ids"))
+            # phaze-mlrwl: cap hydration + OOB-fragment rendering at the 200-row render cap -- see
+            # _BULK_APPROVE_OOB_ROW_CAP's docstring. `count`/`toast_message` above are computed from
+            # the FULL `approved_ids` list, so the toast keeps reporting the true total even when the
+            # OOB row set is capped.
+            capped_ids = approved_ids[:_BULK_APPROVE_OOB_ROW_CAP]
+            rows_stmt = select(RenameProposal).options(selectinload(RenameProposal.file)).where(_proposal_ids_scope(capped_ids, "approved_ids"))
             proposals = (await session.execute(rows_stmt)).scalars().all()
             approved_rows = [_diff_row_context(p, row_id_prefix, facet, "approved", oob=True) for p in proposals]
         return templates.TemplateResponse(

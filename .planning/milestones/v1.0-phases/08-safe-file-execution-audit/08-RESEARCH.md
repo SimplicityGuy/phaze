@@ -226,9 +226,14 @@ async def sse_progress(batch_id: str):
 
 **HTMX client-side:**
 ```html
-<div hx-ext="sse" sse-connect="/execution/progress/{{ batch_id }}">
+<!-- phaze-047gd correction: htmx-ext-sse reads sse-close ONLY from the element carrying
+     sse-connect, never from a descendant -- so it MUST sit on this same div, not on the
+     sse-swap span below. The original snippet here put it on the span, which registers no
+     close listener at all and was copy-pasted into src/phaze/templates/execution/partials/
+     progress.html verbatim, producing the phaze-047gd defect (infinite SSE reconnect loop). -->
+<div hx-ext="sse" sse-connect="/execution/progress/{{ batch_id }}" sse-close="complete">
     <span sse-swap="progress">Waiting...</span>
-    <span sse-swap="complete" sse-close="complete"></span>
+    <span sse-swap="complete"></span>
 </div>
 ```
 

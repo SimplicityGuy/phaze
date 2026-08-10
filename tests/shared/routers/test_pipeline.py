@@ -9,6 +9,7 @@ import uuid
 
 import pytest
 from sqlalchemy import delete, select, text, update
+from sqlalchemy.dialects import postgresql
 
 from phaze.config import settings
 from phaze.config_backends import ComputeBackend, KubeConfig, KueueBackend, LocalBackend
@@ -286,6 +287,38 @@ async def test_enqueue_analysis_jobs_does_not_log_a_live_collision(caplog: pytes
 
     assert queue.captured == []
     assert "deterministic key held by a dead job" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_enqueue_analysis_jobs_contains_a_raising_collision_probe(caplog: pytest.LogCaptureFixture) -> None:
+    """phaze-p2qvv: a raising ``queue.job()`` probe costs one file's diagnostic, not the group.
+
+    Pre-fix, ``classify_process_file_collision(await queue.job(...))`` sat OUTSIDE the per-file
+    ``try``/``except`` -- a raise there (e.g. a transient broker error) escaped
+    ``_enqueue_analysis_jobs`` entirely, aborting every remaining file in the batch. The probe is
+    purely diagnostic and must never affect ``failed_ids`` or abort the loop.
+    """
+    from unittest.mock import AsyncMock
+
+    import phaze.routers.pipeline as pipeline_mod
+
+    blocked_file = _make_file()
+    later_file = _make_file()
+    key = f"process_file:{blocked_file.id}"
+    queue = DedupFakeQueue("phaze-agent-test-fileserver-analyze")
+    queue._live_keys.add(key)  # dedups blocked_file's enqueue to None
+    queue.job = AsyncMock(side_effect=ConnectionError("transient broker pool error"))
+
+    with caplog.at_level("WARNING", logger="phaze.routers.pipeline"):
+        failed_ids = await pipeline_mod._enqueue_analysis_jobs(queue, [blocked_file, later_file], "test-fileserver", settings.models_path)
+
+    # The probe's own failure never lands in failed_ids -- it is diagnostic-only.
+    assert failed_ids == []
+    # later_file's enqueue still ran -- one file's probe failure did not abort the group.
+    assert len(queue.captured) == 1
+    assert queue.captured[0][1]["file_id"] == str(later_file.id)
+    assert "collision-classification probe failed" in caplog.text
+    assert str(blocked_file.id) in caplog.text
 
 
 @pytest.mark.asyncio
@@ -1303,6 +1336,54 @@ async def test_backfill_ledger_delete_is_cas_guarded_against_a_concurrent_reenqu
 
 
 @pytest.mark.asyncio
+async def test_backfill_cas_delete_removes_every_candidates_ledger_row(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-krzz5: the CAS delete must still remove EVERY candidate's ledger row for N > 1 rows.
+
+    The `unnest`-based rewrite replaces a per-row composite ``tuple_(...).in_(...)`` with two
+    array-bound parameters; this pins the functional behavior (every observed (key, enqueued_at)
+    pair is matched and deleted) is unchanged by that rewrite, not just its bind-parameter shape.
+    """
+    candidates = await _persist_failed_with_duration(session, [_LONG, _LONG, _LONG, _LONG, _LONG])
+    await seed_active_agent(session, "nox", kind="fileserver")
+    wire_fakes(client)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+    await _drain_background()
+
+    for candidate in candidates:
+        assert await _process_file_ledger_rows(session, candidate.id) == [], (
+            f"ledger row for {candidate.id} survived the CAS delete -- the unnest rewrite dropped a row"
+        )
+
+
+def test_scheduling_ledger_cas_delete_stmt_uses_a_constant_bind_count_regardless_of_row_count() -> None:
+    """phaze-krzz5: THE regression pin -- bind-parameter count must be constant (2), never O(N).
+
+    A bare ``tuple_(key, enqueued_at).in_(rows)`` renders TWO literal bind parameters PER ROW,
+    which is exactly the shape that re-crosses asyncpg's 32767-parameter cap this module's sibling
+    array-bind helpers (``_analysis_file_ids_scope`` / ``_ledger_keys_scope``) were hardened to
+    avoid. Compiling the statement and counting its bind parameters -- independent of how many
+    ledger rows were observed -- is the direct, fast (no live DB, no 16K-row fixture) assertion
+    that the fix actually changed the PARAMETER SHAPE, not merely that a small-N delete still works
+    (the functional test above would pass against the un-fixed code too, since the bug only
+    manifests at ~16,383+ rows).
+    """
+    from phaze.routers.pipeline import _scheduling_ledger_cas_delete_stmt
+
+    small = [(f"process_file:{i}", datetime(2026, 1, 1, tzinfo=UTC)) for i in range(3)]
+    large = [(f"process_file:{i}", datetime(2026, 1, 1, tzinfo=UTC)) for i in range(5000)]
+
+    small_compiled = _scheduling_ledger_cas_delete_stmt(small).compile(dialect=postgresql.dialect())
+    large_compiled = _scheduling_ledger_cas_delete_stmt(large).compile(dialect=postgresql.dialect())
+
+    # Exactly the two array bind params (`cas_delete_keys`, `cas_delete_enqueued_ats`) -- NOT one
+    # pair of literal params per row, and NOT growing with the row count.
+    assert set(small_compiled.params) == {"cas_delete_keys", "cas_delete_enqueued_ats"}
+    assert len(small_compiled.params) == len(large_compiled.params) == 2
+
+
+@pytest.mark.asyncio
 async def test_backfill_local_redrives_nothing(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """local fork: the cloud-off gate short-circuits -- no file is touched (marker + ledger row untouched)."""
     monkeypatch.setattr(settings, "backends", [_LOCAL_BACKEND])
@@ -1473,11 +1554,39 @@ async def test_dashboard_context_binds_lanes(client: AsyncClient, session: Async
     from phaze.routers.pipeline import build_dashboard_context
 
     sentinel: list[dict[str, object]] = [
-        {"id": "a1", "kind": "compute", "rank": 10, "cap": 2, "in_flight": 1, "available": True, "quota_wait": 0, "inadmissible": 0},
-        {"id": "local", "kind": "local", "rank": 99, "cap": 1, "in_flight": 0, "available": True, "quota_wait": 0, "inadmissible": 0},
+        {
+            "id": "a1",
+            "kind": "compute",
+            "rank": 10,
+            "cap": 2,
+            "in_flight": 1,
+            "available": True,
+            "quota_wait": 0,
+            "inadmissible": 0,
+            "queued": 0,
+            "working": 1,
+            "processed_24h": 3,
+            "processed_lifetime": 10,
+        },
+        {
+            "id": "local",
+            "kind": "local",
+            "rank": 99,
+            "cap": 1,
+            "in_flight": 0,
+            "available": True,
+            "quota_wait": 0,
+            "inadmissible": 0,
+            "queued": 0,
+            "working": 0,
+            "processed_24h": 0,
+            "processed_lifetime": 0,
+        },
     ]
 
-    async def _fake_snapshot(_session: AsyncSession) -> list[dict[str, object]]:
+    # phaze-5c6i2: get_backend_lane_snapshot now takes app_state (the local lane's SAQ read) --
+    # the stub's signature must accept it too, or build_dashboard_context's call raises TypeError.
+    async def _fake_snapshot(_session: AsyncSession, _app_state: object = None) -> list[dict[str, object]]:
         return sentinel
 
     monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _fake_snapshot)
@@ -1722,6 +1831,49 @@ async def test_deepen_collision_with_a_dead_job_reports_blocked_and_does_not_pol
     assert "stuck" in r2.text.lower()
     assert "hx-get" not in r2.text  # terminal -- no poller, unlike the in-flight branch
     assert "deterministic key held by a dead job" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_deepen_collision_lookup_broker_error_degrades_to_already_in_flight_not_500(
+    client: AsyncClient, session: AsyncSession, caplog: pytest.LogCaptureFixture
+) -> None:
+    """phaze-qim6c: a transient broker/pool error on the post-collision ``queue.job()`` lookup
+
+    must NOT escape as a raw 500 -- the endpoint's own docstring promises T-44-10 ("never a
+    raw 500"). Pre-fix, this lookup ran uncontained outside the ``try``'s only ``except``
+    (``NoActiveAgentError``), so a SAQ ``PostgresQueue`` pool error propagated straight past
+    FastAPI as a 500. The fix degrades the SAME way ``classify_process_file_collision``
+    already treats an unlookupable (``None``) job -- benign "in_flight" -- and logs a warning
+    instead of raising.
+    """
+    from unittest.mock import AsyncMock
+
+    file_rec = _make_file()
+    session.add(file_rec)
+    await session.commit()
+    await make_agent_live(session)
+
+    router = DedupFakeTaskRouter()
+    app = client._transport.app  # type: ignore[union-attr]
+    app.state.controller_queue = DedupFakeQueue("controller")
+    app.state.task_router = router
+
+    r1 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
+    assert r1.status_code == 200
+    queue = router.queues["test-fileserver-analyze"]
+    assert len(queue.captured) == 1
+
+    # Model a transient broker/pool error on the collision lookup itself.
+    queue.job = AsyncMock(side_effect=RuntimeError("connection pool exhausted"))
+
+    with caplog.at_level("WARNING", logger="phaze.routers.pipeline"):
+        r2 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
+
+    assert r2.status_code == 200, r2.text
+    assert len(queue.captured) == 1  # still deduped -- no second enqueue
+    assert "already analyzing" in r2.text.lower()
+    assert 'hx-get="/pipeline/files/' in r2.text  # in_flight -- poller still starts
+    assert "collision lookup failed -- degrading to already-in-flight" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -2143,6 +2295,40 @@ async def test_proposals_generate_no_files(client: AsyncClient) -> None:
     assert data["total_files"] == 0
 
 
+@pytest.mark.asyncio
+async def test_proposals_generate_refuses_while_batch_in_flight(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-8qheu: a second trigger while a prior generate_proposals batch is queued/active is refused.
+
+    The set-hash dedup key (``generate_proposals:<sha256(sorted file_ids)>``) is NOT robust to the
+    pending set moving between two triggers (removing one file's proposal shifts every later chunk
+    boundary), so a re-trigger must be REFUSED server-side instead of recomputing + re-enqueueing
+    the pending backlog. Files that would otherwise batch stay untouched -- zero new enqueues.
+    """
+    files = []
+    related = []
+    for _ in range(5):
+        file_rec, analysis, metadata = _make_file_with_convergence()
+        files.append(file_rec)
+        related.extend([analysis, metadata])
+    session.add_all(files)
+    await session.flush()
+    session.add_all(related)
+    await _reset_saq_jobs_minimal(session)
+    await session.execute(text("INSERT INTO saq_jobs (key, status) VALUES (:key, 'active')"), {"key": "generate_proposals:already-in-flight"})
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post("/api/v1/proposals/generate")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["enqueued_batches"] == 0
+    assert data["total_files"] == 0
+    assert "already in progress" in data["message"]
+
+    await _drain_background()
+    assert capture == []
+
+
 # ---------------------------------------------------------------------------
 # Phase 41 (REQ-41-2/REQ-41-4): the bulk match trigger routes to the controller queue (never
 # default), skips already-linked rows, and renders the tracklist-unit empty-state.
@@ -2356,6 +2542,41 @@ async def test_prioritize_already_tracklisted_file_is_a_noop(client: AsyncClient
 
 
 @pytest.mark.asyncio
+async def test_prioritize_a_cache_suppressed_negative_flags_nothing_and_enqueues_nothing(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-z8xq7: a live set whose lookup cached NOT_FOUND (still inside its 180-day TTL) is
+    ``eligible`` by classification but must NOT be flagged or enqueued -- the drain keeps a
+    cache-suppressed set out of the queue even when force-flagged, so doing either would upsert an
+    inert flag and spend the enqueued limit=1 slice's one request on an unrelated set while
+    falsely claiming a lookup was dispatched.
+    """
+    from dataclasses import replace
+
+    from phaze.enums.tracklist_candidate import LookupOutcome
+    from phaze.services.tracklist_candidates import CandidateSignals, group_unique_sets
+    from phaze.services.tracklist_lookup_cache import record_outcome
+    from phaze.services.tracklist_priority import load_flagged_file_ids
+    from phaze.services.tracklist_query import derive_query
+
+    file_rec = await _seed_live_set_file(session)
+    signals = CandidateSignals(file_id=file_rec.id, filename=file_rec.original_filename, sha256_hash=file_rec.sha256_hash, duration_seconds=7200.0)
+    derived = derive_query(signals.filename)
+    signals = replace(signals, derived_query=derived.query)
+    key = group_unique_sets([signals])[0].key
+    await record_outcome(session, set_key=key, query_text="prioritize suppressed test", outcome=LookupOutcome.NOT_FOUND)
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post(f"/pipeline/tracklists/{file_rec.id}/prioritize")
+    assert response.status_code == 200
+    assert "Prioritized and queued" not in response.text
+    assert "will not queue a lookup" in response.text
+
+    assert await load_flagged_file_ids(session) == set()
+    await _drain_background()
+    assert capture == []
+
+
+@pytest.mark.asyncio
 async def test_refresh_rearms_the_drain_for_an_already_tracklisted_file(client: AsyncClient, session: AsyncSession) -> None:
     """phaze-2akf: REFRESH is what Prioritize is for a file that already HAS a tracklist.
 
@@ -2400,14 +2621,26 @@ async def test_refresh_on_a_file_with_no_tracklist_does_nothing(client: AsyncCli
 
 
 @pytest.mark.asyncio
-async def test_refresh_unknown_file_is_404(client: AsyncClient) -> None:
-    assert (await client.post(f"/pipeline/tracklists/{uuid.uuid4()}/refresh")).status_code == 404
+async def test_refresh_unknown_file_renders_fragment_not_dropped_404(client: AsyncClient) -> None:
+    """phaze-9xyjp: an unknown file renders the review fragment (200), never a 404 htmx drops.
+
+    This handler's response swaps into ``#tracklist-review-{file_id}`` and htmx 2.x's stock
+    ``responseHandling`` does not swap a 4xx body (response_shape.py rule 3) -- a bare 404
+    here is silently discarded and the pane sits unchanged with no operator feedback. A
+    status-only assertion would have passed against that exact bug, so this asserts the body
+    htmx actually swaps: the fragment's own "File not found." rendering.
+    """
+    response = await client.post(f"/pipeline/tracklists/{uuid.uuid4()}/refresh")
+    assert response.status_code == 200, response.text
+    assert "file not found" in response.text.lower()
 
 
 @pytest.mark.asyncio
-async def test_prioritize_unknown_file_is_404(client: AsyncClient) -> None:
+async def test_prioritize_unknown_file_renders_fragment_not_dropped_404(client: AsyncClient) -> None:
+    """phaze-9xyjp: same vanished-file race as refresh -- see that test's rationale."""
     response = await client.post(f"/pipeline/tracklists/{uuid.uuid4()}/prioritize")
-    assert response.status_code == 404
+    assert response.status_code == 200, response.text
+    assert "file not found" in response.text.lower()
 
 
 @pytest.mark.asyncio
@@ -2426,9 +2659,11 @@ async def test_unprioritize_clears_a_flag(client: AsyncClient, session: AsyncSes
 
 
 @pytest.mark.asyncio
-async def test_unprioritize_unknown_file_is_404(client: AsyncClient) -> None:
+async def test_unprioritize_unknown_file_renders_fragment_not_dropped_404(client: AsyncClient) -> None:
+    """phaze-9xyjp: same vanished-file race as refresh/prioritize -- see that test's rationale."""
     response = await client.post(f"/pipeline/tracklists/{uuid.uuid4()}/unprioritize")
-    assert response.status_code == 404
+    assert response.status_code == 200, response.text
+    assert "file not found" in response.text.lower()
 
 
 @pytest.mark.asyncio
@@ -2866,6 +3101,31 @@ async def test_trigger_proposals_ui_no_files(client: AsyncClient) -> None:
     response = await client.post("/pipeline/proposals")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
+
+
+@pytest.mark.asyncio
+async def test_trigger_proposals_ui_refuses_while_batch_in_flight(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-8qheu: the HTMX trigger twin also refuses a re-trigger while a batch is queued/active."""
+    files = []
+    related = []
+    for _ in range(5):
+        file_rec, analysis, metadata = _make_file_with_convergence()
+        files.append(file_rec)
+        related.extend([analysis, metadata])
+    session.add_all(files)
+    await session.flush()
+    session.add_all(related)
+    await _reset_saq_jobs_minimal(session)
+    await session.execute(text("INSERT INTO saq_jobs (key, status) VALUES (:key, 'queued')"), {"key": "generate_proposals:already-in-flight"})
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/proposals")
+    assert response.status_code == 200
+    assert "already in progress" in response.text
+
+    await _drain_background()
+    assert capture == []
 
 
 @pytest.mark.asyncio
@@ -3316,6 +3576,33 @@ async def test_dashboard_admission_card_finished_is_green_not_alert(client: Asyn
 
 
 @pytest.mark.asyncio
+async def test_dashboard_admission_card_finished_is_a_lifetime_total_not_a_live_snapshot(client: AsyncClient, session: AsyncSession) -> None:
+    """Acceptance 6 (phaze-zyoag): Finished renders OUTSIDE the "per reconcile" live grid, captioned as cumulative.
+
+    ``cloud_phase == FINISHED`` counts EVERY succeeded row ever, unbounded -- unlike its three siblings
+    it is not a live-at-this-instant snapshot. The template must make that explicit rather than
+    implying, via the shared "per reconcile, updates ~5 min" caption, that all four counts share one
+    clock.
+    """
+    await _seed_cloud_phase(session, cloud_phase=CloudPhase.FINISHED.value)
+
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    import re
+
+    card = re.search(r'id="admission-state-card".*?</section>', response.text, re.DOTALL)
+    assert card is not None
+    card_html = card.group(0)
+    assert "lifetime total" in card_html, "the Finished tile must say it is cumulative, not live"
+    # The live-grid caption must not sit above a lone Finished tile implying it shares that clock.
+    live_caption_pos = card_html.find("live — per reconcile")
+    finished_pos = card_html.find("Finished")
+    assert live_caption_pos == -1, "with only Finished non-zero, the live-snapshot caption must not render"
+    assert finished_pos != -1
+
+
+@pytest.mark.asyncio
 async def test_dashboard_admission_card_quiet_for_null_cloud_phase(client: AsyncClient, session: AsyncSession) -> None:
     """An a1/local row (NULL cloud_phase) counts toward no phase → empty carrier, no heading."""
     await _seed_cloud_phase(session, cloud_phase=None)
@@ -3419,6 +3706,91 @@ async def test_dashboard_count_grid_holds_four_cards_outside_alert_carriers(clie
     assert inadmissible_pos < grid_open
     assert localqueue_pos < grid_open
     assert grid_open < admission_pos < awaiting_pos < staged_pos < analyzing_pos
+
+
+# ---------------------------------------------------------------------------
+# phaze-zyoag acceptance 5: a kueue cloud_job row in each of {uploading, uploaded, submitted, running}
+# must describe ITSELF consistently across the Staged / Analyzing / Admission panels on the SAME
+# rendered page -- no row may be claimed by two contradictory captions (the original bug report's
+# shape: one SUBMITTED row was simultaneously "Queued (quota)" on Admission AND "mid-transfer" on
+# Staged).
+# ---------------------------------------------------------------------------
+
+_VOX_KUEUE_ONLY_TOML = """
+[[backends]]
+kind = "kueue"
+id = "vox"
+rank = 10
+cap = 5
+buckets = ["burst-vox"]
+
+  [backends.kube]
+  api_url = "https://kube.example:6443"
+  namespace = "phaze"
+  local_queue = "phaze-burst"
+
+[[backends]]
+kind = "local"
+id = "local"
+rank = 99
+cap = 1
+
+[[buckets]]
+id = "burst-vox"
+scope = "cluster-specific"
+bucket = "phaze-burst"
+endpoint_url = "https://s3.example"
+"""
+
+
+@pytest.mark.asyncio
+async def test_staged_analyzing_and_admission_agree_per_row(client: AsyncClient, session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """One ``vox`` (kueue) row per {uploading, uploaded, submitted, running} renders consistently everywhere.
+
+    uploading/uploaded -> Staged only (never Analyzing, never an Admission tile -- cloud_phase is NULL
+    pre-submit). submitted -> Analyzing + Admission's "Queued (quota)", NEVER Staged (the exact bug
+    report shape). running -> Analyzing + Admission's "Running", never Staged.
+    """
+    backends_toml_env(_VOX_KUEUE_ONLY_TOML)
+
+    async def _seed(i: int, status: CloudJobStatus, cloud_phase: str | None) -> None:
+        f = _make_file()
+        session.add(f)
+        await session.flush()
+        session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, status=status.value, backend_id="vox", cloud_phase=cloud_phase))
+
+    await _seed(1, CloudJobStatus.UPLOADING, None)
+    await _seed(2, CloudJobStatus.UPLOADED, None)
+    await _seed(3, CloudJobStatus.SUBMITTED, CloudPhase.QUEUED_BEHIND_QUOTA.value)
+    await _seed(4, CloudJobStatus.RUNNING, CloudPhase.RUNNING.value)
+    await session.commit()
+
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    text = response.text
+
+    import re
+
+    def _card(section_id: str) -> str:
+        card = re.search(rf'id="{section_id}".*?</section>', text, re.DOTALL)
+        assert card is not None, f"{section_id} carrier must always render"
+        return card.group(0)
+
+    staged_card = _card("staged-pushing-card")
+    analyzing_card = _card("analyzing-cloud-card")
+    admission_card = _card("admission-state-card")
+
+    # Staged counts EXACTLY the two pre-submit rows (uploading + uploaded); the submitted row must
+    # NEVER inflate it -- the exact bug this bead fixes.
+    assert re.search(r"text-2xl[^>]*>\s*2\s*<", staged_card), staged_card
+
+    # Analyzing counts EXACTLY the two post-submit rows (submitted-on-kueue + running).
+    assert re.search(r"text-2xl[^>]*>\s*2\s*<", analyzing_card), analyzing_card
+
+    # Admission agrees: the SAME submitted row is "Queued (quota)" 1, the SAME running row is "Running" 1.
+    assert "Queued (quota)" in admission_card
+    assert "Running" in admission_card
+    assert re.search(r"Queued \(quota\)", admission_card)
 
 
 # ---------------------------------------------------------------------------

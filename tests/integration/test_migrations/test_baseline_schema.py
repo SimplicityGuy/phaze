@@ -248,7 +248,12 @@ def test_baseline_is_the_only_migration() -> None:
     that outlives the `cloud_job` sidecar the D-14 reaper deletes -- the row 054's per-chain counters
     were being erased with, which let one file start an unbounded number of fresh attempt chains; 056
     (phaze-x8tof) renames the five CHECK constraints the `ck_%(table_name)s_%(constraint_name)s`
-    convention had double-prefixed in the database.
+    convention had double-prefixed in the database; 057 (phaze-mwbz3) adds
+    cloud_job.node_loss_pending, the durable carry for a node-loss verdict classified while the
+    still-terminating re-drive deferral is waiting -- without it the verdict died with the deferral's
+    stack frame and a Job that vanished before the next tick silently charged `attempts` instead of
+    the tighter `node_loss_redrives` ceiling; 058 (phaze-5c6i2) adds a partial btree ON
+    `analysis.analysis_completed_at` for the lane cards' rolling-24h/lifetime PROCESSED counts.
     Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
@@ -271,6 +276,8 @@ def test_baseline_is_the_only_migration() -> None:
         "054_cloud_job_node_loss_redrives.py",
         "055_cloud_budget_ledger.py",
         "056_fix_double_prefixed_check_constraints.py",
+        "057_cloud_job_node_loss_pending.py",
+        "058_analysis_completed_at_btree.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -302,10 +309,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (056: the CHECK-name repair)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (058: the analysis_completed_at btree)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "056"
+    assert version == "058"
 
 
 @pytest.mark.asyncio
@@ -634,7 +641,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "056"
+        assert version == "058"
     finally:
         if engine is not None:
             await engine.dispose()
@@ -1091,4 +1098,154 @@ async def test_migration_048_upgrade_heals_invalid_leftover_index() -> None:
             await cic_conn.close()
         if blocker_conn is not None:
             await blocker_conn.close()
+        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+
+
+@pytest.mark.asyncio
+async def test_migration_051_downgrade_deletes_discogs_links_before_tracklist_tracks() -> None:
+    """051's downgrade must clear ``discogs_links`` for propagated rows before deleting
+    ``tracklist_tracks``, or it aborts with a ForeignKeyViolation on any database where Discogs
+    matching ran over a propagated tracklist (phaze-psa96).
+
+    Seeds a propagated tracklist (``propagated_from_set_key`` set) with a version, a track, and a
+    ``discogs_links`` row against that track -- the exact state ``POST /pipeline/match-tracklists``
+    produces once it starts including propagated rows -- then downgrades to 050 and asserts:
+    * the downgrade completes without raising (the regression this bead fixes);
+    * the propagated tracklist/version/track/discogs_links rows are all gone;
+    * a co-existing CANONICAL tracklist (and its own discogs_links row) survives untouched.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    cfg = _build_alembic_config(MIGRATIONS_TEST_DATABASE_URL)
+    engine = None
+    try:
+        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+        await asyncio.to_thread(upgrade_to, cfg, "051")
+
+        engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
+        canonical_id, canonical_version_id, canonical_track_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        propagated_id, propagated_version_id, propagated_track_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        async with engine.begin() as conn:
+            # A canonical (non-propagated) tracklist with its own accepted discogs_links row --
+            # must survive the downgrade untouched.
+            await conn.execute(
+                text(
+                    "INSERT INTO tracklists (id, external_id, source_url, auto_linked, source, status, created_at, updated_at) "
+                    "VALUES (:id, :ext, :url, false, '1001tracklists', 'approved', NOW(), NOW())"
+                ),
+                {"id": canonical_id, "ext": f"psa96-canon-{canonical_id}", "url": "https://example.com/tl-canon"},
+            )
+            await conn.execute(
+                text("INSERT INTO tracklist_versions (id, tracklist_id, version_number, scraped_at) VALUES (:id, :tid, 1, NOW())"),
+                {"id": canonical_version_id, "tid": canonical_id},
+            )
+            await conn.execute(
+                text("INSERT INTO tracklist_tracks (id, version_id, position) VALUES (:id, :vid, 1)"),
+                {"id": canonical_track_id, "vid": canonical_version_id},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO discogs_links (id, track_id, discogs_release_id, confidence, status) VALUES (:id, :tid, 'r-canon', 90.0, 'accepted')"
+                ),
+                {"id": uuid.uuid4(), "tid": canonical_track_id},
+            )
+
+            # A propagated tracklist -- the exact chain get_match_pending_tracklists surfaces to
+            # POST /pipeline/match-tracklists once discogs matching has run over it.
+            await conn.execute(
+                text(
+                    "INSERT INTO tracklists (id, external_id, source_url, auto_linked, source, status, "
+                    "propagated_from_set_key, propagation_confidence, created_at, updated_at) "
+                    "VALUES (:id, :ext, :url, false, '1001tracklists', 'approved', :set_key, 'exact', NOW(), NOW())"
+                ),
+                {"id": propagated_id, "ext": f"psa96-canon-{canonical_id}", "url": "https://example.com/tl-prop", "set_key": "set-psa96"},
+            )
+            await conn.execute(
+                text("INSERT INTO tracklist_versions (id, tracklist_id, version_number, scraped_at) VALUES (:id, :tid, 1, NOW())"),
+                {"id": propagated_version_id, "tid": propagated_id},
+            )
+            await conn.execute(
+                text("INSERT INTO tracklist_tracks (id, version_id, position) VALUES (:id, :vid, 1)"),
+                {"id": propagated_track_id, "vid": propagated_version_id},
+            )
+            # The discogs_links row against the PROPAGATED track -- without deleting this first,
+            # downgrade's DELETE FROM tracklist_tracks violates fk_discogs_links_track_id_tracklist_tracks.
+            await conn.execute(
+                text(
+                    "INSERT INTO discogs_links (id, track_id, discogs_release_id, confidence, status) VALUES (:id, :tid, 'r-prop', 85.0, 'candidate')"
+                ),
+                {"id": uuid.uuid4(), "tid": propagated_track_id},
+            )
+        await engine.dispose()
+        engine = None
+
+        # The regression this bead fixes: downgrade must not raise ForeignKeyViolation.
+        await asyncio.to_thread(downgrade_to, cfg, "050")
+
+        engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
+        async with engine.connect() as conn:
+            remaining_tracklists = (await conn.execute(text("SELECT id FROM tracklists"))).scalars().all()
+            remaining_tracks = (await conn.execute(text("SELECT id FROM tracklist_tracks"))).scalars().all()
+            remaining_links = (await conn.execute(text("SELECT track_id FROM discogs_links"))).scalars().all()
+        assert remaining_tracklists == [canonical_id], "downgrade must delete only the propagated tracklist"
+        assert remaining_tracks == [canonical_track_id], "downgrade must delete the propagated tracklist_tracks row too"
+        assert remaining_links == [canonical_track_id], "downgrade must delete discogs_links for the propagated track, keeping the canonical one"
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+
+
+@pytest.mark.asyncio
+async def test_migration_042_downgrade_backfills_redrive_attempt_into_payload() -> None:
+    """042's downgrade must mirror-write ``redrive_attempt`` back into the legacy payload JSONB
+    keys before dropping the column, or a rollback silently resets every in-flight push/upload
+    re-drive budget to zero (phaze-dt2cx).
+
+    Seeds two post-042 ``scheduling_ledger`` rows (one ``push_file``, one ``s3_upload``) with a
+    non-zero ``redrive_attempt`` and a payload that carries no legacy counter key (the realistic
+    post-042 shape, since nothing writes the legacy keys anymore), then downgrades to 041 and
+    asserts the payload now carries the counter under the function-appropriate legacy key --
+    exactly what pre-042 code reads.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    cfg = _build_alembic_config(MIGRATIONS_TEST_DATABASE_URL)
+    engine = None
+    try:
+        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+        await asyncio.to_thread(upgrade_to, cfg, "042")
+
+        engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
+        push_key, s3_key = "dt2cx-push-key", "dt2cx-s3-key"
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO scheduling_ledger (key, function, routing, payload, redrive_attempt, enqueued_at, created_at, updated_at) "
+                    "VALUES (:key, 'push_file', 'agent', '{}'::jsonb, 4, NOW(), NOW(), NOW())"
+                ),
+                {"key": push_key},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO scheduling_ledger (key, function, routing, payload, redrive_attempt, enqueued_at, created_at, updated_at) "
+                    "VALUES (:key, 's3_upload', 'agent', '{}'::jsonb, 2, NOW(), NOW(), NOW())"
+                ),
+                {"key": s3_key},
+            )
+        await engine.dispose()
+        engine = None
+
+        # The regression this bead fixes: the counter must not be silently discarded.
+        await asyncio.to_thread(downgrade_to, cfg, "041")
+
+        engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
+        async with engine.connect() as conn:
+            push_payload = (await conn.execute(text("SELECT payload FROM scheduling_ledger WHERE key = :key"), {"key": push_key})).scalar_one()
+            s3_payload = (await conn.execute(text("SELECT payload FROM scheduling_ledger WHERE key = :key"), {"key": s3_key})).scalar_one()
+        assert push_payload.get("push_attempt") == 4, "downgrade must back-fill push_file's counter into payload.push_attempt"
+        assert s3_payload.get("s3_upload_attempt") == 2, "downgrade must back-fill s3_upload's counter into payload.s3_upload_attempt"
+    finally:
+        if engine is not None:
+            await engine.dispose()
         await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)

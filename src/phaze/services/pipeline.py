@@ -548,6 +548,16 @@ async def get_agent_lane_depths(app_state: Any, agent_id: str) -> dict[str, int]
     client skips the lifespan, so the queue handles are absent) or a broker hiccup degrades the whole
     dict to all-zero; a single dead lane degrades THAT lane to 0 without zeroing the others. It NEVER
     raises into the 5s ``/admin/agents/{id}/_activity`` poll (D-00b).
+
+    phaze-en7s7: connect-before-count (#217), mirrored from :func:`get_queue_activity` --
+    SAQ's ``PostgresQueue`` constructs its psycopg pool with ``open=False`` and only
+    ``connect()`` opens it; ``main.py``'s lifespan pre-opens pools only for agents present at
+    boot, so a runtime-registered agent's lanes raise ``PoolClosed`` on ``count()`` until
+    something else connects them first. Without this, every lane's ``PoolClosed`` was silently
+    swallowed by the per-lane ``except`` below and rendered as 0 -- a systematic (every-poll),
+    not transient, false "idle" read for a runtime-registered agent's activity pane.
+    ``connect()`` is idempotent (SAQ guards on ``self._connected``), so this is a no-op once
+    something else (the dashboard poll, an API-side enqueue) has already opened the pool.
     """
     out: dict[str, int] = dict.fromkeys(LANES, 0)
     try:
@@ -559,6 +569,7 @@ async def get_agent_lane_depths(app_state: Any, agent_id: str) -> dict[str, int]
         return out
     for lane, q in zip(LANES, queues, strict=False):
         try:
+            await q.connect()
             out[lane] = await q.count("queued") + await q.count("active")
         except Exception:
             logger.warning("agent_lane_depth_degraded", agent_id=agent_id, lane=lane, exc_info=True)
@@ -1369,28 +1380,40 @@ def _analyze_status_where(status: str | None) -> Any:
     )
 
 
+def derive_file_lane(cloud_job_id: Any, backend_id: str | None, kinds: dict[str, str]) -> tuple[str, str]:
+    """The COMPUTE-03 lane derivation off a file's (possibly absent) ``CloudJob`` -- the ONE place
+    "which lane did this file run on" is answered, so every per-file lane badge (analyze rows,
+    RECORD-01's facts grid, ...) reads the same truth instead of each growing its own copy
+    (phaze-lljfx: ``record_body.html`` hardcoded ``local`` because this derivation was inlined only
+    in :func:`_project_analyze_rows` and never reused).
+
+    No ``cloud_job`` -> local; a stamped ``backend_id`` -> the id + its registry ``lane_kind`` via
+    ``non_local_backend_kinds`` (falling back to ``"cloud"`` for a deregistered cluster); a NULL
+    ``backend_id`` on a stamped job -> the truthful unattributed ``"cloud"`` fallback, NEVER the
+    stale ``"a1"`` heuristic. ``kinds`` is the caller's once-per-call registry projection (never a
+    per-row lookup).
+    """
+    if cloud_job_id is None:
+        return "local", "local"
+    if backend_id is not None:
+        return backend_id, kinds.get(backend_id, "cloud")
+    # Stamped cloud_job with no backend_id yet (not attributed to a registry cluster) -- the
+    # truthful "cloud, unattributed" fallback. NEVER the stale "a1" heuristic label.
+    return "cloud", "cloud"
+
+
 def _project_analyze_rows(rows: Sequence[Any], kinds: dict[str, str]) -> list[dict[str, Any]]:
     """Project raw :func:`_analyze_files_select` rows into the per-file dict the template renders.
 
     The IDENTICAL shape the Phase-58 ``get_analyze_stage_files`` produced (so ``analyze_workspace.html``
     row-building is unchanged): the RECORD-01 ``file_id`` opener key, the DERIVED boolean flags
     (``awaiting_cloud`` / ``analysis_failed`` / ``completed`` -- never a raw ``files.state``), the
-    COMPUTE-03 lane derivation off the stamped ``CloudJob.backend_id`` (no ``cloud_job`` -> local; a
-    stamped ``backend_id`` -> the id + its registry ``lane_kind`` via ``non_local_backend_kinds``,
-    falling back to ``"cloud"`` for a deregistered cluster; a NULL ``backend_id`` -> the truthful
-    unattributed ``"cloud"`` fallback, NEVER the stale ``"a1"`` heuristic), and the 57.1 windowed
-    coverage. ``kinds`` is the once-per-call registry projection (never a per-row lookup).
+    COMPUTE-03 lane derivation (:func:`derive_file_lane`), and the 57.1 windowed coverage. ``kinds``
+    is the once-per-call registry projection (never a per-row lookup).
     """
     files: list[dict[str, Any]] = []
     for file_id, filename, path, cloud_job_id, cloud_status, backend_id, fine_done, fine_total, completed_at, failed_at, duration in rows:
-        if cloud_job_id is None:
-            lane, lane_kind = "local", "local"
-        elif backend_id is not None:
-            lane, lane_kind = backend_id, kinds.get(backend_id, "cloud")
-        else:
-            # Stamped cloud_job with no backend_id yet (not attributed to a registry cluster) --
-            # the truthful "cloud, unattributed" fallback. NEVER the stale "a1" heuristic label.
-            lane, lane_kind = "cloud", "cloud"
+        lane, lane_kind = derive_file_lane(cloud_job_id, backend_id, kinds)
         files.append(
             {
                 # Phase 61 (RECORD-01): the row->record slide-in opener keys on this file_id
@@ -1829,6 +1852,15 @@ async def get_cloud_phase_counts(session: AsyncSession) -> dict[str, int]:
 
     ``cloud_phase`` is NULL for a1/local rows (admission is a k8s-only concept), so those rows count
     toward NONE of the four phases — all-zero leaves the card a quiet empty carrier on non-k8s deploys.
+
+    phaze-zyoag: ``finished`` is DELIBERATELY different in kind from its three siblings -- it counts
+    ``cloud_phase == FINISHED`` with no time bound and no status scoping, and only ``awaiting`` rows are
+    ever deleted (``routers/agent_analysis.py``), so a SUCCEEDED row's FINISHED phase persists forever.
+    This is a LIFETIME CUMULATIVE total, not a live-at-this-instant count like ``queued_behind_quota`` /
+    ``admitted`` / ``running``. The template (``admission_state_card.html``) renders it in its own row
+    below a divider with an explicit "lifetime total, not a live snapshot" caption rather than as a
+    fourth tile in the "per reconcile, updates ~5 min" grid, so it can never be misread as a snapshot of
+    the same instant as the other three.
     """
     return {
         "queued_behind_quota": await _safe_count(
@@ -1854,48 +1886,112 @@ async def get_cloud_phase_counts(session: AsyncSession) -> dict[str, int]:
     }
 
 
-async def get_pushing_count(session: AsyncSession) -> int:
-    """Return COUNT of the "pushing" half of the bounded cloud window, degrading to 0 (D-09/D-12).
+def _kueue_backend_ids() -> frozenset[str]:
+    """Return the registry backend ids whose ``kind == "kueue"``, degrading to empty on any registry error.
 
-    Phase 90 (PR-A): DERIVED from ``cloud_job.status IN ('uploading','submitted')`` -- no longer the
-    retired ``files.state == PUSHING`` column. Drives the dashboard "Staged (pushing)" card -- the left
-    half of the bounded cloud window (files mid-upload / just handed to remote submit). Poll-safe via
-    :func:`_safe_count`
-    (mirrors :func:`get_awaiting_cloud_count`): a DB hiccup degrades this node to 0 and rolls back
-    the aborted transaction rather than 500ing the hot 5s /pipeline/stats poll. This is the
-    OBSERVATIONAL per-card count -- the load-bearing backpressure is now per-backend
+    A pure, no-DB projection over the SAME
+    :func:`phaze.services.agent_liveness.non_local_backend_kinds` helper
+    :func:`get_analyze_working_set`'s per-file lane badges already consume -- one registry answer,
+    shared by the file badges and these two window-count cards, instead of a second guess at "which
+    backend ids are kueue-kind". A settings/registry read failure degrades to an EMPTY set (never
+    raises): with no known kueue ids, :func:`_cloud_window_clauses` below falls back to the pre-fix
+    "SUBMITTED is staged" reading everywhere, which is wrong ONLY for a live kueue deployment whose
+    registry momentarily failed to resolve -- an already-degraded poll tick, not a fresh failure mode.
+    """
+    try:
+        kinds = non_local_backend_kinds(type_cast("ControlSettings", get_settings()))
+    except Exception:
+        logger.warning("cloud_window_kueue_ids_degraded", exc_info=True)
+        return frozenset()
+    return frozenset(backend_id for backend_id, kind in kinds.items() if kind == "kueue")
+
+
+def _cloud_window_clauses() -> tuple[ColumnElement[bool], ColumnElement[bool]]:
+    """Return the ``(staged, analyzing)`` boolean predicates that partition ``backends.IN_FLIGHT`` (phaze-zyoag).
+
+    ROOT CAUSE this replaces: the two cards used to cut {UPLOADING, SUBMITTED} / {UPLOADED, RUNNING} --
+    the lifecycle-order seam for NEITHER backend kind. The correct seam is
+    :data:`phaze.services.backends.STAGING` (pre-submit: UPLOADING/UPLOADED) vs the rest of
+    :data:`phaze.services.backends.IN_FLIGHT`, EXCEPT that SUBMITTED itself means opposite things per
+    backend kind (D-10): mid-rsync on ``compute`` (``ComputeAgentBackend.dispatch`` writes it at
+    DISPATCH time, terminalized only by the ``/pushed`` callback), but POST-upload / admitted-or-queued
+    on ``kueue`` (``submit_cloud_job`` writes it only after the S3 upload has already landed). A single
+    global status->tile mapping cannot say both, so SUBMITTED is split by the row's OWN
+    ``backend_id`` via :func:`_kueue_backend_ids` -- the kueue-attributed half moves to "Analyzing"
+    with everything else in :data:`STAGING` (always staged) and RUNNING (always analyzing, kueue-only
+    in practice: compute never reaches RUNNING, it goes straight to SUCCEEDED off the ``/pushed``
+    callback).
+
+    ANALYZING DEFINITION -- option (a) of the bead's design doc, chosen deliberately: "post-submit, in
+    the cloud window" = {SUBMITTED-on-kueue, RUNNING}. This keeps Staged + Analyzing summing to EXACTLY
+    :data:`phaze.services.backends.IN_FLIGHT` for every row, matching the two card templates'
+    pre-existing "together they account for every backend's busy in-flight slot" sub-caption contract.
+    Option (b) ("a pod is actually executing" == RUNNING only) would leave a quota-queued kueue row
+    counted in NEITHER tile, silently shrinking the visible in-flight total -- worse than the bug this
+    fixes. The tile sub-captions (``staged_pushing_card.html`` / ``analyzing_cloud_card.html``) say so
+    explicitly: Analyzing no longer means "landed", it means "submitted or running".
+
+    A NULL / deregistered ``backend_id`` degrades to the STAGED side (never invisible, never claimed by
+    both cards): both dispatch paths stamp ``backend_id`` in the SAME transaction as the write that
+    would otherwise make a row's kind ambiguous (``ComputeAgentBackend.dispatch`` /
+    ``KueueBackend.dispatch`` in ``services/backends.py``), so an unattributed in-flight SUBMITTED row
+    is itself an anomaly, not the expected shape -- this is the SAME "unattributed cloud" fallback
+    posture :func:`_project_analyze_rows` takes for the per-file lane badge.
+
+    :data:`STAGING` supplies the always-staged half directly (no restated status literals); SUBMITTED
+    is the one member that must stay a named literal because it is the specific point of per-backend
+    disagreement -- deriving it generically is not possible without encoding that disagreement
+    somewhere, and here is the one place it is documented. ``phaze.services.backends`` imports FROM
+    this module at module scope (``MUSIC_VIDEO_TYPES`` / ``get_live_job_keys``), so the reverse import
+    is deferred to call time to avoid a circular import at module load.
+    """
+    from phaze.services.backends import IN_FLIGHT, STAGING  # noqa: PLC0415 -- breaks a module-load import cycle, see docstring
+
+    kueue_ids = _kueue_backend_ids()
+    is_kueue_row = and_(CloudJob.backend_id.is_not(None), CloudJob.backend_id.in_(kueue_ids)) if kueue_ids else false()
+
+    staging_values = [status.value for status in STAGING]
+    submitted_value = CloudJobStatus.SUBMITTED.value
+    unambiguous_analyzing_values = [status.value for status in IN_FLIGHT if status not in STAGING and status.value != submitted_value]
+
+    staged = or_(
+        CloudJob.status.in_(staging_values),
+        and_(CloudJob.status == submitted_value, ~is_kueue_row),
+    )
+    analyzing = or_(
+        CloudJob.status.in_(unambiguous_analyzing_values) if unambiguous_analyzing_values else false(),
+        and_(CloudJob.status == submitted_value, is_kueue_row),
+    )
+    return staged, analyzing
+
+
+async def get_pushing_count(session: AsyncSession) -> int:
+    """Return COUNT of the "staged" (pre-submit / mid-transfer) half of the bounded cloud window (phaze-zyoag).
+
+    Drives the dashboard "Staged (pushing)" card. DERIVED from :func:`_cloud_window_clauses` -- see
+    that docstring for the full per-backend-kind rationale (D-10, phaze-zyoag). Poll-safe via
+    :func:`_safe_count` (mirrors :func:`get_awaiting_cloud_count`): a DB hiccup degrades this node to 0
+    and rolls back the aborted transaction rather than 500ing the hot 5s /pipeline/stats poll. This is
+    the OBSERVATIONAL per-card count -- the load-bearing backpressure is per-backend
     ``Backend.in_flight_count`` (Phase 69, D-05), which the drain reads once per tick and which is
     intentionally NOT degrade-safe so the drain never over-dispatches on a transient error.
     """
-    return await _safe_count(
-        session,
-        # Phase 90 (PR-A, D-12): DERIVED from the ``cloud_job`` sidecar -- the "pushing" half of the
-        # bounded cloud window is a cloud_job mid-upload (``uploading``) or handed to the remote submit
-        # but not yet landed (``submitted``). Mirrors :func:`get_inadmissible_count`'s cloud_job read;
-        # no longer the ``files.state == PUSHING`` column.
-        select(func.count(CloudJob.id)).where(CloudJob.status.in_([CloudJobStatus.UPLOADING.value, CloudJobStatus.SUBMITTED.value])),
-        node="pushing",
-    )
+    staged, _analyzing = _cloud_window_clauses()
+    return await _safe_count(session, select(func.count(CloudJob.id)).where(staged), node="pushing")
 
 
 async def get_pushed_count(session: AsyncSession) -> int:
-    """Return COUNT of the "pushed / analyzing" half of the bounded cloud window, degrading to 0 (D-09/D-12).
+    """Return COUNT of the "analyzing" (post-submit, in the cloud window) half of the bounded cloud window (phaze-zyoag).
 
-    Phase 90 (PR-A): DERIVED from ``cloud_job.status IN ('uploaded','running')`` -- no longer the retired
-    ``files.state == PUSHED`` column. Drives the dashboard "Analyzing (cloud)" card -- the right half of
-    the bounded cloud window (files that finished upload and are awaiting/within remote analysis). Poll-safe via
-    :func:`_safe_count`, exactly like :func:`get_pushing_count`. Observational only; the per-backend
-    cap itself is enforced by ``Backend.in_flight_count`` (Phase 69, D-05) from committed cloud_job rows.
+    Drives the dashboard "Analyzing (cloud)" card. DERIVED from :func:`_cloud_window_clauses` -- see
+    that docstring for the full per-backend-kind rationale and the option-(a) definition this
+    implements (D-10, phaze-zyoag): SUBMITTED-on-kueue + RUNNING, NOT "landed" (a kueue row can sit
+    here for hours waiting on cluster quota). Poll-safe via :func:`_safe_count`, exactly like
+    :func:`get_pushing_count`. Observational only; the per-backend cap itself is enforced by
+    ``Backend.in_flight_count`` (Phase 69, D-05) from committed cloud_job rows.
     """
-    return await _safe_count(
-        session,
-        # Phase 90 (PR-A, D-12): DERIVED from the ``cloud_job`` sidecar -- the "pushed / analyzing"
-        # half of the bounded cloud window is a cloud_job that finished upload (``uploaded``) or is
-        # actively analyzing on the remote (``running``). Mirrors :func:`get_pushing_count`; no longer
-        # the ``files.state == PUSHED`` column.
-        select(func.count(CloudJob.id)).where(CloudJob.status.in_([CloudJobStatus.UPLOADED.value, CloudJobStatus.RUNNING.value])),
-        node="analyzing_cloud",
-    )
+    _staged, analyzing = _cloud_window_clauses()
+    return await _safe_count(session, select(func.count(CloudJob.id)).where(analyzing), node="analyzing_cloud")
 
 
 # --- Phase 50 bounded cloud-window helpers (D-03/D-08, CLOUDPIPE-01) ---------------------
@@ -2226,17 +2322,75 @@ async def get_proposal_pending_batches(session: AsyncSession, batch_size: int) -
     Phase 90 (PR-A, Pitfall 4): the propose-exclusion replaces the retired ``files.state`` membership,
     so an already-proposed file is never re-batched.
 
-    Sorting BEFORE chunking is load-bearing (D-04, 42-RESEARCH Pitfall 2): ``generate_proposals``
-    is keyed on ``generate_proposals:<sha256(sorted file_ids)>`` (an order-independent SET hash),
-    so the manual trigger and recovery MUST produce the IDENTICAL batch MEMBERSHIP to land on the
-    IDENTICAL key and dedup against an in-flight batch. Both paths call THIS helper, so their
-    batches -- and therefore their set-hash keys -- are guaranteed to match. Pure ORM / bound
+    Sorting BEFORE chunking makes a SINGLE call's batches deterministic (order-independent), which
+    matters because ``generate_proposals`` is keyed on ``generate_proposals:<sha256(sorted
+    file_ids)>`` (an order-independent SET hash, D-04, 42-RESEARCH Pitfall 2). Pure ORM / bound
     params, NO f-string SQL (T-42-03).
+
+    phaze-8qheu CORRECTION: this does NOT make two SEPARATE calls dedup against each other, and
+    recovery does not call this helper at all (it replays by stored scheduling-ledger key, not by
+    re-deriving the pending set -- see ``tasks/reenqueue.py``). The pending set this query reads is
+    a MOVING target: as soon as one file's proposal lands, ``~done_clause(PROPOSE)`` excludes it,
+    every later chunk's boundary shifts, and every recomputed batch hashes to a KEY that shares
+    nothing with the in-flight batches it overlaps. A second manual trigger mid-drain therefore
+    dedups nothing and can re-propose files whose first proposal already landed (including
+    already-approved/executed files, since the store's dedup is scoped to PENDING proposals only).
+    Callers MUST NOT trigger a second drain while a ``generate_proposals`` batch from a prior
+    trigger is still in flight -- see :func:`get_proposal_busy_count`, which both trigger routes
+    gate on for exactly this reason.
+
+    phaze-ceuvd: ``batch_size`` is used as the ``range()`` step below, so it degrades rather
+    than crashes on a misconfigured value -- ``llm_batch_size`` now carries ``gt=0`` at the
+    config layer (config.py), but this clamp is the second, independent layer: 0 previously
+    raised ``ValueError: range() arg 3 must not be zero`` (unhandled 500 on GENERATE ALL) and a
+    negative value made ``range(0, N, -k)`` empty, silently returning zero batches (success
+    with nothing enqueued). Both non-positive inputs clamp to 1 (one file per batch) instead.
     """
+    if batch_size < 1:
+        logger.warning("proposal_pending_batches_size_clamped", requested_batch_size=batch_size, clamped_to=1)
+        batch_size = 1
     stmt = select(FileRecord).where(*_proposal_pending_clauses())
     result = await session.execute(stmt)
     file_ids = sorted(str(f.id) for f in result.scalars().all())
     return [file_ids[i : i + batch_size] for i in range(0, len(file_ids), batch_size)]
+
+
+# Bulk proposal in-flight gate (phaze-8qheu). generate_proposals is a CONTROLLER task whose
+# dedup key is a SET hash over the pending file-id snapshot (deterministic_key.py's
+# ``_hash_ids``), not a per-member key like ``process_file:<file_id>`` -- so, unlike the agent
+# stages and match_tracklist_to_discogs, a re-trigger CANNOT rely on SAQ's key dedup to collapse
+# onto an in-flight batch (see the CORRECTION note on :func:`get_proposal_pending_batches`).
+# Mirrors :func:`get_match_busy_count`'s shape verbatim (same ``_STAGE_BUSY_SQL`` grouped scan,
+# same SAVEPOINT degrade-to-0): a second trigger while proposals are queued/active must be
+# REFUSED server-side rather than silently re-proposing the still-pending backlog.
+_PROPOSALS_BUSY_FUNCTION = "generate_proposals"
+
+
+async def get_proposal_busy_count(session: AsyncSession) -> int:
+    """Return the in-flight ``generate_proposals`` job count (``queued`` + ``active``), degrade-safe.
+
+    Counts ``saq_jobs`` rows whose deterministic key prefix is ``generate_proposals`` (status
+    ``IN ('queued', 'active')``). Both proposal trigger routes (``trigger_proposals`` and
+    ``trigger_proposals_ui``) gate on this being 0 before recomputing + enqueuing a fresh batch
+    set, closing the set-hash dedup gap phaze-8qheu describes: refusing a second trigger while a
+    first is live is strictly safer than letting the two batch snapshots race, because their
+    set-hash keys are NOT guaranteed to overlap even though they largely overlap in membership.
+
+    Failure isolation mirrors :func:`get_match_busy_count`: the read runs inside a SAVEPOINT
+    (``session.begin_nested()``); on ANY DB error the nested scope is rolled back ALONE and this
+    degrades to 0 (never raises) -- a degrade-to-0 false negative just re-opens the same window
+    this gate closes, it never blocks the operator's first trigger.
+    """
+    try:
+        async with session.begin_nested():
+            rows = (await session.execute(_STAGE_BUSY_SQL)).all()
+    except Exception:
+        logger.warning("proposal_busy_degraded", exc_info=True)
+        return 0
+    for row in rows:
+        if row[0] == _PROPOSALS_BUSY_FUNCTION:
+            return int(row[1])
+    return 0
 
 
 # --- Queue-loss detector (Phase 42, REQ-42-2) -------------------------------------------

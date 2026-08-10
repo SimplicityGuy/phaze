@@ -215,6 +215,51 @@ async def test_presign_upload_parts_rejects_part_count_over_s3_max(bucket: Bucke
         await s3_staging.presign_upload_parts(uuid.uuid4(), "irrelevant-upload-id", s3_staging.S3_MAX_PART_COUNT + 1, bucket)
 
 
+def _url_ttl_sec(url: str) -> int:
+    """Extract the presigned TTL (seconds) encoded in ``url``'s query string (SigV4 or SigV2)."""
+    query = parse_qs(urlparse(url).query)
+    if "X-Amz-Expires" in query:  # SigV4 -- direct TTL delta
+        return int(query["X-Amz-Expires"][0])
+    return int(query["Expires"][0]) - int(time.time())  # SigV2 (botocore default) -- absolute epoch
+
+
+# === presign_upload_parts TTL (phaze-pq1fe) =============================================
+
+
+async def test_presign_upload_parts_defaults_to_configured_put_ttl(bucket: BucketConfig) -> None:
+    """Omitting ``expires_in_sec`` falls back to the flat ``s3_presign_put_ttl_sec`` knob (unchanged
+    behavior for every caller that does not opt into a scaled TTL).
+    """
+    cfg = get_settings()
+    fid = uuid.uuid4()
+    upload_id = await s3_staging.create_multipart_upload(fid, bucket)
+    urls = await s3_staging.presign_upload_parts(fid, upload_id, 1, bucket)
+    assert _url_ttl_sec(urls[0]) == pytest.approx(cfg.s3_presign_put_ttl_sec, abs=5)
+
+
+async def test_presign_upload_parts_honors_explicit_expires_in_sec_override(bucket: BucketConfig) -> None:
+    """phaze-pq1fe: an explicit ``expires_in_sec`` overrides the flat configured default per call --
+    this is the seam ``cloud_staging._stage_file_to_s3`` uses to scale the TTL with part_count.
+    """
+    fid = uuid.uuid4()
+    upload_id = await s3_staging.create_multipart_upload(fid, bucket)
+    # Comfortably above the default 3600s knob, proving the override -- not the config -- won.
+    override_ttl = 7200
+    urls = await s3_staging.presign_upload_parts(fid, upload_id, 1, bucket, expires_in_sec=override_ttl)
+    assert _url_ttl_sec(urls[0]) == pytest.approx(override_ttl, abs=5)
+
+
+async def test_presign_upload_parts_clamps_expires_in_sec_to_s3_hard_ceiling(bucket: BucketConfig) -> None:
+    """phaze-pq1fe: an ``expires_in_sec`` beyond AWS's SigV4 ceiling is clamped, never passed through
+    raw -- an enormous ``part_count`` budget must degrade to "the longest S3 will honor" instead of
+    minting a signature S3 would reject outright.
+    """
+    fid = uuid.uuid4()
+    upload_id = await s3_staging.create_multipart_upload(fid, bucket)
+    urls = await s3_staging.presign_upload_parts(fid, upload_id, 1, bucket, expires_in_sec=s3_staging.S3_MAX_PRESIGN_EXPIRES_SEC + 100_000)
+    assert _url_ttl_sec(urls[0]) == pytest.approx(s3_staging.S3_MAX_PRESIGN_EXPIRES_SEC, abs=5)
+
+
 async def test_multipart_round_trip_assembles_object(bucket: BucketConfig) -> None:
     """create -> presign parts -> PUT bytes -> complete assembles the object; GET returns the bytes."""
     fid = uuid.uuid4()

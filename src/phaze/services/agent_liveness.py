@@ -154,6 +154,18 @@ class ComputeLane:
     is NEVER a heartbeating agent — its ``state`` is derived purely from in-flight work (``running`` /
     ``waiting``), so a configured-but-quiet cluster is ``IDLE`` (listed, never DEAD/red) and a DB
     hiccup degrades every lane to ``IDLE`` rather than raising into the hot poll (KDEPLOY-04).
+
+    ``running``/``waiting`` answer the ADMISSION question this page renders (the ACTIVE/WAITING/IDLE
+    pill + the "N waiting on quota" caption): ``running`` is a bare ``status == RUNNING`` count,
+    ``waiting`` is ``SUBMITTED AND inadmissible`` -- a QUOTA-FAULT signal, deliberately narrower than
+    "queued". ``queued``/``working`` (phaze-5c6i2) answer a DIFFERENT question -- the operator's
+    lane-card queued/working split -- via the SAME phaze-zyoag staged/analyzing seam
+    ``services.backends._cloud_lane_queued_working`` uses for the ``/s/analyze`` lane cards, so the two
+    pages can never render CONTRADICTORY queued/working figures for one lane (acceptance rule 9): both
+    are now one derivation, read twice. Do NOT repoint ``running``/``waiting`` at this seam -- it would
+    silently change what "waiting on quota" means (a fault caption, not a queue depth) for a page this
+    bead does not otherwise touch (phaze-rdxfu scoped ``/s/analyze`` and ``/admin/agents`` apart on
+    purpose; see that bead's commit message).
     """
 
     backend_id: str
@@ -161,6 +173,8 @@ class ComputeLane:
     state: ComputeLaneState
     running: int
     waiting: int
+    queued: int
+    working: int
 
 
 def _lane_state(running: int, waiting: int) -> ComputeLaneState:
@@ -192,11 +206,21 @@ async def derive_compute_lane_identities(session: AsyncSession) -> list[ComputeL
 
     Composes the Phase-67 registry (``get_settings().backends``, non-local entries) with a SINGLE
     grouped ``CloudJob`` read (``GROUP BY backend_id`` with filtered counts — ``RUNNING`` → running,
-    ``SUBMITTED AND inadmissible`` → waiting), mirroring the ``_admission_by_backend_id`` idiom in
-    ``services.backends``. Every configured cluster appears even when IDLE (0 counts); liveness is
-    in-flight WORK, never a reachability probe. In-flight rows with a NULL ``backend_id`` collapse
-    into ONE trailing ``"unattributed"``/``kind="cloud"`` lane, emitted only when its counts are
-    non-zero.
+    ``SUBMITTED AND inadmissible`` → waiting, plus the phaze-5c6i2 ``queued``/``working`` pair below),
+    mirroring the ``_admission_by_backend_id`` idiom in ``services.backends``. Every configured cluster
+    appears even when IDLE (0 counts); liveness is in-flight WORK, never a reachability probe. In-flight
+    rows with a NULL ``backend_id`` collapse into ONE trailing ``"unattributed"``/``kind="cloud"`` lane,
+    emitted only when its counts are non-zero.
+
+    phaze-5c6i2 (acceptance rule 9): ``queued``/``working`` are ADDED to the SAME grouped read via
+    ``phaze.services.pipeline._cloud_window_clauses`` (the phaze-zyoag staged/analyzing seam) so this
+    page and the ``/s/analyze`` lane cards (``services.backends._cloud_lane_queued_working``) derive
+    their queued/working figures from the identical predicate — one derivation, read twice, never two
+    independent ones that can drift (see :class:`ComputeLane`'s docstring for why ``running``/``waiting``
+    themselves stay untouched). The import is deferred to call time: ``pipeline`` imports
+    ``non_local_backend_kinds`` from THIS module at module scope, so importing ``pipeline`` back from
+    here at module scope would cycle (mirrors ``_cloud_window_clauses``'s own deferred import of
+    ``services.backends``, for the identical reason in the other direction).
 
     Degrade-safe (KDEPLOY-04): the ``CloudJob`` read runs inside a SAVEPOINT (``begin_nested``) so a
     :class:`~sqlalchemy.exc.SQLAlchemyError` rolls back the NESTED scope ALONE and returns the registry
@@ -204,13 +228,27 @@ async def derive_compute_lane_identities(session: AsyncSession) -> list[ComputeL
     already-loaded ``Agent`` rows — both ``admin_agents`` routes call ``_load_agents(session)`` on this
     SAME session before deriving lanes, so a plain ``session.rollback()`` here would expire those rows
     and 500 the template render on the next lazy load (CR-01 / D-00b). A settings/registry read failure
-    returns ``[]``. This must never raise on the hot poll path.
+    returns ``[]``. This must never raise on the hot poll path -- unlike the lane cards' own
+    ``queued``/``working`` (which degrade to ``None``, an explicit unknown), THIS page's pre-existing
+    contract degrades every ``ComputeLane`` field to 0/IDLE, so ``queued``/``working`` here follow that
+    SAME established 0-degrade discipline rather than introducing a second one on one page.
     """
+    from phaze.services.pipeline import _cloud_window_clauses  # noqa: PLC0415 -- breaks a module-load import cycle, see docstring
+
     try:
         kinds = non_local_backend_kinds(cast("ControlSettings", get_settings()))
     except Exception:
         logger.warning("compute_lane_identity_registry_unavailable", exc_info=True)
         return []
+
+    try:
+        staged, analyzing = _cloud_window_clauses()
+    except Exception:
+        logger.warning("compute_lane_identity_window_clauses_degraded", exc_info=True)
+        return [
+            ComputeLane(backend_id=backend_id, kind=kind, state="IDLE", running=0, waiting=0, queued=0, working=0)
+            for backend_id, kind in kinds.items()
+        ]
 
     try:
         # SAVEPOINT degrade (CR-01 / D-00b): roll back the NESTED scope alone on error so the aborted
@@ -221,21 +259,39 @@ async def derive_compute_lane_identities(session: AsyncSession) -> list[ComputeL
                 CloudJob.backend_id,
                 func.count().filter(CloudJob.status == CloudJobStatus.RUNNING.value).label("running"),
                 func.count().filter(CloudJob.status == CloudJobStatus.SUBMITTED.value, CloudJob.inadmissible.is_(True)).label("waiting"),
+                func.count().filter(staged).label("queued"),
+                func.count().filter(analyzing).label("working"),
             ).group_by(CloudJob.backend_id)
             rows = (await session.execute(stmt)).all()
     except SQLAlchemyError:
         logger.warning("compute_lane_identity_degraded", exc_info=True)
-        return [ComputeLane(backend_id=backend_id, kind=kind, state="IDLE", running=0, waiting=0) for backend_id, kind in kinds.items()]
+        return [
+            ComputeLane(backend_id=backend_id, kind=kind, state="IDLE", running=0, waiting=0, queued=0, working=0)
+            for backend_id, kind in kinds.items()
+        ]
 
-    counts = {backend_id: (int(running or 0), int(waiting or 0)) for backend_id, running, waiting in rows}
+    counts = {
+        backend_id: (int(running or 0), int(waiting or 0), int(queued or 0), int(working or 0))
+        for backend_id, running, waiting, queued, working in rows
+    }
 
     lanes: list[ComputeLane] = []
     for backend_id, kind in kinds.items():
-        running, waiting = counts.get(backend_id, (0, 0))
-        lanes.append(ComputeLane(backend_id=backend_id, kind=kind, state=_lane_state(running, waiting), running=running, waiting=waiting))
+        running, waiting, queued, working = counts.get(backend_id, (0, 0, 0, 0))
+        lanes.append(
+            ComputeLane(
+                backend_id=backend_id,
+                kind=kind,
+                state=_lane_state(running, waiting),
+                running=running,
+                waiting=waiting,
+                queued=queued,
+                working=working,
+            )
+        )
 
-    null_running, null_waiting = counts.get(None, (0, 0))
-    if null_running or null_waiting:
+    null_running, null_waiting, null_queued, null_working = counts.get(None, (0, 0, 0, 0))
+    if null_running or null_waiting or null_queued or null_working:
         lanes.append(
             ComputeLane(
                 backend_id=UNATTRIBUTED_LANE_ID,
@@ -243,6 +299,8 @@ async def derive_compute_lane_identities(session: AsyncSession) -> list[ComputeL
                 state=_lane_state(null_running, null_waiting),
                 running=null_running,
                 waiting=null_waiting,
+                queued=null_queued,
+                working=null_working,
             )
         )
 

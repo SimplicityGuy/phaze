@@ -19,7 +19,8 @@ import uuid
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import Select, func, select, tuple_
+from sqlalchemy import Select, and_, exists, func, or_, select, tuple_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 from sqlalchemy.orm import selectinload
 import structlog
@@ -58,18 +59,57 @@ _MAX_BULK_TAG_WRITE = 2000
 # written (COMPLETED) or determined to need no write (NO_OP). Both are excluded from the candidate
 # window so neither can re-occupy the alphabetically-first ``.limit()`` slots and starve qualifying
 # files. DISCREPANCY is intentionally NOT terminal (the file re-appears so the operator can retry).
+#
+# phaze-vwyco: kept as documentation of the two terminal STATUS values, but the actual anti-join
+# (:func:`_terminal_tagwrite_subq`) no longer keys off this tuple alone -- a bare ``status IN (...)``
+# also matches a completed UNDO (``source="undo"``, status COMPLETED), which must NOT be terminal.
 _TERMINAL_TAGWRITE_STATUSES = (TagWriteStatus.COMPLETED, TagWriteStatus.NO_OP)
 
 
-def _terminal_tagwrite_subq() -> Select[tuple[uuid.UUID]]:
-    """Subquery of ``file_id``\\ s with a TERMINAL ``TagWriteLog`` (COMPLETED or NO_OP).
+def _terminal_tagwrite_subq(file_id: uuid.UUID | None = None) -> Select[tuple[uuid.UUID]]:
+    """Subquery of ``file_id``\\ s with a TERMINAL, un-reverted ``TagWriteLog`` (COMPLETED or NO_OP).
 
     The single source of the tag-write idempotency anti-join, shared by both operator builders
     (``bulk_write_no_discrepancies`` here and ``services.review.get_tagwrite_review_rows``): a file
     listed here is done (written) or needs no write (zero-change NO_OP) and is dropped from the
     candidate window (WR-01).
+
+    phaze-vwyco: a completed UNDO is itself a ``COMPLETED`` ``TagWriteLog`` row
+    (``source="undo"``) -- the naive ``status IN (...)`` form this replaced matched it exactly like
+    a genuine forward completion, permanently evicting a reverted file even though its disk tags
+    are back to the pre-write (once again changed) state, with no re-apply path left anywhere
+    (every reachable POST target is a rendered row, and a reverted file's row never renders again).
+    This applies the SAME chain-boundary rule ``_get_write_log_to_undo`` already uses to pick an
+    undo's TARGET, inverted for terminal DETECTION: a forward terminal row (``COMPLETED`` with
+    ``source != "undo"``, or ``NO_OP``) only keeps the file terminal if no LATER completed undo has
+    since reverted it. Optionally scoped to a single ``file_id`` -- :func:`_has_terminal_tagwrite`
+    reuses this exact predicate for its per-file re-check instead of the separate, unfixed
+    ``status``-only query it used to run.
     """
-    return select(TagWriteLog.file_id).where(TagWriteLog.status.in_(_TERMINAL_TAGWRITE_STATUSES))
+    terminal_predicate = or_(
+        TagWriteLog.status == TagWriteStatus.NO_OP,
+        and_(TagWriteLog.status == TagWriteStatus.COMPLETED, TagWriteLog.source != "undo"),
+    )
+    terminal_rows_stmt = select(TagWriteLog.file_id, TagWriteLog.written_at, TagWriteLog.id).where(terminal_predicate)
+    later_undo_stmt = select(TagWriteLog.file_id, TagWriteLog.written_at, TagWriteLog.id).where(
+        TagWriteLog.source == "undo", TagWriteLog.status == TagWriteStatus.COMPLETED
+    )
+    if file_id is not None:
+        terminal_rows_stmt = terminal_rows_stmt.where(TagWriteLog.file_id == file_id)
+        later_undo_stmt = later_undo_stmt.where(TagWriteLog.file_id == file_id)
+    terminal_rows = terminal_rows_stmt.subquery()
+    later_undo = later_undo_stmt.subquery()
+    # phaze-9dwb: built with the standalone ``exists(...)`` construct, not the ``Select.exists()``
+    # method -- the router event-loop-hygiene guard flags any ``.exists()`` ATTRIBUTE call in a
+    # router function body as (unambiguous) blocking filesystem I/O and cannot tell this SQL
+    # construct apart from ``pathlib.Path.exists()``.
+    later_undo_exists = exists(
+        select(1).where(
+            later_undo.c.file_id == terminal_rows.c.file_id,
+            tuple_(later_undo.c.written_at, later_undo.c.id) > tuple_(terminal_rows.c.written_at, terminal_rows.c.id),
+        )
+    )
+    return select(terminal_rows.c.file_id).where(~later_undo_exists).distinct()
 
 
 # phaze-u28m: a fixed application-defined key for the bulk-tag-write Postgres advisory lock. It
@@ -138,8 +178,15 @@ async def _has_terminal_tagwrite(session: AsyncSession, file_id: uuid.UUID) -> b
     phaze-u28m: guards the interleaving with the per-file route (which the bulk advisory lock does
     NOT block) -- a file that gained a COMPLETED/NO_OP log between the candidate SELECT and its turn
     in the loop must be skipped rather than written a second time.
+
+    phaze-vwyco: this used to run its own bare ``status IN (...)`` check, which -- like the
+    candidate-window anti-join it re-verifies -- treated a completed undo as terminal. Reuses
+    :func:`_terminal_tagwrite_subq`'s chain-aware predicate (scoped to this one ``file_id``) so both
+    checks agree: a file the anti-join now correctly re-admits is never re-evicted here. Uses the
+    standalone ``exists(...)`` construct, not the ``Select.exists()`` method -- see the identical
+    phaze-9dwb note in :func:`_terminal_tagwrite_subq`.
     """
-    stmt = select(func.count()).select_from(TagWriteLog).where(TagWriteLog.file_id == file_id, TagWriteLog.status.in_(_TERMINAL_TAGWRITE_STATUSES))
+    stmt = select(exists(_terminal_tagwrite_subq(file_id)))
     return bool((await session.execute(stmt)).scalar())
 
 
@@ -530,7 +577,7 @@ async def write_file_tags(
     form_data = await request.form()
 
     # Build tags dict from form data
-    tags: dict[str, str | int | None] = {}
+    tags: dict[str, str | int | list[str] | None] = {}
     for field in CORE_FIELDS:
         val = form_data.get(field)
         if val is not None and str(val).strip():
@@ -703,6 +750,20 @@ async def bulk_write_no_discrepancies(
                 },
             )
 
+        # phaze-7bjjj: ``_acquire_bulk_tagwrite_lock``'s SELECT is ``lock_conn``'s first statement,
+        # and this engine runs with no AUTOCOMMIT, so it auto-begins a transaction that nothing else
+        # ever ends (no other op touches ``lock_conn`` before its close). Left alone, ``lock_conn``
+        # sits idle-in-transaction for the whole bounded candidate loop below -- tens of seconds to
+        # minutes -- holding back the backend_xmin vacuum horizon and exposed to
+        # ``idle_in_transaction_session_timeout``. ``pg_try_advisory_lock`` is SESSION-, not
+        # transaction-scoped (comment above), so committing here does not release it. Only when we
+        # OWN ``lock_conn`` (a real, dedicated production connection): the test harness's
+        # ``_bulk_tagwrite_lock_connection`` fallback reuses the hermetic per-test connection
+        # (``owns_lock_conn=False``), which is a manually-managed outer transaction the test's own
+        # rollback-based isolation depends on -- committing it here would durably commit test data.
+        if owns_lock_conn:
+            await lock_conn.commit()
+
         queued = 0
         noop = 0
         failed = 0
@@ -774,7 +835,7 @@ async def bulk_write_no_discrepancies(
                         # (stays per-file Approve/Edit/Skip). ``compute_proposed_tags`` never blanks,
                         # so defensive.
                         continue
-                    tags: dict[str, str | int | None] = {k: v for k, v in proposed.items() if v is not None}
+                    tags: dict[str, str | int | list[str] | None] = {k: v for k, v in proposed.items() if v is not None}
                     log_entry = await enqueue_tag_write(session, request.app.state.task_router, candidate, tags, source="proposal")
                     # phaze-k7g6: commit the audit row atomically with the dispatch it describes, so
                     # a mid-loop cancellation/crash can never leave a job enqueued with no
@@ -917,6 +978,25 @@ async def undo_tag_write(
         row_context = await _tagwrite_row_context(session, file_record, row_state="queued")
         already_message = f"A tag write is already queued for {file_record.original_filename}. Wait for it to finish, then retry the undo if needed."
         return _tagwrite_diff_row_response(request, row_context, already_message)
+    except ValueError:
+        # phaze-qe5y1: enqueue_tag_write's own is_applied guard (tag_writer.py:131-133) can fire
+        # here -- the scan-deletion race (services/scan_deletion.py deletes RenameProposal,
+        # TagWriteLog and FileRecord rows for a batch in one transaction) can revert the file's
+        # executed proposal between our idempotency check above and this dispatch. Mirror
+        # write_file_tags' is_applied handling (tags.py:524-528): redraw the row unchanged
+        # (pending) alongside an honest toast, rather than letting the ValueError escape uncaught
+        # as a 500 that htmx silently drops on this outerHTML-targeted row.
+        row_context = await _tagwrite_row_context(session, file_record, row_state="pending")
+        return _tagwrite_diff_row_response(request, row_context, "Only executed files can have tags written -- the revert could not be queued.")
+    except IntegrityError:
+        # phaze-qe5y1: TagWriteLog.file_id has no ondelete, and scan_deletion deletes
+        # rename_proposals BEFORE tag_write_log/files, so an adjacent race window can instead trip
+        # the enqueue's own audit-row INSERT (tag_writer.py's session.flush()) as an FK violation
+        # rather than the is_applied guard above. That leaves the session's transaction aborted, so
+        # roll back before touching it again, and treat the file as gone -- like the file_record is
+        # None branch above -- rather than trying to redraw a row for a file no longer in the DB.
+        await session.rollback()
+        return _tagwrite_stale_toast_response(request, "File not found -- it may have been removed or already processed.")
 
     # phaze-26t7 / phaze-6bkk: the toast must never claim an on-disk outcome the api has not
     # observed -- and post-DIST-01 it observes none, because the reversal runs on the agent. Say

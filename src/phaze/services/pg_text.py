@@ -18,6 +18,7 @@ Bounded length is a separate concern and is handled by the callers' ``max_length
 
 from __future__ import annotations
 
+import math
 import re
 
 
@@ -44,3 +45,42 @@ def contains_pg_invalid_chars(s: str) -> bool:
     typed. Uses the same character class as :func:`sanitize_pg_text`.
     """
     return _PG_INVALID_CHARS.search(s) is not None
+
+
+def find_pg_unsafe_json_reason(value: object) -> str | None:
+    """Recursively find the first PG-unstorable leaf in a JSON-shaped value (phaze-hvve5).
+
+    A ``dict``/``list`` payload bound for a ``jsonb`` column is not caught by
+    :func:`sanitize_pg_text` / :func:`contains_pg_invalid_chars` (both take a single ``str``) nor
+    by a scalar ``Field(ge=..., le=...)`` bound (which only guards a top-level float, not one
+    buried inside a dict/list value) -- so a NUL/lone-surrogate string or a non-finite float
+    nested anywhere in the structure sails through Pydantic validation and aborts the transaction
+    at ``session.commit()`` (``CharacterNotInRepertoireError`` for the text case,
+    ``DataError``/``invalid input syntax for type json`` for NaN/Infinity, since Python's default
+    JSON encoder emits the bare, non-JSON-standard tokens ``NaN``/``Infinity`` that PostgreSQL's
+    ``jsonb`` input parser rejects).
+
+    Walks ``dict`` (both keys and values), ``list``, ``str``, and ``float``; every other scalar
+    type (``bool``, ``int``, ``None``) is always PG-safe and is skipped. Returns a short
+    human-readable reason suitable for a Pydantic ``ValueError`` detail, or ``None`` if the value
+    is safe to store as-is.
+    """
+    if isinstance(value, str):
+        return "contains a NUL byte or a lone Unicode surrogate" if contains_pg_invalid_chars(value) else None
+    if isinstance(value, float):
+        return "is NaN or Infinity, which PostgreSQL's jsonb parser rejects" if math.isnan(value) or math.isinf(value) else None
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(key, str) and contains_pg_invalid_chars(key):
+                return f"has a key ({key!r}) containing a NUL byte or a lone Unicode surrogate"
+            reason = find_pg_unsafe_json_reason(item)
+            if reason is not None:
+                return reason
+        return None
+    if isinstance(value, list):
+        for item in value:
+            reason = find_pg_unsafe_json_reason(item)
+            if reason is not None:
+                return reason
+        return None
+    return None

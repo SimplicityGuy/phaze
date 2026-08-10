@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 import uuid
 
@@ -248,6 +249,84 @@ async def test_probe_reports_backend_availability() -> None:
     assert await _probe_one(None, _FastBackend("k8s", available=False)) == ("k8s", False)  # type: ignore[arg-type]
 
 
+class _RollbackTrackingPoisonSession:
+    """Tracks ``rollback`` calls; ``execute`` (via ``is_available``) is what a probe would poison."""
+
+    def __init__(self) -> None:
+        self.rollback_count = 0
+
+    async def rollback(self) -> None:
+        self.rollback_count += 1
+
+
+@pytest.mark.asyncio
+async def test_probe_one_rolls_back_the_session_on_a_failed_probe() -> None:
+    """phaze-ntr8s: ``_probe_one`` clears the poison it may have caused BEFORE returning.
+
+    A compute probe's cancelled/failed DB read can leave the shared session unusable for the very next
+    statement. The failing branch must roll back immediately -- not rely on some later, one-time
+    cleanup -- so a SEQUENCE of probes on the same session (``_probe_availability``) never inherits a
+    poisoned session from an earlier lane in the SAME sweep.
+    """
+    session = _RollbackTrackingPoisonSession()
+    result = await _probe_one(session, _RaisingBackend("k8s-bad"))  # type: ignore[arg-type]
+
+    assert result == ("k8s-bad", False)
+    assert session.rollback_count == 1
+
+
+@pytest.mark.asyncio
+async def test_probe_one_swallows_a_rollback_failure_after_a_failed_probe() -> None:
+    """A rollback failure in the cleanup branch must never mask the original probe failure (degrade-safe)."""
+
+    class _RollbackAlsoFailsSession:
+        async def rollback(self) -> None:
+            raise RuntimeError("rollback boom")
+
+    result = await _probe_one(_RollbackAlsoFailsSession(), _RaisingBackend("k8s-bad"))  # type: ignore[arg-type]
+    assert result == ("k8s-bad", False)  # the probe failure still degrades cleanly, no raise
+
+
+class _CascadeVictimLane:
+    """A backend whose ``is_available`` fails IFF the shared session is (still) poisoned.
+
+    Models a sibling compute probe's own DB read failing on an already-aborted session -- the exact
+    cascade phaze-ntr8s describes: backend A's cancelled probe poisons the session, and backend B's
+    UNRELATED, otherwise-healthy probe immediately fails too because nothing rolled back in between.
+    """
+
+    def __init__(self, backend_id: str, rank: int) -> None:
+        self.id = backend_id
+        self.rank = rank
+        self.cap = 1
+
+    async def is_available(self, session: _PoisonRecoverSession) -> bool:
+        if session.poisoned:
+            raise RuntimeError("query failed: current transaction is aborted")
+        return True
+
+
+@pytest.mark.asyncio
+async def test_probe_availability_isolates_a_poisoned_probe_from_the_next_sibling_lane() -> None:
+    """phaze-ntr8s ACCEPTANCE: a poisoned probe must NOT cascade to the NEXT lane in the same sweep.
+
+    ``_probe_availability`` runs every backend's probe SEQUENTIALLY on ONE shared session (Pitfall 1).
+    Pre-fix, ``_probe_one`` never rolled back on its own failure -- only a rollback AFTER the whole
+    fan-out cleared the poison, which is too late for a sibling probed WITHIN this same sweep. Ordering
+    the poisoning lane FIRST and a lane that only fails while the session is poisoned SECOND reproduces
+    exactly that: without the per-probe rollback, the second (otherwise healthy) lane would also read
+    False, reporting a false 'offline' for a lane that never actually failed.
+    """
+    session = _PoisonRecoverSession()
+    poison = _DbPoisoningLane("compute-a", 10)
+    victim = _CascadeVictimLane("compute-b", 20)
+
+    result = await _probe_availability(session, [poison, victim])  # type: ignore[arg-type]
+
+    assert result == {"compute-a": False, "compute-b": True}  # the sibling lane is UNAFFECTED
+    assert session.rollbacks >= 1  # the per-probe rollback ran between the two probes
+
+
 # --------------------------------------------------------------------------- Task 2: kind
 
 
@@ -269,10 +348,20 @@ def test_kind_of_unknown_fallback() -> None:
 @pytest.mark.asyncio
 async def test_snapshot_shape_and_rank_order(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A 3-backend registry returns 3 rank-ascending secret-free lane dicts with live counts."""
+    import phaze.services.pipeline as pipeline_mod
+
     local = LocalBackend(id="local", rank=99, cap=1)
     compute = ComputeAgentBackend(id="a1", rank=10, cap=2)
     kueue = KueueBackend(id="k8s", rank=20, cap=3)
     monkeypatch.setattr(backends_mod, "resolve_backends", lambda _settings: [local, compute, kueue])
+    # phaze-5c6i2: _cloud_lane_queued_working resolves kueue-ness via `_cloud_window_clauses`, which
+    # reads pipeline.get_settings() -- a SEPARATE bound name from the resolve_backends mock above, so
+    # it needs its own deterministic registry (a1=compute, k8s=kueue) for the new queued/working split.
+    monkeypatch.setattr(
+        pipeline_mod,
+        "get_settings",
+        lambda: SimpleNamespace(backends=[SimpleNamespace(id="a1", kind="compute"), SimpleNamespace(id="k8s", kind="kueue")]),
+    )
 
     async def _fake_probe(_session: Any, _backends: Any) -> dict[str, bool]:
         return {"local": True, "a1": True, "k8s": False}
@@ -292,15 +381,46 @@ async def test_snapshot_shape_and_rank_order(session: AsyncSession, monkeypatch:
     )
     await session.commit()
 
+    # app_state=None (default) -- the local lane's SAQ queued/working are unavailable without a real
+    # task_router, so they degrade to None (explicit unknown), exactly like every pre-phaze-5c6i2 caller.
     lanes = await get_backend_lane_snapshot(session)
 
     assert [lane["id"] for lane in lanes] == ["a1", "k8s", "local"]  # rank-ascending
-    expected_keys = {"id", "kind", "rank", "cap", "in_flight", "available", "quota_wait", "inadmissible"}
+    expected_keys = {
+        "id",
+        "kind",
+        "rank",
+        "cap",
+        "in_flight",
+        "available",
+        "quota_wait",
+        "inadmissible",
+        "queued",
+        "working",
+        "processed_24h",
+        "processed_lifetime",
+    }
     for lane in lanes:
         assert set(lane) == expected_keys  # secret-free: no config / SecretStr / token key
 
     by_id = {lane["id"]: lane for lane in lanes}
-    assert by_id["a1"] == {"id": "a1", "kind": "compute", "rank": 10, "cap": 2, "in_flight": 1, "available": True, "quota_wait": 0, "inadmissible": 0}
+    # phaze-5c6i2: a1 is compute-kind under the mocked registry above, so its SUBMITTED row is
+    # pre-execution ("staged") -> queued=1, working=0. No AnalysisResult rows exist -> processed all 0.
+    assert by_id["a1"] == {
+        "id": "a1",
+        "kind": "compute",
+        "rank": 10,
+        "cap": 2,
+        "in_flight": 1,
+        "available": True,
+        "quota_wait": 0,
+        "inadmissible": 0,
+        "queued": 1,
+        "working": 0,
+        "processed_24h": 0,
+        "processed_lifetime": 0,
+    }
+    # k8s is kueue-kind, so its SUBMITTED row is post-submit ("analyzing") -> working=1, queued=0.
     assert by_id["k8s"] == {
         "id": "k8s",
         "kind": "kueue",
@@ -310,6 +430,10 @@ async def test_snapshot_shape_and_rank_order(session: AsyncSession, monkeypatch:
         "available": False,
         "quota_wait": 1,
         "inadmissible": 0,
+        "queued": 0,
+        "working": 1,
+        "processed_24h": 0,
+        "processed_lifetime": 0,
     }
     assert by_id["local"] == {
         "id": "local",
@@ -320,6 +444,10 @@ async def test_snapshot_shape_and_rank_order(session: AsyncSession, monkeypatch:
         "available": True,
         "quota_wait": 0,
         "inadmissible": 0,
+        "queued": None,
+        "working": None,
+        "processed_24h": 0,
+        "processed_lifetime": 0,
     }
 
 

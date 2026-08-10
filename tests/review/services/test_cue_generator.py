@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 from pathlib import Path
+
+import pytest
 
 from phaze.services.cue_generator import (
     CueTrackData,
     generate_cue_content,
     next_cue_path,
+    next_cue_path_and_version,
     parse_timestamp_string,
     seconds_to_cue_timestamp,
     write_cue_file,
@@ -476,8 +480,6 @@ class TestWriteCueFile:
         Guards the whole point of returning it: the number must be the same one the deleted
         ``routers/cue.py::_get_cue_version`` re-derived, not an off-by-one reinterpretation.
         """
-        from phaze.services.cue_generator import next_cue_path_and_version
-
         audio = tmp_path / "<set-01>.mp3"
         audio.touch()
         write_cue_file("v1\n", audio)
@@ -485,3 +487,72 @@ class TestWriteCueFile:
         next_path, next_version = next_cue_path_and_version(audio)
         assert next_path.name == "<set-01>.v3.cue"
         assert next_version == 3
+
+
+class TestWriteCueFileConcurrency:
+    """phaze-d16ax: ``next_cue_path_and_version`` PREDICTS a free path; the exclusive-create write
+    must CLAIM one -- two concurrent writers racing the same predicted version must never let the
+    second silently truncate the first.
+    """
+
+    def test_concurrent_writers_do_not_clobber_each_other(self, tmp_path):
+        """Two genuinely concurrent writes for the SAME audio file must both survive on disk.
+
+        Before the fix, both threads could scan before either created the file, both resolve the
+        identical ``(path, version)``, and the truncating ``open("w")`` would let the second
+        writer silently overwrite the first -- one operator-approved cue sheet lost with no error.
+        The exclusive-create retry makes that structurally impossible: a losing writer gets
+        ``FileExistsError``, re-scans, and claims the NEXT version instead.
+        """
+        audio = tmp_path / "<set-01>.mp3"
+        audio.touch()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            future_a = pool.submit(write_cue_file, "content-a\n", audio)
+            future_b = pool.submit(write_cue_file, "content-b\n", audio)
+            (path_a, version_a) = future_a.result()
+            (path_b, version_b) = future_b.result()
+
+        # Both writers must have claimed DISTINCT paths/versions -- neither lost its content.
+        assert path_a != path_b
+        assert {version_a, version_b} == {1, 2}
+        assert path_a.read_text(encoding="utf-8-sig") == "content-a\n"
+        assert path_b.read_text(encoding="utf-8-sig") == "content-b\n"
+
+    def test_retries_past_a_losing_race_then_succeeds(self, tmp_path, monkeypatch):
+        """A single lost race (one ``FileExistsError``) is retried transparently, not surfaced."""
+        import phaze.services.cue_generator as cue_generator_module
+
+        audio = tmp_path / "<set-01>.mp3"
+        audio.touch()
+
+        real_os_open = cue_generator_module.os.open
+        calls = {"n": 0}
+
+        def flaky_open(path, flags, mode=0o777):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise FileExistsError(f"simulated race on {path}")
+            return real_os_open(path, flags, mode)
+
+        monkeypatch.setattr(cue_generator_module.os, "open", flaky_open)
+
+        path, version = write_cue_file("content\n", audio)
+        assert calls["n"] == 2, "exactly one retry after the simulated race"
+        assert version == 1
+        assert path.read_text(encoding="utf-8-sig") == "content\n"
+
+    def test_persistent_collision_raises_instead_of_spinning_forever(self, tmp_path, monkeypatch):
+        """Every attempt losing the exclusive create must raise, not loop unboundedly."""
+        import phaze.services.cue_generator as cue_generator_module
+
+        audio = tmp_path / "<set-01>.mp3"
+        audio.touch()
+
+        def always_fails(path, flags, mode=0o777):
+            raise FileExistsError(f"simulated persistent collision on {path}")
+
+        monkeypatch.setattr(cue_generator_module.os, "open", always_fails)
+
+        with pytest.raises(RuntimeError, match="Could not claim"):
+            write_cue_file("content\n", audio)

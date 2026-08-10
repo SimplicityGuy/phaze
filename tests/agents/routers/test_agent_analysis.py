@@ -11,14 +11,16 @@ creates a row, 422 on extra fields (D-16 / AUTH-01 spoof block), and the auth
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 import uuid
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
 
+from phaze.config import ControlSettings
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
@@ -26,6 +28,7 @@ from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers import agent_analysis as agent_analysis_module
 from phaze.routers.agent_analysis import router as agent_analysis_router
+from phaze.services import s3_staging
 from phaze.services.scheduling_ledger import upsert_ledger_entry
 
 
@@ -33,6 +36,56 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.models.agent import Agent
+
+
+# phaze-7jfgi: a one-kueue registry with a resolvable shared bucket, so
+# `_delete_staged_object_if_cloud`'s guard SELECT finds a row whose `staging_bucket` resolves to a
+# real `BucketConfig` and the S3 delete path (not the all-local / unstaged short-circuits) runs.
+_KUEUE_REGISTRY = """
+    [[backends]]
+    kind = "local"
+    id = "local"
+    rank = 99
+    cap = 1
+
+    [[backends]]
+    kind = "kueue"
+    id = "kueue-cluster"
+    rank = 10
+    cap = 4
+    buckets = ["shared-bucket"]
+
+    [backends.kube]
+    api_url = "https://kube.example.com"
+    namespace = "phaze"
+    local_queue = "phaze-lq"
+
+    [[buckets]]
+    id = "shared-bucket"
+    scope = "shared"
+    endpoint_url = "https://s3.example.com"
+    bucket = "phaze-staging"
+"""
+
+
+def _patch_settings(monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any) -> None:
+    backends_toml_env(_KUEUE_REGISTRY)
+    settings = ControlSettings()
+    monkeypatch.setattr(agent_analysis_module, "get_settings", lambda: settings)
+
+
+async def _seed_cloud_job_with_bucket(session: AsyncSession, file_id: uuid.UUID) -> None:
+    """Seed a `cloud_job` row with a resolvable `staging_bucket` (MKUE-02)."""
+    session.add(
+        CloudJob(
+            id=uuid.uuid4(),
+            file_id=file_id,
+            s3_key=f"phaze-staging/{file_id}",
+            status=CloudJobStatus.RUNNING.value,
+            staging_bucket="shared-bucket",
+        )
+    )
+    await session.commit()
 
 
 def _make_smoke_app(session: AsyncSession) -> FastAPI:
@@ -1299,3 +1352,86 @@ async def test_analysis_failed_vanished_file_holds_200_not_500(seed_test_agent: 
     session.expire_all()
     row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == vanished_file_id))).scalar_one_or_none()
     assert row is None
+
+
+@pytest.mark.asyncio
+async def test_put_analysis_releases_txn_before_the_staged_object_delete(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-7jfgi: the guard-SELECT's own transaction is released BEFORE the S3 delete round-trip.
+
+    `_delete_staged_object_if_cloud`'s guard SELECT autobegins a NEW transaction on the request
+    session (separate from the caller's already-committed result write). Under PgBouncer SESSION
+    mode the upstream server slot is pinned by the checkout, not by transaction state, so a wedged
+    S3 endpoint would otherwise pin a pooled connection idle-in-transaction for the full delete
+    round-trip. We spy that a session commit is recorded strictly BEFORE `delete_staged_object` runs.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job_with_bucket(session, file_id)
+
+    order: list[str] = []
+    real_commit = _AsyncSession.commit
+
+    async def _spy_commit(self: _AsyncSession) -> None:
+        await real_commit(self)
+        order.append("commit")
+
+    async def _delete_recording(*_args: Any, **_kwargs: Any) -> None:
+        order.append("delete")
+
+    monkeypatch.setattr(_AsyncSession, "commit", _spy_commit)
+    monkeypatch.setattr(s3_staging, "delete_staged_object", _delete_recording)
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"bpm": 128.5})
+
+    assert response.status_code == 200, response.text
+    # The S3 delete happens, and a commit (releasing the guard-SELECT's own txn) precedes it --
+    # strictly AFTER the result-write commit that already ran earlier in the handler.
+    assert order.count("commit") >= 2
+    assert "delete" in order
+    delete_index = order.index("delete")
+    assert delete_index > 0
+    assert order[delete_index - 1] == "commit"
+
+
+@pytest.mark.asyncio
+async def test_analysis_failed_releases_txn_before_the_staged_object_delete(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-7jfgi: same guard as put_analysis, exercised through the report_analysis_failed seam."""
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job_with_bucket(session, file_id)
+
+    order: list[str] = []
+    real_commit = _AsyncSession.commit
+
+    async def _spy_commit(self: _AsyncSession) -> None:
+        await real_commit(self)
+        order.append("commit")
+
+    async def _delete_recording(*_args: Any, **_kwargs: Any) -> None:
+        order.append("delete")
+
+    monkeypatch.setattr(_AsyncSession, "commit", _spy_commit)
+    monkeypatch.setattr(s3_staging, "delete_staged_object", _delete_recording)
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.post(f"/api/internal/agent/analysis/{file_id}/failed", json={"reason": "timeout"})
+
+    assert response.status_code == 200, response.text
+    assert order.count("commit") >= 2
+    assert "delete" in order
+    delete_index = order.index("delete")
+    assert delete_index > 0
+    assert order[delete_index - 1] == "commit"

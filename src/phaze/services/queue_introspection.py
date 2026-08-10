@@ -151,6 +151,18 @@ class ActiveJobBreakdown:
 # are kept honest BEHAVIOURALLY instead -- ``test_active_reaper.py`` asserts the count this reports
 # equals the number of rows the reaper actually deletes on the same fixture, which is the property
 # that matters and which textual sharing would only have implied.
+#
+# Both the ``stuck_past_timeout`` and ``stranded`` FILTERs exclude rows whose serialized
+# ``timeout`` is explicitly ``0`` (phaze-mllxc). In SAQ, ``timeout=0`` means UNBOUNDED --
+# ``Job.stuck`` is ``(self.timeout and ...)``, so 0 is falsy and the job is never sweep-eligible --
+# and ``scan_directory`` enqueues with ``timeout=0`` deliberately (a full SHA-256 walk of a large
+# network-mounted archive legitimately takes 1-2h). ``Job.to_dict`` serializes ANY field that
+# differs from its dataclass default, so ``timeout: 0`` is ALWAYS present in the blob; a bare
+# ``? 'timeout'``/``COALESCE(...,  :default)`` treats a present 0 as a real (zero-second) bound
+# instead of the "no bound at all" sentinel SAQ intends, flagging a healthy 1-2h scan as
+# stuck/stranded within ``active_reap_slack_seconds`` of starting. The guard is an exclusion
+# (``<> 0``), never a ``NULLIF(...,0)`` substitution -- that would silently convert 0 to the 10s
+# default and still trip at 10s + slack.
 _ACTIVE_BREAKDOWN_SQL = text(
     """
     SELECT
@@ -161,11 +173,13 @@ _ACTIVE_BREAKDOWN_SQL = text(
         WHERE NOT (convert_from(job, 'UTF8')::jsonb ? 'attempts')
           AND (convert_from(job, 'UTF8')::jsonb ? 'started')
           AND (convert_from(job, 'UTF8')::jsonb ? 'timeout')
+          AND (convert_from(job, 'UTF8')::jsonb->>'timeout')::bigint <> 0
           AND (EXTRACT(EPOCH FROM NOW()) * 1000 - (convert_from(job, 'UTF8')::jsonb->>'started')::bigint) / 1000.0
               > (convert_from(job, 'UTF8')::jsonb->>'timeout')::bigint
       ) AS stuck_past_timeout,
       count(*) FILTER (
         WHERE (convert_from(job, 'UTF8')::jsonb ? 'started')
+          AND COALESCE((convert_from(job, 'UTF8')::jsonb->>'timeout')::bigint, :default_timeout_seconds) <> 0
           AND (EXTRACT(EPOCH FROM NOW()) * 1000 - (convert_from(job, 'UTF8')::jsonb->>'started')::bigint) / 1000.0
               > COALESCE((convert_from(job, 'UTF8')::jsonb->>'timeout')::bigint, :default_timeout_seconds) + :slack_seconds
       ) AS stranded

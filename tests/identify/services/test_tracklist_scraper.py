@@ -25,6 +25,7 @@ from phaze.config import get_settings
 from phaze.services.tracklist_scraper import (
     DisallowedScrapeHostError,
     SearchParseFailureError,
+    SearchRequestFailedError,
     TracklistScraper,
     TracklistSearchResult,
 )
@@ -155,14 +156,16 @@ class TestTracklistScraperSearch:
         assert results == []
 
     @pytest.mark.asyncio
-    async def test_search_403_returns_empty(self):
+    async def test_search_403_raises_search_request_failed(self):
+        """phaze-i7gkc: a non-200 response is a statement about US, not the world -- it must not
+        collapse to the same `[]` a genuine zero-result page returns, or the drain caches a
+        403/Turnstile block as a permanent 180-day NOT_FOUND."""
         client = AsyncMock(spec=httpx.AsyncClient)
         client.post = AsyncMock(return_value=_mock_response(403, "Forbidden"))
 
         scraper = TracklistScraper(client=client)
-        results = await scraper.search("Skrillex")
-
-        assert results == []
+        with pytest.raises(SearchRequestFailedError):
+            await scraper.search("Skrillex")
 
     @pytest.mark.asyncio
     async def test_rate_limit_delay(self):
@@ -275,23 +278,27 @@ class TestTracklistScraperSearchEdgeCases:
     """Search error/parse branches and result-item skip paths."""
 
     @pytest.mark.asyncio
-    async def test_search_http_error_returns_empty(self):
-        """A transport error during the search POST is logged and yields []."""
+    async def test_search_http_error_raises_search_request_failed(self):
+        """phaze-i7gkc: a transport error during the search POST must RAISE, not collapse to []
+        -- a timeout/connection error says nothing about whether the site has this set."""
         client = AsyncMock(spec=httpx.AsyncClient)
         client.post = AsyncMock(side_effect=httpx.ConnectError("boom"))
 
         scraper = TracklistScraper(client=client)
-        assert await scraper.search("skrillex") == []
+        with pytest.raises(SearchRequestFailedError):
+            await scraper.search("skrillex")
 
     @pytest.mark.asyncio
-    async def test_search_parse_failure_returns_empty(self):
-        """An unexpected (non-stale-selector) parser exception on a 200 body is still swallowed to []."""
+    async def test_search_parse_failure_raises_search_request_failed(self):
+        """phaze-i7gkc: an unexpected (non-stale-selector) parser exception on a 200 body is the
+        THIRD collapse site the verifier flagged -- it must raise, exactly like the two above, not
+        be swallowed to [] (which is byte-indistinguishable from a genuine empty result)."""
         client = AsyncMock(spec=httpx.AsyncClient)
         client.post = AsyncMock(return_value=_mock_response(200, SAMPLE_SEARCH_HTML))
 
         scraper = TracklistScraper(client=client)
-        with patch.object(scraper, "_parse_search_results", side_effect=ValueError("bad parse")):
-            assert await scraper.search("skrillex") == []
+        with patch.object(scraper, "_parse_search_results", side_effect=ValueError("bad parse")), pytest.raises(SearchRequestFailedError):
+            await scraper.search("skrillex")
 
     @pytest.mark.asyncio
     async def test_search_parse_failure_error_is_not_swallowed(self):
@@ -409,6 +416,54 @@ class TestTracklistScraperRedirects:
             assert scraper._client.follow_redirects is True
         finally:
             await scraper.close()
+
+    @pytest.mark.asyncio
+    async def test_owned_client_rejects_disallowed_redirect_before_issuing_it(self):
+        """phaze-niflr: the SELF-OWNED client must reject a disallowed redirect hop BEFORE httpx
+        sends it, not merely after parsing the (already-fetched) final response.
+
+        A MockTransport handler counts every request it actually receives -- if the off-host hop
+        were sent, the handler would see two requests to two different hosts. It must see exactly
+        one: the initial POST to the allowed SEARCH_URL, rejected by the ``request`` event hook
+        before the redirect target is ever contacted.
+        """
+        received_hosts: list[str | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            received_hosts.append(request.url.host)
+            if request.url.host == "www.1001tracklists.com":
+                return httpx.Response(302, headers={"Location": "http://169.254.169.254/steal"})
+            return httpx.Response(200, text="stolen")  # pragma: no cover -- must never be reached
+
+        scraper = TracklistScraper()
+        try:
+            scraper._client._transport = httpx.MockTransport(handler)
+            with pytest.raises(DisallowedScrapeHostError):
+                await scraper.search("Skrillex Coachella")
+        finally:
+            await scraper.close()
+
+        assert received_hosts == ["www.1001tracklists.com"], "the off-host redirect target must never be contacted"
+
+    @pytest.mark.asyncio
+    async def test_owned_client_allows_a_same_host_redirect(self):
+        """A benign redirect that stays on an allowed host (e.g. apex -> www, phaze-8ib8) must
+        still be followed through the event hook, not just an off-host one rejected."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "1001tracklists.com":
+                return httpx.Response(302, headers={"Location": "https://www.1001tracklists.com/search/result.php"})
+            return httpx.Response(200, text=SAMPLE_EMPTY_SEARCH_HTML)
+
+        scraper = TracklistScraper()
+        try:
+            scraper._client._transport = httpx.MockTransport(handler)
+            scraper.SEARCH_URL = "https://1001tracklists.com/search/result.php"
+            results = await scraper.search("Skrillex")
+        finally:
+            await scraper.close()
+
+        assert results == []
 
 
 class TestTracklistScraperSharedRateLimit:
@@ -604,6 +659,41 @@ class TestTTLCacheExpiry:
         cache.clear()
         assert cache.get("k") is None
 
+    def test_set_evicts_already_expired_entries_not_just_the_written_key(self) -> None:
+        """phaze-a18s4: an entry nobody ever reads again must not sit in ``_entries`` forever.
+
+        ``get()`` only ever evicted the ONE key it was asked to read, so a query that is never
+        repeated (the common case in a long-lived drain worker doing mostly-unique lookups) grew
+        the dict without bound. `set()` must sweep every already-expired entry on write, not just
+        insert the new one. The two "stale" entries are backdated directly rather than relying on
+        real elapsed time, so the assertion is deterministic.
+        """
+        import time as time_module
+
+        from phaze.services.tracklist_scraper import _TTLCache
+
+        cache: _TTLCache[str] = _TTLCache(ttl_seconds=3600.0)
+        cache.set("stale-1", "v1")
+        cache.set("stale-2", "v2")
+        already_expired = time_module.monotonic() - 1.0
+        cache._entries["stale-1"] = (already_expired, "v1")
+        cache._entries["stale-2"] = (already_expired, "v2")
+
+        # A THIRD, unrelated write is what a long-lived worker does continuously -- and it must
+        # sweep the two now-expired entries above rather than merely adding a third live one.
+        cache.set("fresh", "v3")
+        assert set(cache._entries) == {"fresh"}, "the expired entries must be swept on the next write, not accumulate"
+
+    def test_set_does_not_evict_still_live_entries(self) -> None:
+        """The sweep in `set()` must only drop EXPIRED entries -- a live one survives an
+        unrelated write, the same as it always did."""
+        from phaze.services.tracklist_scraper import _TTLCache
+
+        cache: _TTLCache[str] = _TTLCache(ttl_seconds=3600.0)
+        cache.set("live", "v1")
+        cache.set("other", "v2")
+        assert set(cache._entries) == {"live", "other"}
+
 
 class TestTracklistScraperCaching:
     """phaze-hu8v: repeat lookups must not re-hit the site."""
@@ -646,12 +736,15 @@ class TestTracklistScraperCaching:
 
     @pytest.mark.asyncio
     async def test_search_does_not_cache_a_403(self):
-        """A blocked/transient response must not poison the cache with a permanent []."""
+        """A blocked/transient response must not poison the cache with a permanent [] -- it now
+        raises instead (phaze-i7gkc), but the "never cached" guarantee still needs pinning."""
         client = AsyncMock(spec=httpx.AsyncClient)
         client.post = AsyncMock(return_value=_mock_response(403, "Forbidden"))
         scraper = TracklistScraper(client=client)
 
-        await scraper.search("Skrillex")
-        await scraper.search("Skrillex")
+        with pytest.raises(SearchRequestFailedError):
+            await scraper.search("Skrillex")
+        with pytest.raises(SearchRequestFailedError):
+            await scraper.search("Skrillex")
 
         assert client.post.await_count == 2

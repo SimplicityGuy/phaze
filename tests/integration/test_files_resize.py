@@ -72,7 +72,7 @@ async def test_every_header_carries_exactly_one_resize_handle(client: AsyncClien
     session.add(_make_file("/music/a.mp3"))
     await session.commit()
 
-    body = (await client.get("/pipeline/files")).text
+    body = (await client.get("/pipeline/files", headers={"HX-Request": "true"})).text
     head = body[body.index("<thead") : body.index("<tbody")]
 
     handles = re.findall(r'data-col-resize-handle="([^"]+)"', head)
@@ -92,7 +92,7 @@ async def test_resize_handle_never_splits_a_sortable_label_from_its_caret(client
     session.add(_make_file("/music/a.mp3"))
     await session.commit()
 
-    body = (await client.get("/pipeline/files")).text
+    body = (await client.get("/pipeline/files", headers={"HX-Request": "true"})).text
     head = body[body.index("<thead") : body.index("<tbody")]
 
     for column in FILES_SORT.columns:
@@ -107,7 +107,7 @@ async def test_colgroup_precedes_thead_with_one_col_per_column_in_order(client: 
     session.add(_make_file("/music/a.mp3"))
     await session.commit()
 
-    body = (await client.get("/pipeline/files")).text
+    body = (await client.get("/pipeline/files", headers={"HX-Request": "true"})).text
     colgroup_start = body.index("<colgroup")
     colgroup_end = body.index("</colgroup>")
     thead_start = body.index("<thead")
@@ -130,7 +130,7 @@ async def test_file_cell_keeps_truncate_and_title_but_sheds_the_fixed_max_width(
     session.add(_make_file(long_path))
     await session.commit()
 
-    body = (await client.get("/pipeline/files")).text
+    body = (await client.get("/pipeline/files", headers={"HX-Request": "true"})).text
     row = body[body.index("<tbody") :]
 
     assert f'title="{long_path}"' in row
@@ -147,7 +147,7 @@ async def test_stage_cells_keep_the_no_wrap_contract_after_resize_wiring(client:
     session.add(_make_file("/music/a.mp3"))
     await session.commit()
 
-    body = (await client.get("/pipeline/files")).text
+    body = (await client.get("/pipeline/files", headers={"HX-Request": "true"})).text
     row = body[body.index("<tbody") :]
 
     # Five stage cells, each still carrying the no-wrap contract cvn6.2 introduced.

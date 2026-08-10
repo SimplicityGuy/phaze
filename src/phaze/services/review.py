@@ -101,11 +101,15 @@ _MAX_REVIEW_SCAN_BATCHES = 40
 
 
 class TagwriteReviewPage(NamedTuple):
-    """The tag-write queue's rows plus the honesty flag the subcount needs (phaze-bto9).
+    """The tag-write queue's rows plus the honesty flag the subcount needs (phaze-bto9, phaze-a2ytu).
 
-    ``partial`` is True when the scan hit :data:`_MAX_REVIEW_SCAN_BATCHES` with candidates still
-    unexamined -- the render is a bounded prefix of the queue, not the whole of it. The workspace
-    subcount says so rather than printing a number that silently understates the backlog.
+    ``partial`` is True whenever the scan stopped with candidates possibly still unexamined --
+    whether that's hitting :data:`_MAX_REVIEW_SCAN_BATCHES` with the walk incomplete, or hitting
+    ``_MAX_REVIEW_ROWS`` before the candidate set was provably exhausted (phaze-a2ytu: the
+    row-cap exit used to leave ``partial`` at its default False even though a full or
+    mid-iterated batch could still hold unexamined candidates). The render is a bounded prefix
+    of the queue, not the whole of it, and the workspace subcount says so rather than printing a
+    number that silently understates the backlog.
     """
 
     rows: list[dict[str, Any]]
@@ -141,9 +145,10 @@ async def get_pending_proposal_rows(session: AsyncSession, *, confidence_thresho
     Reuses ``get_proposals_page(status="pending")`` inside a ``session.begin_nested()`` SAVEPOINT and
     maps each proposal (plus its ``selectinload``'d file) to a plain dict keyed for both diff facets:
     ``id`` · ``filename`` (``file.original_filename``) · ``original_path`` (``file.current_path``) ·
-    ``proposed_filename`` · ``proposed_path`` · ``confidence`` · ``status``. Returns an all-empty/zero
-    :class:`PendingProposalRows` on any DB error so the render/poll path degrades instead of 500ing
-    (no router try/except needed).
+    ``proposed_filename`` · ``proposed_path`` · ``confidence`` · ``status`` · ``updated_at``
+    (phaze-exivg -- the row's optimistic-concurrency token, round-tripped by the APPROVE button).
+    Returns an all-empty/zero :class:`PendingProposalRows` on any DB error so the render/poll path
+    degrades instead of 500ing (no router try/except needed).
 
     phaze-rw14: ``get_proposals_page`` already runs a real ``COUNT(*)`` for its ``Pagination.total``
     on every call -- that total used to be fetched and immediately discarded (bound to ``_pagination``
@@ -166,6 +171,9 @@ async def get_pending_proposal_rows(session: AsyncSession, *, confidence_thresho
                     "proposed_path": proposal.proposed_path,
                     "confidence": proposal.confidence,
                     "status": proposal.status,
+                    # phaze-exivg: the optimistic-concurrency token the Rename/Move workspaces'
+                    # APPROVE button round-trips back to /proposals/{id}/approve.
+                    "updated_at": proposal.updated_at,
                 }
                 for proposal in proposals
             ]
@@ -350,7 +358,8 @@ async def get_tagwrite_review_page(session: AsyncSession) -> TagwriteReviewPage:
                 # phaze-bto9: the same batching, extended to the two lookups that were still per-row.
                 tracklists = await _get_tracklists_for_files(session, batch_ids)
                 discogs_links = await _get_accepted_discogs_links_for_files(session, tracklists)
-                for fr in batch:
+                row_cap_hit_mid_batch = False
+                for i, fr in enumerate(batch):
                     proposed = compute_proposed_tags(
                         fr.file_metadata,
                         tracklists.get(fr.id),
@@ -373,7 +382,18 @@ async def get_tagwrite_review_page(session: AsyncSession) -> TagwriteReviewPage:
                         }
                     )
                     if len(rows) >= _MAX_REVIEW_ROWS:
+                        # phaze-a2ytu: hitting the row cap mid-scan means candidates may remain --
+                        # unless this batch was BOTH fully consumed (no unexamined tail, i.e. the cap
+                        # landed on the batch's last member) AND short (< _REVIEW_SCAN_BATCH, so the
+                        # candidate set itself just ran out here). Any other shape -- an unexamined
+                        # tail in this batch, or a full-sized batch that a later keyset page might
+                        # follow -- means the render is a bounded prefix, not the whole queue.
+                        row_cap_hit_mid_batch = i < len(batch) - 1
                         break
+                if len(rows) >= _MAX_REVIEW_ROWS:
+                    if row_cap_hit_mid_batch or len(batch) == _REVIEW_SCAN_BATCH:
+                        partial = True
+                    break
                 if len(batch) < _REVIEW_SCAN_BATCH:
                     break  # candidate set exhausted
             return TagwriteReviewPage(rows=rows, partial=partial)
@@ -418,14 +438,19 @@ def build_dupe_group_card(group: dict[str, Any]) -> dict[str, Any]:
     Assumes ``score_group`` has already run on ``group`` (sets ``group["canonical_id"]`` and sorts
     ``group["files"]`` keeper-first). Returns ``sha256_hash`` (the group key the keeper radio
     resolves against -- ``POST /duplicates/{sha256_hash}/resolve`` with Form ``canonical_id``), a
-    short ``group_name`` label, ``count``, and ``files`` (each ``id`` · ``name`` · ``quality`` ·
-    ``keeper`` where ``keeper == (id == canonical_id)``).
+    short ``group_name`` label, ``count``, ``truncated``, and ``files`` (each ``id`` · ``name`` ·
+    ``quality`` · ``keeper`` where ``keeper == (id == canonical_id)``).
 
     Shared by :func:`get_dedupe_groups` (the whole-list Dedupe workspace read) and the
     ``POST /duplicates/{hash}/undo`` router (phaze-be1j): undo must swap a restored group back
     into the live workspace using this SAME shell shape -- rendering the legacy
     ``group_card.html`` accordion row there left the toast's Undo unable to hand the restored
     group a working keeper-select card.
+
+    phaze-z4p5q: ``group["truncated"]`` (set by ``services/dedup.py``'s per-member cap on the
+    underlying read) rides straight through to the card so ``_dupe_group.html`` can flag a group
+    whose real membership is larger than what's actually shown here. Missing on ``group`` (a caller
+    that built the dict some other way) degrades to ``False`` rather than raising.
     """
     canonical_id = group["canonical_id"]
     files = group["files"]
@@ -433,6 +458,7 @@ def build_dupe_group_card(group: dict[str, Any]) -> dict[str, Any]:
         "sha256_hash": group["sha256_hash"],
         "group_name": Path(files[0]["original_path"]).name if files else group["sha256_hash"][:12],
         "count": len(files),
+        "truncated": group.get("truncated", False),
         "files": [
             {
                 "id": f["id"],
@@ -486,7 +512,10 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
     The whole read runs inside a ``session.begin_nested()`` SAVEPOINT and returns ``[]`` on any error so the
     render/poll path degrades instead of 500ing (no router try/except needed). Per card:
     ``tracklist_id`` · ``set_name`` (the audio file stem, matching the generated ``.cue`` name) ·
-    ``eligible`` (bool) · ``cue_text`` (the in-memory ``.cue`` string, or ``None`` for a gated card).
+    ``eligible`` (bool) · ``cue_text`` (the in-memory ``.cue`` string, or ``None`` for a gated card) ·
+    ``version_id`` (the ``latest_version_id`` this card's preview was built from, or ``None`` for a
+    gated/degraded card -- phaze-ce65s: carried back on APPROVE so the write route can detect a
+    version that moved between this render and the click).
     """
     try:
         async with session.begin_nested():
@@ -519,6 +548,7 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
                             "set_name": Path(file_record.current_path).stem,
                             "eligible": False,
                             "cue_text": None,
+                            "version_id": None,
                         }
                     )
                     continue
@@ -528,6 +558,10 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
                         "set_name": Path(file_record.current_path).stem,
                         "eligible": True,
                         "cue_text": cue_text,
+                        # phaze-ce65s: the version THIS preview's cue_text was actually built
+                        # from -- carried back on APPROVE (hx-vals) so the route can refuse a
+                        # write if `latest_version_id` moved before the click.
+                        "version_id": tracklist.latest_version_id,
                     }
                 )
 
@@ -554,6 +588,7 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
                         "set_name": Path(file_record.current_path).stem,
                         "eligible": False,
                         "cue_text": None,
+                        "version_id": None,
                     }
                 )
 

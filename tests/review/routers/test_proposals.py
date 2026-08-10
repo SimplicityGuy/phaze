@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 import uuid
 
 from bs4 import BeautifulSoup
 import pytest
+from sqlalchemy import update
 
 import phaze
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
@@ -155,6 +157,89 @@ async def test_approve_not_found(client: AsyncClient) -> None:
     random_id = uuid.uuid4()
     response = await client.patch(f"/proposals/{random_id}/approve")
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# approve optimistic-concurrency token (phaze-exivg)
+#
+# update_proposal_status's allowed_from guard folds only the from-STATUS into its conditional
+# UPDATE's WHERE clause. store_proposals is an idempotent upsert that overwrites a still-PENDING
+# row's content in place (same id, same status, new proposed_filename/proposed_path/confidence) on
+# a replayed generate_proposals (a SAQ retry, or recover_orphaned_work's verbatim ledger replay) --
+# a row swapped between the operator's page render and their Approve click still satisfies that
+# status-only WHERE. These exercise the fix end to end: the APPROVE route now takes the row's
+# render-time updated_at as expected_updated_at and refuses when it no longer matches.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_approve_proposal_stale_token_refused(client: AsyncClient, session: AsyncSession) -> None:
+    """An approve carrying a stale updated_at token is refused, and the concurrently swapped-in
+    (unreviewed) content is never approved.
+    """
+    proposal = await create_test_proposal(session, proposed_filename="Artist - Track A.mp3")
+    stale_token = proposal.updated_at.isoformat()
+
+    # Simulate the concurrent store_proposals upsert: same id, same PENDING status, new content and
+    # a bumped updated_at -- exactly the TOCTOU window the render-time token is meant to catch.
+    # Bumped explicitly (rather than relying on onupdate=func.now()) because Postgres' now() is
+    # constant for the whole surrounding transaction, and this test's session fixture wraps
+    # everything in one.
+    await session.execute(
+        update(RenameProposal)
+        .where(RenameProposal.id == proposal.id)
+        .values(proposed_filename="Artist - Track B (unreviewed).mp3", updated_at=proposal.updated_at + timedelta(seconds=5))
+    )
+    await session.commit()
+    await session.refresh(proposal)
+    assert proposal.updated_at.isoformat() != stale_token
+
+    response = await client.patch(f"/proposals/{proposal.id}/approve", data={"expected_updated_at": stale_token})
+    assert response.status_code == 409
+
+    refetched = await session.get(RenameProposal, proposal.id)
+    assert refetched is not None
+    assert refetched.status == ProposalStatus.PENDING
+    assert refetched.proposed_filename == "Artist - Track B (unreviewed).mp3"
+
+
+@pytest.mark.asyncio
+async def test_approve_proposal_current_token_succeeds(client: AsyncClient, session: AsyncSession) -> None:
+    """A token matching the row's live updated_at (the non-race path) approves normally."""
+    proposal = await create_test_proposal(session)
+    token = proposal.updated_at.isoformat()
+
+    response = await client.patch(f"/proposals/{proposal.id}/approve", data={"expected_updated_at": token})
+    assert response.status_code == 200
+
+    updated = await session.get(RenameProposal, proposal.id)
+    assert updated is not None
+    assert updated.status == ProposalStatus.APPROVED
+
+
+@pytest.mark.asyncio
+async def test_approve_proposal_no_token_preserves_legacy_behavior(client: AsyncClient, session: AsyncSession) -> None:
+    """No token (a bare API PATCH, e.g. a non-browser caller) keeps the pre-phaze-exivg
+    status-only guard -- byte-identical to test_approve_proposal above.
+    """
+    proposal = await create_test_proposal(session)
+    response = await client.patch(f"/proposals/{proposal.id}/approve")
+    assert response.status_code == 200
+
+    updated = await session.get(RenameProposal, proposal.id)
+    assert updated is not None
+    assert updated.status == ProposalStatus.APPROVED
+
+
+@pytest.mark.asyncio
+async def test_rename_workspace_approve_button_carries_updated_at_token(client: AsyncClient, session: AsyncSession) -> None:
+    """The Rename workspace's rendered APPROVE button round-trips the row's updated_at via hx-vals
+    (phaze-exivg), so a real browser click actually supplies the guard's token.
+    """
+    proposal = await create_test_proposal(session)
+    response = await client.get("/s/rename")
+    assert response.status_code == 200
+    assert f'"expected_updated_at": "{proposal.updated_at.isoformat()}"' in response.text
 
 
 @pytest.mark.asyncio
@@ -890,6 +975,23 @@ async def test_bulk_approve_high_confidence_v7_response_omits_nonexistent_stats_
 
 
 @pytest.mark.asyncio
+async def test_bulk_approve_high_confidence_pluralizes_a_single_v7_approval(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-zbgi9: exactly one pending proposal clears the predicate -- the toast must read
+    '1 proposal approved.', not '1 proposals approved.' (_bulk_toast's own pluralization, reused
+    here rather than a second hand-rolled string). Covers the v7-target response path; the
+    no-target path is covered by ``test_bulk_approve_high_confidence_without_v7_target_returns_the_toast_alone``.
+    """
+    await create_test_proposal(session, confidence=0.95)
+    response = await client.patch(
+        "/proposals/bulk-approve-high-confidence",
+        headers={"HX-Request": "true", "HX-Target": "rename-trigger-response"},
+    )
+    assert response.status_code == 200
+    assert "1 proposal approved." in response.text
+    assert "1 proposals approved." not in response.text
+
+
+@pytest.mark.asyncio
 async def test_bulk_approve_high_confidence_zero_matches_returns_toast_with_no_oob_rows(client: AsyncClient, session: AsyncSession) -> None:
     """No pending row meets the predicate: a toast is returned but no OOB row fragment is emitted."""
     await create_test_proposal(session, confidence=0.5)
@@ -914,7 +1016,9 @@ async def test_bulk_approve_high_confidence_without_v7_target_returns_the_toast_
     response = await client.patch("/proposals/bulk-approve-high-confidence")
     assert response.status_code == 200
     assert "stats-bar" not in response.text
-    assert "1 proposals approved." in response.text
+    # phaze-zbgi9: singular, matching the module's own _bulk_toast pluralization -- was
+    # "1 proposals approved." before the fix, which this test used to pin rather than catch.
+    assert "1 proposal approved." in response.text
     assert 'hx-swap-oob="true"' not in response.text
 
 

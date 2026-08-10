@@ -138,7 +138,17 @@
         {# D-03 own-tick: the loaded body carries its OWN bounded 5s self-refresh scoped to this lane,
            re-swapping itself into #detail-pane. It is REMOVED on dismiss (no orphan loop): once the pane
            has opened (armed), if the shell's `open` flips false (✕/Esc), the tick element removes itself
-           so it can never re-open a dismissed pane. `armed` skips the pre-open initTree pass. #}
+           so it can never re-open a dismissed pane. `armed` skips the pre-open initTree pass.
+
+           phaze-d80hf: a FAILED tick (non-2xx or network error) swaps nothing -- htmx never fires
+           #detail-pane's after-swap handler on a failure, so nothing ever set the shell's
+           `refreshError` caption true and a stale pane looked current through an outage. htmx
+           dispatches `htmx:responseError` / `htmx:sendError` on the ISSUING element (this div, not
+           the swap target), so the handlers live here. `Alpine.$data(this)` walks up to the
+           enclosing <section x-data> (_detail_pane.html) -- same idiom the after-swap handler on
+           #detail-pane already uses to reach that scope. Guarded on window.Alpine, matching every
+           other Alpine-reaching hx-on in this pane. Cleared by onLoaded() on the next successful
+           swap (already existing behavior -- `this.refreshError = false`). #}
         <div hx-get="/pipeline/lanes/{{ lane.id }}"
              hx-trigger="every 5s"
              hx-target="#detail-pane"
@@ -146,6 +156,8 @@
              {# phaze-zxbh: same sync group as the row trigger (_lane_card.html) -- a newer row
                 click aborts this own-tick's in-flight request instead of racing it to the swap. #}
              hx-sync="#detail-pane:abort"
+             hx-on::response-error="if (window.Alpine) Alpine.$data(this).refreshError = true"
+             hx-on::send-error="if (window.Alpine) Alpine.$data(this).refreshError = true"
              x-data="{ armed: false }"
              x-init="$nextTick(() => { armed = true })"
              x-effect="if (armed && !open && window.htmx) window.htmx.remove($el)"></div>

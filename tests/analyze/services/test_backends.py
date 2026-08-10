@@ -1002,9 +1002,15 @@ async def test_local_reconcile_is_noop(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_compute_reconcile_is_callback_driven_noop(session: AsyncSession) -> None:
-    """Compute terminalization is the /pushed callback path -> reconcile is a no-op cron read."""
-    assert await _compute().reconcile(session) is None
+async def test_compute_reconcile_is_a_noop_with_no_stranded_rows(session: AsyncSession) -> None:
+    """phaze-j7m18: with nothing to reap, reconcile is STILL callback-driven -- it touches nothing.
+
+    Compute terminalization stays PRIMARILY the ``/pushed``/``/mismatch``/``/failed`` callback path;
+    ``reconcile`` (post phaze-j7m18) returns a tally dict (not ``None``, unlike ``LocalBackend``) but a
+    tick with no age-stranded SUBMITTED row reaps nothing.
+    """
+    tally = await _compute().reconcile(session)
+    assert tally == {"submitted_reaped": 0}
 
 
 @pytest.mark.asyncio
@@ -2158,3 +2164,189 @@ async def test_reap_still_deletes_when_no_new_cycle_has_claimed_the_key(
     assert abort.await_count == 1
     assert delete.await_count == 1  # no race -> the (idempotent) cleanup still runs
     assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.AWAITING.value
+
+
+# === phaze-j7m18: the compute stranded-SUBMITTED reaper ==================================
+#
+# Compute's ONLY in-flight status is SUBMITTED (D-08/D-10), terminalized SOLELY by the agent HTTP
+# callbacks (/pushed, /mismatch, /failed). A dead fileserver agent host mid-rsync, or an enqueue
+# failure in flush_pending_push_file_enqueues, leaves the row SUBMITTED forever with no callback ever
+# coming, permanently leaking a compute cap slot -- the exact class of failure phaze-ul2v fixed for the
+# kueue staging half. These cells mirror that reaper's test shape for compute's single status.
+
+
+async def _seed_submitted_cloud_job(session: AsyncSession, *, backend_id: str, age_sec: int) -> uuid.UUID:
+    """Insert one compute SUBMITTED cloud_job row aged ``age_sec`` into the past; return the file id."""
+    from sqlalchemy import text as sa_text
+
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+    session.add(
+        CloudJob(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            backend_id=backend_id,
+            s3_key=None,
+            status=CloudJobStatus.SUBMITTED.value,
+        )
+    )
+    await session.commit()
+    await session.execute(
+        sa_text("UPDATE cloud_job SET updated_at = now() - make_interval(secs => :age) WHERE file_id = :fid"),
+        {"age": age_sec, "fid": file.id},
+    )
+    await session.commit()
+    return file.id
+
+
+async def _ledger_row_exists(session: AsyncSession, key: str) -> bool:
+    from sqlalchemy import select as sa_select
+
+    from phaze.models.scheduling_ledger import SchedulingLedger
+
+    session.expire_all()
+    row = (await session.execute(sa_select(SchedulingLedger).where(SchedulingLedger.key == key))).scalar_one_or_none()
+    return row is not None
+
+
+async def _seed_push_file_ledger(session: AsyncSession, *, file_id: uuid.UUID) -> None:
+    from phaze.services.scheduling_ledger import upsert_ledger_entry
+
+    await upsert_ledger_entry(session, key=f"push_file:{file_id}", function="push_file", kwargs={"file_id": str(file_id)})
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_compute_reconcile_reaps_stranded_submitted_row_and_frees_the_cap_slot(session: AsyncSession) -> None:
+    """phaze-j7m18: a SUBMITTED row older than the bound (agent host gone) spills to awaiting + frees its slot.
+
+    The bug: the fileserver agent host dies mid-rsync, so neither /pushed nor /mismatch nor /failed ever
+    fires. Pre-fix, ComputeAgentBackend.reconcile was a documented no-op, so this row sat SUBMITTED
+    forever while in_flight_count kept counting it -- a permanently leaked compute-lane cap slot.
+    Post-fix the age-bounded reaper re-stamps it to 'awaiting' (OUT of IN_FLIGHT), so the count drops.
+    """
+    backend = _compute(id="compute-a1")
+    file_id = await _seed_submitted_cloud_job(session, backend_id="compute-a1", age_sec=90_000)
+    await _seed_push_file_ledger(session, file_id=file_id)
+
+    assert await backend.in_flight_count(session) == 1  # the leaked slot, pre-reap
+
+    tally = await backend.reconcile(session)
+
+    assert tally == {"submitted_reaped": 1}
+    row = await _cloud_job_for(session, file_id)
+    assert row.status == CloudJobStatus.AWAITING.value  # spilled back onto the drain
+    assert row.attempts == 1  # one re-drive attempt SPENT -> the loop is bounded
+    assert await backend.in_flight_count(session) == 0  # the cap slot is released
+    assert not await _ledger_row_exists(session, f"push_file:{file_id}")  # ledger row cleared
+
+
+@pytest.mark.asyncio
+async def test_compute_reconcile_never_reaps_a_submitted_row_younger_than_its_bound(session: AsyncSession) -> None:
+    """phaze-j7m18 ACCEPTANCE: the callback path stays PRIMARY -- the reaper never fires inside the bound.
+
+    A multi-GB rsync push over a slow link legitimately transfers for hours while bumping no timestamp,
+    so a young SUBMITTED row must be left completely alone for the /pushed callback to terminalize.
+    """
+    backend = _compute(id="compute-a1")
+    file_id = await _seed_submitted_cloud_job(session, backend_id="compute-a1", age_sec=3_600)
+
+    tally = await backend.reconcile(session)
+
+    assert tally == {"submitted_reaped": 0}
+    assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.SUBMITTED.value
+    assert await backend.in_flight_count(session) == 1  # the slot is still (legitimately) held
+
+
+@pytest.mark.asyncio
+async def test_compute_reap_scopes_to_own_backend_id(session: AsyncSession) -> None:
+    """The reaper is backend_id-scoped like the rest of reconcile: a sibling backend's row is untouched."""
+    other_fid = await _seed_submitted_cloud_job(session, backend_id="compute-other", age_sec=90_000)
+
+    tally = await _compute(id="compute-a1").reconcile(session)
+
+    assert tally == {"submitted_reaped": 0}
+    assert (await _cloud_job_for(session, other_fid)).status == CloudJobStatus.SUBMITTED.value
+
+
+@pytest.mark.asyncio
+async def test_compute_reap_skips_a_row_whose_push_file_job_is_live_in_the_broker(session: AsyncSession) -> None:
+    """phaze-j7m18 (mirrors phaze-31q3): an aged SUBMITTED row with a LIVE push_file broker key is NEVER reaped.
+
+    The age bound alone cannot tell a lost callback from live work: updated_at bumps only at dispatch,
+    so a multi-GB rsync push that legitimately transfers past the bound reads SUBMITTED with an old
+    timestamp. If the broker still holds the push_file:<file_id> key queued/active, the callback path
+    owns the row -- reaping it would abort a live transfer. The reaper must consult get_live_job_keys.
+    """
+    backend = _compute(id="compute-a1")
+    file_id = await _seed_submitted_cloud_job(session, backend_id="compute-a1", age_sec=90_000)
+    await _seed_live_saq_job(session, key=f"push_file:{file_id}", status="active")
+
+    assert await backend.in_flight_count(session) == 1
+
+    tally = await backend.reconcile(session)
+
+    assert tally == {"submitted_reaped": 0}  # live broker key -> NOT reaped despite age
+    assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.SUBMITTED.value
+    assert await backend.in_flight_count(session) == 1  # slot still (legitimately) held by the live job
+
+
+@pytest.mark.asyncio
+async def test_compute_reap_still_fires_when_the_broker_key_is_terminal_not_live(session: AsyncSession) -> None:
+    """phaze-j7m18: a FAILED/terminal push_file broker row does NOT protect the aged row (only live keys do)."""
+    backend = _compute(id="compute-a1")
+    file_id = await _seed_submitted_cloud_job(session, backend_id="compute-a1", age_sec=90_000)
+    await _seed_live_saq_job(session, key=f"push_file:{file_id}", status="failed")  # terminal, NOT live
+
+    tally = await backend.reconcile(session)
+
+    assert tally == {"submitted_reaped": 1}  # terminal key is not live -> the lost row is reaped
+    assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.AWAITING.value
+
+
+@pytest.mark.asyncio
+async def test_compute_reap_loses_the_race_to_a_live_callback_and_takes_a_full_noop(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-j7m18 ACCEPTANCE: the happy-path callback WINS the race -- the reaper's CAS misses and it no-ops.
+
+    Simulates /pushed landing between the reaper's read and its update: the row advances out of
+    SUBMITTED, the expect_status-pinned CAS in hold_awaiting_cloud matches 0 rows, and the reaper takes a
+    FULL no-op -- crucially no ledger clear, since the callback's own path already owns that cleanup.
+    """
+    from sqlalchemy import update as sa_update
+
+    backend = _compute(id="compute-a1")
+    file_id = await _seed_submitted_cloud_job(session, backend_id="compute-a1", age_sec=90_000)
+    await _seed_push_file_ledger(session, file_id=file_id)
+
+    real_hold = backends.hold_awaiting_cloud
+
+    async def _callback_wins_first(*args: Any, **kwargs: Any) -> bool:
+        # The "callback": advance the row out of SUBMITTED in a sibling transaction-visible write, then
+        # let the REAL CAS run -- it now matches 0 rows exactly as it would in production.
+        await session.execute(sa_update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.SUCCEEDED.value))
+        return await real_hold(*args, **kwargs)
+
+    monkeypatch.setattr(backends, "hold_awaiting_cloud", _callback_wins_first)
+
+    tally = await backend.reconcile(session)
+
+    assert tally == {"submitted_reaped": 0}  # the reaper lost the race and did nothing
+    # The mocked "callback" advance shares the reaper's own transaction (test-only artifact), so the
+    # reaper's own rollback on the lost CAS undoes it too -- mirrors the kueue twin's identical
+    # `!= AWAITING` assertion rather than pinning the intermediate SUCCEEDED value.
+    assert (await _cloud_job_for(session, file_id)).status != CloudJobStatus.AWAITING.value
+    assert await _ledger_row_exists(session, f"push_file:{file_id}")  # NOT cleared -- the reaper no-op'd
+
+
+@pytest.mark.asyncio
+async def test_compute_reap_per_row_guard_survives_a_bad_row(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One exploding row never aborts the sweep (per-row rollback guard, mirroring reconcile's)."""
+    backend = _compute(id="compute-a1")
+    await _seed_submitted_cloud_job(session, backend_id="compute-a1", age_sec=90_000)
+
+    monkeypatch.setattr(backends, "hold_awaiting_cloud", AsyncMock(side_effect=RuntimeError("boom")))
+
+    tally = await backend.reconcile(session)  # must NOT raise
+
+    assert tally == {"submitted_reaped": 0}

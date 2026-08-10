@@ -27,6 +27,7 @@ from phaze.routers import (
     agent_push,
     agent_s3,
     agent_scan_batches,
+    agent_scratch,
     agent_tag_writes,
     companion,
     cue,
@@ -276,6 +277,9 @@ def create_app() -> FastAPI:
     app.include_router(agent_proposals.router)
     # Phase 27 internal-agent router (D-10).
     app.include_router(agent_scan_batches.router)
+    # phaze-5cvbz: compute-scratch janitor liveness probe -- the agent-side startup sweep asks
+    # here before deleting an age-eligible scratch entry a durable queued/active job still claims.
+    app.include_router(agent_scratch.router)
     # Phase 28 internal-agent router (D-05): per-proposal terminal-state progress reporting
     # — the single mutation point for exec:{batch_id} Redis hash (D-02).
     app.include_router(agent_exec_batches.router)

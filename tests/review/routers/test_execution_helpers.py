@@ -22,6 +22,7 @@ from starlette.requests import Request
 from phaze.routers import execution
 from phaze.routers.execution import _agents_view_from_hash, _build_agents_view, _coerce_int, _render_partial
 from phaze.schemas.agent_tasks import ExecuteBatchProposalItem
+from phaze.services.agent_task_router import AmbiguousEnqueueError
 
 
 if TYPE_CHECKING:
@@ -213,6 +214,11 @@ async def test_sse_empty_hash_terminates_after_cap(smoke_sse_app: tuple[FastAPI,
     # The generator closed on its own: a terminal 'complete' event was emitted and the stream ended.
     assert b"event: complete" in body
     assert b"no longer available" in body
+    # phaze-047gd: a canonical 'close' event must follow -- it's the only event name the template's
+    # sse-close="close" listener (on the sse-connect element) reacts to. Without it the browser's
+    # EventSource treats the server closing the HTTP stream as a network drop and auto-reconnects.
+    assert b"event: close" in body
+    assert body.index(b"event: close") > body.index(b"event: complete")
     # It did not poll forever: the empty-hash cap is small, so hgetall was called a bounded number
     # of times (the cap), not unboundedly.
     from phaze.routers.execution import _MAX_EMPTY_POLLS
@@ -277,6 +283,36 @@ async def test_sse_with_valid_dispatch_summary_succeeds(
 
     assert b"event: agents_table" in body
     assert b"event: complete" in body
+    # phaze-047gd: canonical close event follows the status event on this terminal path too.
+    assert b"event: close" in body
+    assert body.index(b"event: close") > body.index(b"event: complete")
+
+
+async def test_sse_status_terminal_path_emits_close_after_complete_with_errors(
+    smoke_sse_app: tuple[FastAPI, MagicMock],
+) -> None:
+    """phaze-047gd: the ``complete_with_errors`` terminal branch also emits the canonical close event."""
+    app, redis = smoke_sse_app
+    redis.hgetall = AsyncMock(
+        return_value={
+            "total": "2",
+            "completed": "1",
+            "failed": "1",
+            "status": "complete_with_errors",
+            "dispatch_summary": "[]",
+        }
+    )
+    with patch("phaze.routers.execution.asyncio.sleep", new=AsyncMock(return_value=None)):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            async with ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp:
+                assert resp.status_code == 200
+                body = b""
+                async for chunk in resp.aiter_bytes():
+                    body += chunk
+
+    assert b"event: complete_with_errors" in body
+    assert b"event: close" in body
+    assert body.index(b"event: close") > body.index(b"event: complete_with_errors")
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +403,12 @@ def dispatch_app(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, AsyncMock, M
     redis_client.pipeline = MagicMock(return_value=pipe)
     redis_client.set = AsyncMock(return_value=True)
     redis_client.delete = AsyncMock(return_value=1)
+    # phaze-2tsw9: a refused claim now tries to reattach to the live batch via GET
+    # execdispatch:active + HGETALL exec:{batch_id}. Default to "nothing to reattach to" (no active
+    # batch_id) so tests that don't care about this path keep seeing the plain refusal alert; the
+    # reattachment test below overrides both.
+    redis_client.get = AsyncMock(return_value=None)
+    redis_client.hgetall = AsyncMock(return_value={})
     app.state.redis = redis_client
     # phaze-fa2p / phaze-j7u8: the single-dispatch guard claims the sentinel, now via the
     # claim-or-reconcile Lua rather than a bare SET NX. Default to 1 ("claimed outright") so the
@@ -491,6 +533,97 @@ async def test_start_execution_partial_enqueue_failure_corrects_expected(
     assert not any(len(a) >= 3 and a[1] == "agent:agent-a:failed" for a in hincrbys)
 
 
+# ---------------------------------------------------------------------------
+# phaze-19u7g: an AMBIGUOUS enqueue (``AmbiguousEnqueueError`` -- the broker connection was
+# already live when ``enqueue_for_agent`` raised) must NOT be rolled into ``undispatched_by_agent``
+# the way a definite (pre-broker) failure is. Doing so would let ``_reconcile_undispatched`` lower
+# ``subjobs_expected`` past a chunk that may have actually landed, so ``sc >= se`` could promote the
+# batch terminal and release the ``execdispatch:active`` sentinel while that phantom sub-job is
+# still executing -- an operator retry then double-dispatches the same proposals.
+# ---------------------------------------------------------------------------
+
+
+async def test_start_execution_ambiguous_enqueue_failure_is_not_counted_as_failed(
+    dispatch_app: tuple[FastAPI, AsyncMock, MagicMock],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An all-ambiguous dispatch never even enters the reconcile -- every chunk stays 'landed'."""
+    app, mock_router, redis_client = dispatch_app
+    pipe = redis_client.pipeline.return_value
+    groups = {"agent-a": [_proposal("agent-a")], "agent-b": [_proposal("agent-b")]}
+
+    async def _enqueue(*, agent_id: str, **_kw: Any) -> None:
+        if agent_id == "agent-b":
+            raise AmbiguousEnqueueError("agent-b enqueue raised after the broker connection was live")
+
+    mock_router.enqueue_for_agent = AsyncMock(side_effect=_enqueue)
+
+    with (
+        patch("phaze.routers.execution.detect_collisions", AsyncMock(return_value=[])),
+        patch("phaze.routers.execution.get_approved_proposals_grouped_by_agent", AsyncMock(return_value=groups)),
+        patch("phaze.routers.execution.count_revoked_skipped_proposals", AsyncMock(return_value=0)),
+        caplog.at_level("ERROR", logger="phaze.routers.execution"),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post("/execution/start")
+
+    assert resp.status_code == 200
+    assert mock_router.enqueue_for_agent.await_count == 2
+    # Both chunks counted as landed (enqueued_ok == 2), so undispatched_proposals == 0 and the
+    # correction pipeline (``if groups and undispatched_proposals:``) never runs at all -- no
+    # correcting HSET/HINCRBY, the batch stays at its originally-seeded subjobs_expected.
+    assert pipe.hset.call_args_list != []  # the initial seed HSET still ran
+    assert not any(len(a) >= 3 and a[1] == "subjobs_expected" for a in _hset_calls(pipe)[1:])
+    pipe.hincrby.assert_not_called()
+    assert any("enqueue ambiguous" in r.getMessage() for r in caplog.records)
+
+
+async def test_start_execution_ambiguous_enqueue_mixed_with_a_real_failure(
+    dispatch_app: tuple[FastAPI, AsyncMock, MagicMock],
+) -> None:
+    """A real failure still corrects ``subjobs_expected``, but the ambiguous chunk stays inside it."""
+    app, mock_router, redis_client = dispatch_app
+    pipe = redis_client.pipeline.return_value
+    groups = {
+        "agent-a": [_proposal("agent-a")],
+        "agent-b": [_proposal("agent-b")],
+        "agent-c": [_proposal("agent-c")],
+    }
+
+    async def _enqueue(*, agent_id: str, **_kw: Any) -> None:
+        if agent_id == "agent-b":
+            raise AmbiguousEnqueueError("agent-b enqueue raised after the broker connection was live")
+        if agent_id == "agent-c":
+            raise RuntimeError("agent-c broker down, provably before any broker connection")
+
+    mock_router.enqueue_for_agent = AsyncMock(side_effect=_enqueue)
+    promote = AsyncMock()
+
+    with (
+        patch("phaze.routers.execution.detect_collisions", AsyncMock(return_value=[])),
+        patch("phaze.routers.execution.get_approved_proposals_grouped_by_agent", AsyncMock(return_value=groups)),
+        patch("phaze.routers.execution.count_revoked_skipped_proposals", AsyncMock(return_value=0)),
+        patch("phaze.routers.execution._get_promote_status_script", MagicMock(return_value=promote)),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post("/execution/start")
+
+    assert resp.status_code == 200
+    # agent-a landed for real, agent-b is ambiguous (counted as landed too) -> enqueued_ok == 2,
+    # so subjobs_expected corrects to 2, NOT 1 -- the ambiguous chunk is not thrown away.
+    hsets = _hset_calls(pipe)
+    assert any(len(a) >= 3 and a[1] == "subjobs_expected" and a[2] == "2" for a in hsets)
+    assert not any(len(a) >= 3 and a[1] == "status" and a[2] == "complete_with_errors" for a in hsets)
+    promote.assert_awaited_once()
+    # Only agent-c's chunk (the definite, pre-broker-style failure) counts as failed.
+    assert pipe.hincrby.call_args.args[2] == 1
+    hincrbys = [c.args for c in pipe.hincrby.call_args_list]
+    assert any(len(a) >= 3 and a[1] == "agent:agent-c:failed" and a[2] == 1 for a in hincrbys)
+    # The ambiguous agent must NOT get a per-agent failed increment -- it may have landed.
+    assert not any(len(a) >= 3 and a[1] == "agent:agent-b:failed" for a in hincrbys)
+    assert not any(len(a) >= 3 and a[1] == "agent:agent-a:failed" for a in hincrbys)
+
+
 async def test_start_execution_skips_redis_seed_when_no_groups(
     dispatch_app: tuple[FastAPI, AsyncMock, MagicMock],
 ) -> None:
@@ -544,6 +677,70 @@ async def test_start_execution_rejected_when_dispatch_already_active(
     mock_router.enqueue_for_agent.assert_not_awaited()
     # ...and the hash seeded for this refused batch_id is dropped rather than left to rot for 24h.
     redis_client.delete.assert_awaited_once()
+
+
+async def test_start_execution_refused_reattaches_to_the_live_progress_card(
+    dispatch_app: tuple[FastAPI, AsyncMock, MagicMock],
+) -> None:
+    """A refused claim re-attaches to the ACTUALLY running batch's progress card (phaze-2tsw9).
+
+    Before the fix this branch always rendered the static ``dispatch_in_progress.html`` alert into
+    the SAME sink (``#apply-execute-response``, ``hx-swap="innerHTML"``) the live progress card
+    already occupies, evicting it and closing its only ``sse-connect`` mount with no way back in.
+    """
+    app, mock_router, redis_client = dispatch_app
+    redis_client.claim_dispatch_mock.return_value = 0
+    live_batch_id = "11111111-1111-1111-1111-111111111111"
+    redis_client.get = AsyncMock(return_value=live_batch_id)
+    redis_client.hgetall = AsyncMock(
+        return_value={
+            "total": "10",
+            "completed": "3",
+            "failed": "0",
+            "status": "running",
+            "subjobs_expected": "2",
+            "dispatch_summary": json.dumps([{"agent_id": "agent-a", "name": "Agent A", "total": 10}]),
+            "agent:agent-a:completed": "3",
+            "agent:agent-a:failed": "0",
+            "agent:agent-a:total": "10",
+        }
+    )
+    groups = {"agent-a": [_proposal("agent-a"), _proposal("agent-a")]}
+
+    with (
+        patch("phaze.routers.execution.detect_collisions", AsyncMock(return_value=[])),
+        patch("phaze.routers.execution.get_approved_proposals_grouped_by_agent", AsyncMock(return_value=groups)),
+        patch("phaze.routers.execution.count_revoked_skipped_proposals", AsyncMock(return_value=0)),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post("/execution/start")
+
+    assert resp.status_code == 200
+    assert "Execution already in progress" not in resp.text
+    assert f"/execution/progress/{live_batch_id}" in resp.text
+    assert "Agent A" in resp.text
+    mock_router.enqueue_for_agent.assert_not_awaited()
+
+
+async def test_reattach_active_progress_returns_none_without_an_active_batch() -> None:
+    """No ``execdispatch:active`` value -> nothing to reattach to (falls back to the static alert)."""
+    from phaze.routers.execution import _reattach_active_progress
+
+    redis_client = MagicMock()
+    redis_client.get = AsyncMock(return_value=None)
+    result = await _reattach_active_progress(_fake_request(), redis_client)
+    assert result is None
+
+
+async def test_reattach_active_progress_returns_none_when_hash_already_reaped() -> None:
+    """An active sentinel whose batch hash has already reaped -> nothing to reattach to."""
+    from phaze.routers.execution import _reattach_active_progress
+
+    redis_client = MagicMock()
+    redis_client.get = AsyncMock(return_value="some-batch-id")
+    redis_client.hgetall = AsyncMock(return_value={})
+    result = await _reattach_active_progress(_fake_request(), redis_client)
+    assert result is None
 
 
 async def test_start_execution_reconciled_stale_sentinel_is_logged_and_proceeds(
@@ -609,41 +806,105 @@ async def test_start_execution_seeds_the_hash_before_claiming_the_sentinel(
     mock_router.enqueue_for_agent.assert_not_awaited()
 
 
-async def test_start_execution_crash_mid_enqueue_settles_the_sentinel(
+# ---------------------------------------------------------------------------
+# phaze-tnp06: a lost claim response (the EVALSHA executed server-side but this coroutine never
+# observed the reply) must not wedge the exec:active sentinel for the full 24h TTL.
+# ---------------------------------------------------------------------------
+
+
+async def test_start_execution_claim_await_failure_deletes_the_seeded_hash(
     dispatch_app: tuple[FastAPI, AsyncMock, MagicMock],
 ) -> None:
-    """A crash part-way through the enqueue loop with NOTHING landed releases the claim (phaze-0t2c).
+    """A lost claim response deletes the just-seeded hash before re-raising (phaze-tnp06).
 
-    The loop spans many suspension points and real wall time on a large approved set. Before this
-    fix a failure inside it left the hash seeded for the PLANNED subjobs_expected with fewer chunks
-    enqueued, so subjobs_completed could never reach it, the promotion never fired, and the sentinel
-    was held for its full 24h TTL.
+    Before this fix, the claim await had no try/except at all: if the EVALSHA executed on the Redis
+    server but the response was never observed here (a redis client TimeoutError after it landed, or
+    Starlette cancelling the handler on client disconnect while suspended on this await), the
+    sentinel was durably claimed with NO chunk ever enqueued to release it -- and because phaze-0t2c
+    seeds the batch hash BEFORE the claim, the next dispatch's claim-reconcile saw a live-looking
+    hash (subjobs_completed=0 < subjobs_expected) and refused every Execute Approved for the batch
+    hash's full 24h TTL, with no chunk ever going on to POST a terminal event to heal it.
     """
     app, mock_router, redis_client = dispatch_app
-    groups = {"agent-a": [_proposal("agent-a")], "agent-b": [_proposal("agent-b")]}
-    mock_router.enqueue_for_agent = AsyncMock(side_effect=BaseException("worker process died"))
+    redis_client.claim_dispatch_mock.side_effect = TimeoutError("redis response lost after EVALSHA landed")
+    groups = {"agent-a": [_proposal("agent-a")]}
 
     with (
         patch("phaze.routers.execution.detect_collisions", AsyncMock(return_value=[])),
         patch("phaze.routers.execution.get_approved_proposals_grouped_by_agent", AsyncMock(return_value=groups)),
         patch("phaze.routers.execution.count_revoked_skipped_proposals", AsyncMock(return_value=0)),
+        pytest.raises(TimeoutError, match="redis response lost"),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            await ac.post("/execution/start")
+
+    # The seeded exec:{batch_id} hash is deleted before the exception propagates: if the claim
+    # actually landed server-side, the sentinel now names a hash-less batch and the next click's
+    # claim-reconcile (shape 1, EXISTS(held_key) == 0) takes it over outright instead of refusing
+    # for 24h; if it never landed, deleting a hash nobody was ever handed is a no-op.
+    redis_client.delete.assert_awaited_once()
+    (deleted_key,) = redis_client.delete.await_args.args
+    assert deleted_key.startswith("exec:")
+    mock_router.enqueue_for_agent.assert_not_awaited()
+
+
+async def test_start_execution_crash_mid_enqueue_keeps_the_in_flight_chunk_ambiguous(
+    dispatch_app: tuple[FastAPI, AsyncMock, MagicMock],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A crash mid-await does NOT release the claim outright -- the in-flight chunk is ambiguous (phaze-19u7g).
+
+    ``attempted`` is only bumped after a chunk's inner try/except finishes, so a BaseException
+    escaping ``await enqueue_for_agent(...)`` itself -- e.g. a CancelledError landing between the
+    broker commit and this coroutine's resume on a client disconnect -- names a chunk whose enqueue
+    may have already committed on the Postgres broker. Treating it as definitely-failed (the
+    pre-fix behaviour asserted here previously) would let the batch promote terminal and release
+    ``execdispatch:active`` while that phantom sub-job is still executing, so a retry double-
+    dispatches the same proposals -- phaze-19u7g's failure scenario. It must instead be counted as
+    landed (kept inside ``subjobs_expected``), same as ``AmbiguousEnqueueError`` above: the claim
+    stays held pending that chunk's own terminal POST, or the 24h TTL.
+    """
+    app, mock_router, redis_client = dispatch_app
+    pipe = redis_client.pipeline.return_value
+    groups = {"agent-a": [_proposal("agent-a")], "agent-b": [_proposal("agent-b")]}
+    mock_router.enqueue_for_agent = AsyncMock(side_effect=BaseException("worker process died"))
+    promote = AsyncMock()
+
+    with (
+        patch("phaze.routers.execution.detect_collisions", AsyncMock(return_value=[])),
+        patch("phaze.routers.execution.get_approved_proposals_grouped_by_agent", AsyncMock(return_value=groups)),
+        patch("phaze.routers.execution.count_revoked_skipped_proposals", AsyncMock(return_value=0)),
+        patch("phaze.routers.execution._get_promote_status_script", MagicMock(return_value=promote)),
+        caplog.at_level("ERROR", logger="phaze.routers.execution"),
         pytest.raises(BaseException, match="worker process died"),
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             await ac.post("/execution/start")
 
-    # Nothing landed, so the claim is released via the CAS release rather than held to TTL.
-    redis_client.release_dispatch_mock.assert_awaited_once()
+    # The interrupted (agent-a) chunk is ambiguous and counted as landed -> enqueued_ok == 1, so
+    # the claim is NOT released outright (that would only happen at enqueued_ok == 0).
+    redis_client.release_dispatch_mock.assert_not_awaited()
+    promote.assert_awaited_once()
+    hsets = _hset_calls(pipe)
+    assert any(len(a) >= 3 and a[1] == "subjobs_expected" and a[2] == "1" for a in hsets)
+    # Only agent-b's chunk -- genuinely never attempted -- counts as failed.
+    hincrbys = [c.args for c in pipe.hincrby.call_args_list]
+    assert any(len(a) >= 3 and a[1] == "agent:agent-b:failed" and a[2] == 1 for a in hincrbys)
+    assert not any(len(a) >= 3 and a[1] == "agent:agent-a:failed" for a in hincrbys)
+    assert any("enqueue ambiguous" in r.getMessage() for r in caplog.records)
 
 
-async def test_start_execution_crash_mid_enqueue_lowers_expected_to_what_landed(
+async def test_start_execution_crash_mid_enqueue_lowers_expected_to_what_really_never_landed(
     dispatch_app: tuple[FastAPI, AsyncMock, MagicMock],
 ) -> None:
-    """A crash after SOME chunks landed lowers subjobs_expected to the landed count (phaze-0t2c).
+    """A crash after SOME chunks landed lowers subjobs_expected to what landed + what's ambiguous (phaze-0t2c, phaze-19u7g).
 
-    The landed sub-jobs will POST their terminal events, so the batch must be given a target they
-    can actually reach -- otherwise the promotion (and the sentinel release it carries) is
-    unreachable by construction.
+    Three chunks: the first lands for real, the second is in flight when the crash hits (ambiguous
+    -- may have committed on the broker), the third is never even attempted. Only the third is a
+    genuine, provable non-landing -- the landed AND the ambiguous sub-jobs will (or may) POST their
+    own terminal events, so the batch must be given a target that accounts for both, or the
+    promotion (and the sentinel release it carries) is unreachable by construction for the landed
+    one, and a real duplicate dispatch is risked for the ambiguous one.
     """
     app, mock_router, redis_client = dispatch_app
     pipe = redis_client.pipeline.return_value
@@ -670,14 +931,20 @@ async def test_start_execution_crash_mid_enqueue_lowers_expected_to_what_landed(
             await ac.post("/execution/start")
 
     hsets = _hset_calls(pipe)
-    assert any(len(a) >= 3 and a[1] == "subjobs_expected" and a[2] == "1" for a in hsets)
-    # One landed, so the claim is NOT released here -- that sub-job's terminal POST will do it. The
-    # promote check re-runs in case it already reported against the stale, higher expected count.
+    # agent-a landed for real, agent-b is ambiguous (counted as landed too) -> subjobs_expected
+    # corrects to 2, not 1 -- the ambiguous chunk is not thrown away like a definite failure.
+    assert any(len(a) >= 3 and a[1] == "subjobs_expected" and a[2] == "2" for a in hsets)
+    # At least one is landed (or presumed so), so the claim is NOT released here -- a terminal POST
+    # (real or phantom) will do it. The promote check re-runs in case one already reported against
+    # the stale, higher expected count.
     redis_client.release_dispatch_mock.assert_not_awaited()
     promote.assert_awaited_once()
-    # The two chunks that were never reached are counted as failed, not silently dropped.
+    # Only agent-c's chunk -- genuinely never attempted -- counts as failed.
     hincrbys = [c.args for c in pipe.hincrby.call_args_list]
-    assert any(len(a) >= 3 and a[1] == "failed" and a[2] == 2 for a in hincrbys)
+    assert any(len(a) >= 3 and a[1] == "failed" and a[2] == 1 for a in hincrbys)
+    assert any(len(a) >= 3 and a[1] == "agent:agent-c:failed" and a[2] == 1 for a in hincrbys)
+    assert not any(len(a) >= 3 and a[1] == "agent:agent-b:failed" for a in hincrbys)
+    assert not any(len(a) >= 3 and a[1] == "agent:agent-a:failed" for a in hincrbys)
 
 
 async def test_start_execution_returns_collision_block_when_destinations_collide(
@@ -791,3 +1058,5 @@ async def test_sse_wrong_key_type_still_emits_a_terminal_close(
 
     # Degrades to the empty-hash path, which is bounded by _MAX_EMPTY_POLLS and closes the stream.
     assert b"event: complete" in body
+    # phaze-047gd: and the canonical close event that actually stops the browser's EventSource.
+    assert b"event: close" in body

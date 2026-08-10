@@ -46,6 +46,9 @@ def _agent_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PHAZE_AGENT_API_URL", _VALID_URL)
     monkeypatch.setenv("PHAZE_AGENT_TOKEN", _VALID_TOKEN)
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", _VALID_ROOTS)
+    # phaze-27myl: fileserver-kind (the default) AgentSettings now fail-fasts on the default
+    # (docker-service-name) queue_url.
+    monkeypatch.setenv("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@app-server.example:5432/phaze")
 
 
 # --------------------------------------------------------------------------- #
@@ -156,6 +159,9 @@ def test_agent_token_file_still_stripped(monkeypatch: pytest.MonkeyPatch, tmp_pa
     monkeypatch.setenv("PHAZE_ROLE", "agent")
     monkeypatch.setenv("PHAZE_AGENT_API_URL", _VALID_URL)
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", _VALID_ROOTS)
+    # phaze-27myl: fileserver-kind (the default) AgentSettings now fail-fasts on the default
+    # (docker-service-name) queue_url.
+    monkeypatch.setenv("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@app-server.example:5432/phaze")
     token_file = tmp_path / "token"
     token_file.write_text(f"{_VALID_TOKEN}\n", encoding="utf-8")
     monkeypatch.delenv("PHAZE_AGENT_TOKEN", raising=False)

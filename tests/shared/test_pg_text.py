@@ -12,9 +12,11 @@ also clears the scheduling-ledger row.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
-from phaze.services.pg_text import contains_pg_invalid_chars, sanitize_pg_text
+from phaze.services.pg_text import contains_pg_invalid_chars, find_pg_unsafe_json_reason, sanitize_pg_text
 
 
 def test_strips_nul() -> None:
@@ -84,3 +86,52 @@ def test_contains_pg_invalid_chars_agrees_with_sanitize_pg_text() -> None:
     """The detector and the stripper must agree on which strings are affected."""
     for s in ("clean", "a\x00b", "a\ud800b", "a\U0001f3b5b", ""):
         assert contains_pg_invalid_chars(s) == (sanitize_pg_text(s) != s)
+
+
+# phaze-hvve5: `find_pg_unsafe_json_reason` is the dict/list-shaped counterpart to
+# `contains_pg_invalid_chars` -- for a JSONB-bound payload where the hazard can be nested
+# arbitrarily deep (a dict key, a dict value, an item in a list) rather than a single top-level
+# `str`.
+
+
+def test_find_pg_unsafe_json_reason_none_on_safe_values() -> None:
+    for safe in (None, True, False, 1, 1.5, "clean", {}, [], {"a": 1}, [1, "b", {"c": 2.0}], {"a": {"b": [1, 2.0, "c"]}}):
+        assert find_pg_unsafe_json_reason(safe) is None
+
+
+def test_find_pg_unsafe_json_reason_detects_top_level_nul_string() -> None:
+    assert find_pg_unsafe_json_reason("bad\x00text") is not None
+
+
+def test_find_pg_unsafe_json_reason_detects_nul_in_dict_value() -> None:
+    assert find_pg_unsafe_json_reason({"artist": "bad\x00value"}) is not None
+
+
+def test_find_pg_unsafe_json_reason_detects_nul_in_dict_key() -> None:
+    assert find_pg_unsafe_json_reason({"bad\x00key": "value"}) is not None
+
+
+def test_find_pg_unsafe_json_reason_detects_lone_surrogate_nested_in_list() -> None:
+    assert find_pg_unsafe_json_reason({"tags": ["ok", "bad\ud800value"]}) is not None
+
+
+def test_find_pg_unsafe_json_reason_detects_nan_float() -> None:
+    assert find_pg_unsafe_json_reason(float("nan")) is not None
+    assert find_pg_unsafe_json_reason({"score": float("nan")}) is not None
+    assert find_pg_unsafe_json_reason([1.0, float("nan")]) is not None
+
+
+def test_find_pg_unsafe_json_reason_detects_infinity_float() -> None:
+    assert find_pg_unsafe_json_reason(float("inf")) is not None
+    assert find_pg_unsafe_json_reason(float("-inf")) is not None
+
+
+def test_find_pg_unsafe_json_reason_ignores_bool_int_and_none() -> None:
+    """bool/int/None are always PG-safe -- only str and float leaves are checked."""
+    assert find_pg_unsafe_json_reason({"a": True, "b": 42, "c": None}) is None
+
+
+def test_find_pg_unsafe_json_reason_finite_floats_are_safe() -> None:
+    assert find_pg_unsafe_json_reason(0.0) is None
+    assert find_pg_unsafe_json_reason(-1.5) is None
+    assert not math.isnan(0.0)  # sanity: the fixture values themselves are finite

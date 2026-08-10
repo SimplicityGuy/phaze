@@ -2,8 +2,9 @@
 
 Two surfaces are covered:
 
-- The ``$store.pipeline`` extension in ``base.html`` (a pure template-text assertion;
-  no DB) — every per-node sub-key is registered AND seeded to 0, with the Phase-34 keys
+- The ``$store.pipeline`` extension in ``shell/shell.html`` (phaze-uvmcr.5: formerly
+  ``base.html``, deleted once it had zero live callers) — a pure template-text assertion
+  (no DB); every per-node sub-key is registered AND seeded to 0, with the Phase-34 keys
   preserved (``-k store``).
 - The per-node router context built by ``_build_dag_context`` + the OOB seed paragraphs
   emitted by ``stats_bar.html`` on the 5s poll (DB-backed, auto-marked ``integration``):
@@ -31,7 +32,9 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-_BASE_HTML = Path(__file__).resolve().parent.parent.parent.parent / "src" / "phaze" / "templates" / "base.html"
+# phaze-uvmcr.5: base.html deleted (zero live callers) — shell/shell.html is now the only
+# page layout and the sole home of the $store.pipeline literal.
+_SHELL_HTML = Path(__file__).resolve().parent.parent.parent.parent / "src" / "phaze" / "templates" / "shell" / "shell.html"
 
 # Every per-node store sub-key the UI-SPEC "Store extension" mandates (35-UI-SPEC L294).
 _NEW_STORE_KEYS = (
@@ -89,10 +92,10 @@ _PRESERVED_STORE_KEYS = ("discovered", "analyzed", "metadataExtracted", "agentBu
 
 
 def _store_literal() -> str:
-    """Return the ``Alpine.store('pipeline', { ... });`` object-literal text from base.html."""
-    text = _BASE_HTML.read_text(encoding="utf-8")
+    """Return the ``Alpine.store('pipeline', { ... });`` object-literal text from shell.html."""
+    text = _SHELL_HTML.read_text(encoding="utf-8")
     match = re.search(r"Alpine\.store\('pipeline',\s*\{(.*?)\}\s*\);", text, re.DOTALL)
-    assert match is not None, "Alpine.store('pipeline', {...}) literal not found in base.html"
+    assert match is not None, "Alpine.store('pipeline', {...}) literal not found in shell/shell.html"
     return match.group(1)
 
 
@@ -601,8 +604,10 @@ def _window_file(i: int) -> FileRecord:
 async def _seed_window(session: AsyncSession, i: int, status: CloudJobStatus) -> None:
     """Seed a ``(FileRecord, cloud_job)`` pair for the bounded-window count cards (Phase 90 D-12).
 
-    The pushing / analyzing-cloud counts now DERIVE from ``cloud_job.status`` (pushing = uploading /
-    submitted; analyzing-cloud = uploaded / running), NOT ``files.state`` -- so seed the sidecar row.
+    The pushing / analyzing-cloud counts DERIVE from ``cloud_job.status`` (+ ``backend_id`` since
+    phaze-zyoag), NOT ``files.state`` -- so seed the sidecar row. No ``backend_id`` here (no registered
+    cloud backend in these tests' default settings), so a SUBMITTED row falls to the historical
+    "staged" reading (see ``phaze.services.pipeline._cloud_window_clauses``'s NULL-backend_id fallback).
     """
     f = _window_file(i)
     session.add(f)
@@ -640,28 +645,38 @@ async def _capture_context(client: AsyncClient, monkeypatch: pytest.MonkeyPatch,
 
 @pytest.mark.asyncio
 async def test_dashboard_context_carries_window_counts(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """GET /pipeline/ context carries pushing_count + analyzing_cloud_count (Phase 90 D-12: derived)."""
+    """GET /pipeline/ context carries pushing_count + analyzing_cloud_count (phaze-zyoag: re-seamed).
+
+    All three rows carry no ``backend_id`` (no registered cloud backend), so the UPLOADING/UPLOADED/
+    SUBMITTED rows all fall on the staged side of the phaze-zyoag seam (STAGING + the NULL-backend_id
+    SUBMITTED fallback) -- 0 rows are left for "analyzing" (RUNNING, or a kueue-attributed SUBMITTED,
+    neither of which is present here).
+    """
     await _seed_window(session, 1, CloudJobStatus.UPLOADING)
     await _seed_window(session, 2, CloudJobStatus.SUBMITTED)
     await _seed_window(session, 3, CloudJobStatus.UPLOADED)
     await session.commit()
 
     ctx = await _capture_context(client, monkeypatch, "/s/analyze")
-    assert ctx["pushing_count"] == 2
-    assert ctx["analyzing_cloud_count"] == 1
+    assert ctx["pushing_count"] == 3
+    assert ctx["analyzing_cloud_count"] == 0
 
 
 @pytest.mark.asyncio
 async def test_stats_poll_context_carries_window_counts(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """GET /pipeline/stats context re-pushes pushing_count + analyzing_cloud_count on the 5s poll."""
+    """GET /pipeline/stats context re-pushes pushing_count + analyzing_cloud_count on the 5s poll.
+
+    UPLOADING/UPLOADED are unconditionally staged (STAGING); RUNNING is unconditionally analyzing
+    (phaze-zyoag: RUNNING never carries the compute-vs-kueue ambiguity SUBMITTED does).
+    """
     await _seed_window(session, 4, CloudJobStatus.UPLOADING)
     await _seed_window(session, 5, CloudJobStatus.UPLOADED)
     await _seed_window(session, 6, CloudJobStatus.RUNNING)
     await session.commit()
 
     ctx = await _capture_context(client, monkeypatch, "/pipeline/stats")
-    assert ctx["pushing_count"] == 1
-    assert ctx["analyzing_cloud_count"] == 2
+    assert ctx["pushing_count"] == 2
+    assert ctx["analyzing_cloud_count"] == 1
 
 
 @pytest.mark.asyncio

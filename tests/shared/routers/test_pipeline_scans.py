@@ -38,6 +38,7 @@ from phaze.models.file import FileRecord
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers import pipeline, pipeline_scans, shell
 from phaze.routers.response_shape import RENDERABLE_ALERT_STATUS
+from phaze.services.agent_task_router import AmbiguousEnqueueError
 
 
 if TYPE_CHECKING:
@@ -401,6 +402,41 @@ async def test_post_scans_happy_path(
 
 
 @pytest.mark.asyncio
+async def test_post_scans_does_not_refresh_before_enqueue(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-266lc: trigger_scan drops the redundant post-commit ``session.refresh(batch)``.
+
+    The sessionmaker is ``expire_on_commit=False`` (database.py), so ``batch``'s attributes already
+    survive the RUNNING-batch commit without a refresh -- the refresh's sole effect was to autobegin
+    a NEW read transaction on the request session that then sat idle-in-transaction across the
+    ``enqueue_for_agent`` broker call (the phaze-1v37 pool-drain class). Spy on both ``refresh`` and
+    ``enqueue_for_agent`` and assert refresh is never called at all.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
+
+    ac, mock_router = smoke
+    refresh_calls: list[str] = []
+    real_refresh = _AsyncSession.refresh
+
+    async def _spy_refresh(self: _AsyncSession, *args: object, **kwargs: object) -> None:
+        refresh_calls.append("refresh")
+        await real_refresh(self, *args, **kwargs)
+
+    monkeypatch.setattr(_AsyncSession, "refresh", _spy_refresh)
+
+    response = await ac.post(
+        "/pipeline/scans",
+        data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "2026/"},
+    )
+    assert response.status_code == 200, response.text
+    mock_router.enqueue_for_agent.assert_awaited_once()
+    assert refresh_calls == [], "trigger_scan must not refresh() the RUNNING batch before enqueueing (phaze-266lc)"
+
+
+@pytest.mark.asyncio
 async def test_post_scans_subpath_rejects_dotdot(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,
@@ -705,6 +741,47 @@ async def test_post_scans_enqueue_failure_marks_batch_failed(
     assert len(rows) == 1
     assert rows[0].status == ScanStatus.FAILED.value
     assert rows[0].error_message == "controller could not enqueue scan to agent worker"
+
+
+# ---------------------------------------------------------------------------
+# phaze-0dfj4: an AMBIGUOUS enqueue failure (the broker connection was already live when
+# ``enqueue_for_agent`` raised -- the ``saq_jobs`` INSERT may have already committed) must NOT be
+# treated the same as a definite one. Marking the batch FAILED here is a lie the operator acts on:
+# they re-trigger (the uq constraint only covers RUNNING rows), creating a second batch + job while
+# the phantom first job may still dequeue and walk the archive tree concurrently with the real scan.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_post_scans_ambiguous_enqueue_leaves_batch_running(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An ``AmbiguousEnqueueError`` leaves the batch RUNNING instead of marking it FAILED (phaze-0dfj4).
+
+    The batch was already committed RUNNING before the enqueue attempt; on an ambiguous outcome
+    nothing further is written -- the stall reaper (config.scan_stall_seconds) is left to resolve a
+    genuinely-lost enqueue exactly as it would resolve an agent that silently died mid-scan.
+    """
+    ac, mock_router = smoke
+    mock_router.enqueue_for_agent.side_effect = AmbiguousEnqueueError("enqueue raised after the broker connection was live")
+
+    with caplog.at_level("ERROR", logger="phaze.routers.pipeline_scans"):
+        response = await ac.post(
+            "/pipeline/scans",
+            data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "2026/"},
+        )
+
+    # The handler renders the normal RUNNING progress card, not the enqueue-failure alert.
+    assert response.status_code == 200, response.text
+    assert "could not enqueue the scan" not in response.text
+
+    rows = (await session.execute(select(ScanBatch).where(ScanBatch.scan_path == "/data/music/2026"))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].status == ScanStatus.RUNNING.value
+    assert rows[0].error_message is None
+    assert any("enqueue ambiguous" in r.getMessage() for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -1470,22 +1547,36 @@ async def test_delete_failed_scan_is_deletable(
 
 
 @pytest.mark.asyncio
-async def test_delete_unknown_batch_returns_404(
+async def test_delete_unknown_batch_renders_alert_not_dropped_404(
     smoke: tuple[AsyncClient, AsyncMock],
 ) -> None:
-    """DELETE an unknown batch_id -> 404."""
+    """DELETE an unknown batch_id -> 200 + re-rendered table with a role="alert" banner.
+
+    phaze-ytmfm: this handler's sole caller is the trash control in
+    ``recent_scans_table.html`` (``hx-target="#recent-scans"``), and htmx 2.x's stock
+    ``responseHandling`` does not swap a 4xx/5xx body (response_shape.py rule 3) -- a bare
+    404 here is silently dropped and the operator sees nothing. A status assertion alone
+    would have passed against that bug, so this asserts the SHAPE htmx actually swaps: 200,
+    the re-rendered ``#recent-scans`` section, and an announced ``role="alert"`` message.
+    """
     ac, _ = smoke
     response = await ac.delete(f"/pipeline/scans/{uuid.uuid4()}")
-    assert response.status_code == 404
-    assert "scan batch not found" in response.text.lower()
+    assert response.status_code == 200, response.text
+    assert 'id="recent-scans"' in response.text
+    assert 'role="alert"' in response.text
+    assert "already gone" in response.text.lower()
 
 
 @pytest.mark.asyncio
-async def test_delete_live_batch_returns_409(
+async def test_delete_live_batch_renders_alert_not_dropped_409(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,
 ) -> None:
-    """The LIVE watcher sentinel can NEVER be deleted -> 409; no rows touched."""
+    """The LIVE watcher sentinel can NEVER be deleted -> 200 + alert banner; no rows touched.
+
+    phaze-ytmfm: was a bare 409 htmx silently drops (response_shape.py rule 3) -- see
+    ``test_delete_unknown_batch_renders_alert_not_dropped_404`` for the full rationale.
+    """
     ac, _ = smoke
     batch = ScanBatch(
         id=uuid.uuid4(),
@@ -1500,21 +1591,25 @@ async def test_delete_live_batch_returns_409(
     batch_id = batch.id
 
     response = await ac.delete(f"/pipeline/scans/{batch_id}")
-    assert response.status_code == 409
+    assert response.status_code == 200, response.text
+    assert 'role="alert"' in response.text
     assert "live" in response.text.lower()
     # Row survives.
     assert (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalars().all() != []
 
 
 @pytest.mark.asyncio
-async def test_delete_running_batch_returns_409(
+async def test_delete_running_batch_renders_alert_not_dropped_409(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,
 ) -> None:
-    """A RUNNING scan cannot be deleted (only terminal scans are) -> 409; row survives.
+    """A RUNNING scan cannot be deleted (only terminal scans are) -> 200 + alert; row survives.
 
     Server-side recheck is authoritative: the reaper may flip a row's status, or a
     stale button may target a now-running row, so the guard lives on the server.
+
+    phaze-ytmfm: was a bare 409 htmx silently drops (response_shape.py rule 3) -- see
+    ``test_delete_unknown_batch_renders_alert_not_dropped_404`` for the full rationale.
     """
     ac, _ = smoke
     batch = ScanBatch(
@@ -1530,7 +1625,8 @@ async def test_delete_running_batch_returns_409(
     batch_id = batch.id
 
     response = await ac.delete(f"/pipeline/scans/{batch_id}")
-    assert response.status_code == 409
+    assert response.status_code == 200, response.text
+    assert 'role="alert"' in response.text
     assert "running" in response.text.lower()
     assert (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalars().all() != []
 

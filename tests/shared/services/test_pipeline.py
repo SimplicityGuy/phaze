@@ -28,6 +28,7 @@ from phaze.services.pipeline import (
     count_inflight_jobs,
     count_proposal_pending_files,
     deduped_count,
+    get_agent_lane_depths,
     get_agent_recent_scans,
     get_agent_reconciliations,
     get_analysis_failed_count,
@@ -41,6 +42,7 @@ from phaze.services.pipeline import (
     get_match_busy_count,
     get_match_pending_tracklists,
     get_metadata_pending_files,
+    get_proposal_busy_count,
     get_proposal_pending_batches,
     get_pushed_count,
     get_pushing_count,
@@ -295,6 +297,49 @@ async def test_get_queue_activity_isolates_one_failing_agent(session: AsyncSessi
 
 
 # ---------------------------------------------------------------------------
+# get_agent_lane_depths (phaze-en7s7) — per-lane agent-activity-pane depths,
+# connect-before-count regression (the #217 fix, missed by this sibling reader)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_agent_lane_depths_connects_runtime_registered_agent(session: AsyncSession):
+    """A runtime-registered agent's lanes are connected before counting, not degraded to 0.
+
+    Regression (phaze-en7s7): unlike ``get_queue_activity`` (fixed for #217), this reader called
+    ``q.count(...)`` directly with no preceding ``q.connect()``. ``main.py``'s lifespan only opens
+    pools for agents present at boot, so an agent registered at runtime (``phaze agents add``) has
+    an unopened psycopg pool and every lane's ``count()`` raised ``PoolClosed`` -- silently caught
+    by the per-lane ``except`` and rendered as 0 on EVERY poll, not a rare race. ``connect()`` is
+    idempotent, mirroring the fixed sibling.
+    """
+    await seed_active_agent(session, "k8s-vox")
+    router = FakeTaskRouter()
+    for lane in ("analyze", "meta", "io"):
+        router.queue_for("k8s-vox", lane).require_connect().set_counts(queued=2, active=1)
+    app_state = SimpleNamespace(task_router=router)
+
+    depths = await get_agent_lane_depths(app_state, "k8s-vox")
+
+    assert depths == {"analyze": 3, "meta": 3, "io": 3}
+
+
+@pytest.mark.asyncio
+async def test_get_agent_lane_depths_isolates_one_failing_lane(session: AsyncSession):
+    """One lane's count failure zeroes only that lane, not the whole agent's depth dict."""
+    await seed_active_agent(session, "nox")
+    router = FakeTaskRouter()
+    router.queue_for("nox", "analyze").set_counts(queued=5, active=1)
+    router.queue_for("nox", "meta").set_counts(queued=9, active=9).fail_count()
+    router.queue_for("nox", "io").set_counts(queued=1, active=0)
+    app_state = SimpleNamespace(task_router=router)
+
+    depths = await get_agent_lane_depths(app_state, "nox")
+
+    assert depths == {"analyze": 6, "meta": 0, "io": 1}
+
+
+# ---------------------------------------------------------------------------
 # get_stage_busy_counts (t7k FIX2) — per-stage in-flight gate, degrade-safe
 # ---------------------------------------------------------------------------
 
@@ -520,6 +565,52 @@ async def test_get_match_busy_count_degrade_does_not_poison_session(session: Asy
 
 
 # ---------------------------------------------------------------------------
+# get_proposal_busy_count (phaze-8qheu) — the generate_proposals in-flight gate over the
+# saq_jobs table, degrade-safe. Mirrors get_match_busy_count's shape verbatim.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_busy_count_buckets_by_generate_proposals_prefix() -> None:
+    """Returns ONLY the ``generate_proposals`` in-flight count; other prefixes are ignored."""
+    rows = [
+        ("generate_proposals", 5),
+        ("match_tracklist_to_discogs", 6),  # not proposals → ignored
+        ("process_file", 7),  # not proposals → ignored
+    ]
+    assert await get_proposal_busy_count(_BusySession(rows)) == 5  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_busy_count_zero_when_no_proposal_rows() -> None:
+    """With no ``generate_proposals`` rows the in-flight count is 0 (not an error)."""
+    assert await get_proposal_busy_count(_BusySession([("match_tracklist_to_discogs", 6)])) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_busy_count_degrades_on_db_error() -> None:
+    """get_proposal_busy_count returns 0 and never raises when the saq_jobs read fails."""
+
+    class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError('relation "saq_jobs" does not exist')
+
+    assert await get_proposal_busy_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_busy_count_degrade_does_not_poison_session(session: AsyncSession) -> None:
+    """The SAVEPOINT degrade leaves the outer transaction usable (mirrors the match-busy guard)."""
+    await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
+    assert await get_proposal_busy_count(session) == 0
+    follow_up = await get_stage_progress(session)
+    assert follow_up["discovery"]["done"] == 0
+
+
+# ---------------------------------------------------------------------------
 # get_match_pending_tracklists (Phase 41, REQ-41-2) — the exact complement of
 # get_stage_progress match.done. (phaze-2akf removed its get_scrape_pending_tracklists sibling
 # along with the SCRAPE ALL trigger and the ``scrape`` stage node it complemented.)
@@ -644,6 +735,53 @@ async def test_get_proposal_pending_batches_sorts_then_chunks(session: AsyncSess
     expected = sorted(str(f.id) for f in files)
     assert flat == expected  # globally sorted, deterministic membership
     assert [len(b) for b in batches] == [2, 1]  # 3 ids / batch_size 2
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_pending_batches_zero_batch_size_clamps_to_one(session: AsyncSession) -> None:
+    """phaze-ceuvd: batch_size=0 used to raise ValueError (range() arg 3 must not be zero) --
+    an unhandled 500 on GENERATE ALL. It must now degrade to one file per batch instead of
+    crashing, and the full pending set must still be returned (no files dropped)."""
+    files = [_make_pipeline_file() for _ in range(3)]
+    session.add_all(files)
+    await session.flush()
+    related: list[object] = []
+    for f in files:
+        related.append(FileMetadata(file_id=f.id, artist="A", title="T"))
+        related.append(AnalysisResult(file_id=f.id, bpm=120.0, analysis_completed_at=datetime.now(UTC)))
+    session.add_all(related)
+    await session.flush()
+
+    batches = await get_proposal_pending_batches(session, 0)
+
+    flat = [fid for batch in batches for fid in batch]
+    expected = sorted(str(f.id) for f in files)
+    assert flat == expected  # full set still returned, nothing silently dropped
+    assert [len(b) for b in batches] == [1, 1, 1]  # clamped to 1 -> one file per batch
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_pending_batches_negative_batch_size_clamps_to_one(session: AsyncSession) -> None:
+    """phaze-ceuvd: batch_size<0 used to make range(0, N, -k) empty -- a silent no-op that
+    returned success having enqueued ZERO batches while leaving the pending backlog untouched.
+    It must now degrade to one file per batch instead of silently dropping the whole set."""
+    files = [_make_pipeline_file() for _ in range(3)]
+    session.add_all(files)
+    await session.flush()
+    related: list[object] = []
+    for f in files:
+        related.append(FileMetadata(file_id=f.id, artist="A", title="T"))
+        related.append(AnalysisResult(file_id=f.id, bpm=120.0, analysis_completed_at=datetime.now(UTC)))
+    session.add_all(related)
+    await session.flush()
+
+    batches = await get_proposal_pending_batches(session, -5)
+
+    flat = [fid for batch in batches for fid in batch]
+    expected = sorted(str(f.id) for f in files)
+    assert flat == expected  # full set still returned, nothing silently dropped
+    assert batches != []  # must NOT silently collapse to zero batches
+    assert [len(b) for b in batches] == [1, 1, 1]  # clamped to 1 -> one file per batch
 
 
 @pytest.mark.asyncio
@@ -1647,20 +1785,85 @@ async def test_get_awaiting_cloud_count_degrades_to_zero_on_db_error() -> None:
     assert await get_awaiting_cloud_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
 
 
-async def _seed_cloud_job(session: AsyncSession, file_index: int, status: CloudJobStatus) -> None:
-    """Seed a ``(FileRecord, cloud_job)`` pair; the cloud_job carries ``status`` (Phase 90 D-12)."""
+async def _seed_cloud_job(session: AsyncSession, file_index: int, status: CloudJobStatus, *, backend_id: str | None = None) -> None:
+    """Seed a ``(FileRecord, cloud_job)`` pair; the cloud_job carries ``status`` (Phase 90 D-12) + an
+    optional ``backend_id`` (phaze-zyoag: the per-backend-kind seam)."""
     f = _file(file_index)
     session.add(f)
     await session.flush()
-    session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, status=status.value))
+    session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, status=status.value, backend_id=backend_id))
+
+
+# phaze-zyoag: a kueue-only registry (mirrors the bug report's "vox" lane) and a kueue+compute
+# registry (acceptance 3: one row of each kind must land correctly SIMULTANEOUSLY). Both reuse the
+# exact shape `tests/analyze/routers/test_lane_detail.py` already establishes for a kueue backend.
+_KUEUE_ONLY_TOML = """
+[[backends]]
+kind = "kueue"
+id = "vox"
+rank = 10
+cap = 3
+buckets = ["burst-vox"]
+
+  [backends.kube]
+  api_url = "https://kube.example:6443"
+  namespace = "phaze"
+  local_queue = "phaze-burst"
+
+[[backends]]
+kind = "local"
+id = "local"
+rank = 99
+cap = 1
+
+[[buckets]]
+id = "burst-vox"
+scope = "cluster-specific"
+bucket = "phaze-burst"
+endpoint_url = "https://s3.example"
+"""
+
+_KUEUE_AND_COMPUTE_TOML = """
+[[backends]]
+kind = "kueue"
+id = "vox"
+rank = 10
+cap = 3
+buckets = ["burst-vox"]
+
+  [backends.kube]
+  api_url = "https://kube.example:6443"
+  namespace = "phaze"
+  local_queue = "phaze-burst"
+
+[[backends]]
+kind = "compute"
+id = "a1"
+rank = 20
+cap = 2
+agent_ref = "a1-node"
+scratch_dir = "/scratch/a1"
+push_host = "a1.push"
+
+[[backends]]
+kind = "local"
+id = "local"
+rank = 99
+cap = 1
+
+[[buckets]]
+id = "burst-vox"
+scope = "cluster-specific"
+bucket = "phaze-burst"
+endpoint_url = "https://s3.example"
+"""
 
 
 @pytest.mark.asyncio
 async def test_get_pushing_count_happy_path(session: AsyncSession) -> None:
-    """DERIVED "pushing" count (Phase 90 D-12): cloud_job status IN (uploading, submitted).
-
-    Sources from the ``cloud_job`` sidecar, NOT ``files.state == PUSHING``. An ``uploaded`` (pushed)
-    and an ``awaiting`` cloud_job are excluded, proving the status membership.
+    """DERIVED "staged" count (phaze-zyoag): STAGING (uploading/uploaded) + SUBMITTED with no registered
+    kueue attribution (the historical/no-cloud-registry reading -- see the backend-kind tests below for
+    the kueue-attributed carve-out). An ``awaiting`` cloud_job is excluded, proving the status membership.
     """
     await _seed_cloud_job(session, 40, CloudJobStatus.UPLOADING)
     await _seed_cloud_job(session, 41, CloudJobStatus.SUBMITTED)
@@ -1668,15 +1871,15 @@ async def test_get_pushing_count_happy_path(session: AsyncSession) -> None:
     await _seed_cloud_job(session, 43, CloudJobStatus.AWAITING)
     await session.commit()
 
-    assert await get_pushing_count(session) == 2
+    assert await get_pushing_count(session) == 3
 
 
 @pytest.mark.asyncio
 async def test_get_pushed_count_happy_path(session: AsyncSession) -> None:
-    """DERIVED "pushed / analyzing" count (Phase 90 D-12): cloud_job status IN (uploaded, running).
-
-    Sources from the ``cloud_job`` sidecar, NOT ``files.state == PUSHED``. An ``uploading`` (pushing)
-    cloud_job is excluded, proving the status membership.
+    """DERIVED "analyzing" count (phaze-zyoag): RUNNING only, absent a registered kueue backend to
+    attribute a SUBMITTED row to (see the backend-kind tests below). Both ``uploaded`` rows moved OFF
+    this card in the phaze-zyoag re-seam -- an uploaded-not-yet-submitted row is pre-submit/staged, never
+    "analyzing (landed)".
     """
     await _seed_cloud_job(session, 44, CloudJobStatus.UPLOADED)
     await _seed_cloud_job(session, 45, CloudJobStatus.RUNNING)
@@ -1684,7 +1887,7 @@ async def test_get_pushed_count_happy_path(session: AsyncSession) -> None:
     await _seed_cloud_job(session, 47, CloudJobStatus.UPLOADING)
     await session.commit()
 
-    assert await get_pushed_count(session) == 3
+    assert await get_pushed_count(session) == 1
 
 
 @pytest.mark.asyncio
@@ -1713,6 +1916,88 @@ async def test_get_pushed_count_degrades_to_zero_on_db_error() -> None:
             raise RuntimeError("files table unavailable")
 
     assert await get_pushed_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# phaze-zyoag acceptance 1/2/3: the per-backend-kind seam. SUBMITTED means opposite things on kueue
+# (post-upload, admitted-or-queued, D-10) vs compute (mid-rsync, D-10) -- the two window-count cards
+# must split it by the row's OWN ``backend_id``, resolved through the SAME registry projection
+# (``non_local_backend_kinds``) the per-file lane badges already use.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_kueue_submitted_row_is_never_staged_mid_transfer(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """Acceptance 1: a kueue SUBMITTED row (upload done, Job created, waiting on quota) renders 0 in Staged.
+
+    Reproduces the exact bug report shape: one ``vox`` (kueue) row at status=submitted, upload long
+    finished, parked on cluster quota. It must NOT be counted as "Staged (pushing) -- mid-transfer".
+    """
+    backends_toml_env(_KUEUE_ONLY_TOML)
+    await _seed_cloud_job(session, 50, CloudJobStatus.SUBMITTED, backend_id="vox")
+    await session.commit()
+
+    assert await get_pushing_count(session) == 0, "a kueue SUBMITTED row must never render under the staged/mid-transfer card"
+    assert await get_pushed_count(session) == 1, "it belongs in Analyzing (cloud) -- post-submit, in the cloud window"
+
+
+@pytest.mark.asyncio
+async def test_kueue_uploaded_row_is_never_analyzing_landed(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """Acceptance 2: a kueue UPLOADED row (upload finished, submit_cloud_job not yet run) counts as staged.
+
+    ``KueueBackend._reap_stranded_staging`` exists precisely because this window is not necessarily
+    brief -- a dead agent or a lost ``s3_upload`` job can strand a row here for hours. It must never be
+    counted "Analyzing (cloud) -- landed" while nothing is actually analyzing it.
+    """
+    backends_toml_env(_KUEUE_ONLY_TOML)
+    await _seed_cloud_job(session, 51, CloudJobStatus.UPLOADED, backend_id="vox")
+    await session.commit()
+
+    assert await get_pushed_count(session) == 0, "an UPLOADED row must never render under the analyzing/landed card"
+    assert await get_pushing_count(session) == 1, "it is still pre-submit -- staged"
+
+
+@pytest.mark.asyncio
+async def test_compute_submitted_row_stays_staged_alongside_a_kueue_submitted_row(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """Acceptance 3: fixing kueue must not break compute. One row of EACH kind, same registry, same poll.
+
+    ``a1`` (compute) SUBMITTED is genuinely mid-rsync (D-10, ``ComputeAgentBackend.dispatch`` writes it
+    at dispatch time) and must stay staged; ``vox`` (kueue) SUBMITTED is post-upload and must move to
+    analyzing. Seeding both under ONE registry proves the split is per-row, not a global kueue-vs-compute
+    toggle.
+    """
+    backends_toml_env(_KUEUE_AND_COMPUTE_TOML)
+    await _seed_cloud_job(session, 52, CloudJobStatus.SUBMITTED, backend_id="a1")
+    await _seed_cloud_job(session, 53, CloudJobStatus.SUBMITTED, backend_id="vox")
+    await session.commit()
+
+    assert await get_pushing_count(session) == 1, "the compute SUBMITTED row (mid-rsync) must stay staged"
+    assert await get_pushed_count(session) == 1, "the kueue SUBMITTED row (post-upload) must move to analyzing"
+
+
+@pytest.mark.asyncio
+async def test_cloud_window_partition_matches_in_flight_exactly(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """Acceptance 4: Staged + Analyzing partition backends.IN_FLIGHT EXACTLY -- no row in neither, none in both.
+
+    Pins the invariant the phaze-zyoag design doc requires: for every :data:`phaze.services.backends.IN_FLIGHT`
+    status, on EITHER backend kind, the row is counted by EXACTLY ONE of the two cards. A future status-enum
+    member landing in ``IN_FLIGHT`` without an update here would leave this sum short of the total.
+    """
+    from phaze.services.backends import IN_FLIGHT
+
+    backends_toml_env(_KUEUE_AND_COMPUTE_TOML)
+    idx = 60
+    for status in IN_FLIGHT:
+        for backend_id in ("a1", "vox"):
+            await _seed_cloud_job(session, idx, status, backend_id=backend_id)
+            idx += 1
+    await session.commit()
+
+    total_rows = len(IN_FLIGHT) * 2
+    staged = await get_pushing_count(session)
+    analyzing = await get_pushed_count(session)
+
+    assert staged + analyzing == total_rows, "every in-flight row must land in EXACTLY one of the two cards"
 
 
 @pytest.mark.asyncio

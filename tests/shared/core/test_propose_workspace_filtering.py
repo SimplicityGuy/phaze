@@ -21,13 +21,18 @@ already shipped once:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from unittest.mock import patch
+import uuid
 
 import pytest
 from sqlalchemy import update
 from sqlalchemy.exc import OperationalError
 
+from phaze.models.analysis import AnalysisResult
+from phaze.models.file import FileRecord
+from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.routers.shell import PROPOSE_LIST_CONTAINER_ID
 from phaze.services.review import get_proposal_workspace_page
@@ -160,6 +165,94 @@ async def test_search_narrows_within_the_active_filter(
     # the two predicates are ANDed, not one overriding the other.
     crossed = (await client.get("/s/propose?status=pending&q=Approved", headers=_LIST_TARGET)).text
     assert "Approved 0.mp3" not in crossed
+
+
+# ---------------------------------------------------------------------------
+# phaze-a6gsw -- the search box's hx-get must not bake render-time view state
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_search_box_hx_get_is_bare_and_reads_a_state_carrier(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """The search input's hx-get must carry NO query string -- the mutable state must come from
+    hx-include reading a separate, in-container element instead of a static attribute baked at
+    workspace-render time (phaze-a6gsw).
+    """
+    await _seed_mixed(session, seed_pending_proposal)
+    body = (await client.get("/s/propose?status=approved&sort=confidence&order=desc&page_size=50")).text
+
+    search_block = body.split('name="q"')[1].split("</div>")[0]
+    assert 'hx-get="/s/propose"' in search_block, "hx-get must be bare -- no baked query string"
+    assert 'hx-get="/s/propose?' not in search_block, "hx-get must not carry a static query string"
+    assert 'hx-include="this, #' in search_block, "hx-include must union the search input with the state carrier"
+
+
+@pytest.mark.asyncio
+async def test_search_box_state_carrier_reflects_the_active_tab_after_a_tab_swap(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """Regression (phaze-a6gsw): after a tab click re-renders the container, the search box's state
+    carrier -- which lives INSIDE that container -- must report the NEWLY active tab, not whatever
+    was active when the workspace was last fully rendered. Before the fix nothing re-emitted the
+    search box's state on a narrow swap at all: a keystroke right after this response would have
+    resubmitted the OLD status and silently reverted the operator's tab change.
+    """
+    await _seed_mixed(session, seed_pending_proposal)
+
+    # Full render defaults to the "pending" tab.
+    full = (await client.get("/s/propose")).text
+    assert '<input type="hidden" name="status" value="pending">' in full
+
+    # A narrow swap to the "approved" tab must re-render the carrier with the NEW status.
+    swapped = (await client.get("/s/propose?status=approved", headers=_LIST_TARGET)).text
+    assert '<input type="hidden" name="status" value="approved">' in swapped
+    assert '<input type="hidden" name="status" value="pending">' not in swapped
+
+
+@pytest.mark.asyncio
+async def test_search_box_state_carrier_page_is_always_one(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """The carrier's `page` field is a literal 1 even on page 2+, mirroring the pre-fix `page=1`
+    reset: a search narrows the result set, so resubmitting the current page would routinely show an
+    empty table for a query that matched plenty.
+    """
+    await _seed_mixed(session, seed_pending_proposal)
+    body = (await client.get("/s/propose?status=all&page_size=25&page=1")).text
+    assert '<input type="hidden" name="page" value="1">' in body
+
+
+@pytest.mark.asyncio
+async def test_a_search_request_composed_from_the_state_carrier_preserves_the_active_tab(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """End-to-end proof of the failure scenario the bead describes: build the request the browser
+    would actually send -- the search box's bare hx-get URL plus the query string htmx would
+    serialise from `this` (q) unioned with the state carrier (status/page/page_size/sort/order) --
+    and confirm it lands on the tab the operator actually had active, not whatever was active at the
+    last full render.
+    """
+    await _seed_mixed(session, seed_pending_proposal)
+
+    # Simulates: operator opens /s/propose (defaults to pending), clicks Approved, then types.
+    # htmx would compose this exact query from the bare hx-get + hx-include="this, #...-state".
+    response = await client.get(
+        "/s/propose?status=approved&page=1&page_size=25&sort=confidence&order=asc&q=Approved",
+        headers=_LIST_TARGET,
+    )
+    body = response.text
+    assert "Approved 0.mp3" in body
+    assert "Pending 0.mp3" not in body, "a stale baked status=pending must never leak back in"
 
 
 @pytest.mark.asyncio
@@ -381,22 +474,55 @@ async def test_header_subcount_reports_the_filtered_total_not_the_page(
     assert "25 proposals ready" not in body
 
 
+async def _seed_generation_pending(session: AsyncSession, count: int) -> None:
+    """Seed ``count`` files that clear the D-02 convergence gate (metadata + completed analysis,
+    NO proposal row yet) -- the exact population ``get_proposal_pending_batches``/
+    ``count_proposal_pending_files`` enqueue over, DISJOINT from ``seed_pending_proposal``'s
+    already-proposed files (phaze-1aybg).
+    """
+    uids = [uuid.uuid4() for _ in range(count)]
+    session.add_all(
+        FileRecord(
+            agent_id="test-fileserver",
+            id=uid,
+            sha256_hash=uid.hex,
+            original_path=f"/music/gen-pending-{i}-{uid.hex}.mp3",
+            original_filename=f"gen-pending-{i}.mp3",
+            current_path=f"/music/gen-pending-{i}.mp3",
+            file_type="mp3",
+            file_size=1000,
+        )
+        for i, uid in enumerate(uids)
+    )
+    await session.flush()  # FileRecord rows must exist before the FK-dependent inserts below
+    for uid, i in zip(uids, range(count), strict=True):
+        session.add(AnalysisResult(file_id=uid, bpm=120.0, musical_key="Am", analysis_completed_at=datetime.now(UTC)))
+        session.add(FileMetadata(file_id=uid, artist="Gen", title=f"Pending {i}"))
+    await session.commit()
+
+
 @pytest.mark.asyncio
-async def test_generate_all_confirm_quotes_the_corpus_not_the_filtered_page(
+async def test_generate_all_confirm_quotes_the_generation_pending_set(
     client: AsyncClient,
     session: AsyncSession,
     seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
 ) -> None:
-    """A bulk-enqueue confirm must name the scope the ACTION has, not the rows on screen.
+    """A bulk-enqueue confirm must name the scope the ACTION has, not the review-tab stat (phaze-1aybg).
 
-    GENERATE ALL enqueues over the whole pending set regardless of tab, search or page. Quoting the
-    visible rows would understate the blast radius -- filtered to Approved, the confirm would have
-    promised zero jobs before enqueuing every pending one (paging contract rule 7: enqueue sets are
-    never paged).
+    GENERATE ALL enqueues over ``get_proposal_pending_batches``'s convergence set -- files with
+    metadata + completed analysis and NO proposal row yet -- regardless of tab, search or page.
+    That population is DISJOINT from ``propose_stats.pending`` (RenameProposal rows already
+    generated and awaiting review): ``_seed_mixed`` below seeds 3 pending + 2 approved + 1 rejected
+    proposal (6 files, ALL of which already have a proposal row, so NONE of them are
+    generation-pending), plus 4 files that genuinely ARE generation-pending. The confirm must quote
+    4, never the review-tab's 3 pending -- promising "0 litellm jobs" while enqueuing 4 (or the
+    inverse) is exactly the defect this bead fixes.
     """
     await _seed_mixed(session, seed_pending_proposal)
+    await _seed_generation_pending(session, 4)
     body = (await client.get("/s/propose?status=approved")).text
-    assert "all 3 pending files" in body, "the confirm quotes the pending corpus (3), not the approved page (2)"
+    assert "all 4 pending files" in body, "the confirm quotes the generation-pending set (4), not the review-tab pending stat (3)"
+    assert "all 3 pending files" not in body, "the confirm must not quote propose_stats.pending -- that set excludes every generation-pending file"
 
 
 @pytest.mark.asyncio

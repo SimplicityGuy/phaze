@@ -102,6 +102,11 @@ async def test_per_file_retry_reenqueues_one_file_on_meta_lane(client: AsyncClie
     assert response.status_code == 200
     assert "re-queued 1 failed file(s) for metadata extraction" in response.text.lower()
     assert "for analysis" not in response.text.lower()
+    # phaze-bgz26: the ack OOB-pushes the Files-matrix pill this write touched. D-11 leaves
+    # `failed_at` in place, so the re-derived bucket is still "failed" -- pushing it anyway keeps
+    # the pill's id fresh in the DOM rather than silently doing nothing on this surface.
+    assert f'id="files-stage-pill-metadata-{file.id}"' in response.text
+    assert 'hx-swap-oob="true"' in response.text
 
     queue = task_router.queues["test-fileserver-meta"]
     assert queue.name == "phaze-agent-test-fileserver-meta"

@@ -29,7 +29,7 @@ from typing import Annotated
 import unicodedata
 import uuid
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -45,6 +45,7 @@ from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract, 
 from phaze.routers.response_shape import RENDERABLE_ALERT_STATUS
 from phaze.schemas.agent_tasks import ScanDirectoryPayload
 from phaze.schemas.pipeline_scans import TriggerScanForm
+from phaze.services.agent_task_router import AmbiguousEnqueueError
 from phaze.services.pg_text import contains_pg_invalid_chars
 from phaze.services.pipeline import get_agent_reconciliations
 from phaze.services.scan_deletion import delete_scan_cascade
@@ -359,10 +360,16 @@ async def delete_scan(
     """Delete a terminal scan + all associated DB data, then re-render the table.
 
     Guards (server-side authoritative -- defense-in-depth against a stale button
-    or a reaper-flipped status):
-    - unknown batch -> 404.
-    - ``status == 'live'`` -> 409 (the watcher sentinel can NEVER be deleted).
-    - non-terminal (``running``) -> 409 (only completed/failed scans are deletable).
+    or a reaper-flipped status). phaze-ytmfm: none of these raise anymore -- see the STATUS
+    CONTRACT note above the guard block below; each renders the same re-rendered table with a
+    ``role="alert"`` banner at :data:`~phaze.routers.response_shape.RENDERABLE_ALERT_STATUS`
+    (200) instead, because a raw 4xx here would be silently dropped by htmx (response_shape.py
+    rule 3) and this table's sole caller (the trash control in this table's own template) would
+    never see it:
+    - unknown batch -> "that scan is already gone" alert.
+    - ``status == 'live'`` -> "cannot delete the live watcher" alert (it can NEVER be deleted).
+    - non-terminal (``running``) -> "cannot delete a running scan" alert (only completed/failed
+      scans are deletable).
 
     On a deletable row: run the ordered cascade, commit atomically, then return the
     re-rendered Recent Scans section for the HTMX ``outerHTML`` swap into
@@ -380,21 +387,22 @@ async def delete_scan(
 
     Until this bead this endpoint had NO caller: the delete control lives only in
     ``recent_scans_table.html``, which no served document mounted between the Phase-62 cutover and
-    the workspace re-mount -- so this handler, ``delete_scan_cascade`` behind it, and the 404/409
-    guards above were reachable by curl alone, and an operator's only remediation for a
-    half-ingested failed scan was psql.
+    the workspace re-mount -- so this handler, ``delete_scan_cascade`` behind it, and the
+    now-renderable guards above were reachable by curl alone, and an operator's only remediation
+    for a half-ingested failed scan was psql.
     """
     batch = await session.get(ScanBatch, batch_id)
+    alert_message: str | None = None
     if batch is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="scan batch not found")
-    if batch.status == ScanStatus.LIVE.value:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="live watcher batch cannot be deleted")
-    if batch.status not in _TERMINAL_STATUSES:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="cannot delete a running scan; wait for it to complete or fail")
-
-    counts = await delete_scan_cascade(session, batch_id)
-    await session.commit()
-    logger.info("scan deleted", batch_id=str(batch_id), **counts)
+        alert_message = "That scan is already gone -- table refreshed."
+    elif batch.status == ScanStatus.LIVE.value:
+        alert_message = "The live watcher batch cannot be deleted."
+    elif batch.status not in _TERMINAL_STATUSES:
+        alert_message = "Cannot delete a running scan; wait for it to complete or fail."
+    else:
+        counts = await delete_scan_cascade(session, batch_id)
+        await session.commit()
+        logger.info("scan deleted", batch_id=str(batch_id), **counts)
 
     polling = poll != "0"
     sort_state = RECENT_SCANS_SORT.resolve(sort=sort, order=order, view_state={} if polling else {"poll": "0"})
@@ -402,7 +410,8 @@ async def delete_scan(
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/recent_scans_table.html",
-        context={"request": request, "recent_scans": rows, "sort": sort_state, "scans_poll": polling},
+        context={"request": request, "recent_scans": rows, "sort": sort_state, "scans_poll": polling, "alert_message": alert_message},
+        status_code=RENDERABLE_ALERT_STATUS,
     )
 
 
@@ -597,7 +606,13 @@ async def trigger_scan(
             context={"request": request, "error_message": "A scan is already running for this path."},
             status_code=RENDERABLE_ALERT_STATUS,
         )
-    await session.refresh(batch)
+    # phaze-266lc: no ``session.refresh(batch)`` here. The sessionmaker is
+    # ``expire_on_commit=False`` (database.py), so ``batch``'s attributes already survive the
+    # commit above without a refresh -- the refresh was redundant and its sole effect was to
+    # autobegin a NEW transaction on this session, which then sat idle-in-transaction across the
+    # enqueue call below (the phaze-1v37 pool-drain class: PgBouncer SESSION mode pins an upstream
+    # server slot per checkout, and a long-open idle transaction also holds back the vacuum xmin
+    # horizon). Dropping it closes that window with no behavior change.
 
     # Enqueue scan_directory via AgentTaskRouter (Phase 26 D-19). On enqueue
     # failure: mark the batch FAILED and return 503 with the documented copy.
@@ -631,6 +646,26 @@ async def trigger_scan(
             payload=ScanDirectoryPayload(scan_path=joined, batch_id=batch.id, agent_id=form.agent_id),
             timeout=0,
             retries=0,
+        )
+    except AmbiguousEnqueueError:
+        # phaze-0dfj4: ``enqueue_for_agent`` raised AFTER the broker connection was already live
+        # (see ``AmbiguousEnqueueError``'s docstring) -- the ``saq_jobs`` INSERT may already be
+        # durably committed even though this call never got its ack (a connection drop AFTER the
+        # server-side commit is the textbook in-doubt transaction). Marking the batch FAILED here
+        # would be a lie the operator acts on: they re-trigger, the uq constraint only covers
+        # RUNNING rows so a second batch + job is created, and the phantom first job ALSO dequeues
+        # -- walking the archive tree concurrently with the real scan before crash-looping on its
+        # first PATCH against the now-terminal batch. Leave the batch RUNNING instead (it was
+        # already committed RUNNING above) and fall through to the same progress-card render a
+        # confirmed-successful enqueue gets: a genuinely-lost enqueue then has no agent that will
+        # ever report progress, and the progress-based stall reaper (config.scan_stall_seconds)
+        # resolves it the same way it resolves an agent that silently died mid-scan -- the same
+        # non-terminal contract phaze-9f82r established for an ambiguous tag-write enqueue.
+        logger.error(
+            "scan trigger: enqueue ambiguous for batch=%s -- broker connection was live, job may "
+            "have landed; leaving batch RUNNING for the stall reaper to resolve",
+            batch.id,
+            exc_info=True,
         )
     except Exception:
         logger.exception("scan trigger: enqueue failed for batch=%s; marking FAILED", batch.id)

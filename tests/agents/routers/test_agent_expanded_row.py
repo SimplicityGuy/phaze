@@ -174,3 +174,137 @@ async def test_agents_page_no_longer_hosts_the_shared_side_panel() -> None:
     html = re.sub(r"\{#.*?#\}", "", _AGENTS_TABLE.read_text(), flags=re.DOTALL)
     assert "_detail_pane.html" not in html
     assert "pane_kind" not in html
+
+
+_COMPUTE_LANE_PANE = _TEMPLATES / "admin" / "partials" / "_compute_lane_pane.html"
+
+
+@pytest.mark.asyncio
+async def test_compute_lane_pane_partial_deleted_and_not_wired_back() -> None:
+    """phaze-rdxfu (acceptance rule 6): the dedicated side-pane shell is GONE, not just unincluded.
+
+    Pins the deletion itself (not just the include site) so a future edit cannot resurrect the file
+    and quietly wire it back into agents.html/agents_table.html -- both the file's absence and the
+    absence of any reference to it or its swap target are asserted.
+    """
+    assert not _COMPUTE_LANE_PANE.exists(), "_compute_lane_pane.html must be deleted (acceptance rule 6)"
+
+    for template in (_AGENTS_TABLE, _TEMPLATES / "admin" / "partials" / "agents_table.html"):
+        html = re.sub(r"\{#.*?#\}", "", template.read_text(), flags=re.DOTALL)
+        assert "_compute_lane_pane.html" not in html, f"{template} still references the deleted pane partial"
+        assert "#compute-lane-pane" not in html, f"{template} still references the deleted pane's swap target"
+
+    # And the retired card-grid partial the pane used to be included alongside is gone too.
+    assert not (_TEMPLATES / "admin" / "partials" / "compute_lanes.html").exists()
+
+
+_COMPUTE_LANE_DETAIL_ROW = _TEMPLATES / "admin" / "partials" / "_compute_lane_detail_row.html"
+
+
+def _dismiss_component(source: Path) -> str:
+    """Return the `hide()`-carrying Alpine `x-data` blob from a detail-row partial, comments stripped."""
+    html = re.sub(r"\{#.*?#\}", "", source.read_text(), flags=re.DOTALL)
+    m = re.search(r'x-data="([^"]*)"', html, re.DOTALL)
+    assert m, f"expected {source} to carry an x-data component"
+    return m.group(1)
+
+
+@pytest.mark.asyncio
+async def test_dismiss_url_rewrite_keeps_sort_and_order(smoke: AsyncClient) -> None:
+    """phaze-trof4: hide()'s history.replaceState must keep ?sort=/?order=, not just clear ?agent=.
+
+    A bare '/admin/agents' discards the operator's chosen sort, so a reload/bookmark restore after
+    dismissing the detail row silently snaps the table back to the default last_seen-desc order --
+    the same invisible reset the poll-carries-the-sort fix (phaze-a6hm.4) and the drill-in push-url
+    fix (test_drill_in_push_url_keeps_the_sort) both close for their own paths. The dismiss path is a
+    third door to the identical bug and needs the identical fix.
+    """
+    body = (await smoke.get("/admin/agents/_table", params={"agent": AGENT_ID, "sort": "queue", "order": "desc"})).text
+    start = body.find(f'id="agent-detail-row-{AGENT_ID}"')
+    assert start != -1
+    row = body[start : body.find("</tr>", start)]
+    assert "history.replaceState({}, '', '/admin/agents?sort=queue&amp;order=desc')" in row
+    # And the bare, sort-dropping form the bug produced must be gone.
+    assert "history.replaceState({}, '', '/admin/agents')" not in row
+
+
+@pytest.mark.asyncio
+async def test_dismiss_url_rewrite_keeps_the_default_sort_too(smoke: AsyncClient) -> None:
+    """Same contract with no explicit ?sort=/?order= on the request -- the resolved DEFAULT still rides."""
+    body = (await smoke.get("/admin/agents/_table", params={"agent": AGENT_ID})).text
+    start = body.find(f'id="agent-detail-row-{AGENT_ID}"')
+    assert start != -1
+    row = body[start : body.find("</tr>", start)]
+    assert "history.replaceState({}, '', '/admin/agents?sort=last_seen&amp;order=desc')" in row
+
+
+@pytest.mark.asyncio
+async def test_dismiss_removes_the_row_node_instead_of_only_hiding_it(smoke: AsyncClient) -> None:
+    """phaze-fg8vq: hide() must remove this row from the DOM, not just flip x-show off.
+
+    A stale x-show-hidden node left in place under the SAME id wins htmx's hx-preserve id match
+    against a fresh, freshly-open row rendered by re-clicking the same agent inside the ~5s poll
+    window -- the reopen click's response is discarded in favour of the dead node, wedging the
+    expanded row open=false/empty until a different agent is picked or the page is hard-reloaded.
+    Removing the node outright means there is nothing left with this id for a later swap to collide
+    with, so a reopen inside the window always wins.
+    """
+    body = (await smoke.get("/admin/agents/_table", params={"agent": AGENT_ID})).text
+    start = body.find(f'id="agent-detail-row-{AGENT_ID}"')
+    assert start != -1
+    row = body[start : body.find("</tr>", start) + len("</tr>")]
+    assert "this.$el.remove()" in row, "hide() must remove the row node, not only set open = false"
+
+
+@pytest.mark.asyncio
+async def test_dismiss_focuses_the_trigger_before_removing_the_row(smoke: AsyncClient) -> None:
+    """Focus must move to the trigger row BEFORE the node is removed -- removing first drops focus to <body>."""
+    body = (await smoke.get("/admin/agents/_table", params={"agent": AGENT_ID})).text
+    start = body.find(f'id="agent-detail-row-{AGENT_ID}"')
+    assert start != -1
+    row = body[start : body.find("</tr>", start) + len("</tr>")]
+    focus_at = row.find(f"getElementById('agent-trigger-{AGENT_ID}')?.focus()")
+    remove_at = row.find("this.$el.remove()")
+    assert focus_at != -1, "hide() must still return focus to the trigger row by stable id"
+    assert remove_at != -1
+    assert focus_at < remove_at, "focus must be moved before the row removes itself"
+
+
+@pytest.mark.asyncio
+async def test_compute_lane_dismiss_url_rewrite_keeps_sort_and_order(
+    session: AsyncSession,
+    make_file,  # type: ignore[no-untyped-def]
+    backends_toml_env,  # type: ignore[no-untyped-def]
+) -> None:
+    """phaze-trof4's sibling site: _compute_lane_detail_row.html's hide() had the identical bare-path bug."""
+    from tests.agents.routers.test_admin_agents import _TWO_CLUSTER_REGISTRY, _seed_cloud_job
+
+    backends_toml_env(_TWO_CLUSTER_REGISTRY)
+    await _seed_cloud_job(session, make_file, backend_id="vox")
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        body = (await ac.get("/admin/agents/_table", params={"clane": "vox", "sort": "name", "order": "asc"})).text
+
+    start = body.find('id="compute-lane-detail-row-vox"')
+    assert start != -1
+    row = body[start : body.find("</tr>", start) + len("</tr>")]
+    assert "history.replaceState({}, '', '/admin/agents?sort=name&amp;order=asc')" in row
+    assert "history.replaceState({}, '', '/admin/agents')" not in row
+    assert "this.$el.remove()" in row, "hide() must remove the row node, not only set open = false"
+
+
+@pytest.mark.asyncio
+async def test_agent_detail_row_hide_component_source_contract() -> None:
+    """Source-level pin: both fixes hold in _agent_detail_row.html even outside a rendered request."""
+    component = _dismiss_component(_DETAIL_ROW)
+    assert re.search(r"history\.replaceState\(\{\}, '', '/admin/agents\?\{\{\s*sort\.query_params\(\)\s*\}\}'\)", component)
+    assert "this.$el.remove()" in component
+
+
+@pytest.mark.asyncio
+async def test_compute_lane_detail_row_hide_component_source_contract() -> None:
+    """Source-level pin: both fixes hold in _compute_lane_detail_row.html too (mirrors the agent row)."""
+    component = _dismiss_component(_COMPUTE_LANE_DETAIL_ROW)
+    assert re.search(r"history\.replaceState\(\{\}, '', '/admin/agents\?\{\{\s*sort\.query_params\(\)\s*\}\}'\)", component)
+    assert "this.$el.remove()" in component

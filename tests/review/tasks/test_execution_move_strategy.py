@@ -213,7 +213,9 @@ async def test_cross_fs_copy_failure_leaves_no_partial_destination(tmp_path: Pat
     # No partial file at the real destination, and no leftover temp sibling.
     dest = tmp_path / "out" / "concert.mkv"
     assert not dest.exists()
-    assert not (tmp_path / "out" / ("concert.mkv" + execmod._COPY_TMP_SUFFIX)).exists()
+    # phaze-otoqj: the tmp name is now unique per attempt (pid+uuid4 suffix), so glob for the
+    # family of names rather than the single deterministic one.
+    assert not list((tmp_path / "out").glob(f"concert.mkv{execmod._COPY_TMP_SUFFIX}*"))
     # The source is untouched -- no data loss.
     assert orig.read_bytes() == b"v" * (4 * 1024 * 1024)
     # Reported as a failure at the 'copy' step.
@@ -391,7 +393,8 @@ async def test_cross_fs_copy_refuses_a_destination_occupied_during_the_copy(tmp_
     assert dst.read_bytes() == b"a DIFFERENT file's bytes, already committed elsewhere"
     # ...and this move lost nothing either: the source is intact and the temp file is cleaned up.
     assert src.read_bytes() == b"the file being moved"
-    assert not (tmp_path / "dst" / f"<track-01>.mp3{execmod._COPY_TMP_SUFFIX}").exists()
+    # phaze-otoqj: unique-per-attempt tmp name -- glob for the family, not one fixed path.
+    assert not list((tmp_path / "dst").glob(f"<track-01>.mp3{execmod._COPY_TMP_SUFFIX}*"))
 
 
 async def test_cross_fs_copy_publishes_to_a_free_destination(tmp_path: Path) -> None:
@@ -405,7 +408,8 @@ async def test_cross_fs_copy_publishes_to_a_free_destination(tmp_path: Path) -> 
     execmod._atomic_cross_fs_copy(src, dst)
 
     assert dst.read_bytes() == b"payload" * 1000
-    assert not (tmp_path / "dst" / f"<track-02>.mp3{execmod._COPY_TMP_SUFFIX}").exists()
+    # phaze-otoqj: unique-per-attempt tmp name -- glob for the family, not one fixed path.
+    assert not list((tmp_path / "dst").glob(f"<track-02>.mp3{execmod._COPY_TMP_SUFFIX}*"))
     assert src.exists()  # the caller owns the unlink, not this primitive
 
 
@@ -424,7 +428,8 @@ async def test_cross_fs_copy_falls_back_when_the_filesystem_has_no_hard_links(tm
     execmod._atomic_cross_fs_copy(src, dst)
 
     assert dst.read_bytes() == b"content"
-    assert not (tmp_path / "dst" / f"<track-03>.mp3{execmod._COPY_TMP_SUFFIX}").exists()
+    # phaze-otoqj: unique-per-attempt tmp name -- glob for the family, not one fixed path.
+    assert not list((tmp_path / "dst").glob(f"<track-03>.mp3{execmod._COPY_TMP_SUFFIX}*"))
 
 
 async def test_same_fs_move_refuses_an_occupant_rather_than_clobbering_it(tmp_path: Path) -> None:
@@ -471,3 +476,259 @@ async def test_same_fs_move_completes_a_crashed_link_claim_rather_than_no_op_ren
     assert result["status"] == "completed"
     assert (dest_dir / "<track-05>.mp3").read_bytes() == b"already claimed"
     assert not orig.exists(), "the crashed claim must be completed forward, not left dangling"
+
+
+# ---------------------------------------------------------------------------
+# phaze-kxnnd -- st_nlink>1 alone is NOT sufficient evidence that the extra link
+# sits AT `proposed`: a case-only rename on a case-insensitive filesystem also
+# makes `original != proposed` true while both name the SAME single directory
+# entry, and an unrelated pre-existing hard link elsewhere in the archive
+# inflates nlink with nothing to do with `proposed`. The fix rules out the
+# case-only-same-entry shape (a pure path comparison) before ever trusting nlink.
+# ---------------------------------------------------------------------------
+
+
+def test_is_case_only_same_entry_true_for_case_variants_in_the_same_directory(tmp_path: Path) -> None:
+    from phaze.tasks.execution import _is_case_only_same_entry
+
+    original = tmp_path / "dir" / "Track.MP3"
+    proposed = tmp_path / "dir" / "track.mp3"
+    assert _is_case_only_same_entry(original, proposed) is True
+
+
+def test_is_case_only_same_entry_false_across_different_directories(tmp_path: Path) -> None:
+    """A same-name (or same-case-fold-name) file in a DIFFERENT directory is a real distinct entry."""
+    from phaze.tasks.execution import _is_case_only_same_entry
+
+    original = tmp_path / "orig" / "Track.MP3"
+    proposed = tmp_path / "moved" / "track.mp3"
+    assert _is_case_only_same_entry(original, proposed) is False
+
+
+def test_is_case_only_same_entry_false_for_genuinely_different_names(tmp_path: Path) -> None:
+    """Names that differ by more than case are never mistaken for a case-only alias."""
+    from phaze.tasks.execution import _is_case_only_same_entry
+
+    original = tmp_path / "dir" / "concert.mp4"
+    proposed = tmp_path / "dir" / "renamed-concert.mp4"
+    assert _is_case_only_same_entry(original, proposed) is False
+
+
+async def test_same_fs_case_only_rename_with_unrelated_hardlink_does_not_delete_the_only_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for phaze-kxnnd.
+
+    A case-only rename (``Track.MP3`` -> ``track.mp3``) of a file that ALSO carries an
+    unrelated pre-existing hard link elsewhere in the archive (``st_nlink == 2``, but
+    neither link is at ``proposed``) must complete the rename via ``original.replace``,
+    never via ``original.unlink()``. Pre-fix, ``st_nlink > 1`` alone was trusted as proof
+    of a crashed same-fs link claim and the executor deleted `original` outright -- the
+    rename to `proposed` never happened, yet the proposal still reported success with a
+    `current_path` that resolved to nothing.
+
+    ``_is_same_file`` is forced to report a match here (this is the one thing a genuinely
+    case-insensitive filesystem gives for free and this repo's test filesystem may not) --
+    this isolates the fix under test (``_is_case_only_same_entry``) from the host
+    filesystem's actual case-sensitivity, which is otherwise unrelated to it.
+    """
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    monkeypatch.setattr(execmod, "_is_same_file", lambda _a, _b: True)
+
+    orig = tmp_path / "dir" / "Track.MP3"
+    orig.parent.mkdir(parents=True, exist_ok=True)
+    orig.write_bytes(b"the only copy in this directory")
+    # The unrelated pre-existing hard link elsewhere in the archive (not at `proposed`).
+    backup_dir = tmp_path / "backup"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    execmod.os.link(orig, backup_dir / "Track.MP3")
+    assert orig.stat().st_nlink == 2
+
+    proposed = tmp_path / "dir" / "track.mp3"
+    # Empty proposed_path == rename in place, so `proposed` lands in the SAME directory
+    # as `original` with only the filename's case changed.
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=[_item(orig, "", "track.mp3")])
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed"
+    assert result["error_count"] == 0
+    # The whole point: the rename actually happened, unlike the pre-fix delete-only outcome.
+    assert proposed.exists()
+    assert proposed.read_bytes() == b"the only copy in this directory"
+    # The unrelated backup hard link is untouched by this proposal's move.
+    assert (backup_dir / "Track.MP3").read_bytes() == b"the only copy in this directory"
+    state_patch = api.patch_proposal_state.await_args.args[1]
+    assert state_patch.proposal_state == "executed"
+    assert state_patch.current_path == str(proposed)
+
+
+# ---------------------------------------------------------------------------
+# phaze-otoqj -- the cross-fs staging file must be unique per attempt AND
+# opened O_EXCL, and the destination is re-verified before the source is
+# unlinked. The old deterministic tmp name let two genuinely concurrent
+# attempts at the same destination share one truncatable inode.
+# ---------------------------------------------------------------------------
+
+
+def test_unique_tmp_path_differs_across_attempts_at_the_same_destination(tmp_path: Path) -> None:
+    """`_unique_tmp_path` must not be derivable from `dst` alone (the phaze-otoqj root cause)."""
+    dst = tmp_path / "out" / "dest.bin"
+
+    first = execmod._unique_tmp_path(dst)
+    second = execmod._unique_tmp_path(dst)
+
+    assert first != second
+    assert first.name.startswith(f"dest.bin{execmod._COPY_TMP_SUFFIX}")
+    assert second.name.startswith(f"dest.bin{execmod._COPY_TMP_SUFFIX}")
+    assert first.parent == dst.parent == second.parent
+
+
+def test_atomic_cross_fs_copy_stages_into_a_fresh_tmp_name_each_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two consecutive `_atomic_cross_fs_copy` calls to the same `dst` never reuse a tmp path."""
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"x" * 1024)
+    dst = tmp_path / "out" / "dest.bin"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    seen: list[Path] = []
+    real_streamed_copy = execmod._streamed_copy
+
+    def _record(s: Path, d: Path) -> None:
+        seen.append(d)
+        real_streamed_copy(s, d)
+
+    monkeypatch.setattr(execmod, "_streamed_copy", _record)
+
+    execmod._atomic_cross_fs_copy(src, dst)
+    dst.unlink()
+    execmod._atomic_cross_fs_copy(src, dst)
+
+    assert len(seen) == 2
+    assert seen[0] != seen[1]
+
+
+def test_streamed_copy_refuses_to_write_into_an_existing_path(tmp_path: Path) -> None:
+    """`_streamed_copy` opens O_EXCL -- it must never silently share/truncate an existing inode.
+
+    phaze-otoqj: this is the belt half of "belt and suspenders" -- even if two attempts
+    somehow computed the same staging name, O_EXCL turns that into a loud FileExistsError
+    instead of a silent shared-inode write.
+    """
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"new content")
+    dst = tmp_path / "dst.bin"
+    dst.write_bytes(b"pre-existing, must survive")
+
+    with pytest.raises(FileExistsError):
+        _streamed_copy(src, dst)
+
+    assert dst.read_bytes() == b"pre-existing, must survive"
+
+
+def test_concurrent_cross_fs_copies_to_one_destination_never_share_one_staging_inode(tmp_path: Path) -> None:
+    """Two genuinely concurrent `_atomic_cross_fs_copy` calls at the same `dst` must not interleave.
+
+    phaze-otoqj failure scenario, reproduced directly against the primitive: two real OS
+    threads (matching the ``asyncio.to_thread`` offload `_execute_one` uses) race to publish
+    to the same destination. Pre-fix, both staged into ONE shared, deterministically-named
+    inode and could publish a half-A-half-B interleave. Post-fix, each gets its own staging
+    inode, so exactly one wins the no-clobber publish and the other is refused outright --
+    never a corrupted destination, never both reporting success.
+    """
+    import threading
+
+    src_a = tmp_path / "a.bin"
+    src_b = tmp_path / "b.bin"
+    content_a = b"A" * (2 * 1024 * 1024)
+    content_b = b"B" * (2 * 1024 * 1024)
+    src_a.write_bytes(content_a)
+    src_b.write_bytes(content_b)
+    dst = tmp_path / "out" / "dest.bin"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    barrier = threading.Barrier(2, timeout=5)
+    real_streamed_copy = execmod._streamed_copy
+
+    def _synced_streamed_copy(src: Path, tmp: Path) -> None:
+        # Force genuine temporal overlap between the two threads' writes -- each writes into
+        # its OWN unique tmp file, so this proves the fix rather than defeating it.
+        barrier.wait()
+        real_streamed_copy(src, tmp)
+
+    results: dict[str, str] = {}
+
+    def _run(name: str, src: Path) -> None:
+        try:
+            execmod._atomic_cross_fs_copy(src, dst)
+            results[name] = "ok"
+        except FileExistsError:
+            results[name] = "refused"
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(execmod, "_streamed_copy", _synced_streamed_copy)
+        t_a = threading.Thread(target=_run, args=("a", src_a))
+        t_b = threading.Thread(target=_run, args=("b", src_b))
+        t_a.start()
+        t_b.start()
+        t_a.join(timeout=10)
+        t_b.join(timeout=10)
+
+    # Exactly one attempt wins the publish; the other is refused -- never both "succeeding"
+    # with a corrupted/interleaved destination.
+    assert sorted(results.values()) == ["ok", "refused"]
+    # The winner's bytes are fully intact, not an interleave of A and B.
+    winner_content = dst.read_bytes()
+    assert winner_content in (content_a, content_b)
+    # Both sources are untouched -- this primitive never unlinks the source itself.
+    assert src_a.read_bytes() == content_a
+    assert src_b.read_bytes() == content_b
+    # No orphaned temp files left behind by either attempt.
+    assert not list((tmp_path / "out").glob(f"dest.bin{execmod._COPY_TMP_SUFFIX}*"))
+
+
+async def test_cross_fs_copy_post_publish_hash_mismatch_fails_loudly_without_deleting_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A corrupted publish must fail loudly at 'verify' and leave `original` untouched (phaze-otoqj).
+
+    Simulates the exact failure this bead closes: bytes land at `proposed` that do not match
+    the caller-supplied hash (interleaved/corrupt bytes from a shared-inode race, or any other
+    copy-path corruption). The re-verify must catch it BEFORE `original.unlink()` runs.
+    """
+    import hashlib
+
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    monkeypatch.setattr(execmod, "_same_filesystem", lambda _s, _d: False)
+
+    orig = tmp_path / "orig" / "set.mp3"
+    orig.parent.mkdir(parents=True, exist_ok=True)
+    content = b"good bytes, the real file"
+    orig.write_bytes(content)
+    expected_hash = hashlib.sha256(content).hexdigest()
+
+    real_copy = execmod._atomic_cross_fs_copy
+
+    def _corrupting_copy(src: Path, dst: Path) -> None:
+        real_copy(src, dst)
+        dst.write_bytes(b"CORRUPTED BYTES, NOT WHAT WAS COPIED")
+
+    monkeypatch.setattr(execmod, "_atomic_cross_fs_copy", _corrupting_copy)
+
+    payload = ExecuteApprovedBatchPayload(
+        batch_id=uuid.uuid4(),
+        agent_id="a",
+        proposals=[_item_with_hash(orig, "out", "set.mp3", expected_hash)],
+    )
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed_with_errors"
+    assert result["error_count"] == 1
+    # The whole point: the source must survive a detected post-publish corruption.
+    assert orig.exists()
+    assert orig.read_bytes() == content
+    assert api.patch_proposal_state.await_args.args[1].proposal_state == "failed"
+    assert api.patch_execution_log.await_args.args[1].error_message.startswith("verify:")

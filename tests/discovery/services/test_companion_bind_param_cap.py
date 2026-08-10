@@ -141,8 +141,10 @@ async def test_associate_companions_chunked_insert_is_atomic_on_mid_write_failur
     ``test_analysis_window_chunked_insert_is_atomic_on_mid_write_failure``). Chunking splits one
     statement into several, which would be a regression if the chunks could land independently:
     ``bulk_insert.py``'s "atomicity is the caller's job" rule holds here because every chunk lands
-    on THIS session and ``associate_companions``'s single ``session.commit()`` after the loop is
-    the only commit boundary -- a mid-loop raise must leave zero links committed.
+    on THIS session inside the SAME page's transaction. ``associate_companions`` now commits per
+    keyset PAGE rather than once for the whole run (phaze-yiwq5), but this fixture's 105 companions
+    all fit in one page under the default ``batch_size``, so the page boundary and the whole-run
+    boundary coincide here -- a mid-page raise must leave zero links committed.
     """
     import phaze.services.companion as companion_module
 

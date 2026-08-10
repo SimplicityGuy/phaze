@@ -25,10 +25,10 @@ import uuid
 
 import pytest
 
-from phaze.enums.tracklist_candidate import LookupOutcome
+from phaze.enums.tracklist_candidate import TRANSIENT_MAX_ATTEMPTS, CacheDecision, LookupOutcome
 from phaze.models.metadata import FileMetadata
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
-from phaze.services.tracklist_candidates import CandidateSignals, group_unique_sets
+from phaze.services.tracklist_candidates import CandidateSignals, group_unique_sets, set_key
 from phaze.services.tracklist_lookup_cache import record_outcome
 from phaze.services.tracklist_priority import (
     clear_flags,
@@ -254,6 +254,44 @@ class TestFileTracklistReview:
         assert review.cache_entry.outcome == LookupOutcome.BLOCKED.value
         assert review.cache_entry.outcome != LookupOutcome.NOT_FOUND.value
 
+    async def test_a_multi_part_members_cluster_row_is_found_by_query_text_when_the_singleton_key_misses(
+        self, session: AsyncSession, make_file
+    ) -> None:  # type: ignore[no-untyped-def]
+        """phaze-3dwsp: part 2 of a two-part set, parked under the CLUSTER's key.
+
+        The drain writes the cache row under ``set_key(cluster_query, cluster_median_duration)``.
+        This file's own singleton key -- ``set_key(this file's query, THIS file's duration)`` --
+        differs because a linked part's own duration (35 min) lands in a different 5-minute bucket
+        than the cluster's median (90 min, dominated by the much longer part 1). Before the fix
+        this diverging key was a flat MISS and the record page told the operator the set was
+        "never looked up", when it was actually parked awaiting their attention.
+        """
+        file = await make_file(original_filename=LIVE_SET_FILENAME)
+        session.add(FileMetadata(file_id=file.id, duration=2100.0))  # this file's own duration: 35 min
+        await session.commit()
+
+        # The cluster's query_text is `group_unique_sets`' normalized form of the derived query --
+        # the same normalization `get_file_tracklist_review` applies to build its own key, so this
+        # mirrors what the drain actually writes rather than a hand-normalized approximation.
+        signals = CandidateSignals(file_id=file.id, filename=file.original_filename, sha256_hash=file.sha256_hash, duration_seconds=2100.0)
+        derived = derive_query(signals.filename)
+        signals = replace(signals, derived_query=derived.query)
+        cluster_query_text = group_unique_sets([signals])[0].query_text
+        cluster_key = set_key(cluster_query_text, 5400.0)  # the cluster's median duration: 90 min
+        for _ in range(TRANSIENT_MAX_ATTEMPTS):
+            await record_outcome(session, set_key=cluster_key, query_text=cluster_query_text, outcome=LookupOutcome.BLOCKED, now=datetime.now(UTC))
+            await session.commit()
+
+        own_key = await _set_key_for(session, file, duration=2100.0)
+        assert own_key != cluster_key, "the singleton and cluster keys must actually diverge for this test to mean anything"
+
+        review = await get_file_tracklist_review(session, file.id)
+
+        assert review is not None
+        assert review.cache_entry is not None, "the parked cluster row must be found via the query-text fallback"
+        assert review.cache_decision is CacheDecision.TRANSIENT_EXHAUSTED
+        assert review.actionable is False
+
     @pytest.mark.parametrize("propagated", [False, True])
     async def test_a_tracklist_shows_scraped_vs_propagated_distinctly(self, session: AsyncSession, make_file, propagated: bool) -> None:  # type: ignore[no-untyped-def]
         file = await make_file(original_filename=LIVE_SET_FILENAME)
@@ -282,3 +320,123 @@ class TestFileTracklistReview:
         assert len(review.tracks) == 1
         assert review.tracks[0].title == "Opener"
         assert review.cache_entry is None
+
+
+class TestActionable:
+    """phaze-z8xq7: ``actionable`` is ``eligible`` AND "the cache verdict would actually be
+    queried now" -- the gate the Prioritize route and the honest-suppression template copy both
+    read, so a cache-suppressed set can never claim a lookup has been dispatched when the drain's
+    own cache decision will keep it out of the queue regardless of the flag.
+    """
+
+    async def test_never_looked_up_is_actionable(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """STATE 3b (no cache row at all -- MISS) is unaffected: still actionable."""
+        file = await make_file(original_filename=LIVE_SET_FILENAME)
+        session.add(FileMetadata(file_id=file.id, duration=7200.0))
+        await session.commit()
+
+        review = await get_file_tracklist_review(session, file.id)
+
+        assert review is not None
+        assert review.cache_entry is None
+        assert review.eligible is True
+        assert review.actionable is True
+
+    async def test_not_a_live_set_is_not_actionable(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """STATE 3b, ineligible by classification: ``actionable`` follows ``eligible`` here too."""
+        file = await make_file(original_filename=TRACK_FILENAME)
+        session.add(FileMetadata(file_id=file.id, duration=180.0))
+        await session.commit()
+
+        review = await get_file_tracklist_review(session, file.id)
+
+        assert review is not None
+        assert review.eligible is False
+        assert review.actionable is False
+
+    async def test_a_suppressed_negative_within_ttl_is_not_actionable(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """The exact bug scenario: a definitive NOT_FOUND still inside its 180-day TTL.
+
+        ``eligible`` stays True by construction (classification never consults the cache), but
+        ``actionable`` must be False -- the drain will not query this set again until the TTL
+        elapses, so flagging it is inert.
+        """
+        file = await make_file(original_filename=LIVE_SET_FILENAME)
+        session.add(FileMetadata(file_id=file.id, duration=7200.0))
+        await session.commit()
+        key = await _set_key_for(session, file, duration=7200.0)
+        await record_outcome(session, set_key=key, query_text="nightwave late signal", outcome=LookupOutcome.NOT_FOUND, now=NOW)
+        await session.commit()
+
+        review = await get_file_tracklist_review(session, file.id)
+
+        assert review is not None
+        assert review.cache_decision is CacheDecision.SUPPRESSED_NEGATIVE
+        assert review.eligible is True
+        assert review.actionable is False
+
+    async def test_a_negative_past_its_ttl_is_actionable_again(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """Past the TTL the cache reports NEGATIVE_EXPIRED -- re-queryable, so actionable again."""
+        file = await make_file(original_filename=LIVE_SET_FILENAME)
+        session.add(FileMetadata(file_id=file.id, duration=7200.0))
+        await session.commit()
+        key = await _set_key_for(session, file, duration=7200.0)
+        await record_outcome(session, set_key=key, query_text="nightwave late signal", outcome=LookupOutcome.NOT_FOUND, now=NOW, negative_ttl_days=0)
+        await session.commit()
+
+        review = await get_file_tracklist_review(session, file.id)
+
+        assert review is not None
+        assert review.cache_decision is CacheDecision.NEGATIVE_EXPIRED
+        assert review.actionable is True
+
+    async def test_a_transient_failure_in_backoff_is_not_actionable(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """A transient failure still inside its short backoff window: not actionable YET (it will
+        retry automatically once the backoff elapses -- distinct from the negative-TTL case)."""
+        file = await make_file(original_filename=LIVE_SET_FILENAME)
+        session.add(FileMetadata(file_id=file.id, duration=7200.0))
+        await session.commit()
+        key = await _set_key_for(session, file, duration=7200.0)
+        # Backoff is computed relative to the WRITE time, and the review's own cache read always
+        # uses the real wall clock (no injectable `now`) -- so this must be freshly-written, not
+        # the module's fixed historical NOW, or the 30-minute window would already have elapsed.
+        await record_outcome(session, set_key=key, query_text="nightwave late signal", outcome=LookupOutcome.BLOCKED, now=datetime.now(UTC))
+        await session.commit()
+
+        review = await get_file_tracklist_review(session, file.id)
+
+        assert review is not None
+        assert review.cache_decision is CacheDecision.BACKOFF
+        assert review.actionable is False
+
+    async def test_a_transient_failure_ready_for_retry_is_actionable(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """Past its backoff window, a transient failure is TRANSIENT_RETRY_READY -- actionable."""
+        file = await make_file(original_filename=LIVE_SET_FILENAME)
+        session.add(FileMetadata(file_id=file.id, duration=7200.0))
+        await session.commit()
+        key = await _set_key_for(session, file, duration=7200.0)
+        await record_outcome(session, set_key=key, query_text="nightwave late signal", outcome=LookupOutcome.BLOCKED, now=NOW)
+        await session.commit()
+
+        review = await get_file_tracklist_review(session, file.id)
+
+        assert review is not None
+        assert review.cache_decision is CacheDecision.TRANSIENT_RETRY_READY
+        assert review.actionable is True
+
+    async def test_a_parked_transient_exhausted_set_is_not_actionable(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """After TRANSIENT_MAX_ATTEMPTS consecutive transient failures the set is PARKED -- worse
+        than the TTL case, since nothing resets it automatically. Never actionable."""
+        file = await make_file(original_filename=LIVE_SET_FILENAME)
+        session.add(FileMetadata(file_id=file.id, duration=7200.0))
+        await session.commit()
+        key = await _set_key_for(session, file, duration=7200.0)
+        for _ in range(TRANSIENT_MAX_ATTEMPTS):
+            await record_outcome(session, set_key=key, query_text="nightwave late signal", outcome=LookupOutcome.BLOCKED, now=datetime.now(UTC))
+            await session.commit()
+
+        review = await get_file_tracklist_review(session, file.id)
+
+        assert review is not None
+        assert review.cache_decision is CacheDecision.TRANSIENT_EXHAUSTED
+        assert review.actionable is False

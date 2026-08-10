@@ -4,8 +4,9 @@ from collections.abc import Iterable, Sequence
 from typing import Any
 import uuid as uuid_mod
 
-from sqlalchemy import Subquery, delete, func, select, tuple_
+from sqlalchemy import ColumnElement, Subquery, delete, func, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.models.dedup_resolution import DedupResolution
@@ -16,6 +17,17 @@ from phaze.services.stage_status import dedup_resolved_clause
 
 
 TAG_FIELDS = ["artist", "title", "album", "year", "genre", "track_number"]
+
+# phaze-z4p5q: display cap on how many MEMBERS of a single duplicate group get materialized by the
+# three per-group readers below (find_duplicate_group_by_hash, find_duplicate_groups_with_metadata,
+# find_duplicate_groups_by_hashes). None of them previously had a per-member LIMIT -- only
+# find_duplicate_groups_with_metadata capped the number of GROUPS (via _dup_hash_subquery's
+# limit/offset) -- so a pathological group (e.g. a directory of byte-identical placeholder media
+# sharing one SHA256) materialized every member, and every member's FileMetadata dict, into the API
+# process. 500 is generous for the real single-user-archive use case (typical duplicate groups are a
+# handful of copies of the same track/set) while bounding the worst case to a fixed, small multiple
+# of one card's normal size.
+_MAX_GROUP_MEMBERS = 500
 
 
 def tag_completeness(file_dict: dict[str, Any]) -> tuple[str, int, int]:
@@ -96,11 +108,55 @@ def _dup_hash_subquery(limit: int, offset: int) -> Subquery:
     )
 
 
-def _build_metadata_groups(rows: Iterable[Sequence[Any]]) -> list[dict[str, Any]]:
+def _select_capped_group_members(hash_filter: ColumnElement[bool], cap: int = _MAX_GROUP_MEMBERS) -> Any:
+    """Build the ``(FileRecord, FileMetadata)`` SELECT for ``hash_filter``, capped to ``cap`` + 1 rows PER
+    ``sha256_hash`` group (phaze-z4p5q).
+
+    Shared by all three per-member readers: :func:`find_duplicate_group_by_hash` (a single hash),
+    :func:`find_duplicate_groups_with_metadata` (a page of group hashes), and
+    :func:`find_duplicate_groups_by_hashes` (an exact hash set) -- all three previously ran this same
+    join with no LIMIT at all, so a pathological group materialized every member.
+
+    A plain ``.limit()`` on the outer query would cap the TOTAL row count across every group
+    ``hash_filter`` matches, not each group independently -- for the two multi-hash callers that would
+    starve whichever hashes happen to sort last. Instead, ``ROW_NUMBER() OVER (PARTITION BY
+    sha256_hash ORDER BY original_path)`` ranks each group's members independently, and only ids with
+    rank <= ``cap`` + 1 are kept. Fetching one row PAST the cap (rather than exactly ``cap``) is what
+    lets :func:`_build_metadata_groups` tell "exactly ``cap`` members" apart from "more than ``cap``
+    members" and set ``truncated`` accordingly, without a second COUNT query per group.
+    """
+    ranked = (
+        select(
+            FileRecord.id,
+            func.row_number().over(partition_by=FileRecord.sha256_hash, order_by=FileRecord.original_path).label("rn"),
+        )
+        .where(hash_filter)
+        .where(~dedup_resolved_clause())
+    ).subquery()
+    capped_ids = select(ranked.c.id).where(ranked.c.rn <= cap + 1)
+
+    return (
+        select(FileRecord, FileMetadata)
+        .outerjoin(FileMetadata, FileRecord.id == FileMetadata.file_id)
+        .where(FileRecord.id.in_(capped_ids))
+        .order_by(FileRecord.sha256_hash, FileRecord.original_path)
+    )
+
+
+def _build_metadata_groups(rows: Iterable[Sequence[Any]], cap: int | None = None) -> list[dict[str, Any]]:
     """Group ``(FileRecord, FileMetadata | None)`` rows into the duplicate-group dict shape.
 
-    Shared by :func:`find_duplicate_groups_with_metadata` (paginated) and
-    :func:`find_duplicate_groups_by_hashes` (exact hash set) so both build identical file dicts.
+    Shared by :func:`find_duplicate_group_by_hash` (single group), :func:`find_duplicate_groups_with_metadata`
+    (paginated) and :func:`find_duplicate_groups_by_hashes` (exact hash set) so all three build identical
+    file dicts.
+
+    ``cap``, when given, marks a group ``"truncated": True`` if it received MORE than ``cap`` rows --
+    the caller is expected to have fetched ``cap`` + 1 rows per group via
+    :func:`_select_capped_group_members`, so an extra row here is exactly the truncation signal. The
+    group's ``"files"``/``"count"`` are then trimmed back down to ``cap`` so the display never shows
+    more members than the cap even though one extra was fetched. ``cap=None`` (the default) always
+    reports ``"truncated": False`` -- no caller currently passes it, but it keeps this a normal,
+    uncapped grouping helper if one needs it.
     """
     groups_map: dict[str, list[dict[str, Any]]] = {}
     for file_record, metadata in rows:
@@ -124,14 +180,20 @@ def _build_metadata_groups(rows: Iterable[Sequence[Any]]) -> list[dict[str, Any]
         file_dict["tag_total"] = total
         groups_map.setdefault(file_record.sha256_hash, []).append(file_dict)
 
-    return [
-        {
-            "sha256_hash": h,
-            "count": len(members),
-            "files": members,
-        }
-        for h, members in groups_map.items()
-    ]
+    groups: list[dict[str, Any]] = []
+    for h, members in groups_map.items():
+        truncated = cap is not None and len(members) > cap
+        if truncated:
+            members = members[:cap]
+        groups.append(
+            {
+                "sha256_hash": h,
+                "count": len(members),
+                "truncated": truncated,
+                "files": members,
+            }
+        )
+    return groups
 
 
 async def find_duplicate_groups(session: AsyncSession, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
@@ -184,16 +246,12 @@ async def find_duplicate_groups_with_metadata(session: AsyncSession, limit: int 
     """
     dup_hashes = _dup_hash_subquery(limit, offset)
 
-    # Main query with outerjoin to metadata
-    stmt = (
-        select(FileRecord, FileMetadata)
-        .outerjoin(FileMetadata, FileRecord.id == FileMetadata.file_id)
-        .where(FileRecord.sha256_hash.in_(select(dup_hashes.c.sha256_hash)))
-        .where(~dedup_resolved_clause())
-        .order_by(FileRecord.sha256_hash, FileRecord.original_path)
-    )
+    # Main query with outerjoin to metadata -- phaze-z4p5q: capped to _MAX_GROUP_MEMBERS + 1 members
+    # PER hash (this call can select many hashes' worth of members at once via the `limit` page of
+    # GROUPS above; the per-member cap here is independent of that page size).
+    stmt = _select_capped_group_members(FileRecord.sha256_hash.in_(select(dup_hashes.c.sha256_hash)))
     result = await session.execute(stmt)
-    return _build_metadata_groups(result.all())
+    return _build_metadata_groups(result.all(), cap=_MAX_GROUP_MEMBERS)
 
 
 async def find_duplicate_groups_by_hashes(session: AsyncSession, hashes: Sequence[str]) -> list[dict[str, Any]]:
@@ -208,15 +266,11 @@ async def find_duplicate_groups_by_hashes(session: AsyncSession, hashes: Sequenc
     if not hashes:
         return []
 
-    stmt = (
-        select(FileRecord, FileMetadata)
-        .outerjoin(FileMetadata, FileRecord.id == FileMetadata.file_id)
-        .where(FileRecord.sha256_hash.in_(hashes))
-        .where(~dedup_resolved_clause())
-        .order_by(FileRecord.sha256_hash, FileRecord.original_path)
-    )
+    # phaze-z4p5q: capped to _MAX_GROUP_MEMBERS + 1 members PER hash, independently of how many
+    # hashes are in the caller's set.
+    stmt = _select_capped_group_members(FileRecord.sha256_hash.in_(hashes))
     result = await session.execute(stmt)
-    return _build_metadata_groups(result.all())
+    return _build_metadata_groups(result.all(), cap=_MAX_GROUP_MEMBERS)
 
 
 async def find_duplicate_group_by_hash(session: AsyncSession, group_hash: str) -> dict[str, Any] | None:
@@ -237,16 +291,16 @@ async def find_duplicate_group_by_hash(session: AsyncSession, group_hash: str) -
     single remaining file) -- all of which are ordinary states a stale card can ask about, not errors.
     The ``count > 1`` check mirrors the ``HAVING count(id) > 1`` in :func:`_dup_hash_subquery` so a
     lookup agrees with the list about what counts as a group.
+
+    phaze-z4p5q: this used to fetch every unresolved member with no LIMIT at all, so an operator
+    Compare/Undo click on a pathological group (tens of thousands of byte-identical members) would
+    materialize all of them -- and one metadata dict each -- into the API process. Now capped to
+    ``_MAX_GROUP_MEMBERS`` (with ``"truncated": True`` set on the returned dict if the real group is
+    larger); the ``count > 1`` existence check above never needs the full membership either way.
     """
-    stmt = (
-        select(FileRecord, FileMetadata)
-        .outerjoin(FileMetadata, FileRecord.id == FileMetadata.file_id)
-        .where(FileRecord.sha256_hash == group_hash)
-        .where(~dedup_resolved_clause())
-        .order_by(FileRecord.original_path)
-    )
+    stmt = _select_capped_group_members(FileRecord.sha256_hash == group_hash)
     result = await session.execute(stmt)
-    groups = _build_metadata_groups(result.all())
+    groups = _build_metadata_groups(result.all(), cap=_MAX_GROUP_MEMBERS)
     if not groups or groups[0]["count"] <= 1:
         return None
     return groups[0]
@@ -356,6 +410,18 @@ async def resolve_group(session: AsyncSession, group_hash: str, canonical_id: uu
     instead of minting a second, conflicting resolution. The lock is transaction-scoped (released at
     the caller's ``commit()``/``rollback()``), matching how both call sites (``resolve_group_endpoint``
     and the ``bulk_resolve`` loop) run inside a caller-owned transaction.
+
+    phaze-a3if1: the membership/non-canonical reads above are plain SELECTs with no ``FOR SHARE``, so
+    they do NOT block on ``delete_scan_cascade``'s ``SELECT ... FOR UPDATE`` -- a group member (or
+    ``canonical_id`` itself) can be deleted by a concurrent scan-batch delete AFTER this function's own
+    read sees it and BEFORE the ``DedupResolution`` INSERT below runs. ``delete_scan_cascade``'s own
+    comment names the expected outcome: the losing writer "simply FK-fails against the already-deleted
+    file". The INSERT therefore runs inside its own SAVEPOINT (request_guards.py contract rule 5) and
+    an ``IntegrityError`` there is caught (rule 4 -- a genuine race no stricter signature could have
+    rejected, not a validation bug), reporting 0 resolved instead of letting the FK violation escape
+    uncaught. That return value is indistinguishable from every other 0-resolved shape this function
+    already has (stale canonical, concurrent no-op), so the router's existing 0-resolved handling
+    (phaze-ptzse) covers this race too without a separate branch.
     """
     # phaze-v0iy: serialize per group_hash BEFORE the membership check so a concurrent resolve of the
     # same group (any canonical) blocks here until the first resolve's transaction commits or rolls
@@ -404,8 +470,22 @@ async def resolve_group(session: AsyncSession, group_hash: str, canonical_id: uu
         # the >10,922-row break in practice; the guard is one line, so it costs nothing to apply
         # here too rather than leave the shape unchunked (bulk_insert.py's atomicity rule holds --
         # every chunk lands on this session, and the caller still owns the single commit/flush).
-        for chunk in chunk_rows(rows):
-            await session.execute(pg_insert(DedupResolution).values(chunk).on_conflict_do_nothing(index_elements=["file_id"]))
+        #
+        # phaze-a3if1: the whole insert runs inside ONE SAVEPOINT (not per-chunk) so a mid-loop FK
+        # failure unwinds every chunk of THIS resolve atomically, never a partial marker set, and
+        # leaves the caller's outer transaction usable for the rest of the request (contract rule 5
+        # -- a nested rollback, never session.rollback(), which would expire every already-loaded
+        # ORM object on the session).
+        try:
+            async with session.begin_nested():
+                for chunk in chunk_rows(rows):
+                    await session.execute(pg_insert(DedupResolution).values(chunk).on_conflict_do_nothing(index_elements=["file_id"]))
+        except IntegrityError:
+            # A member of `files` (or `canonical_id` itself) was deleted by a concurrent scan-batch
+            # cascade between the SELECT above and this INSERT -- request_guards.py contract rule 4:
+            # catch the race, not the typo. Report the same 0-resolved shape every other no-op in
+            # this function already returns.
+            return 0, []
 
     await session.flush()
     return len(file_states), file_states

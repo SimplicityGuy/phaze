@@ -27,7 +27,20 @@ config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 
 # Interpret the config file for Python logging.
-if config.config_file_name is not None:
+#
+# Guarded by the canonical Alembic ``configure_logger`` attribute (phaze-lhdj0):
+# fileConfig unconditionally REMOVES every existing root logging handler and resets
+# root's level from alembic.ini's ``[logger_root] level = WARNING`` -- regardless of
+# disable_existing_loggers, which only controls logger *disabling*, not handler
+# replacement or level reset. When env.py runs inside the api process (in-process
+# lifespan migration via phaze.database.run_migrations), that clobbers the structlog
+# JSON logging root handler configure_logging() just installed: every INFO log is
+# silently dropped for the rest of the process lifetime and WARNING+ renders as a
+# plain-text dict repr instead of JSON. phaze.database._run_upgrade_head_sync sets
+# ``cfg.attributes["configure_logger"] = False`` on the in-process Config so this
+# block is skipped there; the CLI `alembic upgrade` path (no attribute set) keeps its
+# own logging output via the default True.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
     # disable_existing_loggers=False preserves application loggers across migration
     # runs. With the default True, fileConfig disables every Python logger not
     # listed in alembic.ini (only root/sqlalchemy/alembic), which kills pytest

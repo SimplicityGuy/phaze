@@ -5,7 +5,12 @@
    approve/write -- there is NO /cue/{id}/approve route). Gated card: opacity-60 with "awaiting tracklist
    match…" and NO approve control (the visible eligibility gate). The <pre> autoescapes the DB+filesystem-
    derived cue text -- NEVER | safe (T-60-XSS). Wrapped in #cue-card-{id} so the generate response
-   (cue_row.html fall-through, A2) swaps the card in place. #}
+   (cue_row.html fall-through, A2) swaps the card in place.
+
+   phaze-ce65s: APPROVE pins `card.version_id` (the tracklist version THIS preview's cue_text was
+   built from) via hx-vals, so the route can detect a background re-scrape that moved
+   `latest_version_id` between this render and the click and refuse to write unreviewed content --
+   see routers/cue.py::_render_stale_version_response. #}
 <div id="cue-card-{{ card.tracklist_id }}"
      class="rounded-xl border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel{% if not card.eligible %} opacity-60{% endif %}">
     <div class="mb-2 truncate text-sm text-gray-800 dark:text-gray-200">{{ card.set_name }}.cue</div>
@@ -15,6 +20,7 @@
         <button type="button"
                 hx-post="/cue/{{ card.tracklist_id }}/generate"
                 hx-target="#cue-card-{{ card.tracklist_id }}"
+                hx-vals='{"version_id":"{{ card.version_id }}"}'
                 hx-swap="outerHTML"
                 hx-disabled-elt="this"
                 aria-label="Approve and write the cue sheet for {{ card.set_name }}"

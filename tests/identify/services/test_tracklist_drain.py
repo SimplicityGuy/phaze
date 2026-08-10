@@ -337,6 +337,22 @@ class TestPerformLookupHonesty:
         assert attempt.outcome.is_transient
         assert attempt.host_requests == 2
 
+    async def test_a_no_signal_query_is_refused_without_ever_spending_the_search(self) -> None:
+        """phaze-97uw8: a bare-date/noise-only filename never reaches the host at all.
+
+        `select_result` refuses any derived query with neither an artist nor an event before it
+        looks at results -- a pure function of `derived`, which `perform_lookup` already holds
+        before it would issue the search. Checking it first means the predetermined SEARCH_FAILED
+        never costs a host request against the shared crawl-delay budget.
+        """
+        search = FakeSearch("time-warp-2024")  # would answer if asked -- asserting it never IS
+        attempt = await perform_lookup(candidate_for("2024-10-25.mp3"), search=search, renderer=FakeRenderer())
+
+        assert attempt.outcome is LookupOutcome.SEARCH_FAILED
+        assert attempt.outcome.is_transient
+        assert attempt.host_requests == 0
+        assert search.queries == [], "no-signal queries must never spend a host request"
+
     async def test_no_non_found_path_ever_claims_more_than_it_knows(self) -> None:
         """Sweep: every outcome this module can produce is either FOUND, a definitive negative, or transient."""
         producible = {
@@ -670,6 +686,27 @@ class TestDrainPass:
         assert entry.derived.query == "Sven Vath At Time Warp Mannheim 2024"
         assert "GRVMSTR" not in entry.derived.query
         assert entry.added_at is not None
+
+    async def test_added_at_is_correct_when_load_added_at_is_chunked(
+        self,
+        session: AsyncSession,
+        make_file,
+        monkeypatch: pytest.MonkeyPatch,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """phaze-1x31w: ``_load_added_at`` chunks its ``FileRecord.id.in_(...)`` the same way
+        ``lookup_many`` chunks ``set_key.in_(...)`` -- forced here to a chunk size of 1 (several
+        files, several SELECTs) to prove the merged result is unaffected by the split."""
+        import phaze.services.tracklist_drain as drain_module
+
+        monkeypatch.setattr(drain_module, "IN_CLAUSE_CHUNK_SIZE", 1)
+
+        for index in range(3):
+            await self._seed(make_file, session, f"Artist{index} - Live @ Event 2024-04-1{index}.mp3")
+
+        queue = await build_drain_queue(session, now=NOW)
+
+        assert len(queue.entries) == 3
+        assert all(entry.added_at is not None for entry in queue.entries)
 
     async def test_flagged_files_reach_the_front_of_the_queue(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
         for index in range(4):

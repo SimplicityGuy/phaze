@@ -1,0 +1,81 @@
+{# phaze-rdxfu: the burst-lane detail, as an EXPANDED ROW beneath its trigger row.
+
+   Mirrors _agent_detail_row.html's shape byte-for-byte (same D-09 dismiss/focus-return-by-stable-id
+   contract, same hx-preserve survival across the section's own 5s outerHTML self-poll, same colspan-7
+   full-width body host, same bounded own-tick on the fetched body) so a lane's drill-in reads
+   identically to an agent's — the whole point of this bead. Replaces the deleted
+   admin/partials/_compute_lane_pane.html side panel (phaze-2u8v.5): every drill-in on
+   /admin/agents is now an expanded row, agent or lane alike.
+
+   Reads the unified `row` view-model (a TableRow, admin_agents.py) — included only for a
+   `row.status_kind == 'lane'` selection (its agent-kind sibling is `_agent_detail_row.html`).
+   `row.id` is `lane.backend_id` for a lane row.
+
+   The BODY fetched into the slot below is `_compute_lane_detail.html`, REUSED UNCHANGED except for
+   its own-tick's hx-target, which now points at this row's per-lane slot
+   (#compute-lane-activity-{{ row.id }}) instead of the deleted pane's #compute-lane-pane host — see
+   that partial's own docstring. Its own-tick still reads `open` from the nearest enclosing Alpine
+   x-data, which is now THIS row's `x-data` below rather than the old pane shell's, so no change to
+   that partial's own-tick wiring beyond the hx-target was needed.
+
+   Included from agents_table.html ONLY for the currently `row.selected` row (server-resolved
+   lookup-in-known-set, same _resolve_selected_compute_lane idiom the deleted pane used) — at most one
+   expanded row (agent OR lane) exists at a time, immediately below its trigger
+   `<tr id="{{ row.trigger_id }}">`. #}
+<tr id="{{ row.detail_row_id }}"
+    hx-preserve
+    x-data="{
+        open: true,
+        hide() {
+            // Full dismiss, mirroring _agent_detail_row.html's hide() (phaze-trof4 + phaze-fg8vq apply
+            // identically here -- same shape, same bugs, same fix): clear the fetched body (also
+            // removes its own-tick poller — htmx cancels a trigger on an element once it leaves the
+            // DOM), drop the ?clane= selection so the NEXT table poll stops rendering this row at all
+            // while KEEPING the operator's chosen sort/order (a bare '/admin/agents' discarded them,
+            // so a reload after dismissing silently reset the table to the default order), then return
+            // focus to the trigger row by STABLE id ({{ row.trigger_id }} survives every poll's
+            // outerHTML swap) and remove THIS row from the DOM outright (x-show-hiding it left a dead
+            // node with this same id in place, so a re-click on the same lane inside the ≤5s poll
+            // window lost to it under hx-preserve's id match, wedging the row open=false/empty
+            // forever). Focus MUST move before removal — removing the focused element's ancestor first
+            // drops focus to <body> instead.
+            this.open = false;
+            const el = document.getElementById('compute-lane-activity-{{ row.id }}');
+            if (el) el.innerHTML = '';
+            try { history.replaceState({}, '', '/admin/agents?{{ sort.query_params() }}'); } catch (e) { /* history unavailable: degrade */ }
+            document.getElementById('{{ row.trigger_id }}')?.focus();
+            this.$el.remove();
+        }
+    }"
+    x-init="$nextTick(() => { document.getElementById('compute-lane-detail-heading-{{ row.id }}')?.focus(); })"
+    x-show="open"
+    x-cloak
+    @keydown.escape.window="if (open && ![...document.querySelectorAll('[role=&quot;dialog&quot;]')].some(d => d.getClientRects().length > 0)) hide()"
+    class="bg-gray-50 dark:bg-phaze-panel/60">
+    <td colspan="7" class="px-4 py-4">
+        <div class="flex items-center justify-between gap-2">
+            <h3 id="compute-lane-detail-heading-{{ row.id }}" tabindex="-1"
+                class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Detail</h3>
+            <button type="button"
+                    @click="hide()"
+                    aria-label="Close detail"
+                    class="rounded-lg px-2 py-0.5 text-sm text-gray-500 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-gray-400 dark:hover:text-gray-100">
+                ✕<span class="sr-only"> Close</span>
+            </button>
+        </div>
+
+        {# The swap target: fetched once on insertion (hx-trigger="load" — this row only exists in the
+           DOM once the selection resolves, so "load" fires exactly when the operator opens it, or on
+           a deep-linked ?clane= reload). _compute_lane_detail.html carries its OWN bounded 5s own-tick
+           that re-swaps INTO this same target (D-03) — hx-preserve above keeps that tick alive across
+           the outer table's unrelated 5s poll. #}
+        <div id="compute-lane-activity-{{ row.id }}"
+             class="mt-3"
+             hx-get="{{ row.detail_url }}"
+             hx-trigger="load"
+             hx-swap="innerHTML"
+             hx-on::after-swap="if (window.Alpine) { Alpine.initTree(this); }">
+            <p class="text-sm text-gray-500 dark:text-gray-400">Loading…</p>
+        </div>
+    </td>
+</tr>

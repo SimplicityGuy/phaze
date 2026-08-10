@@ -6,10 +6,14 @@ right pane) on a direct/bookmark navigation, and a bare content fragment on an H
 rail swap -- the fork decided by ``response_shape.wants_fragment`` (contract rule 1),
 the same predicate ``admin_agents.page`` (``routers/admin_agents.py``) composes.
 
-Stage resolution is a strict whitelist: ``STAGE_PARTIALS`` maps each rail-node id to the
-content partial that bridges it (D-01). ``stage`` is NEVER interpolated into a template
-path -- the partial name always comes from this static dict, closing the
-template-path-injection surface (T-57-01 / ASVS V5). An unknown stage 404s (D-02).
+Stage resolution is a strict whitelist across TWO static maps: ``STAGE_PARTIALS`` for the DAG
+pipeline rail nodes (D-01), and its sibling ``UTILITY_PANES`` (phaze-uvmcr.1) for the two
+below-the-line utility panes -- Audit Log and Compute/Agents -- that are NOT DAG stages and so
+are kept out of ``STAGE_PARTIALS``, whose own docstring pins its key set AND order verbatim to
+the 57-UI-SPEC "DAG Rail" table. ``stage`` is NEVER interpolated into a template path -- the
+partial name always comes from one of these two static dicts, closing the
+template-path-injection surface (T-57-01 / ASVS V5). An unknown stage (in neither map) 404s
+(D-02).
 
 ``GET /`` renders the Summary landing placeholder (quick 260707-sq3) -- a static, DB-free
 stage reserving the landing slot for a future at-a-glance overview. Analyze is one rail click
@@ -35,13 +39,17 @@ from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
 from phaze.models.proposal import APPROVE_REJECT_FROM
+from phaze.routers.admin_agents import build_agents_pane_context
+from phaze.routers.execution import build_audit_log_context
 from phaze.routers.pipeline import FILES_SORT
 from phaze.routers.pipeline_scans import RECENT_SCANS_SORT, build_recent_scans
 from phaze.routers.proposal_sort import PROPOSE_SORT
-from phaze.routers.response_shape import wants_fragment
+from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_fragment
 from phaze.routers.view_state import PAGE_SIZE_CHOICES, ListViewState
+from phaze.services.pagination import DEFAULT_PAGE_SIZE, clamp_page, clamp_page_size
 from phaze.services.pipeline import (
     analyze_lanes_content_hash,
+    count_proposal_pending_files,
     get_files_page,
     get_match_pending_tracklists,
     get_stage_progress,
@@ -55,6 +63,7 @@ from phaze.services.review import (
     get_tagwrite_review_page,
 )
 from phaze.services.route_control import get_route_control
+from phaze.utils.humanize import relative_time
 from phaze.web.static import static_asset_url
 
 from .pipeline import build_dashboard_context
@@ -69,6 +78,13 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # phaze-315t: fingerprinted, cache-forever static asset URLs. `shell/shell.html` is the
 # top-level layout that carries the app.css link + favicon set.
 templates.env.globals["static_url"] = static_asset_url
+# phaze-uvmcr.4: admin/agents.html (UTILITY_PANES["agents"]) transitively includes
+# admin/partials/agents_table.html, which calls {{ humanize_relative_time(...) }} for each agent's
+# last-seen column -- the SAME global admin_agents.py's own (separate) Jinja2Templates instance
+# registers for its unchanged fragment endpoints (_table/_activity/compute-lanes). Two Jinja
+# environments, so the global must be registered on both; templates rendered through THIS env
+# (shell.html, every STAGE_PARTIALS/UTILITY_PANES partial) resolve it from here.
+templates.env.globals["humanize_relative_time"] = relative_time
 router = APIRouter(tags=["shell"])
 
 # Rail-node id -> bridged content partial (D-01). The keys + their order are VERBATIM
@@ -147,6 +163,54 @@ STAGE_PARTIALS: dict[str, str] = {
     # closes the Review & Apply group, after the five review nodes it consumes the output of.
     "apply": "pipeline/partials/apply_workspace.html",
 }
+
+
+# phaze-uvmcr.1: rail-node id -> bridged content partial for the two BELOW-THE-LINE utility
+# panes (Audit Log, Compute/Agents) -- the sibling of STAGE_PARTIALS above, deliberately kept
+# SEPARATE from it rather than folded in. STAGE_PARTIALS' own comment pins its key set AND
+# order VERBATIM to the 57-UI-SPEC "DAG Rail" table; Audit and Agents are not DAG pipeline
+# stages -- they sit below the rail's border-t divider, carry no pipeline count/badge and never
+# take the blue aria-[current=page] active tint reserved for pipeline nodes (rail.html) -- so
+# adding them to STAGE_PARTIALS would silently falsify a documented invariant instead of
+# widening it honestly. This map exists so that claim stays literally true.
+#
+# Same T-57-01 discipline as STAGE_PARTIALS: every VALUE is a STATIC string literal, `stage` is
+# matched against these keys and NEVER spliced into a template path, and the literals double as
+# dead-template-guard entry roots (test_dead_template_guard.py) exactly like STAGE_PARTIALS'.
+#
+# phaze-uvmcr.1 landed both keys with placeholder/thin content so that bead was independently
+# mergeable.
+#
+# phaze-uvmcr.3: "audit" now points at the REAL content -- execution/audit_log.html, converted
+# from a base.html-extending full page into a content-only partial. Its context is built by
+# build_audit_log_context (routers/execution.py, imported above), the SAME function GET /audit/'s
+# redirect target composes with -- shared so the shell-hosted pane and the (now-redirecting)
+# legacy route can never diverge on what a render of this content needs.
+#
+# phaze-uvmcr.4: "agents" now points at the REAL content -- admin/agents.html, converted from a
+# base.html-extending full page into a content-only partial (no more {% extends %}, no
+# document-level tags). Its context is built by build_agents_pane_context (routers/admin_agents.py,
+# imported above), the SAME function GET /admin/agents's redirect target composed with before this
+# bead -- shared so the shell-hosted pane and the (now-redirecting) legacy route can never diverge
+# on what a render of this content needs. See the ``elif stage == "agents"`` branch below.
+UTILITY_PANES: dict[str, str] = {
+    "audit": "execution/audit_log.html",
+    "agents": "admin/agents.html",
+}
+
+
+def _stage_partial(stage: str) -> str:
+    """Resolve ``stage`` to its content partial across both static maps (T-57-01).
+
+    Checked in ``STAGE_PARTIALS`` first (DAG rail stages), then ``UTILITY_PANES``
+    (below-the-line utility panes). Both are STATIC string-literal dicts keyed by ``stage`` --
+    never spliced into a template path -- so this preserves T-57-01 whichever map resolves it.
+    Callers are expected to have already validated ``stage in STAGE_PARTIALS or stage in
+    UTILITY_PANES`` (``shell_stage`` does; ``shell_home`` passes the hardcoded ``"summary"``
+    literal); a stage in neither raises ``KeyError``, matching the pre-existing
+    ``STAGE_PARTIALS[stage]`` behavior this replaces.
+    """
+    return STAGE_PARTIALS.get(stage) or UTILITY_PANES[stage]
 
 
 # Phase 61 (61-05, RECORD-04): the first-run empty-state guide. A STATIC string literal
@@ -271,6 +335,14 @@ async def build_propose_list_context(request: Request, session: AsyncSession) ->
     # this render and the submit is still correctly SKIPPED rather than rewritten.
     select_ids = [str(row["id"]) for row in page.rows]
     select_locked = [row["status"] not in APPROVE_REJECT_FROM for row in page.rows]
+    # phaze-1aybg: the GENERATE ALL confirm must quote the population the trigger actually
+    # enqueues -- POST /pipeline/proposals batches ``get_proposal_pending_batches``'s convergence
+    # set (files with metadata + completed analysis and NO proposal row yet), which is DISJOINT
+    # from ``propose_stats.pending`` (RenameProposal rows already generated and awaiting review).
+    # ``count_proposal_pending_files`` shares the exact predicate (`_proposal_pending_clauses`)
+    # with the batching producer, so this count and the trigger's enqueue set can never drift
+    # apart. Kept separate from ``propose_stats``, which stays the review-tab counts only.
+    generation_pending = await count_proposal_pending_files(session)
     return {
         "propose_view": view,
         "sort": sort_state,
@@ -280,6 +352,7 @@ async def build_propose_list_context(request: Request, session: AsyncSession) ->
         "select_name": "proposal_ids",
         "propose_pagination": page.pagination,
         "propose_stats": page.stats,
+        "propose_generation_pending": generation_pending,
         "propose_list_id": PROPOSE_LIST_CONTAINER_ID,
         # The pager's destination and page-size choices live in the BASE context (not a template
         # {% with %}) because _propose_list.html has three producers -- the full workspace render,
@@ -326,7 +399,7 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
     context: dict[str, Any] = {
         "request": request,
         "stage": stage,
-        "stage_partial": STAGE_PARTIALS[stage],
+        "stage_partial": _stage_partial(stage),
         "oob_counts": False,
         # Phase 71 (71-04, BEUI-02): seed the header force-local pill's state on EVERY page from the
         # durable route_control 'global' row (get_route_control is degrade-safe -> False on any DB
@@ -337,7 +410,7 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
     if stage == "analyze":
         context.update(await build_dashboard_context(request.app.state, session))
         context["stage"] = stage
-        context["stage_partial"] = STAGE_PARTIALS[stage]
+        context["stage_partial"] = _stage_partial(stage)
         context["oob_counts"] = False
         # Phase 88 (88-01, DRILL-03 / D-02): a reload of /s/analyze?lane={id} seeds the selected-lane
         # highlight server-side for the initial full grid (the poll re-applies it thereafter). Resolved
@@ -384,7 +457,7 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # `include_poll_seeds` context flag (87-09 gap-fix's hand-rolled substitute for that same
         # include) has no remaining producer and is removed rather than left to double-emit the seeds.
         context["stage"] = stage
-        context["stage_partial"] = STAGE_PARTIALS[stage]
+        context["stage_partial"] = _stage_partial(stage)
         context["oob_counts"] = False
     elif stage == "discover":
         # Phase 58 (58-02, WORK-01): the Discover workspace reuses the EXISTING recent-scans
@@ -489,6 +562,56 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # useful half of the deleted proposals/partials/stats_bar.html. No enqueue, no write, no new
         # query path; oob_counts stays False (Pitfall 5) like every other review stage.
         context["stats"] = await get_proposal_stats(session)
+    elif stage == "audit":
+        # phaze-uvmcr.3: the /s/audit utility-pane host (UTILITY_PANES, not STAGE_PARTIALS -- it
+        # is not a DAG pipeline stage). ``execution.audit_log``'s non-fragment branch now redirects
+        # a plain request / bookmark / history-restore of GET /audit/ HERE, carrying the request's
+        # whole query string, so the status/page/page_size/sort/order the redirect arrives with
+        # must resolve to the SAME filtered view on this side -- not silently reset to page 1 / all
+        # statuses. Parsed straight off ``request.query_params`` (not threaded through
+        # ``shell_stage``'s signature, which stays generic across every rail node, DAG or utility
+        # alike) and clamped with the SAME ``phaze.services.pagination`` helpers every other paged
+        # read in this router composes, so an absurd/unparseable value degrades to the same safe
+        # default a hand-edited URL gets everywhere else (never a 422 on a render path).
+        #
+        # The context itself comes from :func:`build_audit_log_context`, the SAME function the
+        # GET /audit/ fragment endpoint (the filter tab / pager / column-sort swap target, still at
+        # its own path, unchanged) calls -- so the two producers of "what audit log content looks
+        # like" cannot independently drift (phaze-a6hm.11's build_propose_list_context discipline,
+        # applied here).
+        audit_params = request.query_params
+        audit_status = audit_params.get("status")
+        try:
+            audit_page_num = clamp_page(int(audit_params.get("page", "1")))
+        except ValueError:
+            audit_page_num = clamp_page(1)
+        try:
+            audit_page_size = clamp_page_size(int(audit_params.get("page_size", str(DEFAULT_PAGE_SIZE))))
+        except ValueError:
+            audit_page_size = clamp_page_size(DEFAULT_PAGE_SIZE)
+        context |= await build_audit_log_context(
+            session,
+            status=audit_status,
+            page=audit_page_num,
+            page_size=audit_page_size,
+            sort=audit_params.get("sort"),
+            order=audit_params.get("order"),
+        )
+    elif stage == "agents":
+        # phaze-uvmcr.4: the Compute/Agents UTILITY_PANES stage -- below-the-line, not a DAG stage
+        # (hence living last here, mirroring the below-the-line placement in rail.html) but forked through
+        # the exact same wants_fragment/history-restore machinery as every stage above (H1). Its
+        # context is built by admin_agents.build_agents_pane_context, the SAME assembly GET
+        # /admin/agents's redirect target used to build inline before this bead -- shared so this pane
+        # and the (now-redirecting) legacy route can never diverge on what a render needs. That
+        # function reads ?agent=/?clane=/?sort=/?order= straight off request.query_params (mirroring
+        # the ``analyze`` branch's ?lane= resolution above) rather than declaring typed Query()
+        # params on THIS route, so the wire-bounds contract stays scoped to the routes that actually
+        # declare them (/admin/agents/_table, unchanged).
+        context |= await build_agents_pane_context(request, session)
+        context["stage"] = stage
+        context["stage_partial"] = _stage_partial(stage)
+        context["oob_counts"] = False
 
     if wants_fragment(request):
         # phaze-a6hm.2 / .9: a live htmx swap has TWO shapes on this route, distinguished by what the
@@ -506,8 +629,10 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # here or anywhere else in this module.
         target = request.headers.get("HX-Target", "")
         if stage == "propose" and target == PROPOSE_LIST_CONTAINER_ID:
-            return templates.TemplateResponse(request=request, name="pipeline/partials/_propose_list.html", context=context)
-        return templates.TemplateResponse(request=request, name="shell/_stage_fragment.html", context=context)
+            return templates.TemplateResponse(
+                request=request, name="pipeline/partials/_propose_list.html", context=context, headers=DUAL_SHAPE_RESPONSE_HEADERS
+            )
+        return templates.TemplateResponse(request=request, name="shell/_stage_fragment.html", context=context, headers=DUAL_SHAPE_RESPONSE_HEADERS)
     # A direct navigation, a bookmark, OR A HISTORY RESTORE lands here and gets the full shell. That
     # third case is phaze-a6hm.2's acceptance criterion and it needs NO extra code: because the filter
     # tabs, search box and pager all push /s/propose?... URLs (never a bare fragment endpoint), a restore
@@ -515,7 +640,12 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
     # ListViewState above, and re-renders the same slice inside full chrome. The alternative design --
     # pushing a dedicated fragment endpoint's URL -- would have made every restore a fragment served into
     # <body>, i.e. the exact phaze-64uy defect response_shape.py rule 2 exists to prevent.
-    return templates.TemplateResponse(request=request, name="shell/shell.html", context=context)
+    #
+    # phaze-r6e5m (response_shape.py contract rule 6): this URL legitimately serves THREE bodies
+    # (the two fragment branches above plus this full document), so every branch -- this one
+    # included -- carries DUAL_SHAPE_RESPONSE_HEADERS to keep the browser's HTTP cache from ever
+    # substituting one shape's cached bytes for another on a Back/Forward navigation.
+    return templates.TemplateResponse(request=request, name="shell/shell.html", context=context, headers=DUAL_SHAPE_RESPONSE_HEADERS)
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -533,9 +663,10 @@ async def shell_home(request: Request, session: AsyncSession = Depends(get_sessi
 async def shell_stage(request: Request, stage: str, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     """GET /s/{stage} -- a single rail-node workspace.
 
-    ``stage`` is whitelisted against ``STAGE_PARTIALS`` (D-02 per-stage validation owned
-    here); an unknown stage 404s and is NEVER used to build a template path (T-57-01).
+    ``stage`` is whitelisted against ``STAGE_PARTIALS`` (DAG rail stages) OR ``UTILITY_PANES``
+    (phaze-uvmcr.1's below-the-line utility panes) (D-02 per-stage validation owned here); an
+    unknown stage (in neither map) 404s and is NEVER used to build a template path (T-57-01).
     """
-    if stage not in STAGE_PARTIALS:
+    if stage not in STAGE_PARTIALS and stage not in UTILITY_PANES:
         raise HTTPException(status_code=404)
     return await _render_stage(request, stage, session)

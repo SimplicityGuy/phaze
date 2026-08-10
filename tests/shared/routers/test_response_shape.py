@@ -14,6 +14,7 @@ from fastapi import Request
 import pytest
 
 from phaze.routers.response_shape import (
+    DUAL_SHAPE_RESPONSE_HEADERS,
     RENDERABLE_ALERT_STATUS,
     is_history_restore,
     is_htmx_request,
@@ -131,6 +132,43 @@ def test_renderable_alert_status_is_distinct_from_the_malformed_payload_status()
 
 
 # ---------------------------------------------------------------------------
+# Dual-shape browser-cache headers (contract rule 6, phaze-r6e5m)
+# ---------------------------------------------------------------------------
+
+
+def test_dual_shape_response_headers_disables_browser_caching() -> None:
+    """``no-store`` is the effective directive -- it makes an incomplete ``Vary`` unable to matter.
+
+    Rule 6's whole argument is that the browser HTTP cache keys by URL alone unless told
+    otherwise; ``no-store`` sidesteps needing that "otherwise" to be exactly right by refusing to
+    let the browser store the response at all.
+    """
+    assert DUAL_SHAPE_RESPONSE_HEADERS["Cache-Control"] == "no-store"
+
+
+def test_dual_shape_response_headers_vary_covers_every_header_an_in_tree_fork_reads() -> None:
+    """``Vary`` rides alongside as defense in depth and must name every discriminating header.
+
+    ``response_shape.wants_fragment`` itself reads ``HX-Request``/``HX-History-Restore-Request``
+    (rules 1/2); ``routers/shell.py``'s ``_render_stage`` additionally reads ``HX-Target`` to pick
+    the propose-list narrow-swap fragment (the adversarial verifier's correction on this bead) --
+    a bare ``Vary: HX-Request`` would under-declare that third discriminator.
+    """
+    vary_headers = {h.strip() for h in DUAL_SHAPE_RESPONSE_HEADERS["Vary"].split(",")}
+    assert vary_headers == {"HX-Request", "HX-History-Restore-Request", "HX-Target"}
+
+
+def test_dual_shape_response_headers_is_a_plain_str_mapping_usable_as_response_headers() -> None:
+    """The constant is passed verbatim as ``headers=`` to ``TemplateResponse``/``RedirectResponse``.
+
+    Both accept ``Mapping[str, str] | None`` -- pinning the value type here catches an accidental
+    non-string value (e.g. a list) before it reaches a router and breaks header encoding at
+    request time instead of import time.
+    """
+    assert all(isinstance(k, str) and isinstance(v, str) for k, v in DUAL_SHAPE_RESPONSE_HEADERS.items())
+
+
+# ---------------------------------------------------------------------------
 # Corpus-level guard (phaze-64uy)
 #
 # Contract rule 1 is phrased as a BAN on the raw ``HX-Request`` header rather than as advice,
@@ -218,4 +256,41 @@ def test_no_template_branches_on_the_raw_hx_request_header() -> None:
         "routers -- a history restore sets that header too.\n\n"
         "FIX: have the HANDLER pass the flag in as response_shape.wants_fragment(request).\n\n"
         "Offending lines:\n  " + "\n  ".join(offenders)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Corpus-level guard (phaze-r6e5m, contract rule 6)
+#
+# Every ``wants_fragment`` fork is, by construction, a handler that answers ONE URL with more than
+# one document shape depending on request headers the browser's HTTP cache does not key on. A
+# router that reads ``wants_fragment`` but never imports ``DUAL_SHAPE_RESPONSE_HEADERS`` has almost
+# certainly left the fork's responses cacheable by URL alone -- exactly the gap this bead closes.
+# This does not prove every branch is covered (the per-route behavioral tests do that); it catches
+# the case a per-handler test cannot: a NEW fork nobody has written a header test for yet.
+# ---------------------------------------------------------------------------
+
+
+def test_every_router_reading_wants_fragment_also_imports_the_dual_shape_headers() -> None:
+    """A router that forks on ``wants_fragment`` must import ``DUAL_SHAPE_RESPONSE_HEADERS`` too.
+
+    ``response_shape.py`` itself is exempt (it defines both, and its module docstring's "USING IT"
+    example names the header read for illustration, not as a live branch).
+    """
+    offenders: list[str] = []
+    for path in sorted(_ROUTERS_DIR.rglob("*.py")):
+        if path.name == "response_shape.py":
+            continue
+        source = path.read_text()
+        if re.search(r"\bwants_fragment\s*\(", source) and "DUAL_SHAPE_RESPONSE_HEADERS" not in source:
+            offenders.append(str(path.relative_to(_ROUTERS_DIR.parents[2])))
+
+    assert not offenders, (
+        "These routers branch on response_shape.wants_fragment() but never reference\n"
+        "DUAL_SHAPE_RESPONSE_HEADERS, so the URL they fork almost certainly answers with more than\n"
+        "one document shape while remaining cacheable by the browser under one URL-only cache key\n"
+        "(contract rule 6 of src/phaze/routers/response_shape.py, phaze-r6e5m).\n\n"
+        "FIX: pass headers=DUAL_SHAPE_RESPONSE_HEADERS to EVERY TemplateResponse/RedirectResponse\n"
+        "returned from the wants_fragment fork, not just the fragment branch.\n\n"
+        "Offending files:\n  " + "\n  ".join(offenders)
     )

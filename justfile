@@ -190,7 +190,15 @@ rebuild: tailwind
 [group('build')]
 tailwind:
     @mkdir -p src/phaze/static/css bin
-    @if [ ! -x ./bin/tailwindcss ]; then \
+    # phaze-y3iyt: the download used to be gated on EXISTENCE only (`[ ! -x ./bin/tailwindcss ]`),
+    # so bumping tailwind_version (+ the sha256 pins) had no effect on any machine already holding
+    # a cached binary -- every `just tailwind`/`up`/`up-dev`/`rebuild` kept compiling app.css with
+    # the stale version forever, silently diverging from the Dockerfile css-builder stage (whose
+    # cache key is the Docker layer, busted automatically by its ARG). Stamp the version that was
+    # actually verified and installed next to the binary, and re-download whenever it doesn't
+    # match the currently configured pin -- this also closes the residual phaze-hvzd hole where a
+    # binary cached before the sha256 pins existed was never re-checked against any digest.
+    @if [ ! -x ./bin/tailwindcss ] || [ "$(cat ./bin/tailwindcss.version 2>/dev/null || true)" != "{{ tailwind_version }}" ]; then \
         echo "⬇️  Downloading standalone Tailwind binary ({{ tailwind_version }})..."; \
         OS=$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/macos/'); \
         ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/'); \
@@ -201,7 +209,7 @@ tailwind:
             "macos-arm64") TW_SHA256="{{ tailwind_sha256_macos_arm64 }}" ;; \
             *) echo "❌ no pinned sha256 for ${OS}-${ARCH}; refusing to download unverified" >&2; exit 1 ;; \
         esac; \
-        rm -f ./bin/tailwindcss.tmp; \
+        rm -f ./bin/tailwindcss.tmp ./bin/tailwindcss.version; \
         curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --retry-delay 5 -o ./bin/tailwindcss.tmp \
             "https://github.com/tailwindlabs/tailwindcss/releases/download/{{ tailwind_version }}/tailwindcss-${OS}-${ARCH}" \
         && { \
@@ -216,7 +224,8 @@ tailwind:
         && chmod +x ./bin/tailwindcss.tmp \
         && ./bin/tailwindcss.tmp --help >/dev/null \
         && mv ./bin/tailwindcss.tmp ./bin/tailwindcss \
-        || { echo "❌ Tailwind download or verification failed; removing partial binary" >&2; rm -f ./bin/tailwindcss.tmp; exit 1; }; \
+        && echo "{{ tailwind_version }}" > ./bin/tailwindcss.version \
+        || { echo "❌ Tailwind download or verification failed; removing partial binary" >&2; rm -f ./bin/tailwindcss.tmp ./bin/tailwindcss.version; exit 1; }; \
     fi
     ./bin/tailwindcss -i assets/src/app.css -o src/phaze/static/css/app.css --minify
 
@@ -311,11 +320,36 @@ test-db:
         rm -f "$run_err"
         return 1
     }
+    # phaze-3yznp: `docker start` resurrects a container with whatever image/port it was
+    # ORIGINALLY created with -- it carries none of the currently-configured knobs (unlike
+    # `docker run`, which gets every one as an argument). A container left over from before a
+    # postgres_image bump, or created under a different PHAZE_TEST_DB_PORT/
+    # PHAZE_TEST_REDIS_PORT, is silently reused while the surrounding echo asserts the
+    # CURRENTLY configured values -- and the in-container pg_isready probe below is blind to
+    # the host-port mismatch. Verify a reused container's actual image/port before trusting it.
+    verify_reused_container() {
+        local name="$1" want_image="$2" want_hostport="$3" container_port="$4"
+        local got_image got_hostport
+        got_image="$(docker inspect -f '{{{{.Config.Image}}' "$name" 2>/dev/null || echo '')"
+        got_hostport="$(docker port "$name" "$container_port" 2>/dev/null | head -n1 | sed -E 's/.*:([0-9]+)$/\1/')"
+        if [ "$got_image" != "$want_image" ] || [ "$got_hostport" != "$want_hostport" ]; then
+            echo "❌ Existing ${name} does not match the configured image/port." >&2
+            echo "   configured: image=${want_image} host-port=${want_hostport}" >&2
+            echo "   actual:     image=${got_image:-<unknown>} host-port=${got_hostport:-<unknown>}" >&2
+            echo "   'docker start' reuses whatever image/port the container was created with;" >&2
+            echo "   it does not pick up a postgres_image bump or a port override." >&2
+            echo "   Run 'just test-db-down' (PHAZE_TEST_DB_FORCE_DOWN=1 if it reports busy), then retry." >&2
+            exit 1
+        fi
+    }
     if [ "$(docker inspect -f '{{{{.State.Running}}' "$container" 2>/dev/null || echo false)" = "true" ]; then
+        verify_reused_container "$container" "{{postgres_image}}" "$port" "5432/tcp"
         echo "🐘 ${container} already running on port ${port}"
     else
         echo "🐘 Starting ${container} ({{postgres_image}}) on host port ${port}..."
-        if ! docker start "$container" >/dev/null 2>&1; then
+        if docker start "$container" >/dev/null 2>&1; then
+            verify_reused_container "$container" "{{postgres_image}}" "$port" "5432/tcp"
+        else
             run_or_yield "$container" "created" \
                 -e POSTGRES_USER=phaze \
                 -e POSTGRES_PASSWORD=phaze \
@@ -327,10 +361,18 @@ test-db:
     fi
     redis_databases="{{test_redis_databases}}"
     redis_running="$(docker inspect -f '{{{{.State.Running}}' "$redis_container" 2>/dev/null || echo false)"
-    if [ "$redis_running" != "true" ]; then
+    redis_reused=0
+    if [ "$redis_running" = "true" ]; then
+        redis_reused=1
+    else
         echo "🟥 Starting ${redis_container} (redis:7-alpine, ${redis_databases} logical DBs) on host port ${redis_port}..."
-        docker start "$redis_container" >/dev/null 2>&1 || true
+        if docker start "$redis_container" >/dev/null 2>&1; then
+            redis_reused=1
+        fi
         redis_running="$(docker inspect -f '{{{{.State.Running}}' "$redis_container" 2>/dev/null || echo false)"
+    fi
+    if [ "$redis_running" = "true" ] && [ "$redis_reused" = "1" ]; then
+        verify_reused_container "$redis_container" "redis:7-alpine" "$redis_port" "6379/tcp"
     fi
     if [ "$redis_running" = "true" ]; then
         # A container started before this setting existed (or with a smaller value) only has 16
@@ -345,6 +387,32 @@ test-db:
             echo "♻️  ${redis_container} has only ${current_databases:-0} logical DBs (need ${redis_databases}); recreating."
             echo "    This CLEARS the test Redis, including per-worktree DB allocations. Re-run"
             echo "    'just test-db-for <name>' in each active worktree afterwards."
+            # phaze-1t4gc: this resize is a deliberate rm (see the comment above), but unlike
+            # test-db-down (phaze-ieqg) it had no live-seat guard at all -- so raising
+            # PHAZE_TEST_REDIS_DATABASES (including via the exhaustion remedy test-db-for's own
+            # error message suggests) would silently wipe every concurrent worktree's live Redis
+            # keys and the DB-index registry mid-suite. Every live suite also holds a Postgres
+            # advisory-lock backend (tests/db_guard.py), so the same pg_stat_activity probe
+            # test-db-down uses is a valid liveness signal here too.
+            if [ "${PHAZE_TEST_DB_FORCE_DOWN:-}" != "1" ] && \
+               [ "$(docker inspect -f '{{{{.State.Running}}' "$container" 2>/dev/null || echo false)" = "true" ]; then
+                busy="$(docker exec "$container" psql -U phaze -d postgres -tAc \
+                    "SELECT string_agg(DISTINCT datname || '  (backend pid ' || pid || ', ' || coalesce(nullif(application_name, ''), 'unnamed client') || ')', chr(10) || '     ')
+                       FROM pg_stat_activity
+                      WHERE backend_type = 'client backend' AND pid <> pg_backend_pid() AND datname LIKE 'phaze%'" 2>/dev/null || true)"
+                if [ -n "$(printf '%s' "$busy" | tr -d '[:space:]')" ]; then
+                    echo "❌ Refusing to recreate ${redis_container} for the logical-DB resize: another seat is using the shared harness." >&2
+                    echo "     ${busy}" >&2
+                    echo "" >&2
+                    echo "   Recreating now would wipe every concurrent worktree's live Redis keys and the" >&2
+                    echo "   DB-index allocation registry out from under those runs -- the same false-red" >&2
+                    echo "   signature test-db-down's guard exists to prevent (phaze-ieqg / phaze-1t4gc)." >&2
+                    echo "" >&2
+                    echo "   Wait for those runs to finish, or PHAZE_TEST_DB_FORCE_DOWN=1 just test-db-for ..." >&2
+                    echo "   if you know the connections are stale." >&2
+                    exit 1
+                fi
+            fi
             docker rm -f "$redis_container" >/dev/null 2>&1 || true
             run_or_yield "$redis_container" "recreated" \
                 -p "{{test_db_bind_ip}}:${redis_port}:6379" \
@@ -359,7 +427,16 @@ test-db:
     fi
     echo "⏳ Waiting for Postgres to accept connections..."
     for _ in $(seq 1 30); do
-        if docker exec "$container" pg_isready -U phaze -d phaze_test >/dev/null 2>&1; then
+        # phaze-cbf1r: probe over TCP (`-h 127.0.0.1`), not the default unix socket. The
+        # postgres entrypoint's first-boot sequence runs a TEMPORARY, socket-only server
+        # (`listen_addresses=''`) to create phaze_test and run init scripts before starting
+        # the real server -- a socket probe reports OK against that temp server too (PQping
+        # only distinguishes "no server answering" from "a server answered"), so the
+        # unqualified probe could break out of this loop before phaze_test genuinely exists,
+        # intermittently failing the next step (scripts/ensure-pg-database.sh). The temp
+        # server never listens on TCP, so `-h 127.0.0.1` is exactly the discriminator between
+        # "a server is up" and "the final server, with phaze_test, is up".
+        if docker exec "$container" pg_isready -h 127.0.0.1 -U phaze -d phaze_test >/dev/null 2>&1; then
             db_ready=1
             break
         fi
@@ -477,13 +554,16 @@ test-db-down:
     #
     # A pytest session shows up here whether or not it is mid-query: `pytest_sessionstart` holds
     # an advisory-lock connection to its own database for the whole run (tests/db_guard.py), so an
-    # idle-looking suite is still a visible `client backend` on a `phaze%test` database.
+    # idle-looking suite is still a visible `client backend` on a `phaze%` database. The pattern is
+    # deliberately NOT narrowed to `phaze%test`: a perf DB misplaced on this shared container (e.g.
+    # `phaze_perf82`, phaze-zpdyg) would otherwise be invisible to this guard even though it lives
+    # on the exact container this recipe is about to remove.
     if [ "${PHAZE_TEST_DB_FORCE_DOWN:-}" != "1" ] && \
        [ "$(docker inspect -f '{{{{.State.Running}}' "$container" 2>/dev/null || echo false)" = "true" ]; then
         busy="$(docker exec "$container" psql -U phaze -d postgres -tAc \
             "SELECT string_agg(DISTINCT datname || '  (backend pid ' || pid || ', ' || coalesce(nullif(application_name, ''), 'unnamed client') || ')', chr(10) || '     ')
                FROM pg_stat_activity
-              WHERE backend_type = 'client backend' AND pid <> pg_backend_pid() AND datname LIKE 'phaze%test'" 2>/dev/null || true)"
+              WHERE backend_type = 'client backend' AND pid <> pg_backend_pid() AND datname LIKE 'phaze%'" 2>/dev/null || true)"
         if [ -n "$(printf '%s' "$busy" | tr -d '[:space:]')" ]; then
             echo "❌ Refusing to remove the SHARED test harness: another seat is using it." >&2
             echo "     ${busy}" >&2
@@ -887,15 +967,42 @@ perf-db-up:
     set -euo pipefail
     container="{{perf_db_container}}"
     port="{{perf_db_port}}"
+    # phaze-uame5: mirror test-db's `docker start`-first pattern (phaze-20vd). This container
+    # is the durable home for the ~200K-row PERF-02 corpus (see the recipe doc comment above),
+    # seeded into its writable layer with no volume backing it. `docker run` has no --restart
+    # flag, so the normal state after a host reboot or daemon restart is "exists, stopped" --
+    # the previous `docker rm -f` on that path destroyed the corpus and silently reprovisioned
+    # an empty database, printing the same "Starting..." line either way. `docker start`
+    # succeeds on a stopped container and fails harmlessly when none exists, so no `rm -f` is
+    # needed here at all -- and skipping it also avoids reintroducing the speculative-rm race
+    # phaze-20vd eliminated from test-db (a concurrent `just perf-db-up` racing our own
+    # `docker run` could otherwise have its just-created container deleted out from under it).
+    run_or_yield() {
+        local run_err
+        run_err="$(mktemp)"
+        if docker run -d --name "$container" \
+            -e POSTGRES_USER=phaze -e POSTGRES_PASSWORD=phaze -e POSTGRES_DB={{perf_db_name}} \
+            --shm-size {{postgres_shm_size}} \
+            -p "{{test_db_bind_ip}}:${port}:5432" {{postgres_image}} >/dev/null 2>"$run_err"; then
+            rm -f "$run_err"
+            return 0
+        fi
+        if grep -q "is already in use" "$run_err"; then
+            echo "🔁 ${container} was created by a concurrent invocation; continuing"
+            rm -f "$run_err"
+            return 0
+        fi
+        cat "$run_err" >&2
+        rm -f "$run_err"
+        return 1
+    }
     if [ "$(docker inspect -f '{{{{.State.Running}}' "$container" 2>/dev/null || echo false)" = "true" ]; then
         echo "🐘 ${container} already running on port ${port}"
     else
-        docker rm -f "$container" >/dev/null 2>&1 || true
         echo "🐘 Starting ${container} ({{postgres_image}}) on host port ${port}..."
-        docker run -d --name "$container" \
-            -e POSTGRES_USER=phaze -e POSTGRES_PASSWORD=phaze -e POSTGRES_DB={{perf_db_name}} \
-            --shm-size {{postgres_shm_size}} \
-            -p "{{test_db_bind_ip}}:${port}:5432" {{postgres_image}} >/dev/null
+        if ! docker start "$container" >/dev/null 2>&1; then
+            run_or_yield
+        fi
     fi
     for _ in $(seq 1 30); do
         if docker exec "$container" pg_isready -U phaze -d {{perf_db_name}} >/dev/null 2>&1; then

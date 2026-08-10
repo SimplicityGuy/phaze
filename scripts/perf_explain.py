@@ -44,7 +44,7 @@ from phaze.services.stage_status import dedup_resolved_clause, eligible_clause, 
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 
 
-_DEFAULT_DSN = "postgresql://phaze:phaze@localhost:5433/phaze_perf82"
+_DEFAULT_DSN = "postgresql://phaze:phaze@localhost:5545/phaze_perf82"
 
 
 def _bucket_stmt(stage: Stage):  # type: ignore[no-untyped-def]

@@ -119,6 +119,24 @@
         {% if review.cache_entry.detail %}
         <p class="mt-1 truncate text-xs text-gray-400 dark:text-gray-500" title="{{ review.cache_entry.detail }}">{{ review.cache_entry.detail }}</p>
         {% endif %}
+        {# phaze-z8xq7: the cache verdict, said plainly, whenever it currently suppresses a
+           re-query -- so an operator never sees a Prioritize/Priority-queued control promise a
+           lookup the drain's own cache decision will not honor. #}
+        {% if not review.actionable %}
+            {% if review.cache_decision.value == 'suppressed_negative' %}
+        <p class="mt-2 text-xs font-medium text-amber-600 dark:text-amber-400">
+            Suppressed until {{ review.cache_entry.expires_at.strftime('%Y-%m-%d %H:%M') if review.cache_entry.expires_at else 'unknown' }} (definitive-negative TTL) -- prioritizing this file will not queue a lookup until then.
+        </p>
+            {% elif review.cache_decision.value == 'backoff' %}
+        <p class="mt-2 text-xs font-medium text-amber-600 dark:text-amber-400">
+            In backoff until {{ review.cache_entry.expires_at.strftime('%Y-%m-%d %H:%M') if review.cache_entry.expires_at else 'unknown' }} after a transient failure -- it will retry automatically; prioritizing it now would not queue a lookup.
+        </p>
+            {% elif review.cache_decision.value == 'transient_exhausted' %}
+        <p class="mt-2 text-xs font-medium text-red-600 dark:text-red-400">
+            Parked after repeated transient failures -- needs a human look. Prioritizing this file will not queue a lookup.
+        </p>
+            {% endif %}
+        {% endif %}
 
     {% elif review.answered_elsewhere %}
         {# STATE 3a -- excluded from the drain BEFORE classification, by a source other than a
@@ -171,7 +189,15 @@
                 class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500">
             Priority queued · cancel
         </button>
-        {% elif review.eligible %}
+        {% if not review.actionable %}
+        {# phaze-z8xq7: an existing flag on a cache-suppressed set is inert -- it will not enter
+           the drain queue until the cache verdict changes. Say so, rather than let "Priority
+           queued" stand as an unqualified claim of an active queue position. #}
+        <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+            This flag will have no effect until the cache verdict above changes -- the drain keeps a cache-suppressed set out of the queue even when flagged.
+        </p>
+        {% endif %}
+        {% elif review.actionable %}
         <button type="button"
                 hx-post="/pipeline/tracklists/{{ file_id }}/prioritize" hx-target="#tracklist-review-{{ file_id }}" hx-swap="innerHTML"
                 hx-confirm="Queue a prioritized 1001Tracklists lookup for this file?"

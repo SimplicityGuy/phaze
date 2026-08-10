@@ -29,14 +29,18 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS
+
 
 if TYPE_CHECKING:
-    from httpx import AsyncClient
+    from httpx import AsyncClient, Response
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# The 14 navigable rail-node ids (VERBATIM prototype RAIL order, with the quick-260707-sq3
+# The DAG pipeline rail-node ids (VERBATIM prototype RAIL order, with the quick-260707-sq3
 # Summary landing node prepended and the Phase-87 87-09 Files stage-matrix overview inserted
-# right after it), each wired to /s/<id>.
+# right after it), each wired to /s/<id> and resolved through routers/shell.py's
+# STAGE_PARTIALS.
 _RAIL_STAGES = [
     "summary",
     "files",
@@ -50,6 +54,18 @@ _RAIL_STAGES = [
     "move",
     "dedupe",
     "cue",
+]
+
+# phaze-uvmcr.1: the two below-the-line UTILITY_PANES ids (Audit Log, Compute/Agents) --
+# NOT DAG pipeline stages, so kept out of _RAIL_STAGES (which mirrors STAGE_PARTIALS'
+# DAG-verbatim-order contract), but wired to /s/<id> exactly like their stage siblings and
+# resolved through routers/shell.py's sibling UTILITY_PANES map. Combined with _RAIL_STAGES
+# below wherever a conformance assertion is meant to cover every navigable rail node, DAG or
+# utility -- so registering a pane in UTILITY_PANES is what buys it this coverage, with no
+# bespoke per-pane test of its own.
+_UTILITY_PANE_STAGES = [
+    "audit",
+    "agents",
 ]
 
 
@@ -190,25 +206,73 @@ async def test_files_rail_node_is_reachable_and_accessible(client: AsyncClient) 
     assert glyph is not None, "Files node missing its aria-hidden inline-SVG glyph"
 
 
+@pytest.mark.parametrize("stage", ["discover", "audit", "agents"])
 @pytest.mark.asyncio
-async def test_stage_fragment_is_bare(client: AsyncClient) -> None:
-    """SHELL-02 -- /s/<stage> is a bare fragment on an HX request, the full shell on direct nav (D-01)."""
-    hx = await client.get("/s/discover", headers={"HX-Request": "true"})
+async def test_stage_fragment_is_bare(client: AsyncClient, stage: str) -> None:
+    """SHELL-02 -- /s/<stage> is a bare fragment on an HX request, the full shell on direct nav (D-01).
+
+    ``discover`` is a STAGE_PARTIALS (DAG) stage; ``audit``/``agents`` (phaze-uvmcr.1) are
+    UTILITY_PANES stages -- both maps fork through the same ``_render_stage`` code path, so
+    this single parametrized test covers all three with no bespoke per-pane copy.
+    """
+    hx = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
     assert hx.status_code == 200
     # Content-only: a swapped fragment NEVER carries the document wrapper or head (no
     # duplicate landmarks / skip-links injected -- the chrome persists across swaps).
     assert "<html" not in hx.text
     assert "<head" not in hx.text
 
-    full = await client.get("/s/discover")
+    full = await client.get(f"/s/{stage}")
     assert full.status_code == 200
     # The non-HX request is the full shell (carries the swap target + chrome).
     assert 'id="stage-workspace"' in full.text
 
 
+def _assert_dual_shape_headers(response: Response, *, context: str) -> None:
+    """Assert ``response`` carries every header ``DUAL_SHAPE_RESPONSE_HEADERS`` demands."""
+    for name, value in DUAL_SHAPE_RESPONSE_HEADERS.items():
+        assert response.headers.get(name) == value, f"{context}: missing/wrong {name!r} header (got {response.headers.get(name)!r})"
+
+
+@pytest.mark.parametrize("stage", _RAIL_STAGES + _UTILITY_PANE_STAGES)
+@pytest.mark.asyncio
+async def test_stage_route_marks_every_shape_uncacheable_by_the_browser(client: AsyncClient, stage: str) -> None:
+    """phaze-r6e5m (response_shape.py contract rule 6) -- /s/<stage> forks THREE ways on the SAME
+    URL (fragment / full shell / history restore), and the browser's HTTP cache keys by URL alone.
+    Every branch must carry DUAL_SHAPE_RESPONSE_HEADERS so a cached fragment can never be replayed
+    as the whole document on a Back/Forward navigation, or vice versa. Covers every DAG stage
+    (``_RAIL_STAGES``) and utility pane (``_UTILITY_PANE_STAGES``) through the single shared
+    ``_render_stage`` fork -- no bespoke per-stage copy.
+    """
+    live_swap = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
+    assert live_swap.status_code == 200
+    _assert_dual_shape_headers(live_swap, context=f"live htmx swap of /s/{stage}")
+
+    direct_nav = await client.get(f"/s/{stage}")
+    assert direct_nav.status_code == 200
+    _assert_dual_shape_headers(direct_nav, context=f"direct navigation to /s/{stage}")
+
+    restore = await client.get(f"/s/{stage}", headers=_RESTORE_HEADERS)
+    assert restore.status_code == 200
+    _assert_dual_shape_headers(restore, context=f"history restore of /s/{stage}")
+
+
+@pytest.mark.asyncio
+async def test_root_marks_every_shape_uncacheable_by_the_browser(client: AsyncClient) -> None:
+    """``GET /`` shares ``_render_stage`` with ``/s/<stage>``, so it owes the same guarantee."""
+    direct_nav = await client.get("/")
+    assert direct_nav.status_code == 200
+    _assert_dual_shape_headers(direct_nav, context="direct navigation to /")
+
+    restore = await client.get("/", headers=_RESTORE_HEADERS)
+    assert restore.status_code == 200
+    _assert_dual_shape_headers(restore, context="history restore of /")
+
+
 @pytest.mark.asyncio
 async def test_every_rail_stage_carries_exactly_one_focus_heading(client: AsyncClient) -> None:
-    """Regression (phaze-t0b8) -- every STAGE_PARTIALS value renders exactly one <h1 tabindex="-1">.
+    """Regression (phaze-t0b8) -- every STAGE_PARTIALS/UTILITY_PANES value renders exactly one
+    ``<h1 tabindex="-1">``.
 
     The shell's htmx:afterSwap / htmx:historyRestore handler (``shell.html``'s
     ``_focusStageHeading``) moves keyboard focus to ``#stage-workspace``'s first ``<h1>`` after
@@ -217,9 +281,11 @@ async def test_every_rail_stage_carries_exactly_one_focus_heading(client: AsyncC
     skipped this: it hand-rolled its own body instead of composing ``_workspace_scaffold.html``
     like every sibling, so it carried no heading at all. This guards the whole class, not just
     that one stage, the way the bead's own fix hint asked: every navigable rail node must have
-    exactly one focus-landing heading, not zero and not two.
+    exactly one focus-landing heading, not zero and not two -- DAG pipeline stages
+    (``_RAIL_STAGES``) AND below-the-line utility panes (``_UTILITY_PANE_STAGES``, phaze-uvmcr.1)
+    alike.
     """
-    for stage in _RAIL_STAGES:
+    for stage in _RAIL_STAGES + _UTILITY_PANE_STAGES:
         frag = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
         assert frag.status_code == 200, f"/s/{stage} must render"
         count = len(re.findall(r'<h1\b[^>]*\btabindex="-1"', frag.text))
@@ -237,24 +303,28 @@ async def test_unknown_stage_404(client: AsyncClient) -> None:
 async def test_rail_nodes_wired(client: AsyncClient) -> None:
     """SHELL-02 -- every navigable rail node carries the HTMX swap wiring; summary is active.
 
-    The DAG rail is the nav spine: each of the 14 nodes swaps ONLY ``#stage-workspace``
+    The DAG rail is the nav spine: each stage node swaps ONLY ``#stage-workspace``
     (innerHTML) via ``/s/<id>`` with ``hx-push-url``. The ``/`` default marks the summary node
     ``aria-current="page"`` (quick 260707-sq3 -- it was analyze before the landing repoint).
+    phaze-uvmcr.1: the two below-the-line utility panes (``_UTILITY_PANE_STAGES``) are wired
+    identically and are covered here too -- registering a pane in UTILITY_PANES is what buys
+    it this wiring assertion, with no bespoke per-pane copy.
     """
     response = await client.get("/")
     assert response.status_code == 200
     body = response.text
 
-    # Every navigable node carries hx-get="/s/<id>" for all 14 rail-order stages.
-    for stage in _RAIL_STAGES:
+    # Every navigable node carries hx-get="/s/<id>" for every rail-order DAG stage AND both
+    # below-the-line utility panes.
+    for stage in _RAIL_STAGES + _UTILITY_PANE_STAGES:
         assert f'hx-get="/s/{stage}"' in body, f"rail node {stage} missing hx-get wiring"
 
     # The single stable swap target + push-url are present on the rail nodes.
     assert 'hx-target="#stage-workspace"' in body
     assert 'hx-swap="innerHTML"' in body
     assert 'hx-push-url="true"' in body
-    # Exactly one swap-target attr per navigable stage node (the 14 /s/ stages).
-    assert body.count('hx-target="#stage-workspace"') >= len(_RAIL_STAGES)
+    # Exactly one swap-target attr per navigable node (DAG stages + utility panes).
+    assert body.count('hx-target="#stage-workspace"') >= len(_RAIL_STAGES) + len(_UTILITY_PANE_STAGES)
 
     # The summary node (the / default) is the active rail node: aria-current="page" sits on
     # the same element carrying data-rail-stage="summary".
@@ -390,14 +460,17 @@ def _assert_full_shell(body: str, *, context: str) -> None:
     assert 'id="stage-workspace"' in body, f"{context}: the swap target every rail node aims at must exist"
 
 
-@pytest.mark.parametrize("stage", ["analyze", "files", "discover", "summary", "dedupe"])
+@pytest.mark.parametrize("stage", ["analyze", "files", "discover", "summary", "dedupe", "audit", "agents"])
 @pytest.mark.asyncio
 async def test_stage_history_restore_returns_full_shell(client: AsyncClient, stage: str) -> None:
     """A history-restore GET /s/<stage> returns the FULL shell, not the bare stage fragment.
 
     This is the reproduction from the bead, one stage per parametrisation. Before the fix each of
     these returned ``_stage_fragment.html`` -- the dispatcher measured /s/analyze at 5796 bytes,
-    /s/files at 5656 and /s/discover at 8652, all with ``full_document=False``.
+    /s/files at 5656 and /s/discover at 8652, all with ``full_document=False``. ``audit``/``agents``
+    (phaze-uvmcr.1) are the UTILITY_PANES additions -- the H1 history-restore trap applies to them
+    identically since they fork through the same ``response_shape.wants_fragment`` check as every
+    STAGE_PARTIALS stage.
     """
     response = await client.get(f"/s/{stage}", headers=_RESTORE_HEADERS)
     assert response.status_code == 200
@@ -424,20 +497,185 @@ async def test_root_history_restore_returns_full_shell(client: AsyncClient) -> N
     _assert_full_shell(response.text, context="history restore of /")
 
 
+@pytest.mark.parametrize("stage", ["analyze", "audit", "agents"])
 @pytest.mark.asyncio
-async def test_stage_live_htmx_swap_still_returns_bare_fragment(client: AsyncClient) -> None:
+async def test_stage_live_htmx_swap_still_returns_bare_fragment(client: AsyncClient, stage: str) -> None:
     """The OTHER direction: a live rail swap must still get the chrome-less fragment.
 
     The fix must not turn every htmx request into a full page. ``_stage_fragment.html`` is swapped
     INTO ``#stage-workspace``; a full document here would nest ``<html>``/duplicate landmarks
-    inside the live shell, a ROADMAP-locked anti-pattern.
+    inside the live shell, a ROADMAP-locked anti-pattern. ``audit``/``agents`` (phaze-uvmcr.1) are
+    the UTILITY_PANES additions, covered here alongside the DAG ``analyze`` stage.
     """
-    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    response = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
     assert response.status_code == 200
     body = response.text
     assert "<html" not in body.lower(), "a live rail swap must get a fragment, not a full document"
     assert 'aria-label="Pipeline navigation"' not in body, "the fragment must not carry a second rail"
     assert 'id="stage-workspace"' not in body, "the fragment swaps INTO #stage-workspace, not around it"
+
+
+@pytest.mark.asyncio
+async def test_audit_rail_node_carries_aria_current_on_direct_nav(client: AsyncClient) -> None:
+    """Acceptance #2 (phaze-uvmcr.3) -- the Audit rail node shows aria-current="page" on /s/audit.
+
+    Mirrors ``test_analyze_still_reachable_at_s_analyze``'s equivalent assertion for the DAG rail;
+    ``audit`` is a UTILITY_PANES node (phaze-uvmcr.1) but is wired into the SAME rail active-state
+    idiom (rail.html:404), so a direct navigation there marks it, not any DAG stage.
+    """
+    response = await client.get("/s/audit")
+    assert response.status_code == 200
+    body = response.text
+    assert 'data-stage="audit"' in body
+    assert re.search(r'data-rail-stage="audit"[^>]*aria-current="page"', body), 'audit rail node must carry aria-current="page" on /s/audit'
+
+
+async def _seed_execution_log(session: AsyncSession, *, status: str, source_path: str) -> None:
+    """Seed ONE ExecutionLog row (with its prerequisite FileRecord + approved RenameProposal).
+
+    A local, minimal cousin of ``tests/review/routers/test_execution.py``'s
+    ``create_test_execution_log`` -- this module tests the SHELL side of the audit pane, not the
+    execution router, so it seeds only what :func:`build_audit_log_context`'s read actually needs.
+    """
+    from datetime import UTC, datetime
+    import uuid
+
+    from phaze.models.execution import ExecutionLog
+    from phaze.models.file import FileRecord
+    from phaze.models.proposal import ProposalStatus, RenameProposal
+
+    file_id = uuid.uuid4()
+    session.add(
+        FileRecord(
+            agent_id="test-fileserver",
+            id=file_id,
+            sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+            original_path=f"/music/{uuid.uuid4().hex}/test.mp3",
+            original_filename="test.mp3",
+            current_path=source_path,
+            file_type="music",
+            file_size=1_000_000,
+        )
+    )
+    await session.flush()
+    proposal_id = uuid.uuid4()
+    session.add(
+        RenameProposal(
+            id=proposal_id,
+            file_id=file_id,
+            proposed_filename="new.mp3",
+            confidence=0.9,
+            status=ProposalStatus.APPROVED,
+            context_used={"artist": "Test"},
+            reason="Test",
+        )
+    )
+    await session.flush()
+    session.add(
+        ExecutionLog(
+            id=uuid.uuid4(),
+            proposal_id=proposal_id,
+            operation="move",
+            source_path=source_path,
+            destination_path=source_path.replace("old", "new"),
+            sha256_verified=True,
+            status=status,
+            executed_at=datetime.now(UTC).replace(tzinfo=None),
+        )
+    )
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_audit_stage_resolves_query_params_the_redirect_from_audit_arrives_with(client: AsyncClient, session: AsyncSession) -> None:
+    """The /s/audit branch actually READS status/sort/order off the query string, not just /audit/.
+
+    ``execution.audit_log``'s non-fragment branch 301-redirects a bookmarked/filtered
+    ``/audit/?...`` URL to ``/s/audit?...`` (acceptance #3), carrying the WHOLE query string. That
+    round trip is only meaningful if ``/s/audit`` itself resolves those same parameters into the
+    same filtered/sorted view -- otherwise a bookmark of a filtered audit URL would silently reset
+    to page 1 / all statuses / default order on arrival. Seeds one COMPLETED and one FAILED log,
+    then hits ``/s/audit?status=failed`` directly (as the redirect would) and asserts the response
+    reflects the FAILED-only, active-tab-marked view.
+    """
+    from phaze.models.execution import ExecutionStatus
+
+    await _seed_execution_log(session, status=ExecutionStatus.COMPLETED, source_path="/music/old-completed.mp3")
+    await _seed_execution_log(session, status=ExecutionStatus.FAILED, source_path="/music/old-failed.mp3")
+
+    response = await client.get("/s/audit?status=failed")
+    assert response.status_code == 200
+    body = response.text
+    assert "/music/old-failed.mp3" in body
+    assert "/music/old-completed.mp3" not in body
+    # The active tab reflects the resolved status, not the "all" default.
+    assert 'hx-get="/audit/?status=all' in body
+
+
+@pytest.mark.asyncio
+async def test_audit_stage_degrades_a_malformed_page_and_page_size_instead_of_500ing(client: AsyncClient) -> None:
+    """A hand-edited/truncated ``/s/audit`` URL degrades page/page_size to a safe default, never 500s.
+
+    Mirrors the ``pagination.py`` contract's rule 5 (out-of-range/unparseable inputs clamp, they
+    never raise) -- the SAME discipline every other paged read in this router already gets via
+    ``Query(..., ge=..., le=...)``. ``/s/audit`` parses these itself (off ``request.query_params``,
+    not FastAPI's per-field validation, since ``shell_stage`` stays generic across every rail node),
+    so it needs its OWN degrade-safe parsing, pinned here.
+    """
+    response = await client.get("/s/audit?page=not-a-number&page_size=also-not-a-number")
+    assert response.status_code == 200
+    assert 'id="audit-content"' in response.text
+
+
+@pytest.mark.asyncio
+async def test_audit_pane_filter_tabs_pager_and_sort_still_wired_from_inside_the_shell(client: AsyncClient) -> None:
+    """Acceptance #6 (phaze-uvmcr.3) -- the filter tabs, pager, and column-sort headers still swap
+    into their targets now that their host lives inside #stage-workspace, not a standalone page.
+
+    The swap wiring itself (``#audit-content`` target, ``GET /audit/`` endpoint) is UNCHANGED by
+    this bead -- these ids/attributes are the proof it survived being re-hosted, not a new feature.
+    """
+    response = await client.get("/s/audit")
+    assert response.status_code == 200
+    body = response.text
+    # The filter tabs' swap target and endpoint.
+    assert 'id="audit-content"' in body
+    assert 'hx-get="/audit/?status=all' in body
+    assert 'hx-target="#audit-content"' in body
+    # The column-sort headers resolve against the SAME target (AUDIT_SORT.target == "#audit-content").
+    assert re.search(r'hx-get="/audit/\?[^"]*sort=', body), "no column-sort header hx-get found inside the shell-hosted pane"
+
+
+@pytest.mark.asyncio
+async def test_audit_pane_carries_no_poller_and_away_navigation_leaves_nothing_behind(client: AsyncClient) -> None:
+    """H3 (phaze-uvmcr.3 epic design) -- the audit pane starts no timer of its own, and swapping
+    away to another rail node leaves no orphaned poller, listener, or dangling swap target behind.
+
+    Unlike its below-the-line sibling (the agents pane, phaze-uvmcr.4), audit carries NO self-poll:
+    the filter tabs, pager, and column-sort headers are all operator-triggered ``hx-get`` on click,
+    never ``hx-trigger="every ...s"`` or a ``setInterval``. This proves that directly (there is
+    nothing here that COULD leak), then proves the other half of H3: an innerHTML swap of
+    ``#stage-workspace`` to another stage is self-cleaning -- none of audit's own ids survive it.
+    """
+    audit_fragment = await client.get("/s/audit", headers={"HX-Request": "true"})
+    assert audit_fragment.status_code == 200
+    audit_body = audit_fragment.text
+    assert 'id="audit-content"' in audit_body, "sanity: this is really the audit pane"
+    # No self-poll of any kind -- every control here is operator-triggered.
+    assert 'hx-trigger="every' not in audit_body
+    assert "setInterval" not in audit_body
+
+    # Swap AWAY to a sibling rail node, the same innerHTML swap of #stage-workspace a real rail
+    # click performs.
+    away_fragment = await client.get("/s/files", headers={"HX-Request": "true"})
+    assert away_fragment.status_code == 200
+    away_body = away_fragment.text
+    # None of audit's ids/hooks survive the swap: htmx cancels any element-scoped trigger when its
+    # element leaves the DOM, and an innerHTML replace carries none of the old subtree forward, so
+    # nothing from the audit pane is still present -- or listening -- after this swap.
+    assert 'id="audit-content"' not in away_body
+    assert 'id="audit-table-container"' not in away_body
+    assert "audit-details-trigger-" not in away_body
 
 
 @pytest.mark.asyncio

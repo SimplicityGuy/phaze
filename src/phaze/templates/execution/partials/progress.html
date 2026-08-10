@@ -7,7 +7,10 @@
      - Aggregate counter row (sse-swap="progress" — backward-compat event name)
      - Per-agent rollup table (sse-swap="agents_table") — server-rendered at
        first response so there is no empty-flash; SSE re-renders every tick.
-     - Dual sse-close listeners for "complete" and "complete_with_errors"
+     - A single sse-close="close" on the sse-connect element itself (phaze-047gd):
+       htmx-ext-sse@2.2.4 reads sse-close ONLY from the element carrying
+       sse-connect, never from descendants, so it cannot live on the terminal
+       status spans below.
 
    Context contract (POST /execution/start template-response):
      - batch_id (str): parent UUID
@@ -29,8 +32,14 @@
    approved proposal on a revoked agent) seeds no exec:{batch_id} hash, so a stream opened here would
    poll a nonexistent key forever ("Waiting for execution to start...") and never terminate. Gating
    the sse-connect on `agents` keeps the empty-state card static and connectionless. #}
+{# phaze-047gd: sse-close MUST live on this same element -- htmx-ext-sse@2.2.4's ensureEventSource
+   reads sse-close only from the element it found via sse-connect; registerSSE (which walks
+   descendants for sse-swap/hx-trigger) never looks at sse-close. Putting it on a child span (as the
+   markup previously did) registers no close listener at all, so the terminal SSE event never closes
+   the EventSource and the browser auto-reconnects forever. execution_progress (routers/execution.py)
+   emits a single canonical {"event": "close", "data": ""} from both terminal paths for this to catch. #}
 <div class="bg-gray-50 dark:bg-phaze-panel rounded-lg p-6 border border-gray-200 dark:border-phaze-border"
-     {% if agents %}hx-ext="sse" sse-connect="/execution/progress/{{ batch_id }}"{% endif %}
+     {% if agents %}hx-ext="sse" sse-connect="/execution/progress/{{ batch_id }}" sse-close="close"{% endif %}
      aria-live="polite">
 
     {% if skipped_revoked and skipped_revoked > 0 %}
@@ -88,10 +97,12 @@
     </div>
     {% endif %}
 
-    {# Dual SSE close listeners — terminal status closes the stream. Only meaningful when a stream is
-       connected (phaze-5zyv: the empty-state card has no sse-connect, so these would never fire). #}
+    {# Terminal status message slots (phaze-047gd: sse-close intentionally NOT repeated here -- see
+       the sse-connect div above, the only element htmx-ext-sse@2.2.4 reads it from). Only meaningful
+       when a stream is connected (phaze-5zyv: the empty-state card has no sse-connect, so these
+       would never fire). #}
     {% if agents %}
-    <span sse-swap="complete" sse-close="complete"></span>
-    <span sse-swap="complete_with_errors" sse-close="complete_with_errors"></span>
+    <span sse-swap="complete"></span>
+    <span sse-swap="complete_with_errors"></span>
     {% endif %}
 </div>

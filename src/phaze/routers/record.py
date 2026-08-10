@@ -15,7 +15,7 @@ proposals.py:283 T-31-06-02). A missing / de-duplicated file resolves to a frien
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast as type_cast
 import uuid
 
 from fastapi import APIRouter, Depends, Request
@@ -25,15 +25,22 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
+from phaze.models.cloud_job import CloudJob
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.routers.proposals import TIMELINE_H, TIMELINE_W, _bpm_spark, _ribbons
-from phaze.services.pipeline import get_file_stage_buckets
+from phaze.services.agent_liveness import non_local_backend_kinds
+from phaze.services.pipeline import derive_file_lane, get_file_stage_buckets
 from phaze.services.tracklist_priority import get_file_tracklist_review
+
+
+if TYPE_CHECKING:
+    from phaze.config import ControlSettings
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -109,6 +116,9 @@ async def file_record(
             "original_path": p.file.current_path,
             "proposed_filename": p.proposed_filename,
             "proposed_path": p.proposed_path,
+            # phaze-exivg: the optimistic-concurrency token the record page's APPROVE button
+            # round-trips back to /proposals/{id}/approve.
+            "updated_at": p.updated_at,
         }
         for p in proposals
     ]
@@ -150,6 +160,14 @@ async def file_record(
     # above, so this can never legitimately come back None here.
     tracklist_review = await get_file_tracklist_review(session, file_id)
 
+    # phaze-lljfx: the facts grid's Lane tile used to hardcode "local" unconditionally. Derive it
+    # the SAME way the Analyze matrix does (COMPUTE-03, `derive_file_lane`) off this file's
+    # (possibly absent) `CloudJob`, so the record view can never contradict the badge the operator
+    # just saw for the same file. `CloudJob.file_id` is unique -- at most one row.
+    cloud_job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
+    kinds = non_local_backend_kinds(type_cast("ControlSettings", get_settings()))
+    lane, lane_kind = derive_file_lane(cloud_job.id if cloud_job else None, cloud_job.backend_id if cloud_job else None, kinds)
+
     spark = _bpm_spark(fine, total_sec, TIMELINE_W, TIMELINE_H)
     context: dict[str, Any] = {
         "request": request,
@@ -171,5 +189,7 @@ async def file_record(
         "identity": identity,
         "history": history,
         "tracklist_review": tracklist_review,
+        "lane": lane,
+        "lane_kind": lane_kind,
     }
     return templates.TemplateResponse(request=request, name="record/record_body.html", context=context)

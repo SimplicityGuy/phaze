@@ -76,6 +76,26 @@ def test_analysis_write_payload_rejects_out_of_range_energy() -> None:
         AnalysisWritePayload.model_validate({"energy": 2.0})
 
 
+def test_analysis_write_payload_rejects_nan_in_mood_value() -> None:
+    """phaze-hvve5 (site 4): a `ge=`/`le=` scalar bound never runs on a value buried inside a
+    dict -- `json.dumps` (`allow_nan=True` by default) would otherwise re-emit a bare `NaN` token
+    that PostgreSQL's jsonb parser rejects, aborting the upsert."""
+    with pytest.raises(pydantic.ValidationError):
+        AnalysisWritePayload.model_validate({"mood": {"happy": float("nan")}})
+
+
+def test_analysis_write_payload_rejects_infinity_in_style_value() -> None:
+    with pytest.raises(pydantic.ValidationError):
+        AnalysisWritePayload.model_validate({"style": {"electronic": float("inf")}})
+
+
+def test_analysis_write_payload_rejects_nul_in_mood_key() -> None:
+    """A NUL in a mood/style dict KEY survives `_summarize_dict_to_string`'s reduction and would
+    otherwise land in the `String(50)` column."""
+    with pytest.raises(pydantic.ValidationError):
+        AnalysisWritePayload.model_validate({"mood": {"bad\x00key": 0.5}})
+
+
 def test_analysis_window_payload_round_trips() -> None:
     """Fine-tier window round-trips via model_dump()/model_validate()."""
     payload = AnalysisWindowPayload(
@@ -114,6 +134,23 @@ def test_analysis_window_payload_accepts_coarse_fields() -> None:
     assert payload.style == "electronic"
     assert payload.danceability == 0.8
     assert payload.features == {"valence": 0.6}
+
+
+def test_analysis_window_payload_rejects_nan_in_features_value() -> None:
+    """phaze-hvve5 (site 4): `features` lands straight into a JSONB column; a nested NaN passes
+    Pydantic (a plain `dict` field carries no per-value float constraint) but PostgreSQL's jsonb
+    parser rejects the bare `NaN` token `json.dumps` (`allow_nan=True`) would re-emit."""
+    with pytest.raises(pydantic.ValidationError):
+        AnalysisWindowPayload.model_validate(
+            {"tier": "coarse", "window_index": 0, "start_sec": 0.0, "end_sec": 30.0, "features": {"valence": float("nan")}}
+        )
+
+
+def test_analysis_window_payload_rejects_nul_in_features_key() -> None:
+    with pytest.raises(pydantic.ValidationError):
+        AnalysisWindowPayload.model_validate(
+            {"tier": "coarse", "window_index": 0, "start_sec": 0.0, "end_sec": 30.0, "features": {"bad\x00key": 0.5}}
+        )
 
 
 def test_analysis_window_payload_rejects_bad_tier() -> None:

@@ -7,6 +7,8 @@ the real router into `main.py`. Mirrors Plan 25-02's smoke-app strategy.
 
 from __future__ import annotations
 
+import hashlib
+import secrets
 from typing import TYPE_CHECKING
 import uuid
 
@@ -16,6 +18,7 @@ import pytest
 from sqlalchemy import func as sa_func, select
 
 from phaze.database import get_session
+from phaze.models.agent import Agent
 from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord
 from phaze.models.proposal import RenameProposal
@@ -26,8 +29,6 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from sqlalchemy.ext.asyncio import AsyncSession
-
-    from phaze.models.agent import Agent
 
 
 def _make_authed_app(session: AsyncSession) -> FastAPI:
@@ -63,6 +64,15 @@ async def _authed_client(authed_app: tuple[FastAPI, str]) -> AsyncGenerator[Asyn
     headers = {"Authorization": f"Bearer {raw_token}"}
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
         yield ac
+
+
+async def _seed_second_agent(session: AsyncSession, agent_id: str = "test-agent-b") -> str:
+    """Seed a SECOND agent (inline, mirrors conftest.seed_test_agent's pattern). Returns raw_token."""
+    raw_token = "phaze_agent_" + secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    session.add(Agent(id=agent_id, name=agent_id, token_hash=token_hash, scan_roots=["/test/b"]))
+    await session.commit()
+    return raw_token
 
 
 async def _seed_proposal_chain(session: AsyncSession, agent_id: str) -> tuple[uuid.UUID, uuid.UUID]:
@@ -577,3 +587,209 @@ async def test_concurrent_patch_does_not_regress_terminal_status(async_engine) -
             await s.commit()
         # NOTE: do NOT dispose ``engine`` -- it is the session-scoped ``async_engine`` fixture,
         # owned (and disposed) by conftest.
+
+
+# ---------------------------------------------------------------------------
+# phaze-4f7vb: neither handler bound the write to the authenticated agent --
+# any agent with a valid bearer token could forge or mutate the audit trail
+# for a proposal dispatched to a DIFFERENT agent. Mirrors the cross-tenant
+# guard pattern verified in tests/review/routers/test_agent_proposals.py
+# (test_proposal_cross_agent_403).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_cross_agent_403(
+    authed_app: tuple[FastAPI, str],
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-4f7vb: agent B cannot CREATE an execution-log row for a proposal dispatched to agent A."""
+    agent_a, _ = seed_test_agent
+    _, proposal_id = await _seed_proposal_chain(session, agent_a.id)
+    raw_token_b = await _seed_second_agent(session)
+
+    app, _ = authed_app
+    headers_b = {"Authorization": f"Bearer {raw_token_b}"}
+    log_id = uuid.uuid4()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers_b) as ac:
+        response = await ac.post(
+            "/api/internal/agent/execution-log",
+            json=_make_create_body(proposal_id, log_id=log_id),
+        )
+    assert response.status_code == 403, response.text
+    assert "does not belong" in response.json()["detail"].lower()
+
+    # No row was left behind by the rejected cross-agent create.
+    result = await session.execute(select(ExecutionLog).where(ExecutionLog.id == log_id))
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_patch_cross_agent_403(
+    authed_app: tuple[FastAPI, str],
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-4f7vb: agent B cannot PATCH an execution-log row created for a proposal dispatched to agent A."""
+    agent_a, _ = seed_test_agent
+    _, proposal_id = await _seed_proposal_chain(session, agent_a.id)
+    log_id = uuid.uuid4()
+
+    async for ac in _authed_client(authed_app):
+        r_post = await ac.post(
+            "/api/internal/agent/execution-log",
+            json=_make_create_body(proposal_id, log_id=log_id, status="pending"),
+        )
+        assert r_post.status_code == 200, r_post.text
+
+    raw_token_b = await _seed_second_agent(session)
+    app, _ = authed_app
+    headers_b = {"Authorization": f"Bearer {raw_token_b}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers_b) as ac:
+        response = await ac.patch(
+            f"/api/internal/agent/execution-log/{log_id}",
+            json={"status": "in_progress"},
+        )
+    assert response.status_code == 403, response.text
+    assert "does not belong" in response.json()["detail"].lower()
+
+    # Row's status was NOT mutated by the rejected cross-agent patch.
+    session.expire_all()
+    result = await session.execute(select(ExecutionLog).where(ExecutionLog.id == log_id))
+    row = result.scalar_one()
+    assert row.status == ExecutionStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_patch_explicit_null_sha256_verified_returns_422(
+    authed_app: tuple[FastAPI, str],
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-e2b36: an explicit `"sha256_verified": null` 422s instead of 500ing the NOT NULL commit.
+
+    `bool | None = None` is Pydantic's OPTIONAL idiom (field may be absent), not a NULLABLE one --
+    but the column is `Boolean, nullable=False`. Before the fix, `exclude_unset=True` let the
+    explicit null through to `setattr` + `session.commit()`, raising an unhandled IntegrityError.
+    """
+    agent, _ = seed_test_agent
+    _, proposal_id = await _seed_proposal_chain(session, agent.id)
+    log_id = uuid.uuid4()
+
+    async for ac in _authed_client(authed_app):
+        r_post = await ac.post(
+            "/api/internal/agent/execution-log",
+            json=_make_create_body(proposal_id, log_id=log_id, status="pending"),
+        )
+        assert r_post.status_code == 200, r_post.text
+
+        response = await ac.patch(
+            f"/api/internal/agent/execution-log/{log_id}",
+            json={"status": "in_progress", "sha256_verified": None},
+        )
+    assert response.status_code == 422, response.text
+
+    # The row was NOT mutated -- the request never reached the handler.
+    session.expire_all()
+    result = await session.execute(select(ExecutionLog).where(ExecutionLog.id == log_id))
+    row = result.scalar_one()
+    assert row.status == ExecutionStatus.PENDING
+    assert row.sha256_verified is False
+
+
+@pytest.mark.asyncio
+async def test_patch_omitted_sha256_verified_still_allowed(
+    authed_app: tuple[FastAPI, str],
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-e2b36 regression guard: OMITTING `sha256_verified` (the normal case) still 200s."""
+    agent, _ = seed_test_agent
+    _, proposal_id = await _seed_proposal_chain(session, agent.id)
+    log_id = uuid.uuid4()
+
+    async for ac in _authed_client(authed_app):
+        r_post = await ac.post(
+            "/api/internal/agent/execution-log",
+            json=_make_create_body(proposal_id, log_id=log_id, status="pending"),
+        )
+        assert r_post.status_code == 200, r_post.text
+
+        response = await ac.patch(
+            f"/api/internal/agent/execution-log/{log_id}",
+            json={"status": "in_progress"},
+        )
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.asyncio
+async def test_create_error_message_with_nul_is_sanitized_not_500(
+    authed_app: tuple[FastAPI, str],
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-hvve5 (site 3) / phaze-d55hu (additional site): a NUL in POST error_message is
+    stripped rather than aborting the INSERT with CharacterNotInRepertoireError."""
+    agent, _ = seed_test_agent
+    _, proposal_id = await _seed_proposal_chain(session, agent.id)
+    log_id = uuid.uuid4()
+    body = _make_create_body(proposal_id, log_id=log_id, status="failed")
+    body["error_message"] = "boom\x00 traceback"
+
+    async for ac in _authed_client(authed_app):
+        response = await ac.post("/api/internal/agent/execution-log", json=body)
+    assert response.status_code == 200, response.text
+
+    result = await session.execute(select(ExecutionLog).where(ExecutionLog.id == log_id))
+    row = result.scalar_one()
+    assert row.error_message == "boom traceback"
+    assert "\x00" not in (row.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_patch_error_message_with_nul_is_sanitized_not_500(
+    authed_app: tuple[FastAPI, str],
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-hvve5 (site 3) / phaze-d55hu (additional site): same hazard on the PATCH path."""
+    agent, _ = seed_test_agent
+    _, proposal_id = await _seed_proposal_chain(session, agent.id)
+    log_id = uuid.uuid4()
+
+    async for ac in _authed_client(authed_app):
+        r_post = await ac.post(
+            "/api/internal/agent/execution-log",
+            json=_make_create_body(proposal_id, log_id=log_id, status="pending"),
+        )
+        assert r_post.status_code == 200, r_post.text
+
+        response = await ac.patch(
+            f"/api/internal/agent/execution-log/{log_id}",
+            json={"status": "failed", "error_message": "agent tool output: \x00\x00 corrupt"},
+        )
+    assert response.status_code == 200, response.text
+
+    result = await session.execute(select(ExecutionLog).where(ExecutionLog.id == log_id))
+    row = result.scalar_one()
+    assert "\x00" not in (row.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_create_source_path_with_nul_returns_422(
+    authed_app: tuple[FastAPI, str],
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-hvve5 (site 3): a NUL in `source_path`/`destination_path` is REJECTED (422), not
+    silently stripped -- stripping would point the row at a different path than the agent
+    actually operated on."""
+    agent, _ = seed_test_agent
+    _, proposal_id = await _seed_proposal_chain(session, agent.id)
+    body = _make_create_body(proposal_id)
+    body["source_path"] = "/test/music/\x00a.mp3"
+
+    async for ac in _authed_client(authed_app):
+        response = await ac.post("/api/internal/agent/execution-log", json=body)
+    assert response.status_code == 422, response.text

@@ -27,19 +27,31 @@ def _owning_root_expr() -> ScalarSelect[str]:
     order-independent and deterministic. Returns NULL when no scan_root matches
     (an unconfigured/legacy agent) -- callers keep the absolute dirname in that
     case rather than fabricating a root-relative path.
+
+    ``scan_roots`` is stored verbatim as the operator typed it (``validate_scan_roots``
+    only requires a non-empty absolute path -- nothing normalizes it), so a
+    trailing-slash root like ``/archive/`` is a real, storable value. Matching against
+    the RAW root previously turned that trailing slash into a doubled ``//`` prefix
+    (``value || '/'``) that ``starts_with`` never matches, silently nulling
+    ``owning_root`` for every file under that root (phaze-wlp4l). Right-trimming
+    trailing ``/`` off the root before both comparisons -- and before selecting it as
+    the returned value -- makes the match (and the value handed to callers, e.g.
+    ``_dest_key_columns``'s prefix-stripping below) independent of how the root was
+    formatted when it was entered.
     """
     roots = func.jsonb_array_elements_text(Agent.scan_roots).table_valued("value").lateral()
+    root = func.rtrim(roots.c.value, "/")
     return (
-        select(roots.c.value)
+        select(root)
         .select_from(Agent, roots)
         .where(Agent.id == FileRecord.agent_id)
         .where(
             or_(
-                FileRecord.original_path == roots.c.value,
-                func.starts_with(FileRecord.original_path, roots.c.value.op("||")("/")),
+                FileRecord.original_path == root,
+                func.starts_with(FileRecord.original_path, root.op("||")("/")),
             ),
         )
-        .order_by(func.length(roots.c.value).desc())
+        .order_by(func.length(root).desc())
         .limit(1)
         .correlate(FileRecord)
         .scalar_subquery()
@@ -97,13 +109,24 @@ async def detect_collisions(session: AsyncSession) -> list[tuple[str, int]]:
     resolving to one on-disk file) while cross-agent / cross-scan-root phantoms
     are not (phaze-dqx8). Covers both path-relative renames and NULL-path
     (rename-in-place) proposals (phaze-7czn).
+
+    Excludes proposals whose Agent is revoked (``Agent.revoked_at IS NOT
+    NULL``), matching :func:`phaze.services.execution_dispatch.get_approved_proposals_grouped_by_agent`
+    (phaze-p46n4). The collision key is agent-scoped (``_dest_key_columns``
+    groups on ``agent_id`` first), so a collision confined entirely to a
+    revoked agent's own proposals involves only rows dispatch already skips --
+    without this filter it still vetoed every OTHER agent's dispatch.
     """
     agent_id, owning_root, dest_path = _dest_key_columns()
     stmt = (
         select(dest_path.label("dest"), func.count().label("cnt"))
         .select_from(RenameProposal)
         .join(FileRecord, RenameProposal.file_id == FileRecord.id)
-        .where(RenameProposal.status == ProposalStatus.APPROVED)
+        .join(Agent, FileRecord.agent_id == Agent.id)
+        .where(
+            RenameProposal.status == ProposalStatus.APPROVED,
+            Agent.revoked_at.is_(None),
+        )
         .group_by(agent_id, owning_root, dest_path)
         .having(func.count() > 1)
     )
@@ -119,6 +142,9 @@ async def get_collision_ids(session: AsyncSession) -> set[str]:
     proposal is flagged iff another approved proposal shares its agent, owning
     scan_root, and root-relative destination (phaze-dqx8) -- including NULL-path
     (in-place) proposals (phaze-7czn).
+
+    Excludes revoked-agent proposals, matching :func:`detect_collisions`
+    (phaze-p46n4).
     """
     agent_id, owning_root, dest_path = _dest_key_columns()
     cnt = func.count().over(partition_by=[agent_id, owning_root, dest_path])
@@ -126,7 +152,11 @@ async def get_collision_ids(session: AsyncSession) -> set[str]:
         select(RenameProposal.id.label("pid"), cnt.label("cnt"))
         .select_from(RenameProposal)
         .join(FileRecord, RenameProposal.file_id == FileRecord.id)
-        .where(RenameProposal.status == ProposalStatus.APPROVED)
+        .join(Agent, FileRecord.agent_id == Agent.id)
+        .where(
+            RenameProposal.status == ProposalStatus.APPROVED,
+            Agent.revoked_at.is_(None),
+        )
         .subquery()
     )
     stmt = select(scoped.c.pid).where(scoped.c.cnt > 1)

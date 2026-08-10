@@ -51,6 +51,24 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+class NoCloudJobToRedriveError(s3_staging.S3StagingError):
+    """A re-drive was asked for a file that has NO ``cloud_job`` row at all (phaze-k95r7).
+
+    NOT a bucket problem, NOT an expiry problem, and NOT a transient one -- there is simply no staging
+    attempt on record to re-drive. On the live deployment this meant the work had FINISHED and the
+    ``cloud_job`` row had since been cleaned up, leaving an orphaned ``s3_upload`` ledger row behind.
+
+    It is split out because the merged message it used to share
+    (*"could not resolve a staging bucket"*, which the caller then logged as *"its payload is
+    time-limited and cannot be regenerated right now"*) was WRONG for this case in every particular,
+    and cost an investigation on 2026-08-08: nothing was time-limited, nothing was mis-bucketed, and
+    the row was never a recovery candidate in the first place. Subclasses
+    :class:`~phaze.services.s3_staging.S3StagingError` so existing handlers that treat a staging
+    failure as "cannot regenerate right now" keep working unchanged; callers that want to distinguish
+    the two catch this FIRST.
+    """
+
+
 # phaze-grzo: the session.info key under which a staging body PARKS its s3_upload enqueue until the
 # caller has durably committed the cloud_job UPLOADING row. Enqueue-before-commit was a dual-write
 # ordering hole: SAQ's PostgresQueue enqueues on its OWN psycopg pool and commits the job durably +
@@ -217,7 +235,10 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
        ``file_size`` misreports. The same effective size is what gets recorded on
        ``UploadFileS3Payload.part_size_bytes`` -- passing the raw config value there while presigning
        against an adjusted part count would silently corrupt the object (the agent would slice bytes
-       at the wrong boundaries).
+       at the wrong boundaries). phaze-pq1fe: every part is presigned with the SAME
+       part-count-scaled TTL (``max(cfg.s3_presign_put_ttl_sec, upload_file_saq_timeout_sec(part_count))``)
+       instead of the flat 1h default, so a signature is still valid when the agent's strictly
+       SEQUENTIAL transfer (``tasks/s3_upload._transfer_parts``) finally reaches a later part.
     3. Upsert the ``cloud_job`` row (``UPLOADING`` + file_id-scoped key + multipart ``upload_id``)
        ON CONFLICT (file_id) so a re-stage is idempotent against the unique FK (no duplicate row).
     4. PARK exactly one ``s3_upload`` job on the session (phaze-grzo) carrying the presigned part
@@ -269,7 +290,15 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
         # s3_multipart_part_size_bytes is a floor, not the final word (phaze-wz1q).
         part_size = max(cfg.s3_multipart_part_size_bytes, math.ceil(file.file_size / s3_staging.S3_MAX_PART_COUNT))
         part_count = max(1, math.ceil(file.file_size / part_size))
-        part_urls = await s3_staging.presign_upload_parts(file.id, upload_id, part_count, bucket)
+        # phaze-pq1fe: scale the presign TTL with the transfer's OWN sanctioned budget instead of the
+        # flat ``s3_presign_put_ttl_sec`` (default 3600s). The agent PUTs parts strictly SEQUENTIALLY
+        # (tasks/s3_upload._transfer_parts) under a per-part budget that already drives the SAQ job-net
+        # timeout below (phaze-g37f, ``upload_file_saq_timeout_sec``) -- reusing that SAME part-count-scaled
+        # value here keeps the presign TTL and the transfer's sanctioned wall-clock budget from drifting
+        # apart, so a signature is still valid when the sequential agent finally reaches its part. Never
+        # goes BELOW the configured floor (a short transfer keeps the operator's shorter default).
+        presign_ttl_sec = max(cfg.s3_presign_put_ttl_sec, upload_file_saq_timeout_sec(part_count))
+        part_urls = await s3_staging.presign_upload_parts(file.id, upload_id, part_count, bucket, expires_in_sec=presign_ttl_sec)
 
         # Idempotent upsert against the unique file_id FK: a re-stage refreshes the key/status/upload_id
         # in place instead of erroring on the duplicate (mirrors the scheduling_ledger upsert idiom).
@@ -379,6 +408,14 @@ def _redrive_bucket(cfg: ControlSettings, existing: CloudJob | None, file: FileR
     (a legacy row staged before Phase 70, or a row whose backend later cleared it) does it fall back to
     re-picking deterministically over the file's backend's bound bucket set -- keeping the fresh multipart
     on the same D-06 bucket the presign/cleanup path will read.
+
+    ``None`` now means ONE thing: a ``cloud_job`` row EXISTS but neither its ``staging_bucket`` nor its
+    ``backend_id`` resolves to a configured bucket set -- a genuine bucket/configuration problem. The
+    structurally different ``existing is None`` case (NO row at all, i.e. nothing was ever staged or the
+    row was cleaned up after the work finished) is rejected by :func:`redrive_upload` BEFORE this is
+    called, with :class:`NoCloudJobToRedriveError`. Merging the two behind one return value and one
+    message is what made a completed file's stale ledger row read as a bucket/expiry failure for a
+    month (phaze-k95r7); do not re-merge them.
     """
     if existing is not None and existing.staging_bucket:
         return s3_staging.resolve_bucket_config(cfg, existing.staging_bucket)
@@ -401,9 +438,23 @@ async def redrive_upload(session: AsyncSession, file: FileRecord, task_router: A
 
     Both the abort and the re-stage act on the RECORDED ``staging_bucket`` (MKUE-02) so the fresh
     multipart lands on exactly the bucket the presign/cleanup path reads back.
+
+    TWO distinct refusals, deliberately not merged (phaze-k95r7):
+
+    - **no ``cloud_job`` row at all** -> :class:`NoCloudJobToRedriveError`. There is no staging attempt
+      to re-drive. Nothing is expired and nothing is mis-configured; the usual cause is that the work
+      finished and the row was cleaned up, leaving a stale ledger row pointing at it.
+    - **a row exists but no bucket resolves** -> :class:`~phaze.services.s3_staging.S3StagingError`.
+      The genuine bucket/configuration problem, and the only one of the two that a later re-drive (or a
+      config fix) can clear.
     """
     cfg = cast("ControlSettings", get_settings())
     existing = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one_or_none()
+    if existing is None:
+        raise NoCloudJobToRedriveError(
+            f"redrive_upload has no cloud_job row for {file.id} -- nothing was staged, so there is nothing to re-drive "
+            "(the work is finished, or was never dispatched); this is NOT a bucket or expiry failure"
+        )
     bucket = _redrive_bucket(cfg, existing, file)
     if bucket is None:
         raise s3_staging.S3StagingError(f"redrive_upload could not resolve a staging bucket for {file.id}")

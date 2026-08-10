@@ -73,8 +73,16 @@ if TYPE_CHECKING:
     from phaze.schemas.agent_s3 import UploadedPart, UploadedResponse, UploadFailedResponse
     from phaze.schemas.agent_scan_batches import ScanBatchPatch, ScanBatchPatchResponse
 
-    # phaze-6bkk tag-write result callback.
-    from phaze.schemas.agent_tag_writes import TagWriteResultPayload, TagWriteResultResponse
+    # phaze-5cvbz scratch-janitor liveness probe schema.
+    from phaze.schemas.agent_scratch import ScratchLivenessResponse
+
+    # phaze-6bkk tag-write result callback; phaze-anrw4 pre-write snapshot callback.
+    from phaze.schemas.agent_tag_writes import (
+        TagWriteBeforeSnapshotPayload,
+        TagWriteBeforeSnapshotResponse,
+        TagWriteResultPayload,
+        TagWriteResultResponse,
+    )
 
 
 logger = structlog.get_logger(__name__)
@@ -398,6 +406,28 @@ class PhazeAgentClient:
         )
         return PushMismatchResponse.model_validate(response.json())
 
+    async def scratch_liveness(self, file_ids: list[uuid.UUID]) -> ScratchLivenessResponse:
+        """POST /api/internal/agent/scratch/live -- compute-scratch janitor liveness probe (phaze-5cvbz).
+
+        The compute agent's startup janitor (``phaze.tasks.agent_worker._maybe_sweep_scratch``)
+        calls this BEFORE deleting an age-eligible scratch entry, asking whether a durable
+        ``process_file`` job still claims it -- a fixed ``min_age_sec`` ceiling alone cannot tell
+        a job merely waiting behind a concurrency-1 clamp, or parked at the pause ``SENTINEL``,
+        from a genuinely orphaned entry (phaze-5cvbz). Also returns ``push_file_active`` (ignores
+        ``file_ids``) to gate the shared ``.rsync-partial`` staging directory. Inherits the
+        tenacity retry policy (D-11) + exception hierarchy (D-12) via the ``_request`` funnel --
+        5xx retries, 4xx surface immediately; the caller treats ANY exception as "unknown,
+        defer this sweep pass" rather than falling back to age-only deletion. httpx-only -- NO
+        database import, keeping the agent worker Postgres-free (tests/shared/core/test_task_split.py)."""
+        from phaze.schemas.agent_scratch import ScratchLivenessRequest, ScratchLivenessResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "POST",
+            "/api/internal/agent/scratch/live",
+            json=ScratchLivenessRequest(file_ids=file_ids).model_dump(mode="json"),
+        )
+        return ScratchLivenessResponse.model_validate(response.json())
+
     async def report_upload_complete(self, file_id: uuid.UUID, parts: list[UploadedPart]) -> UploadedResponse:
         """POST /api/internal/agent/s3/{file_id}/uploaded -- multipart upload success (Phase 53, 53-03).
 
@@ -473,6 +503,26 @@ class PhazeAgentClient:
             json=payload.model_dump(mode="json"),
         )
         return TagWriteResultResponse.model_validate(response.json())
+
+    async def report_tag_write_before_snapshot(self, log_id: uuid.UUID, payload: TagWriteBeforeSnapshotPayload) -> TagWriteBeforeSnapshotResponse:
+        """PATCH /api/internal/agent/tag-writes/{log_id}/before-snapshot -- pre-write undo anchor (phaze-anrw4).
+
+        Called BEFORE the mutating mutagen write in ``write_file_tags``, separate from (and prior
+        to) :meth:`patch_tag_write`'s terminal report -- the control plane records it first-write
+        -wins, so a SAQ retry's re-extraction of an ALREADY-WRITTEN disk can never overwrite the
+        true original captured by an earlier attempt. Best-effort from the caller's perspective:
+        a failure here must not abort the write itself (the terminal callback still carries its own
+        ``before_tags`` as a single-attempt fallback). ``log_id`` rides the path only (AUTH-01).
+        httpx-only -- NO database import, keeping the agent worker Postgres-free
+        (tests/shared/core/test_task_split.py)."""
+        from phaze.schemas.agent_tag_writes import TagWriteBeforeSnapshotResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "PATCH",
+            f"/api/internal/agent/tag-writes/{log_id}/before-snapshot",
+            json=payload.model_dump(mode="json"),
+        )
+        return TagWriteBeforeSnapshotResponse.model_validate(response.json())
 
     async def post_execution_log(self, payload: ExecutionLogCreate) -> ExecutionLogCreateResponse:
         """POST /api/internal/agent/execution-log -- INSERT-on-conflict-do-nothing."""

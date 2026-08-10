@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
@@ -24,7 +25,7 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
-from phaze.routers.tags import _get_accepted_discogs_link, _get_tag_stats, _get_tracklist_for_file
+from phaze.routers.tags import _get_accepted_discogs_link, _get_tag_stats, _get_tracklist_for_file, _has_terminal_tagwrite
 from tests._queue_fakes import install_fake_queues
 
 
@@ -635,6 +636,68 @@ async def test_undo_tag_write_v7_no_prior_write_surfaces_toast_and_pending_row(c
 
 
 @pytest.mark.asyncio
+async def test_undo_tag_write_valueerror_branch_surfaces_toast_and_pending_row(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-qe5y1: enqueue_tag_write's own ``is_applied`` guard (tag_writer.py:131-133) can raise
+    ``ValueError`` here too -- the scan-deletion race reverts the file's executed proposal between
+    undo_tag_write's own idempotency check and this dispatch. That must not escape as an uncaught
+    500 htmx silently drops on this outerHTML-targeted row; it is caught and surfaced exactly like
+    write_file_tags' own is_applied guard (test_write_tags_valueerror_branch)."""
+    file_record, _ = await _create_executed_file(session, artist="Original Artist")
+    await _add_write_log(
+        session,
+        file_record.id,
+        status=TagWriteStatus.COMPLETED,
+        source="proposal",
+        before_tags={"artist": "Original Artist"},
+        written_at=datetime(2026, 7, 20, 12, 0, 0),
+    )
+
+    with patch("phaze.routers.tags.enqueue_tag_write", new=AsyncMock(side_effect=ValueError("Only executed files can have tags written"))):
+        response = await client.post(
+            f"/tags/{file_record.id}/undo",
+            headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
+        )
+
+    assert response.status_code == 200
+    body = response.text
+    assert "hx-swap-oob" in body
+    assert "could not be queued" in body.lower()
+    assert f'id="tagwrite-row-{file_record.id}"' in body
+    assert "APPROVE" in body
+
+
+@pytest.mark.asyncio
+async def test_undo_tag_write_integrityerror_branch_surfaces_stale_toast(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-qe5y1: ``TagWriteLog.file_id`` has no ``ondelete``, and scan_deletion deletes
+    ``rename_proposals`` BEFORE ``tag_write_log``/``files``, so an adjacent race window can instead
+    trip enqueue_tag_write's own audit-row INSERT as an FK violation (``IntegrityError``) rather
+    than the ``is_applied`` ``ValueError`` above. This must also not escape uncaught -- it is
+    caught, the aborted transaction is rolled back, and the file is treated as gone (mirroring the
+    ``file_record is None`` branch) rather than trying to redraw a row for it."""
+    file_record, _ = await _create_executed_file(session, artist="Original Artist")
+    await _add_write_log(
+        session,
+        file_record.id,
+        status=TagWriteStatus.COMPLETED,
+        source="proposal",
+        before_tags={"artist": "Original Artist"},
+        written_at=datetime(2026, 7, 20, 12, 0, 0),
+    )
+
+    integrity_error = IntegrityError("INSERT INTO tag_write_log ...", {}, Exception("fk violation on files"))
+    with patch("phaze.routers.tags.enqueue_tag_write", new=AsyncMock(side_effect=integrity_error)):
+        response = await client.post(
+            f"/tags/{file_record.id}/undo",
+            headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
+        )
+
+    assert response.status_code == 200
+    body = response.text
+    assert "hx-swap-oob" in body
+    assert "not found" in body.lower()
+
+
+@pytest.mark.asyncio
 async def test_write_tags_ignores_legacy_hx_target_and_always_returns_the_v7_row(client: AsyncClient, session: AsyncSession) -> None:
     """phaze-y4s6: the legacy ``tag_row.html`` fallback is gone; every caller gets the v7 row back.
 
@@ -1152,3 +1215,29 @@ async def test_undo_dispatch_records_a_queued_undo_audit_row(client: AsyncClient
     assert len(undo_rows) == 1
     assert undo_rows[0].status == TagWriteStatus.QUEUED
     assert undo_rows[0].after_tags == {"artist": "Original Artist"}
+
+
+# ---------------------------------------------------------------------------
+# phaze-vwyco: a completed undo must not permanently evict its file from the tag-write queue.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_has_terminal_tagwrite_false_after_a_completed_undo(session: AsyncSession) -> None:
+    """The bulk loop's per-file re-check under the lock must agree with the candidate-window
+    anti-join (:func:`_terminal_tagwrite_subq`): a file whose latest terminal row is a COMPLETED
+    undo is NOT terminal. Before the fix, both read a bare ``status IN (COMPLETED, NO_OP)`` and
+    treated the undo's own COMPLETED row exactly like a genuine forward completion, permanently
+    excluding the reverted file even though its disk tags are (again) changed.
+    """
+    file_record, _ = await _create_executed_file(session)
+    base = datetime(2026, 8, 1, 12, 0, 0)
+    await _add_write_log(session, file_record.id, status=TagWriteStatus.COMPLETED, source="proposal", before_tags={}, written_at=base)
+
+    assert await _has_terminal_tagwrite(session, file_record.id) is True, "an un-reverted COMPLETED forward write is still terminal"
+
+    await _add_write_log(
+        session, file_record.id, status=TagWriteStatus.COMPLETED, source="undo", before_tags={}, written_at=base + timedelta(seconds=30)
+    )
+
+    assert await _has_terminal_tagwrite(session, file_record.id) is False, "a completed undo must un-terminal the file, not re-evict it"

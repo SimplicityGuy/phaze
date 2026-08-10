@@ -47,7 +47,20 @@
             </div>
             <div class="{{ _tile }}">
                 <p class="{{ _eyebrow }}">Lane</p>
-                <p class="mt-1 truncate text-sm text-gray-900 dark:text-gray-200">🖥️ local</p>
+                {# phaze-lljfx: real per-file lane, not a hardcoded "local". Mirrors the glyph
+                   mapping _analyze_files.html derives from f.lane_kind (COMPUTE-03): local=🖥️,
+                   compute=☁️, kueue=⎈, anything else (an unrecognized/deregistered kind) gets the
+                   neutral gray fallback rather than silently asserting local. #}
+                {% if lane_kind == 'local' %}
+                    {% set _lane_glyph, _lane_color = '🖥️', 'text-emerald-600 dark:text-emerald-300' %}
+                {% elif lane_kind == 'compute' %}
+                    {% set _lane_glyph, _lane_color = '☁️', 'text-blue-600 dark:text-blue-300' %}
+                {% elif lane_kind == 'kueue' %}
+                    {% set _lane_glyph, _lane_color = '⎈', 'text-amber-600 dark:text-amber-300' %}
+                {% else %}
+                    {% set _lane_glyph, _lane_color = '▪', 'text-gray-600 dark:text-gray-300' %}
+                {% endif %}
+                <p class="mt-1 truncate text-sm {{ _lane_color }}">{{ _lane_glyph }} {{ lane }}</p>
             </div>
         </div>
 
@@ -160,7 +173,8 @@
                             undo_url="/proposals/" ~ p.id ~ "/undo",
                             edit_url="/proposals/" ~ p.id ~ "/edit",
                             edit_facet="filename",
-                            row_state="pending" %}
+                            row_state="pending",
+                            updated_at=p.updated_at %}
                         {% include "pipeline/partials/_diff_row.html" %}
                     {% endwith %}
                 {% endfor %}

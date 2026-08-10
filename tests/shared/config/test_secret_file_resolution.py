@@ -44,6 +44,9 @@ def _agent_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PHAZE_ROLE", "agent")
     monkeypatch.setenv("PHAZE_AGENT_API_URL", _VALID_URL)
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", _VALID_ROOTS)
+    # phaze-27myl: fileserver-kind (the default) AgentSettings now fail-fasts on the default
+    # (docker-service-name) queue_url.
+    monkeypatch.setenv("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@app-server.example:5432/phaze")
 
 
 # --------------------------------------------------------------------------- #

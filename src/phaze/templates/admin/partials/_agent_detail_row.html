@@ -5,40 +5,65 @@
    panel (the Analyze workspace's compute-lane cards keep the side panel, now a fixed/non-reflowing
    overlay — see _detail_pane.html for that half of this same bead).
 
-   Included from agents_table.html ONLY for the currently `selected_agent` (server-resolved
+   phaze-rdxfu: reads the unified `row` view-model (a TableRow, admin_agents.py) rather than the raw
+   Agent ORM object — the merged table's single loop passes ONE variable, `row`, for every row kind
+   (agent or lane), and this partial is included only for a `row.status_kind == 'agent'` selection
+   (its lane-kind sibling is `_compute_lane_detail_row.html`, included for `row.status_kind == 'lane'`
+   instead). `row.id` is `agent.id` for an agent row, so every DOM id below is byte-identical to what
+   this partial rendered pre-merge.
+
+   Included from agents_table.html ONLY for the currently `row.selected` row (server-resolved
    lookup-in-known-set, same D-02 pattern as the row's aria-current ring) — at most one expanded row
-   exists at a time, immediately below its trigger `<tr id="agent-trigger-{{ agent.id }}">`.
+   (agent OR lane) exists at a time, immediately below its trigger `<tr id="{{ row.trigger_id }}">`.
 
    hx-preserve keeps this ROW untouched across #agents-table-section's OWN 5s outerHTML self-poll
-   (agents_table.html:47-51). Without it, that poll would destroy and recreate this row — and its
+   (agents_table.html). Without it, that poll would destroy and recreate this row — and its
    fetched content, in-flight own-tick, and focus — every 5 seconds regardless of operator activity,
    since the whole section (not just this row) is what the poll re-renders. htmx matches hx-preserve
    elements by id BEFORE applying an incoming swap: as long as the poll's fresh response still contains
-   a node with THIS id (i.e. selected_agent still resolves to this agent), the OLD node — Alpine state,
+   a node with THIS id (i.e. the selection still resolves to this agent), the OLD node — Alpine state,
    in-flight own-tick, fetched content, all of it — is kept in place, untouched, in preference to the
-   newly-rendered one. The moment selected_agent stops resolving to this agent (a different row
-   selected, or dismissed via ✕/Esc, which clears the ?agent= URL param this render is keyed on) the
-   next poll's response simply omits a node with this id, so there is nothing left to preserve and this
-   row is torn down cleanly with the rest of the old content — no separate teardown plumbing needed.
+   newly-rendered one. The moment a DIFFERENT row is selected the next poll's response simply omits a
+   node with this id, so there is nothing left to preserve and this row is torn down cleanly with the
+   rest of the old content — no separate teardown plumbing needed for that path.
+
+   Dismissal (✕/Esc) is NOT left to that poll-driven path, deliberately (phaze-fg8vq): hide() below
+   removes this node from the DOM itself, synchronously, rather than only x-show-hiding it and waiting
+   up to 5s for a poll response that omits the id. A stale x-show-hidden node with this SAME id would
+   otherwise win the hx-preserve id match against a fresh, freshly-`open:true` row rendered by a
+   re-click on the same agent inside that window — hx-preserve cannot tell "still selected, untouched
+   on purpose" apart from "was dismissed, hasn't been swept yet" by id alone, so the only node-identity
+   state that is safe to leave lying around is "does not exist".
 
    Kept minimal + extensible (phaze-2u8v.8 fixes the SKIPPED-column clipping on top of this shape): the
-   activity swap target (#agent-activity-{{ agent.id }}) is a plain child div sized to the table's FULL
+   activity swap target (#agent-activity-{{ row.id }}) is a plain child div sized to the table's FULL
    width via colspan, so nothing here reintroduces the old side panel's narrow-column clipping. #}
-<tr id="agent-detail-row-{{ agent.id }}"
+<tr id="{{ row.detail_row_id }}"
     hx-preserve
     x-data="{
         open: true,
         hide() {
             // Full dismiss, mirroring _detail_pane.html's wipe()+hide(): clear the fetched body (also
             // removes its own-tick poller — htmx cancels a trigger on an element once it leaves the
-            // DOM), drop the ?agent= selection so the NEXT table poll stops rendering this row at all,
-            // then return focus to the trigger row by STABLE id (agent-trigger-{{ agent.id }} survives
-            // every poll's outerHTML swap).
+            // DOM), drop the ?agent= selection so the NEXT table poll stops rendering this row at all
+            // while KEEPING the operator's chosen sort/order (phaze-trof4: a bare '/admin/agents'
+            // discarded them, so a reload after dismissing silently reset the table to the default
+            // order — the same reset the poll fix already closes, arriving by a different route; the
+            // `sort` object is always resolved server-side by this render, so it is never empty here
+            // even when the operator never clicked a header), then return focus to the trigger row by
+            // STABLE id ({{ row.trigger_id }} survives every poll's outerHTML swap) and remove THIS
+            // row from the DOM outright (phaze-fg8vq: x-show-hiding it left a dead node with this
+            // same id in place, so a re-click on the same agent inside the ≤5s poll window lost to it
+            // under hx-preserve's id match — htmx keeps the OLD node over a fresh incoming one
+            // whenever both carry the same id, wedging the row open=false/empty forever). Focus MUST
+            // move before removal — removing the focused element's ancestor first drops focus to
+            // <body> instead.
             this.open = false;
-            const el = document.getElementById('agent-activity-{{ agent.id }}');
+            const el = document.getElementById('agent-activity-{{ row.id }}');
             if (el) el.innerHTML = '';
-            try { history.replaceState({}, '', '/admin/agents'); } catch (e) { /* history unavailable: degrade */ }
-            this.$nextTick(() => { document.getElementById('agent-trigger-{{ agent.id }}')?.focus(); });
+            try { history.replaceState({}, '', '/admin/agents?{{ sort.query_params() }}'); } catch (e) { /* history unavailable: degrade */ }
+            document.getElementById('{{ row.trigger_id }}')?.focus();
+            this.$el.remove();
         }
     }"
     {# Focus the heading exactly once: x-init fires only when Alpine first initializes this
@@ -46,14 +71,14 @@
        component) survives every later table poll untouched — so this never re-fires on a routine
        5s refresh the way an unconditional after-swap focus would (see _detail_pane.html's onLoaded()
        `wasOpen` guard for the same concern on the lane pane). #}
-    x-init="$nextTick(() => { document.getElementById('agent-detail-heading-{{ agent.id }}')?.focus(); })"
+    x-init="$nextTick(() => { document.getElementById('agent-detail-heading-{{ row.id }}')?.focus(); })"
     x-show="open"
     x-cloak
     @keydown.escape.window="if (open && ![...document.querySelectorAll('[role=&quot;dialog&quot;]')].some(d => d.getClientRects().length > 0)) hide()"
     class="bg-gray-50 dark:bg-phaze-panel/60">
     <td colspan="7" class="px-4 py-4">
         <div class="flex items-center justify-between gap-2">
-            <h3 id="agent-detail-heading-{{ agent.id }}" tabindex="-1"
+            <h3 id="agent-detail-heading-{{ row.id }}" tabindex="-1"
                 class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Detail</h3>
             <button type="button"
                     @click="hide()"
@@ -64,13 +89,13 @@
         </div>
 
         {# The swap target: fetched once on insertion (hx-trigger="load" — this row only exists in the
-           DOM once selected_agent resolves, so "load" fires exactly when the operator opens it, or on
+           DOM once the selection resolves, so "load" fires exactly when the operator opens it, or on
            a deep-linked ?agent= reload). _agent_activity.html carries its OWN bounded 5s own-tick that
            re-swaps INTO this same target (D-03) — hx-preserve above keeps that tick alive across the
            outer table's unrelated 5s poll. #}
-        <div id="agent-activity-{{ agent.id }}"
+        <div id="agent-activity-{{ row.id }}"
              class="mt-3"
-             hx-get="/admin/agents/{{ agent.id }}/_activity"
+             hx-get="{{ row.detail_url }}"
              hx-trigger="load"
              hx-swap="innerHTML"
              hx-on::after-swap="if (window.Alpine) { Alpine.initTree(this); }">

@@ -140,3 +140,62 @@ async def test_resume_unparks_the_job_blob_not_only_the_column(
         retry_scheduled = deserialized_scheduled or int(now_seconds())
         assert retry_scheduled != SENTINEL
         assert retry_scheduled <= int(now_seconds()) + 1, "a forced retry schedules the job to run now, not in year 2286"
+
+
+async def test_resume_survives_a_nul_bearing_job_blob(
+    stage_env: tuple[PostgresQueue, async_sessionmaker[AsyncSession]],
+) -> None:
+    """phaze-a0m3z: one poisoned blob must not 500 the UPDATE and wedge the whole stage parked.
+
+    A job re-queued by SAQ's ``_retry`` keeps the prior attempt's traceback in the blob's
+    ``error`` field, and ``json.dumps`` (SAQ's default serializer, ``ensure_ascii=True``) encodes
+    any NUL byte in that traceback as the literal six-character escape ``\\u0000``. Postgres's
+    ``::jsonb`` input parser rejects that escape (``22P05 unsupported Unicode escape sequence``)
+    even though the surrounding BYTEA column and the JSON *text* type both store it fine. Because
+    ``_RESUME_SQL`` matches every parked row for the stage in a single UPDATE, an un-sanitized cast
+    would abort that whole statement -- not just the poisoned row -- leaving every other parked job
+    in the stage un-resumable too. This reproduces the poisoned blob directly against ``saq_jobs``
+    (bypassing SAQ's own serializer, which never needs to touch NUL in a passing test) and proves:
+
+    * ``resume_stage`` does not raise;
+    * the poisoned row's ``scheduled`` column is reset to 0 (successfully un-parked), same as a
+      clean sibling row in the same batch -- the fix does not merely skip the bad row;
+    * the persisted blob is valid JSON afterwards (the escape was stripped, not left to break a
+      later ``json.loads`` on dequeue).
+    """
+    queue, session_factory = stage_env
+
+    clean_key = f"process_file:{uuid.uuid4()}"
+    poisoned_key = f"process_file:{uuid.uuid4()}"
+    await queue.enqueue("process_file", file_id=clean_key.split(":", 1)[1])
+    await queue.enqueue("process_file", file_id=poisoned_key.split(":", 1)[1])
+
+    async with session_factory() as session:
+        await pause_stage(session, "analyze")
+        await session.commit()
+        for key in (clean_key, poisoned_key):
+            assert await _scheduled(session, key) == SENTINEL
+
+        # Simulate a re-queued job whose blob's `error` field carries a prior attempt's
+        # traceback with an embedded NUL byte -- exactly what json.dumps(ensure_ascii=True)
+        # turns into a literal `\u0000` escape in the stored BYTEA text.
+        poisoned_blob = await _job_blob(session, poisoned_key)
+        poisoned_blob["error"] = "Traceback (most recent call last):\nbinary tool output: \x00 <-- NUL byte here"
+        poisoned_json = json.dumps(poisoned_blob).encode("utf-8")
+        assert b"\\u0000" in poisoned_json, "sanity: json.dumps must escape the NUL as \\u0000"
+        await session.execute(text("UPDATE saq_jobs SET job = :job WHERE key = :k"), {"job": poisoned_json, "k": poisoned_key})
+        await session.commit()
+
+        # Pre-fix this UPDATE raised `22P05 unsupported Unicode escape sequence` and aborted the
+        # whole statement, leaving BOTH rows parked.
+        await resume_stage(session, "analyze")
+        await session.commit()
+
+        # Both rows -- the poisoned one AND its clean sibling in the same batch -- un-parked.
+        assert await _scheduled(session, clean_key) == 0
+        assert await _scheduled(session, poisoned_key) == 0
+
+        # The persisted blob is valid JSON with the NUL escape gone (not just tolerated once).
+        healed_blob = await _job_blob(session, poisoned_key)
+        assert "scheduled" not in healed_blob
+        assert "\\u0000" not in json.dumps(healed_blob)

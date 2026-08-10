@@ -56,8 +56,11 @@ re-drive path in the system was walked; findings, including the negatives:
   by design, but creates NO pod and cannot loop: it is bounded by
   :data:`PENDING_SUBMIT_CONFIRMATION_SECONDS`, after which it terminalizes through the charged path.
   NOT a bypass.
-* ``_handle_no_callback_terminal`` still-terminating deferral -- returns with NO state change and NO
-  pod created; the next tick re-decides. NOT a bypass.
+* ``_handle_no_callback_terminal`` still-terminating deferral -- returns with NO budget charged and NO
+  pod created; the next tick re-decides. NOT a bypass. (phaze-mwbz3: it DOES stash the classified
+  node-loss verdict, if any, onto ``cloud_job.node_loss_pending`` so the eventual re-drive still spends
+  the right counter -- that write is a durable RECORD of the verdict, not a charge against either
+  budget.)
 * ``Inadmissible`` hold (D-06/D-07) -- deliberately never consumes the cap, and deliberately creates
   no pod: it holds one Job that is not admitting. NOT a bypass.
 * ``KueueBackend._reap_stranded_staging`` -- charges ``min(attempts + 1, cap)``. Bounded.
@@ -390,10 +393,13 @@ async def _handle_no_callback_terminal(
 
     Under cap it is a re-drive: delete the prior Job and CONFIRM it is gone (the race guard) BEFORE
     incrementing ``attempts`` + committing and enqueuing the fresh ``submit_cloud_job``. If the prior
-    Job is still terminating the re-drive is deferred to a later tick with NO state change -- so no
+    Job is still terminating the re-drive is deferred to a later tick with NO BUDGET charged -- so no
     extra attempt is burned and the deterministic-name 409->refresh cannot latch onto the dying Job.
-    The staged S3 object is PRESERVED on the re-drive path (the re-submitted Job still needs it); it is
-    deleted only on the genuinely-terminal at-cap path.
+    phaze-mwbz3: the deferral DOES persist ``cloud_job.node_loss_pending`` (the classified verdict, if
+    any) across the wait -- see :data:`CloudJob.node_loss_pending` -- so a Job that finally vanishes
+    between ticks still re-drives against the right counter instead of losing the verdict to the
+    vanished-Job branch's blind spot. The staged S3 object is PRESERVED on the re-drive path (the
+    re-submitted Job still needs it); it is deleted only on the genuinely-terminal at-cap path.
 
     phaze-32wz (pending-vs-vanished, the TOCTOU this closes): ``_enqueue_resubmit`` only ENQUEUES the
     fresh ``submit_cloud_job`` -- the actual re-create-and-stamp is asynchronous and runs later, on the
@@ -442,9 +448,21 @@ async def _handle_no_callback_terminal(
     """
     cfg = cast("ControlSettings", get_settings())
     file_id = cloud_job.file_id
+    # phaze-mwbz3: the still-terminating deferral below commits with NO other DB mutation, so a FRESH
+    # node-loss verdict computed for THIS call (``node_loss_reason`` not None) must be persisted across
+    # it -- otherwise it dies with this stack frame and, once the Job finally vanishes, the NEXT tick
+    # re-enters through the vanished-Job branch (:631) with no pods left to classify and no
+    # ``node_loss_reason`` argument at all, silently charging ``attempts`` instead of
+    # ``node_loss_redrives`` (the tighter, deliberately-1 ceiling phaze-1q4g exists to enforce).
+    # ``cloud_job.node_loss_pending`` is that durable record, one row per file, scoped to the CURRENT
+    # Job (cleared below whenever this call actually spends a budget or the row leaves in-flight). A
+    # fresh classification always wins; when this call's own classification is unavailable (``None`` --
+    # either a genuinely non-node-loss cause, or a caller that structurally cannot classify), fall back
+    # to whatever an earlier deferral on this SAME Job already stashed.
+    effective_node_loss_reason = node_loss_reason if node_loss_reason is not None else cloud_job.node_loss_pending
     # phaze-1q4g: pick the budget this re-drive spends. The counter, its ceiling and its log label move
     # together; every line below is otherwise cause-agnostic.
-    if node_loss_reason is not None:
+    if effective_node_loss_reason is not None:
         next_attempt, ceiling, budget = cloud_job.node_loss_redrives + 1, cfg.cloud_node_loss_max_redrives, "node_loss_redrives"
     else:
         next_attempt, ceiling, budget = cloud_job.attempts + 1, cap, "attempts"
@@ -514,6 +532,7 @@ async def _handle_no_callback_terminal(
             )
         cloud_job.inadmissible = False  # terminal row must not keep the operator alert lit (helper does not stamp it).
         cloud_job.staging_bucket = None  # clear so no pre-repurpose reader is misled about the (now-gone) object.
+        cloud_job.node_loss_pending = None  # phaze-mwbz3: row is leaving in-flight -- no verdict left to carry.
         await session.commit()  # releases the per-row lock -- the old object is ALREADY gone (clean-before-flip).
         if name is not None:  # phaze-1b39: a phantom row (kueue_workload IS NULL) has no Job to delete.
             await kube_staging.delete_job(name, kube)  # Job delete stays POST-commit (D-04 status-read-vs-GC; cleanup only).
@@ -524,7 +543,7 @@ async def _handle_no_callback_terminal(
             attempt=next_attempt,
             cap=ceiling,
             budget=budget,  # phaze-1q4g: WHICH ceiling ran out -- 'attempts' (the file kept failing) or
-            node_loss_reason=node_loss_reason,  # 'node_loss_redrives' (the node kept dying under it).
+            node_loss_reason=effective_node_loss_reason,  # 'node_loss_redrives' (the node kept dying under it).
         )
         return
 
@@ -532,26 +551,43 @@ async def _handle_no_callback_terminal(
     if name is not None:  # phaze-1b39: a phantom row (kueue_workload IS NULL) has no Job to delete.
         await kube_staging.delete_job(name, kube)
     if not await _job_gone(name, kube):
-        # phaze-nq3c: COMMIT before returning. This deferral path makes no DB mutation worth persisting (only a
-        # kube-side delete_job ran), but the per-row unit acquired pg_advisory_xact_lock(5_000_504) at the top
-        # of KueueBackend.reconcile and the design (SCHED-02 / Pitfall 2) RELIES on _reconcile_one committing
-        # per row to auto-release that transaction-scoped lock at row granularity. Returning without a commit
-        # was the ONLY non-committing exit in this file -- it leaked the lock past the row boundary until some
-        # later row's commit (or session close if this was the last in-flight row), stalling a concurrent
-        # stage_cloud_window drain tick that blocks on the same key. Commit to end the txn and release the lock,
-        # matching every other no-op path here (lines with 'release the per-row advisory lock (Pitfall 2)').
+        # phaze-nq3c: COMMIT before returning. This deferral path makes no OTHER DB mutation worth persisting
+        # (only a kube-side delete_job ran), but the per-row unit acquired pg_advisory_xact_lock(5_000_504) at
+        # the top of KueueBackend.reconcile and the design (SCHED-02 / Pitfall 2) RELIES on _reconcile_one
+        # committing per row to auto-release that transaction-scoped lock at row granularity. Returning without
+        # a commit was the ONLY non-committing exit in this file -- it leaked the lock past the row boundary
+        # until some later row's commit (or session close if this was the last in-flight row), stalling a
+        # concurrent stage_cloud_window drain tick that blocks on the same key. Commit to end the txn and
+        # release the lock, matching every other no-op path here (lines with 'release the per-row advisory
+        # lock (Pitfall 2)').
+        #
+        # phaze-mwbz3: DO persist the node-loss verdict, though -- ``effective_node_loss_reason`` is the ONLY
+        # durable copy of "this terminal's cause was NODE_LOST", and it dies with this stack frame otherwise.
+        # If the Job finally vanishes before the NEXT tick, ``_reconcile_one`` re-enters through the
+        # vanished-Job branch, which has no pods left to classify and passes no ``node_loss_reason`` argument
+        # at all -- without this, that re-entry would silently charge ``attempts`` instead of the tighter
+        # ``node_loss_redrives`` ceiling (the whole defect phaze-1q4g exists to prevent). A ``None`` here
+        # (ordinary, non-node-loss cause) correctly clears any stale marker from an earlier, unrelated Job
+        # under this same deterministic name.
+        cloud_job.node_loss_pending = effective_node_loss_reason
         await session.commit()
-        logger.info("reconcile_cloud_jobs: prior Job still terminating; deferring re-drive", file_id=str(file_id), kueue_workload=name)
+        logger.info(
+            "reconcile_cloud_jobs: prior Job still terminating; deferring re-drive",
+            file_id=str(file_id),
+            kueue_workload=name,
+            node_loss_reason=effective_node_loss_reason,
+        )
         return
     # phaze-1q4g: charge the budget this cause spends -- and ONLY that one. A node-loss re-drive leaves
     # ``attempts`` untouched (the file has not failed an analysis), so the two causes stay separable on
     # the row forever; an ordinary re-drive leaves ``node_loss_redrives`` untouched for the same reason.
-    if node_loss_reason is not None:
+    if effective_node_loss_reason is not None:
         cloud_job.node_loss_redrives = next_attempt
     else:
         cloud_job.attempts = next_attempt
     cloud_job.status = CloudJobStatus.SUBMITTED.value
     cloud_job.inadmissible = False  # CR-01: re-driving a failed Job clears any stale Inadmissible flag.
+    cloud_job.node_loss_pending = None  # phaze-mwbz3: verdict spent -- the NEXT Job under this name starts fresh.
     # phaze-32wz: clear the (now-deleted) Job's name so the NEXT tick reads this row as "pending
     # confirmation" (the phantom-row branch's fresh-hold path), not as a fresh no-callback terminal
     # against the OLD, already-confirmed-gone name -- this is what stops the enqueue-time attempt bump
@@ -565,7 +601,7 @@ async def _handle_no_callback_terminal(
         file_id=str(file_id),
         attempt=next_attempt,
         budget=budget,  # phaze-1q4g: which of the two re-drive budgets this one spent, and (when it is
-        node_loss_reason=node_loss_reason,  # the node-loss one) the pod evidence that classified it.
+        node_loss_reason=effective_node_loss_reason,  # the node-loss one) the pod evidence that classified it.
     )
 
 
@@ -773,11 +809,14 @@ async def reconcile_cloud_jobs(ctx: dict[str, Any]) -> dict[str, int]:
     The ``*/5`` cron body (D-01/D-03), Phase-69 SCHED-05 form: dispatch reconcile PER-BACKEND
     (``for b in resolve_backends(cfg): await b.reconcile(session, ctx)``) instead of a single global
     ``select(CloudJob WHERE status IN {SUBMITTED, RUNNING})`` query. Removing that global un-scoped query
-    closes the double-owner vector: a compute ``cloud_job`` row is now touched ONLY by its ``/pushed``
-    callback (Compute/Local ``reconcile`` are no-ops); the Kueue rows are owned by ``KueueBackend.reconcile``
-    (backend_id-scoped, per-row advisory-locked). Each backend's tally is aggregated into the cron's
-    return dict (same shape); the per-row guard + delete-after-record ordering + "never raise out of the
-    cron" discipline live inside each backend's ``reconcile`` (KSUBMIT-03: still never writes a result).
+    closes the double-owner vector: a compute ``cloud_job`` row's PRIMARY terminalization stays its
+    ``/pushed``/``/mismatch``/``/failed`` callback path -- ``ComputeAgentBackend.reconcile`` only reaps
+    the AGE-STRANDED rows those callbacks never reach (phaze-j7m18); ``LocalBackend.reconcile`` stays a
+    genuine no-op (local completion is synchronous). The Kueue rows are owned by
+    ``KueueBackend.reconcile`` (backend_id-scoped, per-row advisory-locked). Each backend's tally is
+    aggregated into the cron's return dict (same shape); the per-row guard + delete-after-record
+    ordering + "never raise out of the cron" discipline live inside each backend's ``reconcile``
+    (KSUBMIT-03: still never writes a result).
 
     ``resolve_backends`` is imported FUNCTION-LOCALLY (deferred) because ``services.backends`` does a
     module-top ``from phaze.tasks.reconcile_cloud_jobs import _reconcile_one`` -- a module-top import
@@ -791,7 +830,7 @@ async def reconcile_cloud_jobs(ctx: dict[str, Any]) -> dict[str, int]:
     async with ctx["async_session"]() as session:
         for backend in resolve_backends(cfg):
             backend_tally = await backend.reconcile(session, ctx)
-            # Kueue returns its per-backend tally; Local/Compute reconcile are no-ops (None). Aggregate.
+            # Kueue and Compute return per-backend tallies; Local's reconcile is a genuine no-op (None).
             if backend_tally:
                 for key, value in backend_tally.items():
                     tally[key] = tally.get(key, 0) + value

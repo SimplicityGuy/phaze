@@ -290,6 +290,56 @@ async def test_orphaned_agent_row_replays_through_keyed_producer(
 
 
 @pytest.mark.asyncio
+async def test_recover_orphaned_work_releases_read_txn_before_replay_loops(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-266lc: the read-phase transaction is committed before the enqueue replay loops.
+
+    ``recover_orphaned_work`` wraps its whole body in one ``async with async_session()`` block.
+    After the read phase (ledger rows / live keys / done sets / cloud exclusions) it must commit
+    BEFORE entering the controller/agent replay loops -- each row's replay is a network-dependent
+    ``queue.enqueue`` call, and on a large orphaned set the loop can run for minutes. Left open,
+    the control-engine connection sits idle-in-transaction across the whole replay (the phaze-1v37
+    pool-drain class). Spy on both the session commit and the per-agent queue's enqueue and assert
+    a commit is recorded strictly before the first enqueue.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file()
+    session.add(f)
+    await session.commit()
+    await _seed_ledger(session, function="process_file", file_id=f.id)
+
+    order: list[str] = []
+    real_commit = AsyncSession.commit
+    real_enqueue = DedupFakeQueue.enqueue
+
+    async def _spy_commit(self: AsyncSession) -> None:
+        await real_commit(self)
+        order.append("commit")
+
+    async def _spy_enqueue(self: DedupFakeQueue, task_name: str, **kwargs: Any) -> Any:
+        order.append("enqueue")
+        return await real_enqueue(self, task_name, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "commit", _spy_commit)
+    monkeypatch.setattr(DedupFakeQueue, "enqueue", _spy_enqueue)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert result["stages"]["process_file"]["reenqueued"] == 1
+    assert "enqueue" in order
+    enqueue_index = order.index("enqueue")
+    assert "commit" in order[:enqueue_index], f"expected a read-phase commit before the first replay enqueue, got order={order}"
+
+
+@pytest.mark.asyncio
 async def test_replay_preserves_stored_timeout_and_retries(
     async_engine: AsyncEngine,
     session: AsyncSession,
@@ -1071,18 +1121,39 @@ def test_every_keyed_function_is_predicate_covered_xor_live_keys_only(function: 
     """Each keyed function is EITHER domain-predicate-covered XOR live-keys-only.
 
     No function may be both (double-classified) or neither (silently undefined). The
-    predicate-covered functions are process_file/extract_file_metadata plus the Phase-50 push_file stage.
+    predicate-covered functions are process_file/extract_file_metadata plus the Phase-50 push_file and
+    (phaze-k95r7) s3_upload cloud-lane stages.
     """
     covered = function in _DOMAIN_COMPLETED_STAGES
     live_keys_only = function not in _DOMAIN_COMPLETED_STAGES
     assert covered != live_keys_only  # exclusive-or: exactly one is true
 
 
-def test_domain_completed_stages_are_exactly_the_three_agent_stages() -> None:
-    """The predicate-covered set is exactly process_file/extract_file_metadata/push_file."""
-    assert {"process_file", "extract_file_metadata", "push_file"} == _DOMAIN_COMPLETED_STAGES
-    # And every covered stage is a real keyed function (no typos / drift from _KEY_BUILDERS).
-    assert set(_KEY_BUILDERS) >= _DOMAIN_COMPLETED_STAGES
+def test_domain_completed_stages_are_exactly_the_file_keyed_agent_stages() -> None:
+    """The predicate-covered set is exactly the FILE-KEYED AGENT tasks (phaze-k95r7).
+
+    Not a hand-kept list: the membership rule is derived here from the two registries that actually
+    decide it -- ``AGENT_TASKS`` (the work runs off-controller, so its ledger clear is a control-side
+    callback that can be lost) and ``_KEY_BUILDERS`` keyed on a ``file_id`` (so a per-file completion
+    predicate can exist at all). ``write_file_tags`` is agent-routed but keyed on a ``log_id``, so it
+    is correctly out; every controller task is out because its clear rides ``after_process``.
+
+    This is the guard that would have caught phaze-k95r7's actual defect: ``s3_upload`` satisfied both
+    halves of the rule and had simply never been added, so it had NO completion exclusion of any kind
+    and its rows were recovery candidates forever.
+    """
+    from phaze.services.enqueue_router import AGENT_TASKS
+
+    def _keyed_on_file_id(function: str) -> bool:
+        """True iff the function's key builder derives its natural id from ``file_id`` alone."""
+        try:
+            return _KEY_BUILDERS[function]({"file_id": "the-file-id"}) == "the-file-id"
+        except (KeyError, TypeError):  # keyed on tracklist_id / log_id / a batch hash -> not file-keyed
+            return False
+
+    file_keyed = {fn for fn in _KEY_BUILDERS if fn in AGENT_TASKS and _keyed_on_file_id(fn)}
+    assert file_keyed == _DOMAIN_COMPLETED_STAGES
+    assert {"process_file", "extract_file_metadata", "push_file", "s3_upload"} == _DOMAIN_COMPLETED_STAGES
 
 
 def test_is_domain_completed_replays_a_predicate_row_with_no_file_id() -> None:
@@ -1098,7 +1169,7 @@ def test_is_domain_completed_replays_a_predicate_row_with_no_file_id() -> None:
         metadata_domain_completed=set(),
         metadata_failed_at={},
         metadata_skipped=set(),
-        push_done=set(),
+        cloud_lane_done=set(),
     )
     assert is_domain_completed(row, empty) is False
 
@@ -1992,3 +2063,209 @@ async def test_agent_row_lane_routing_failure_is_isolated(
 
     assert result["stages"]["legacy_removed_task"] == {"reenqueued": 0, "skipped": 0, "errored": 1, "unreplayable": 0}
     assert result["stages"]["submit_cloud_job"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
+
+
+# --- phaze-k95r7: completed work is never a recovery candidate ---------------------------
+#
+# Found 2026-08-08: a single operator ``POST /pipeline/recover`` put hundreds of jobs onto an
+# already-backed-up analyze queue, and 17 ``s3_upload`` rows had been reporting ``unreplayable`` on
+# every run for a month. Two DIFFERENT findings sit behind that one symptom, and these tests pin both
+# so they can never be conflated again:
+#
+# 1. The ANALYZE lane's predicate was already correct. A ``process_file`` row whose file carries a
+#    COMPLETED analysis is excluded, and always was. What it reads is the DERIV-03 discriminator
+#    ``analysis_completed_at IS NOT NULL`` -- NOT "an ``analysis`` row exists" and NOT
+#    "``failed_at IS NULL``". A PARTIAL row (the shape ``POST /agent/analysis/{id}/progress`` writes:
+#    real window counters, real bpm, no completion stamp) is a genuinely unfinished analysis and is
+#    CORRECTLY re-driven -- so a corpus query counting "successfully analyzed" as row-existence will
+#    over-count what recovery re-enqueues. Both cells are asserted below, together, because the pair
+#    is the finding; either one alone reads as the opposite conclusion.
+# 2. The ``s3_upload`` lane had NO completion exclusion at all -- the real defect, and the whole of
+#    the 17-row case.
+
+
+@pytest.mark.asyncio
+async def test_completed_analyze_row_is_neither_orphan_nor_reenqueued(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``process_file`` row whose file has a SUCCESSFUL terminal analysis is excluded from recovery.
+
+    The acceptance shape stated on the bead: such a row is neither counted as an orphan nor
+    re-enqueued. ``is_domain_completed`` is asserted directly (the predicate the amber badge shares by
+    definition, so this is the badge assertion too) alongside the enqueue side, so a future change
+    cannot satisfy one and quietly break the other.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file()
+    session.add(f)
+    await session.commit()
+    await _seed_ledger(session, function="process_file", file_id=f.id)
+    await _seed_analysis(session, f.id, completed=True)
+
+    rows = await get_ledger_rows(session)
+    done_sets = await _build_done_sets(session, _ledger_fids(rows))
+    assert [is_domain_completed(r, done_sets) for r in rows] == [True]  # -> excluded from the orphan set AND the badge
+
+    router = DedupFakeTaskRouter()
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
+
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
+    assert [c for q in router.queues.values() for c in q.captured] == []
+
+
+@pytest.mark.asyncio
+async def test_partial_analysis_row_is_still_a_recovery_candidate(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A PARTIAL ``analysis`` row does NOT make its file domain-complete -- it re-drives (DERIV-03).
+
+    The companion to the test above, and the reason a "has an analysis row" corpus query disagrees
+    with what recovery actually does. This seeds exactly what ``POST /agent/analysis/{id}/progress``
+    writes -- window counters and an aggregate, NO ``analysis_completed_at``, NO ``failed_at`` -- i.e.
+    an analysis that started and never finished. Re-driving it is correct: the work is genuinely owed.
+
+    MUTATION: relax ``done_clause(ANALYZE)`` to bare row existence (or to ``failed_at IS NULL``) and
+    this file silently stops being re-analyzed forever, which is the strictly worse failure.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file()
+    session.add(f)
+    await session.commit()
+    await _seed_ledger(session, function="process_file", file_id=f.id)
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=f.id, bpm=128.0, fine_windows_analyzed=12, fine_windows_total=40))
+    await session.commit()
+
+    rows = await get_ledger_rows(session)
+    done_sets = await _build_done_sets(session, _ledger_fids(rows))
+    assert [is_domain_completed(r, done_sets) for r in rows] == [False]
+
+    router = DedupFakeTaskRouter()
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
+
+    assert result["stages"]["process_file"]["reenqueued"] == 1
+
+
+@pytest.mark.asyncio
+async def test_completed_s3_upload_row_is_not_a_recovery_candidate(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE 17-ROW REGRESSION: an ``s3_upload`` row whose file is analyzed is excluded from recovery.
+
+    The exact live shape: the file exists, its analysis SUCCEEDED, and its ``cloud_job`` row has since
+    been cleaned up (so NEITHER cloud exclusion -- in-flight nor awaiting -- can see it, because both
+    key off a ``cloud_job`` row that is gone). Before the fix ``s3_upload`` was absent from
+    ``_DOMAIN_COMPLETED_STAGES`` entirely, so the row reached the regenerator on EVERY run and tallied
+    ``unreplayable`` forever.
+
+    MUTATION: drop ``s3_upload`` from ``_DOMAIN_COMPLETED_STAGES`` and this goes back to
+    ``unreplayable: 1``.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file()
+    session.add(f)
+    await session.commit()
+    await _seed_ledger(session, function="s3_upload", file_id=f.id)
+    await _seed_analysis(session, f.id, completed=True)
+
+    rows = await get_ledger_rows(session)
+    done_sets = await _build_done_sets(session, _ledger_fids(rows))
+    assert [is_domain_completed(r, done_sets) for r in rows] == [True]
+
+    router = DedupFakeTaskRouter()
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
+
+    assert result["stages"]["s3_upload"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
+    assert result["unreplayable"] == 0
+
+
+@pytest.mark.asyncio
+async def test_pending_s3_upload_row_still_recovers(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The over-exclusion guard: an ``s3_upload`` row for an UNANALYZED file is still a candidate.
+
+    The new completion exclusion must not swallow the stage. This file has no analysis at all and no
+    ``cloud_job``, so it is not cloud-lane-done -- it reaches the regenerator exactly as before and is
+    reported (here, ``unreplayable``: with no ``cloud_job`` row there is no staging attempt to
+    re-drive). What matters is that the row is NOT silently dropped from recovery.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file()
+    session.add(f)
+    await session.commit()
+    await _seed_ledger(session, function="s3_upload", file_id=f.id)
+
+    rows = await get_ledger_rows(session)
+    done_sets = await _build_done_sets(session, _ledger_fids(rows))
+    assert [is_domain_completed(r, done_sets) for r in rows] == [False]
+
+    router = DedupFakeTaskRouter()
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
+
+    assert result["stages"]["s3_upload"]["unreplayable"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stale_s3_upload_row_is_reported_as_stale_not_as_time_limited(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``existing is None`` is reported DISTINCTLY -- never as a time-limited/expired payload.
+
+    ``_redrive_bucket`` returned ``None`` for two structurally different cases and ``redrive_upload``
+    collapsed both into "could not resolve a staging bucket", which the caller then logged as "its
+    payload is time-limited and cannot be regenerated right now". For a file with no ``cloud_job`` row
+    at all, every word of that was false, and it cost an investigation on 2026-08-08.
+
+    Asserted on the RAISED exception type (the contract) and on the absence of the misleading wording.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file()
+    session.add(f)
+    await session.commit()
+    await _seed_ledger(session, function="s3_upload", file_id=f.id)
+
+    from phaze.services.cloud_staging import NoCloudJobToRedriveError, redrive_upload
+
+    with pytest.raises(NoCloudJobToRedriveError) as excinfo:
+        await redrive_upload(session, f, DedupFakeTaskRouter())
+    message = str(excinfo.value)
+    assert "no cloud_job row" in message
+    assert "could not resolve a staging bucket" not in message  # the merged message this case used to borrow
+
+    caplog.set_level("WARNING")
+    router = DedupFakeTaskRouter()
+    await recover_orphaned_work(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
+
+    # The per-row warning names the real reason...
+    assert "points at work that is not pending" in caplog.text
+    # ...and NEITHER the per-row line NOR the run-level summary asserts a time-limited payload. The
+    # substring "time-limited" survives only inside the new line's explicit denial, so the assertion is
+    # on the CLAIM, not the word.
+    assert "payload is time-limited and cannot be regenerated" not in caplog.text
+    assert "payload is time-limited and could not be regenerated" not in caplog.text

@@ -40,6 +40,21 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+class AmbiguousEnqueueError(RuntimeError):
+    """``queue.enqueue()`` raised AFTER the broker connection was already established (phaze-9f82r).
+
+    SAQ's ``PostgresQueue`` forces autocommit on its broker connection (``postgres.py:132``), and
+    ``enqueue()`` runs a ``before_enqueue`` hook chain (which durably writes the scheduling-ledger
+    row -- ``tasks._shared.deterministic_key.apply_deterministic_key``) BEFORE the ``saq_jobs``
+    INSERT, followed by a SEPARATE ``NOTIFY`` round trip. Any of those three steps can raise after
+    an earlier one already committed, so a caller catching this exception has NO way to tell
+    "the job was never created" from "the job exists and only the ack was lost" -- and MUST NOT
+    treat it as proof of the former. Distinct from a plain exception out of ``queue.connect()``
+    (called BEFORE this try block), which is provably pre-broker and safe to treat as "nothing
+    happened".
+    """
+
+
 class AgentTaskRouter:
     """Lazily-cached per-agent Queue enqueuer.
 
@@ -210,7 +225,15 @@ class AgentTaskRouter:
             timeout=timeout,
             retries=retries,
         )
-        return await queue.enqueue(task_name, **dumped, **extra)
+        try:
+            return await queue.enqueue(task_name, **dumped, **extra)
+        except Exception as exc:
+            # phaze-9f82r: wrap so callers can distinguish this (ambiguous -- durable side effects
+            # may already exist) from a failure raised earlier, out of ``queue.connect()`` above
+            # (provably pre-broker). See ``AmbiguousEnqueueError``'s docstring.
+            raise AmbiguousEnqueueError(
+                f"enqueue for agent {agent_id!r} task {task_name!r} raised after the broker connection was established: {exc}"
+            ) from exc
 
     async def enqueue_for_file(
         self,
@@ -235,12 +258,37 @@ class AgentTaskRouter:
         )
 
     async def close(self) -> None:
-        """Disconnect every cached Queue and clear the cache. Idempotent."""
-        for queue in self._queues.values():
-            # Phase 36 (WR-01): close the factory-attached cache_redis handle too —
-            # disconnect() closes only the psycopg3 pool, leaving the Redis client open.
-            cache_redis = getattr(queue, "cache_redis", None)
-            if cache_redis is not None:
-                await cache_redis.aclose()
-            await queue.disconnect()
-        self._queues.clear()
+        """Disconnect every cached Queue and clear the cache. Idempotent.
+
+        phaze-sbpj3: each queue's cleanup is isolated in its own try/except so a
+        raise from one queue's ``cache_redis.aclose()`` / ``queue.disconnect()`` (a
+        redis client on a dropped connection, a psycopg3 pool close error) cannot
+        abandon the rest of the loop -- every remaining queue still gets a close
+        attempt. ``self._queues.clear()`` runs in a ``finally`` so the cache is
+        always cleared, even when one or more queues failed to close cleanly,
+        keeping the documented idempotency guarantee honest.
+        """
+        try:
+            for cache_key, queue in self._queues.items():
+                # Phase 36 (WR-01): close the factory-attached cache_redis handle too —
+                # disconnect() closes only the psycopg3 pool, leaving the Redis client open.
+                cache_redis = getattr(queue, "cache_redis", None)
+                if cache_redis is not None:
+                    try:
+                        await cache_redis.aclose()
+                    except Exception:
+                        logger.warning(
+                            "agent task router: cache_redis.aclose() failed during close()",
+                            queue=cache_key,
+                            exc_info=True,
+                        )
+                try:
+                    await queue.disconnect()
+                except Exception:
+                    logger.warning(
+                        "agent task router: queue.disconnect() failed during close()",
+                        queue=cache_key,
+                        exc_info=True,
+                    )
+        finally:
+            self._queues.clear()

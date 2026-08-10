@@ -25,6 +25,12 @@
                          status div) can still update this row IN PLACE. Default false -- the normal
                          single-row mutation responses (`hx-target`/`hx-swap="outerHTML"` on the row
                          itself) must NOT also carry hx-swap-oob.
+     * updated_at     -- (phaze-exivg, optional) this render's RenameProposal.updated_at, round-tripped
+                         by the APPROVE button as an optimistic-concurrency token (hx-vals
+                         expected_updated_at) so /proposals/{id}/approve can refuse a row a concurrent
+                         store_proposals upsert rewrote after this partial rendered. Undefined/None
+                         (the Tag facet, whose approve_url is unrelated) renders an empty token, which
+                         the route treats as "no guard" -- byte-identical to every pre-phaze-exivg caller.
 
    Trust boundary: every before/after/file cell is autoescaped by Jinja and is NEVER rendered raw or
    unescaped -- DB-sourced filenames/paths cross into rendered HTML (T-60-XSS). Colour is a static
@@ -70,7 +76,15 @@
            is reversible via /tags/{id}/undo). The APPROVE + UNDO verbs are templated (hx-{{ *_method }}) so the
            Tag facet can POST while rename/move stay PATCH. #}
         <div class="flex gap-1.5 shrink-0 ml-4" x-show="!editing">
-            <button type="button" hx-{{ approve_method|default('patch') }}="{{ approve_url }}" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" hx-disabled-elt="this" class="{{ _primary }}">APPROVE</button>
+            {# phaze-exivg: hx-vals round-trips this render's updated_at back to the approve route as
+               expected_updated_at, an optimistic-concurrency token. Folded into the server's
+               conditional UPDATE, it catches a concurrent store_proposals upsert that rewrote this
+               row's content (same id, same PENDING status) after this partial rendered -- the write
+               refuses instead of approving content the operator never actually saw. `updated_at` is
+               caller-supplied like every other row field here (see the context contract at top);
+               callers that don't pass one (the Tag facet, whose approve_url targets an unrelated
+               /tags/{id}/write route) get an empty token, which the route treats as "no guard". #}
+            <button type="button" hx-{{ approve_method|default('patch') }}="{{ approve_url }}" hx-vals='{"expected_updated_at": "{{ updated_at.isoformat() if updated_at is defined and updated_at else "" }}"}' hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" hx-disabled-elt="this" class="{{ _primary }}">APPROVE</button>
             {% if show_edit|default(true) %}
             <button type="button" @click="editing=true; $nextTick(()=>$refs.edit.focus())" class="{{ _sec }}">EDIT</button>
             {% endif %}

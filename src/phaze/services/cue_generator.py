@@ -9,6 +9,7 @@ suffix naming, and UTF-8 BOM file writing.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 import re
 from typing import TYPE_CHECKING
 
@@ -217,6 +218,15 @@ def next_cue_path(audio_path: Path) -> Path:
     return next_cue_path_and_version(audio_path)[0]
 
 
+# phaze-d16ax: a bound on the exclusive-create retry loop below, not a realistic expectation --
+# each retry means another writer won the SAME predicted version out from under this one, and
+# the version number is monotonically increasing, so genuine unbounded contention is not a shape
+# this file's callers produce (write_cue_sheet is one job per generate click). The cap exists so a
+# persistent, unrelated failure (e.g. a directory that vanished) reports an error instead of
+# spinning forever.
+_MAX_VERSION_CLAIM_ATTEMPTS = 50
+
+
 def write_cue_file(content: str, audio_path: Path) -> tuple[Path, int]:
     """Write CUE content to filesystem with UTF-8 BOM encoding.
 
@@ -225,8 +235,19 @@ def write_cue_file(content: str, audio_path: Path) -> tuple[Path, int]:
     DIST-01 / phaze-6bkk: this is agent-side code. The only caller is
     ``phaze.tasks.cue_write.write_cue_sheet``, which runs on the file server's ``meta`` lane where
     the archive is actually mounted. It must NEVER be called from the api or controller process --
-    neither has a media mount, so ``path.open("w")`` there raises ``FileNotFoundError`` on a parent
+    neither has a media mount, so a raw open there raises ``FileNotFoundError`` on a parent
     directory that does not exist in that container.
+
+    phaze-d16ax: ``next_cue_path_and_version`` is a pure check-then-act PREDICTION of a free path
+    (an ``exists()`` check plus an ``iterdir()`` sweep) -- it does not CLAIM one. ``write_cue_sheet``
+    runs on the meta lane at concurrency 2 with the scan+write offloaded to a worker thread, so two
+    concurrent generates for the SAME audio file can genuinely resolve the identical ``(path,
+    version)`` and, with a truncating ``open("w")``, the second silently overwrites the first's
+    content while both report success. The open below is exclusive create (``O_CREAT | O_EXCL``,
+    mirroring the ``phaze-otoqj`` pattern in ``tasks/execution.py``) so a losing writer gets
+    ``FileExistsError`` instead of clobbering -- it re-derives the next free version (the winner's
+    file now exists, so the scan naturally advances) and retries, rather than losing the loser's
+    content.
 
     Args:
         content: CUE sheet content string.
@@ -234,8 +255,22 @@ def write_cue_file(content: str, audio_path: Path) -> tuple[Path, int]:
 
     Returns:
         ``(path, version)`` of the written CUE file.
+
+    Raises:
+        RuntimeError: every attempt within :data:`_MAX_VERSION_CLAIM_ATTEMPTS` lost the exclusive
+            create -- a persistent collision rather than a single race, surfaced instead of spun on.
     """
-    path, version = next_cue_path_and_version(audio_path)
-    with path.open("w", encoding="utf-8-sig") as f:
-        f.write(content)
-    return path, version
+    encoded = content.encode("utf-8-sig")
+    for _attempt in range(_MAX_VERSION_CLAIM_ATTEMPTS):
+        path, version = next_cue_path_and_version(audio_path)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "wb") as f:
+            f.write(encoded)
+        return path, version
+
+    raise RuntimeError(
+        f"Could not claim a free CUE version for {audio_path} after {_MAX_VERSION_CLAIM_ATTEMPTS} attempts (persistent version collisions)"
+    )

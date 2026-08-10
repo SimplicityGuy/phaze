@@ -52,7 +52,7 @@ from sqlalchemy import delete, exists, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import aliased
 
-from phaze.enums.tracklist_candidate import CandidateClass
+from phaze.enums.tracklist_candidate import CacheDecision, CandidateClass
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.metadata import FileMetadata
@@ -60,7 +60,7 @@ from phaze.models.tracklist import Tracklist, TracklistTrack
 from phaze.models.tracklist_priority_flag import TracklistPriorityFlag
 from phaze.services.tracklist_candidate_queue import CUE_FILE_TYPE
 from phaze.services.tracklist_candidates import CandidateSignals, classify, detect_embedded_tracklist, group_unique_sets
-from phaze.services.tracklist_lookup_cache import CacheVerdict, lookup
+from phaze.services.tracklist_lookup_cache import CacheVerdict, lookup, lookup_by_query_text
 from phaze.services.tracklist_query import derive_query
 
 
@@ -180,10 +180,21 @@ class FileTracklistReview:
     (:attr:`~phaze.services.tracklist_candidates.CandidateSignals.already_tracklisted`), so it can
     never become a :class:`~phaze.services.tracklist_drain.DrainCandidate` regardless of
     ``classification_class`` -- see :attr:`eligible`."""
+    cache_decision: CacheDecision | None = None
+    """The :class:`~phaze.services.tracklist_lookup_cache.CacheVerdict.decision` computed alongside
+    ``cache_entry`` (phaze-z8xq7). ``None`` when no cache row exists yet -- a file that has never
+    been looked up carries no verdict to suppress it. See :attr:`actionable`, which is the property
+    that actually reads this: :attr:`eligible` stays a pure classification/funnel-membership read
+    (does this file's CLASS put it in the drain funnel at all), independent of what the cache
+    currently says about it -- collapsing the two would make the "not classified as a live set"
+    STATE 3b copy (:attr:`eligible` is False) indistinguishable from the "cache-suppressed" STATE 2
+    copy the template renders instead."""
 
     @property
     def eligible(self) -> bool:
-        """True when this file would enter the drain queue as a LIVE_SET candidate.
+        """True when this file's CLASS would ever let it enter the drain queue as a LIVE_SET
+        candidate -- independent of what the cache currently says about it (see :attr:`actionable`
+        for the version that also consults the cache).
 
         ``UNKNOWN`` and ``TRACK`` files are excluded from :func:`~phaze.services
         .tracklist_candidate_queue.build_queue_from_signals` by default (a wrong guess spends a
@@ -198,6 +209,31 @@ class FileTracklistReview:
         if self.answered_elsewhere is not None:
             return False
         return self.classification_class is CandidateClass.LIVE_SET
+
+    @property
+    def actionable(self) -> bool:
+        """True when clicking Prioritize right now would actually cause a lookup (phaze-z8xq7).
+
+        ``eligible`` alone is not enough: it is True for EVERY cache-suppressed set too (STATE 2 --
+        a ``cache_entry`` with no tracklist), because it never consults the cache
+        (:mod:`~phaze.services.tracklist_lookup_cache`'s ``CacheVerdict``/``CacheDecision`` --
+        computed once, in :func:`_lookup_status_without_a_tracklist`, and previously discarded
+        right after, keeping only ``verdict.entry``). A set the drain's own cache verdict keeps
+        suppressed (``SUPPRESSED_NEGATIVE`` within its 180-day TTL, ``BACKOFF`` inside its transient
+        retry window, or ``TRANSIENT_EXHAUSTED`` parked after repeated failures) never enters the
+        queue even when force-flagged -- see
+        :mod:`phaze.services.tracklist_candidate_queue`'s module docstring on why a forced file is
+        still subject to the cache verdict. Flagging one anyway would upsert an inert flag, falsely
+        tell the operator "a lookup has been dispatched", and spend the enqueued ``limit=1`` slice's
+        one live request on whatever UNRELATED set actually sits at the front of the real queue --
+        the exact misattributed-lookup failure mode ``eligible`` itself exists to prevent for the
+        classification/funnel-membership case, just not (until now) for this one.
+        """
+        if not self.eligible:
+            return False
+        if self.cache_decision is None:
+            return True
+        return self.cache_decision.should_query
 
 
 async def get_file_tracklist_review(session: AsyncSession, file_id: uuid.UUID) -> FileTracklistReview | None:
@@ -228,7 +264,7 @@ async def get_file_tracklist_review(session: AsyncSession, file_id: uuid.UUID) -
             classification_class=CandidateClass.LIVE_SET,
         )
 
-    classification_class, cache_entry, answered_elsewhere = await _lookup_status_without_a_tracklist(session, file)
+    classification_class, cache_entry, cache_decision, answered_elsewhere = await _lookup_status_without_a_tracklist(session, file)
     return FileTracklistReview(
         file_id=file_id,
         flagged=flagged,
@@ -238,6 +274,7 @@ async def get_file_tracklist_review(session: AsyncSession, file_id: uuid.UUID) -
         cache_entry=cache_entry,
         classification_class=classification_class,
         answered_elsewhere=answered_elsewhere,
+        cache_decision=cache_decision,
     )
 
 
@@ -277,7 +314,7 @@ async def _already_answered_elsewhere(session: AsyncSession, file: FileRecord, m
 
 async def _lookup_status_without_a_tracklist(
     session: AsyncSession, file: FileRecord
-) -> tuple[CandidateClass | None, TracklistLookupCache | None, str | None]:
+) -> tuple[CandidateClass | None, TracklistLookupCache | None, CacheDecision | None, str | None]:
     """Classify ``file`` and, if it is a LIVE_SET candidate with no other answer, fetch the
     cache's last verdict.
 
@@ -285,6 +322,12 @@ async def _lookup_status_without_a_tracklist(
     corpus-wide funnel's OTHER signals are deliberately not replicated here), but the
     already-answered-elsewhere check runs regardless of classification, because it is what makes
     ``eligible`` -- and therefore the Prioritize button -- honest.
+
+    phaze-z8xq7: the ``CacheVerdict`` this fetches carries a ``decision`` (``should_query``) that
+    used to be discarded here, keeping only ``verdict.entry`` -- so nothing downstream could tell a
+    cache-suppressed set (``SUPPRESSED_NEGATIVE`` / ``BACKOFF`` / ``TRANSIENT_EXHAUSTED``) apart
+    from one the cache would actually re-query. Now returned alongside the entry, for
+    ``FileTracklistReview.actionable``.
     """
     metadata_result = await session.execute(select(FileMetadata).where(FileMetadata.file_id == file.id).limit(1))
     metadata = metadata_result.scalar_one_or_none()
@@ -308,13 +351,25 @@ async def _lookup_status_without_a_tracklist(
     )
     classification = classify(signals)
     if classification.candidate_class is not CandidateClass.LIVE_SET or answered_elsewhere is not None:
-        return classification.candidate_class, None, answered_elsewhere
+        return classification.candidate_class, None, None, answered_elsewhere
 
     derived = derive_query(signals.filename)
     signals = replace(signals, derived_query=derived.query)
     unique_sets = group_unique_sets([signals])
     if not unique_sets:  # pragma: no cover - defensive; a single-element input always yields one cluster
-        return classification.candidate_class, None, answered_elsewhere
+        return classification.candidate_class, None, None, answered_elsewhere
 
     verdict: CacheVerdict = await lookup(session, unique_sets[0].key)
-    return classification.candidate_class, verdict.entry, answered_elsewhere
+    if verdict.entry is None:
+        # phaze-3dwsp: the drain writes cache rows under the CLUSTER's key -- built from the most
+        # common query and the MEDIAN duration across every member of the corpus-wide cluster --
+        # while this singleton lookup was just built from this one file's own query and duration.
+        # They agree for a lone file and can disagree for one part of a multi-part set (a linked
+        # part's own duration bucket need not match the cluster median) or a hash-linked rename.
+        # A miss on the exact key does not mean "never looked up"; probe by the readable query
+        # text too before reporting that to the operator -- see lookup_by_query_text's docstring
+        # for which divergence cases this does and does not recover.
+        fallback = await lookup_by_query_text(session, unique_sets[0].query_text)
+        if fallback is not None:
+            verdict = fallback
+    return classification.candidate_class, verdict.entry, verdict.decision, answered_elsewhere

@@ -1,4 +1,9 @@
 <div class="px-4 pb-4">
+    {% if group.truncated %}
+    <p class="mb-2 text-xs font-medium text-amber-600 dark:text-amber-400">
+        This group has more than {{ group.count }} copies -- only the first {{ group.count }} are shown below.
+    </p>
+    {% endif %}
     <form hx-post="/duplicates/{{ group.sha256_hash }}/resolve"
           hx-target="#group-{{ group.sha256_hash }}"
           hx-swap="outerHTML"

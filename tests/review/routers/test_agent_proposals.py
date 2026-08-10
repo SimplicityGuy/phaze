@@ -279,3 +279,31 @@ async def test_proposal_unknown_token_returns_403(session: AsyncSession, seed_te
             json={"proposal_state": "executed", "file_state": "moved", "current_path": "/x"},
         )
     assert r.status_code == 403
+
+
+async def test_failed_error_message_with_nul_is_sanitized_not_500(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """phaze-d55hu: a NUL in `error_message` used to abort the joint commit (Pitfall 6) with
+    `CharacterNotInRepertoireError`, rolling back BOTH the status transition and the FileRecord
+    update and 500ing every identical retry. It is stripped instead, and the joint update lands."""
+    agent, raw_token = seed_test_agent
+    file_id, proposal_id = await _seed_file_and_proposal(session, agent.id)
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.patch(
+            f"/api/internal/agent/proposals/{proposal_id}/state",
+            json={
+                "proposal_state": "failed",
+                "file_state": "unchanged",
+                "error_message": "move failed: \x00binary tool output",
+            },
+        )
+    assert r.status_code == 200, r.text
+    await session.commit()
+    session.expire_all()
+    p = (await session.execute(select(RenameProposal).where(RenameProposal.id == proposal_id))).scalar_one()
+    assert p.status == ProposalStatus.FAILED.value
+    assert p.reason is not None
+    assert "\x00" not in p.reason
+    assert p.reason == "move failed: binary tool output"
+    # The joint update was NOT rolled back by the sanitize fix -- proposal + file both landed.
+    f = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    assert f is not None

@@ -23,6 +23,9 @@ if TYPE_CHECKING:
 _VALID_API_URL = "https://api.test:8000"
 _VALID_TOKEN = SecretStr("phaze_agent_test-token-abc123")
 _VALID_ROOTS = ["/data/music"]
+# phaze-27myl: fileserver-kind AgentSettings now fail-fasts on the default (docker-service-name)
+# queue_url, so fixtures for the default/fileserver kind must supply a reachable one.
+_VALID_QUEUE_URL = "postgresql://phaze:phaze@app-server.example:5432/phaze"
 
 
 def _make_settings(**overrides: object):  # type: ignore[no-untyped-def]
@@ -32,6 +35,7 @@ def _make_settings(**overrides: object):  # type: ignore[no-untyped-def]
         "agent_api_url": _VALID_API_URL,
         "agent_token": _VALID_TOKEN,
         "scan_roots": _VALID_ROOTS,
+        "queue_url": _VALID_QUEUE_URL,
     }
     base.update(overrides)
     return AgentSettings(**base)

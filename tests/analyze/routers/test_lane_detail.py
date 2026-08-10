@@ -333,6 +333,38 @@ async def test_queue_depths_resolve_compute_agent_ref_not_backend_id(session: As
     assert "oci-a1" not in router.queue_for_calls
 
 
+@pytest.mark.asyncio
+async def test_queue_depths_connects_runtime_registered_agent_lane(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """phaze-en7s7: a lane never touched by an API-side enqueue must be connected before counting.
+
+    Regression (#217's fix, missed here): ``queue_for`` constructs the lane's ``PostgresQueue``
+    with its psycopg pool ``open=False``. The sibling reader ``get_queue_activity`` connects each
+    queue before counting; this reader replicated the PRE-fix shape (no ``connect()``), so every
+    lane's ``PoolClosed`` was silently caught by the per-tier ``except`` and rendered as 0 --
+    every poll, not a rare race, since ``resolve_lane_queue_agent`` binds a lane fresh here with
+    no other producer having connected it first.
+    """
+    from types import SimpleNamespace
+
+    from phaze.services.backends import get_lane_queue_depths
+    from tests._queue_fakes import FakeTaskRouter
+
+    backends_toml_env(_COMPUTE_ID_NE_AGENT_REF_TOML)
+
+    router = FakeTaskRouter()
+    # Models a lane bound fresh at read-time (never touched by an API-side enqueue): count()
+    # raises until connect() opens the pool.
+    router.queue_for("compute-agent-01", "analyze").require_connect().set_counts(queued=3, active=2)
+    app_state = SimpleNamespace(task_router=router)
+
+    result = await get_lane_queue_depths(session, app_state, "oci-a1", "compute")
+
+    assert result.depths is not None
+    assert result.depths["analyze"] == 5, "an unconnected lane must not degrade to 0 -- it must be connected first"
+    assert result.depths["meta"] == 0
+    assert result.depths["io"] == 0
+
+
 # ---------------------------------------------------------------------------
 # phaze-2u8v.1: the SAME class of bug that phaze-tbps closed for COMPUTE lanes was left
 # open for the two kinds the operator actually runs. A registry of [local, kueue "vox"]
@@ -522,6 +554,14 @@ async def test_lane_detail_known_lane_renders_fields(client: AsyncClient, sessio
     assert 'hx-trigger="every 5s"' in body
     assert f'hx-get="/pipeline/lanes/{lane["id"]}"' in body
     assert 'hx-target="#detail-pane"' in body
+    # phaze-d80hf: the own-tick element itself carries the failure handlers -- a failed tick swaps
+    # nothing, so #detail-pane's after-swap handler (which is what used to be documented as "the
+    # wave-2 tick handler") never fires and never sets `refreshError`. These are the ONLY assignment
+    # sites for that flag now that _detail_pane.html's own comment used to (falsely) claim the wave-2
+    # body set it with no code anywhere doing so.
+    assert "hx-on::response-error=" in body
+    assert "hx-on::send-error=" in body
+    assert "refreshError = true" in body
 
 
 @pytest.mark.asyncio

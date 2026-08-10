@@ -303,6 +303,55 @@ class TestGroupUniqueSets:
         ]
         assert len(group_unique_sets(corpus)) == 2
 
+    def test_unmerged_clusters_that_collide_on_the_coarser_key_bucket_get_distinct_keys(self) -> None:
+        """phaze-3t8kc: the cache key's 300s bucket is coarser than the 45s merge tolerance.
+
+        1250s and 1330s are 80s apart -- over tolerance, so grouping correctly keeps them as TWO
+        clusters -- but both floor-divide into the same 300s bucket (1250 // 300 == 1330 // 300
+        == 4), so the raw ``set_key`` for each would be byte-identical. Confirmed at the
+        primitive level below, then asserted that the two UniqueSets group_unique_sets actually
+        returns do NOT collide: an undisambiguated collision would let the second set silently
+        share the first's cache row and never be looked up.
+        """
+        query = normalize_query("Artist - Live @ Event.mp3")
+        assert set_key(query, 1250.0) == set_key(query, 1330.0), "the raw bucketed keys must collide for this to test anything"
+
+        corpus = [
+            signals("Artist - Live @ Event.mp3", duration=1250.0),
+            signals("Artist - Live @ Event.mp3", duration=1330.0),
+        ]
+        groups = group_unique_sets(corpus)
+        assert len(groups) == 2
+        assert groups[0].key != groups[1].key
+
+    def test_three_way_key_collision_all_get_distinct_keys(self) -> None:
+        """The disambiguation must hold for a group larger than two, not just a pair."""
+        query = normalize_query("Artist - Live @ Event.mp3")
+        assert len({set_key(query, d) for d in (1210.0, 1290.0, 1490.0)}) == 1, "all three must land in the same raw bucket"
+
+        corpus = [
+            signals("Artist - Live @ Event.mp3", duration=1210.0),
+            signals("Artist - Live @ Event.mp3", duration=1290.0),
+            signals("Artist - Live @ Event.mp3", duration=1490.0),
+        ]
+        groups = group_unique_sets(corpus)
+        assert len(groups) == 3
+        assert len({g.key for g in groups}) == 3
+
+    def test_key_disambiguation_is_stable_across_input_order(self) -> None:
+        """The salted key must not depend on the order candidates were scanned in."""
+        a = signals("Artist - Live @ Event.mp3", duration=1250.0)
+        b = signals("Artist - Live @ Event.mp3", duration=1330.0)
+        keys_forward = sorted(g.key for g in group_unique_sets([a, b]))
+        keys_reversed = sorted(g.key for g in group_unique_sets([b, a]))
+        assert keys_forward == keys_reversed
+
+    def test_a_lone_set_keeps_its_plain_key_when_nothing_collides(self) -> None:
+        """Disambiguation must not perturb the overwhelming common case: no collision at all."""
+        corpus = [signals("Artist - Live @ Event 2024-04-12.mp3", duration=3600.0)]
+        query = normalize_query("Artist - Live @ Event 2024-04-12.mp3")
+        assert group_unique_sets(corpus)[0].key == set_key(query, 3600.0)
+
     def test_multipart_recording_is_one_lookup(self) -> None:
         """Parts have wildly different durations by design; the part markers rejoin them."""
         corpus = [

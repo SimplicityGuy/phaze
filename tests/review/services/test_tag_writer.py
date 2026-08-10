@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from sqlalchemy.ext.asyncio import AsyncSession
+from phaze.services.agent_task_router import AmbiguousEnqueueError
 from phaze.services.tag_write_disk import _extract_before_tags as _extract_before_tags_disk, _mp4_track_tuple, write_and_verify_sync
 from phaze.services.tag_writer import (
     TagWriteAlreadyQueuedError,
@@ -182,6 +183,13 @@ class TestWriteVorbisFormat:
         audio.__delitem__.assert_called_once_with("artist")
         audio.__setitem__.assert_not_called()
 
+    def test_write_vorbis_list_genre_writes_every_value_as_a_separate_comment(self) -> None:
+        """phaze-z2u08: a list[str] genre (an undo snapshot) writes one comment PER value."""
+        audio = MagicMock()
+        _write_vorbis(audio, {"genre": ["House", "Techno"]})
+
+        audio.__setitem__.assert_called_once_with("genre", ["House", "Techno"])
+
 
 class TestWriteMP4Format:
     """Tests for MP4/M4A format writing via mock."""
@@ -225,6 +233,13 @@ class TestWriteMP4Format:
         audio.__delitem__.assert_called_once_with("\xa9ART")
         audio.__setitem__.assert_not_called()
 
+    def test_write_mp4_list_genre_writes_every_value_as_a_separate_atom_entry(self) -> None:
+        """phaze-z2u08: a list[str] genre (an undo snapshot) writes every value into the atom."""
+        audio = MagicMock()
+        _write_mp4(audio, {"genre": ["House", "Techno"]})
+
+        audio.__setitem__.assert_called_once_with("\xa9gen", ["House", "Techno"])
+
 
 class TestMp4TrackTuple:
     """phaze-2zl7: the MP4 ``trkn`` atom writer must accept the raw "N/total" undo text."""
@@ -250,6 +265,15 @@ class TestWriteID3Format:
 
         audio.tags.add.assert_not_called()
         audio.tags.delall.assert_not_called()
+
+    def test_write_id3_list_genre_writes_a_single_tcon_frame_with_every_value(self) -> None:
+        """phaze-z2u08: a list[str] genre (an undo snapshot) writes one TCON with every value."""
+        audio = MagicMock()
+        _write_id3(audio, {"genre": ["House", "Techno"]})
+
+        args, _kwargs = audio.tags.add.call_args
+        frame = args[0]
+        assert list(frame.text) == ["House", "Techno"]
 
 
 class TestVerifyWrite:
@@ -312,6 +336,23 @@ class TestVerifyWrite:
         # text -- verify_write re-reads through extract_tags, which drops the total.
         assert discrepancies["track_number"]["actual"] == "3"
 
+    def test_list_genre_match_against_the_raw_multi_value_re_read_is_not_a_discrepancy(self, mp3_file: Path) -> None:
+        """phaze-z2u08: a list[str] expected genre compares against the re-read's raw multi-value
+        list, not the single-value normalized ``genre`` field (which is always just the first
+        entry and would otherwise report every faithful multi-value write as a false mismatch).
+        """
+        write_tags(str(mp3_file), {"genre": ["House", "Techno"]})
+        discrepancies = verify_write(str(mp3_file), {"genre": ["House", "Techno"]})
+        assert discrepancies == {}
+
+    def test_list_genre_mismatch_is_still_reported(self, mp3_file: Path) -> None:
+        """A genuine multi-value genre mismatch is still caught, not silently accepted."""
+        write_tags(str(mp3_file), {"genre": ["House", "Trance"]})
+        discrepancies = verify_write(str(mp3_file), {"genre": ["House", "Techno"]})
+        assert "genre" in discrepancies
+        assert discrepancies["genre"]["expected"] == "House; Techno"
+        assert discrepancies["genre"]["actual"] == "House; Trance"
+
 
 class TestExtractBeforeTags:
     """phaze-52qd: the before/undo snapshot must span every core field, marking absent tags None."""
@@ -370,13 +411,27 @@ class TestExtractBeforeTagsRawFidelity:
         assert snapshot["year"] == "2024-03-15"
 
     def test_genre_preserves_every_value_not_just_the_first(self, mp3_file: Path) -> None:
-        """A multi-value TCON frame must round-trip all of it, not collapse to _first_str's first."""
+        """A multi-value TCON frame must round-trip all of it, not collapse to _first_str's first.
+
+        phaze-z2u08: the snapshot keeps every value as a real ``list[str]`` -- not a "; "-joined
+        string -- because nothing on the write side ever split a joined string back apart, so a
+        single-value undo of that string collapsed the multi-value tag into one value on restore.
+        """
         audio = ID3(str(mp3_file))
         audio.add(TCON(encoding=3, text=["House", "Techno"]))
         audio.save()
 
         snapshot = _extract_before_tags_disk(str(mp3_file))
-        assert snapshot["genre"] == "House; Techno"
+        assert snapshot["genre"] == ["House", "Techno"]
+
+    def test_single_value_genre_still_snapshots_as_a_plain_string(self, mp3_file: Path) -> None:
+        """phaze-z2u08: a single-value genre is unaffected -- still a plain str, not a 1-item list."""
+        audio = ID3(str(mp3_file))
+        audio.add(TCON(encoding=3, text=["House"]))
+        audio.save()
+
+        snapshot = _extract_before_tags_disk(str(mp3_file))
+        assert snapshot["genre"] == "House"
 
     def test_absent_fields_still_fall_back_to_none(self, mp3_file: Path) -> None:
         """No raw text on disk -> the normalized (also None) value is used, not a stray raw value."""
@@ -439,6 +494,30 @@ class TestUndoDeletesAddedTags:
         audio = MP3(str(mp3_file))
         assert str(audio.tags["TRCK"]) == "3/12", "the track TOTAL must survive the undo round trip"
         assert str(audio.tags["TDRC"]) == "2024-03-15", "the full release date must survive the undo round trip"
+
+    def test_undo_restores_multi_value_genre_as_separate_values_not_one_joined_string(self, mp3_file: Path) -> None:
+        """phaze-z2u08 end-to-end: undo of a multi-value genre restores every value separately.
+
+        Pre-fix, the snapshot joined ["House", "Techno"] into "House; Techno" and every write path
+        wrote that back as ONE tag value. verify_write was structurally blind to the collapse (its
+        re-read's first-value comparison matched the joined text), so the undo reported COMPLETED
+        with zero discrepancies while silently corrupting the file's tags.
+        """
+        audio = ID3(str(mp3_file))
+        audio.add(TCON(encoding=3, text=["House", "Techno"]))
+        audio.save()
+
+        status, _disc, _err, before = write_and_verify_sync(str(mp3_file), {"genre": "Trance"})
+        assert status == TagWriteStatus.COMPLETED
+        assert before["genre"] == ["House", "Techno"]
+
+        undo_status, undo_disc, _err2, _before2 = write_and_verify_sync(str(mp3_file), before)
+        assert undo_status == TagWriteStatus.COMPLETED, f"undo must not report a discrepancy for a faithful multi-value restore: {undo_disc}"
+
+        audio = MP3(str(mp3_file))
+        assert list(audio.tags["TCON"].text) == ["House", "Techno"], (
+            "both original genre values must survive the undo round trip, not one joined value"
+        )
 
     def test_verify_raises_on_unreadable_file(self, tmp_path: Path) -> None:
         """phaze-vq3g: an unreadable/absent file on re-read raises TagReadError, not a false discrepancy.
@@ -579,10 +658,14 @@ class TestEnqueueTagWrite:
 
     @pytest.mark.asyncio
     async def test_enqueue_failure_downgrades_the_row_to_failed(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
-        """A broker/enqueue failure leaves a FAILED row with an actionable message, not a stuck ``queued``.
+        """An UNAMBIGUOUS broker/enqueue failure leaves a FAILED row with an actionable message.
 
-        A ``queued`` row no agent will ever answer for would hold the file out of every terminal
-        count forever with nothing on screen explaining why.
+        A plain exception out of ``enqueue_for_agent`` here stands in for a failure the real
+        ``AgentTaskRouter`` would raise BEFORE ``queue.enqueue()`` is ever called (e.g.
+        ``queue.connect()``) -- provably nothing was created, so downgrading is safe. A ``queued``
+        row no agent will ever answer for would hold the file out of every terminal count forever
+        with nothing on screen explaining why. Contrast
+        :meth:`test_ambiguous_enqueue_failure_leaves_the_row_queued` below.
         """
         fr = await make_file()
         router = MagicMock()
@@ -595,6 +678,32 @@ class TestEnqueueTagWrite:
         assert log_entry.error_message is not None
         assert fr.agent_id in log_entry.error_message
         assert "broker unreachable" in log_entry.error_message
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_enqueue_failure_leaves_the_row_queued(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """phaze-9f82r: an AMBIGUOUS enqueue failure must NOT downgrade to FAILED.
+
+        ``AmbiguousEnqueueError`` means ``queue.enqueue()`` raised AFTER the broker connection was
+        live -- the ``saq_jobs`` INSERT (and its ledger row) may already be durably committed even
+        though this call never got its ack. Downgrading here would let an operator retry mint a
+        SECOND queued row + job for the SAME file while a possibly-live ghost job from THIS attempt
+        is still queued -- two concurrent mutagen rewrites of one archive file. The row must stay
+        ``queued`` so the phaze-lwqk guard refuses a retry instead.
+        """
+        fr = await make_file()
+        router = MagicMock()
+        router.enqueue_for_agent = AsyncMock(side_effect=AmbiguousEnqueueError("enqueue raised after connect"))
+
+        with patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)):
+            log_entry = await enqueue_tag_write(session, router, fr, {"artist": "Test"}, "manual_edit")
+
+            assert log_entry.status == TagWriteStatus.QUEUED
+            assert log_entry.error_message is None
+
+            # The phaze-lwqk guard now refuses a retry for this file -- exactly the protection an
+            # incorrect FAILED downgrade would have bypassed.
+            with pytest.raises(TagWriteAlreadyQueuedError):
+                await enqueue_tag_write(session, router, fr, {"artist": "Retry"}, "manual_edit")
 
     @pytest.mark.asyncio
     async def test_does_not_touch_the_filesystem(self, session: AsyncSession, make_file, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]

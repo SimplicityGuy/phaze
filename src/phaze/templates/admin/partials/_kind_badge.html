@@ -1,15 +1,38 @@
-{# Phase 48 (CLOUDAGENT-03): agent kind badge. Mirrors _status_pill.html geometry
+{# Phase 48 (CLOUDAGENT-03) + phaze-rdxfu: agent/lane kind badge. Mirrors _status_pill.html geometry
    (text-xs font-semibold px-2 py-0.5 rounded-full — project-wide pill ladder, LOCKED
-   by 48-UI-SPEC §Spacing). Expects `agent` in context (loop variable from
-   agents_table.html). Palette + labels + aria-labels LOCKED by 48-UI-SPEC
-   §Component Contract: compute=indigo (cloud capacity pops), fileserver=slate
-   (quiet cool-neutral baseline recedes). Defensive if/elif/else mirrors
-   _status_pill.html — any out-of-enum kind falls through to the neutral
-   fileserver branch so the cell is never blank (T-48-02 tampering mitigation).
-   Color is never the sole signal: each badge carries an uppercase label AND an
-   aria-label. Text-only (no icon — design system has no icon library). #}
-{% if agent.kind == 'compute' %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-400" aria-label="Kind: compute">COMPUTE</span>
+   by 48-UI-SPEC §Spacing). Color is never the sole signal: each badge carries an uppercase label AND
+   an aria-label (WCAG 1.4.1).
+
+   Two callers, distinguished by which context variable is in scope:
+     * agents_table.html's merged-row loop passes `row` (a TableRow view-model, admin_agents.py) —
+       may be an agent-kind OR a lane-kind row, discriminated by `row.status_kind`.
+     * _agent_activity.html's expanded-row body passes the raw `agent` ORM object, unchanged — it
+       never defines a name called `row`, so `row is defined` is False there and the ORIGINAL
+       agent-only branch below (unchanged behavior/markup) is what renders.
+
+   phaze-rdxfu extends the badge with the LANE kinds (kueue, cloud/compute), reusing the SAME
+   identity pairing the deleted compute_lanes.html tile used (compute=blue, kueue=amber, else
+   neutral) — glyph + uppercase word, unlike the plain-text agent badges below, because that pairing
+   is what the rest of the app (pipeline/partials/_lane_card.html) already uses for a lane's kind and
+   changing it here would desync the two surfaces for no reason this bead asks for. A lane's `kind`
+   can share a STRING with an agent's `kind` (both may be "compute") but must render differently — the
+   `row.status_kind` check below runs FIRST so the two never collide. #}
+{% if row is defined and row.status_kind == 'lane' %}
+    {% if row.kind == 'compute' %}
+    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400" aria-label="Kind: compute lane">☁️ COMPUTE</span>
+    {% elif row.kind == 'kueue' %}
+    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400" aria-label="Kind: kueue lane">⎈ KUEUE</span>
+    {% else %}
+    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300" aria-label="Kind: {{ row.kind }} lane">▪ {{ row.kind | upper }}</span>
+    {% endif %}
 {% else %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300" aria-label="Kind: file server">FILE SERVER</span>
+    {# Defensive if/elif/else mirrors _status_pill.html — any out-of-enum kind falls through to the
+       neutral fileserver branch so the cell is never blank (T-48-02 tampering mitigation). Text-only
+       (no icon — the agent badge design system has no icon library; unchanged from Phase 48). #}
+    {% set _kind = row.kind if row is defined else agent.kind %}
+    {% if _kind == 'compute' %}
+    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-400" aria-label="Kind: compute">COMPUTE</span>
+    {% else %}
+    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300" aria-label="Kind: file server">FILE SERVER</span>
+    {% endif %}
 {% endif %}

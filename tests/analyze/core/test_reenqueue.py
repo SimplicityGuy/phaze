@@ -308,8 +308,8 @@ async def test_pushed_file_is_not_analyze_done_for_process_file(
         session, _ledger_fids([SchedulingLedger(key=key, function="push_file", routing="agent", payload={"file_id": str(f.id)})])
     )
 
-    # The landed file IS in the push done-set (SUCCEEDED cloud_job, D-07)...
-    assert str(f.id) in done_sets.push_done
+    # The landed file IS in the cloud-lane done-set (SUCCEEDED cloud_job, D-07)...
+    assert str(f.id) in done_sets.cloud_lane_done
 
     # ...but a process_file row for the same file is NOT domain-completed (no analysis row -> analyze pending).
     pf_row = SchedulingLedger(key=f"process_file:{f.id}", function="process_file", routing="agent", payload={"file_id": str(f.id)})
@@ -327,3 +327,119 @@ def test_push_file_is_predicate_covered() -> None:
     """push_file joins the domain-predicate-covered set (it is keyed and stage-classifiable)."""
     assert "push_file" in _DOMAIN_COMPLETED_STAGES
     assert "push_file" in _KEY_BUILDERS
+
+
+# --- process_file owned by a COMPUTE agent -> re-drives onto ITS owner (phaze-5dkgp) ----
+
+
+def _process_payload(file_id: uuid.UUID, *, agent_id: str) -> dict[str, Any]:
+    return {
+        "file_id": str(file_id),
+        "original_path": f"/music/{file_id}.mp3",
+        "file_type": "mp3",
+        "agent_id": agent_id,
+        "models_path": _MODELS_PATH,
+    }
+
+
+async def _seed_process_ledger(session: AsyncSession, *, file_id: uuid.UUID, agent_id: str) -> str:
+    """Upsert one ``process_file:<file_id>`` ledger row owned by ``agent_id`` and return its key."""
+    payload = _process_payload(file_id, agent_id=agent_id)
+    key = f"process_file:{_KEY_BUILDERS['process_file'](payload)}"
+    await upsert_ledger_entry(session, key=key, function="process_file", kwargs=payload)
+    await session.commit()
+    return key
+
+
+@pytest.mark.asyncio
+async def test_process_file_orphan_owned_by_compute_agent_redrives_to_compute(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-5dkgp: a compute-owned, orphaned process_file row re-drives onto ITS compute owner.
+
+    Before the fix ``_replay_agent_rows_by_owner`` pinned ``kind="fileserver"`` for EVERY agent-routed
+    row, so ``select_agent_by_id(owner_id, kind="fileserver")`` raised ``NoActiveAgentError`` for a
+    compute-owned ``process_file`` row on every pass, even with the owning compute agent live and
+    healthy -- permanently stranding the row (the /pushed callback's own comment: "the durable recovery
+    handle recover_orphaned_work re-drives if the job is later lost"). The fix resolves the owner by id
+    with no kind pin for every agent function except ``push_file``, so a live compute owner is accepted.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="cloud", kind="compute")
+    f = _make_file()
+    session.add(f)
+    await session.commit()
+    await _seed_process_ledger(session, file_id=f.id, agent_id="cloud")
+    # No analysis row -> not analyze-done -> orphaned and re-drivable.
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(router, controller_queue))
+
+    assert result["stages"]["process_file"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
+    assert "cloud-analyze" in router.queues
+    assert [t for t, _ in router.queues["cloud-analyze"].captured] == ["process_file"]
+    assert [str(f.id)] == [payload["file_id"] for _name, payload in router.queues["cloud-analyze"].captured]
+
+
+@pytest.mark.asyncio
+async def test_process_file_orphan_owned_by_offline_compute_agent_skips(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A compute-owned process_file row whose owner is offline/unregistered skips with a WARNING, never raises."""
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    # No agent seeded at all -- "cloud" is unregistered.
+    f = _make_file()
+    session.add(f)
+    await session.commit()
+    await _seed_process_ledger(session, file_id=f.id, agent_id="cloud")
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    with caplog.at_level("WARNING", logger="phaze.tasks.reenqueue"):
+        result = await recover_orphaned_work(_make_ctx(router, controller_queue))
+
+    assert not router.queues
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
+    assert "owning agent offline" in caplog.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_push_file_orphan_still_requires_fileserver_kind_when_owner_is_compute(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """phaze-5dkgp regression guard: push_file keeps its D-10 fileserver pin -- a compute-only owner still skips.
+
+    The fix must NOT weaken push_file's Phase-50/D-10 guarantee (a re-driven push reads the media mount
+    and must never land on a compute agent) while relaxing process_file's owner-kind requirement.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="cloud", kind="compute")
+    f = _make_file()
+    session.add(f)
+    await session.commit()
+    # The push_file row is (unrealistically) owned by a compute agent id -- must still be refused.
+    payload = _push_payload(f.id)
+    payload["agent_id"] = "cloud"
+    key = f"push_file:{_KEY_BUILDERS['push_file'](payload)}"
+    await upsert_ledger_entry(session, key=key, function="push_file", kwargs=payload)
+    await session.commit()
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    with caplog.at_level("WARNING", logger="phaze.tasks.reenqueue"):
+        result = await recover_orphaned_work(_make_ctx(router, controller_queue))
+
+    assert not router.queues
+    assert result["stages"]["push_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}

@@ -47,6 +47,7 @@ from phaze.services.pipeline import (
     get_tracklist_sets_page,
     get_untracked_files,
 )
+from tests._queue_fakes import wire_fakes
 
 
 if TYPE_CHECKING:
@@ -100,12 +101,16 @@ async def _seed_tracklist(
     match_confidence: int | None = None,
     external_id: str | None = None,
     artist: str | None = None,
+    event: str | None = None,
 ) -> Tracklist:
     """Insert one ``tracklists`` row.
 
     ``file_id`` non-NULL models a LINKED ("matched") tracklist (D-04); NULL models a candidate.
-    ``match_confidence`` is the rapidfuzz int surfaced as the per-set confidence. ``artist`` is the
-    ``Set`` column the sortable-column contract orders by (``TRACKLIST_SETS_SORT``, default key).
+    ``match_confidence`` is the rapidfuzz int surfaced as the per-set confidence. ``artist`` /
+    ``event`` are the ``Tracklist`` columns the phaze-6not3 fix's ``TRACKLIST_SETS_SORT`` NO LONGER
+    orders "Set" / "Tracklist" by directly (those headers now order by the DISPLAYED value --
+    see ``get_tracklist_sets_page``) but both remain part of the fallback chain for an unmatched
+    candidate's displayed set name (``artist or event or external_id``).
     """
     tl = Tracklist(
         id=uuid.uuid4(),
@@ -114,6 +119,7 @@ async def _seed_tracklist(
         file_id=file_id,
         match_confidence=match_confidence,
         artist=artist,
+        event=event,
     )
     session.add(tl)
     await session.commit()
@@ -251,6 +257,34 @@ async def test_tracklist_workspace_is_the_drain_plus_match(client: AsyncClient) 
     # D-05: NO single run-chain orchestrator button (no backend endpoint runs all three).
     assert "run-chain" not in body
     assert "RUN CHAIN" not in body
+
+
+@pytest.mark.asyncio
+async def test_tracklist_drain_status_refreshes_after_running_a_slice(client: AsyncClient) -> None:
+    """phaze-k2ob4: the drain-status panel refreshes after "Run a drain slice", not just on mount.
+
+    The panel's host div is `hx-trigger="load"`-only (fetched exactly once) and the panel itself
+    carries no self-poll (WORK-05/R-2 forbids a second `hx-trigger="every"` loop on this surface --
+    see `test_identify_single_poll_discipline`), so before this fix Queued/Answered-by-cache/
+    Prioritized/ETA froze at first render for the life of the tab even though
+    `_run_drain_response.html` promised the operator checks the outcome "on its own refresh". The
+    sanctioned fix is an event-driven, bounded, ONE-shot re-fetch per click -- never an interval:
+    POST /pipeline/run-tracklist-drain sets `HX-Trigger: drain-refresh` on its response, and the
+    host div listens for that event bubbling to `<body>`.
+    """
+    workspace = await client.get("/s/tracklist", headers={"HX-Request": "true"})
+    assert workspace.status_code == 200
+    ws_body = workspace.text
+    assert 'hx-trigger="load, drain-refresh from:body"' in ws_body
+    # WORK-05 / R-2: still no interval anywhere on this fragment (the sanctioned fix, not the
+    # rejected one -- see the router endpoint's docstring).
+    assert 'hx-trigger="every' not in ws_body
+    assert "setInterval" not in ws_body
+
+    wire_fakes(client)
+    response = await client.post("/pipeline/run-tracklist-drain")
+    assert response.status_code == 200
+    assert response.headers.get("HX-Trigger") == "drain-refresh"
 
 
 @pytest.mark.asyncio
@@ -664,3 +698,57 @@ async def test_sorting_preserves_view_state_and_the_pager_preserves_the_sort(cli
     pager = body[body.index("</table>") :]
     assert "sort=artist" in pager
     assert "order=desc" in pager
+
+
+# ---------------------------------------------------------------------------
+# phaze-6not3: TRACKLIST_SETS_SORT must order by what the cell actually RENDERS, not merely a
+# same-named Tracklist column (FILES_SORT's own "sort what you show" precedent, violated on both
+# of this contract's columns before the fix).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_set_column_sorts_by_the_displayed_set_name_not_bare_artist(client: AsyncClient, session: AsyncSession) -> None:
+    """The 'Set' header must order by ``set_name`` (filename when matched, else artist/event/id).
+
+    Before the fix it ordered by bare ``Tracklist.artist`` unconditionally -- a value that is
+    NEVER shown for a matched row (the cell renders the linked file's name instead). Seeded so the
+    two orderings DISAGREE: by bare artist, the candidate ("bbb-artist") sorts before the matched
+    row ("zzz-artist"); by displayed set_name, the matched row's filename ("aaa-file.mp3") sorts
+    first. Only the fixed expression can produce the second order.
+    """
+    matched_file = await _seed_file(session, original_filename="aaa-file.mp3")
+    await _seed_tracklist(session, file_id=matched_file.id, artist="zzz-artist", external_id="set-matched")
+    await _seed_tracklist(session, file_id=None, artist="bbb-artist", external_id="set-candidate")
+
+    asc = (await client.get("/pipeline/tracklist-sets?sort=artist&order=asc")).text
+    rows = asc[asc.index("<tbody") :]
+    assert rows.index("aaa-file.mp3") < rows.index("bbb-artist"), (
+        "ascending 'Set' sort must follow the DISPLAYED set_name (matched row's filename), not the invisible Tracklist.artist column"
+    )
+
+
+@pytest.mark.asyncio
+async def test_tracklist_column_groups_matched_apart_from_candidate(client: AsyncClient, session: AsyncSession) -> None:
+    """The 'Tracklist' header must group by the matched/candidate STATE actually shown.
+
+    Before the fix it ordered by bare ``Tracklist.event`` -- a column that appears nowhere on
+    screen (the cell renders only "matched"/"candidate"). ``event`` values are chosen so
+    alphabetical order would INTERLEAVE matched and candidate rows; the fixed expression
+    (``Tracklist.file_id IS NOT NULL``) must instead put every candidate on one side and every
+    matched row on the other, with no interleaving, regardless of event.
+    """
+    file_a = await _seed_file(session, original_filename="matched-a.mp3")
+    file_b = await _seed_file(session, original_filename="matched-b.mp3")
+    await _seed_tracklist(session, file_id=file_a.id, artist="m1", event="aaa-event", external_id="ev-m1")
+    await _seed_tracklist(session, file_id=None, artist="c1", event="bbb-event", external_id="ev-c1")
+    await _seed_tracklist(session, file_id=file_b.id, artist="m2", event="ccc-event", external_id="ev-m2")
+    await _seed_tracklist(session, file_id=None, artist="c2", event="ddd-event", external_id="ev-c2")
+
+    asc = (await client.get("/pipeline/tracklist-sets?sort=event&order=asc")).text
+    rows = asc[asc.index("<tbody") :]
+
+    positions = {name: rows.index(name) for name in ("matched-a.mp3", "matched-b.mp3", "c1", "c2")}
+    candidates_last = max(positions["c1"], positions["c2"])
+    matched_first = min(positions["matched-a.mp3"], positions["matched-b.mp3"])
+    assert candidates_last < matched_first, "ascending 'Tracklist' sort must group ALL candidates before ALL matched rows, never interleaved"

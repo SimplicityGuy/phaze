@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from pathlib import Path
 import re
 from typing import TYPE_CHECKING, Any
@@ -289,7 +290,15 @@ class ProposalService:
 
     @staticmethod
     def _clamp_confidence(value: float) -> float:
-        """Clamp a confidence value to the 0.0-1.0 range."""
+        """Clamp a confidence value to the 0.0-1.0 range.
+
+        Non-finite values (NaN, +inf, -inf) are treated as untrusted rather than
+        maximal: ``min(1.0, value)`` keeps its initial 1.0 whenever the comparison
+        is False, which it is for both NaN and +inf, so a garbage confidence would
+        otherwise clamp to the maximum instead of being rejected.
+        """
+        if not math.isfinite(value):
+            return 0.0
         return max(0.0, min(1.0, value))
 
 
@@ -489,43 +498,42 @@ async def store_proposals(
 # ---------------------------------------------------------------------------
 
 
-async def load_companion_contents(
+async def load_companion_targets(
     session: AsyncSession,
     media_file_id: uuid.UUID,
-    max_chars: int,
     task_router: AgentTaskRouter | None = None,
-) -> list[dict[str, str]]:
-    """Load and clean companion file contents for a media file, reading them ON THE OWNING AGENT.
+) -> dict[str, list[CompanionReadItem]]:
+    """Look up a media file's companions and group them by OWNING agent (DB reads only).
 
-    phaze-6bkk (DIST-01): this used to ``open()`` the companion path directly. ``generate_proposals``
-    runs on the CONTROLLER worker, which docker-compose.yml documents as "fileless -- never touches
-    SCAN_PATH", so that read could not succeed in any documented production topology. It failed
-    invisibly: the ``except OSError: continue`` treated a permanent, architectural failure exactly
-    like a single unreadable sidecar, and every proposal was silently generated with an empty
-    companion context. The read now goes to the agent that owns the file, via a bounded
-    request/response ``read_companion_files`` job on its ``meta`` lane.
+    phaze-potg5: split out of ``load_companion_contents`` so the DB portion -- the two
+    ``session.execute`` calls that resolve which agent owns which companion path -- can run
+    inside a short read session/transaction, while the network round-trip that follows
+    (``fetch_companion_contents``) runs with NO session checked out. Callers that need both
+    (e.g. a standalone/unit caller) can use ``load_companion_contents`` below; callers that must
+    not hold a session across network I/O (``generate_proposals``) call this, close the session,
+    then call ``fetch_companion_contents`` separately.
 
     Args:
         session: Active async database session.
         media_file_id: UUID of the media file.
-        max_chars: Maximum chars per companion file (passed to ``clean_companion_content``).
         task_router: The per-agent SAQ enqueuer (``ctx["task_router"]``). ``None`` means "no
-            dispatcher available" and yields an empty list -- companion text is ENRICHMENT, so its
-            absence must degrade the proposal, never block it.
+            dispatcher available"; skips the DB query entirely and returns ``{}`` since the
+            targets would never be used.
 
     Returns:
-        List of dicts with ``"filename"`` and ``"content"`` keys.
+        Dict of ``agent_id -> [CompanionReadItem, ...]``. Empty when there is no dispatcher or no
+        companions.
     """
     if task_router is None:
         # No dispatcher available (a unit-level caller, or a deployment without agents wired). The
         # proposal is still generated -- companion text is enrichment, never a precondition.
         logger.debug("companion_read_skipped_no_task_router", media_file_id=str(media_file_id))
-        return []
+        return {}
 
     result = await session.execute(select(FileCompanion).where(FileCompanion.media_id == media_file_id))
     companions = result.scalars().all()
     if not companions:
-        return []
+        return {}
 
     # Group by OWNING agent (phaze-c9w9 affinity): a companion path only means anything on the
     # mount it was reported from, so each owner reads its own files. In practice a media file and
@@ -537,6 +545,40 @@ async def load_companion_contents(
         if rec is None:
             continue
         by_agent.setdefault(rec.agent_id, []).append(CompanionReadItem(filename=rec.original_filename, path=rec.current_path))
+
+    return by_agent
+
+
+async def fetch_companion_contents(
+    by_agent: dict[str, list[CompanionReadItem]],
+    max_chars: int,
+    task_router: AgentTaskRouter | None,
+    media_file_id: uuid.UUID,
+) -> list[dict[str, str]]:
+    """Fetch and clean companion file contents, reading them ON THE OWNING AGENT.
+
+    phaze-potg5: this is the NETWORK-I/O half of what ``load_companion_contents`` used to do in
+    one call. It performs the ``read_companion_files`` request/response round trip (up to
+    ``_COMPANION_READ_TIMEOUT_S`` per chunk) against each owning agent's ``meta`` lane and takes
+    NO ``AsyncSession`` -- it must be safe to call with no DB session/transaction held open, per
+    the codebase rule that no database connection is ever held across network I/O
+    (phaze-1bcc/phaze-igwi). Callers collect ``by_agent`` from ``load_companion_targets`` inside a
+    short read session, close that session, and only then await this.
+
+    Args:
+        by_agent: Companion targets grouped by owning agent id (``load_companion_targets``'s
+            return value).
+        max_chars: Maximum chars per companion file (passed to ``clean_companion_content``).
+        task_router: The per-agent SAQ enqueuer (``ctx["task_router"]``). ``None`` or an empty
+            ``by_agent`` short-circuits to ``[]`` -- companion text is ENRICHMENT, so its absence
+            must degrade the proposal, never block it.
+        media_file_id: UUID of the media file (for logging only).
+
+    Returns:
+        List of dicts with ``"filename"`` and ``"content"`` keys.
+    """
+    if task_router is None or not by_agent:
+        return []
 
     contents: list[dict[str, str]] = []
     for agent_id, items in by_agent.items():
@@ -571,3 +613,41 @@ async def load_companion_contents(
                 contents.append({"filename": sanitize_pg_text(entry["filename"]), "content": cleaned})
 
     return contents
+
+
+async def load_companion_contents(
+    session: AsyncSession,
+    media_file_id: uuid.UUID,
+    max_chars: int,
+    task_router: AgentTaskRouter | None = None,
+) -> list[dict[str, str]]:
+    """Load and clean companion file contents for a media file, reading them ON THE OWNING AGENT.
+
+    phaze-6bkk (DIST-01): this used to ``open()`` the companion path directly. ``generate_proposals``
+    runs on the CONTROLLER worker, which docker-compose.yml documents as "fileless -- never touches
+    SCAN_PATH", so that read could not succeed in any documented production topology. It failed
+    invisibly: the ``except OSError: continue`` treated a permanent, architectural failure exactly
+    like a single unreadable sidecar, and every proposal was silently generated with an empty
+    companion context. The read now goes to the agent that owns the file, via a bounded
+    request/response ``read_companion_files`` job on its ``meta`` lane.
+
+    phaze-potg5: this is now a thin convenience wrapper over ``load_companion_targets`` (the DB
+    read) followed immediately by ``fetch_companion_contents`` (the agent network round-trip). It
+    remains correct for a standalone/unit caller with no other session to protect, but it is NOT
+    safe to call from inside a session/transaction that must stay open only for local reads --
+    ``generate_proposals`` calls the two halves separately instead, with the read session closed
+    in between (see ``src/phaze/tasks/proposal.py``).
+
+    Args:
+        session: Active async database session.
+        media_file_id: UUID of the media file.
+        max_chars: Maximum chars per companion file (passed to ``clean_companion_content``).
+        task_router: The per-agent SAQ enqueuer (``ctx["task_router"]``). ``None`` means "no
+            dispatcher available" and yields an empty list -- companion text is ENRICHMENT, so its
+            absence must degrade the proposal, never block it.
+
+    Returns:
+        List of dicts with ``"filename"`` and ``"content"`` keys.
+    """
+    by_agent = await load_companion_targets(session, media_file_id, task_router=task_router)
+    return await fetch_companion_contents(by_agent, max_chars, task_router, media_file_id)

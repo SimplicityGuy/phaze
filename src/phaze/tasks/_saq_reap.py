@@ -18,7 +18,7 @@ that had NEVER been analyzed). The two reapers differ ONLY in which status they 
 slack that status earns; the three load-bearing guards are IDENTICAL, so they are written once here
 rather than copied. A guard fixed in one reaper and not the other is the exact drift this prevents.
 
-THREE GUARDS, all load-bearing:
+FOUR GUARDS, all load-bearing:
 
 - **Age bound on the FROZEN ``started``, NOT ``touched``.** SAQ's sweeper bumps ``touched`` on every
   pass (``Queue.update`` sets ``touched = now()``), so a touched-based bound would never fire on a
@@ -35,6 +35,18 @@ THREE GUARDS, all load-bearing:
   true for every phaze producer via ``apply_project_job_defaults``, so the row's OWN blob already
   carries the bound; no side table is needed. A bare/legacy row without ``timeout`` falls back to
   :data:`SAQ_DEFAULT_TIMEOUT_SECONDS`.
+- **``timeout: 0`` rows are EXCLUDED, not bounded at 0 (phaze-mllxc).** In SAQ, ``timeout=0`` means
+  UNBOUNDED -- ``Job.stuck`` is ``(self.timeout and ...)``, so 0 is falsy and the job is never
+  sweep-eligible. ``scan_directory`` enqueues with ``timeout=0`` deliberately, because a full
+  SHA-256 walk of a large network-mounted archive legitimately takes 1-2h
+  (``routers/pipeline_scans.py``). ``Job.to_dict`` serializes ANY field that differs from its
+  dataclass default, so ``timeout: 0`` is always present in the blob -- the old
+  ``COALESCE(...::bigint, :default_timeout_seconds)`` only substitutes the default when the key is
+  ABSENT, so a present ``0`` produced a bound of ``0 + slack`` and reaped a healthy 1-2h scan
+  ~15 minutes in. The exclusion conjunct below is an ``<> 0`` guard, deliberately NOT a
+  ``NULLIF(...,0)`` substitution -- ``NULLIF`` would silently convert 0 to the 10s default and still
+  reap at 910s. A ``timeout: 0`` row's liveness is owned by the progress-based scan stall reaper
+  instead.
 - **CAS on the status inside the DELETE's WHERE.** A row a live worker is mid-finalizing must never be
   stolen. Under READ COMMITTED the DELETE re-checks the ``status = :status`` qualification after
   locking a concurrently-updated row, so a row that flips to a terminal status first wins the race and
@@ -67,6 +79,7 @@ REAP_STRANDED_SQL = text(
     DELETE FROM saq_jobs
     WHERE status = :status
       AND (convert_from(job, 'UTF8')::jsonb ? 'started')
+      AND COALESCE((convert_from(job, 'UTF8')::jsonb->>'timeout')::bigint, :default_timeout_seconds) <> 0
       AND (EXTRACT(EPOCH FROM NOW()) * 1000 - (convert_from(job, 'UTF8')::jsonb->>'started')::bigint)
           / 1000.0 > COALESCE((convert_from(job, 'UTF8')::jsonb->>'timeout')::bigint, :default_timeout_seconds) + :slack_seconds
     RETURNING key

@@ -255,6 +255,58 @@ async def test_extra_field_422(session: AsyncSession, seed_test_agent: tuple[Age
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["status", "total_files", "processed_files"])
+async def test_explicit_null_for_non_nullable_field_422s_without_mutating_the_row(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    field: str,
+) -> None:
+    """phaze-q6i5g: an explicit JSON null for `status`/`total_files`/`processed_files` used to
+    validate, bypass every router guard (all keyed on `is not None`, not "was set"), and reach
+    the unconditional setattr apply loop -- these back NOT NULL columns, so `session.commit()`
+    raised an unhandled 500 instead of a clean 422. Also confirms a real, in-flight
+    `processed_files` update in the SAME body is not silently rolled back by the null."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.patch(
+            f"/api/internal/agent/scan-batches/{batch_id}",
+            json={field: None, "processed_files": 5} if field != "processed_files" else {field: None, "total_files": 5},
+        )
+
+    assert r.status_code == 422, r.text
+    assert field in r.text
+
+    await session.commit()
+    session.expire_all()
+    b = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    assert b.status == ScanStatus.RUNNING.value
+    assert b.total_files == 0
+    assert b.processed_files == 0
+
+
+@pytest.mark.asyncio
+async def test_explicit_null_error_message_still_clears_it(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """`error_message` is the one nullable column -- an explicit null must still be allowed
+    through end-to-end (schema layer must not overreach into rejecting a legitimate clear)."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+    async with _make_client(session, raw_token) as ac:
+        seed_error = await ac.patch(
+            f"/api/internal/agent/scan-batches/{batch_id}",
+            json={"error_message": "boom"},
+        )
+        assert seed_error.status_code == 200, seed_error.text
+        r = await ac.patch(
+            f"/api/internal/agent/scan-batches/{batch_id}",
+            json={"error_message": None},
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["error_message"] is None
+
+
+@pytest.mark.asyncio
 async def test_cross_agent_403_before_state_machine(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
     """T-27-01: agent B PATCHing agent A's batch must return 403, NOT 409.
 
@@ -554,6 +606,70 @@ async def test_same_terminal_status_with_extra_mutating_field_still_409s(session
     assert b.processed_files == 0
 
 
+# ---------------------------------------------------------------------------
+# phaze-01a3h: at-least-once retry of the agent's REAL terminal PATCH body (which always
+# carries extra fields alongside status, e.g. tasks/scan.py:317-320/:296-299/:337-340) must be
+# a 200 echo, not a 409 -- the old guard only recognized a bare {"status"} body as a replay.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_terminal_completed_replay_of_real_agent_body_is_idempotent_echo(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """Reproduces tasks/scan.py:317-320's terminal PATCH (status="completed" + matching
+    total_files/processed_files) being retried after a lost-response TransportError: the
+    IDENTICAL body resent against the now-COMPLETED row must echo 200, not 409 (phaze-01a3h)."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+    body = {"status": "completed", "total_files": 42, "processed_files": 42}
+    async with _make_client(session, raw_token) as ac:
+        first = await ac.patch(f"/api/internal/agent/scan-batches/{batch_id}", json=body)
+        assert first.status_code == 200, first.text
+        replay = await ac.patch(f"/api/internal/agent/scan-batches/{batch_id}", json=body)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["total_files"] == 42
+    assert replay.json()["processed_files"] == 42
+
+
+@pytest.mark.asyncio
+async def test_terminal_failed_replay_of_real_agent_body_is_idempotent_echo(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """Same replay-tolerance for tasks/scan.py's failed-terminal PATCH shape
+    (status="failed" + matching error_message, :296-299/:337-340)."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+    body = {"status": "failed", "error_message": "Controller error: boom"}
+    async with _make_client(session, raw_token) as ac:
+        first = await ac.patch(f"/api/internal/agent/scan-batches/{batch_id}", json=body)
+        assert first.status_code == 200, first.text
+        replay = await ac.patch(f"/api/internal/agent/scan-batches/{batch_id}", json=body)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["error_message"] == "Controller error: boom"
+
+
+@pytest.mark.asyncio
+async def test_terminal_completed_replay_with_a_differing_field_still_409s(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """A retry is only tolerated when it is VALUE-IDENTICAL to the committed row -- a body that
+    differs in even one field from a genuinely different attempt (not a replay of the same
+    request) still 409s, so the widened echo test cannot mask a real conflicting write."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+    async with _make_client(session, raw_token) as ac:
+        first = await ac.patch(
+            f"/api/internal/agent/scan-batches/{batch_id}",
+            json={"status": "completed", "total_files": 42, "processed_files": 42},
+        )
+        assert first.status_code == 200, first.text
+        conflicting = await ac.patch(
+            f"/api/internal/agent/scan-batches/{batch_id}",
+            json={"status": "completed", "total_files": 43, "processed_files": 43},
+        )
+    assert conflicting.status_code == 409, conflicting.text
+    await session.commit()
+    session.expire_all()
+    b = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    assert b.total_files == 42
+    assert b.processed_files == 42
+
+
 def test_router_registered_in_main_app() -> None:
     """Task 3: phaze.main.create_app() must include the agent_scan_batches router.
 
@@ -686,3 +802,27 @@ async def test_concurrent_terminal_patches_serialize_on_the_row_lock(async_engin
             await s.commit()
         # NOTE: do NOT dispose ``engine`` -- it is the session-scoped ``async_engine`` fixture,
         # owned (and disposed) by conftest.
+
+
+@pytest.mark.asyncio
+async def test_running_to_failed_error_message_with_nul_is_sanitized_not_500(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """phaze-hvve5 (site 1): this was the ONE agent PATCH endpoint that did not sanitize
+    `error_message` before the generic `setattr` loop writes it and commits -- a NUL used to abort
+    the commit with CharacterNotInRepertoireError, permanently losing the terminal FAILED report."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.patch(
+            f"/api/internal/agent/scan-batches/{batch_id}",
+            json={"status": "failed", "error_message": "disk I/O error: \x00 corrupted sector"},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "\x00" not in body["error_message"]
+
+    await session.commit()
+    session.expire_all()
+    b = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    assert b.status == ScanStatus.FAILED.value
+    assert b.error_message == "disk I/O error:  corrupted sector"
+    assert "\x00" not in (b.error_message or "")

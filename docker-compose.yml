@@ -28,10 +28,40 @@ services:
       # phaze-hti8: Redis runs with `--requirepass ${REDIS_PASSWORD}` (below), so
       # every client MUST authenticate. `env_file` does NOT interpolate, so the
       # `.env` REDIS_URL cannot embed `${REDIS_PASSWORD}`; compose's `environment:`
-      # block DOES interpolate at parse time. Assembling the authenticated URL here
-      # (overriding the passwordless `.env`/default REDIS_URL) makes the NOAUTH
-      # drift impossible for the app-server's own Redis clients.
-      - "REDIS_URL=redis://default:${REDIS_PASSWORD:?REDIS_PASSWORD required}@redis:6379/0"
+      # block DOES interpolate at parse time.
+      #
+      # phaze-1g89i: this used to assemble the FULL authenticated DSN here --
+      # `REDIS_URL=redis://default:${REDIS_PASSWORD}@redis:6379/0` -- which broke on a
+      # strong password containing `/`, `#`, or `?` (compose interpolates the raw byte
+      # sequence into the URL string, and `redis.asyncio.Redis.from_url` then RFC-3986-parses
+      # and percent-DECODES it, truncating the netloc) and silently corrupted one containing a
+      # `%XX` sequence. Passing the RAW password through its own var instead lets
+      # `config.py`'s `_apply_redis_password` percent-ENCODE it into `redis_url`'s userinfo in
+      # Python, where the full byte string is still intact -- no shell/URL round-trip to
+      # mangle it. Still fails fast at compose-parse time if unset, same as before.
+      #
+      # phaze-qu5ne (superseded by phaze-1g89i, see below): this line used to assemble the
+      # full authenticated DSN under the bare `REDIS_URL` name, which `redis_url`'s
+      # `AliasChoices("PHAZE_REDIS_URL", "REDIS_URL", "redis_url")` ranks BELOW an operator's
+      # own `.env` `PHAZE_REDIS_URL` -- so a passwordless `.env` PHAZE_REDIS_URL silently
+      # outranked and defeated this line, reintroducing NOAUTH. `_apply_redis_password`
+      # (config.py) closes that gap as a side effect: it percent-encodes `redis_password`
+      # into `redis_url`'s userinfo AFTER alias resolution, regardless of which alias won --
+      # so the password lands correctly whether `redis_url` resolved from `PHAZE_REDIS_URL`,
+      # `REDIS_URL`, or the field default. Verified by
+      # tests/agents/deployment/test_api_filesystem_isolation.py::
+      # test_compose_authenticated_redis_url_outranks_dotenv_alias.
+      - "REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD required}"
+      # phaze-bvkah: the api service has NO models volume (DIST-01) but still reads
+      # config.py's `models_path` field via `env_file: .env`, and that value is forwarded
+      # VERBATIM to the agent as the model-load path in every process_file payload
+      # (enqueue_process_file(..., cfg.models_path) in services/backends.py /
+      # routers/pipeline.py). Leaving MODELS_PATH unset here lets the HOST-side compose bind
+      # value (e.g. `./models`) leak into the payload, sending the agent a path relative to
+      # ITS OWN filesystem that has nothing to do with the archive's actual bind mount.
+      # Pinning it to the agent's fixed mount target keeps the payload correct regardless of
+      # what the operator's `.env` MODELS_PATH resolves to on the host.
+      - MODELS_PATH=/models
     # Backend execution registry (control-plane-only, ControlSettings) is declared in a
     # backends.toml mounted at PHAZE_BACKENDS_CONFIG_FILE (default /etc/phaze/backends.toml);
     # an absent file resolves to the zero-config implicit all-local registry (cloud off).
@@ -60,11 +90,14 @@ services:
     env_file: .env
     environment:
       - PHAZE_ROLE=control
-      # phaze-hti8: same authenticated REDIS_URL assembly as the api service — the
-      # control worker's before_enqueue/after_process counter + rate-limit hooks read
-      # this same cache_redis handle, so it must authenticate against the requirepass
-      # Redis or every hook raises NOAUTH on first use.
-      - "REDIS_URL=redis://default:${REDIS_PASSWORD:?REDIS_PASSWORD required}@redis:6379/0"
+      # phaze-1g89i: same safe REDIS_PASSWORD pass-through as the api service (see there for
+      # why the DSN is no longer assembled here) — the control worker's before_enqueue/
+      # after_process counter + rate-limit hooks read the same cache_redis handle, so it must
+      # authenticate against the requirepass Redis or every hook raises NOAUTH on first use.
+      # phaze-qu5ne (superseded by phaze-1g89i — see the api service's comment above):
+      # _apply_redis_password closes the same alias-priority NOAUTH gap this bead reported,
+      # regardless of which redis_url alias won.
+      - "REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD required}"
       # Backend execution registry (control-plane-only, ControlSettings) is declared in a
       # backends.toml mounted at PHAZE_BACKENDS_CONFIG_FILE (default /etc/phaze/backends.toml);
       # an absent file resolves to the zero-config implicit all-local registry (cloud off).

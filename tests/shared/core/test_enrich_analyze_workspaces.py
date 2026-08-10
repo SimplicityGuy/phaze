@@ -304,6 +304,37 @@ async def test_analyze_workspace_hosts_the_real_analysis_health_card(client: Asy
 
 
 @pytest.mark.asyncio
+async def test_analysis_health_card_hosts_the_backfill_to_cloud_trigger(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-7x0lf: 'Backfill to cloud' is re-homed onto the Analysis Health card.
+
+    The Phase-62 cutover deleted dag_canvas.html, the ONLY host of POST /pipeline/backfill-cloud
+    (trigger_backfill_cloud) -- and unlike every other dag_canvas trigger, it was never re-homed
+    into any v7 workspace, leaving the timed-out-long-file cloud recovery path unreachable from
+    any served page. This asserts the re-homed trigger exists beside the existing 'Retry failed'
+    control (the fix hint's natural home), wired to the real endpoint with a confirming guard and
+    its own sibling response sink -- never clobbering the Retry ack's sink.
+    """
+    file = await _seed_file(session)
+    await _seed_analysis(session, file.id, None, None, completed=False)
+    failed = await _seed_file(session, original_filename="terminal.mp3")
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=failed.id, failed_at=datetime.now(UTC), error_message="boom", analysis_completed_at=None))
+    await session.commit()
+
+    frag = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert frag.status_code == 200
+    body = frag.text
+    card = body.split('id="straggler-failed-card"')[1].split("</section>")[0]
+
+    assert 'hx-post="/pipeline/backfill-cloud"' in card
+    assert "Backfill to cloud" in card
+    # A SIBLING sink, not the Retry control's own #retry-failed-result (so a click never clobbers
+    # the other control's ack).
+    assert 'id="backfill-response"' in card
+    assert 'hx-target="#backfill-response"' in card
+    assert "hx-confirm" in card
+
+
+@pytest.mark.asyncio
 async def test_other_workspaces_still_sink_the_analysis_health_card_hidden(client: AsyncClient) -> None:
     """Regression (phaze-tyt3): every OTHER stage still needs the hidden OOB sink.
 
@@ -400,29 +431,101 @@ async def test_metadata_trigger_all_wired(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_analyze_run_trigger_wired(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-pix6g -- RUN ANALYSIS is re-homed to the analyze workspace, wired to POST /pipeline/analyze.
+
+    The Phase-62 cutover deleted dag_canvas.html, the ONLY host of POST /pipeline/analyze
+    (trigger_analysis_ui) -- every other dag_canvas trigger was re-homed into its v7 workspace
+    (EXTRACT ALL / GENERATE ALL / RECOVER / EXECUTE APPROVED) but analyze never was, leaving
+    DISCOVERED files with no way into the pipeline. This asserts the re-homed trigger exists with
+    the same R-4 bulk-enqueue guard shape (hx-confirm + hx-disabled-elt + a seeded busy-gate) and a
+    sibling response sink, matching metadata/propose/apply -- and that it starts no second poll.
+
+    A file must be seeded: with a zero-file corpus, shell._render_stage swaps `stage_partial` to
+    the RECORD-04 first-run empty-state guide instead of analyze_workspace.html, which would make
+    this test pass or fail on the WRONG template.
+    """
+    await _seed_file(session)
+    az = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert az.status_code == 200
+    az_body = az.text
+    # RUN ANALYSIS wired VERBATIM to the existing endpoint (byte-for-byte the phaze-vvmh shape).
+    assert 'hx-post="/pipeline/analyze"' in az_body
+    assert "RUN ANALYSIS" in az_body
+    # Trigger-response landing target present, a SIBLING of the trigger (phaze-thd6 shape).
+    assert 'id="analyze-trigger-response"' in az_body
+    # R-4 bulk-enqueue guard: confirm + hx-disabled-elt + busy-disable on the SEEDED analyzeBusy key.
+    assert "hx-confirm" in az_body
+    assert 'hx-disabled-elt="this"' in az_body
+    assert "$store.pipeline.analyzeBusy" in az_body
+    # WORK-05 / R-2: no second poll loop.
+    assert 'hx-trigger="every' not in az_body
+    assert "setInterval" not in az_body
+
+
+@pytest.mark.asyncio
 async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """BEUI-01 / D-04/D-05/D-06 -- N registry lane cards render rank-ascending; word-labelled states; global roll-up intact.
+    """BEUI-01 / D-04/D-05/D-06 (rebuilt phaze-5c6i2) -- N registry lane cards render rank-ascending; word-labelled states; global roll-up intact.
 
     The Analyze workspace loops ``_lane_card.html`` over the seeded ``get_backend_lane_snapshot`` list
-    (D-04): one card per registry backend, rank-ascending (D-06), each showing ``RANK {n}`` + the
-    ``{in_flight}/{cap}`` numeral + the per-lane Kueue quota-wait-vs-Inadmissible caption (D-03). A down
-    lane (``available=False``) is NEVER hidden -- it greys with the explicit word ``offline`` (WCAG 1.4.1);
-    the Phase-58 ``not configured`` path is retired for the N-lane grid. The 6 global cloud-state cards stay
+    (D-04): one card per registry backend, rank-ascending (D-06), each showing ``RANK {n} · cap {n}``
+    (phaze-5c6i2: cap is a caption, never a live-count denominator) + queued/working/processed + the
+    per-lane Kueue quota-wait-vs-Inadmissible caption (D-03). A down lane (``available=False``) is
+    NEVER hidden -- it greys with the explicit word ``offline`` (WCAG 1.4.1); the Phase-58
+    ``not configured`` path is retired for the N-lane grid. The 6 global cloud-state cards stay
     VERBATIM as a cross-lane roll-up below the grid (D-07) with the load-bearing WORK-03 distinction: the
     Inadmissible FAULT card carries ``role="alert"`` while the healthy admission-state card does NOT.
     """
     import phaze.routers.pipeline as pipeline_mod
 
-    # phaze-xd8k: "nox" is offline yet still carries 5 real in-flight files (a lane can be unreachable
-    # for NEW dispatch while still draining work it already accepted) -- the card must render that TRUE
-    # count, never a fabricated 0 that hides real in-flight work behind "offline".
+    # phaze-xd8k precedent, phaze-5c6i2 successor: "nox" is offline yet still carries real queued/working
+    # figures -- the card must render them, never a fabricated 0 that hides real work behind "offline".
     lanes = [
-        {"id": "a1", "kind": "compute", "rank": 10, "cap": 4, "in_flight": 2, "available": True, "quota_wait": 0, "inadmissible": 0},
-        {"id": "k8s", "kind": "kueue", "rank": 20, "cap": 3, "in_flight": 1, "available": True, "quota_wait": 2, "inadmissible": 1},
-        {"id": "nox", "kind": "local", "rank": 99, "cap": 8, "in_flight": 5, "available": False, "quota_wait": 0, "inadmissible": 0},
+        {
+            "id": "a1",
+            "kind": "compute",
+            "rank": 10,
+            "cap": 4,
+            "in_flight": 2,
+            "available": True,
+            "quota_wait": 0,
+            "inadmissible": 0,
+            "queued": 1,
+            "working": 2,
+            "processed_24h": 12,
+            "processed_lifetime": 340,
+        },
+        {
+            "id": "k8s",
+            "kind": "kueue",
+            "rank": 20,
+            "cap": 3,
+            "in_flight": 1,
+            "available": True,
+            "quota_wait": 2,
+            "inadmissible": 1,
+            "queued": 2,
+            "working": 1,
+            "processed_24h": 5,
+            "processed_lifetime": 42,
+        },
+        {
+            "id": "nox",
+            "kind": "local",
+            "rank": 99,
+            "cap": 8,
+            "in_flight": 5,
+            "available": False,
+            "quota_wait": 0,
+            "inadmissible": 0,
+            "queued": 3,
+            "working": 5,
+            "processed_24h": 20,
+            "processed_lifetime": 500,
+        },
     ]
 
-    async def _snapshot(_session: AsyncSession) -> list[dict[str, object]]:
+    async def _snapshot(_session: AsyncSession, _app_state: object = None) -> list[dict[str, object]]:
         return lanes
 
     monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
@@ -458,19 +561,28 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
     assert "LOCAL · nox" in body
     # D-06: rank-ascending render order (a1 rank10 -> k8s rank20 -> nox rank99).
     assert body.index("COMPUTE · a1") < body.index("KUEUE · k8s") < body.index("LOCAL · nox")
-    # RANK micro-labels + {in_flight}/{cap} numerals.
-    assert "RANK 10" in body and "RANK 20" in body and "RANK 99" in body
-    assert "2/4" in body  # a1 in_flight/cap
-    assert "1/3" in body  # k8s in_flight/cap
+    # RANK micro-labels, now paired with the cap CAPTION (phaze-5c6i2: never a live-count denominator).
+    assert "RANK 10 · cap 4" in body
+    assert "RANK 20 · cap 3" in body
+    assert "RANK 99 · cap 8" in body
+    # phaze-5c6i2: the old {in_flight}/{cap} numeral is GONE.
+    assert "2/4" not in body
+    assert "1/3" not in body
+    assert "5/8" not in body
+    # queued/working/processed render per lane, 24h primary + lifetime caption (acceptance rule 1).
+    assert "processed 12 (24h) / 340 all time" in body  # a1
+    assert "processed 5 (24h) / 42 all time" in body  # k8s
+    assert "processed 20 (24h) / 500 all time" in body  # nox
     # D-03 per-lane Kueue admission caption: quota-wait vs Inadmissible, word-labelled.
     assert "2 waiting" in body
     assert "1 inadmissible" in body
     # local lane available=False -> explicit "offline" word (never hidden). "not configured" is retired.
     assert "offline" in body
     assert "not configured" not in body
-    # phaze-xd8k: the offline nox lane renders its TRUE in-flight count (5/8), never a literal "0" that
-    # would hide the 5 files it is still draining.
-    assert "5/8" in body
+    # phaze-5c6i2 (acceptance rule 5): nox's working (5) exceeds its cap (8)? No -- pick a lane where it
+    # DOES, so the fault renders. nox: working=5, cap=8 -> NOT over cap; assert the fault does NOT fire
+    # for a lane within cap, and see test_lane_card_working_over_cap_is_a_visible_fault for the positive case.
+    assert "exceeds cap" not in body
 
     # D-07 / WORK-03 load-bearing distinction: the Inadmissible FAULT carries role="alert"; the HEALTHY
     # admission-state card does NOT (the fault can never be collapsed into healthy progression).
@@ -508,7 +620,7 @@ async def test_lane_grid_subcount_makes_no_across_lanes_claim(client: AsyncClien
         {"id": "nox", "kind": "local", "rank": 99, "cap": 1, "in_flight": 0, "available": True, "quota_wait": 0, "inadmissible": 0},
     ]
 
-    async def _snapshot(_session: AsyncSession) -> list[dict[str, object]]:
+    async def _snapshot(_session: AsyncSession, _app_state: object = None) -> list[dict[str, object]]:
         return lanes
 
     monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
@@ -761,7 +873,7 @@ async def test_analyze_lanes_grid_carries_content_hash(client: AsyncClient, sess
 
     lanes = [{"id": "a1", "kind": "compute", "rank": 10, "cap": 4, "in_flight": 2, "available": True, "quota_wait": 0, "inadmissible": 0}]
 
-    async def _snapshot(_session: AsyncSession) -> list[dict[str, object]]:
+    async def _snapshot(_session: AsyncSession, _app_state: object = None) -> list[dict[str, object]]:
         return lanes
 
     monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
@@ -792,7 +904,7 @@ async def test_analyze_lanes_poll_hash_stable_when_unchanged_changes_on_state(cl
 
     state = {"in_flight": 2}
 
-    async def _snapshot(_session: AsyncSession) -> list[dict[str, object]]:
+    async def _snapshot(_session: AsyncSession, _app_state: object = None) -> list[dict[str, object]]:
         return [
             {
                 "id": "a1",
@@ -847,7 +959,7 @@ async def test_poll_still_seeds_store_and_lands_analyze_lanes_oob(client: AsyncC
     """
     import phaze.routers.pipeline as pipeline_mod
 
-    async def _snapshot(_session: AsyncSession) -> list[dict[str, object]]:
+    async def _snapshot(_session: AsyncSession, _app_state: object = None) -> list[dict[str, object]]:
         return [{"id": "a1", "kind": "compute", "rank": 10, "cap": 4, "in_flight": 1, "available": True, "quota_wait": 0, "inadmissible": 0}]
 
     monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)

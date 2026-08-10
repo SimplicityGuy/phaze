@@ -32,6 +32,7 @@ The per-shape ORM seed factories live in ``tests/conftest.py`` (``make_file``,
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
@@ -309,6 +310,67 @@ async def test_tag_bulk_makes_forward_progress_past_zero_change_wall(
             break
 
     assert await _queued_count(qual.id) == 1, "the qualifying file behind the zero-change wall must eventually be reached"
+
+
+@pytest.mark.asyncio
+async def test_tag_bulk_reactivates_a_file_after_a_completed_undo(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_executed_file_with_metadata: Callable[..., Awaitable[tuple[FileRecord, FileMetadata]]],
+) -> None:
+    """phaze-vwyco: a completed UNDO must not permanently evict the reverted file from bulk write.
+
+    ``_terminal_tagwrite_subq`` (the candidate-window anti-join) and ``_has_terminal_tagwrite``
+    (the per-file re-check under the advisory lock) both used to match a completed undo
+    (``source="undo"``, status COMPLETED) exactly like a genuine forward completion. Once an undo
+    lands, the file's disk tags are (again) changed, yet both checks dropped it from the queue
+    forever -- this exercises a real second submit, after the revert, DOES dispatch a fresh write.
+    """
+    file, _ = await seed_executed_file_with_metadata(original_filename="New Artist - New Title.mp3", artist=None, title=None, album="Keep Album")
+    # phaze-o2ln: the bulk loop's per-file rollback expires every ORM object in the session's
+    # identity map -- capture the id up front so a post-request ``file.id`` access never triggers a
+    # sync lazy-reload (``MissingGreenlet``) under the async engine.
+    file_id = file.id
+    base = datetime(2026, 8, 1, 12, 0, 0)
+    session.add(
+        TagWriteLog(
+            file_id=file_id,
+            before_tags={},
+            after_tags={"title": "New Title"},
+            source="proposal",
+            status=TagWriteStatus.COMPLETED.value,
+            written_at=base,
+        )
+    )
+    await session.commit()
+
+    async def _log_count(fid: object, *, status: str | None = None, source: str | None = None) -> int:
+        stmt = select(func.count()).select_from(TagWriteLog).where(TagWriteLog.file_id == fid)
+        if status is not None:
+            stmt = stmt.where(TagWriteLog.status == status)
+        if source is not None:
+            stmt = stmt.where(TagWriteLog.source == source)
+        return (await session.execute(stmt)).scalar_one()
+
+    resp = await client.post("/tags/bulk-write-no-discrepancies")
+    assert resp.status_code == 200
+    assert await _log_count(file_id) == 1, "the un-reverted COMPLETED write must be untouched -- the file must not be re-selected yet"
+
+    session.add(
+        TagWriteLog(
+            file_id=file_id,
+            before_tags={"title": "New Title"},
+            after_tags={},
+            source="undo",
+            status=TagWriteStatus.COMPLETED.value,
+            written_at=base + timedelta(seconds=30),
+        )
+    )
+    await session.commit()
+
+    resp2 = await client.post("/tags/bulk-write-no-discrepancies")
+    assert resp2.status_code == 200
+    assert await _log_count(file_id, status="queued", source="proposal") == 1, "the reverted file must be re-dispatched, not stay evicted forever"
 
 
 async def _tagwrite_log_count(session: AsyncSession, file_id: object, *, status: str | None = None) -> int:

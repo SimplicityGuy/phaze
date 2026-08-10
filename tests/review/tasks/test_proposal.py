@@ -78,9 +78,11 @@ SAMPLE_BATCH_RESPONSE = BatchProposalResponse(
 
 @patch("phaze.tasks.proposal.store_proposals", new_callable=AsyncMock)
 @patch("phaze.tasks.proposal.check_rate_limit", new_callable=AsyncMock)
-@patch("phaze.tasks.proposal.load_companion_contents", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.fetch_companion_contents", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.load_companion_targets", new_callable=AsyncMock)
 async def test_generate_proposals_happy_path(
-    mock_companions: AsyncMock,
+    mock_targets: AsyncMock,
+    mock_fetch: AsyncMock,
     mock_rate_limit: AsyncMock,
     mock_store: AsyncMock,
 ) -> None:
@@ -102,7 +104,8 @@ async def test_generate_proposals_happy_path(
     mock_result_metadata.scalar_one_or_none.return_value = None
     session.execute.side_effect = [mock_result_file, mock_result_analysis, mock_result_metadata]
 
-    mock_companions.return_value = []
+    mock_targets.return_value = {}
+    mock_fetch.return_value = []
 
     ctx = _make_ctx(mock_session=session)
     ctx["proposal_service"].generate_batch.return_value = SAMPLE_BATCH_RESPONSE
@@ -121,9 +124,11 @@ async def test_generate_proposals_happy_path(
 
 @patch("phaze.tasks.proposal.store_proposals", new_callable=AsyncMock)
 @patch("phaze.tasks.proposal.check_rate_limit", new_callable=AsyncMock)
-@patch("phaze.tasks.proposal.load_companion_contents", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.fetch_companion_contents", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.load_companion_targets", new_callable=AsyncMock)
 async def test_generate_proposals_file_not_found(
-    _mock_companions: AsyncMock,
+    _mock_targets: AsyncMock,
+    _mock_fetch: AsyncMock,
     _mock_rate_limit: AsyncMock,
     _mock_store: AsyncMock,
 ) -> None:
@@ -142,6 +147,7 @@ async def test_generate_proposals_file_not_found(
     assert result["status"] == "empty"
     assert result["count"] == 0
     _mock_rate_limit.assert_not_called()
+    _mock_fetch.assert_not_called()
 
 
 async def test_generate_proposals_retry_on_exception() -> None:
@@ -158,9 +164,11 @@ async def test_generate_proposals_retry_on_exception() -> None:
 
 @patch("phaze.tasks.proposal.store_proposals", new_callable=AsyncMock)
 @patch("phaze.tasks.proposal.check_rate_limit", new_callable=AsyncMock)
-@patch("phaze.tasks.proposal.load_companion_contents", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.fetch_companion_contents", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.load_companion_targets", new_callable=AsyncMock)
 async def test_generate_proposals_calls_rate_limit(
-    mock_companions: AsyncMock,
+    mock_targets: AsyncMock,
+    mock_fetch: AsyncMock,
     mock_rate_limit: AsyncMock,
     mock_store: AsyncMock,
 ) -> None:
@@ -181,7 +189,8 @@ async def test_generate_proposals_calls_rate_limit(
     mock_result_metadata.scalar_one_or_none.return_value = None
     session.execute.side_effect = [mock_result_file, mock_result_analysis, mock_result_metadata]
 
-    mock_companions.return_value = []
+    mock_targets.return_value = {}
+    mock_fetch.return_value = []
 
     ctx = _make_ctx(mock_session=session)
     ctx["proposal_service"].generate_batch.return_value = SAMPLE_BATCH_RESPONSE
@@ -194,9 +203,11 @@ async def test_generate_proposals_calls_rate_limit(
 
 @patch("phaze.tasks.proposal.store_proposals", new_callable=AsyncMock)
 @patch("phaze.tasks.proposal.check_rate_limit", new_callable=AsyncMock)
-@patch("phaze.tasks.proposal.load_companion_contents", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.fetch_companion_contents", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.load_companion_targets", new_callable=AsyncMock)
 async def test_generate_proposals_holds_no_session_across_rate_limit_and_llm(
-    mock_companions: AsyncMock,
+    mock_targets: AsyncMock,
+    mock_fetch: AsyncMock,
     mock_rate_limit: AsyncMock,
     mock_store: AsyncMock,
 ) -> None:
@@ -208,6 +219,11 @@ async def test_generate_proposals_holds_no_session_across_rate_limit_and_llm(
     The read session must CLOSE before those awaits and a FRESH session open only for the write. We
     record the session-lifecycle events interleaved with the rate-limit/LLM/store calls and assert the
     read session is exited before either network await, and the write session is opened after them.
+
+    phaze-potg5: the companion FETCH (the agent round-trip half of the old ``load_companion_contents``)
+    is recorded here too and asserted to run after the read session closes and before the write
+    session opens -- see ``test_generate_proposals_holds_no_session_across_companion_fetch`` below
+    for a test isolating just that claim.
     """
     from phaze.tasks.proposal import generate_proposals
 
@@ -245,6 +261,10 @@ async def test_generate_proposals_holds_no_session_across_rate_limit_and_llm(
         cm.__aexit__ = _aexit
         return cm
 
+    async def _companion_fetch_recording(*_a: Any, **_k: Any) -> list[dict[str, str]]:
+        events.append("companion_fetch")
+        return []
+
     async def _rate_limit_recording(*_a: Any, **_k: Any) -> None:
         events.append("rate_limit")
 
@@ -256,7 +276,8 @@ async def test_generate_proposals_holds_no_session_across_rate_limit_and_llm(
         events.append("store")
         return 1
 
-    mock_companions.return_value = []
+    mock_targets.return_value = {"some-agent": []}
+    mock_fetch.side_effect = _companion_fetch_recording
     mock_rate_limit.side_effect = _rate_limit_recording
     mock_store.side_effect = _store_recording
 
@@ -269,13 +290,101 @@ async def test_generate_proposals_holds_no_session_across_rate_limit_and_llm(
     assert result["status"] == "ok"
     # Two distinct sessions were opened (read, then write) -- not one held across the whole task.
     assert session_count == 2
-    # The read session closes BEFORE the rate-limit backoff and the LLM call.
+    # The read session closes BEFORE the companion fetch, the rate-limit backoff, and the LLM call.
+    assert events.index("close1") < events.index("companion_fetch")
     assert events.index("close1") < events.index("rate_limit")
     assert events.index("close1") < events.index("llm")
-    # The write session opens only AFTER both network awaits complete.
+    # The write session opens only AFTER every network await (companion fetch, rate limit, LLM).
+    assert events.index("open2") > events.index("companion_fetch")
     assert events.index("open2") > events.index("rate_limit")
     assert events.index("open2") > events.index("llm")
     assert events.index("store") > events.index("open2")
+
+
+@patch("phaze.tasks.proposal.store_proposals", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.check_rate_limit", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.fetch_companion_contents", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.load_companion_targets", new_callable=AsyncMock)
+async def test_generate_proposals_holds_no_session_across_companion_fetch(
+    mock_targets: AsyncMock,
+    mock_fetch: AsyncMock,
+    mock_rate_limit: AsyncMock,
+    mock_store: AsyncMock,
+) -> None:
+    """phaze-potg5: no DB session/transaction is held across the companion agent round-trip.
+
+    Since phaze-6bkk, the per-file companion read is NOT a local read -- it is a
+    ``queue.apply("read_companion_files", timeout=30, ...)`` request/response job dispatched to the
+    owning agent's meta lane. Holding the read session open across that 30s-per-chunk network call
+    (as the code did before this bead) pins a PgBouncer SESSION-mode connection idle-in-transaction
+    for up to the full timeout, per file, per concurrent worker slot -- reproducing the pool
+    exhaustion shape phaze-6fvu closed for the rate-limit/LLM calls. This test isolates just that
+    claim: ``load_companion_targets`` (the DB read) must run INSIDE the read session, and
+    ``fetch_companion_contents`` (the network round-trip) must run only AFTER that session has
+    closed.
+    """
+    from phaze.tasks.proposal import generate_proposals
+
+    file_id = uuid.uuid4()
+    file_record = _make_file_record(file_id=file_id)
+
+    events: list[str] = []
+
+    def _make_recording_session() -> AsyncMock:
+        s = AsyncMock()
+        mock_result_file = MagicMock()
+        mock_result_file.scalar_one_or_none.return_value = file_record
+        mock_result_none = MagicMock()
+        mock_result_none.scalar_one_or_none.return_value = None
+        s.execute.side_effect = [mock_result_file, mock_result_none, mock_result_none]
+        return s
+
+    def _factory() -> AsyncMock:
+        cm = AsyncMock()
+
+        async def _aenter(*_a: Any) -> AsyncMock:
+            events.append("session_open")
+            return _make_recording_session()
+
+        async def _aexit(*_a: Any) -> bool:
+            events.append("session_close")
+            return False
+
+        cm.__aenter__ = _aenter
+        cm.__aexit__ = _aexit
+        return cm
+
+    async def _load_targets_recording(*_a: Any, **_k: Any) -> dict[str, list[Any]]:
+        # The DB portion runs WHILE the read session is open -- record that it saw an open session
+        # and no close yet.
+        events.append("load_targets")
+        return {"fileserver-01": []}
+
+    async def _fetch_recording(*_a: Any, **_k: Any) -> list[dict[str, str]]:
+        events.append("companion_fetch")
+        return [{"filename": "info.nfo", "content": "hello"}]
+
+    mock_targets.side_effect = _load_targets_recording
+    mock_fetch.side_effect = _fetch_recording
+    mock_rate_limit.return_value = None
+    mock_store.return_value = 1
+
+    ctx = _make_ctx()
+    ctx["async_session"] = _factory
+    ctx["proposal_service"].generate_batch.return_value = SAMPLE_BATCH_RESPONSE
+
+    result = await generate_proposals(ctx, file_ids=[str(file_id)], batch_index=0)
+
+    assert result["status"] == "ok"
+    # load_companion_targets (the DB read) happens BEFORE the read session closes.
+    assert events.index("load_targets") < events.index("session_close")
+    # fetch_companion_contents (the agent network round-trip) happens strictly AFTER the read
+    # session closes -- this is the core regression this bead fixes.
+    assert events.index("companion_fetch") > events.index("session_close")
+    # And it is called with the targets load_companion_targets produced, not re-derived.
+    mock_fetch.assert_awaited_once()
+    fetch_call_kwargs = mock_fetch.await_args
+    assert fetch_call_kwargs.args[0] == {"fileserver-01": []}
 
 
 def test_controller_settings_contains_generate_proposals() -> None:

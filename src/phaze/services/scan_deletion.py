@@ -116,7 +116,33 @@ async def delete_scan_cascade(session: AsyncSession, batch_id: uuid.UUID) -> dic
     # cascade against the read window so `DELETE FROM files` can never observe a row committed
     # mid-cascade (see the fix's own longer-term note: gating deletion on no live/queued jobs for
     # the batch's files would remove the retry cost entirely, but is a larger scheduling change).
-    await session.execute(files_of_batch.with_for_update())
+    #
+    # phaze-zfxy6: this FOR UPDATE sweep and `upsert_files`' (routers/agent_files.py) multi-row
+    # `INSERT ... ON CONFLICT DO UPDATE` are TWO independent multi-row lockers over an
+    # overlapping row set (a rescan reassigning a completed batch's files to the agent's live
+    # batch, while an operator deletes that completed batch). With no explicit order, this
+    # sweep locked in heap/plan order while the upsert locks in VALUES order (the agent's
+    # directory-walk order) -- two lockers visiting the same rows in different orders is the
+    # classic ABBA deadlock: cascade holds row A waiting on row B while the upsert holds B
+    # waiting on A. Postgres aborts one side after `deadlock_timeout`, either 500ing this whole
+    # cascade or losing the agent's chunk. `original_path` is the only column both sides can
+    # sort on (the cascade only has `batch_id`; the upsert's natural key is
+    # `(agent_id, original_path)`), so order THIS lock acquisition by it -- `upsert_files` sorts
+    # its deduped VALUES rows by the same column, giving both lockers one global acquisition
+    # order. Whichever transaction reaches a given row first holds it and the other blocks on
+    # that exact row; neither can be holding a "later" row the other needs, so the cycle cannot
+    # form. Use a locally-ordered clone (`files_of_batch` itself stays unordered below -- it is
+    # only ever used as an `IN (...)` subquery scoping predicate, where row order is
+    # irrelevant and an ORDER BY would just be dead weight on the plan).
+    #
+    # This also closes the identical unordered acquisition an adversarial reviewer flagged at
+    # the final `DELETE FROM files WHERE batch_id = :b` (below): that statement targets exactly
+    # the row set this sweep already holds FOR UPDATE, in the SAME transaction. Postgres does
+    # not re-acquire a lock its own transaction already holds, so that DELETE takes no new
+    # locks and cannot re-open the cycle -- and the phaze-8567 ScanBatch FOR UPDATE above
+    # blocks any INSERT that would grow this batch's file set between the two statements, so
+    # the row set cannot drift in the meantime either.
+    await session.execute(files_of_batch.order_by(FileRecord.original_path).with_for_update())
 
     # Tracklist chain subqueries (4 levels deep). NULL-file_id tracklists are
     # excluded automatically: ``file_id IN (files_of_batch)`` never matches NULL.

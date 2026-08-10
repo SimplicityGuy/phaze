@@ -66,7 +66,7 @@ _WRITE_MP4_MAP: dict[str, str] = {
 _CORE_TAG_FIELDS: tuple[str, ...] = ("artist", "title", "album", "year", "genre", "track_number")
 
 
-def write_tags(file_path: str, tags: dict[str, str | int | None]) -> None:
+def write_tags(file_path: str, tags: dict[str, str | int | list[str] | None]) -> None:
     """Write tags to an audio file using format-aware mutagen methods.
 
     Supports ID3 (MP3), Vorbis (OGG/FLAC/OPUS), and MP4 (M4A) formats.
@@ -75,7 +75,10 @@ def write_tags(file_path: str, tags: dict[str, str | int | None]) -> None:
         file_path: Path to the audio file.
         tags: Dict of field names to values. A ``None`` value DELETES the corresponding
             frame/atom/comment (phaze-52qd: this is how an undo removes a tag a prior write
-            added). A field that is simply absent from the dict is left untouched.
+            added). A field that is simply absent from the dict is left untouched. A
+            ``list[str]`` value (phaze-z2u08: currently only ``genre``, via an undo snapshot's
+            raw multi-value capture) writes one frame/comment/atom PER entry, verbatim -- not
+            joined into a single value.
 
     Raises:
         ValueError: If the file is not a recognized audio format.
@@ -99,20 +102,31 @@ def write_tags(file_path: str, tags: dict[str, str | int | None]) -> None:
     audio.save()
 
 
-def _write_id3(audio: Any, tags: dict[str, str | int | None]) -> None:
-    """Write ID3 frames to an MP3 file. A ``None`` value DELETES the frame (phaze-52qd)."""
+def _write_id3(audio: Any, tags: dict[str, str | int | list[str] | None]) -> None:
+    """Write ID3 frames to an MP3 file. A ``None`` value DELETES the frame (phaze-52qd).
+
+    phaze-z2u08: a ``list[str]`` value (a multi-value genre undo snapshot) writes ONE TCON frame
+    with every entry as a separate ``text`` list item, instead of collapsing it to a single value.
+    """
     for field, value in tags.items():
         frame_cls = _WRITE_ID3_MAP.get(field)
         if frame_cls is None:
             continue
         if value is None:
             audio.tags.delall(frame_cls.__name__)
+        elif isinstance(value, list):
+            audio.tags.add(frame_cls(encoding=3, text=[str(item) for item in value]))
         else:
             audio.tags.add(frame_cls(encoding=3, text=[str(value)]))
 
 
-def _write_vorbis(audio: Any, tags: dict[str, str | int | None]) -> None:
-    """Write Vorbis comments to an OGG/FLAC/OPUS file. A ``None`` value DELETES the key (phaze-52qd)."""
+def _write_vorbis(audio: Any, tags: dict[str, str | int | list[str] | None]) -> None:
+    """Write Vorbis comments to an OGG/FLAC/OPUS file. A ``None`` value DELETES the key (phaze-52qd).
+
+    phaze-z2u08: a ``list[str]`` value (a multi-value genre undo snapshot) writes one Vorbis
+    comment PER entry -- the same multi-comment shape the file originally carried -- instead of
+    collapsing every value into a single joined comment.
+    """
     for field, value in tags.items():
         vorbis_key = _WRITE_VORBIS_MAP.get(field)
         if vorbis_key is None:
@@ -120,6 +134,8 @@ def _write_vorbis(audio: Any, tags: dict[str, str | int | None]) -> None:
         if value is None:
             if vorbis_key in audio:
                 del audio[vorbis_key]
+        elif isinstance(value, list):
+            audio[vorbis_key] = [str(item) for item in value]
         else:
             audio[vorbis_key] = [str(value)]
 
@@ -141,8 +157,14 @@ def _mp4_track_tuple(value: str | int) -> tuple[int, int]:
     return (int(value), 0)
 
 
-def _write_mp4(audio: Any, tags: dict[str, str | int | None]) -> None:
-    """Write MP4 atoms to an M4A file. A ``None`` value DELETES the atom (phaze-52qd)."""
+def _write_mp4(audio: Any, tags: dict[str, str | int | list[str] | None]) -> None:
+    """Write MP4 atoms to an M4A file. A ``None`` value DELETES the atom (phaze-52qd).
+
+    phaze-z2u08: a ``list[str]`` value (a multi-value genre undo snapshot) writes every entry as
+    a separate ``\xa9gen`` atom value, instead of collapsing it to one. ``track_number`` never
+    carries a list -- its own raw text stays a plain ``"N"``/``"N/total"`` string -- so that branch
+    is checked after the list branch and keeps its original ``str | int`` typing.
+    """
     for field, value in tags.items():
         mp4_key = _WRITE_MP4_MAP.get(field)
         if mp4_key is None:
@@ -150,6 +172,8 @@ def _write_mp4(audio: Any, tags: dict[str, str | int | None]) -> None:
         if value is None:
             if mp4_key in audio:
                 del audio[mp4_key]
+        elif isinstance(value, list):
+            audio[mp4_key] = [str(item) for item in value]
         elif field == "track_number":
             audio[mp4_key] = [_mp4_track_tuple(value)]
         else:
@@ -167,7 +191,7 @@ _SEMANTIC_COMPARE_FIELDS: dict[str, Callable[[Any], int | None]] = {
 }
 
 
-def verify_write(file_path: str, expected: dict[str, str | int | None]) -> dict[str, dict[str, str | None]]:
+def verify_write(file_path: str, expected: dict[str, str | int | list[str] | None]) -> dict[str, dict[str, str | None]]:
     """Verify written tags by re-reading and comparing with NFC normalization.
 
     Args:
@@ -192,6 +216,11 @@ def verify_write(file_path: str, expected: dict[str, str | int | None]) -> dict[
     Note (phaze-2zl7): ``year``/``track_number`` are compared through the extractor's OWN
     normalization rule (see :data:`_SEMANTIC_COMPARE_FIELDS`), not raw NFC text -- see that
     mapping's docstring.
+
+    Note (phaze-z2u08): a ``list[str]`` expected ``genre`` (a multi-value undo snapshot) is
+    compared against the re-read file's OWN raw multi-value list (``ExtractedTags.raw_genre``),
+    not the single-value normalized ``genre`` field -- the latter is always just the first entry,
+    which would report every multi-value write as a false discrepancy.
     """
     actual_tags = extract_tags(file_path, strict=True)
     discrepancies: dict[str, dict[str, str | None]] = {}
@@ -206,6 +235,18 @@ def verify_write(file_path: str, expected: dict[str, str | int | None]) -> dict[
                 discrepancies[field] = {
                     "expected": None,
                     "actual": unicodedata.normalize("NFC", str(actual_val)),
+                }
+            continue
+
+        if field == "genre" and isinstance(expected_val, list):
+            actual_raw = actual_tags.raw_genre
+            actual_list = actual_raw if isinstance(actual_raw, list) else ([actual_raw] if actual_raw is not None else [])
+            expected_norm_list = [unicodedata.normalize("NFC", str(item)) for item in expected_val]
+            actual_norm_list = [unicodedata.normalize("NFC", str(item)) for item in actual_list]
+            if expected_norm_list != actual_norm_list:
+                discrepancies[field] = {
+                    "expected": "; ".join(expected_norm_list),
+                    "actual": "; ".join(actual_norm_list) if actual_norm_list else None,
                 }
             continue
 
@@ -231,7 +272,7 @@ def verify_write(file_path: str, expected: dict[str, str | int | None]) -> dict[
     return discrepancies
 
 
-def _extract_before_tags(file_path: str) -> dict[str, str | int | None]:
+def _extract_before_tags(file_path: str) -> dict[str, str | int | list[str] | None]:
     """Extract current tags as a COMPLETE before/undo snapshot.
 
     phaze-52qd: records EVERY core field, mapping an absent tag to an explicit ``None`` rather
@@ -246,9 +287,13 @@ def _extract_before_tags(file_path: str) -> dict[str, str | int | None]:
     (a full release date truncates to a 4-digit year, "N/total" drops the total, a multi-value
     genre keeps only the first). Falls back to the normalized value when no raw text exists (the
     field is genuinely absent on disk, or the format has no richer representation to lose).
+
+    phaze-z2u08: a MULTI-value genre's raw text is now a real ``list[str]`` (``raw_genre``), not a
+    ``"; "``-joined string -- so ``write_tags`` can write every value back verbatim on undo instead
+    of collapsing them into one. A single-value genre is still a plain ``str``.
     """
     tags = extract_tags(file_path)
-    before: dict[str, str | int | None] = {field: getattr(tags, field, None) for field in _CORE_TAG_FIELDS}
+    before: dict[str, str | int | list[str] | None] = {field: getattr(tags, field, None) for field in _CORE_TAG_FIELDS}
     if tags.raw_year is not None:
         before["year"] = tags.raw_year
     if tags.raw_track_number is not None:
@@ -260,8 +305,8 @@ def _extract_before_tags(file_path: str) -> dict[str, str | int | None]:
 
 def write_and_verify_sync(
     file_path: str,
-    proposed_tags: dict[str, str | int | None],
-) -> tuple[TagWriteStatus, dict[str, dict[str, str | None]] | None, str | None, dict[str, str | int | None]]:
+    proposed_tags: dict[str, str | int | list[str] | None],
+) -> tuple[TagWriteStatus, dict[str, dict[str, str | None]] | None, str | None, dict[str, str | int | list[str] | None]]:
     """Synchronous disk work for one tag write: read-before, write, verify (phaze-qfxv).
 
     Bundled into a single function so the ENTIRE blocking sequence -- ``_extract_before_tags``
@@ -278,7 +323,7 @@ def write_and_verify_sync(
     EVERY path (including a failure in ``write_tags``/``verify_write`` after a successful read)
     so the audit log's before/undo snapshot is preserved.
     """
-    before_tags: dict[str, str | int | None] = {}
+    before_tags: dict[str, str | int | list[str] | None] = {}
     try:
         before_tags = _extract_before_tags(file_path)
         write_tags(file_path, proposed_tags)
