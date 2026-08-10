@@ -119,8 +119,21 @@ async def patch_scan_batch(
     # caller happens to set. A genuinely no-op PATCH (nothing set at all, or only `status`
     # re-affirming the row's own terminal value with no other mutating field) still gets the
     # idempotent 200 echo -- everything else against a terminal row is refused with 409.
+    #
+    # phaze-01a3h: the echo test used to require the body carry NOTHING but `status` -- too
+    # narrow for the agent's real terminal PATCHes, which always carry extra fields
+    # (ScanBatchPatch(status="completed", total_files=N, processed_files=N) --
+    # tasks/scan.py:317-320; ScanBatchPatch(status="failed", error_message=...) --
+    # :296-299/:337-340). The client funnel retries on ANY httpx.TransportError, including a
+    # read timeout on a response whose request already committed server-side; the resulting
+    # retry resends that identical multi-field body, failed the old keys-only check, and hit an
+    # unwarranted 409 that crashed the (already-successful) scan task. Compare every
+    # EXPLICITLY-set field against the ORM attribute it would overwrite instead of the key set:
+    # a value-identical replay (every set field already matches the row) is a true no-op and
+    # gets the 200 echo; any field that actually differs from the current row still 409s below,
+    # so a genuine conflicting write is unaffected.
     if cur in _TERMINAL_SCAN_STATUSES:
-        is_pure_echo = not set_fields or (set(set_fields.keys()) == {"status"} and body.status is not None and ScanStatus(body.status) == cur)
+        is_pure_echo = not set_fields or all(getattr(batch, field) == value for field, value in set_fields.items())
         if is_pure_echo:
             return _row_to_response(batch)
         if body.status is not None:
