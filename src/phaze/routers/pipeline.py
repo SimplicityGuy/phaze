@@ -48,6 +48,7 @@ from phaze.services.backends import (
     LANE_RECENT_N,
     derive_cloud_hold_reason,
     derive_localqueue_unreachable,
+    get_analyze_queue_totals,
     get_backend_lane_snapshot,
     get_lane_queue_depths,
     get_lane_recent_completions,
@@ -927,13 +928,21 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     recon = await get_global_reconciliation(session)
 
     # Phase 71 (71-03, BEUI-01 / D-04): the N-lane grid snapshot -- one rank-ascending, secret-free dict
-    # per registry backend {id, kind, rank, cap, in_flight, available, quota_wait, inadmissible}. Seeded
-    # IDENTICALLY in pipeline_stats_partial() below so the WHOLE #analyze-lanes grid OOB-swaps on the SAME
-    # existing 5s poll (no second loop, no new read endpoint -- Pitfall 2: N is dynamic, no per-lane store
-    # keys). The snapshot helper owns the never-500 degrade (-> [] on any error), so NO try/except here --
+    # per registry backend {id, kind, rank, cap, in_flight, available, quota_wait, inadmissible, queued,
+    # working, processed_24h, processed_lifetime} (the last four added phaze-5c6i2). Seeded IDENTICALLY
+    # in pipeline_stats_partial() below so the WHOLE #analyze-lanes grid OOB-swaps on the SAME existing
+    # 5s poll (no second loop, no new read endpoint -- Pitfall 2: N is dynamic, no per-lane store keys).
+    # The snapshot helper owns the never-500 degrade (-> [] on any error), so NO try/except here --
     # same service-owns-degrade idiom as the cloud counts above. This SUPERSEDES the transitional single
     # non-local lane-kind key (retired); resolved_non_local_kind stays for the :811 callers.
-    lanes = await get_backend_lane_snapshot(session)
+    lanes = await get_backend_lane_snapshot(session, app_state)
+
+    # phaze-5c6i2 (acceptance rule 2): the global "TOTAL QUEUED (analyze)" figure + its unrouted
+    # remainder, derived from the SAME lane snapshot above (each lane's own ``queued``) plus the
+    # Stage.ANALYZE not_started bucket. Seeded IDENTICALLY in pipeline_stats_partial() below so the
+    # OOB-swapped card re-push agrees with this first-load render (the OOB swap contract). Degrade-safe
+    # at the service layer, so NO router try/except -- mirrors the lanes wiring immediately above.
+    analyze_queue_totals = await get_analyze_queue_totals(session, lanes)
 
     # phaze-6r39 (retires 56-02/D-05/D-06's cross-process Redis flag): the K8s LocalQueue-unreachable
     # amber alert, derived from the SAME lane snapshot above rather than a separate boot-time Redis key.
@@ -977,6 +986,10 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
         # Phase 71 (71-03, BEUI-01 / D-04): the N-lane grid snapshot (seeded above, mirrored identically
         # in pipeline_stats_partial). Retires the transitional single non-local lane-kind context key.
         "lanes": lanes,
+        # phaze-5c6i2 (acceptance rule 2): the global TOTAL QUEUED (analyze) figure + its unrouted
+        # remainder (seeded above, mirrored identically in pipeline_stats_partial).
+        "total_queued_analyze": analyze_queue_totals["total_queued"],
+        "unrouted_queued_analyze": analyze_queue_totals["unrouted_queued"],
         **activity,
         **dag_ctx,
         "queue_progress_percent": queue_progress,
@@ -1092,7 +1105,7 @@ async def pipeline_stats_partial(
             # 5s poll so the WHOLE #analyze-lanes grid OOB-swaps as a unit (stats_bar.html includes _analyze_lanes
             # with oob=True inside the oob_counts gate). Seeded IDENTICALLY to build_dashboard_context (degrade-safe
             # -> [], never 500) -- one existing poll, no second loop, no new read endpoint.
-            _read_in_own_session(fanout, lambda s: get_backend_lane_snapshot(s), cast("list[dict[str, Any]]", [])),
+            _read_in_own_session(fanout, lambda s: get_backend_lane_snapshot(s, request.app.state), cast("list[dict[str, Any]]", [])),
             # The SAME hold-reason derivation build_dashboard_context seeds on first load, re-pushed on every 5s
             # poll so the awaiting_cloud_card sub-caption stays live via its OOB swap (the OOB swap contract:
             # both render paths must agree). Degrade-safe at the service layer, so NO router try/except -- mirrors
@@ -1106,6 +1119,11 @@ async def pipeline_stats_partial(
     # render paths must agree). Pure function over the `lanes` snapshot just resolved above -- no I/O,
     # cannot raise -- so NO router try/except, mirroring the lanes wiring immediately above it.
     localqueue_unreachable = derive_localqueue_unreachable(lanes)
+    # phaze-5c6i2 (acceptance rule 2): the same TOTAL QUEUED (analyze) derivation build_dashboard_context
+    # seeds on first load, re-pushed on every 5s poll so the total-queued card stays live via its OOB
+    # swap (the OOB swap contract: both render paths must agree). Depends on the JUST-resolved `lanes`
+    # value, so it runs sequentially here rather than inside the gather above.
+    analyze_queue_totals = await get_analyze_queue_totals(session, lanes)
     queue_progress = queue_progress_percent(stats["analyzed"], activity["agent_busy"])
     # Phase 35 (35-04): same per-node reconcile as dashboard(), re-pushed on every 5s
     # poll via the OOB x-init seeds in stats_bar.html (gated behind oob_counts). The store
@@ -1148,6 +1166,8 @@ async def pipeline_stats_partial(
             "lanes": lanes,
             "selected_lane": selected_lane,
             "lanes_hash": lanes_hash,
+            "total_queued_analyze": analyze_queue_totals["total_queued"],
+            "unrouted_queued_analyze": analyze_queue_totals["unrouted_queued"],
             **activity,
             **dag_ctx,
             "queue_progress_percent": queue_progress,
@@ -1173,7 +1193,7 @@ async def lane_detail(
     carries its own bounded 5s tick (D-03). Read-only -- no commit. Only secret-free filename/timestamp/id
     scalars leave here (T-88-04); ``backend_id``/``kind`` stay Jinja-autoescaped (T-88-05).
     """
-    lanes = await get_backend_lane_snapshot(session)  # degrade-safe -> []
+    lanes = await get_backend_lane_snapshot(session, request.app.state)  # degrade-safe -> []
     lane = next((one for one in lanes if one["id"] == backend_id), None)
     if lane is None:
         return templates.TemplateResponse(

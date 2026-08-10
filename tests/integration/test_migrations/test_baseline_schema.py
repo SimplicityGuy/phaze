@@ -252,7 +252,8 @@ def test_baseline_is_the_only_migration() -> None:
     cloud_job.node_loss_pending, the durable carry for a node-loss verdict classified while the
     still-terminating re-drive deferral is waiting -- without it the verdict died with the deferral's
     stack frame and a Job that vanished before the next tick silently charged `attempts` instead of
-    the tighter `node_loss_redrives` ceiling.
+    the tighter `node_loss_redrives` ceiling; 058 (phaze-5c6i2) adds a partial btree ON
+    `analysis.analysis_completed_at` for the lane cards' rolling-24h/lifetime PROCESSED counts.
     Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
@@ -276,6 +277,7 @@ def test_baseline_is_the_only_migration() -> None:
         "055_cloud_budget_ledger.py",
         "056_fix_double_prefixed_check_constraints.py",
         "057_cloud_job_node_loss_pending.py",
+        "058_analysis_completed_at_btree.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -307,10 +309,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (057: the node-loss verdict carry)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (058: the analysis_completed_at btree)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "057"
+    assert version == "058"
 
 
 @pytest.mark.asyncio
@@ -639,7 +641,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "057"
+        assert version == "058"
     finally:
         if engine is not None:
             await engine.dispose()

@@ -72,6 +72,11 @@
        ready). A SIBLING of the RUN ANALYSIS button, never its ancestor (phaze-thd6 shape) -- see
        metadata_workspace.html / apply_workspace.html for the same pattern. #}
     <div id="analyze-trigger-response" class="px-6 pt-4 empty:hidden"></div>
+    {# phaze-5c6i2 (acceptance rule 2): the global TOTAL QUEUED (analyze) figure, ABOVE the per-lane
+       grid -- one global number that accounts for files not yet routed to any lane, complementing the
+       per-lane queued/working/processed breakdown below. NO `oob` here -> the initial full-page render;
+       the 5s poll re-includes the SAME partial with oob=True. #}
+    {% include "pipeline/partials/_analyze_queue_total.html" %}
     {# (a) the N-lane grid (BEUI-01 / D-05/D-06): _analyze_lanes.html loops _lane_card.html over the seeded
        `lanes` list, rank-ascending. NO `oob` here -> the initial full-page grid (the #analyze-lanes id host
        is present so the poll's OOB grid-swap lands). The stats poll re-includes the SAME partial with

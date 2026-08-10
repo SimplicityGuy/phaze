@@ -25,7 +25,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from phaze.models.agent import Agent
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
-from phaze.services import agent_liveness as liveness_mod
+from phaze.services import agent_liveness as liveness_mod, pipeline as pipeline_mod
 from phaze.services.agent_liveness import (
     AgentStatus,
     ComputeLane,
@@ -330,9 +330,12 @@ async def test_derive_two_kueue_registry_both_running(session: AsyncSession, mon
 
     lanes = await derive_compute_lane_identities(session)
 
+    # phaze-5c6i2: queued/working derive from the SAME phaze-zyoag seam the lane cards use -- a plain
+    # RUNNING row is unconditionally "working" regardless of backend kind, so both lanes are fully
+    # working with nothing queued.
     assert lanes == [
-        ComputeLane(backend_id="k8s-a", kind="kueue", state="ACTIVE", running=2, waiting=0),
-        ComputeLane(backend_id="k8s-b", kind="kueue", state="ACTIVE", running=1, waiting=0),
+        ComputeLane(backend_id="k8s-a", kind="kueue", state="ACTIVE", running=2, waiting=0, queued=0, working=2),
+        ComputeLane(backend_id="k8s-b", kind="kueue", state="ACTIVE", running=1, waiting=0, queued=0, working=1),
     ]
 
 
@@ -345,8 +348,8 @@ async def test_derive_idle_configured_cluster_still_listed(session: AsyncSession
     lanes = await derive_compute_lane_identities(session)
 
     assert lanes == [
-        ComputeLane(backend_id="k8s-a", kind="kueue", state="ACTIVE", running=1, waiting=0),
-        ComputeLane(backend_id="k8s-idle", kind="kueue", state="IDLE", running=0, waiting=0),
+        ComputeLane(backend_id="k8s-a", kind="kueue", state="ACTIVE", running=1, waiting=0, queued=0, working=1),
+        ComputeLane(backend_id="k8s-idle", kind="kueue", state="IDLE", running=0, waiting=0, queued=0, working=0),
     ]
 
 
@@ -354,6 +357,11 @@ async def test_derive_idle_configured_cluster_still_listed(session: AsyncSession
 async def test_derive_waiting_via_submitted_inadmissible(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A SUBMITTED+inadmissible row (and no running) → WAITING; a plain SUBMITTED row does NOT count as waiting."""
     monkeypatch.setattr(liveness_mod, "get_settings", lambda: _settings(_backend("k8s-a", "kueue")))
+    # phaze-5c6i2: _cloud_window_clauses (pipeline.py) resolves kueue-ness via ITS OWN bound
+    # ``get_settings`` -- a separate name from liveness_mod's, so both must carry the SAME registry for
+    # queued/working to reflect "k8s-a is a kueue lane" (mirrors tests/shared/services/test_pipeline.py's
+    # ``monkeypatch.setattr(pipeline_mod, "get_settings", ...)`` idiom for the same helper).
+    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _settings(_backend("k8s-a", "kueue")))
     await _seed(
         session,
         ("k8s-a", CloudJobStatus.SUBMITTED.value, True),
@@ -362,13 +370,17 @@ async def test_derive_waiting_via_submitted_inadmissible(session: AsyncSession, 
 
     lanes = await derive_compute_lane_identities(session)
 
-    assert lanes == [ComputeLane(backend_id="k8s-a", kind="kueue", state="WAITING", running=0, waiting=1)]
+    # phaze-5c6i2: BOTH SUBMITTED rows are kueue-attributed, so both count as "working" under the
+    # zyoag option-(a) definition (post-submit, in the cloud window) regardless of the admissible flag
+    # that drives the SEPARATE running/waiting admission-fault fields above.
+    assert lanes == [ComputeLane(backend_id="k8s-a", kind="kueue", state="WAITING", running=0, waiting=1, queued=0, working=2)]
 
 
 @pytest.mark.asyncio
 async def test_derive_running_takes_precedence_over_waiting(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A lane with BOTH a running and a waiting row is ACTIVE (running≥1 dominates)."""
     monkeypatch.setattr(liveness_mod, "get_settings", lambda: _settings(_backend("k8s-a", "kueue")))
+    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _settings(_backend("k8s-a", "kueue")))
     await _seed(
         session,
         ("k8s-a", CloudJobStatus.RUNNING.value, False),
@@ -377,7 +389,8 @@ async def test_derive_running_takes_precedence_over_waiting(session: AsyncSessio
 
     lanes = await derive_compute_lane_identities(session)
 
-    assert lanes == [ComputeLane(backend_id="k8s-a", kind="kueue", state="ACTIVE", running=1, waiting=1)]
+    # phaze-5c6i2: the RUNNING row and the kueue-attributed SUBMITTED row are BOTH "working".
+    assert lanes == [ComputeLane(backend_id="k8s-a", kind="kueue", state="ACTIVE", running=1, waiting=1, queued=0, working=2)]
 
 
 @pytest.mark.asyncio
@@ -393,9 +406,12 @@ async def test_derive_unattributed_lane_only_when_null_rows_in_flight(session: A
 
     lanes = await derive_compute_lane_identities(session)
 
+    # phaze-5c6i2: a NULL backend_id can never be treated as kueue-attributed (the split predicate
+    # requires a non-NULL id IN the kueue set), so the unattributed group's SUBMITTED row falls to
+    # "queued" (the compute-shaped fallback) while its RUNNING row is unconditionally "working".
     assert lanes == [
-        ComputeLane(backend_id="k8s-a", kind="kueue", state="ACTIVE", running=1, waiting=0),
-        ComputeLane(backend_id="unattributed", kind="cloud", state="ACTIVE", running=1, waiting=1),
+        ComputeLane(backend_id="k8s-a", kind="kueue", state="ACTIVE", running=1, waiting=0, queued=0, working=1),
+        ComputeLane(backend_id="unattributed", kind="cloud", state="ACTIVE", running=1, waiting=1, queued=1, working=1),
     ]
 
 
@@ -418,8 +434,8 @@ async def test_derive_degrades_to_registry_all_idle_on_db_error(monkeypatch: pyt
     lanes = await derive_compute_lane_identities(_RaisingSession())  # type: ignore[arg-type]
 
     assert lanes == [
-        ComputeLane(backend_id="k8s-a", kind="kueue", state="IDLE", running=0, waiting=0),
-        ComputeLane(backend_id="a1", kind="compute", state="IDLE", running=0, waiting=0),
+        ComputeLane(backend_id="k8s-a", kind="kueue", state="IDLE", running=0, waiting=0, queued=0, working=0),
+        ComputeLane(backend_id="a1", kind="compute", state="IDLE", running=0, waiting=0, queued=0, working=0),
     ]
 
 
@@ -453,7 +469,7 @@ async def test_derive_degrade_preserves_caller_loaded_agent_rows(session: AsyncS
     monkeypatch.setattr(session, "execute", real_execute)  # restore for the assertion query
 
     # Degrades to the registry lanes all-IDLE, never raises (KDEPLOY-04).
-    assert lanes == [ComputeLane(backend_id="k8s-a", kind="kueue", state="IDLE", running=0, waiting=0)]
+    assert lanes == [ComputeLane(backend_id="k8s-a", kind="kueue", state="IDLE", running=0, waiting=0, queued=0, working=0)]
     # CR-01: the outer transaction (and the earlier flush of the agent) must survive the degrade. A plain
     # ``session.rollback()`` would unwind the outer txn and this lookup would be None.
     assert await session.get(Agent, "cr01-lane-agent") is not None
