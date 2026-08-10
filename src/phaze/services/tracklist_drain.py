@@ -414,6 +414,19 @@ async def perform_lookup(candidate: DrainCandidate, *, search: SearchClient, ren
     derived = candidate.derived
     base = LookupAttempt(set_key=candidate.set_key, query_text=derived.query, outcome=LookupOutcome.SEARCH_FAILED)
 
+    # phaze-97uw8: `select_result` refuses any candidate set whose derived query carries neither
+    # an artist nor an event WITHOUT ever looking at `results` (see its own no-signal guard) --
+    # the refusal is a pure function of `derived`, which we already hold here. Checking it before
+    # spending the search means a no-signal file (a bare date, or every distinguishing word
+    # stripped as noise) never burns a host request against the shared crawl-delay budget just to
+    # have its result discarded unread by the scorer a moment later.
+    if not derived.artist and not derived.event:
+        return replace(
+            base,
+            detail="derived query has neither artist nor event -- nothing to score candidates against",
+            host_requests=0,
+        )
+
     try:
         results = await search.search(derived.query)
     except (SearchRequestFailedError, SearchParseFailureError, DisallowedScrapeHostError) as exc:
