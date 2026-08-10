@@ -174,3 +174,25 @@ async def test_agents_page_no_longer_hosts_the_shared_side_panel() -> None:
     html = re.sub(r"\{#.*?#\}", "", _AGENTS_TABLE.read_text(), flags=re.DOTALL)
     assert "_detail_pane.html" not in html
     assert "pane_kind" not in html
+
+
+_COMPUTE_LANE_PANE = _TEMPLATES / "admin" / "partials" / "_compute_lane_pane.html"
+
+
+@pytest.mark.asyncio
+async def test_compute_lane_pane_partial_deleted_and_not_wired_back() -> None:
+    """phaze-rdxfu (acceptance rule 6): the dedicated side-pane shell is GONE, not just unincluded.
+
+    Pins the deletion itself (not just the include site) so a future edit cannot resurrect the file
+    and quietly wire it back into agents.html/agents_table.html -- both the file's absence and the
+    absence of any reference to it or its swap target are asserted.
+    """
+    assert not _COMPUTE_LANE_PANE.exists(), "_compute_lane_pane.html must be deleted (acceptance rule 6)"
+
+    for template in (_AGENTS_TABLE, _TEMPLATES / "admin" / "partials" / "agents_table.html"):
+        html = re.sub(r"\{#.*?#\}", "", template.read_text(), flags=re.DOTALL)
+        assert "_compute_lane_pane.html" not in html, f"{template} still references the deleted pane partial"
+        assert "#compute-lane-pane" not in html, f"{template} still references the deleted pane's swap target"
+
+    # And the retired card-grid partial the pane used to be included alongside is gone too.
+    assert not (_TEMPLATES / "admin" / "partials" / "compute_lanes.html").exists()

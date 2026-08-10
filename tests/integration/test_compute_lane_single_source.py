@@ -128,17 +128,18 @@ async def test_all_three_surfaces_reflect_one_stubbed_lane_list(
     assert stats.status_code == 200, stats.text
     assert "$store.pipeline.computeLanesActive = 1" in stats.text, "header seed must reflect the ONE ACTIVE stubbed lane"
 
-    # ---- Surface (b): the Agents-page Section-2 tiles (full page + the /_table poll partial) ---------
+    # ---- Surface (b): the Agents-page merged-table lane rows (full page + the /_table poll partial) ---
     for path in ("/admin/agents", "/admin/agents/_table"):
         resp = await client.get(path)
         assert resp.status_code == 200, resp.text
-        section2 = resp.text.split('id="compute-lanes"', 1)[1]
-        assert "vox" in section2, f"vox tile missing from Section 2 of {path}"
-        assert "xenolab" in section2, f"xenolab tile missing from Section 2 of {path}"
-        assert "ACTIVE" in section2, f"vox ACTIVE pill missing from {path}"
-        assert "IDLE" in section2, f"xenolab IDLE pill missing from {path}"
-        # A compute lane is an ephemeral Job-based identity -- never a perpetually-DEAD agent.
-        assert "DEAD" not in section2, f"DEAD leaked into Section 2 of {path}"
+        body = resp.text
+        assert 'id="compute-lane-trigger-vox"' in body, f"vox lane row missing from {path}"
+        assert 'id="compute-lane-trigger-xenolab"' in body, f"xenolab lane row missing from {path}"
+        assert "ACTIVE" in body, f"vox ACTIVE pill missing from {path}"
+        assert "IDLE" in body, f"xenolab IDLE pill missing from {path}"
+        # A compute lane is an ephemeral Job-based identity -- never a perpetually-DEAD agent, and
+        # this fixture seeds no dead agent either, so the never-DEAD guarantee is checked page-wide.
+        assert "DEAD" not in body, f"DEAD leaked into {path}"
 
     # ---- Surface (c): the Analyze-stage file badge derives its kind from the SAME registry projection.
     # The badge does NOT re-derive lanes; it reads non_local_backend_kinds(settings) -- the exact helper

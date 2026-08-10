@@ -288,16 +288,17 @@ async def _seed_cloud_job(session: AsyncSession, make_file, *, backend_id: str) 
 
 
 @pytest.mark.asyncio
-async def test_section2_renders_two_cluster_tiles(
+async def test_lane_rows_render_for_both_clusters_never_dead(
     session: AsyncSession,
     make_file,  # type: ignore[no-untyped-def]
     backends_toml_env,  # type: ignore[no-untyped-def]
 ) -> None:
-    """COMPUTE-01: two stamped clusters (vox ACTIVE, xenolab IDLE) → two labeled tiles, never DEAD.
+    """phaze-rdxfu: two stamped clusters (vox ACTIVE, xenolab IDLE) → two lane rows, never DEAD.
 
-    A 2-compute registry (vox + xenolab) with a RUNNING CloudJob stamped only on vox: Section 2 must
-    render BOTH per-cluster tiles labeled by backend_id — vox ACTIVE while xenolab stays a visible IDLE
-    lane (registry-composed, no reachability probe) — and NEVER a perpetual DEAD state (KDEPLOY-04).
+    A 2-compute registry (vox + xenolab) with a RUNNING CloudJob stamped only on vox: the merged
+    table must render BOTH per-cluster rows labeled by backend_id — vox ACTIVE while xenolab stays a
+    visible IDLE lane (registry-composed, no reachability probe) — and NEVER a perpetual DEAD state
+    (KDEPLOY-04), which is structurally impossible for a lane row (TableRow.status_kind == "lane").
     """
     backends_toml_env(_TWO_CLUSTER_REGISTRY)
     await _seed_cloud_job(session, make_file, backend_id="vox")
@@ -308,27 +309,40 @@ async def test_section2_renders_two_cluster_tiles(
             response = await ac.get(path)
             assert response.status_code == 200, response.text
             body = response.text
-            compute_section = body.split('id="compute-lanes"', 1)[1]
-            # Both clusters render as labeled tiles.
-            assert "vox" in compute_section, f"vox tile missing from {path}"
-            assert "xenolab" in compute_section, f"xenolab tile missing from {path}"
+            # Both clusters render as their own rows.
+            assert 'id="compute-lane-trigger-vox"' in body, f"vox row missing from {path}"
+            assert 'id="compute-lane-trigger-xenolab"' in body, f"xenolab row missing from {path}"
             # vox is doing work → ACTIVE; xenolab is configured-but-quiet → IDLE (still listed).
-            assert "ACTIVE" in compute_section, f"vox ACTIVE pill missing from {path}"
-            assert "IDLE" in compute_section, f"xenolab IDLE pill missing from {path}"
-            # Never a perpetual DEAD/rose state in Section 2.
-            assert "DEAD" not in compute_section, f"DEAD leaked into Section 2 of {path}"
+            assert "ACTIVE" in body, f"vox ACTIVE pill missing from {path}"
+            assert "IDLE" in body, f"xenolab IDLE pill missing from {path}"
+            # Never a perpetual DEAD/rose state anywhere on the page (no dead agent is seeded either).
+            assert "DEAD" not in body, f"DEAD leaked into {path}"
 
 
 @pytest.mark.asyncio
-async def test_section2_poll_partial_matches_full_page(
+def _merged_row_order(body: str) -> list[str]:
+    """Return every row's trigger id (agent OR lane) in on-page order, prefix included.
+
+    Used for the poll/full-page parity check below instead of a raw byte comparison of the whole
+    section: `data-refreshed-at` and the "Last refreshed Ns ago" Alpine seed are real timestamps that
+    legitimately differ by a few milliseconds between two SEPARATE requests, so a byte-for-byte
+    comparison of the full section would be flaky on wall-clock timing rather than testing the
+    property acceptance rule 7 actually asks for -- ROW ORDERING agreement.
+    """
+    return re.findall(r'<tr id="((?:agent|compute-lane)-trigger-[^"]+)"', body)
+
+
+@pytest.mark.asyncio
+async def test_poll_partial_matches_full_page_for_the_merged_table(
     session: AsyncSession,
     make_file,  # type: ignore[no-untyped-def]
     backends_toml_env,  # type: ignore[no-untyped-def]
 ) -> None:
-    """COMPUTE-01: the /_table poll partial's Section 2 is byte-identical to the full page's.
+    """phaze-rdxfu (acceptance rule 7): the /_table poll partial's row ordering matches the full page's.
 
-    The compute-lane tiles are a single include site, so the first-load full page and the 5s poll
-    partial must render the SAME Section-2 markup (no Pitfall-5 flicker between first-load and poll).
+    Agent rows and lane rows are a single include site, so the first-load full page and the 5s poll
+    partial must render rows in the SAME order — no Pitfall-5 flicker between first-load and poll, and
+    no ordering drift between the two render paths for the same query.
     """
     backends_toml_env(_TWO_CLUSTER_REGISTRY)
     await _seed_cloud_job(session, make_file, backend_id="vox")
@@ -338,46 +352,30 @@ async def test_section2_poll_partial_matches_full_page(
         full = (await ac.get("/admin/agents")).text
         partial = (await ac.get("/admin/agents/_table")).text
 
-    def _section2(body: str) -> str:
-        # From the compute-lanes root up to (and including) its first </section> close — the
-        # compute_lanes.html partial nests no <section>, so this isolates Section 2 from the
-        # surrounding page chrome (which differs between full page and poll partial by design).
-        start = body.index('id="compute-lanes"')
-        end = body.index("</section>", start) + len("</section>")
-        return body[start:end]
-
-    assert _section2(full) == _section2(partial)
+    full_order = _merged_row_order(full)
+    assert full_order, "the fixture must seed at least one row for this comparison to mean anything"
+    assert full_order == _merged_row_order(partial)
 
 
 @pytest.mark.asyncio
-async def test_section2_empty_registry_renders_idle_card(smoke: AsyncClient) -> None:
-    """COMPUTE-01: a pure-local registry (no non-local backends) renders a friendly IDLE/empty card.
+async def test_empty_registry_renders_normally_with_no_lane_rows(smoke: AsyncClient) -> None:
+    """phaze-rdxfu (acceptance rule 7): a pure-local registry (no non-local backends) is not broken.
 
     The default smoke app has no cloud backends configured, so ``derive_compute_lane_identities``
-    returns no lanes — Section 2 must still render (never blank/error) as an IDLE empty-state card.
+    returns no lanes — the merged table must still render normally (agent rows only, never
+    blank/error), and no leftover lane-only chrome (the retired Section-2 card grid) survives it.
     """
     response = await smoke.get("/admin/agents/_table")
+    assert response.status_code == 200, response.text
     body = response.text
-    compute_section = body.split('id="compute-lanes"', 1)[1]
-    assert "No compute lanes" in compute_section
-    assert "IDLE" in compute_section
-    assert "DEAD" not in compute_section
+    assert 'id="agents-table-section"' in body
+    assert "compute-lane-trigger-" not in body, "no lane rows should render for an empty registry"
+    assert "AliveBox" in body, "agent rows still render normally alongside an empty lane registry"
 
 
 # ---------------------------------------------------------------------------
 # COMPUTE-01 (dedupe): suppress the registry-shadowed never-heartbeating compute row
 # ---------------------------------------------------------------------------
-
-
-def _sections(body: str) -> tuple[str, str]:
-    """Split the rendered page into (Section 1, Section 2) at the compute-lanes root.
-
-    Section 1 (heartbeating agents) is everything BEFORE ``id="compute-lanes"``; Section 2 (the
-    compute-lane tiles) is that marker onward. compute_lanes.html nests no ``id="compute-lanes"``, so
-    the single split cleanly separates the two panels.
-    """
-    section1, _marker, section2 = body.partition('id="compute-lanes"')
-    return section1, section2
 
 
 @pytest_asyncio.fixture
@@ -406,25 +404,25 @@ async def shadow_smoke(session: AsyncSession, backends_toml_env) -> AsyncGenerat
 
 
 @pytest.mark.asyncio
-async def test_dedupe_registry_shadow_compute_row_suppressed_from_section1(shadow_smoke: AsyncClient) -> None:
-    """COMPUTE-01: a never-seen 'vox'/kind=compute row is absent from Section 1 while its tile is in Section 2.
+async def test_dedupe_registry_shadow_compute_row_suppressed_from_agent_row(shadow_smoke: AsyncClient) -> None:
+    """COMPUTE-01: a never-seen 'vox'/kind=compute row never renders its OWN agent row; its lane row does.
 
-    The exact "shown twice" defect: the vox cluster must render as a live tile in Section 2 (registry-
-    composed) but NOT sit as a perpetual-NEVER agent row in Section 1.
+    The exact "shown twice" defect: the vox cluster must render as a live LANE row (registry-composed)
+    but NOT ALSO sit as a perpetual-NEVER AGENT row — one identity, one row.
     """
     for path in ("/admin/agents", "/admin/agents/_table"):
         response = await shadow_smoke.get(path)
         assert response.status_code == 200, response.text
-        section1, section2 = _sections(response.text)
-        # Suppressed from Section 1 (no shadow agent-row).
-        assert "agent-trigger-vox" not in section1, f"vox shadow row leaked into Section 1 of {path}"
-        # Still surfaced as a live lane in Section 2.
-        assert "vox" in section2, f"vox tile missing from Section 2 of {path}"
+        body = response.text
+        # Suppressed as an agent row (no shadow agent-trigger for vox).
+        assert "agent-trigger-vox" not in body, f"vox shadow row leaked as an agent row in {path}"
+        # Still surfaced as a live lane row.
+        assert 'id="compute-lane-trigger-vox"' in body, f"vox lane row missing from {path}"
 
 
 @pytest.mark.asyncio
 async def test_dedupe_non_registry_compute_row_also_suppressed(shadow_smoke: AsyncClient) -> None:
-    """phaze-2u8v.4: a never-seen compute Agent matching NO registry id is suppressed from Section 1 too.
+    """phaze-2u8v.4: a never-seen compute Agent matching NO registry id is suppressed from its own row too.
 
     This inverts the original COMPUTE-01 expectation, which kept such a row visible "so the operator can
     see (and clean up) it". The affordance was implemented by rendering a claim that is false by
@@ -432,12 +430,13 @@ async def test_dedupe_non_registry_compute_row_also_suppressed(shadow_smoke: Asy
     so its NEVER/—/never/0 columns describe the schema rather than the cluster. Registry membership does
     not change that, and keying on it is what let the deployed k8s rows sit perpetually-dead — a kueue
     backend binds no agent_ref, and a lane whose [[backends]] block is commented out has no registry key
-    at all. Section 1 is the heartbeating table; identities that cannot heartbeat belong to Section 2.
+    at all. The heartbeating table renders only identities a persistent process actually beats for;
+    identities that cannot heartbeat get a lane row instead (none here — orphan-compute is registry-less).
     """
     response = await shadow_smoke.get("/admin/agents/_table")
-    section1, _section2 = _sections(response.text)
-    assert "agent-trigger-orphan-compute" not in section1, "non-registry compute NEVER row leaked into the heartbeating table"
-    assert "OrphanCompute" not in section1
+    body = response.text
+    assert "agent-trigger-orphan-compute" not in body, "non-registry compute NEVER row leaked into the heartbeating table"
+    assert "OrphanCompute" not in body
 
 
 @pytest.mark.asyncio
@@ -457,39 +456,39 @@ async def test_dedupe_compute_row_that_stopped_heartbeating_still_renders_dead(s
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.get("/admin/agents/_table")
 
-    section1, _section2 = _sections(response.text)
-    assert "agent-trigger-compute-went-down" in section1, "a compute agent that stopped heartbeating must stay visible"
-    assert "DEAD" in section1
+    body = response.text
+    assert "agent-trigger-compute-went-down" in body, "a compute agent that stopped heartbeating must stay visible"
+    assert "DEAD" in body
 
 
 @pytest.mark.asyncio
 async def test_dedupe_fileserver_never_row_unaffected(shadow_smoke: AsyncClient) -> None:
     """COMPUTE-01: an ordinary fileserver NEVER row is untouched by the compute-only suppression."""
     response = await shadow_smoke.get("/admin/agents/_table")
-    section1, _section2 = _sections(response.text)
-    assert "agent-trigger-fs-never" in section1, "fileserver NEVER row was wrongly suppressed"
-    assert "FsNever" in section1
+    body = response.text
+    assert "agent-trigger-fs-never" in body, "fileserver NEVER row was wrongly suppressed"
+    assert "FsNever" in body
     # NEVER pill still rendered for the surviving fileserver row.
-    assert "NEVER" in section1
+    assert "NEVER" in body
 
 
 @pytest.mark.asyncio
-async def test_dedupe_cluster_id_appears_exactly_once(shadow_smoke: AsyncClient) -> None:
-    """COMPUTE-01 invariant: the shadowed cluster id 'vox' is represented in exactly ONE section.
+async def test_dedupe_cluster_id_represented_by_exactly_one_row_kind(shadow_smoke: AsyncClient) -> None:
+    """COMPUTE-01 invariant: the shadowed cluster id 'vox' is represented by exactly ONE row kind.
 
-    Before the fix, 'vox' appeared in BOTH sections (a NEVER agent row in Section 1 AND a live tile in
-    Section 2). After suppression it lives ONLY in Section 2 — proving the "shown twice" duplication is
-    gone while the lane identity is preserved.
+    Before the fix, 'vox' appeared as BOTH a NEVER agent row AND a live lane row. After suppression it
+    renders ONLY as a lane row — proving the "shown twice" duplication is gone while the lane identity
+    is preserved.
     """
     response = await shadow_smoke.get("/admin/agents")
-    section1, section2 = _sections(response.text)
-    assert "vox" not in section1, "vox still duplicated into Section 1 (shown twice)"
-    assert "vox" in section2, "vox lane identity lost from Section 2"
+    body = response.text
+    assert "agent-trigger-vox" not in body, "vox still duplicated into an agent row (shown twice)"
+    assert 'id="compute-lane-trigger-vox"' in body, "vox lane identity lost"
 
 
 @pytest.mark.asyncio
 async def test_dedupe_heartbeating_compute_agent_row_kept(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
-    """COMPUTE-01: a genuinely-heartbeating registry compute agent keeps its Section 1 row (never suppressed).
+    """COMPUTE-01: a genuinely-heartbeating registry compute agent keeps its own agent row (never suppressed).
 
     Suppression is gated on ``_status=='never'`` — a compute agent that IS heartbeating (recent
     last_seen_at → 'alive') is a real process and must stay visible even when its id matches a backend.
@@ -503,13 +502,13 @@ async def test_dedupe_heartbeating_compute_agent_row_kept(session: AsyncSession,
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.get("/admin/agents/_table")
 
-    section1, _section2 = _sections(response.text)
-    assert "agent-trigger-vox" in section1, "a heartbeating (alive) compute agent must keep its row"
-    assert "ALIVE" in section1
+    body = response.text
+    assert "agent-trigger-vox" in body, "a heartbeating (alive) compute agent must keep its row"
+    assert "ALIVE" in body
 
 
 # ---------------------------------------------------------------------------
-# phaze-2u8v.4 — the deployed shape: k8s rows perpetually-dead in Section 1
+# phaze-2u8v.4 — the deployed shape: k8s rows perpetually-dead as agent rows
 #
 # The two dedupe generations above both keyed on REGISTRY MEMBERSHIP: the row was dropped when its
 # id/name equalled a non-local backend id (phaze-zlv), or later when it equalled a backend's bound
@@ -521,8 +520,9 @@ async def test_dedupe_heartbeating_compute_agent_row_kept(session: AsyncSession,
 #   * the second cluster's ``[[backends]]`` block is commented out (the lane was disabled), so its
 #     ``k8s-xenolab`` callback row has no registry entry that COULD match, ever.
 #
-# Both therefore rendered STATUS "NEVER" / QUEUE "—" / LAST SEEN "never" / SCAN ROOTS 0 in the
-# heartbeating table while the burst panel below reported the same cluster ACTIVE with 3 running.
+# Both therefore rendered STATUS "NEVER" / QUEUE "—" / LAST SEEN "never" / SCAN ROOTS 0 as an agent
+# row while the SAME cluster's lane row reported ACTIVE with 3 running (pre-merge: two DIFFERENT
+# panels disagreeing; post-merge: two DIFFERENT rows disagreeing, same underlying defect shape).
 # This fixture reproduces that registry verbatim (minus the disabled block) and pins the fix.
 # ---------------------------------------------------------------------------
 
@@ -585,23 +585,24 @@ async def test_deployed_k8s_rows_never_render_as_dead_agents(deployed_shape_smok
     for path in ("/admin/agents", "/admin/agents/_table"):
         response = await deployed_shape_smoke.get(path)
         assert response.status_code == 200, response.text
-        section1, _section2 = _sections(response.text)
-        assert "agent-trigger-k8s-vox" not in section1, f"k8s-vox rendered as a heartbeating agent in {path}"
-        assert "agent-trigger-k8s-xenolab" not in section1, f"k8s-xenolab rendered as a heartbeating agent in {path}"
+        body = response.text
+        assert "agent-trigger-k8s-vox" not in body, f"k8s-vox rendered as a heartbeating agent in {path}"
+        assert "agent-trigger-k8s-xenolab" not in body, f"k8s-xenolab rendered as a heartbeating agent in {path}"
 
 
 @pytest.mark.asyncio
-async def test_deployed_shape_panels_do_not_contradict_each_other(deployed_shape_smoke: AsyncClient) -> None:
-    """The vox cluster is claimed live by exactly one panel — the burst panel — and dead by none.
+async def test_deployed_shape_agent_and_lane_rows_do_not_contradict_each_other(deployed_shape_smoke: AsyncClient) -> None:
+    """The vox cluster is claimed live by exactly one row kind — the lane row — and dead by none.
 
-    The reported defect was the two panels disagreeing about the SAME lane: "NEVER" above, "ACTIVE ·
-    3 workloads" below. Section 2 keeps the lane; Section 1 no longer contradicts it.
+    The reported defect was two DIFFERENT panels disagreeing about the SAME lane: "NEVER" in one,
+    "ACTIVE · 3 workloads" in the other. Post-merge that is two DIFFERENT ROWS disagreeing — the lane
+    row keeps the lane; no agent row for it exists to contradict it.
     """
     response = await deployed_shape_smoke.get("/admin/agents")
-    section1, section2 = _sections(response.text)
-    assert "vox" not in section1, "the vox cluster is still represented in the heartbeating table"
-    assert "vox" in section2, "the vox lane identity was lost from the burst panel"
-    assert "DEAD" not in section2
+    body = response.text
+    assert "agent-trigger-k8s-vox" not in body, "the vox cluster is still represented by an agent row"
+    assert 'id="compute-lane-trigger-vox"' in body, "the vox lane identity was lost"
+    assert "DEAD" not in body
 
 
 @pytest.mark.asyncio
@@ -610,13 +611,13 @@ async def test_deployed_shape_fileserver_agent_keeps_its_liveness(deployed_shape
 
     A never-seen FILESERVER row (the shared conftest's ``test-fileserver``) keeps its NEVER pill: a file
     server is a persistent process, so "has not checked in" is a real and actionable statement about it.
-    Only the k8s rows, which have no process to check in, leave the table.
+    Only the k8s rows, which have no process to check in, never render their own agent row.
     """
     response = await deployed_shape_smoke.get("/admin/agents/_table")
-    section1, _section2 = _sections(response.text)
-    assert "agent-trigger-nox" in section1, "the file-server agent must stay in the heartbeating table"
-    assert "ALIVE" in section1
-    assert "k8s" not in section1, "a k8s callback identity is still being rendered as a heartbeating agent"
+    body = response.text
+    assert "agent-trigger-nox" in body, "the file-server agent must stay in the heartbeating table"
+    assert "ALIVE" in body
+    assert "agent-trigger-k8s" not in body, "a k8s callback identity is still being rendered as a heartbeating agent"
 
 
 # ---------------------------------------------------------------------------
@@ -1026,6 +1027,203 @@ async def test_queue_sort_survives_a_heartbeat_above_int32_max(smoke: AsyncClien
     assert "alive-agent" in _row_order(response.text)
 
 
+# ---------------------------------------------------------------------------
+# phaze-rdxfu (acceptance rule 8 / SCOPE rule 3): lane placement is deterministic and PINNED under
+# every sortable column and both directions -- including the -infinity/-1 no-value folding for
+# last_seen/scan_roots. Agent-relative order is never re-derived (that stays SQL's job, pinned above
+# by test_default_matches_locked_sort_key / test_sort_is_server_side_across_the_whole_set); each test
+# below crafts values chosen so the expected merged order is unambiguous, then asserts it exactly.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_lane_placement_pinned_for_name_sort(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """A lane sorts into the AGENT column by plain string comparison on its backend_id, both directions."""
+    from sqlalchemy import delete
+
+    await session.execute(delete(Agent))
+    now = datetime.now(UTC)
+    session.add_all(
+        [
+            Agent(id="agent-beta", name="Beta", scan_roots=[], kind="fileserver", last_seen_at=now),
+            Agent(id="agent-delta", name="Delta", scan_roots=[], kind="fileserver", last_seen_at=now),
+        ]
+    )
+    await session.commit()
+    backends_toml_env("""
+    [[backends]]
+    kind = "compute"
+    id = "Charlie"
+    rank = 10
+    cap = 2
+    agent_ref = "charlie-node"
+    scratch_dir = "/scratch/charlie"
+    push_host = "charlie.push"
+    """)
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        asc = (await ac.get("/admin/agents/_table", params={"sort": "name", "order": "asc"})).text
+        desc = (await ac.get("/admin/agents/_table", params={"sort": "name", "order": "desc"})).text
+
+    assert _merged_row_order(asc) == ["agent-trigger-agent-beta", "compute-lane-trigger-Charlie", "agent-trigger-agent-delta"]
+    assert _merged_row_order(desc) == ["agent-trigger-agent-delta", "compute-lane-trigger-Charlie", "agent-trigger-agent-beta"]
+
+
+@pytest.mark.asyncio
+async def test_lane_placement_pinned_for_kind_sort(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """A lane sorts into the KIND column by the same string comparison an agent's kind would use.
+
+    'compute' < 'fileserver' < 'kueue' (ASCII), so a single kueue lane sorts strictly after every
+    real agent kind and a single compute agent sorts strictly before every real agent kind -- one
+    row per bucket is enough to pin the ordering unambiguously.
+    """
+    from sqlalchemy import delete
+
+    await session.execute(delete(Agent))
+    now = datetime.now(UTC)
+    session.add_all(
+        [
+            Agent(id="agent-compute", name="AgentCompute", scan_roots=[], kind="compute", last_seen_at=now),
+            Agent(id="agent-fs", name="AgentFs", scan_roots=[], kind="fileserver", last_seen_at=now),
+        ]
+    )
+    await session.commit()
+    backends_toml_env(_DEPLOYED_KUEUE_REGISTRY)  # a single kind='kueue' backend, id='vox'
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        asc = (await ac.get("/admin/agents/_table", params={"sort": "kind", "order": "asc"})).text
+        desc = (await ac.get("/admin/agents/_table", params={"sort": "kind", "order": "desc"})).text
+
+    assert _merged_row_order(asc) == ["agent-trigger-agent-compute", "agent-trigger-agent-fs", "compute-lane-trigger-vox"]
+    assert _merged_row_order(desc) == ["compute-lane-trigger-vox", "agent-trigger-agent-fs", "agent-trigger-agent-compute"]
+
+
+@pytest.mark.asyncio
+async def test_lane_placement_pinned_for_queue_sort(
+    session: AsyncSession,
+    make_file,  # type: ignore[no-untyped-def]
+    backends_toml_env,  # type: ignore[no-untyped-def]
+) -> None:
+    """A lane's ``waiting`` count competes DIRECTLY with an agent's queue depth (real values, no fold).
+
+    An agent with no reported queue_depth still folds to -1 (the existing _QUEUE_DEPTH_ORDER fold,
+    unrelated to lanes) and sorts below the lane's real 1-waiting count; an agent reporting a REAL
+    depth of 5 sorts above it.
+    """
+    import uuid
+
+    from phaze.models.cloud_job import CloudJob, CloudJobStatus
+
+    # make_file's default agent_id="test-fileserver" FK-targets the conftest seed row, so it is left
+    # in place here (unlike the other pinning tests, which wipe the Agent table) -- the assertions
+    # below filter the rendered order down to just the 3 rows under test, so its own NEVER row (whose
+    # own -1 queue fold could tie with agent-noqueue) never has to be reasoned about.
+    file = await make_file(original_filename="vox-waiting.mp3")
+    now = datetime.now(UTC)
+    session.add_all(
+        [
+            Agent(id="agent-noqueue", name="AgentNoQueue", scan_roots=[], kind="fileserver", last_seen_at=now),
+            Agent(id="agent-q5", name="AgentQ5", scan_roots=[], kind="fileserver", last_seen_at=now, last_status={"queue_depth": 5}),
+        ]
+    )
+    backends_toml_env(_DEPLOYED_KUEUE_REGISTRY)  # a single kind='kueue' backend, id='vox'
+    session.add(
+        CloudJob(
+            id=uuid.uuid4(), file_id=file.id, s3_key=f"staging/{file.id}", status=CloudJobStatus.SUBMITTED.value, backend_id="vox", inadmissible=True
+        )
+    )
+    await session.commit()
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        asc = (await ac.get("/admin/agents/_table", params={"sort": "queue", "order": "asc"})).text
+        desc = (await ac.get("/admin/agents/_table", params={"sort": "queue", "order": "desc"})).text
+
+    _under_test = {"agent-trigger-agent-noqueue", "agent-trigger-agent-q5", "compute-lane-trigger-vox"}
+    assert [r for r in _merged_row_order(asc) if r in _under_test] == [
+        "agent-trigger-agent-noqueue",
+        "compute-lane-trigger-vox",
+        "agent-trigger-agent-q5",
+    ]
+    assert [r for r in _merged_row_order(desc) if r in _under_test] == [
+        "agent-trigger-agent-q5",
+        "compute-lane-trigger-vox",
+        "agent-trigger-agent-noqueue",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_lane_placement_pinned_for_last_seen_sort_no_value_fold(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """A lane's last_seen folds to -infinity -- it sorts EXACTLY where a never-seen agent would.
+
+    Mirrors ``_LAST_SEEN_ORDER``'s NULL fold precisely (acceptance rule 3): a lane is never a "most
+    recent" row under either direction, and a tie against a genuinely never-seen agent always
+    resolves agent-first (deterministic, never a coin flip that could reshuffle between polls).
+    """
+    from sqlalchemy import delete
+
+    await session.execute(delete(Agent))
+    now = datetime.now(UTC)
+    session.add_all(
+        [
+            Agent(id="agent-recent", name="AgentRecent", scan_roots=[], kind="fileserver", last_seen_at=now - timedelta(seconds=5)),
+            Agent(id="agent-old", name="AgentOld", scan_roots=[], kind="fileserver", last_seen_at=now - timedelta(seconds=500)),
+            Agent(id="agent-never", name="AgentNever", scan_roots=[], kind="fileserver"),  # last_seen_at=None
+        ]
+    )
+    await session.commit()
+    backends_toml_env(_DEPLOYED_KUEUE_REGISTRY)  # a single kind='kueue' backend, id='vox'
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        desc = (await ac.get("/admin/agents/_table", params={"sort": "last_seen", "order": "desc"})).text
+        asc = (await ac.get("/admin/agents/_table", params={"sort": "last_seen", "order": "asc"})).text
+
+    assert _merged_row_order(desc) == [
+        "agent-trigger-agent-recent",
+        "agent-trigger-agent-old",
+        "agent-trigger-agent-never",
+        "compute-lane-trigger-vox",
+    ]
+    assert _merged_row_order(asc) == [
+        "agent-trigger-agent-never",
+        "compute-lane-trigger-vox",
+        "agent-trigger-agent-old",
+        "agent-trigger-agent-recent",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_lane_placement_pinned_for_scan_roots_sort_no_value_fold(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """A lane's scan_roots folds to -1 -- mirrors ``_QUEUE_DEPTH_ORDER``'s absent-value fold exactly.
+
+    An agent with a genuine EMPTY scan_roots list still reports a real ``0``, which is NOT the same
+    fold value and must sort strictly above a lane's -1 under both directions.
+    """
+    from sqlalchemy import delete
+
+    await session.execute(delete(Agent))
+    now = datetime.now(UTC)
+    session.add_all(
+        [
+            Agent(id="agent-noroots", name="AgentNoRoots", scan_roots=[], kind="fileserver", last_seen_at=now),
+            Agent(id="agent-3roots", name="Agent3Roots", scan_roots=["/a", "/b", "/c"], kind="fileserver", last_seen_at=now),
+        ]
+    )
+    await session.commit()
+    backends_toml_env(_DEPLOYED_KUEUE_REGISTRY)  # a single kind='kueue' backend, id='vox'
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        asc = (await ac.get("/admin/agents/_table", params={"sort": "scan_roots", "order": "asc"})).text
+        desc = (await ac.get("/admin/agents/_table", params={"sort": "scan_roots", "order": "desc"})).text
+
+    assert _merged_row_order(asc) == ["compute-lane-trigger-vox", "agent-trigger-agent-noroots", "agent-trigger-agent-3roots"]
+    assert _merged_row_order(desc) == ["agent-trigger-agent-3roots", "agent-trigger-agent-noroots", "compute-lane-trigger-vox"]
+
+
 @pytest.mark.asyncio
 async def test_poll_tick_preserves_operator_sort(sort_smoke: AsyncClient) -> None:
     """THE bead: the 5s self-poll carries the chosen sort forward instead of resetting it.
@@ -1181,55 +1379,96 @@ async def test_sort_click_preserves_the_open_detail_pane(smoke: AsyncClient) -> 
 
 
 # ---------------------------------------------------------------------------
-# phaze-2u8v.5 — Section 2 no longer reads as an unconditional alarm; a legend explains the
-# per-lane state colors; each lane is a drill-in trigger into GET /admin/agents/compute-lanes/{id}.
+# phaze-rdxfu — every lane is a row, indistinguishable in interaction shape from an agent row; the
+# per-lane state colors are never the sole signal; a lane row is a drill-in trigger into an
+# EXPANDED ROW whose body fetches GET /admin/agents/compute-lanes/{id}.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_section2_container_is_no_longer_amber(smoke: AsyncClient) -> None:
-    """The Section 2 CONTAINER/heading no longer carry the unconditional amber styling.
+async def test_merged_table_carries_no_unconditional_amber_alarm_styling(smoke: AsyncClient) -> None:
+    """The retired Section-2 container/heading amber never reappears in the merged table.
 
-    The amber never varied with data (every lane could be IDLE and the shell was still amber) -- it
-    read as an always-on alarm with no legend. Per-LANE state colors (kept below) are the real signal.
+    That amber never varied with data (every lane could be IDLE and the shell was still amber) -- it
+    read as an always-on alarm. The merged table shares Section 1's ALWAYS-neutral chrome, so this
+    guard pins that the retired classes cannot be reintroduced by a future edit.
     """
     response = await smoke.get("/admin/agents/_table")
-    compute_section = response.text.split('id="compute-lanes"', 1)[1]
-    assert "border-amber-500/25" not in compute_section
-    assert "bg-amber-500/[0.06]" not in compute_section
-    assert "text-amber-700 dark:text-amber-300" not in compute_section  # the old heading color
+    body = response.text
+    assert "border-amber-500/25" not in body
+    assert "bg-amber-500/[0.06]" not in body
+    assert "text-amber-700 dark:text-amber-300" not in body  # the old Section-2 heading color
 
 
 @pytest.mark.asyncio
-async def test_section2_legend_explains_the_state_colors(smoke: AsyncClient) -> None:
-    """A legend spells out what ACTIVE/WAITING/IDLE mean -- the color is no longer opaque."""
-    response = await smoke.get("/admin/agents/_table")
-    compute_section = response.text.split('id="compute-lanes"', 1)[1]
-    assert "workloads running" in compute_section
-    assert "queued behind quota" in compute_section
-    assert "nothing in flight" in compute_section
-
-
-@pytest.mark.asyncio
-async def test_section2_lane_tile_is_a_drill_in_trigger(
+async def test_lane_status_pill_carries_word_and_aria_label_not_hue_only(
     session: AsyncSession,
     make_file,  # type: ignore[no-untyped-def]
     backends_toml_env,  # type: ignore[no-untyped-def]
 ) -> None:
-    """Each real lane tile carries the keyboard-accessible hx-get/hx-push-url drill-in wiring."""
+    """A lane's STATUS cell spells out ACTIVE/WAITING/IDLE by word + aria-label, never hue alone (WCAG 1.4.1).
+
+    The retired Section-2 legend explained the SAME three colors in a separate paragraph next to the
+    card grid; the merged table's per-row STATUS pill is now the self-explanatory unit (mirrors
+    _kind_badge.html's "glyph/word + aria-label, never hue-only" contract) so no standalone legend is
+    needed to understand ANY row -- consistent with how the agent 5-state pill already worked.
+    """
+    _seeded_backends = """
+    [[backends]]
+    kind = "kueue"
+    id = "burst-a"
+    rank = 10
+    cap = 3
+    buckets = ["burst-a-bucket"]
+
+    [backends.kube]
+    api_url = "https://kube.example.com"
+    namespace = "phaze"
+    local_queue = "phaze-burst"
+
+    [[buckets]]
+    id = "burst-a-bucket"
+    scope = "cluster-specific"
+    endpoint_url = "https://s3.example.com"
+    bucket = "phaze-burst"
+    """
+    backends_toml_env(_seeded_backends)
+    await _seed_cloud_job(session, make_file, backend_id="burst-a")
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get("/admin/agents/_table")
+    body = response.text
+    assert "ACTIVE" in body
+    assert 'aria-label="Status: active"' in body
+
+
+@pytest.mark.asyncio
+async def test_lane_row_is_a_drill_in_trigger_matching_the_agent_row_pattern(
+    session: AsyncSession,
+    make_file,  # type: ignore[no-untyped-def]
+    backends_toml_env,  # type: ignore[no-untyped-def]
+) -> None:
+    """Each real lane row carries the SAME keyboard-accessible drill-in wiring shape an agent row does.
+
+    phaze-rdxfu: a lane row's click re-fetches the WHOLE merged table (hx-target=#agents-table-section)
+    naming its OWN selection via hx-vals, exactly like an agent row -- no more direct
+    hx-get=/admin/agents/compute-lanes/{id} on the trigger itself (that endpoint is now only fetched by
+    the expanded row's body slot, once the row is open).
+    """
     backends_toml_env(_TWO_CLUSTER_REGISTRY)
     await _seed_cloud_job(session, make_file, backend_id="vox")
 
     app = _make_smoke_app(session)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.get("/admin/agents/_table")
-    compute_section = response.text.split('id="compute-lanes"', 1)[1]
+    body = response.text
 
-    assert 'id="compute-lane-trigger-vox"' in compute_section
-    assert 'role="button"' in compute_section
-    assert 'hx-get="/admin/agents/compute-lanes/vox"' in compute_section
-    assert 'hx-target="#compute-lane-pane"' in compute_section
-    assert 'hx-push-url="/admin/agents?clane=vox' in compute_section
+    assert 'id="compute-lane-trigger-vox"' in body
+    assert 'role="button"' in body
+    assert """hx-vals='{"clane": "vox"}'""" in body
+    assert 'hx-target="#agents-table-section"' in body
+    assert 'hx-push-url="/admin/agents?clane=vox' in body
 
 
 @pytest.mark.asyncio
@@ -1252,7 +1491,8 @@ async def test_compute_lane_detail_active_lane_lists_running_files(
     assert "Running workloads" in body
     assert 'hx-get="/admin/agents/compute-lanes/vox"' in body  # own 5s tick
     assert 'hx-trigger="every 5s"' in body
-    assert 'hx-target="#compute-lane-pane"' in body
+    assert 'hx-target="#compute-lane-activity-vox"' in body  # phaze-rdxfu: the expanded row's per-lane slot
+    assert "ephemeral · no heartbeat" in body
 
 
 @pytest.mark.asyncio
@@ -1282,12 +1522,12 @@ async def test_compute_lane_detail_unknown_backend_is_friendly_offline(smoke: As
 
 
 @pytest.mark.asyncio
-async def test_selected_compute_lane_opens_dedicated_pane(
+async def test_selected_compute_lane_opens_its_expanded_row(
     session: AsyncSession,
     make_file,  # type: ignore[no-untyped-def]
     backends_toml_env,  # type: ignore[no-untyped-def]
 ) -> None:
-    """?clane=<id> on the full page seeds the dedicated #compute-lane-pane open on that lane (deep-link/reload)."""
+    """?clane=<id> on the full page opens that lane's EXPANDED ROW (deep-link/reload), agent-row shape."""
     backends_toml_env(_TWO_CLUSTER_REGISTRY)
     await _seed_cloud_job(session, make_file, backend_id="vox")
 
@@ -1299,8 +1539,10 @@ async def test_selected_compute_lane_opens_dedicated_pane(
     body = response.text
     assert 'id="compute-lane-trigger-vox"' in body
     assert 'aria-current="true"' in body
-    # The dedicated compute-lane pane self-fetches its own body on this deep link.
-    assert 'hx-get="/admin/agents/compute-lanes/vox" hx-trigger="load"' in body
+    assert 'id="compute-lane-detail-row-vox"' in body
+    # The expanded row's body slot self-fetches on insertion, exactly like an agent's.
+    assert 'hx-get="/admin/agents/compute-lanes/vox"' in body
+    assert 'hx-trigger="load"' in body
 
 
 @pytest.mark.asyncio

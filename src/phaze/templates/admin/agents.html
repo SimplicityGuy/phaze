@@ -7,29 +7,24 @@
 <div class="space-y-6">
     <h1 class="text-2xl font-semibold leading-tight">Agents</h1>
     <p class="text-sm text-gray-500 dark:text-gray-400">
-        Live status of every heartbeating file-server agent, plus the ephemeral k8s burst lane. Refreshes every 5 seconds.
+        Live status of every heartbeating file-server agent and every ephemeral k8s burst lane, in one table. Refreshes every 5 seconds.
     </p>
-    {# Phase 61 Plan 04 (RECORD-03 / D-06): the two-section layout — Section 1
-       "Agents · heartbeating" (local / A1) and Section 2 "Compute / burst lanes · ephemeral"
-       (the k8s burst lane synthesized read-only from in-flight CloudJob counts) — is rendered
-       inside the polled #agents-table-section partial below, so BOTH sections refresh on the
-       existing 5s self-poll with no new loop (RESEARCH OQ-1). The prior Phase-56 STATIC k8s
-       note is superseded by that LIVE Section 2. #}
-    {# phaze-2u8v.6: the agents table's OWN detail is an EXPANDED ROW beneath its selected agent
-       (admin/partials/_agent_detail_row.html, included from agents_table.html) rather than a side
-       panel — it is tabular data, so its detail belongs inline with the row it describes. This used
-       to share the Analyze workspace's _detail_pane.html shell (pane_kind='agent'); that side-by-side
-       column layout is gone along with it, and the table now renders at full width.
+    {# phaze-rdxfu: the former two-panel layout — Section 1 "Agents · heartbeating" (a sortable TABLE
+       whose detail was an EXPANDED ROW) and Section 2 "Compute / burst lanes · ephemeral" (a CARD GRID
+       whose detail was a dedicated side panel, admin/partials/_compute_lane_pane.html) — gave one
+       operator question ("what is this worker doing right now?") two different answers depending on
+       whether the worker heartbeats. Every burst lane now renders as a ROW in the SAME table
+       (admin/partials/agents_table.html, driven by admin_agents._build_table_rows's unified
+       `TableRow` view-model) and every drill-in, agent or lane, opens the SAME expanded-row shape
+       (_agent_detail_row.html / _compute_lane_detail_row.html) — full table width, never a side panel.
+       admin/partials/_compute_lane_pane.html is DELETED; this page no longer includes it or references
+       #compute-lane-pane (test_compute_lane_pane_partial_deleted_and_not_wired_back pins both).
 
-       phaze-2u8v.5: Section 2 (the compute/burst-lane CARD grid, compute_lanes.html included from
-       agents_table.html) is a card grid, not a table, so its own drill-down IS a side panel — but it is
-       its OWN dedicated shell (admin/partials/_compute_lane_pane.html), deliberately NOT a reuse of the
-       Analyze workspace's _detail_pane.html/pane_kind mechanism (test_agent_expanded_row.py locks this
-       page to never wire that shared file/variable back in). It follows the SAME fixed, non-reflowing,
-       slide-in-from-the-right pattern .6 established (position: fixed, so it needs no grid column and
-       can never reflow the table above it), just as an independent copy scoped to this one caller. #}
+       The Analyze workspace's lane CARDS (/s/analyze, pipeline/partials/_lane_card.html +
+       _detail_pane.html) are unaffected and out of scope — a card grid's own drill-down is correctly a
+       pop-out side panel, unlike this table's rows (test_agent_expanded_row.py locks THIS page to
+       never wire that shared file/variable back in either). #}
     {% include "admin/partials/agents_table.html" %}
-    {% include "admin/partials/_compute_lane_pane.html" %}
 </div>
 
 {# CLEAN-01 (D-09/D-10/D-11): discreet flag-gated footer link to the still-mounted /saq SAQ
