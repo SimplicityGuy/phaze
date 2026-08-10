@@ -43,7 +43,11 @@ def test_redis_password_is_percent_encoded_into_redis_url() -> None:
     """A password with RFC-3986 reserved characters round-trips through redis_url."""
     from phaze.config import ControlSettings
 
-    cfg = ControlSettings(control_env="production", redis_password=_SLASH_PASSWORD)
+    # redis_url passed explicitly: init kwargs outrank env in pydantic-settings, so an ambient
+    # REDIS_URL/PHAZE_REDIS_URL (a dev shell's seat export, CI's localhost service) cannot swap
+    # the host out from under the assertions below -- that non-hermeticity is exactly how this
+    # test passed locally and failed in CI.
+    cfg = ControlSettings(control_env="production", redis_url="redis://redis:6379/0", redis_password=_SLASH_PASSWORD)
     parsed = urlparse(cfg.redis_url)
     assert unquote(parsed.password) == _SLASH_PASSWORD, (
         f"expected password to round-trip via urlparse+unquote; got {parsed.password!r} from {cfg.redis_url!r}"
@@ -127,6 +131,10 @@ def test_agent_settings_also_applies_redis_password() -> None:
         scan_roots=["/data/music"],
         redis_url="redis://cache-host:6379/0",
         redis_password=_SLASH_PASSWORD,
+        # phaze-27myl fails fast when a non-compute agent's queue_url still points at the
+        # compose 'postgres' service default; this test is about redis_password encoding, so
+        # satisfy the validator explicitly instead of leaning on ambient PHAZE_QUEUE_URL.
+        queue_url="postgresql://phaze:phaze@queue-host:5432/phaze",
     )
     parsed = urlparse(cfg.redis_url)
     assert unquote(parsed.password) == _SLASH_PASSWORD

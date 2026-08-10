@@ -132,6 +132,13 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/proposals/{proposal_id}/edit", "proposed"): _TEXT,
     ("/proposals/{proposal_id}/edit", "facet"): _WHITELIST,
     ("/proposals/bulk", "action"): _WHITELIST,
+    # phaze-exivg: the APPROVE button's optimistic-concurrency token (the row render's own
+    # ``updated_at``, round-tripped via hx-vals). ``_parse_updated_at_token`` parses it before it
+    # goes anywhere near SQL -- malformed collapses to None, same as absent -- and the parsed
+    # datetime is only ever COMPARED in the conditional UPDATE's WHERE clause, never written to a
+    # column. A length bound would police a value FastAPI hands to ``datetime.fromisoformat``, not
+    # a value Postgres stores.
+    ("/proposals/{proposal_id}/approve", "expected_updated_at"): _NOT_STORED,
     # phaze-y4s6: ``GET /proposals/`` (status/q/sort/order) and the matching four params on
     # ``PATCH /proposals/bulk`` were removed along with the legacy ``#proposal-list-container``
     # surface (``proposal_list.html``/``proposal_table.html``/``pagination.html``/

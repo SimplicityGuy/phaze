@@ -98,6 +98,12 @@ def _patch_common_startup_bits(monkeypatch: pytest.MonkeyPatch, aw: Any) -> None
     monkeypatch.setenv("PHAZE_AGENT_QUEUE", "phaze-agent-test-id")
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/var/empty")
     monkeypatch.setenv("PHAZE_REDIS_URL", "redis://localhost:6379/0")
+    # phaze-27myl made AgentSettings fail fast when queue_url still points at the docker-compose
+    # 'postgres' service name for a non-compute agent. These tests never touch the queue (the
+    # broker probe is mocked), but the settings object must still construct -- and relying on the
+    # developer's ambient PHAZE_QUEUE_URL is exactly the non-hermeticity that made this pass
+    # locally and fail in CI. Pin an explicit non-compose host.
+    monkeypatch.setenv("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@queue-host:5432/phaze")
 
     fake_cfg = AgentSettings()
     monkeypatch.setattr(aw, "get_settings", lambda: fake_cfg)
