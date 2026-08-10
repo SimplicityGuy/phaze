@@ -38,6 +38,7 @@ from phaze.models.file import FileRecord
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers import pipeline, pipeline_scans, shell
 from phaze.routers.response_shape import RENDERABLE_ALERT_STATUS
+from phaze.services.agent_task_router import AmbiguousEnqueueError
 
 
 if TYPE_CHECKING:
@@ -705,6 +706,47 @@ async def test_post_scans_enqueue_failure_marks_batch_failed(
     assert len(rows) == 1
     assert rows[0].status == ScanStatus.FAILED.value
     assert rows[0].error_message == "controller could not enqueue scan to agent worker"
+
+
+# ---------------------------------------------------------------------------
+# phaze-0dfj4: an AMBIGUOUS enqueue failure (the broker connection was already live when
+# ``enqueue_for_agent`` raised -- the ``saq_jobs`` INSERT may have already committed) must NOT be
+# treated the same as a definite one. Marking the batch FAILED here is a lie the operator acts on:
+# they re-trigger (the uq constraint only covers RUNNING rows), creating a second batch + job while
+# the phantom first job may still dequeue and walk the archive tree concurrently with the real scan.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_post_scans_ambiguous_enqueue_leaves_batch_running(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An ``AmbiguousEnqueueError`` leaves the batch RUNNING instead of marking it FAILED (phaze-0dfj4).
+
+    The batch was already committed RUNNING before the enqueue attempt; on an ambiguous outcome
+    nothing further is written -- the stall reaper (config.scan_stall_seconds) is left to resolve a
+    genuinely-lost enqueue exactly as it would resolve an agent that silently died mid-scan.
+    """
+    ac, mock_router = smoke
+    mock_router.enqueue_for_agent.side_effect = AmbiguousEnqueueError("enqueue raised after the broker connection was live")
+
+    with caplog.at_level("ERROR", logger="phaze.routers.pipeline_scans"):
+        response = await ac.post(
+            "/pipeline/scans",
+            data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "2026/"},
+        )
+
+    # The handler renders the normal RUNNING progress card, not the enqueue-failure alert.
+    assert response.status_code == 200, response.text
+    assert "could not enqueue the scan" not in response.text
+
+    rows = (await session.execute(select(ScanBatch).where(ScanBatch.scan_path == "/data/music/2026"))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].status == ScanStatus.RUNNING.value
+    assert rows[0].error_message is None
+    assert any("enqueue ambiguous" in r.getMessage() for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

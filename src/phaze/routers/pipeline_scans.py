@@ -45,6 +45,7 @@ from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract, 
 from phaze.routers.response_shape import RENDERABLE_ALERT_STATUS
 from phaze.schemas.agent_tasks import ScanDirectoryPayload
 from phaze.schemas.pipeline_scans import TriggerScanForm
+from phaze.services.agent_task_router import AmbiguousEnqueueError
 from phaze.services.pg_text import contains_pg_invalid_chars
 from phaze.services.pipeline import get_agent_reconciliations
 from phaze.services.scan_deletion import delete_scan_cascade
@@ -639,6 +640,26 @@ async def trigger_scan(
             payload=ScanDirectoryPayload(scan_path=joined, batch_id=batch.id, agent_id=form.agent_id),
             timeout=0,
             retries=0,
+        )
+    except AmbiguousEnqueueError:
+        # phaze-0dfj4: ``enqueue_for_agent`` raised AFTER the broker connection was already live
+        # (see ``AmbiguousEnqueueError``'s docstring) -- the ``saq_jobs`` INSERT may already be
+        # durably committed even though this call never got its ack (a connection drop AFTER the
+        # server-side commit is the textbook in-doubt transaction). Marking the batch FAILED here
+        # would be a lie the operator acts on: they re-trigger, the uq constraint only covers
+        # RUNNING rows so a second batch + job is created, and the phantom first job ALSO dequeues
+        # -- walking the archive tree concurrently with the real scan before crash-looping on its
+        # first PATCH against the now-terminal batch. Leave the batch RUNNING instead (it was
+        # already committed RUNNING above) and fall through to the same progress-card render a
+        # confirmed-successful enqueue gets: a genuinely-lost enqueue then has no agent that will
+        # ever report progress, and the progress-based stall reaper (config.scan_stall_seconds)
+        # resolves it the same way it resolves an agent that silently died mid-scan -- the same
+        # non-terminal contract phaze-9f82r established for an ambiguous tag-write enqueue.
+        logger.error(
+            "scan trigger: enqueue ambiguous for batch=%s -- broker connection was live, job may "
+            "have landed; leaving batch RUNNING for the stall reaper to resolve",
+            batch.id,
+            exc_info=True,
         )
     except Exception:
         logger.exception("scan trigger: enqueue failed for batch=%s; marking FAILED", batch.id)
