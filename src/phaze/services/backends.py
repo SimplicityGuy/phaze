@@ -104,6 +104,7 @@ async def hold_awaiting_cloud(
     *,
     attempts: int = 0,
     expect_status: Sequence[str] | None = None,
+    expect_upload_id: str | None = None,
     clear_cloud_phase: bool = False,
 ) -> bool:
     """The SINGLE go-forward writer of ``cloud_job.status='awaiting'`` (D-01/D-02). NEVER commits.
@@ -127,7 +128,14 @@ async def hold_awaiting_cloud(
       late/duplicate callback matched an already-advanced row (0 rows), and the CALLER keeps its FULL
       no-op (no FileRecord write, no cleanup, no ledger clear -- D-10). This mode does NOT write
       ``file.state`` and does NOT touch the FileRecord: the caller owns the gated dual-write behind the
-      returned bool.
+      returned bool. ``expect_upload_id``, when given, is ADDED to the CAS predicate
+      (``CloudJob.upload_id == expect_upload_id``) -- phaze-wnp51, mirroring ``report_uploaded``'s
+      phaze-p8h3 CAS. ``status`` alone is not a generation identifier: a row CAN legitimately
+      RE-ENTER ``expect_status`` (``cloud_staging.redrive_upload`` re-stages a failed upload back into
+      ``'uploading'`` with a FRESH ``upload_id``), so a caller whose observed status was read before a
+      concurrent re-drive can otherwise win its CAS against a generation it never actually observed.
+      Pinning ``upload_id`` too makes a re-drive's fresh generation fail the CAS -- a clean no-op --
+      instead of silently spilling live work out from under its running job.
 
     ``'awaiting'`` is deliberately OUT of :data:`IN_FLIGHT`, so a held/re-stamped row never inflates any
     backend's ``in_flight_count`` (D-03). NEVER commits in EITHER mode -- the caller owns the commit
@@ -198,9 +206,14 @@ async def hold_awaiting_cloud(
     values: dict[str, Any] = {"status": CloudJobStatus.AWAITING.value, "attempts": attempts}
     if clear_cloud_phase:
         values["cloud_phase"] = None
+    conditions = [CloudJob.file_id == file.id, CloudJob.status.in_(expect_status)]
+    if expect_upload_id is not None:
+        # phaze-wnp51: pin the CAS to the observed generation too, not just status -- see the
+        # ``expect_upload_id`` docstring paragraph above for why status alone is not enough here.
+        conditions.append(CloudJob.upload_id == expect_upload_id)
     res = cast(
         "CursorResult[Any]",
-        await session.execute(update(CloudJob).where(CloudJob.file_id == file.id, CloudJob.status.in_(expect_status)).values(**values)),
+        await session.execute(update(CloudJob).where(*conditions).values(**values)),
     )
     wrote = res.rowcount > 0
     if wrote:
@@ -1032,6 +1045,12 @@ class KueueBackend(_BaseBackend):
                     file,
                     attempts=attempts,
                     expect_status=(observed_status,),
+                    # phaze-wnp51: pin the spill to the generation we actually observed. ``status`` alone
+                    # is not a generation identifier -- redrive_upload can re-stage the row back into the
+                    # SAME status with a fresh upload_id between our read and this CAS; requiring the
+                    # observed upload_id too makes that re-drive fail the CAS instead of losing its work
+                    # to a reap that thinks it is spilling the OLD (dead) generation.
+                    expect_upload_id=upload_id,
                     clear_cloud_phase=True,
                 )
                 if not spilled:
@@ -1048,6 +1067,17 @@ class KueueBackend(_BaseBackend):
                 # ran DESTRUCTIVE cleanup before the commit (a commit failure then left the DB claiming an upload
                 # whose S3 substrate was already gone).
                 await clear_ledger_entry(session, f"s3_upload:{file_id}")
+                if observed_status == CloudJobStatus.UPLOADED.value:
+                    # phaze-2iizn: an UPLOADED row is owned by submit_cloud_job:<file_id> (phaze-1k0i's
+                    # status-keyed liveness gate above), not s3_upload:<file_id> -- the s3_upload job
+                    # already completed and swept its own broker key by the time the row reached
+                    # UPLOADED. The lost job here is submit_cloud_job's, and its before_enqueue-written
+                    # ledger row survives this reap untouched unless cleared too: recover_orphaned_work
+                    # would otherwise replay it against an already-spilled/terminal file and guarantee-fail
+                    # with KubeStagingError. Clearing s3_upload:<file_id> stays -- it is unconditionally
+                    # load-bearing (the control side never clears it on the success path) -- this ADDS the
+                    # second key rather than swapping it.
+                    await clear_ledger_entry(session, f"submit_cloud_job:{file_id}")
                 await session.commit()
                 tally["staging_reaped"] += 1
                 logger.warning(
@@ -1079,10 +1109,19 @@ class KueueBackend(_BaseBackend):
                         # A new cycle always re-upserts status back to UPLOADING with a FRESH upload_id
                         # (_stage_file_to_s3), so a row still 'awaiting' with the SAME upload_id we observed
                         # proves no new cycle has claimed the key -- only then is the delete safe.
-                        current = (
-                            await session.execute(select(CloudJob.status, CloudJob.upload_id).where(CloudJob.id == cloud_job_id))
-                        ).one_or_none()
-                        await session.rollback()  # read-only probe; release its implicit tx either way
+                        current = None
+                        try:
+                            current = (
+                                await session.execute(select(CloudJob.status, CloudJob.upload_id).where(CloudJob.id == cloud_job_id))
+                            ).one_or_none()
+                        finally:
+                            # phaze-a6un6: rollback in a finally, not after the SELECT in the try body --
+                            # if the SELECT itself raises (transient DB error), the old placement skipped
+                            # this rollback entirely and the outer except below only logged, leaving the
+                            # session in an aborted/pending transaction. The NEXT row's advisory-lock
+                            # acquire then raised PendingRollbackError and THAT healthy row's reap was
+                            # skipped for the whole tick, misleadingly blamed instead of this probe.
+                            await session.rollback()  # read-only probe; release its implicit tx either way
                         if current is not None and current.status == CloudJobStatus.AWAITING.value and current.upload_id == upload_id:
                             await s3_staging.delete_staged_object(file_id, bucket)
                     except Exception:
@@ -1480,6 +1519,16 @@ async def derive_cloud_hold_reason(session: AsyncSession) -> str:
             return "held — cloud routing paused (force-local)"
 
         lanes = await get_backend_lane_snapshot(session)
+        # phaze-2nomn: get_backend_lane_snapshot swallows ANY top-level error (e.g. a transient DB
+        # error inside one backend's in_flight_count read) and returns [] -- indistinguishable, by
+        # value alone, from an OBSERVED registry of zero non-local lanes. resolve_backends is pure
+        # (no I/O, reads only cfg.backends) and the snapshot's normal path always emits exactly one
+        # lane dict per resolved backend (unavailable backends still get an entry, just
+        # available=False) -- so an EMPTY lanes list against a NON-empty resolved registry can only
+        # mean the snapshot's try/except fired, not that every lane was actually probed and found
+        # unreachable. Fall through to the degrade belt instead of asserting a gate never observed.
+        if not lanes and resolve_backends(cfg):
+            return _HOLD_REASON_DEGRADED
         # phaze-g4fh: restrict reachability/capacity math to CLOUD lanes. A local lane is always
         # `available=True` with `in_flight=0` (LocalBackend.is_available/in_flight_count), so
         # including it here made `available_lanes` never empty and `free_slots` always ≥1 -- both
