@@ -921,6 +921,113 @@ async def test_cross_fs_replay_committed_copy_with_hash_completes_move(
     assert not execmod._committed_copy_marker_path(proposed, proposal_id).exists()
 
 
+# ---------------------------------------------------------------------------
+# phaze-v3b1e — a crash between the completed-forward `original.unlink()` and
+# its OWN marker cleanup leaves the marker orphaned: the NEXT replay sees
+# `original` gone + `proposed` present, takes the `already_moved` fast path
+# entirely (corroborated by the still-present marker), and never reaches either
+# of the two call sites that would otherwise unlink it -- both require
+# `original` to still exist. Unlike the two tests above (which model the FIRST
+# crash edge -- before `original.unlink()` -- and assert the marker is cleaned
+# up when the move completes forward), this models the SECOND edge: the move
+# already completed on a PRIOR call, and this call is the already-moved replay.
+# ---------------------------------------------------------------------------
+
+
+async def test_already_moved_replay_cleans_up_orphaned_commit_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for phaze-v3b1e.
+
+    Simulates a worker crash strictly between the completed-forward
+    ``original.unlink()`` and the marker's own ``unlink(missing_ok=True)`` (or,
+    equivalently, between the fresh cross-fs move's ``original.unlink()`` and its
+    marker cleanup): `original` is already gone, `proposed` already holds the
+    final file, and the per-proposal commit marker is still sitting on disk. SAQ
+    replays the job; `_execute_one` correctly detects `already_moved` (using the
+    orphaned marker as its OWN corroboration, exactly as a genuine replay would),
+    but pre-fix it never touched the marker on this path -- it survived forever,
+    polluting the archive with `<dest>.phaze-committed.<uuid>`.
+    """
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    job = _make_job_mock()
+
+    proposed = tmp_path / "new" / "concert.mkv"
+    proposed.parent.mkdir(parents=True, exist_ok=True)
+    content = b"concert-bytes" * 4096
+    proposed.write_bytes(content)  # the move already fully completed
+
+    original = tmp_path / "orig" / "concert.mkv"  # gone -- the crash happened after unlink()
+
+    proposal_id = uuid.uuid4()
+    marker = execmod._committed_copy_marker_path(proposed, proposal_id)
+    marker.write_text(str(proposal_id))  # orphaned: never cleaned up by the crashed attempt
+    assert marker.exists()
+
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=proposal_id,
+            file_id=uuid.uuid4(),
+            original_path=str(original),
+            proposed_path="new",
+            proposed_filename=proposed.name,
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+    result = await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed"
+    assert result["error_count"] == 0
+    state_patch = api.patch_proposal_state.await_args.args[1]
+    assert state_patch.proposal_state == "executed"
+    assert state_patch.current_path == str(proposed)
+    # The whole point: the orphaned marker is cleaned up by the already-moved replay,
+    # not left behind forever.
+    assert not marker.exists()
+    assert proposed.read_bytes() == content
+
+
+async def test_already_moved_replay_via_moved_flag_cleans_up_absent_marker_safely(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The already-moved cleanup must not raise when there is no marker to clean up.
+
+    A same-fs move is corroborated via the ``moved:`` job-meta flag (phaze-ebb46), not a
+    cross-fs commit marker -- there is nothing on disk to unlink. `unlink(missing_ok=True)`
+    must make this a no-op, not an error.
+    """
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    original = orig_paths[0]
+    proposed = proposed_paths[0]
+    proposal_id = uuid.uuid4()
+    job = _make_job_mock(initial_meta={f"moved:{proposal_id}": "1"})
+
+    proposed.parent.mkdir(parents=True, exist_ok=True)
+    original.replace(proposed)  # the prior same-fs attempt already committed
+
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=proposal_id,
+            file_id=uuid.uuid4(),
+            original_path=str(original),
+            proposed_path="new",
+            proposed_filename=proposed.name,
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+    result = await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed"
+    assert result["error_count"] == 0
+    assert not execmod._committed_copy_marker_path(proposed, proposal_id).exists()
+
+
 async def test_cross_fs_foreign_file_at_destination_still_refused(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
