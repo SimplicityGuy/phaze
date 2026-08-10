@@ -233,12 +233,19 @@ async def distinct_artists(session: AsyncSession, query: str, *, limit: int = 20
     (>=150-250ms), a ``len(query) >= 2`` gate, and relies on the ``LIMIT`` here to bound the
     per-keystroke scan. A real trigram index is deferred (a schema change, out of the
     presentation scope of this phase).
+
+    phaze-p0ytz: ``DISTINCT`` + ``LIMIT`` with no ``ORDER BY`` lets Postgres return ANY
+    ``limit`` of the matching distinct artists, and the chosen subset is plan-dependent —
+    two identical calls can return different results, so a matching artist can silently
+    (and unstably) drop out of the truncated set. Ordering alphabetically before the
+    ``LIMIT`` makes the truncation deterministic, mirroring the mandatory tiebreaker
+    ``search()`` appends via ``paged_stmt`` above.
     """
     like = like_wildcard(query)
     fm = select(FileMetadata.artist).where(FileMetadata.artist.is_not(None), FileMetadata.artist.ilike(like, escape=LIKE_ESCAPE_CHAR))
     tl = select(Tracklist.artist).where(Tracklist.artist.is_not(None), Tracklist.artist.ilike(like, escape=LIKE_ESCAPE_CHAR))
     combined = union_all(fm, tl).subquery()
-    rows = await session.execute(select(combined.c.artist).distinct().limit(limit))
+    rows = await session.execute(select(combined.c.artist).distinct().order_by(combined.c.artist).limit(limit))
     return [artist for (artist,) in rows if artist]
 
 
