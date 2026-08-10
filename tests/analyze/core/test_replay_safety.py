@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 import uuid
 
 import boto3
@@ -42,6 +43,7 @@ from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS, apply_determini
 from phaze.tasks._shared.replay_safety import (
     LEDGER_REPLAY_REGENERATED,
     LEDGER_REPLAY_TIME_INVARIANT,
+    _string_is_time_limited,
     find_time_limited_paths,
 )
 from phaze.tasks.reenqueue import _REPLAY_REGENERATORS
@@ -225,6 +227,30 @@ def test_detector_generalises_beyond_s3_upload(payload: dict[str, Any]) -> None:
 def test_detector_ignores_a_plain_url_with_no_credentials() -> None:
     """An ordinary addressable URL is not time-limited -- only a CREDENTIAL-bearing query string is."""
     assert find_time_limited_paths({"endpoint": "https://s3.test/bucket/key?versionId=42"}) == []
+
+
+def test_detector_ignores_a_non_http_scheme_even_with_presign_looking_params() -> None:
+    """The URL rule is scoped to http(s): an ftp/s3:// URI's query string is never inspected.
+
+    ``_PRESIGN_QUERY_PARAMS`` names are common enough that an unscoped match would false-positive on
+    any non-web URI carrying a same-named param for an unrelated reason.
+    """
+    assert _string_is_time_limited("ftp://example.com/file?signature=abc123") is False
+    assert find_time_limited_paths({"path": "s3://bucket/key?token=abc123"}) == []
+
+
+def test_detector_treats_an_unparseable_url_as_not_time_limited() -> None:
+    """``urlsplit`` can raise ``ValueError`` on a malformed authority (e.g. an unterminated IPv6 host).
+
+    The detector is best-effort and must never raise on odd-but-not-malicious payload strings -- a
+    string that merely LOOKS like a URL but fails to parse is simply not flagged.
+    """
+    malformed = "http://[::1?x=1"
+    with pytest.raises(ValueError, match="Invalid IPv6 URL"):
+        urlsplit(malformed)  # confirms this string really does exercise the except ValueError branch
+
+    assert _string_is_time_limited(malformed) is False
+    assert find_time_limited_paths({"url": malformed}) == []
 
 
 def test_detector_is_total_on_odd_payloads() -> None:

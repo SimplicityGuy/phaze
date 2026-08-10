@@ -242,6 +242,33 @@ async def test_get_queue_activity_controller_independent_of_agents(session: Asyn
 
 
 @pytest.mark.asyncio
+async def test_get_queue_activity_degrades_when_agents_query_raises():
+    """The ``Agent`` select itself failing (DB hiccup, missing table) degrades the agent source to 0.
+
+    Distinct from the redis/missing-app-state degrades above: here the DB READ that discovers which
+    agents exist is what fails, before any per-agent queue is ever touched. The controller source is
+    untouched by this session and keeps reporting normally (source isolation).
+    """
+
+    class _ExplodingAgentsSession:
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            msg = 'relation "agents" does not exist'
+            raise RuntimeError(msg)
+
+    controller = FakeQueue("controller")
+    controller.set_counts(queued=5, active=0)
+    app_state = SimpleNamespace(task_router=FakeTaskRouter(), controller_queue=controller)
+
+    activity = await get_queue_activity(app_state, _ExplodingAgentsSession())  # type: ignore[arg-type]
+
+    assert activity["agent_queued"] == 0
+    assert activity["agent_active"] == 0
+    assert activity["agent_busy"] == 0
+    assert activity["controller_queued"] == 5
+    assert activity["controller_busy"] == 5
+
+
+@pytest.mark.asyncio
 async def test_get_queue_activity_connects_runtime_registered_agent(session: AsyncSession):
     """A per-agent queue not pre-connected at startup is connected before counting.
 
@@ -415,6 +442,33 @@ async def test_get_stage_busy_counts_degrades_on_db_error() -> None:
 
     counts = await get_stage_busy_counts(_ExplodingSession())  # type: ignore[arg-type]
     assert counts == {"metadata": 0, "analyze": 0}
+
+
+@pytest.mark.asyncio
+async def test_safe_bucket_counts_degrades_when_rollback_also_fails() -> None:
+    """``_safe_bucket_counts`` (five-way stage bucket, no ``begin_nested``) degrades to all-zero even
+    when its own explicit guarded ``session.rollback()`` ALSO raises.
+
+    Unlike the ``begin_nested``-based readers, this one manages its own rollback inline (INFLIGHT-02
+    discipline): the primary read failing hits the outer ``except``, and the recovery attempt
+    (``session.rollback()``) failing too must still be swallowed -- logged separately -- rather than
+    propagating into the 5s poll.
+    """
+    from phaze.enums.stage import Stage
+
+    class _DoublyExplodingSession:
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            msg = "current transaction is aborted"
+            raise RuntimeError(msg)
+
+        async def rollback(self) -> None:
+            msg = "connection already closed"
+            raise RuntimeError(msg)
+
+    out = await pipeline_mod._safe_bucket_counts(_DoublyExplodingSession(), Stage.ANALYZE)  # type: ignore[arg-type]
+
+    assert out, "the zero-filled bucket dict must not be empty"
+    assert all(v == 0 for v in out.values())
 
 
 @pytest.mark.asyncio
@@ -1167,6 +1221,25 @@ async def test_count_inflight_jobs_degrades_to_zero_on_db_error() -> None:
             raise RuntimeError('relation "saq_jobs" does not exist')
 
     assert await count_inflight_jobs(_ExplodingSession()) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_live_job_keys_degrades_to_empty_set_on_db_error() -> None:
+    """A missing saq_jobs table or DB hiccup degrades get_live_job_keys to the empty set, never raises.
+
+    Mirrors count_inflight_jobs's SAVEPOINT degrade discipline over the same ``_LIVE_KEYS_SQL`` read
+    (recovery's live-key exclusion set, consumed by the degrade-tolerant recovery producer).
+    """
+
+    class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            msg = 'relation "saq_jobs" does not exist'
+            raise RuntimeError(msg)
+
+    assert await pipeline_mod.get_live_job_keys(_ExplodingSession()) == set()  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -2144,6 +2217,27 @@ async def test_get_agent_recent_scans_orders_by_created_at_then_id(session: Asyn
 
 
 @pytest.mark.asyncio
+async def test_get_agent_recent_scans_degrades_to_empty_list_on_db_error() -> None:
+    """A DB error on the ``ScanBatch`` read degrades to ``[]`` -- never raises into the agent-pane poll.
+
+    The read runs inside a SAVEPOINT; the exception propagates out of the nested scope and is caught
+    by the degrade ``except``.
+    """
+
+    class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            msg = 'relation "scan_batches" does not exist'
+            raise RuntimeError(msg)
+
+    rows = await get_agent_recent_scans(_ExplodingSession(), "nox")  # type: ignore[arg-type]
+
+    assert rows == []
+
+
+@pytest.mark.asyncio
 async def test_stats_fanout_is_process_global_within_a_loop() -> None:
     """phaze-28wi: two "polls" on the SAME loop must share ONE semaphore, not one each.
 
@@ -2199,3 +2293,64 @@ async def test_stats_fanout_test_override_wins_over_the_loop_cache(monkeypatch: 
     override = asyncio.Semaphore(1)
     monkeypatch.setattr(pipeline_mod, "_STATS_FANOUT", override)
     assert pipeline_mod._stats_fanout() is override
+
+
+def test_kueue_backend_ids_degrades_to_empty_frozenset_on_registry_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A settings/registry read failure degrades ``_kueue_backend_ids`` to an empty frozenset.
+
+    With no known kueue ids, ``_cloud_window_clauses`` falls back to the pre-fix "SUBMITTED is
+    staged" reading everywhere -- wrong only for a live kueue deployment whose registry momentarily
+    failed to resolve, never a crash.
+    """
+
+    def _boom() -> None:
+        msg = "registry TOML unreadable"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(pipeline_mod, "get_settings", _boom)
+
+    assert pipeline_mod._kueue_backend_ids() == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_get_pending_files_page_degrades_to_empty_page_on_db_error() -> None:
+    """A DB error on the pending-set read degrades to an empty page -- never 500s the enrich workspace."""
+    from phaze.enums.stage import Stage
+    from phaze.services.pipeline import get_pending_files_page
+
+    class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            msg = 'relation "metadata" does not exist'
+            raise RuntimeError(msg)
+
+    page = await get_pending_files_page(_ExplodingSession(), Stage.METADATA)  # type: ignore[arg-type]
+
+    assert page.rows == []
+    assert page.has_next is False
+    assert page.page == 1
+
+
+@pytest.mark.asyncio
+async def test_get_file_stage_buckets_degrades_to_all_not_started_on_db_error() -> None:
+    """A DB error on the single-file stage-buckets read degrades to an all-``not_started`` mapping.
+
+    Mirrors ``get_files_page``'s SAVEPOINT degrade posture -- the record slide-in pane renders
+    instead of 500ing.
+    """
+    from phaze.services.pipeline import get_file_stage_buckets
+
+    class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            msg = 'relation "files" does not exist'
+            raise RuntimeError(msg)
+
+    buckets = await get_file_stage_buckets(_ExplodingSession(), uuid.uuid4())  # type: ignore[arg-type]
+
+    assert buckets, "the not-started fallback mapping must not be empty"
+    assert all(v == "not_started" for v in buckets.values())

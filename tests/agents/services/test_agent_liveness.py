@@ -486,6 +486,22 @@ async def test_derive_returns_empty_on_registry_failure(session: AsyncSession, m
     assert await derive_compute_lane_identities(session) == []
 
 
+async def test_derive_degrades_to_all_idle_lanes_on_window_clauses_failure(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``_cloud_window_clauses`` failure (distinct from the registry read above) still lists every
+    configured non-local backend, each forced to state=IDLE / running=waiting=queued=working=0 --
+    never an empty list and never a raise, so the page renders the known lanes instead of going blank.
+    """
+    settings = _settings(_backend("k8s-a", "kueue"), _backend("a1", "compute"))
+    monkeypatch.setattr(liveness_mod, "get_settings", lambda: settings)
+    monkeypatch.setattr(pipeline_mod, "_cloud_window_clauses", lambda: (_ for _ in ()).throw(RuntimeError("clauses unavailable")))
+
+    lanes = await derive_compute_lane_identities(session)
+
+    assert {lane.backend_id: lane.kind for lane in lanes} == {"k8s-a": "kueue", "a1": "compute"}
+    assert all(lane.state == "IDLE" for lane in lanes)
+    assert all((lane.running, lane.waiting, lane.queued, lane.working) == (0, 0, 0, 0) for lane in lanes)
+
+
 # ---------------------------------------------------------------------------
 # get_compute_lane_running_jobs(session, backend_id) — phaze-2u8v.5 burst-lane workload drill-down
 # ---------------------------------------------------------------------------
@@ -566,4 +582,20 @@ async def test_running_jobs_degrades_on_error(session: AsyncSession, monkeypatch
     from unittest.mock import AsyncMock
 
     monkeypatch.setattr(session, "execute", AsyncMock(side_effect=SQLAlchemyError("boom")))
+    assert await get_compute_lane_running_jobs(session, "vox") == []
+
+
+@pytest.mark.asyncio
+async def test_running_jobs_degrades_on_error_even_when_the_guarded_rollback_also_fails(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The query AND its own recovery rollback both failing still degrades to ``[]``, never raises.
+
+    The guarded ``try: await session.rollback() except SQLAlchemyError`` around the recovery attempt
+    exists for exactly this case -- a session so broken even the cleanup can't run.
+    """
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(session, "execute", AsyncMock(side_effect=SQLAlchemyError("boom")))
+    monkeypatch.setattr(session, "rollback", AsyncMock(side_effect=SQLAlchemyError("connection already closed")))
     assert await get_compute_lane_running_jobs(session, "vox") == []

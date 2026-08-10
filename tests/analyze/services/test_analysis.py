@@ -19,7 +19,11 @@ from phaze.services.analysis import (
     FineWindow,
     ModelConfig,
     ModelSetConfig,
+    _get_classifier,
+    _get_labels,
     _peak_rss_gib,
+    _positive_class_prediction,
+    _resolve_malloc_trim,
     _stride_to_cap,
     aggregate_bpm,
     aggregate_danceability,
@@ -973,3 +977,94 @@ def test_analyze_file_skips_peak_rss_log_when_unreadable(
         analyze_file("/fake/audio.mp3", "/fake/models")
 
     assert not [r for r in caplog.records if "peak RSS" in r.getMessage()]
+
+
+# --- _get_classifier / _get_labels / _positive_class_prediction / _resolve_malloc_trim ---
+
+
+def test_get_classifier_rejects_an_unknown_classifier_type() -> None:
+    """A ``ModelConfig`` whose ``classifier_type`` matches none of the three known kinds raises."""
+    bogus = ModelConfig(name="bogus", variant="bogus_variant", filename="bogus-model-1", classifier_type="not_a_real_type")
+
+    with pytest.raises(ValueError, match="Unknown classifier type: not_a_real_type"):
+        _get_classifier(bogus, "/fake/models")
+
+
+def test_get_labels_reads_json_and_normalizes_and_caches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_get_labels`` reads ``<models_dir>/<filename>.json``, maps '---' -> '/' in class names, and caches by filename.
+
+    The cache is asserted directly: after priming it, the JSON file is deleted, so a second call
+    that still returns the same labels proves the cache -- not a lucky re-read -- served it.
+    """
+    monkeypatch.setattr(analysis_mod, "_labels_cache", {})
+    models_dir = tmp_path
+    json_path = models_dir / "genre-model-1.json"
+    json_path.write_text('{"classes": ["Electronic---House", "Pop---Dance", "Rock"]}')
+
+    labels = _get_labels("genre-model-1", str(models_dir))
+
+    assert labels == ["Electronic/House", "Pop/Dance", "Rock"]
+
+    json_path.unlink()  # prove the second call is served from the cache, not a re-read
+    cached_labels = _get_labels("genre-model-1", str(models_dir))
+
+    assert cached_labels == labels
+
+
+def test_positive_class_prediction_falls_back_to_first_entry_when_no_label_qualifies() -> None:
+    """If every entry's label starts with a negation prefix, the defensive fallback picks entry 0.
+
+    Real essentia binary-classifier metadata always has exactly one non-negated label, so this
+    only fires on an unexpected label shape -- and must not raise when it does.
+    """
+    predictions = [
+        {"label": "non_relaxed", "prediction": 0.2},
+        {"label": "not_relaxed_either", "prediction": 0.8},
+    ]
+
+    result = _positive_class_prediction(predictions)
+
+    assert result == pytest.approx(0.2)  # entry 0, the defensive fallback -- not the higher score
+
+
+def test_derive_style_returns_unknown_when_no_predictions() -> None:
+    """An empty/absent genre predictions list derives the sentinel 'unknown' style, not a crash."""
+    assert derive_style({"predictions": []}) == "unknown"
+    assert derive_style({}) == "unknown"
+
+
+def test_resolve_malloc_trim_returns_none_off_glibc(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-glibc libc (macOS, musl) short-circuits to None without ever touching ctypes."""
+    monkeypatch.setattr(analysis_mod.platform, "libc_ver", lambda: ("", ""))
+
+    assert _resolve_malloc_trim() is None
+
+
+def test_resolve_malloc_trim_binds_the_symbol_on_glibc(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On glibc, the symbol is resolved via ``ctypes.CDLL(None)`` and given size_t/int signature/return types."""
+    import ctypes
+
+    trim_symbol = MagicMock(name="malloc_trim")
+    fake_libc = MagicMock()
+    fake_libc.malloc_trim = trim_symbol
+    monkeypatch.setattr(analysis_mod.platform, "libc_ver", lambda: ("glibc", "2.35"))
+    monkeypatch.setattr(analysis_mod.ctypes, "CDLL", lambda _arg: fake_libc)
+
+    trim = _resolve_malloc_trim()
+
+    assert trim is trim_symbol
+    assert trim_symbol.argtypes == [ctypes.c_size_t]
+    assert trim_symbol.restype == ctypes.c_int
+
+
+def test_resolve_malloc_trim_returns_none_when_symbol_lookup_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """glibc reported, but the running image cannot ``dlopen``/resolve the symbol: None, never raises."""
+
+    def _boom(_arg: object) -> None:
+        msg = "cannot load shared object"
+        raise OSError(msg)
+
+    monkeypatch.setattr(analysis_mod.platform, "libc_ver", lambda: ("glibc", "2.35"))
+    monkeypatch.setattr(analysis_mod.ctypes, "CDLL", _boom)
+
+    assert _resolve_malloc_trim() is None
