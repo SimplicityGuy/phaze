@@ -552,6 +552,68 @@ async def test_complete_scan_is_not_reported_partial(session: AsyncSession) -> N
 
 
 # ---------------------------------------------------------------------------
+# phaze-a2ytu — the row-cap exit must also report ``partial``, not just the
+# batch-cap exit. Three shapes at the ``_MAX_REVIEW_ROWS`` boundary, matching
+# the adversarial finder's case split:
+#   (a) row cap hit mid-batch, with unexamined siblings still in that batch;
+#   (b) row cap hit exactly on a FULL batch's last member (a later keyset page
+#       may still hold candidates, so this must still be reported partial);
+#   (c) row cap hit exactly as the candidate set itself is exhausted (a SHORT
+#       batch, fully consumed) -- the one true "not partial" case.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_row_cap_hit_mid_batch_reports_partial(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """(a) The row cap lands before the end of a batch -- unexamined siblings remain in it."""
+    monkeypatch.setattr("phaze.services.review._MAX_REVIEW_ROWS", 2)
+    monkeypatch.setattr("phaze.services.review._REVIEW_SCAN_BATCH", 5)
+    for i in range(5):  # all 5 land in one batch; the cap (2) trips mid-batch, 3 siblings unexamined
+        await _seed_qualifying_applied_file(session, filename=f"aaa_{i} - Title.mp3")
+
+    page = await get_tagwrite_review_page(session)
+
+    assert len(page.rows) == 2
+    assert page.partial is True, "unexamined siblings remain in the batch the cap tripped inside"
+
+
+@pytest.mark.asyncio
+async def test_row_cap_hit_at_full_batch_boundary_reports_partial(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """(b) The row cap lands exactly on a FULL batch's last row -- a later keyset page may remain,
+    which the builder cannot rule out without another round-trip, so it must still say partial.
+
+    This is the exact shape from the bug report: N qualifying rows accumulate within full
+    ``_REVIEW_SCAN_BATCH``-sized batches, so neither the inner-loop unexamined-sibling check nor the
+    outer short-batch check fires -- the pre-fix code left ``partial`` at its default False here.
+    """
+    monkeypatch.setattr("phaze.services.review._MAX_REVIEW_ROWS", 3)
+    monkeypatch.setattr("phaze.services.review._REVIEW_SCAN_BATCH", 3)
+    for i in range(3):  # exactly one full batch, cap trips on its last (and only) qualifying row
+        await _seed_qualifying_applied_file(session, filename=f"aaa_{i} - Title.mp3")
+
+    page = await get_tagwrite_review_page(session)
+
+    assert len(page.rows) == 3
+    assert page.partial is True, "a full-sized batch cannot prove the candidate set is exhausted"
+
+
+@pytest.mark.asyncio
+async def test_row_cap_hit_exactly_as_candidates_exhausted_is_not_partial(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """(c) The row cap lands exactly on a SHORT batch's last row -- the candidate set is provably
+    exhausted right there, so the render is complete despite hitting the cap.
+    """
+    monkeypatch.setattr("phaze.services.review._MAX_REVIEW_ROWS", 3)
+    monkeypatch.setattr("phaze.services.review._REVIEW_SCAN_BATCH", 5)
+    for i in range(3):  # fewer than the scan batch, so the returned batch is short (< 5)
+        await _seed_qualifying_applied_file(session, filename=f"aaa_{i} - Title.mp3")
+
+    page = await get_tagwrite_review_page(session)
+
+    assert len(page.rows) == 3
+    assert page.partial is False, "the short batch proves no candidates remain, even though the cap was hit"
+
+
+# ---------------------------------------------------------------------------
 # phaze-hcsb — per-card isolation in get_cue_review_cards
 # ---------------------------------------------------------------------------
 
