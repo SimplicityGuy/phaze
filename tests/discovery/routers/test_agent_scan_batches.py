@@ -255,6 +255,58 @@ async def test_extra_field_422(session: AsyncSession, seed_test_agent: tuple[Age
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["status", "total_files", "processed_files"])
+async def test_explicit_null_for_non_nullable_field_422s_without_mutating_the_row(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    field: str,
+) -> None:
+    """phaze-q6i5g: an explicit JSON null for `status`/`total_files`/`processed_files` used to
+    validate, bypass every router guard (all keyed on `is not None`, not "was set"), and reach
+    the unconditional setattr apply loop -- these back NOT NULL columns, so `session.commit()`
+    raised an unhandled 500 instead of a clean 422. Also confirms a real, in-flight
+    `processed_files` update in the SAME body is not silently rolled back by the null."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.patch(
+            f"/api/internal/agent/scan-batches/{batch_id}",
+            json={field: None, "processed_files": 5} if field != "processed_files" else {field: None, "total_files": 5},
+        )
+
+    assert r.status_code == 422, r.text
+    assert field in r.text
+
+    await session.commit()
+    session.expire_all()
+    b = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    assert b.status == ScanStatus.RUNNING.value
+    assert b.total_files == 0
+    assert b.processed_files == 0
+
+
+@pytest.mark.asyncio
+async def test_explicit_null_error_message_still_clears_it(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """`error_message` is the one nullable column -- an explicit null must still be allowed
+    through end-to-end (schema layer must not overreach into rejecting a legitimate clear)."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+    async with _make_client(session, raw_token) as ac:
+        seed_error = await ac.patch(
+            f"/api/internal/agent/scan-batches/{batch_id}",
+            json={"error_message": "boom"},
+        )
+        assert seed_error.status_code == 200, seed_error.text
+        r = await ac.patch(
+            f"/api/internal/agent/scan-batches/{batch_id}",
+            json={"error_message": None},
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["error_message"] is None
+
+
+@pytest.mark.asyncio
 async def test_cross_agent_403_before_state_machine(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
     """T-27-01: agent B PATCHing agent A's batch must return 403, NOT 409.
 
