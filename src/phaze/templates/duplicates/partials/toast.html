@@ -1,4 +1,4 @@
-<div x-data="{ show: true }"
+<div x-data="{ show: true, undoFailed: false }"
      x-init="setTimeout(() => show = false, 10000)"
      x-show="show"
      x-transition:leave="transition ease-in duration-200"
@@ -17,9 +17,20 @@
     {# undo_target/undo_swap: the v7 shell has no #duplicates-list (its sole definer, list.html,
        was deleted in the Phase 62 cutover) -- the caller MUST supply a real, live DOM id
        (phaze-be1j). Bulk undo lands in the persistent #dedupe-bulk-response status div. #}
+    {# phaze-yjl9v: hx-target here is a workspace-scoped id (#dedupe-bulk-response) that only
+       exists while the Dedupe stage is the live #stage-workspace content. The toast itself lives
+       in shell-level chrome (#toast-container) that survives a rail navigation, so a stale toast
+       can outlive its own target. When that happens htmx resolves hx-target BEFORE opening the
+       request and raises htmx:targetError WITHOUT sending anything -- silently dropping the undo.
+       Do NOT hide the toast optimistically on click: only dismiss it once htmx confirms the
+       request actually completed successfully, and surface target-error/failure so the operator
+       is not left believing an undo that never ran actually worked. #}
     <form hx-post="/duplicates/undo-all"
           hx-target="#{{ undo_target }}"
           hx-swap="{{ undo_swap | default('innerHTML') }}"
+          @htmx:target-error="undoFailed = true"
+          @htmx:response-error="undoFailed = true"
+          @htmx:after-request="if ($event.detail.successful) { show = false } else { undoFailed = true }"
           class="inline">
         <input type="hidden" name="file_states" value="{{ undo_file_states }}">
         {# phaze-dpc5: carry the SUBMITTED group hashes into the undo, mirroring how bulk resolve
@@ -30,25 +41,36 @@
         <input type="hidden" name="group_hashes" value="{{ hash }}">
         {% endfor %}
         <button type="submit"
-                @click="show = false"
                 class="text-blue-300 hover:text-blue-100 font-semibold underline">
             Undo All
         </button>
     </form>
+    <p x-show="undoFailed" x-cloak class="text-red-300 text-xs mt-1">
+        Undo failed -- reopen the Dedupe stage and try again.
+    </p>
     {% else %}
     {# undo_target/undo_swap: retargets the resolve response's OWN "group-{hash}" placeholder
        (outerHTML), which the /undo endpoint restores to a live _dupe_group.html card
        (phaze-be1j) -- NOT the deleted #duplicates-list. #}
+    {# phaze-yjl9v: same silent-drop risk as the bulk form above -- hx-target="#group-{hash}" only
+       exists while THIS resolve's placeholder is still in the live #stage-workspace. A stale toast
+       (navigated away and back) issues no request at all on click; don't hide it until htmx
+       confirms the request actually completed successfully. #}
     <form hx-post="{{ undo_url }}"
           hx-target="#{{ undo_target }}"
           hx-swap="{{ undo_swap | default('outerHTML') }}"
+          @htmx:target-error="undoFailed = true"
+          @htmx:response-error="undoFailed = true"
+          @htmx:after-request="if ($event.detail.successful) { show = false } else { undoFailed = true }"
           class="inline">
         <input type="hidden" name="file_states" value="{{ undo_file_states }}">
         <button type="submit"
-                @click="show = false"
                 class="text-blue-300 hover:text-blue-100 font-semibold underline">
             Undo
         </button>
     </form>
+    <p x-show="undoFailed" x-cloak class="text-red-300 text-xs mt-1">
+        Undo failed -- reopen the Dedupe stage and try again.
+    </p>
     {% endif %}
 </div>
