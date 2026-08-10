@@ -554,6 +554,70 @@ async def test_same_terminal_status_with_extra_mutating_field_still_409s(session
     assert b.processed_files == 0
 
 
+# ---------------------------------------------------------------------------
+# phaze-01a3h: at-least-once retry of the agent's REAL terminal PATCH body (which always
+# carries extra fields alongside status, e.g. tasks/scan.py:317-320/:296-299/:337-340) must be
+# a 200 echo, not a 409 -- the old guard only recognized a bare {"status"} body as a replay.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_terminal_completed_replay_of_real_agent_body_is_idempotent_echo(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """Reproduces tasks/scan.py:317-320's terminal PATCH (status="completed" + matching
+    total_files/processed_files) being retried after a lost-response TransportError: the
+    IDENTICAL body resent against the now-COMPLETED row must echo 200, not 409 (phaze-01a3h)."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+    body = {"status": "completed", "total_files": 42, "processed_files": 42}
+    async with _make_client(session, raw_token) as ac:
+        first = await ac.patch(f"/api/internal/agent/scan-batches/{batch_id}", json=body)
+        assert first.status_code == 200, first.text
+        replay = await ac.patch(f"/api/internal/agent/scan-batches/{batch_id}", json=body)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["total_files"] == 42
+    assert replay.json()["processed_files"] == 42
+
+
+@pytest.mark.asyncio
+async def test_terminal_failed_replay_of_real_agent_body_is_idempotent_echo(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """Same replay-tolerance for tasks/scan.py's failed-terminal PATCH shape
+    (status="failed" + matching error_message, :296-299/:337-340)."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+    body = {"status": "failed", "error_message": "Controller error: boom"}
+    async with _make_client(session, raw_token) as ac:
+        first = await ac.patch(f"/api/internal/agent/scan-batches/{batch_id}", json=body)
+        assert first.status_code == 200, first.text
+        replay = await ac.patch(f"/api/internal/agent/scan-batches/{batch_id}", json=body)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["error_message"] == "Controller error: boom"
+
+
+@pytest.mark.asyncio
+async def test_terminal_completed_replay_with_a_differing_field_still_409s(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """A retry is only tolerated when it is VALUE-IDENTICAL to the committed row -- a body that
+    differs in even one field from a genuinely different attempt (not a replay of the same
+    request) still 409s, so the widened echo test cannot mask a real conflicting write."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+    async with _make_client(session, raw_token) as ac:
+        first = await ac.patch(
+            f"/api/internal/agent/scan-batches/{batch_id}",
+            json={"status": "completed", "total_files": 42, "processed_files": 42},
+        )
+        assert first.status_code == 200, first.text
+        conflicting = await ac.patch(
+            f"/api/internal/agent/scan-batches/{batch_id}",
+            json={"status": "completed", "total_files": 43, "processed_files": 43},
+        )
+    assert conflicting.status_code == 409, conflicting.text
+    await session.commit()
+    session.expire_all()
+    b = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    assert b.total_files == 42
+    assert b.processed_files == 42
+
+
 def test_router_registered_in_main_app() -> None:
     """Task 3: phaze.main.create_app() must include the agent_scan_batches router.
 
