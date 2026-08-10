@@ -18,7 +18,7 @@ construction via the shared ``_read_secret_file`` helper (D-04/D-06), failing fa
 path.
 """
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
@@ -130,6 +130,17 @@ class ComputeBackend(BaseModel):
             raise ValueError(f"backend {self.id!r} (kind=compute) push_host must not contain whitespace or shell metacharacters")
         if self.ssh_user and any(ch in _PUSH_DEST_FORBIDDEN for ch in self.ssh_user):
             raise ValueError(f"backend {self.id!r} (kind=compute) ssh_user must not contain whitespace or shell metacharacters")
+        # phaze-xoxvt: scratch_dir lands in the SAME ssh remote spec as push_host/ssh_user (WR-03's
+        # own comment says so) but, before this check, only got the truthiness check above -- so a
+        # scratch_dir with whitespace/shell metachars or a relative path validated here and then blew
+        # up as a pydantic.ValidationError on every dispatch, AFTER the CloudJob SUBMITTED upsert
+        # (services/backends.py), committing a phantom row with no push_file enqueue. Mirror
+        # PushFilePayload._dest_scratch_absolute (schemas/agent_tasks.py) exactly: absolute-path check
+        # plus the same forbidden-charset guard, id-tagged, so the misconfig fails at boot instead.
+        if not PurePosixPath(self.scratch_dir).is_absolute():
+            raise ValueError(f"backend {self.id!r} (kind=compute) scratch_dir must be an absolute path")
+        if any(ch in _PUSH_DEST_FORBIDDEN for ch in self.scratch_dir):
+            raise ValueError(f"backend {self.id!r} (kind=compute) scratch_dir must not contain whitespace or shell metacharacters")
         return self
 
 
