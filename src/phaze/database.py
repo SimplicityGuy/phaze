@@ -77,6 +77,15 @@ def _run_upgrade_head_sync() -> None:
     # crashes with ValueError('invalid interpolation syntax') before env.py's own escaping
     # is ever reached (phaze-7oya).
     cfg.set_main_option("sqlalchemy.url", str(settings.database_url).replace("%", "%%"))
+    # This runs in-process inside the api's lifespan (run_migrations below), AFTER
+    # configure_logging() has already installed the structlog JSON handler on the root
+    # logger. alembic/env.py's module-level fileConfig() call would otherwise strip that
+    # handler and reset root to alembic.ini's WARNING level for the rest of the process
+    # lifetime. Setting the canonical Alembic ``configure_logger`` attribute to False
+    # tells env.py to skip fileConfig entirely for this in-process run; the CLI
+    # `alembic upgrade` path builds its own bare Config (no attributes set) and keeps
+    # its logging output, since env.py defaults the guard to True (phaze-lhdj0).
+    cfg.attributes["configure_logger"] = False
     command.upgrade(cfg, "head")
 
 
