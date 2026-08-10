@@ -530,6 +530,39 @@ async def test_saq_cancellation_reaps_child_before_secret_shred(monkeypatch: pyt
     assert api.pushed == [], "no success callback fires on a cancelled push"
 
 
+async def test_saq_cancellation_before_spawn_leaves_no_orphan(monkeypatch: pytest.MonkeyPatch) -> None:
+    # phaze-piqai: a SAQ job-net cancellation landing on the size-derived stat() await -- the only
+    # await previously sitting between create_subprocess_exec and the guarded communicate() -- used
+    # to bypass the proc.kill()/proc.wait() reap entirely, because the spawn had already happened.
+    # The fix hoists the stat + outer_guard computation ABOVE the spawn, so a cancellation there now
+    # lands strictly BEFORE create_subprocess_exec ever runs: no child process exists yet, so there is
+    # nothing to orphan and nothing for a not-yet-started ssh to read the about-to-be-shredded secrets
+    # out from under. Assert create_subprocess_exec is never even called.
+    cfg = _fake_cfg()
+    payload = _payload()
+    monkeypatch.setattr(push, "_agent_settings", lambda: cfg)
+
+    spawn_called = False
+
+    async def _fake_exec(*_args: Any, **_kwargs: Any) -> _FakeProc:
+        nonlocal spawn_called
+        spawn_called = True
+        return _FakeProc(returncode=0)
+
+    async def _cancelled_to_thread(*_args: Any, **_kwargs: Any) -> Any:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(push.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(push.asyncio, "to_thread", _cancelled_to_thread)
+    api = _FakeApi()
+
+    with pytest.raises(asyncio.CancelledError):
+        await push.push_file({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert spawn_called is False, "the rsync child must never be spawned once the stat is cancelled"
+    assert api.pushed == [], "no success callback fires on a cancelled push"
+
+
 def test_push_file_saq_timeout_above_asyncio_outer_guard() -> None:
     # WR-03: the SAQ job-net timeout MUST sit strictly above the asyncio outer guard
     # (push_timeout_sec + buffer) for the documented default so a job-net cancellation never
