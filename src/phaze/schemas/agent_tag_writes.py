@@ -56,7 +56,7 @@ class TagWriteResultPayload(BaseModel):
     # phaze-52qd: the COMPLETE before/undo snapshot the agent read off disk immediately before
     # writing -- every core field, ``None`` where the tag was absent. This is the only place it can
     # be captured (the control plane cannot read the file), and it is what an undo re-applies.
-    before_tags: dict[str, str | int | None] = Field(default_factory=dict)
+    before_tags: dict[str, str | int | list[str] | None] = Field(default_factory=dict)
     discrepancies: dict[str, dict[str, str | None]] | None = None
     error_message: str | None = Field(default=None, max_length=_ERROR_MESSAGE_MAX)
 
@@ -95,7 +95,7 @@ class TagWriteBeforeSnapshotPayload(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    before_tags: dict[str, str | int | None] = Field(default_factory=dict)
+    before_tags: dict[str, str | int | list[str] | None] = Field(default_factory=dict)
 
     # Same sink, same hazard as `TagWriteResultPayload.before_tags` -- see `_reject_pg_unsafe_json`.
     _reject_pg_unsafe_before_tags = field_validator("before_tags", mode="after")(_reject_pg_unsafe_json)

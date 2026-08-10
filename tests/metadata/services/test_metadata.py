@@ -351,6 +351,39 @@ class TestExtractTagsVorbis:
         assert result.duration == 180.0
         assert result.bitrate == 192000
 
+    @patch("phaze.services.metadata.mutagen.File")
+    def test_vorbis_multi_value_genre_preserves_all_raw_values_as_a_list(self, mock_file):
+        """phaze-z2u08: a FLAC with two Vorbis ``genre`` comments must snapshot BOTH raw values.
+
+        The normalized ``genre`` field stays the first value only (correct for search/matching),
+        but ``raw_genre`` -- the undo snapshot's source -- must keep every value as a real
+        ``list[str]``, not collapse them into one string nothing on the write side can split back
+        apart.
+        """
+        mock_audio = MagicMock()
+        mock_tags = MagicMock()
+        mock_tags.__class__ = type("VorbisComment", (), {})
+
+        def vorbis_get(key):
+            mapping = {"genre": ["Rock", "Pop"]}
+            return mapping.get(key)
+
+        mock_tags.get = vorbis_get
+        mock_tags.items.return_value = [("genre", ["Rock", "Pop"])]
+
+        mock_audio.tags = mock_tags
+        mock_audio.__class__ = type("OggVorbis", (), {})
+        mock_audio.info = MagicMock()
+        mock_audio.info.length = 180.0
+        mock_audio.info.bitrate = 192000
+
+        mock_file.return_value = mock_audio
+
+        result = extract_tags("/fake/path.flac")
+
+        assert result.genre == "Rock"
+        assert result.raw_genre == ["Rock", "Pop"]
+
 
 class TestExtractTagsMP4:
     """Tests for extract_tags with MP4-tagged (M4A) files."""
