@@ -378,6 +378,32 @@ test-db:
             echo "♻️  ${redis_container} has only ${current_databases:-0} logical DBs (need ${redis_databases}); recreating."
             echo "    This CLEARS the test Redis, including per-worktree DB allocations. Re-run"
             echo "    'just test-db-for <name>' in each active worktree afterwards."
+            # phaze-1t4gc: this resize is a deliberate rm (see the comment above), but unlike
+            # test-db-down (phaze-ieqg) it had no live-seat guard at all -- so raising
+            # PHAZE_TEST_REDIS_DATABASES (including via the exhaustion remedy test-db-for's own
+            # error message suggests) would silently wipe every concurrent worktree's live Redis
+            # keys and the DB-index registry mid-suite. Every live suite also holds a Postgres
+            # advisory-lock backend (tests/db_guard.py), so the same pg_stat_activity probe
+            # test-db-down uses is a valid liveness signal here too.
+            if [ "${PHAZE_TEST_DB_FORCE_DOWN:-}" != "1" ] && \
+               [ "$(docker inspect -f '{{{{.State.Running}}' "$container" 2>/dev/null || echo false)" = "true" ]; then
+                busy="$(docker exec "$container" psql -U phaze -d postgres -tAc \
+                    "SELECT string_agg(DISTINCT datname || '  (backend pid ' || pid || ', ' || coalesce(nullif(application_name, ''), 'unnamed client') || ')', chr(10) || '     ')
+                       FROM pg_stat_activity
+                      WHERE backend_type = 'client backend' AND pid <> pg_backend_pid() AND datname LIKE 'phaze%test'" 2>/dev/null || true)"
+                if [ -n "$(printf '%s' "$busy" | tr -d '[:space:]')" ]; then
+                    echo "❌ Refusing to recreate ${redis_container} for the logical-DB resize: another seat is using the shared harness." >&2
+                    echo "     ${busy}" >&2
+                    echo "" >&2
+                    echo "   Recreating now would wipe every concurrent worktree's live Redis keys and the" >&2
+                    echo "   DB-index allocation registry out from under those runs -- the same false-red" >&2
+                    echo "   signature test-db-down's guard exists to prevent (phaze-ieqg / phaze-1t4gc)." >&2
+                    echo "" >&2
+                    echo "   Wait for those runs to finish, or PHAZE_TEST_DB_FORCE_DOWN=1 just test-db-for ..." >&2
+                    echo "   if you know the connections are stale." >&2
+                    exit 1
+                fi
+            fi
             docker rm -f "$redis_container" >/dev/null 2>&1 || true
             run_or_yield "$redis_container" "recreated" \
                 -p "{{test_db_bind_ip}}:${redis_port}:6379" \
