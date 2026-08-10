@@ -23,10 +23,12 @@ Docker invocation (set by Plan 13's docker-compose.yml update):
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any, cast
 
 import redis.asyncio as redis_async
 from saq import CronJob
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 import structlog
 
@@ -55,10 +57,67 @@ from phaze.tasks.tracklist_drain import drain_tracklists, tracklist_drain_status
 
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from phaze.config import ControlSettings
 
 
 logger = structlog.get_logger(__name__)
+
+# phaze-sekvl: docker-compose gives `worker` and `api` the IDENTICAL `depends_on: postgres:
+# service_healthy` with no ordering edge between them, so `docker compose up -d` can boot this
+# process concurrently with (or before) the api lifespan's `alembic upgrade head`
+# (phaze.database.run_migrations). Every OTHER control-worker duty is a `* * * * *` / `*/5 * * * *`
+# CronJob that simply retries itself out of a transient pre-head schema -- but the two boot
+# reconciles below (`backfill_ledger_from_saq_jobs`, `recover_orphaned_work`) are one-shot AND
+# exception-swallowed (boot resilience, D-05 -- a reconcile failure must never abort controller
+# boot), so hitting the race was TERMINAL for the process lifetime: the in-flight/orphaned job
+# cohort was silently never reconciled until an operator happened to restart the worker again.
+# Bounded retry-with-backoff closes the window the same way the cron jobs do, without turning a
+# genuine, persistent failure into an indefinite hang (D-05 stays honored: the final attempt's
+# failure is still swallowed, just after giving the api's migration a realistic chance to land).
+_BOOT_RECONCILE_RETRY_ATTEMPTS = 5
+_BOOT_RECONCILE_RETRY_DELAY_SECONDS = 2.0
+# Only retry the failure shape this race actually produces: a missing table/column (or a not-yet-
+# accepting-connections Postgres) surfaces through SQLAlchemy as a DBAPIError subclass (asyncpg's
+# UndefinedTableError/UndefinedColumnError arrive wrapped as ProgrammingError; a refused connection
+# as OperationalError). Scoping the retry to THIS type, rather than bare ``Exception``, keeps the
+# retry budget for the race it exists to cover and lets any OTHER failure (a real bug in the
+# reconcile logic) surface -- and get logged -- on the first attempt, exactly as before.
+_RETRYABLE_BOOT_RECONCILE_EXCEPTIONS = (DBAPIError,)
+
+
+async def _run_boot_reconcile_with_retry(
+    description: str,
+    attempt_fn: Callable[[], Awaitable[Any]],
+    *,
+    attempts: int = _BOOT_RECONCILE_RETRY_ATTEMPTS,
+    delay_seconds: float = _BOOT_RECONCILE_RETRY_DELAY_SECONDS,
+) -> Any | None:
+    """Run a one-shot boot reconcile with bounded retry-with-backoff (phaze-sekvl).
+
+    Retries ``attempt_fn`` up to ``attempts`` times on a :data:`_RETRYABLE_BOOT_RECONCILE_EXCEPTIONS`
+    (schema-not-ready) failure, sleeping ``delay_seconds`` between attempts. ANY OTHER exception is
+    logged once and NOT retried -- retrying it would not help, and consuming the retry budget on a
+    non-transient bug would only delay surfacing it. Returns the successful result, or ``None`` if
+    every attempt failed (or a non-retryable exception was raised) -- never raises, so this NEVER
+    aborts controller boot, matching the pre-existing broad try/except contract.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return await attempt_fn()
+        except _RETRYABLE_BOOT_RECONCILE_EXCEPTIONS:
+            if attempt < attempts:
+                logger.warning(f"{description} failed (schema not ready?), retrying", attempt=attempt, attempts=attempts)
+                await asyncio.sleep(delay_seconds)
+            else:
+                logger.exception(f"{description} failed on final attempt", attempts=attempts)
+        except Exception:
+            # Boot resilience still applies (never abort controller boot) -- but this is not the
+            # race the retry budget exists for, so don't spend it: log once and stop.
+            logger.exception(f"{description} failed")
+            break
+    return None
 
 
 async def startup(ctx: dict[str, Any]) -> None:
@@ -172,21 +231,26 @@ async def startup(ctx: dict[str, Any]) -> None:
     # before_enqueue WRITE hook populating the ledger. This is a CONTROL-SIDE runtime reconcile, NOT
     # an Alembic data step (Alembic must never touch saq_jobs). It is idempotent (ON CONFLICT DO
     # NOTHING) so it stays safe on every boot and becomes a cheap no-op once the transition cohort
-    # drains. Wrapped in its OWN try/except so a backfill failure logs and NEVER aborts boot or blocks
-    # the subsequent recovery (boot resilience, T-45-14).
-    try:
+    # drains. Boot resilience (T-45-14) is now bounded retry-with-backoff rather than a bare
+    # try/except -- see ``_run_boot_reconcile_with_retry`` (phaze-sekvl): a single failed attempt no
+    # longer strands the process for its whole lifetime if it landed while the api's migration was
+    # still in flight.
+    async def _do_backfill() -> dict[str, int]:
         async with ctx["async_session"]() as session:
             tally = await backfill_ledger_from_saq_jobs(session)
             await session.commit()
-        logger.info("phaze.controller startup ledger backfill", inserted=tally["inserted"], skipped=tally["skipped"])
-    except Exception:
-        logger.exception("ledger backfill on startup failed")
+        return tally
 
-    try:
-        result = await recover_orphaned_work(ctx)
+    tally = await _run_boot_reconcile_with_retry("ledger backfill on startup", _do_backfill)
+    if tally is not None:
+        logger.info("phaze.controller startup ledger backfill", inserted=tally["inserted"], skipped=tally["skipped"])
+
+    async def _do_recovery() -> dict[str, Any]:
+        return await recover_orphaned_work(ctx)
+
+    result = await _run_boot_reconcile_with_retry("recover_orphaned_work on startup", _do_recovery)
+    if result is not None:
         logger.info("phaze.controller startup recovery", detected_loss=result["detected_loss"], stages=result["stages"])
-    except Exception:
-        logger.exception("recover_orphaned_work on startup failed")
 
     # Phase 56/70 (KDEPLOY-04, MKUE-01/03, D-05/D-06 -- REVISED phaze-6r39): PER-CLUSTER LocalQueue-
     # reachability probe. This is a RUNTIME probe, distinct from the fail-fast kube config validators --
