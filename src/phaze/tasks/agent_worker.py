@@ -111,6 +111,61 @@ def _sweep_scratch(scratch_dir: Path, min_age_sec: float) -> None:
             entry.unlink(missing_ok=True)
 
 
+_QUEUE_READY_BACKOFF_S: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0)
+"""Bounded retry budget for the startup dequeue-readiness probe (phaze-xuec1): ~15s total
+wall-clock, deliberately short relative to whoami's ~63s (``_WHOAMI_BACKOFF_S``).
+
+By the time this probe runs, SAQ's own ``worker.queue.connect()`` (``saq.worker.start()``,
+called immediately before ``Worker.start()`` invokes this module's ``startup()``) has already
+called ``pool.open(wait=False)`` -- a NON-BLOCKING call that always "succeeds" immediately
+even when the network route to the broker is down; psycopg3 fills the pool lazily in the
+background. So either the pool is already usable by the time we get here, or the route
+genuinely will not come up in this window -- a short, clearly-logged budget is more useful to
+an operator than a long silent hang before the eventual failure.
+"""
+
+
+async def _wait_for_queue_ready() -> None:
+    """Bounded-retry probe that the worker can actually reach its broker (phaze-xuec1).
+
+    Design (bead phaze-xuec1, "Startup ordering"): ``startup complete`` must not be logged
+    while the worker is unable to dequeue. SAQ's own queue.connect() proves nothing about
+    that (see ``_QUEUE_READY_BACKOFF_S`` above) -- it is a "Likely context" theory in the
+    2026-08-08 nox incident report that a broker/PgBouncer blip DURING startup (the agent
+    restarted while lux's api/worker were themselves being recreated by the same deploy) left
+    a worker that looked cleanly started but could not consume its queue.
+
+    ``queue.info()`` exercises the exact same psycopg3 pool ``_dequeue()`` needs (and the one
+    the heartbeat's own broker probe re-checks every tick post-startup, see
+    ``phaze.tasks.heartbeat.send_heartbeat``), so a successful call here is real evidence the
+    worker can reach its broker -- not just that SAQ's non-blocking ``pool.open()`` returned.
+
+    Raises:
+        RuntimeError: the probe never succeeded within the retry budget. Uncaught, this
+            propagates out of ``startup()`` and out of ``saq.worker.Worker.start()`` (which
+            catches only ``asyncio.CancelledError``), crashing the process with a non-zero
+            exit -- the existing "operator misconfiguration -- exiting non-zero" posture this
+            module already uses for the queue/token mismatch guard below, applied here to
+            "the broker was still unreachable after startup gave it ~15s to recover".
+    """
+    last_exc: Exception | None = None
+    for delay in _QUEUE_READY_BACKOFF_S:
+        try:
+            await queue.info()
+            return
+        except Exception as e:
+            last_exc = e
+            logger.warning("queue readiness probe failed: %s; retrying in %.1fs", e, delay)
+            await asyncio.sleep(delay)
+    try:
+        await queue.info()
+        return
+    except Exception as e:
+        last_exc = e
+    msg = f"agent worker cannot reach its broker after startup (~{sum(_QUEUE_READY_BACKOFF_S):.0f}s of retries); last error: {last_exc}"
+    raise RuntimeError(msg)
+
+
 async def _maybe_sweep_scratch(cfg: AgentSettings) -> None:
     """Compute-only startup janitor gate (D-14).
 
@@ -238,6 +293,12 @@ async def startup(ctx: dict[str, Any]) -> None:
     # child-per-file model (services.analysis_exec) replaced the pebble ProcessPool;
     # this semaphore preserves the pool's worker_process_pool_size concurrency bound.
     ctx["analysis_semaphore"] = asyncio.Semaphore(cfg.worker_process_pool_size)
+
+    # phaze-xuec1: prove the worker can actually reach its broker BEFORE claiming
+    # "startup complete" -- see _wait_for_queue_ready's docstring. Raises RuntimeError
+    # (crashing the process, non-zero exit) if the broker is still unreachable after the
+    # retry budget, rather than logging a clean startup that cannot dequeue.
+    await _wait_for_queue_ready()
 
     logger.info(
         "phaze.tasks.agent_worker startup complete agent_id=%s queue=%s lane=%s",
