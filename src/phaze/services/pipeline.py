@@ -2317,7 +2317,17 @@ async def get_proposal_pending_batches(session: AsyncSession, batch_size: int) -
     IDENTICAL key and dedup against an in-flight batch. Both paths call THIS helper, so their
     batches -- and therefore their set-hash keys -- are guaranteed to match. Pure ORM / bound
     params, NO f-string SQL (T-42-03).
+
+    phaze-ceuvd: ``batch_size`` is used as the ``range()`` step below, so it degrades rather
+    than crashes on a misconfigured value -- ``llm_batch_size`` now carries ``gt=0`` at the
+    config layer (config.py), but this clamp is the second, independent layer: 0 previously
+    raised ``ValueError: range() arg 3 must not be zero`` (unhandled 500 on GENERATE ALL) and a
+    negative value made ``range(0, N, -k)`` empty, silently returning zero batches (success
+    with nothing enqueued). Both non-positive inputs clamp to 1 (one file per batch) instead.
     """
+    if batch_size < 1:
+        logger.warning("proposal_pending_batches_size_clamped", requested_batch_size=batch_size, clamped_to=1)
+        batch_size = 1
     stmt = select(FileRecord).where(*_proposal_pending_clauses())
     result = await session.execute(stmt)
     file_ids = sorted(str(f.id) for f in result.scalars().all())
