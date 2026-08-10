@@ -290,6 +290,38 @@ async def test_enqueue_analysis_jobs_does_not_log_a_live_collision(caplog: pytes
 
 
 @pytest.mark.asyncio
+async def test_enqueue_analysis_jobs_contains_a_raising_collision_probe(caplog: pytest.LogCaptureFixture) -> None:
+    """phaze-p2qvv: a raising ``queue.job()`` probe costs one file's diagnostic, not the group.
+
+    Pre-fix, ``classify_process_file_collision(await queue.job(...))`` sat OUTSIDE the per-file
+    ``try``/``except`` -- a raise there (e.g. a transient broker error) escaped
+    ``_enqueue_analysis_jobs`` entirely, aborting every remaining file in the batch. The probe is
+    purely diagnostic and must never affect ``failed_ids`` or abort the loop.
+    """
+    from unittest.mock import AsyncMock
+
+    import phaze.routers.pipeline as pipeline_mod
+
+    blocked_file = _make_file()
+    later_file = _make_file()
+    key = f"process_file:{blocked_file.id}"
+    queue = DedupFakeQueue("phaze-agent-test-fileserver-analyze")
+    queue._live_keys.add(key)  # dedups blocked_file's enqueue to None
+    queue.job = AsyncMock(side_effect=ConnectionError("transient broker pool error"))
+
+    with caplog.at_level("WARNING", logger="phaze.routers.pipeline"):
+        failed_ids = await pipeline_mod._enqueue_analysis_jobs(queue, [blocked_file, later_file], "test-fileserver", settings.models_path)
+
+    # The probe's own failure never lands in failed_ids -- it is diagnostic-only.
+    assert failed_ids == []
+    # later_file's enqueue still ran -- one file's probe failure did not abort the group.
+    assert len(queue.captured) == 1
+    assert queue.captured[0][1]["file_id"] == str(later_file.id)
+    assert "collision-classification probe failed" in caplog.text
+    assert str(blocked_file.id) in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_extract_metadata_enqueues_complete_payload(client: AsyncClient, session: AsyncSession) -> None:
     """Regression (35-REVIEW CR-01): /api/v1/extract-metadata must enqueue a COMPLETE ExtractMetadataPayload.
 
