@@ -311,11 +311,36 @@ test-db:
         rm -f "$run_err"
         return 1
     }
+    # phaze-3yznp: `docker start` resurrects a container with whatever image/port it was
+    # ORIGINALLY created with -- it carries none of the currently-configured knobs (unlike
+    # `docker run`, which gets every one as an argument). A container left over from before a
+    # postgres_image bump, or created under a different PHAZE_TEST_DB_PORT/
+    # PHAZE_TEST_REDIS_PORT, is silently reused while the surrounding echo asserts the
+    # CURRENTLY configured values -- and the in-container pg_isready probe below is blind to
+    # the host-port mismatch. Verify a reused container's actual image/port before trusting it.
+    verify_reused_container() {
+        local name="$1" want_image="$2" want_hostport="$3" container_port="$4"
+        local got_image got_hostport
+        got_image="$(docker inspect -f '{{{{.Config.Image}}' "$name" 2>/dev/null || echo '')"
+        got_hostport="$(docker port "$name" "$container_port" 2>/dev/null | head -n1 | sed -E 's/.*:([0-9]+)$/\1/')"
+        if [ "$got_image" != "$want_image" ] || [ "$got_hostport" != "$want_hostport" ]; then
+            echo "❌ Existing ${name} does not match the configured image/port." >&2
+            echo "   configured: image=${want_image} host-port=${want_hostport}" >&2
+            echo "   actual:     image=${got_image:-<unknown>} host-port=${got_hostport:-<unknown>}" >&2
+            echo "   'docker start' reuses whatever image/port the container was created with;" >&2
+            echo "   it does not pick up a postgres_image bump or a port override." >&2
+            echo "   Run 'just test-db-down' (PHAZE_TEST_DB_FORCE_DOWN=1 if it reports busy), then retry." >&2
+            exit 1
+        fi
+    }
     if [ "$(docker inspect -f '{{{{.State.Running}}' "$container" 2>/dev/null || echo false)" = "true" ]; then
+        verify_reused_container "$container" "{{postgres_image}}" "$port" "5432/tcp"
         echo "🐘 ${container} already running on port ${port}"
     else
         echo "🐘 Starting ${container} ({{postgres_image}}) on host port ${port}..."
-        if ! docker start "$container" >/dev/null 2>&1; then
+        if docker start "$container" >/dev/null 2>&1; then
+            verify_reused_container "$container" "{{postgres_image}}" "$port" "5432/tcp"
+        else
             run_or_yield "$container" "created" \
                 -e POSTGRES_USER=phaze \
                 -e POSTGRES_PASSWORD=phaze \
@@ -327,10 +352,18 @@ test-db:
     fi
     redis_databases="{{test_redis_databases}}"
     redis_running="$(docker inspect -f '{{{{.State.Running}}' "$redis_container" 2>/dev/null || echo false)"
-    if [ "$redis_running" != "true" ]; then
+    redis_reused=0
+    if [ "$redis_running" = "true" ]; then
+        redis_reused=1
+    else
         echo "🟥 Starting ${redis_container} (redis:7-alpine, ${redis_databases} logical DBs) on host port ${redis_port}..."
-        docker start "$redis_container" >/dev/null 2>&1 || true
+        if docker start "$redis_container" >/dev/null 2>&1; then
+            redis_reused=1
+        fi
         redis_running="$(docker inspect -f '{{{{.State.Running}}' "$redis_container" 2>/dev/null || echo false)"
+    fi
+    if [ "$redis_running" = "true" ] && [ "$redis_reused" = "1" ]; then
+        verify_reused_container "$redis_container" "redis:7-alpine" "$redis_port" "6379/tcp"
     fi
     if [ "$redis_running" = "true" ]; then
         # A container started before this setting existed (or with a smaller value) only has 16
