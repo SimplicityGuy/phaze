@@ -42,6 +42,9 @@ def test_all_tables_defined() -> None:
         # phaze-5fta.2 (migration 053): generic corpus-learned convention store, keyed
         # (scope, scope_value, convention_kind) with a DB-derived confidence column.
         "filename_convention",
+        # phaze-6nrrf (migration 059): the durable operator ARM/DISARM flag for the continuous
+        # 1001Tracklists drain -- one singleton row, seeded disarmed (DEFAULT OFF).
+        "tracklist_drain_arm_state",
     }
     assert expected == table_names
 

@@ -2696,6 +2696,75 @@ async def test_run_tracklist_drain_enqueues_one_job_on_the_controller_queue(clie
 
 
 # ---------------------------------------------------------------------------
+# phaze-6nrrf: the continuous-drain ARM/DISARM operator control.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_arm_persists_armed_state_and_enqueues_nothing_itself(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /pipeline/arm-tracklist-drain flips the durable flag but does NOT enqueue a slice --
+    that is the continue_armed_tracklist_drain CronJob's job, on its own next tick."""
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/arm-tracklist-drain")
+    assert response.status_code == 200, response.text
+    assert "Armed" in response.text
+    assert capture == []
+
+    from phaze.services.tracklist_drain_arm import get_arm_state
+
+    state = await get_arm_state(session)
+    assert state.armed is True
+
+
+@pytest.mark.asyncio
+async def test_disarm_persists_disarmed_state_with_operator_reason(client: AsyncClient, session: AsyncSession) -> None:
+    from phaze.services.tracklist_drain_arm import arm_drain, get_arm_state
+
+    await arm_drain(session)
+    await session.commit()
+
+    response = await client.post("/pipeline/disarm-tracklist-drain")
+    assert response.status_code == 200, response.text
+    assert "Disarmed" in response.text
+
+    state = await get_arm_state(session)
+    assert state.armed is False
+    assert state.disarmed_reason == "operator"
+
+
+@pytest.mark.asyncio
+async def test_disarm_when_already_disarmed_is_a_no_op_not_an_error(client: AsyncClient) -> None:
+    response = await client.post("/pipeline/disarm-tracklist-drain")
+    assert response.status_code == 200, response.text
+    assert "Disarmed" in response.text
+
+
+@pytest.mark.asyncio
+async def test_drain_status_fragment_renders_disarmed_by_default(client: AsyncClient, session: AsyncSession) -> None:
+    """A fresh workspace load must show Disarmed -- the DEFAULT OFF safety invariant, visible to
+    the operator, not just true in the database."""
+    await _seed_live_set_file(session)
+
+    response = await client.get("/pipeline/tracklist-drain-status")
+    assert response.status_code == 200
+    assert "Disarmed" in response.text
+    assert "Armed" not in response.text  # "Disarmed" does not contain the substring "Armed"
+
+
+@pytest.mark.asyncio
+async def test_drain_status_fragment_renders_armed_after_arming(client: AsyncClient, session: AsyncSession) -> None:
+    await _seed_live_set_file(session)
+
+    arm_response = await client.post("/pipeline/arm-tracklist-drain")
+    assert "Armed" in arm_response.text
+
+    status_response = await client.get("/pipeline/tracklist-drain-status")
+    assert status_response.status_code == 200
+    assert "Armed since" in status_response.text
+
+
+# ---------------------------------------------------------------------------
 # Phase 42 (REQ-42-1/REQ-42-4/REQ-42-5): the manual /pipeline/recover endpoint calls the
 # SAME gated recover_orphaned_work producer (force=True) the controller startup runs, on a
 # worker-shaped ctx built from app state; the global DAG "Recover" button renders end-to-end.

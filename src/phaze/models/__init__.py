@@ -19,6 +19,7 @@ from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.models.tracklist_drain_arm_state import TracklistDrainArmState
 from phaze.models.tracklist_lookup_cache import TracklistLookupCache
 from phaze.models.tracklist_priority_flag import TracklistPriorityFlag
 
@@ -49,6 +50,7 @@ __all__ = [
     "TagWriteLog",
     "TagWriteStatus",
     "Tracklist",
+    "TracklistDrainArmState",
     "TracklistLookupCache",
     "TracklistPriorityFlag",
     "TracklistTrack",

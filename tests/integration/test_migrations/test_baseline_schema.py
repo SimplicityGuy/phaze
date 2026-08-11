@@ -99,6 +99,7 @@ _EXPECTED_TABLES = frozenset(
         "scheduling_ledger",
         "stage_skip",
         "tag_write_log",
+        "tracklist_drain_arm_state",
         "tracklist_lookup_cache",
         "tracklist_priority_flags",
         "tracklist_tracks",
@@ -253,7 +254,9 @@ def test_baseline_is_the_only_migration() -> None:
     still-terminating re-drive deferral is waiting -- without it the verdict died with the deferral's
     stack frame and a Job that vanished before the next tick silently charged `attempts` instead of
     the tighter `node_loss_redrives` ceiling; 058 (phaze-5c6i2) adds a partial btree ON
-    `analysis.analysis_completed_at` for the lane cards' rolling-24h/lifetime PROCESSED counts.
+    `analysis.analysis_completed_at` for the lane cards' rolling-24h/lifetime PROCESSED counts;
+    059 (phaze-6nrrf) creates tracklist_drain_arm_state, the durable operator ARM/DISARM flag for
+    the continuous 1001Tracklists drain, seeded disarmed (DEFAULT OFF).
     Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
@@ -278,6 +281,7 @@ def test_baseline_is_the_only_migration() -> None:
         "056_fix_double_prefixed_check_constraints.py",
         "057_cloud_job_node_loss_pending.py",
         "058_analysis_completed_at_btree.py",
+        "059_tracklist_drain_arm_state.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -309,10 +313,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (058: the analysis_completed_at btree)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (059: the tracklist drain arm state)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "058"
+    assert version == "059"
 
 
 @pytest.mark.asyncio
@@ -464,7 +468,7 @@ def test_every_model_datetime_column_declares_timezone_aware() -> None:
 
 @pytest.mark.asyncio
 async def test_expected_tables_present(migrated_engine: AsyncEngine) -> None:
-    """The baseline creates the full 23-table inventory the chain produced."""
+    """The baseline creates the full 24-table inventory the chain produced."""
     async with migrated_engine.connect() as conn:
         rows = (await conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"))).scalars().all()
     tables = set(rows) - {"alembic_version"}
@@ -641,7 +645,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "058"
+        assert version == "059"
     finally:
         if engine is not None:
             await engine.dispose()
