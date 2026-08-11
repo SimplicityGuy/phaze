@@ -363,6 +363,127 @@ def test_single_buffer_wrapper_matches_window_major() -> None:
 
 
 # ---------------------------------------------------------------------------
+# phaze-ouz0y: single-frame ("squeezed") activations must not collapse to a scalar
+# ---------------------------------------------------------------------------
+#
+# Production crash (agent_analysis, 2026-08-10, two distinct files within 24h):
+# ``analysis child failed (exit 1): TypeError: 'numpy.float64' object is not iterable``.
+#
+# ``classifier(audio_16k)`` is documented -- and normally observed, see ``_predictions_for``
+# above -- to return a 2D ``[patches, classes]`` array. But on a short-enough buffer (the
+# trailing coarse/fine window of a short file is the reproducing shape) essentia squeezes the
+# patch axis away and returns a bare 1D ``[classes]`` vector instead. Before the fix,
+# ``np.mean(activations, axis=0)`` on that 1D vector has no batch axis left to reduce over,
+# so it collapses the WHOLE vector to a single 0-d ``numpy.float64`` scalar; that scalar then
+# reaches ``zip(labels, predictions)`` in ``_run_model_sets_over_windows`` two lines later and
+# ``zip`` raises exactly the production message.
+
+
+def _predictions_for_squeezed(graph_filename: str, audio: np.ndarray) -> np.ndarray:
+    """The same deterministic values as ``_predictions_for``, squeezed to 1D -- the
+    single-frame essentia output shape that collapses under ``np.mean(axis=0)`` pre-fix."""
+    return _predictions_for(graph_filename, audio)[0]
+
+
+def _build_mock_es_single_frame(duration_sec: float = _DURATION_SEC) -> MagicMock:
+    """Same registry as ``_build_mock_es``, but every ``TensorflowPredict*`` classifier
+    returns the squeezed single-frame shape essentia yields on a short-enough buffer."""
+    mock_es = _build_mock_es(duration_sec)
+
+    for cls_name in ("TensorflowPredictMusiCNN", "TensorflowPredictVGGish", "TensorflowPredictEffnetDiscogs"):
+
+        def _ctor(*, graphFilename: str, batchSize: int) -> MagicMock:
+            inst = MagicMock()
+            inst.side_effect = lambda audio: _predictions_for_squeezed(graphFilename, audio)
+            return inst
+
+        setattr(mock_es, cls_name, MagicMock(side_effect=_ctor))
+
+    return mock_es
+
+
+def test_predict_single_normalizes_single_frame_activations_to_a_vector() -> None:
+    """A classifier call returning a bare ``[classes]`` vector (essentia's single-frame
+    squeeze) must still yield a per-class vector, not a 0-d scalar, from ``_predict_single``."""
+    model = MODEL_SETS[0].models[0]
+    squeezed = np.array([0.2, 0.8], dtype=np.float32)
+    classifier = MagicMock(return_value=squeezed)
+
+    with patch.object(analysis_mod, "_get_classifier", return_value=classifier):
+        result = analysis_mod._predict_single(np.zeros(1024, dtype=np.float32), model, "/fake/models")
+
+    assert np.ndim(result) == 1, f"expected a 1D per-class vector, got a {np.ndim(result)}-d result (scalar collapse reproduces phaze-ouz0y)"
+    np.testing.assert_allclose(result, squeezed)
+
+
+def test_single_frame_activations_do_not_crash_the_sweep() -> None:
+    """Reproduces the exact production crash end to end through the model-major sweep.
+
+    Pre-fix this raises ``TypeError: 'numpy.float64' object is not iterable`` out of
+    ``zip(labels, predictions)`` in ``_run_model_sets_over_windows`` -- the analysis child's
+    terminal error line, verbatim.
+    """
+    mock_es = _build_mock_es_single_frame()
+    buffers = [(0, np.full(1024, 0.0, dtype=np.float32))]
+
+    with patch.object(analysis_mod, "es", mock_es), patch.object(analysis_mod, "_get_labels", side_effect=_mock_labels):
+        features, failed = analysis_mod._run_model_sets_over_windows(buffers, "/fake/models", lambda _i: None)
+
+    assert failed == set(), "a squeezed single-frame prediction must not be treated as an inference failure"
+    mood_predictions = features[0]["mood_acoustic"]["musicnn_msd"]
+    assert len(mood_predictions) == 2, "predictions must be zipped one-per-class, not collapsed to a single scalar"
+    assert {p["label"] for p in mood_predictions} == {"positive_class", "non_positive_class"}
+
+    genre_predictions = features[0]["genre"]["predictions"]
+    assert len(genre_predictions) == 10, "genre predictions must survive the squeeze too"
+
+
+def _assert_features_approximately_equal(actual: Any, expected: Any, *, path: str = "$") -> None:
+    """Structural equality with float tolerance for the leaves.
+
+    Both sides are built from the SAME deterministic ``row`` (``_predictions_for`` tiles one
+    row 10x), so a squeezed single-frame vector and a 10-frame ``np.mean`` should carry the
+    same value -- but float32 summation-then-division over 10 tiled copies does not round to
+    the *exact* same bits as returning the row untouched (~1e-7, ~1 float32 ulp), the same
+    class of harmless drift the batch-size docstring above measures and tolerates. Structure
+    (keys, labels, list lengths, ordering) is still compared exactly.
+    """
+    if isinstance(expected, dict):
+        assert isinstance(actual, dict), f"{path}: expected dict, got {type(actual).__name__}"
+        assert list(actual) == list(expected), f"{path}: key order differs"
+        for key in expected:
+            _assert_features_approximately_equal(actual[key], expected[key], path=f"{path}.{key}")
+    elif isinstance(expected, list):
+        assert isinstance(actual, list), f"{path}: expected list, got {type(actual).__name__}"
+        assert len(actual) == len(expected), f"{path}: length differs ({len(actual)} vs {len(expected)})"
+        for i, (a, e) in enumerate(zip(actual, expected, strict=True)):
+            _assert_features_approximately_equal(a, e, path=f"{path}[{i}]")
+    elif isinstance(expected, float):
+        assert actual == pytest.approx(expected, abs=1e-6), f"{path}: {actual} !~= {expected}"
+    else:
+        assert actual == expected, f"{path}: {actual!r} != {expected!r}"
+
+
+def test_single_frame_activations_match_the_normal_multi_frame_mean() -> None:
+    """The squeezed single-frame vector and the tiled 10-frame mean are the SAME activation
+    row in this fixture (``_predictions_for`` tiles one row 10x), so the fix must produce
+    matching features for both shapes (float tolerance for ``np.mean``'s summation order) --
+    proof the normalization is a true no-op for real multi-frame windows, not a
+    value-changing workaround."""
+    buf = np.full(1024, 42.0, dtype=np.float32)
+
+    with patch.object(analysis_mod, "es", _build_mock_es_single_frame()), patch.object(analysis_mod, "_get_labels", side_effect=_mock_labels):
+        analysis_mod._classifier_cache.clear()
+        squeezed = _window_major_features(buf, "/fake/models")
+
+    with patch.object(analysis_mod, "es", _build_mock_es()), patch.object(analysis_mod, "_get_labels", side_effect=_mock_labels):
+        analysis_mod._classifier_cache.clear()
+        multi_frame = _window_major_features(buf, "/fake/models")
+
+    _assert_features_approximately_equal(squeezed, multi_frame)
+
+
+# ---------------------------------------------------------------------------
 # _release_classifier
 # ---------------------------------------------------------------------------
 
