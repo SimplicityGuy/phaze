@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 
 from phaze import analysis_child
 from phaze.analysis_child import _TARGET_ENV, _parse_args, run
-from tests.analyze.services.test_analysis import _build_mock_essentia, _mock_labels_file
+from tests.analyze.services.pipeline.test_analysis import _build_mock_essentia, _mock_labels_file
 
 
 if TYPE_CHECKING:

@@ -21,12 +21,42 @@ jobs:
       - name: 🔀 Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: 🪣 Read bucket list
+      # phaze-crq9k: tests/ci_shards.json is the CI matrix source (each entry a
+      # {name, paths} shard), distinct from tests/buckets.json (the 8 fixed top-level
+      # tests/<bucket> directory names the partition guard and BUCKETS.md track). A
+      # shard's `paths` can split ONE bucket directory into several parallel matrix
+      # legs -- see the durations comment on the `test` job below for why.
+      - name: 🪣 Read CI shard list
         id: buckets
-        run: echo "buckets=$(jq -c . tests/buckets.json)" >> "${GITHUB_OUTPUT}"
+        run: echo "buckets=$(jq -c . tests/ci_shards.json)" >> "${GITHUB_OUTPUT}"
 
+  # phaze-crq9k (2026-08-11): measured per-bucket wall time on PR #417 before this split:
+  #   analyze 551s <- critical path, shared 301s, review 159s, agents 142s, identify 127s,
+  #   integration 112s, discovery 92s, metadata 61s (total ~1,545s across 8 jobs; flat mean
+  #   ~193s, so analyze ran ~2.9x and shared ~1.6x the mean).
+  #
+  # analyze and shared were each split into multiple tests/ci_shards.json entries, chosen
+  # from local `pytest --durations=0` timings on this snapshot and scaled to the CI numbers
+  # above (~3.05-3.1x the local machine):
+  #   - analyze-core   ~151s  tests/analyze --ignore=tests/analyze/services (core, models,
+  #                            routers, tasks dirs + the 3 tests/analyze/*.py root files)
+  #   - analyze-svc-pipeline ~200s  tests/analyze/services/pipeline/ (the analysis-exec test
+  #                            files: test_analysis*.py minus test_analysis_model_major.py)
+  #   - analyze-svc-backends ~200s  tests/analyze/services/backends/ (compute-backend /
+  #                            cloud-staging / queue-introspection test files) -- services/
+  #                            alone was ~68% of analyze's wall time, so it was physically
+  #                            split into these two subdirectories rather than left whole
+  #   - shared-core    ~144s  tests/shared/core (its largest single directory)
+  #   - shared-rest    ~157s  tests/shared --ignore=tests/shared/core (every other
+  #                            tests/shared/* subdirectory PLUS the tests/shared/*.py
+  #                            root-level files -- `--ignore` rather than an enumerated
+  #                            subdirectory list so a new subdirectory or root file added
+  #                            later is never silently dropped from CI)
+  # New matrix mean ~140s; every shard stays within ~1.5x of it. Re-measure and re-split
+  # when a shard's wall time drifts back above that -- this imbalance recurs as the suite
+  # grows.
   test:
-    name: Tests (${{ matrix.bucket }})
+    name: Tests (${{ matrix.bucket.name }})
     needs: [setup]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -111,20 +141,20 @@ jobs:
       - name: 📦 Install dependencies
         run: just install
 
-      - name: 🧪 Run bucket tests with coverage
-        # Every bucket contains DB-fixture (integration-marked) tests — verified empirically at
-        # execution: `pytest tests/<bucket> -m integration --collect-only` returns >0 for all 9
-        # buckets. So no bucket qualifies for `-n auto` (xdist would race on schema create/drop
-        # against the shared phaze_test DB). All buckets run serial; matrix fan-out alone delivers
-        # CI-02's parallelism. If a future bucket becomes DB-free, add a matrix.include entry
+      - name: 🧪 Run shard tests with coverage
+        # Every shard contains DB-fixture (integration-marked) tests — verified empirically at
+        # execution: `pytest <paths> -m integration --collect-only` returns >0 for all shards.
+        # So no shard qualifies for `-n auto` (xdist would race on schema create/drop against
+        # the shared phaze_test DB). All shards run serial; matrix fan-out alone delivers
+        # CI-02's parallelism. If a future shard becomes DB-free, add a matrix.include entry
         # passing a third `-n auto` arg here.
-        run: just test-bucket ${{ matrix.bucket }}
+        run: just test-bucket ${{ matrix.bucket.name }} "${{ matrix.bucket.paths }}"
 
       - name: 📤 Upload coverage shard
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: coverage-${{ matrix.bucket }}
-          path: .coverage.${{ matrix.bucket }}
+          name: coverage-${{ matrix.bucket.name }}
+          path: .coverage.${{ matrix.bucket.name }}
           include-hidden-files: true
           if-no-files-found: error
 

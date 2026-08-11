@@ -9,7 +9,7 @@ and "Recovery started — re-enqueuing any orphaned work across all stages" thro
 These tests drive that scenario through the REAL producer against a REAL (wire-compatible
 ``ThreadedMotoServer``) object store rather than a mocked S3 client, because the failure IS an
 object-store response -- a mocked client is exactly what would let this regress unnoticed
-(acceptance 5). ``tests/analyze/services/test_cloud_staging.py`` established this harness; the setup
+(acceptance 5). ``tests/analyze/services/backends/test_cloud_staging.py`` established this harness; the setup
 fixtures here mirror it deliberately.
 
 WHAT "DEAD CREDENTIALS" MEANS IN THIS HARNESS -- read before changing an assertion. moto does NOT

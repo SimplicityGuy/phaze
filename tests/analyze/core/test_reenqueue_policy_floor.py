@@ -49,7 +49,7 @@ class _RealHookQueue:
     Production's ``PostgresQueue`` (built by ``tasks._shared.queue_factory``) registers this
     exact hook first in its ``before_enqueue`` chain; this fake reproduces only that one hook
     (the one under test here) rather than the full chain, mirroring how
-    ``tests/analyze/services/test_analysis_enqueue.py::test_enqueue_policy_survives_apply_project_job_defaults``
+    ``tests/analyze/services/pipeline/test_analysis_enqueue.py::test_enqueue_policy_survives_apply_project_job_defaults``
     already drives the hook directly against a real ``Job``.
     """
 

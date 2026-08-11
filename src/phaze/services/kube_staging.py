@@ -286,7 +286,7 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
     ``kube.memory_limit`` is set, the analyze container gains ``resources.limits.memory`` --
     ``requests`` is untouched (Kueue's quota input stays authoritative), and NO CPU limit is
     emitted (a memory-only limit does not promote the pod's QoS class off Burstable -- see
-    ``tests/analyze/services/test_kube_staging.py::test_build_job_manifest_memory_limit_keeps_qos_burstable``).
+    ``tests/analyze/services/backends/test_kube_staging.py::test_build_job_manifest_memory_limit_keeps_qos_burstable``).
     When ``memory_limit`` is unset (the default), NO ``limits`` key is emitted at all -- the
     manifest is byte-identical to the pre-ADR-0005 form (regression-guarded), the same
     backward-compatibility posture already used for ``models_pvc_name`` /

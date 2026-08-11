@@ -1,0 +1,46 @@
+[
+  {
+    "name": "discovery",
+    "paths": "tests/discovery"
+  },
+  {
+    "name": "metadata",
+    "paths": "tests/metadata"
+  },
+  {
+    "name": "analyze-core",
+    "paths": "tests/analyze --ignore=tests/analyze/services"
+  },
+  {
+    "name": "analyze-svc-pipeline",
+    "paths": "tests/analyze/services/pipeline"
+  },
+  {
+    "name": "analyze-svc-backends",
+    "paths": "tests/analyze/services/backends"
+  },
+  {
+    "name": "identify",
+    "paths": "tests/identify"
+  },
+  {
+    "name": "review",
+    "paths": "tests/review"
+  },
+  {
+    "name": "agents",
+    "paths": "tests/agents"
+  },
+  {
+    "name": "integration",
+    "paths": "tests/integration"
+  },
+  {
+    "name": "shared-core",
+    "paths": "tests/shared/core"
+  },
+  {
+    "name": "shared-rest",
+    "paths": "tests/shared --ignore=tests/shared/core"
+  }
+]
