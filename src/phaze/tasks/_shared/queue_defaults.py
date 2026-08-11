@@ -34,12 +34,13 @@ Both :class:`ControlSettings` and :class:`AgentSettings` expose the three knobs
 on the shared :class:`BaseSettings` base, so the hook works for both roles
 without further dispatch.
 
-Per-function policy floor (phaze-plpnf)
-----------------------------------------
+Per-function job policy (phaze-plpnf, re-shaped by phaze-w55w1)
+--------------------------------------------------------------
 Live logs on 2026-08-11 showed a steady stream of ``process_file`` jobs dying at exactly 600s
 with a SAQ ``TimeoutError``, carrying ``timeout=600`` / ``retries=4`` -- the ROLE defaults above
 -- while ``process_file``'s sole producer (:func:`phaze.services.analysis_enqueue.enqueue_process_file`)
-always pins ``timeout=7200`` / ``retries=2``. Root cause: recovery's ledger replay
+pinned an explicit policy (``timeout=7200`` / ``retries=2`` at the time; ``timeout=0`` /
+``retries=2`` since phaze-w55w1). Root cause: recovery's ledger replay
 (:func:`phaze.tasks.reenqueue._replay_row`) replays a ``scheduling_ledger`` row's STORED
 ``timeout``/``retries`` when present, but those columns are nullable and rows written before the
 Phase-45 capture columns existed carry NULL -- so the replay omits both kwargs entirely and this
@@ -50,15 +51,14 @@ retry budget at 1/12th of the timeout it needs and goes terminal ``ANALYSIS_FAIL
 The generic fill above is deliberately GENERIC -- it exists to give every job a sane role-level
 default, and call sites that want something else pass explicit values, which the "still at SAQ
 default" check preserves. It has no way to know that ONE function (``process_file``) has its own
-policy that is not the role default. :data:`_FUNCTION_POLICY_FLOOR` closes that gap: after the
-generic fill runs, a function listed here has its ``timeout`` raised to at least the floor (never
-run with LESS protection than its policy affords) and its ``retries`` capped to at most the floor
-(never run with MORE retry churn than its policy budgets -- each retry can itself run up to the
-full floor timeout, so extra retries are not "safer", they are extra hours). This is enforced
-regardless of producer or replay path: the SOLE current ``process_file`` producer already emits
-exactly ``timeout=7200``/``retries=2``, so the floor is a no-op on that path (7200 is not < 7200;
-2 is not > 2) and only bites a job that reached this hook WITHOUT that explicit policy -- exactly
-the replay-with-NULL-bounds path above.
+policy that is not the role default. :data:`_FUNCTION_JOB_POLICY` closes that gap: after the
+generic fill runs, a function listed here has its ``timeout`` PINNED to the policy value and its
+``retries`` capped to at most the policy's maximum (never run with MORE retry churn than its
+policy budgets -- each retry can itself run a full analysis, so extra retries are not "safer",
+they are extra hours). This is enforced regardless of producer or replay path: the SOLE current
+``process_file`` producer already emits exactly that policy, so this step is a no-op on that path
+and only bites a job that reached this hook WITHOUT it -- exactly the replay-with-NULL-bounds
+path above.
 """
 
 from __future__ import annotations
@@ -84,18 +84,44 @@ _SAQ_DEFAULT_TIMEOUT = 10
 _SAQ_DEFAULT_RETRIES = 1
 _SAQ_DEFAULT_TTL = 600
 
-# phaze-plpnf: per-function policy floor -- ``{function: (min_timeout, max_retries)}``.
+# phaze-plpnf: per-function policy -- ``{function: (timeout, max_retries)}``.
 # Enforced AFTER the generic "still at SAQ default" fill above, unconditionally on every
-# enqueue of that function (independent of producer/replay path). A job's ``timeout`` is
-# raised to at least the floor; its ``retries`` is capped to at most the floor. Grep-able
-# single source of truth -- add a new pinned-policy function here, never as a one-off
-# clobber-guard scattered at a call site.
-_FUNCTION_POLICY_FLOOR: dict[str, tuple[int, int]] = {
-    # analyze: phaze.services.analysis_enqueue.enqueue_process_file pins timeout=7200/retries=2
-    # (Phase 43 outer safety net + the locked 1-2 retry band that kills long-file re-analysis
-    # churn). Never let process_file run under that protection, regardless of how it was
-    # enqueued -- see the module docstring's "Per-function policy floor" section.
-    "process_file": (7200, 2),
+# enqueue of that function (independent of producer/replay path). ``timeout`` is PINNED
+# exactly; ``retries`` is capped to at most the value. Grep-able single source of truth --
+# add a new pinned-policy function here, never as a one-off clobber-guard scattered at a
+# call site.
+#
+# phaze-w55w1 changed ``timeout`` from a FLOOR ("raise to at least") to a PIN ("set to
+# exactly"). A floor cannot express ``process_file``'s policy any more, because that policy is
+# now ``timeout=0`` -- SAQ's "disabled" -- and ``0`` is below every value a floor could raise
+# from, so a floor would silently leave a replayed job on the 600s role default and reintroduce
+# the exact phaze-plpnf defect (a long analysis dying at 1/12th the bound it needs) that this
+# table exists to prevent. Pinning is also strictly more faithful to what the table means: a
+# function listed here has ONE timeout policy, not a minimum.
+_FUNCTION_JOB_POLICY: dict[str, tuple[int, int]] = {
+    # analyze: phaze.services.analysis_enqueue.enqueue_process_file pins timeout=0/retries=2
+    # (no wall-clock net -- exhaustive analysis runs for hours by design, ADR-0007 §7 -- plus the
+    # locked 1-2 retry band that kills long-file re-analysis churn).
+    "process_file": (0, 2),
+}
+
+# Functions whose ``heartbeat`` this hook must also pin, and from which setting.
+#
+# ``heartbeat`` is pinned here and not left to the producer alone because ``timeout=0`` makes it
+# the ONLY liveness signal SAQ has: ``Job.stuck`` is
+# ``(timeout and ...) or (heartbeat and ...)``, so a ``process_file`` row carrying 0 for BOTH is
+# permanently un-stuck -- invisible to SAQ's sweep, excluded from both key reapers (they skip
+# ``timeout: 0`` rows by design), and forever "in_flight" to
+# ``classify_process_file_collision``. One worker crash would then hold that file's
+# deterministic key until a human noticed.
+#
+# That is not hypothetical: ``reenqueue._replay_row`` replays a ``scheduling_ledger`` row's
+# STORED bounds, the ledger captures ``timeout``/``retries`` and NOT ``heartbeat``, so every
+# recovery replay reaches this hook with ``heartbeat`` unset. Pinning it here -- the one
+# chokepoint every producer and every replay path passes through -- is what makes a replayed
+# job as supervised as a fresh one.
+_FUNCTION_HEARTBEAT_POLICY: dict[str, str] = {
+    "process_file": "analysis_job_heartbeat_sec",
 }
 
 
@@ -108,14 +134,16 @@ async def apply_project_job_defaults(job: Job) -> None:
     still carries the SAQ default. Call sites that pass explicit values to
     :func:`saq.Queue.enqueue` are left alone.
 
-    Then enforces :data:`_FUNCTION_POLICY_FLOOR` for any function listed there
-    (phaze-plpnf): ``job.timeout`` is raised to at least the floor's minimum and
-    ``job.retries`` is capped to at most the floor's maximum, UNCONDITIONALLY --
-    this step does not care whether the generic fill above just ran or the job
-    already carried an explicit policy. That makes it the single chokepoint that
-    guarantees ``process_file`` can never run under its 7200s/retries=2 policy no
-    matter which producer or replay path (including a recovery replay of a
-    legacy ``scheduling_ledger`` row with NULL captured bounds) enqueued it.
+    Then enforces :data:`_FUNCTION_JOB_POLICY` and :data:`_FUNCTION_HEARTBEAT_POLICY`
+    for any function listed there (phaze-plpnf, phaze-w55w1): ``job.timeout`` and
+    ``job.heartbeat`` are PINNED to the policy values and ``job.retries`` is capped
+    to at most the policy maximum, UNCONDITIONALLY -- this step does not care whether
+    the generic fill above just ran or the job already carried an explicit policy.
+    That makes it the single chokepoint guaranteeing ``process_file`` runs under its
+    current policy (``timeout=0`` + a derived progress ``heartbeat``, ``retries=2``)
+    no matter which producer or replay path enqueued it -- including a recovery replay
+    of a legacy ``scheduling_ledger`` row with NULL captured bounds, or one carrying
+    the pre-phaze-w55w1 7200s wall clock that must NOT be honoured.
 
     The hook is registered via ``Queue.register_before_enqueue(...)`` from each
     role's settings module (``controller.py`` + ``agent_worker.py``). SAQ awaits
@@ -134,13 +162,20 @@ async def apply_project_job_defaults(job: Job) -> None:
     if job.ttl == _SAQ_DEFAULT_TTL:
         job.ttl = cfg.worker_keep_result
 
-    floor = _FUNCTION_POLICY_FLOOR.get(job.function)
-    if floor is not None:
-        min_timeout, max_retries = floor
-        if job.timeout < min_timeout:
-            job.timeout = min_timeout
+    policy = _FUNCTION_JOB_POLICY.get(job.function)
+    if policy is not None:
+        pinned_timeout, max_retries = policy
+        job.timeout = pinned_timeout
         if job.retries > max_retries:
             job.retries = max_retries
+
+    heartbeat_field = _FUNCTION_HEARTBEAT_POLICY.get(job.function)
+    if heartbeat_field is not None:
+        # Pinned, not filled-if-absent: a replayed row can carry a STALE heartbeat from an older
+        # deployment's configuration just as easily as none at all, and both must land on the
+        # current policy. See _FUNCTION_HEARTBEAT_POLICY for why an unpinned heartbeat on a
+        # timeout=0 job is a permanently un-sweepable row.
+        job.heartbeat = getattr(cfg, heartbeat_field)
 
 
 __all__ = ["apply_project_job_defaults"]

@@ -1495,7 +1495,7 @@ async def get_analyze_working_set(
                         _analyze_files_select()
                         .where(AnalysisResult.analysis_completed_at.is_not(None))
                         # phaze-wiz1: exclude anything the active section would also claim -- a
-                        # deepen-in-flight completed file (analysis_completed_at stays set through a
+                        # re-analysis-in-flight completed file (analysis_completed_at stays set through a
                         # re-run per the migration-033 XOR check, while the re-run's enqueue recreates
                         # the scheduling_ledger row / an active cloud_job) or an orphaned, never-cleared
                         # ledger row on an already-completed file. The Python `seen` dedup below only
@@ -2095,7 +2095,7 @@ def _backfill_candidates_stmt(threshold_sec: int) -> Select[Any]:
     literal, never f-string SQL (T-49-02 / T-55-BF-04).
 
     phaze-l1km: this predicate cannot distinguish an ORPHANED ledger row (a timed-out process_file
-    whose SAQ job is gone) from the LIVE-in-flight marker of a still-running deepen job. That live/dead
+    whose SAQ job is gone) from the LIVE-in-flight marker of a still-running re-analysis. That live/dead
     split is a READ of the SAQ-owned ``saq_jobs`` broker (absent in some envs), so it is applied by the
     caller (:func:`phaze.routers.pipeline.trigger_backfill_cloud`) via the degrade-safe
     :func:`get_live_job_keys`, NOT baked into this always-on candidate query.

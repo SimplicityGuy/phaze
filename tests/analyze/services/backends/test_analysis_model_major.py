@@ -177,13 +177,29 @@ def test_at_most_one_graph_is_resident() -> None:
     assert result["coarse_windows_analyzed"] == 5
 
 
-def test_construction_count_does_not_scale_with_window_count() -> None:
-    """5 coarse windows and 30 coarse windows both cost exactly 34 constructions."""
-    _, built_5, _ = _instrumented_analyze(_build_mock_es(900.0))
-    _, built_30, _ = _instrumented_analyze(_build_mock_es(7200.0), fine_cap=4)
+def test_construction_count_scales_with_chunks_not_with_windows() -> None:
+    """34 constructions per COARSE CHUNK -- not per window, and not once per file (phaze-w55w1).
 
+    This assertion changed with the chunked rework and the change is a real, deliberate cost,
+    so it is stated exactly rather than loosened. Under the caps a file cost 34 constructions
+    FULL STOP, because the whole tier was one model-major sweep. Chunking means one sweep per
+    chunk, so the cost is ``34 x ceil(coarse_windows / _COARSE_CHUNK_WINDOWS)``: that is the
+    price paid to keep PCM residency independent of duration (D-07).
+
+    What did NOT change is the invariant that actually bought the memory (phaze-15sw): still one
+    graph at a time, still no per-WINDOW reload. The 900 s file (5 coarse windows, 1 chunk) and
+    the 7 200 s file (40 coarse windows, 2 chunks) differ 8x in windows and only 2x in
+    constructions -- if graphs were rebuilt per window the second figure would be 34 x 40.
+    """
+    result_5, built_5, _ = _instrumented_analyze(_build_mock_es(900.0))
+    result_40, built_40, resident_40 = _instrumented_analyze(_build_mock_es(7200.0))
+
+    assert result_5["coarse_windows_analyzed"] == 5  # 1 chunk
+    assert result_40["coarse_windows_analyzed"] == 40  # 2 chunks (30 + 10)
     assert len(built_5) == _N_MODELS
-    assert len(built_30) == _N_MODELS, "a per-window graph reload would show up here as 34 x n_windows"
+    assert len(built_40) == _N_MODELS * 2, "constructions must track CHUNKS; 34 x n_windows would mean a per-window reload"
+    # The load-bearing half: chunking must not have reintroduced co-residency.
+    assert max(resident_40) == 1
 
 
 # ---------------------------------------------------------------------------

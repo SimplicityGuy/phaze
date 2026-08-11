@@ -65,7 +65,6 @@ def _fake_result() -> dict:
         "fine_windows_total": 1,
         "coarse_windows_analyzed": 0,
         "coarse_windows_total": 0,
-        "sampled": False,
     }
 
 
@@ -288,9 +287,10 @@ async def test_analysis_result_forwarded_to_put_unchanged(job_env, monkeypatch):
         "fine_windows_total",
         "coarse_windows_analyzed",
         "coarse_windows_total",
-        "sampled",
     ):
         assert body[field] == expected[field], field
+    # phaze-w55w1: `sampled` left the analyze result AND the write payload together.
+    assert "sampled" not in body
     # Every window dict crosses intact (payload adds only schema-defaulted keys, never mutates values).
     assert len(body["windows"]) == len(expected["windows"])
     for sent, produced in zip(body["windows"], expected["windows"], strict=True):

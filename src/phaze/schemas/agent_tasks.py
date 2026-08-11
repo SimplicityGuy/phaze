@@ -20,10 +20,10 @@ Each item carries the per-proposal data the agent needs to perform a local
 file copy + verify + delete without DB access.
 """
 
-from typing import ClassVar
+from typing import Any, ClassVar
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ProcessFilePayload(BaseModel):
@@ -36,12 +36,6 @@ class ProcessFilePayload(BaseModel):
     file_type: str
     agent_id: str
     models_path: str  # essentia .pb files; only ProcessFile needs this
-    # Phase 44: optional per-job analysis cap overrides (the "deepen analysis" lever).
-    # Default None preserves the bulk _enqueue_analysis_jobs producer (five fields only) under
-    # extra="forbid". When set, the worker prefers these over the AgentSettings 60/30 defaults;
-    # a cap of 0 reaches analysis.py::_stride_to_cap as the analyze-ALL-windows no-op (unbounded).
-    fine_cap: int | None = None
-    coarse_cap: int | None = None
     # Phase 50 D-11: cloud push pipeline integrity + scratch read-path. The control plane pins
     # expected_sha256 from FileRecord.sha256_hash so the compute agent can verify the rsync'd
     # copy before analysis. `scratch_path is not None` is ITSELF the compute-read/ephemeral
@@ -50,6 +44,38 @@ class ProcessFilePayload(BaseModel):
     # producer (five fields only) stays byte-identical under extra="forbid".
     expected_sha256: str | None = None
     scratch_path: str | None = None
+
+    # ---- LEGACY-KEY SHIM (phaze-w55w1) — REMOVABLE, see the removal condition below ----
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_removed_window_cap_keys(cls, data: Any) -> Any:
+        """Accept-and-discard the Phase 44 ``fine_cap`` / ``coarse_cap`` keys.
+
+        These were the per-job "deepen" lever — a sentinel 0 disabling the window cap for one
+        file. phaze-w55w1 removed the caps (ADR-0007 §7), so the keys mean nothing and the
+        fields are gone.
+
+        **Why tolerate them instead of letting ``extra="forbid"`` reject them.** Every
+        ``process_file`` payload enqueued before this deploy is ALREADY SERIALIZED — in
+        ``saq_jobs`` and, durably, in ``scheduling_ledger``. The old producer built the payload
+        with ``model_dump(mode="json")`` and no ``exclude_none``, so *every* one of those rows
+        carries ``"fine_cap": null, "coarse_cap": null`` — not just the handful that used the
+        deepen lever. ``reenqueue._replay_row`` replays a ledger row's stored payload
+        **verbatim**; it never regenerates it through the current producer. So rejecting the
+        keys would not "route the job back through the current producer" — it would dead-letter
+        the entire pre-upgrade analyze backlog on every recovery pass, permanently, with the
+        ledger row surviving to try again next tick.
+
+        Discarding is safe precisely because the values are now meaningless: a cap of 0 asked
+        for the full window budget, which is what every file gets unconditionally.
+
+        **Remove this shim when** no ``scheduling_ledger`` row (and no ``saq_jobs`` blob) written
+        before the phaze-w55w1 deploy can still be replayed — i.e. once the analyze backlog that
+        predates it has drained and been reaped. Until then it is load-bearing.
+        """
+        if isinstance(data, dict) and ("fine_cap" in data or "coarse_cap" in data):
+            data = {k: v for k, v in data.items() if k not in ("fine_cap", "coarse_cap")}
+        return data
 
 
 class PushFilePayload(BaseModel):

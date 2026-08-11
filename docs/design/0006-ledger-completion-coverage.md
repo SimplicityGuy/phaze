@@ -118,9 +118,11 @@ The bead identified 328 queued analyze jobs where the ledger entry is **newer th
 analysis, and correctly refused to assume they were stale. They are **legitimate, and they were not
 produced by recovery.** Two disjoint shapes, one verdict:
 
-- **A re-analysis ("deepen") request.** The deepen path re-enqueues `process_file` for a file that is
-  already analyzed and, by design, **keeps the old `analysis_completed_at`** until the fresh
-  `put_analysis` lands (`routers/pipeline.py`, the timestamp-gated completion predicate). That is
+- **A re-analysis request.** *(At the time this was written that meant the per-file "deepen" action;
+  it was removed by phaze-w55w1 / ADR-0007 §7, but the shape survives it — the operator-gated retry
+  endpoints and a recovery replay produce exactly the same one.)* A re-analysis re-enqueues
+  `process_file` for a file that is already analyzed and, by design, **keeps the old
+  `analysis_completed_at`** until the fresh `put_analysis` lands. That is
   exactly the "ledger newer than the analysis" shape. Such a file **is** domain-complete, so
   `is_domain_completed` returns `True` and recovery has never re-driven it — before or after this
   change. The queued job came from the operator's own click. Deleting it cancels a deep analysis
@@ -130,7 +132,7 @@ produced by recovery.** Two disjoint shapes, one verdict:
 
 Either way the verdict is the same: **not stale, not safe to delete, and untouched by this change.**
 The one behaviour worth flagging for a future bead is the *opposite* asymmetry the first shape
-implies — an orphaned deepen request is indistinguishable from a completed analysis and is therefore
+implies — an orphaned re-analysis request is indistinguishable from a completed analysis and is therefore
 silently dropped by recovery. That is a gap in re-analysis durability, not an over-enqueue, and it is
 out of scope here.
 

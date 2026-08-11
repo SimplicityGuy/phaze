@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 import uuid
 
@@ -11,7 +12,7 @@ import pytest
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.dialects import postgresql
 
-from phaze.config import settings
+from phaze.config import get_settings, settings
 from phaze.config_backends import ComputeBackend, KubeConfig, KueueBackend, LocalBackend
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
@@ -30,6 +31,12 @@ from tests._queue_fakes import (
     seed_active_agent,
     wire_fakes,
 )
+
+
+# phaze-w55w1: the SAQ `heartbeat` every process_file enqueue must carry, read from the SAME
+# derived setting the producer reads. Hard-coding a number here would let the two drift silently
+# -- the assertion is that the producer stamps the CONFIGURED deadline, not a literal.
+_JOB_HEARTBEAT_SEC = get_settings().analysis_job_heartbeat_sec
 
 
 if TYPE_CHECKING:
@@ -212,18 +219,16 @@ async def test_analyze_enqueues_complete_process_file_payload(client: AsyncClien
     queue_name, task_name, kwargs = capture[0]
     assert (queue_name, task_name) == ("phaze-agent-test-fileserver-analyze", "process_file")
 
-    # All five required fields present -- not just file_id (the pre-fix bug). Phase 44-01
-    # added the optional fine_cap/coarse_cap overrides; Phase 50 added expected_sha256/scratch_path
-    # for the cloud push pipeline. All four serialize as None on the bulk local path (the
-    # AgentSettings 60/30 defaults still apply, and a local file is read in place).
+    # All five required fields present -- not just file_id (the pre-fix bug). Phase 50 added the
+    # optional expected_sha256/scratch_path for the cloud push pipeline, both None on the bulk
+    # local path (a local file is read in place). phaze-w55w1 removed the Phase 44-01
+    # fine_cap/coarse_cap overrides entirely -- there is no per-job window budget to carry.
     assert set(kwargs) == {
         "file_id",
         "original_path",
         "file_type",
         "agent_id",
         "models_path",
-        "fine_cap",
-        "coarse_cap",
         "expected_sha256",
         "scratch_path",
     }
@@ -232,9 +237,6 @@ async def test_analyze_enqueues_complete_process_file_payload(client: AsyncClien
     assert kwargs["file_type"] == expected_type
     assert kwargs["agent_id"] == "test-fileserver"
     assert kwargs["models_path"] == settings.models_path
-    # Bulk "Run Analysis" path carries no cap override (deepen is the only elevated-cap caller).
-    assert kwargs["fine_cap"] is None
-    assert kwargs["coarse_cap"] is None
 
     # The exact kwargs the agent worker receives validate against ProcessFilePayload.
     validated = ProcessFilePayload.model_validate(kwargs)
@@ -364,14 +366,14 @@ async def test_extract_metadata_enqueues_complete_payload(client: AsyncClient, s
 
 @pytest.mark.asyncio
 async def test_analyze_enqueues_bounded_timeout_and_retries(client: AsyncClient, session: AsyncSession) -> None:
-    """Phase 43: POST /api/v1/analyze enqueues process_file with timeout=7200 + retries=2.
+    """phaze-w55w1: POST /api/v1/analyze enqueues process_file with NO wall clock + a heartbeat.
 
-    The outer SAQ timeout was lowered from the Phase 31 4h bound (14400) to a 2h net
-    (7200): Phase 43 caps per-file cost (even-stride), so the inner pebble per-task
-    timeout (analysis_inner_timeout_sec, 6600 < 7200) does the real killing and the
-    outer net only reclaims a dead/restarted worker's slot. retries=2 stays in the
-    locked 1-2 band so apply_project_job_defaults does NOT clobber it to
-    worker_max_retries (the retries==1 -> 4 churn).
+    The outer SAQ timeout went 14400 (Phase 31) -> 7200 (Phase 43, under a 6600s inner kill) ->
+    ``0``, i.e. disabled. Exhaustive analysis means a concert set legitimately runs past any
+    such number, and a wall clock cannot tell that from a hang (phaze-1b39). Liveness moves to
+    SAQ's own ``heartbeat``, which the agent lane touches off the analysis child's progress
+    channel. retries=2 stays in the locked 1-2 band so apply_project_job_defaults does NOT
+    clobber it to worker_max_retries (the retries==1 -> 4 churn).
     """
     file_rec = _make_file()
     session.add(file_rec)
@@ -388,11 +390,10 @@ async def test_analyze_enqueues_bounded_timeout_and_retries(client: AsyncClient,
     queue = task_router.queues["test-fileserver-analyze"]
     assert len(queue.captured_policy) == 1
     # Phase 32: the shared helper now also sets the deterministic dedup key.
-    assert queue.captured_policy[0] == {"key": expected_key, "timeout": 7200, "retries": 2}
+    assert queue.captured_policy[0] == {"key": expected_key, "timeout": 0, "heartbeat": _JOB_HEARTBEAT_SEC, "retries": 2}
     # retries is explicitly NOT 1 (which apply_project_job_defaults would override to 4).
     assert queue.captured_policy[0]["retries"] != 1
     # Payload still complete (job-control keys are split out, not part of the payload).
-    # Phase 44-01 added the optional fine_cap/coarse_cap (None on the bulk path).
     task_name, payload = queue.captured[0]
     assert task_name == "process_file"
     assert set(payload) == {
@@ -401,8 +402,6 @@ async def test_analyze_enqueues_bounded_timeout_and_retries(client: AsyncClient,
         "file_type",
         "agent_id",
         "models_path",
-        "fine_cap",
-        "coarse_cap",
         "expected_sha256",
         "scratch_path",
     }
@@ -440,7 +439,7 @@ async def test_analyze_enqueues_deterministic_key_per_file(client: AsyncClient, 
 
 @pytest.mark.asyncio
 async def test_analyze_ui_enqueues_bounded_timeout_and_retries(client: AsyncClient, session: AsyncSession) -> None:
-    """Phase 43: the HTMX /pipeline/analyze path also enqueues with timeout=7200 + retries=2."""
+    """The HTMX /pipeline/analyze path enqueues with the same policy: no wall clock, a heartbeat."""
     file_rec = _make_file()
     session.add(file_rec)
     await session.commit()
@@ -455,24 +454,26 @@ async def test_analyze_ui_enqueues_bounded_timeout_and_retries(client: AsyncClie
     queue = task_router.queues["test-fileserver-analyze"]
     assert len(queue.captured_policy) == 1
     # Phase 32: the shared helper now also sets the deterministic dedup key.
-    assert queue.captured_policy[0] == {"key": expected_key, "timeout": 7200, "retries": 2}
+    assert queue.captured_policy[0] == {"key": expected_key, "timeout": 0, "heartbeat": _JOB_HEARTBEAT_SEC, "retries": 2}
 
 
 @pytest.mark.asyncio
 async def test_process_file_enqueue_policy_survives_project_defaults_hook() -> None:
-    """The before_enqueue hook leaves the explicit timeout=7200 / retries=2 intact.
+    """The before_enqueue hook leaves the explicit timeout=0 / retries=2 policy intact.
 
-    apply_project_job_defaults only overrides a Job still at the SAQ defaults
-    (timeout==10, retries==1). An explicit retries=2 (and timeout=7200) is honored,
-    proving the process_file enqueue escapes the retries==1 -> worker_max_retries clobber.
+    apply_project_job_defaults fills a Job still at the SAQ defaults (timeout==10, retries==1)
+    and then pins process_file's own policy. phaze-w55w1 makes the timeout half worth asserting
+    twice over: ``0`` is both the intended value AND exactly what a naive "fill in a sane
+    default" step would overwrite, and overwriting it would silently restore the wall-clock kill
+    this bead removed.
     """
     from saq import Job
 
     from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 
-    job = Job(function="process_file", timeout=7200, retries=2)
+    job = Job(function="process_file", timeout=0, retries=2)
     await apply_project_job_defaults(job)
-    assert job.timeout == 7200
+    assert job.timeout == 0
     assert job.retries == 2
 
 
@@ -1253,22 +1254,22 @@ async def _reset_saq_jobs_minimal(session: AsyncSession) -> None:
 
 @pytest.mark.asyncio
 async def test_backfill_skips_file_with_live_process_file_job(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-l1km: a candidate with a LIVE process_file (deepen) job is skipped -- no double-dispatch.
+    """phaze-l1km: a candidate with a LIVE process_file job is skipped -- no double-dispatch.
 
-    deepen_analysis re-enqueues process_file on a still-failed long file WITHOUT clearing failed_at, so
+    A producer can re-enqueue process_file on a still-failed long file WITHOUT clearing failed_at, so
     the file satisfies every backfill candidate conjunct (failed marker + long + ledger row EXISTS) while
     its local job is still grinding. Backfilling it would delete the LIVE job's ledger row and hold the
     file for the cloud drain -- dispatching the same file to local + cloud at once and orphaning the local
     job from queue-loss recovery. The endpoint skips any candidate whose process_file key is live: the
     file stays failed, its ledger row survives, and it is NOT held in AWAITING_CLOUD.
     """
-    (live_deepen,) = await _persist_failed_with_duration(session, [_LONG])  # long + failed + ledger row
+    (live_reanalysis,) = await _persist_failed_with_duration(session, [_LONG])  # long + failed + ledger row
     await seed_active_agent(session, "nox", kind="fileserver")  # no compute -> would otherwise hold in AWAITING_CLOUD
-    # Model the live deepen: a queued/active saq_jobs row for this file's process_file key.
+    # Model the live re-analysis: a queued/active saq_jobs row for this file's process_file key.
     await _reset_saq_jobs_minimal(session)
     await session.execute(
         text("INSERT INTO saq_jobs (key, status) VALUES (:key, 'active')"),
-        {"key": f"process_file:{live_deepen.id}"},
+        {"key": f"process_file:{live_reanalysis.id}"},
     )
     await session.commit()
     wire_fakes(client)
@@ -1277,11 +1278,11 @@ async def test_backfill_skips_file_with_live_process_file_job(client: AsyncClien
     assert response.status_code == 200
     await _drain_background()
 
-    # The live-deepen file is untouched: failure marker retained, ledger row (the live in-flight marker)
+    # The live-job file is untouched: failure marker retained, ledger row (the live in-flight marker)
     # NOT deleted, and it is NOT held in AWAITING_CLOUD -- so no local+cloud double-dispatch.
-    assert await _analysis_failed_at(session, live_deepen.id) is not None
-    assert len(await _process_file_ledger_rows(session, live_deepen.id)) == 1
-    assert not await _is_awaiting_cloud(session, live_deepen.id)
+    assert await _analysis_failed_at(session, live_reanalysis.id) is not None
+    assert len(await _process_file_ledger_rows(session, live_reanalysis.id)) == 1
+    assert not await _is_awaiting_cloud(session, live_reanalysis.id)
 
 
 @pytest.mark.asyncio
@@ -1292,7 +1293,7 @@ async def test_backfill_ledger_delete_is_cas_guarded_against_a_concurrent_reenqu
     DELETE must not lose the live ledger row out from under it.
 
     The l1km ``live_keys`` guard is a lock-free snapshot taken well before the ledger DELETE; a
-    concurrent enqueue (deepen_analysis / retry_analysis_failed's background loop) for this EXACT
+    concurrent enqueue (retry_analysis_failed's background loop, a recovery replay) for this EXACT
     candidate can land in that gap. ``upsert_ledger_entry`` -- the SAQ before_enqueue write hook every
     process_file producer shares -- refreshes ``enqueued_at`` on every re-enqueue of a still-existing
     key, so the ledger DELETE is CAS-guarded on the exact ``enqueued_at`` value observed immediately
@@ -1625,313 +1626,88 @@ async def test_dashboard_context_excludes_compute_agents_from_scan_picker(client
 
 
 # ---------------------------------------------------------------------------
-# Phase 44 Plan 03: POST /pipeline/files/{file_id}/deepen — re-analyze ONE
-# sampled file at the full window budget (fine_cap=0 / coarse_cap=0 -> the
-# _stride_to_cap analyze-ALL-windows no-op). Mirrors the existing /pipeline
-# trigger-test harness (seed_active_agent + the FakeQueue capture doubles) and
-# enforces the D-05 incident guards: per-agent routing (never default queue),
-# the COMPLETE ProcessFilePayload (v4.0.8 guard), and the deterministic
-# process_file:<file_id> dedup key.
+# phaze-w55w1: POST /pipeline/files/{file_id}/deepen is REMOVED.
+#
+# Phase 44's per-file "deepen" re-enqueued one file at a cap of 0 to lift the
+# window caps for it. With analysis exhaustive by default (ADR-0007 §7) there is no cap to
+# lift, so the endpoint, its progress poll, their templates, and the ~20 tests that pinned
+# their routing/collision/poll-state behaviour are all gone. What replaces them is the two
+# assertions below: the routes 404, and nothing still links to them.
+#
+# The guards those tests protected are NOT lost -- per-agent routing, the NoActiveAgentError
+# refusal, the complete-payload funnel, and phaze-ewen collision classification are all
+# exercised by the surviving process_file producers (`_enqueue_analysis_jobs` and the
+# operator-gated retry endpoints) in this same file.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_deepen_enqueues_elevated_cap_on_per_agent_queue(client: AsyncClient, session: AsyncSession) -> None:
-    """POST .../deepen re-enqueues process_file with fine_cap=0/coarse_cap=0 onto the per-agent queue.
-
-    The elevated (sentinel) cap reaches enqueue_process_file and lands on the resolved
-    ``phaze-agent-nox`` queue — NEVER the consumer-less default queue (Phase-30 guard).
-    """
+async def test_deepen_routes_are_gone(client: AsyncClient, session: AsyncSession) -> None:
+    """Both deepen routes 404 -- they are unregistered, not merely unreachable from the UI."""
     file_rec = _make_file()
     session.add(file_rec)
     await session.commit()
-    expected_id = str(file_rec.id)
-    await make_agent_live(session)
-    _, task_router = install_fake_queues(client)
 
-    response = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
-    assert response.status_code == 200
+    post = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
+    poll = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since=1700000000.0")
 
-    queue = task_router.queues["test-fileserver-analyze"]
-    assert len(queue.captured) == 1
-    task_name, payload = queue.captured[0]
-    assert (queue.name, task_name) == ("phaze-agent-test-fileserver-analyze", "process_file")
-    assert queue.name != "default"
-    # The unbounded-deepen sentinel reached the producer and was serialized.
-    assert payload["fine_cap"] == 0
-    assert payload["coarse_cap"] == 0
-    assert payload["file_id"] == expected_id
+    assert post.status_code == 404
+    assert poll.status_code == 404
 
 
-@pytest.mark.asyncio
-async def test_deepen_enqueues_complete_process_file_payload(client: AsyncClient, session: AsyncSession) -> None:
-    """The deepen re-enqueue funnels the COMPLETE ProcessFilePayload, not a file_id-only payload (v4.0.8 guard).
+# The removed surface's LIVE artifacts. Deliberately token-level and not the bare word
+# "deepen": history is allowed to be discussed in prose (several docstrings correctly explain
+# that a re-analysis of an already-complete file used to arrive via that path), and a sweep
+# that forbade the word would push accurate history out of the codebase to buy nothing. What
+# must not survive is anything a browser or Jinja can still resolve.
+_DEAD_DEEPEN_ARTIFACTS = (
+    "/deepen",  # the route path -- covers the button's hx-post, the poll's hx-get, and the decorators
+    "def deepen_",  # the route handlers themselves
+    "sampled_badge.html",  # the deleted badge partial, as an {% include %}
+    "deepen_response.html",
+    "deepen_progress.html",
+    "analysis.sampled",  # the dropped column, in a Jinja gate or a query
+)
 
-    A file_id-only payload would dead-letter under ``extra="forbid"`` (the v4.0.8 incident).
-    Assert all five required fields PLUS the two Phase-44 cap overrides are present and the
-    exact kwargs validate against ProcessFilePayload.
+
+def test_no_live_reference_to_the_removed_deepen_surface() -> None:
+    """No resolvable reference to the removed surface survives anywhere in the app.
+
+    A dangling `hx-post` renders perfectly and fails only on click; a stale `{% include %}` of a
+    deleted partial is a 500 on whatever page includes it; a Jinja gate on a dropped column is a
+    silent always-false. None of the three is caught by a route test, so the tree is swept for
+    the concrete artifacts directly.
     """
-    file_rec = _make_file()
-    session.add(file_rec)
-    await session.commit()
-    expected_id = str(file_rec.id)
-    expected_path = file_rec.original_path
-    expected_type = file_rec.file_type
-    await make_agent_live(session)
-    _, task_router = install_fake_queues(client)
+    import phaze
 
-    response = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
-    assert response.status_code == 200
+    root = Path(phaze.__file__).resolve().parent
+    offenders = [
+        f"{path.relative_to(root)}:{i}: {line.strip()[:80]}"
+        for path in [*root.rglob("*.py"), *root.rglob("*.html")]
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if any(token in line for token in _DEAD_DEEPEN_ARTIFACTS)
+    ]
 
-    queue = task_router.queues["test-fileserver-analyze"]
-    assert len(queue.captured) == 1
-    _, payload = queue.captured[0]
-    # All five required fields present (not just file_id) plus the cap overrides.
-    assert set(payload) == {
-        "file_id",
-        "original_path",
-        "file_type",
-        "agent_id",
-        "models_path",
-        "fine_cap",
-        "coarse_cap",
-        "expected_sha256",
-        "scratch_path",
-    }
-    assert payload["file_id"] == expected_id
-    assert payload["original_path"] == expected_path
-    assert payload["file_type"] == expected_type
-    assert payload["agent_id"] == "test-fileserver"
-    assert payload["models_path"] == settings.models_path
-
-    # The exact kwargs the agent worker receives validate against ProcessFilePayload.
-    validated = ProcessFilePayload.model_validate(payload)
-    assert str(validated.file_id) == expected_id
-    assert validated.fine_cap == 0
-    assert validated.coarse_cap == 0
-
-
-@pytest.mark.asyncio
-async def test_deepen_uses_deterministic_key_and_dedups_in_flight(client: AsyncClient, session: AsyncSession) -> None:
-    """The deepen re-enqueue carries process_file:<file_id>, so an in-flight repeat dedups to a no-op (D-05).
-
-    Uses the DedupFakeQueue (models SAQ's incomplete-set dedup): the first deepen enqueues
-    and registers the key; an immediate second deepen of the same in-flight file is a no-op
-    (no second capture). After the job ``finish``-es, a third deepen re-enqueues fresh.
-    """
-    file_rec = _make_file()
-    session.add(file_rec)
-    await session.commit()
-    expected_key = f"process_file:{file_rec.id}"
-    await make_agent_live(session)
-
-    # Wire the dedup-aware router so the deterministic key collapses an in-flight repeat.
-    router = DedupFakeTaskRouter()
-    app = client._transport.app  # type: ignore[union-attr]
-    app.state.controller_queue = DedupFakeQueue("controller")
-    app.state.task_router = router
-
-    # First deepen: enqueues + registers the key.
-    r1 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
-    assert r1.status_code == 200
-    queue = router.queues["test-fileserver-analyze"]
-    assert len(queue.captured) == 1
-    assert queue.captured_policy[0]["key"] == expected_key
-
-    # Second deepen while in-flight: deduped to a no-op (no new capture).
-    r2 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
-    assert r2.status_code == 200
-    assert len(queue.captured) == 1
-
-    # Once the job completes, the same key re-enqueues fresh (already-ANALYZED, no live job).
-    queue.finish(expected_key)
-    r3 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
-    assert r3.status_code == 200
-    assert len(queue.captured) == 2
-    assert queue.captured_policy[1]["key"] == expected_key
-
-
-@pytest.mark.asyncio
-async def test_deepen_collision_with_a_live_job_reports_already_in_flight_and_still_polls(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-ewen: a collision against a genuinely LIVE job renders an honest fragment, poller included.
-
-    Pre-fix, EVERY None return rendered the unconditional "Queued — starting deepen…" as if a
-    fresh full-caps job had been created, even though the collision means the caps this click
-    requested were silently discarded. The poller must still start (D-05: the live job's own
-    progress will complete/fail normally) -- only the CLAIM that this click queued something is
-    wrong, not the wait itself.
-    """
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock
-
-    file_rec = _make_file()
-    session.add(file_rec)
-    await session.commit()
-    expected_key = f"process_file:{file_rec.id}"
-    await make_agent_live(session)
-
-    router = DedupFakeTaskRouter()
-    app = client._transport.app  # type: ignore[union-attr]
-    app.state.controller_queue = DedupFakeQueue("controller")
-    app.state.task_router = router
-
-    r1 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
-    assert r1.status_code == 200
-    queue = router.queues["test-fileserver-analyze"]
-    assert len(queue.captured) == 1
-
-    # Model the live collision: queue.job(key) now resolves to a genuinely in-flight (queued) row.
-    queue.job = AsyncMock(return_value=SimpleNamespace(status="queued", stuck=False))
-
-    r2 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
-    assert r2.status_code == 200
-    assert len(queue.captured) == 1  # still deduped -- no second enqueue
-    assert "already analyzing" in r2.text.lower()
-    assert 'hx-get="/pipeline/files/' in r2.text  # the poller still starts (D-05)
-    assert expected_key.split(":", 1)[1] in r2.text
-
-
-@pytest.mark.asyncio
-async def test_deepen_collision_with_a_dead_job_reports_blocked_and_does_not_poll(
-    client: AsyncClient, session: AsyncSession, caplog: pytest.LogCaptureFixture
-) -> None:
-    """phaze-ewen: a collision against a DEAD job (aborting/failed/stuck) is terminal, not queued.
-
-    SAQ's dedup upsert never overwrites an 'aborting' row, so this deepen was silently dropped
-    pre-fix while the UI polled 'Queued — starting deepen…' forever (nothing will ever satisfy
-    deepen_progress's non-terminal branches for a job that does not exist). The fix renders a
-    terminal fragment with NO poller and logs the drop.
-    """
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock
-
-    file_rec = _make_file()
-    session.add(file_rec)
-    await session.commit()
-    await make_agent_live(session)
-
-    router = DedupFakeTaskRouter()
-    app = client._transport.app  # type: ignore[union-attr]
-    app.state.controller_queue = DedupFakeQueue("controller")
-    app.state.task_router = router
-
-    r1 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
-    assert r1.status_code == 200
-    queue = router.queues["test-fileserver-analyze"]
-    assert len(queue.captured) == 1
-
-    # Model the zombie collision: the key is held by a dead 'aborting' row.
-    queue.job = AsyncMock(return_value=SimpleNamespace(status="aborting", stuck=False))
-
-    with caplog.at_level("WARNING", logger="phaze.routers.pipeline"):
-        r2 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
-
-    assert r2.status_code == 200
-    assert len(queue.captured) == 1  # nothing new enqueued
-    assert "stuck" in r2.text.lower()
-    assert "hx-get" not in r2.text  # terminal -- no poller, unlike the in-flight branch
-    assert "deterministic key held by a dead job" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_deepen_collision_lookup_broker_error_degrades_to_already_in_flight_not_500(
-    client: AsyncClient, session: AsyncSession, caplog: pytest.LogCaptureFixture
-) -> None:
-    """phaze-qim6c: a transient broker/pool error on the post-collision ``queue.job()`` lookup
-
-    must NOT escape as a raw 500 -- the endpoint's own docstring promises T-44-10 ("never a
-    raw 500"). Pre-fix, this lookup ran uncontained outside the ``try``'s only ``except``
-    (``NoActiveAgentError``), so a SAQ ``PostgresQueue`` pool error propagated straight past
-    FastAPI as a 500. The fix degrades the SAME way ``classify_process_file_collision``
-    already treats an unlookupable (``None``) job -- benign "in_flight" -- and logs a warning
-    instead of raising.
-    """
-    from unittest.mock import AsyncMock
-
-    file_rec = _make_file()
-    session.add(file_rec)
-    await session.commit()
-    await make_agent_live(session)
-
-    router = DedupFakeTaskRouter()
-    app = client._transport.app  # type: ignore[union-attr]
-    app.state.controller_queue = DedupFakeQueue("controller")
-    app.state.task_router = router
-
-    r1 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
-    assert r1.status_code == 200
-    queue = router.queues["test-fileserver-analyze"]
-    assert len(queue.captured) == 1
-
-    # Model a transient broker/pool error on the collision lookup itself.
-    queue.job = AsyncMock(side_effect=RuntimeError("connection pool exhausted"))
-
-    with caplog.at_level("WARNING", logger="phaze.routers.pipeline"):
-        r2 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
-
-    assert r2.status_code == 200, r2.text
-    assert len(queue.captured) == 1  # still deduped -- no second enqueue
-    assert "already analyzing" in r2.text.lower()
-    assert 'hx-get="/pipeline/files/' in r2.text  # in_flight -- poller still starts
-    assert "collision lookup failed -- degrading to already-in-flight" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_deepen_no_active_agent_does_not_enqueue(client: AsyncClient, session: AsyncSession) -> None:
-    """When no agent is online the deepen endpoint surfaces a fragment and does NOT enqueue (Phase-30 guard).
-
-    NoActiveAgentError must NOT fall through to the consumer-less default queue.
-    """
-    file_rec = _make_file()
-    session.add(file_rec)
-    await session.commit()
-    capture = wire_fakes(client)  # no active agent seeded
-
-    response = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
-    assert response.status_code == 200
-    assert "no active agent" in response.text.lower()
-    # Nothing enqueued anywhere — never the default queue.
-    assert capture == []
-
-
-@pytest.mark.asyncio
-async def test_deepen_unknown_file_returns_not_found_fragment(client: AsyncClient, session: AsyncSession) -> None:
-    """A well-formed but unknown file_id returns a not-found fragment (200), never a 500, and enqueues nothing."""
-    await make_agent_live(session)
-    capture = wire_fakes(client)
-
-    missing_id = uuid.uuid4()
-    response = await client.post(f"/pipeline/files/{missing_id}/deepen")
-    assert response.status_code == 200
-    assert "not found" in response.text.lower()
-    assert capture == []
-
-
-@pytest.mark.asyncio
-async def test_deepen_malformed_file_id_returns_422(client: AsyncClient) -> None:
-    """A malformed (non-uuid) file_id is rejected by the typed path param with 422 (T-44-10)."""
-    response = await client.post("/pipeline/files/not-a-uuid/deepen")
-    assert response.status_code == 422
+    assert offenders == [], f"live references to the removed deepen surface: {offenders}"
 
 
 # ---------------------------------------------------------------------------
 # quick-260707-d79: operator-gated BULK retry of ANALYSIS_FAILED files.
 #
 # POST /pipeline/analysis-failed/retry re-drives EVERY ANALYSIS_FAILED file through the SAME
-# guarded funnel deepen uses (per-agent routing -> NoActiveAgentError guard -> enqueue_process_file
-# full payload + deterministic key), but with NORMAL caps (fine_cap/coarse_cap None, NOT the deepen
-# sentinel 0). Each file leaves the red bucket immediately (the retired ``files.state`` flip that
+# guarded funnel every producer uses (per-agent routing -> NoActiveAgentError guard ->
+# enqueue_process_file full payload + deterministic key). Each file leaves the red bucket immediately (the retired ``files.state`` flip that
 # accompanied this is gone since Phase 90). recover_orphaned_work / _select_done_analyze_ids stay unchanged.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_retry_reenqueues_all_failed_and_flips_state(client: AsyncClient, session: AsyncSession) -> None:
-    """POST retry re-enqueues process_file for every ANALYSIS_FAILED file on the per-agent queue with NORMAL caps.
+    """POST retry re-enqueues process_file for every ANALYSIS_FAILED file on the per-agent queue.
 
     All N failed files land on ``phaze-agent-nox`` (never the default queue) carrying the COMPLETE
-    ProcessFilePayload with NO cap override (fine_cap/coarse_cap None -- the retry-vs-deepen guard),
-    and every file's derived analyze-failure marker is cleared (0 remain in failed_clause). Phase 90
+    ProcessFilePayload -- since phaze-w55w1 a retry and a first run are literally the same job,
+    there being no per-file window budget left to vary -- and every file's derived analyze-failure marker is cleared (0 remain in failed_clause). Phase 90
     (D-09): retry NO LONGER writes files.state. The ack reports N.
     """
     failed = await _seed_analysis_failed(session, 3)
@@ -1952,9 +1728,6 @@ async def test_retry_reenqueues_all_failed_and_flips_state(client: AsyncClient, 
     captured_ids = set()
     for task_name, payload in queue.captured:
         assert task_name == "process_file"
-        # NORMAL caps: no deepen sentinel -- a retry is a fresh re-analysis (fine/coarse None).
-        assert payload["fine_cap"] is None
-        assert payload["coarse_cap"] is None
         # Complete payload (v4.0.8 guard): validates against ProcessFilePayload.
         ProcessFilePayload.model_validate(payload)
         captured_ids.add(payload["file_id"])
@@ -2020,243 +1793,6 @@ async def test_retry_button_renders_only_when_count_positive(client: AsyncClient
     assert positive.status_code == 200
     assert "analysis-failed/retry" in positive.text
     assert "hx-confirm" in positive.text
-
-
-# ---------------------------------------------------------------------------
-# quick-260707-cvz: GET /pipeline/files/{file_id}/deepen-progress poll endpoint +
-# the deepen POST success-path bootstrap poller. Four poll-state fragments
-# (queued / running / complete / gone) driven by the timestamp-gated completion
-# predicate (analysis_completed_at > since), plus the success branch now emitting
-# the self-polling bootstrap span instead of the old static line.
-# ---------------------------------------------------------------------------
-
-# A fixed click epoch; seeded completed_at values are set relative to it so the
-# (> vs <=) boundary is deterministic and tz-aware.
-_CVZ_SINCE = 1_700_000_000.0
-_CVZ_REQUESTED_AT = datetime.fromtimestamp(_CVZ_SINCE, tz=UTC)
-
-
-@pytest.mark.asyncio
-async def test_deepen_progress_queued_state_polls(client: AsyncClient, session: AsyncSession) -> None:
-    """A stale pre-click result with equal counts renders the queued fragment and keeps polling."""
-    file_rec = _make_file()
-    session.add(file_rec)
-    await session.flush()
-    session.add(
-        AnalysisResult(
-            file_id=file_rec.id,
-            fine_windows_analyzed=20,
-            fine_windows_total=20,
-            # Pre-click completion (<= since) -> NOT complete -> queued (job not re-started yet).
-            analysis_completed_at=datetime.fromtimestamp(_CVZ_SINCE - 100, tz=UTC),
-        )
-    )
-    await session.commit()
-
-    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since={_CVZ_SINCE}")
-    assert response.status_code == 200
-    assert "Queued" in response.text
-    # Non-terminal -> still polling.
-    assert "hx-trigger" in response.text
-    assert "deepen-progress" in response.text
-    assert "Deepen complete" not in response.text
-
-
-@pytest.mark.asyncio
-async def test_deepen_progress_running_state_shows_counts_and_polls(client: AsyncClient, session: AsyncSession) -> None:
-    """fine_done < fine_total renders the live 'N/M windows' running fragment and keeps polling."""
-    file_rec = _make_file()
-    session.add(file_rec)
-    await session.flush()
-    session.add(
-        AnalysisResult(
-            file_id=file_rec.id,
-            fine_windows_analyzed=34,
-            fine_windows_total=62,
-            analysis_completed_at=None,
-        )
-    )
-    await session.commit()
-
-    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since={_CVZ_SINCE}")
-    assert response.status_code == 200
-    assert "34/62 windows" in response.text
-    # Running is non-terminal -> poll active.
-    assert "hx-trigger" in response.text
-    assert "deepen-progress" in response.text
-    assert "Deepen complete" not in response.text
-
-
-@pytest.mark.asyncio
-async def test_deepen_progress_complete_state_halts_poll(client: AsyncClient, session: AsyncSession) -> None:
-    """A completed_at strictly AFTER since renders the terminal complete fragment with NO poll trigger."""
-    file_rec = _make_file()
-    session.add(file_rec)
-    await session.flush()
-    session.add(
-        AnalysisResult(
-            file_id=file_rec.id,
-            fine_windows_analyzed=62,
-            fine_windows_total=62,
-            # Fresh put_analysis stamp AFTER the click -> complete.
-            analysis_completed_at=datetime.fromtimestamp(_CVZ_SINCE + 100, tz=UTC),
-        )
-    )
-    await session.commit()
-
-    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since={_CVZ_SINCE}")
-    assert response.status_code == 200
-    assert "Deepen complete" in response.text
-    # Terminal -> polling halted (outerHTML swap removed the trigger).
-    assert "hx-trigger" not in response.text
-
-
-@pytest.mark.asyncio
-async def test_deepen_progress_gone_state_halts_poll(client: AsyncClient, session: AsyncSession) -> None:
-    """An unknown (well-formed) file_id returns the terminal 'gone' fragment with no poll trigger, never a 500."""
-    missing_id = uuid.uuid4()
-    response = await client.get(f"/pipeline/files/{missing_id}/deepen-progress?since={_CVZ_SINCE}")
-    assert response.status_code == 200
-    assert "no longer available" in response.text.lower()
-    assert "hx-trigger" not in response.text
-
-
-@pytest.mark.asyncio
-async def test_deepen_progress_failed_state_halts_poll(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-l9nc: a failed_at stamped AFTER since renders the terminal 'Deepen failed' fragment,
-    with NO poll trigger -- without this, the frozen fine_windows counters (fine_done < fine_total
-    at the point of failure) kept the running branch (self-re-arming) forever.
-    """
-    file_rec = _make_file()
-    session.add(file_rec)
-    await session.flush()
-    session.add(
-        AnalysisResult(
-            file_id=file_rec.id,
-            fine_windows_analyzed=12,
-            fine_windows_total=40,
-            analysis_completed_at=None,
-            # Fresh report_analysis_failed stamp AFTER the click -> failed (terminal).
-            failed_at=datetime.fromtimestamp(_CVZ_SINCE + 100, tz=UTC),
-            error_message="agent crashed",
-        )
-    )
-    await session.commit()
-
-    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since={_CVZ_SINCE}")
-    assert response.status_code == 200
-    assert "Deepen failed" in response.text
-    # Terminal -> polling halted (outerHTML swap removed the trigger).
-    assert "hx-trigger" not in response.text
-    assert "Re-analyzing" not in response.text
-
-
-@pytest.mark.asyncio
-async def test_deepen_progress_stale_failed_at_does_not_short_circuit_retry(client: AsyncClient, session: AsyncSession) -> None:
-    """A failed_at from BEFORE this click (an unrelated earlier failure) must not read as this
-    re-run's failure -- the in-flight retry keeps polling on its own fine_windows counters.
-    """
-    file_rec = _make_file()
-    session.add(file_rec)
-    await session.flush()
-    session.add(
-        AnalysisResult(
-            file_id=file_rec.id,
-            fine_windows_analyzed=5,
-            fine_windows_total=40,
-            analysis_completed_at=None,
-            # Stale pre-click failure (<= since) -> NOT this click's failure.
-            failed_at=datetime.fromtimestamp(_CVZ_SINCE - 100, tz=UTC),
-            error_message="an earlier, unrelated failure",
-        )
-    )
-    await session.commit()
-
-    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since={_CVZ_SINCE}")
-    assert response.status_code == 200
-    assert "Deepen failed" not in response.text
-    assert "5/40 windows" in response.text
-    assert "hx-trigger" in response.text
-
-
-@pytest.mark.asyncio
-async def test_deepen_progress_stale_sampled_result_not_complete(client: AsyncClient, session: AsyncSession) -> None:
-    """A stale sampled result completed at exactly `since` is NOT shown as complete (> boundary, not >=)."""
-    file_rec = _make_file()
-    session.add(file_rec)
-    await session.flush()
-    session.add(
-        AnalysisResult(
-            file_id=file_rec.id,
-            fine_windows_analyzed=40,
-            fine_windows_total=40,
-            sampled=True,
-            # completed_at == requested_at -> predicate is strict `>` -> NOT complete.
-            analysis_completed_at=_CVZ_REQUESTED_AT,
-        )
-    )
-    await session.commit()
-
-    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since={_CVZ_SINCE}")
-    assert response.status_code == 200
-    assert "Deepen complete" not in response.text
-    assert "hx-trigger" in response.text
-
-
-@pytest.mark.asyncio
-async def test_deepen_progress_non_numeric_since_is_422(client: AsyncClient, session: AsyncSession) -> None:
-    """A non-numeric `since` query param is rejected by the typed float param (T-cvz-01), never rendered raw."""
-    file_rec = _make_file()
-    session.add(file_rec)
-    await session.commit()
-
-    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since=not-a-number")
-    assert response.status_code == 422
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "since",
-    [
-        "nan",  # ValueError: Invalid value NaN out of datetime.fromtimestamp
-        "inf",  # OverflowError: timestamp out of range for platform time_t
-        "-inf",  # OverflowError: timestamp out of range for platform time_t
-        "1e30",  # OverflowError: beyond datetime's year range, still a valid float
-        "-7e10",  # ValueError: year out of the 1..9999 range on the pre-epoch side
-    ],
-)
-async def test_deepen_progress_out_of_range_since_is_422(client: AsyncClient, session: AsyncSession, since: str) -> None:
-    """phaze-zut8: NaN/inf/out-of-range `since` is rejected with 422, never the docstring-forbidden 500.
-
-    A well-formed ``float`` is not necessarily a valid Unix timestamp -- ``datetime.fromtimestamp``
-    raises ``ValueError``/``OverflowError`` for these shapes, and the endpoint's own docstring
-    promises "never a 500" (T-cvz-04), so contract rule 6 requires this regression test.
-    """
-    file_rec = _make_file()
-    session.add(file_rec)
-    await session.commit()
-
-    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since={since}")
-    assert response.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_deepen_success_path_returns_bootstrap_poller(client: AsyncClient, session: AsyncSession) -> None:
-    """The deepen POST success branch now emits the self-polling bootstrap span, not the old static line."""
-    file_rec = _make_file()
-    session.add(file_rec)
-    await session.commit()
-    await make_agent_live(session)
-    install_fake_queues(client)
-
-    response = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
-    assert response.status_code == 200
-    # The bootstrap poller: hx-get at the poll endpoint + load-then-interval trigger.
-    assert "deepen-progress" in response.text
-    assert 'hx-trigger="load, every 2s"' in response.text
-    assert 'hx-swap="outerHTML"' in response.text
-    # The old static success line is gone.
-    assert "Re-analysis queued at full window budget" not in response.text
 
 
 @pytest.mark.asyncio
@@ -3215,16 +2751,14 @@ async def test_enqueue_analysis_background(client: AsyncClient, session: AsyncSe
     queue_name, task_name, kwargs = capture[0]
     assert queue_name == "phaze-agent-test-fileserver-analyze"
     assert task_name == "process_file"
-    # Complete payload -- all five ProcessFilePayload fields, not just file_id. Phase 44-01
-    # added the optional fine_cap/coarse_cap overrides (None on the bulk path).
+    # Complete payload -- all five ProcessFilePayload fields, not just file_id, plus the two
+    # optional Phase-50 cloud-push fields (None on the bulk path).
     assert set(kwargs) == {
         "file_id",
         "original_path",
         "file_type",
         "agent_id",
         "models_path",
-        "fine_cap",
-        "coarse_cap",
         "expected_sha256",
         "scratch_path",
     }

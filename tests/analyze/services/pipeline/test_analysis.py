@@ -19,12 +19,13 @@ from phaze.services.analysis import (
     FineWindow,
     ModelConfig,
     ModelSetConfig,
+    _chunk_stop_sec,
+    _chunked,
     _get_classifier,
     _get_labels,
     _peak_rss_gib,
     _positive_class_prediction,
     _resolve_malloc_trim,
-    _stride_to_cap,
     aggregate_bpm,
     aggregate_danceability,
     aggregate_dominant,
@@ -377,7 +378,10 @@ def test_analysis_result_stored(_mock_es: MagicMock, mock_get_labels: MagicMock)
 
 
 # ---------------------------------------------------------------------------
-# Phase 43: _stride_to_cap even-stride downsampler (pure-Python, NO essentia)
+# phaze-w55w1: window CHUNKING (pure-Python, NO essentia). The Phase 43
+# `_stride_to_cap` even-stride downsampler these tests replace is gone with the
+# caps -- analysis is exhaustive, so the property under test flipped from "bound
+# the window count" to "never drop a window while bounding what is held at once".
 # ---------------------------------------------------------------------------
 
 
@@ -386,83 +390,81 @@ def _win(idx: int) -> tuple[int, float, float]:
     return (idx, float(idx) * 30.0, float(idx) * 30.0 + 30.0)
 
 
-def test_stride_under_cap_is_noop() -> None:
-    """len(windows) <= cap returns the windows unchanged with sampled False."""
-    windows = [_win(i) for i in range(3)]
-    kept, sampled = _stride_to_cap(windows, 5)
-    assert kept == windows
-    assert sampled is False
+def test_chunked_partitions_without_losing_or_reordering_windows() -> None:
+    """The concatenated chunks are the input, exactly: no window dropped, none reordered."""
+    windows = [_win(i) for i in range(101)]
+
+    chunks = _chunked(windows, 30)
+
+    assert [w for chunk in chunks for w in chunk] == windows
 
 
-def test_stride_equal_to_cap_is_noop() -> None:
-    """len(windows) == cap is the boundary: no striding, sampled False."""
-    windows = [_win(i) for i in range(5)]
-    kept, sampled = _stride_to_cap(windows, 5)
-    assert kept == windows
-    assert sampled is False
+def test_chunked_bounds_every_chunk_by_the_chunk_size() -> None:
+    """Every chunk is at most `size` long -- the property the memory envelope rests on."""
+    windows = [_win(i) for i in range(101)]
+
+    chunks = _chunked(windows, 30)
+
+    assert [len(c) for c in chunks] == [30, 30, 30, 11]
+    assert all(len(c) <= 30 for c in chunks)
 
 
-def test_stride_cap_le_zero_is_noop() -> None:
-    """cap <= 0 returns the windows unchanged with sampled False (guard)."""
-    windows = [_win(i) for i in range(10)]
-    kept, sampled = _stride_to_cap(windows, 0)
-    assert kept == windows
-    assert sampled is False
-    kept_neg, sampled_neg = _stride_to_cap(windows, -3)
-    assert kept_neg == windows
-    assert sampled_neg is False
+def test_chunked_exact_multiple_emits_no_empty_trailing_chunk() -> None:
+    """An exact multiple yields full chunks only -- an empty trailer would decode nothing, twice."""
+    windows = [_win(i) for i in range(60)]
+
+    assert [len(c) for c in _chunked(windows, 30)] == [30, 30]
 
 
-def test_stride_cap_one_does_not_divide_by_zero() -> None:
-    """cap == 1 (validated out at config load, but a direct call must not crash on cap-1==0)."""
-    windows = [_win(i) for i in range(10)]
-    kept, sampled = _stride_to_cap(windows, 1)
-    assert kept == windows[:1]
-    assert sampled is True
+def test_chunked_empty_input_yields_no_chunks() -> None:
+    """A zero-window tier must do NO decode work at all (a 0-duration probe)."""
+    assert _chunked([], 30) == []
 
 
-def test_stride_over_cap_bounds_count_and_sets_sampled() -> None:
-    """len(windows) > cap yields len(kept) <= cap and sampled True."""
-    windows = [_win(i) for i in range(100)]
-    kept, sampled = _stride_to_cap(windows, 60)
-    assert sampled is True
-    assert len(kept) <= 60
+def test_chunked_shorter_than_size_is_one_chunk() -> None:
+    """The common case -- an ordinary track -- is a single chunk, i.e. the pre-chunking shape."""
+    windows = [_win(i) for i in range(7)]
+
+    assert _chunked(windows, 30) == [windows]
 
 
-def test_stride_keeps_first_and_last() -> None:
-    """The first and last original windows are always retained (whole-file span)."""
-    windows = [_win(i) for i in range(100)]
-    kept, _sampled = _stride_to_cap(windows, 60)
-    assert kept[0] == windows[0]
-    assert kept[-1] == windows[-1]
+def test_chunk_stop_sec_gates_every_chunk_but_the_last() -> None:
+    """Non-final chunks stop the decode at their own end; the final one runs to EOF (None).
+
+    The last chunk is deliberately ungated: it reaches EOF anyway, so a gate could only risk
+    clipping the file's final window for no saving.
+    """
+    chunks = _chunked([_win(i) for i in range(65)], 30)
+
+    assert _chunk_stop_sec(chunks, 0) == chunks[0][-1][2]
+    assert _chunk_stop_sec(chunks, 1) == chunks[1][-1][2]
+    assert _chunk_stop_sec(chunks, 2) is None
 
 
-def test_stride_preserves_original_index_no_renumber() -> None:
-    """Kept tuples retain their ORIGINAL idx; nothing is renumbered to 0..k-1."""
-    windows = [_win(i) for i in range(100)]
-    kept, _sampled = _stride_to_cap(windows, 60)
-    # Each kept tuple must be identical to the original window at its idx.
-    for idx, start, end in kept:
-        assert (idx, start, end) == windows[idx]
-    # The kept indices are a strict subset that is NOT a contiguous 0..k-1 range.
-    kept_indices = [w[0] for w in kept]
-    assert kept_indices != list(range(len(kept)))
+def test_chunk_stop_sec_single_chunk_is_never_gated() -> None:
+    """One chunk == the whole file: gating it would be pure risk for zero saving."""
+    chunks = _chunked([_win(i) for i in range(5)], 30)
+
+    assert _chunk_stop_sec(chunks, 0) is None
 
 
-def test_stride_sorted_ascending_by_index() -> None:
-    """Kept windows are sorted ascending by original idx."""
-    windows = [_win(i) for i in range(57)]
-    kept, _sampled = _stride_to_cap(windows, 30)
-    kept_indices = [w[0] for w in kept]
-    assert kept_indices == sorted(kept_indices)
+def test_chunk_sizes_match_the_documented_memory_envelope() -> None:
+    """The D-07 chunk sizes are pinned: they ARE the pre-removal per-tier residency figures.
 
+    317 MB fine / 345 MB coarse is the envelope ADR-0005's memory limits were sized against,
+    and the D-07 record's whole argument is that chunking reproduces it rather than changing
+    it. A silent bump here would invalidate that reasoning without anyone noticing, so the
+    arithmetic is asserted, not just the constants.
+    """
+    fine_bytes = analysis_mod._FINE_CHUNK_WINDOWS * 30 * 44100 * 4
+    coarse_bytes = analysis_mod._COARSE_CHUNK_WINDOWS * 180 * 16000 * 4
 
-def test_stride_evenly_spaced() -> None:
-    """Picks are approximately evenly spaced across the whole file."""
-    windows = [_win(i) for i in range(101)]  # n=101, cap=11 -> step 10
-    kept, sampled = _stride_to_cap(windows, 11)
-    assert sampled is True
-    assert [w[0] for w in kept] == [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+    assert analysis_mod._FINE_CHUNK_WINDOWS == 60
+    assert analysis_mod._COARSE_CHUNK_WINDOWS == 30
+    # +/- 1 MB: the docstrings' 317 / 345 are the truncated figures the pre-removal code
+    # carried, kept verbatim so the docs and the constants can be diffed against each other.
+    assert abs(fine_bytes / 1_000_000 - 317) <= 1.0
+    assert abs(coarse_bytes / 1_000_000 - 345) <= 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -735,29 +737,28 @@ def test_analyze_file_return_shape_has_windows(_mock_es: MagicMock, mock_get_lab
 
 
 # ---------------------------------------------------------------------------
-# Phase 43: cap-bounded coverage emit (mocked essentia)
+# phaze-w55w1: EXHAUSTIVE coverage emit (mocked essentia)
 # ---------------------------------------------------------------------------
 
-_COVERAGE_KEYS = ("fine_windows_analyzed", "fine_windows_total", "coarse_windows_analyzed", "coarse_windows_total", "sampled")
+_COVERAGE_KEYS = ("fine_windows_analyzed", "fine_windows_total", "coarse_windows_analyzed", "coarse_windows_total")
 
 
 @patch("phaze.services.analysis._probe_duration_sec", return_value=600.0)
 @patch("phaze.services.analysis._get_labels")
 @patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
-def test_analyze_file_coverage_under_cap(_mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
-    """Under the cap, every window is analyzed: analyzed == total and sampled is False."""
+def test_analyze_file_coverage_is_complete(_mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
+    """Every natural window is analyzed: analyzed == total in both tiers."""
     mock_get_labels.side_effect = _mock_labels_file
 
     result = analyze_file("/fake/audio.mp3", "/fake/models")
 
     for key in _COVERAGE_KEYS:
-        assert key in result, f"missing coverage key: {key}"
-    # 600s -> 20 fine (<=60) + 4 coarse (<=30); nothing strided.
+        assert key in result, f"missing progress-count key: {key}"
+    # 600s -> 20 fine (30s) + 4 coarse (180/180/180/60).
     assert result["fine_windows_total"] == 20
     assert result["fine_windows_analyzed"] == 20
     assert result["coarse_windows_total"] == 4
     assert result["coarse_windows_analyzed"] == 4
-    assert result["sampled"] is False
     # analyzed counts equal the emitted window lists.
     assert result["fine_windows_analyzed"] == len(_fine_dicts(result))
     assert result["coarse_windows_analyzed"] == len(_coarse_dicts(result))
@@ -766,39 +767,74 @@ def test_analyze_file_coverage_under_cap(_mock_es: MagicMock, mock_get_labels: M
 @patch("phaze.services.analysis._probe_duration_sec", return_value=600.0)
 @patch("phaze.services.analysis._get_labels")
 @patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
-def test_analyze_file_coverage_over_cap_strides(_mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
-    """Over the cap, analyzed <= cap, total is the natural pre-stride count, sampled is True."""
+def test_analyze_file_no_longer_emits_sampled(_mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
+    """The `sampled` flag is GONE from the result contract (ADR-0007 §7).
+
+    Asserted rather than assumed because every downstream consumer -- the write payload, the
+    job_runner log line, the (removed) badge -- read it by key off this dict; a stray reappearance
+    would be silently accepted by `.get()` everywhere and mean nothing.
+    """
     mock_get_labels.side_effect = _mock_labels_file
 
-    # 600s -> 20 fine / 4 coarse naturally; force striding via small caps.
-    result = analyze_file("/fake/audio.mp3", "/fake/models", fine_cap=5, coarse_cap=2)
+    result = analyze_file("/fake/audio.mp3", "/fake/models")
 
-    assert result["fine_windows_total"] == 20  # natural count, BEFORE stride
-    assert result["fine_windows_analyzed"] <= 5
-    assert len(_fine_dicts(result)) <= 5
-    assert result["coarse_windows_total"] == 4
-    assert result["coarse_windows_analyzed"] <= 2
-    assert len(_coarse_dicts(result)) <= 2
-    assert result["sampled"] is True
-    # Whole-file span: first and last natural window indices are retained.
-    fine_indices = [w["window_index"] for w in _fine_dicts(result)]
-    assert 0 in fine_indices
-    assert 19 in fine_indices
+    assert "sampled" not in result
 
 
-@patch("phaze.services.analysis._probe_duration_sec", return_value=600.0)
+@patch("phaze.services.analysis._probe_duration_sec", return_value=54000.0)
 @patch("phaze.services.analysis._get_labels")
 @patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
-def test_analyze_file_sampled_true_if_either_pass_strided(_mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
-    """sampled is the OR of the two passes: striding only the fine pass still flips it True."""
+def test_analyze_file_long_file_analyzes_every_window_across_many_chunks(
+    _mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock
+) -> None:
+    """A 15-hour set -- far past every removed cap -- is analyzed window for window.
+
+    This is the acceptance criterion of the whole change: 54 000 s is 1 800 fine windows (30
+    chunks of 60) and 300 coarse windows (10 chunks of 30). Before phaze-w55w1 the same file
+    produced 60 fine / 30 coarse and a `sampled` flag; the indices below prove nothing is
+    dropped AT a chunk boundary either, which is the one way chunking could regress coverage.
+    """
     mock_get_labels.side_effect = _mock_labels_file
 
-    # fine over cap (5 < 20), coarse under cap (30 > 4).
-    result = analyze_file("/fake/audio.mp3", "/fake/models", fine_cap=5)
+    result = analyze_file("/fake/<set-01>", "/fake/models")
 
-    assert result["fine_windows_analyzed"] <= 5
-    assert result["coarse_windows_analyzed"] == 4
-    assert result["sampled"] is True
+    assert result["fine_windows_total"] == 1800
+    assert result["fine_windows_analyzed"] == 1800
+    assert result["coarse_windows_total"] == 300
+    assert result["coarse_windows_analyzed"] == 300
+    # Contiguous 0..N-1 indices: no gap at any of the 30 fine / 10 coarse chunk seams.
+    assert [w["window_index"] for w in _fine_dicts(result)] == list(range(1800))
+    assert [w["window_index"] for w in _coarse_dicts(result)] == list(range(300))
+
+
+@patch("phaze.services.analysis._probe_duration_sec", return_value=5400.0)
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_analyze_file_decodes_each_tier_in_bounded_chunks(_mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
+    """No single decode call is ever handed more than one chunk of windows.
+
+    THIS is the memory invariant, stated where it is actually enforceable: peak PCM is a
+    function of the largest window list that reaches `_decode_windows` at once, and that list
+    is what this asserts is bounded. 5 400 s = 180 fine windows (3 chunks) + 30 coarse (1).
+    """
+    mock_get_labels.side_effect = _mock_labels_file
+    seen: list[tuple[int, int, float | None]] = []
+    real_decode = analysis_mod._decode_windows
+
+    def _spy(file_path: str, sample_rate: int, windows: Any, on_skip: Any, **kwargs: Any) -> Any:
+        seen.append((sample_rate, len(windows), kwargs.get("stop_at_sec")))
+        return real_decode(file_path, sample_rate, windows, on_skip, **kwargs)
+
+    with patch.object(analysis_mod, "_decode_windows", _spy):
+        analyze_file("/fake/<set-02>", "/fake/models")
+
+    fine_calls = [c for c in seen if c[0] == 44100]
+    coarse_calls = [c for c in seen if c[0] == 16000]
+    assert [c[1] for c in fine_calls] == [60, 60, 60]
+    assert [c[1] for c in coarse_calls] == [30]
+    # Every non-final fine chunk carries an early-stop gate; the last one runs to EOF.
+    assert [c[2] is None for c in fine_calls] == [False, False, True]
+    assert coarse_calls[0][2] is None
 
 
 # Phase 57.1 (PROG-01): the analyze_file progress_cb seam.
@@ -845,8 +881,8 @@ def test_analyze_file_progress_cb_default_none_is_inert(_mock_es: MagicMock, moc
     with_none = analyze_file("/fake/audio.mp3", "/fake/models")
     with_cb = analyze_file("/fake/audio.mp3", "/fake/models", progress_cb=lambda _a, _t: None)
 
-    # Same coverage contract regardless of whether a callback was supplied.
-    for key in ("fine_windows_analyzed", "fine_windows_total", "coarse_windows_analyzed", "coarse_windows_total", "sampled"):
+    # Same progress-count contract regardless of whether a callback was supplied.
+    for key in _COVERAGE_KEYS:
         assert with_none[key] == with_cb[key]
 
 
@@ -872,20 +908,18 @@ def test_analysis_module_has_no_http_client_import() -> None:
     assert "agent_client" not in text
 
 
-def test_aggregates_valid_over_strided_subset() -> None:
-    """Aggregations over a strided subset equal the direct reduction over that subset.
+def test_aggregates_are_order_and_gap_independent_reductions() -> None:
+    """aggregate_* over an arbitrary subset equals the direct reduction over that subset.
 
-    No algorithm needs contiguous windows: aggregate_* are order-independent
-    reductions, so sampling the windows keeps the aggregate well-defined.
+    Kept from the Phase 43 era (where the subset was a stride) because the property still
+    matters and now has a DIFFERENT source: per-window decode/inference failures punch gaps in
+    an otherwise exhaustive window set, and chunking means those gaps can cluster at a chunk.
+    No aggregation needs contiguous windows.
     """
     from statistics import median
 
     fine = [_fine(i, 120.0 + i, "C major", start=float(i) * 30.0, end=float(i) * 30.0 + 30.0) for i in range(100)]
-    tuples = [(w.window_index, w.start_sec, w.end_sec) for w in fine]
-    kept_tuples, sampled = _stride_to_cap(tuples, 60)
-    assert sampled is True
-    kept_idx = {t[0] for t in kept_tuples}
-    subset = [w for w in fine if w.window_index in kept_idx]
+    subset = [w for w in fine if w.window_index % 7 == 0]
 
     expected = round(median([w.bpm for w in subset if w.bpm is not None]), 1)
     assert aggregate_bpm(subset) == expected
@@ -1068,3 +1102,35 @@ def test_resolve_malloc_trim_returns_none_when_symbol_lookup_fails(monkeypatch: 
     monkeypatch.setattr(analysis_mod.ctypes, "CDLL", _boom)
 
     assert _resolve_malloc_trim() is None
+
+
+@patch("phaze.services.analysis._probe_duration_sec", return_value=600.0)
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_a_coarse_window_that_fails_derivation_is_dropped_not_fatal(_mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
+    """Per-window isolation survives chunking: a bad window is dropped, its chunk-mates are not.
+
+    Derivation runs at chunk ASSEMBLY, after the model sweep, so a raise there is the one
+    failure mode that could plausibly take a whole chunk with it rather than one window. 600 s
+    is 4 coarse windows in a single chunk, and exactly one of them is made to fail.
+    """
+    mock_get_labels.side_effect = _mock_labels_file
+    real_derive = analysis_mod.derive_mood
+    seen: list[int] = []
+
+    def _fail_second_call(features: dict[str, Any]) -> str:
+        seen.append(len(seen))
+        if len(seen) == 2:
+            msg = "derivation exploded on this window"
+            raise RuntimeError(msg)
+        return real_derive(features)
+
+    with patch.object(analysis_mod, "derive_mood", _fail_second_call):
+        result = analyze_file("/fake/audio.mp3", "/fake/models")
+
+    # 4 natural coarse windows, 1 dropped at assembly -> 3 analyzed, and the file still succeeds.
+    assert result["coarse_windows_total"] == 4
+    assert result["coarse_windows_analyzed"] == 3
+    assert [w["window_index"] for w in _coarse_dicts(result)] == [0, 2, 3]
+    # The fine tier is untouched by a coarse-side failure.
+    assert result["fine_windows_analyzed"] == 20

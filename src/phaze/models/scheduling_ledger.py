@@ -26,9 +26,14 @@ Columns:
   - ``timeout``    : nullable SAQ Job ``timeout`` (seconds) captured at enqueue time so recovery
                      replays the SAME bound. NULL means "the producer did not set an explicit
                      timeout" -- replay omits it and the queue's ``before_enqueue`` default applies.
-                     Critical for ``process_file`` (analyze): its 7200s outer net must survive a
-                     replay, else a recovered long concert set falls back to the 600s default and
-                     times out (the gap behind the recover-button timeout-loss bug).
+                     Mattered most for ``process_file`` (analyze), whose outer net had to survive a
+                     replay or a recovered long concert set fell back to the 600s default and timed
+                     out (the gap behind the recover-button timeout-loss bug). Since phaze-w55w1
+                     ``process_file`` carries no wall clock at all (``timeout=0`` + a progress
+                     ``heartbeat``, ADR-0007 §7) and its policy is PINNED by
+                     ``apply_project_job_defaults`` on every enqueue, so its correctness no longer
+                     rests on this column. NOTE: ``heartbeat`` is deliberately NOT a column here --
+                     the pin is what supplies it on replay.
   - ``retries``    : nullable SAQ Job ``retries`` budget, captured + replayed for the same reason
                      (``process_file`` pins retries=2 to kill the long-file re-analysis churn).
   - ``redrive_attempt`` : nullable bounded re-drive counter for the ``push_file:<id>`` (push mismatch)

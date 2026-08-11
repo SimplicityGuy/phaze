@@ -414,17 +414,31 @@ phaze is developed against a real personal music archive on real hardware. Inves
 Architecture not yet mapped. Follow existing patterns found in the codebase.
 <!-- GSD:architecture-end -->
 
-### Windowed analysis is being removed — caps are decided-for-removal, not yet gone
+### Analysis is exhaustive, chunk-bounded, and killed only by lack of progress
 
-`analyze_file` **today** still bounds per-file cost with a fine/coarse window cap
-(`analysis_fine_cap` / `analysis_coarse_cap` in `config.py`) rather than analyzing every window
-of every file, engaging only on long files (concert sets / live recordings past ~30–90 minutes).
-The operator reviewed the rationale and **decided (2026-08-11) to remove the caps entirely** —
-every file will get full fine+coarse analysis, and the `deepen` re-analysis path
-(`routers/pipeline.py`) becomes redundant and is being removed with it. That rework (chunked
-bounded-memory passes, raised/removed analysis timeouts, and deletion of the sampling machinery)
-is a separate, not-yet-landed implementation bead. See `docs/design/0007-windowed-analysis.md`
-for the full rationale, cost analysis, and the recorded decision/implementation scope.
+`analyze_file` analyzes **every natural fine and coarse window of every file**, whatever its
+length. There is no window cap, no even stride, no `sampled` flag, and no `deepen` path — all
+removed by `phaze-w55w1`. Two invariants replace what the caps used to provide, and both are
+easy to break by accident:
+
+- **Memory is bounded by the CHUNK, not by the file.** Each tier decodes and analyzes 60 (fine)
+  / 30 (coarse) windows at a time, so peak PCM stays ~317 MB / ~345 MB regardless of duration.
+  Do not "simplify" either pass back into a single whole-tier decode: on a 12-hour set that is
+  ~7.3 GiB and a cgroup OOMKill. The chunk sizes are the old cap values on purpose, so
+  ADR-0005's memory limits still hold.
+- **Nothing is killed for running long.** A multi-hour concert set is expected to take hours.
+  Liveness is progress-based (`analysis_stall_timeout_sec`, default 1800 s of *silence*): the
+  child heartbeats window completions, chunk decodes and model sweeps, and only total silence
+  kills it. The SAQ `process_file` job runs `timeout=0` + a SAQ `heartbeat`. **Never add a
+  wall-clock bound on any lane** — `phaze-1b39` is the incident where one SIGTERM'd legitimate
+  2–6 hour analyses and stalled the whole burst lane.
+
+The decision records live with the code: **D-07** (chunking) in `services/analysis.py` and
+**D-08** (stall liveness) in `services/analysis_exec.py`.
+`docs/design/0007-windowed-analysis.md` has the full rationale and cost analysis (§7 the
+operator decision, §8 what shipped); `docs/essentia-analysis.md` has the operational view.
+**Still owed:** a real peak-RSS / wall-clock measurement on a genuine multi-hour file — the
+current bounded-memory proof is synthetic (ADR-0007 §8).
 
 ## Beadhive Workflow Enforcement
 

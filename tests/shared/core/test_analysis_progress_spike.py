@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 
 
 # Canonical "uninterrupted control" payload: the known-good final analysis a
-# clean run produces. Five fine windows fully analyzed (sampled=False), plus the
+# clean run produces. Five fine windows fully analyzed (analyzed == total), plus the
 # representative aggregates. The re-run after a crash must land byte-identical.
 _CONTROL_PAYLOAD: dict = {
     "bpm": 128.0,
@@ -61,7 +61,6 @@ _CONTROL_PAYLOAD: dict = {
     "fine_windows_total": 5,
     "coarse_windows_analyzed": 2,
     "coarse_windows_total": 2,
-    "sampled": False,
     "windows": [
         {"tier": "fine", "window_index": 0, "start_sec": 0.0, "end_sec": 30.0, "bpm": 128.0, "musical_key": "C minor"},
         {"tier": "fine", "window_index": 1, "start_sec": 30.0, "end_sec": 60.0, "bpm": 127.0, "musical_key": "C minor"},
@@ -126,7 +125,6 @@ async def _analysis_aggregates(session: AsyncSession, file_id: uuid.UUID) -> tup
         row.fine_windows_total,
         row.coarse_windows_analyzed,
         row.coarse_windows_total,
-        row.sampled,
     )
 
 
@@ -176,7 +174,6 @@ async def test_idempotent_crash_midrun_rerun_matches_control(seed_test_agent: tu
             bpm=None,
             fine_windows_analyzed=3,
             fine_windows_total=10,
-            sampled=True,
         )
     )
     for idx in range(3):
@@ -199,10 +196,10 @@ async def test_idempotent_crash_midrun_rerun_matches_control(seed_test_agent: tu
 
     # (a) aggregates identical to the uninterrupted control run.
     assert await _analysis_aggregates(session, crashed_id) == await _analysis_aggregates(session, control_id)
-    # The partial-row markers were overwritten (NULL bpm -> control bpm; sampled True -> False).
+    # The partial-row markers were overwritten (NULL bpm -> control bpm; 3/10 -> the control's 5/5).
     crashed_aggs = await _analysis_aggregates(session, crashed_id)
     assert crashed_aggs[0] == 128.0  # bpm
-    assert crashed_aggs[8] is False  # sampled
+    assert crashed_aggs[4:6] == (5, 5)  # fine analyzed/total: the stale partial counts are gone
 
     # (b) window set identical to control, by (tier, window_index); no dup, no orphan.
     control_keys = await _window_keys(session, control_id)

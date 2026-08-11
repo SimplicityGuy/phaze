@@ -789,7 +789,7 @@ def seed_file_with_windows(session: AsyncSession, make_file):  # type: ignore[no
     """Return an async factory seeding a file + its ``AnalysisResult`` + fine/coarse ``AnalysisWindow`` rows.
 
     Backs the record timeline (RECORD-01): the aggregate carries bpm/musical_key with
-    ``sampled=True`` and non-NULL fine/coarse window counts; the per-window rows span
+    non-NULL fine/coarse window counts; the per-window rows span
     ``tier="fine"`` (bpm/musical_key populated) and ``tier="coarse"`` (mood/style populated)
     with distinct ``window_index`` so a timeline read has ordered, tiered data.
     """
@@ -808,7 +808,6 @@ def seed_file_with_windows(session: AsyncSession, make_file):  # type: ignore[no
             musical_key="Am",
             mood="energetic",
             style="techno",
-            sampled=True,
             fine_windows_analyzed=fine_count,
             fine_windows_total=fine_count,
             coarse_windows_analyzed=coarse_count,

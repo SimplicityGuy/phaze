@@ -17,14 +17,23 @@ channel stays machine-clean. This closes the capture/routing TODO the in-process
 
 Protocol — one JSON object per line on the saved protocol channel:
 
-    {"type": "progress", "analyzed": N, "total": M}   per fine-window bump
-    {"type": "result", "result": {...}}               terminal success line → exit 0
-    {"type": "error", "message": "..."}               terminal failure line → exit 1
+    {"type": "progress", "analyzed": N, "total": M}          per fine-window bump
+    {"type": "heartbeat", "stage": S, "done": N, "total": M} per liveness tick
+    {"type": "result", "result": {...}}                      terminal success line → exit 0
+    {"type": "error", "message": "..."}                      terminal failure line → exit 1
 
 The ``result`` value is the ``analyze_file`` dict verbatim (representative
-aggregates + ``windows`` + the five-field coverage contract). It already crosses
+aggregates + ``windows`` + the four progress counts). It already crosses
 HTTP JSON to the control plane today, so the protocol's JSON round-trip introduces
 no representation change (byte-identical windowed output — success criterion 4).
+
+``heartbeat`` is the LIVENESS line (phaze-w55w1). It is deliberately a SECOND line type
+rather than a widening of ``progress``: ``progress`` is the UI bar's channel and is
+fine-tier-only by design (WORK-04), while liveness must also cover the coarse pass, the
+per-chunk decodes, and the model sweeps — every stage of an exhaustive analysis that can
+run for many minutes without completing a fine window. The parent resets its stall
+watchdog on either line and forwards only ``progress`` to the bar, so the two channels
+stay independent and neither has to lie for the other.
 
 IMPORT-BOUNDARY INVARIANT (D-25 family, enforced by tests/shared/core/test_task_split.py):
 module load MUST NOT import essentia (the wheel is platform-gated in pyproject.toml)
@@ -69,8 +78,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--fine-window-sec", type=int, default=None)
     parser.add_argument("--coarse-window-sec", type=int, default=None)
     parser.add_argument("--fine-min-sec", type=int, default=None)
-    parser.add_argument("--fine-cap", type=int, default=None)
-    parser.add_argument("--coarse-cap", type=int, default=None)
     return parser.parse_args(argv)
 
 
@@ -131,8 +138,11 @@ def run(args: argparse.Namespace, protocol: IO[str]) -> int:
         def _progress(analyzed: int, total: int) -> None:
             _emit(protocol, {"type": "progress", "analyzed": analyzed, "total": total})
 
-        kwargs: dict[str, Any] = {"progress_cb": _progress}
-        for name in ("fine_window_sec", "coarse_window_sec", "fine_min_sec", "fine_cap", "coarse_cap"):
+        def _heartbeat(stage: str, done: int, total: int) -> None:
+            _emit(protocol, {"type": "heartbeat", "stage": stage, "done": done, "total": total})
+
+        kwargs: dict[str, Any] = {"progress_cb": _progress, "heartbeat_cb": _heartbeat}
+        for name in ("fine_window_sec", "coarse_window_sec", "fine_min_sec"):
             value = getattr(args, name)
             if value is not None:
                 kwargs[name] = value

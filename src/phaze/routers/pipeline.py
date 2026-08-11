@@ -38,7 +38,6 @@ from phaze.models.stage_skip import StageSkip
 from phaze.models.tracklist import Tracklist
 from phaze.routers.column_sort import SortableColumn, SortContract
 from phaze.routers.pipeline_scans import build_recent_scans
-from phaze.routers.request_guards import MALFORMED_PAYLOAD_STATUS
 from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, RENDERABLE_ALERT_STATUS, wants_fragment
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
 from phaze.services import enqueue_router
@@ -435,7 +434,8 @@ async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: 
     Delegates each enqueue to the FastAPI-free shared producer
     ``services.analysis_enqueue.enqueue_process_file``. That helper owns the
     deterministic job key (``process_file:<file_id>``), the complete 5-field
-    ``ProcessFilePayload``, and the job policy (``timeout=7200`` / ``retries=2``)
+    ``ProcessFilePayload``, and the job policy (``timeout=0`` + a progress ``heartbeat``,
+    ``retries=2``)
     -- so this dashboard path and the Wave-2 agent-reboot re-enqueue path cannot
     drift: both emit the IDENTICAL key, letting SAQ's per-queue deterministic-key
     dedup collapse a repeat enqueue of an in-flight file to a no-op (32-RESEARCH §Q4).
@@ -1652,9 +1652,10 @@ async def trigger_backfill_cloud(
 
     # phaze-l1km: the candidate query keys on "a process_file:<id> ledger row EXISTS", which is TRUE
     # both for an orphaned row (a timed-out job -- the set this backfill re-drives) AND for the LIVE
-    # in-flight marker of a still-running deepen. deepen_analysis re-enqueues process_file WITHOUT
-    # clearing failed_at (unlike retry_analysis_failed), so a long ANALYSIS_FAILED file with a deepen
-    # grinding for hours satisfies every candidate conjunct. Deleting its ledger row + holding it for
+    # in-flight marker of a still-running re-analysis. A producer that re-enqueues process_file
+    # WITHOUT clearing failed_at (the removed deepen path did this; a recovery replay can too) leaves
+    # a long ANALYSIS_FAILED file whose live job grinds for hours satisfying every candidate conjunct
+    # -- and exhaustive analysis makes "grinds for hours" the normal case, not the rare one. Deleting its ledger row + holding it for
     # the cloud drain would DOUBLE-DISPATCH the same file to local + cloud and orphan the live local
     # job from queue-loss recovery. Skip any candidate whose deterministic process_file key is LIVE
     # (queued/active) in saq_jobs -- the same liveness signal recovery's ledger-minus-live-keys set
@@ -1669,7 +1670,7 @@ async def trigger_backfill_cloud(
                 "backfill_cloud: skipped files with a LIVE process_file job (phaze-l1km double-dispatch guard)",
                 skipped=[str(file.id) for file in skipped],
             )
-    # The response count reflects the files actually acted on (live-deepen files were excluded above).
+    # The response count reflects the files actually acted on (live-job files were excluded above).
     count = len(candidates)
     if count == 0:
         return templates.TemplateResponse(
@@ -1711,8 +1712,8 @@ async def trigger_backfill_cloud(
         )
         # phaze-g31m: CAS the ledger DELETE on the ``enqueued_at`` THIS transaction observes right here,
         # not a bare key-membership DELETE. The live_keys snapshot above is a lock-free read taken before
-        # this point, so a concurrent process_file enqueue (deepen_analysis / retry_analysis_failed's
-        # background loop) for one of these EXACT candidates can land in the gap between that snapshot
+        # this point, so a concurrent process_file enqueue (retry_analysis_failed's background loop,
+        # a recovery replay) for one of these EXACT candidates can land in the gap between that snapshot
         # and this statement (each such gap is a single DB round trip wide). ``upsert_ledger_entry`` --
         # the SAQ before_enqueue write hook every process_file producer shares -- refreshes
         # ``enqueued_at`` on EVERY re-enqueue of a still-existing key, including that race. Conditioning
@@ -1777,11 +1778,12 @@ async def retry_analysis_failed(
     analyze-DONE (:func:`phaze.tasks.reenqueue._select_done_analyze_ids`), so a genuinely
     un-analyzable file is never auto-looped. This endpoint is that invariant's deliberate,
     operator-gated counterpart: it re-drives EVERY ANALYSIS_FAILED file through the SAME guarded
-    funnel :func:`deepen_analysis` uses -- per-agent routing -> ``NoActiveAgentError`` guard ->
+    funnel every other producer uses -- per-agent routing -> ``NoActiveAgentError`` guard ->
     :func:`enqueue_process_file` (COMPLETE ``ProcessFilePayload`` + deterministic
-    ``process_file:<id>`` key) -- but with NORMAL caps: a retry is a fresh re-analysis, NOT a
-    deepen, so ``fine_cap`` / ``coarse_cap`` are left at their None default (the standard 60/30
-    window budget), not the deepen sentinel 0.
+    ``process_file:<id>`` key). There is nothing per-job left to vary: since phaze-w55w1 every
+    ``process_file`` analyzes every window of its file, so a retry and a first run are the same
+    job (the Phase 44 ``fine_cap`` / ``coarse_cap`` levers and the deepen path they served are
+    gone -- ADR-0007 §7).
 
     Ordering follows the Phase-30 / RESEARCH-Pitfall-3 guards:
     - Resolve the per-agent queue ONCE. ``process_file`` is an AGENT_TASK; if no agent is online
@@ -1866,7 +1868,6 @@ async def retry_analysis_failed(
     # response returns immediately and the enqueue loop keeps running to completion regardless of
     # what the client/proxy does with the connection.
     #
-    # NORMAL caps: NO fine_cap/coarse_cap override -- a retry is a fresh re-analysis, not a deepen.
     # The single funnel (_enqueue_analysis_jobs -> enqueue_process_file) guarantees the full payload
     # + deterministic dedup key. phaze-4ter: routed through `_retry_analysis_group`, which contains
     # per-file enqueue failures and restores `failed_at` for any file that never got a replacement
@@ -2045,7 +2046,6 @@ async def retry_analysis_failed_file(
     # twin's restore (`_retry_analysis_group`): re-stamp the marker on a failed enqueue and tell the
     # operator honestly instead of a dropped htmx 500.
     try:
-        # NORMAL caps: a retry is a fresh re-analysis, not a deepen -- no fine_cap/coarse_cap override.
         job = await enqueue_process_file(routed.queue, file, agent_id, settings.models_path)
     except Exception:
         logger.exception("retry_analysis_failed_file: failed to enqueue process_file job", file_id=str(file_id))
@@ -2066,10 +2066,10 @@ async def retry_analysis_failed_file(
         # but per classify_process_file_collision (services.analysis_enqueue) a key held by a DEAD
         # job (aborting/failed/aborted, or a stuck active row) blocks the enqueue FOREVER: nothing
         # was scheduled and nothing ever will be until the aborting-reaper clears the key. Every
-        # other process_file producer classifies this (deepen_analysis phaze-ewen/phaze-qim6c,
-        # _enqueue_analysis_jobs phaze-ewen/phaze-p2qvv) -- this endpoint was the one gap, silently
-        # reporting success on a marker that was already cleared+committed above. Mirror
-        # deepen_analysis: classify before claiming success, and degrade a raising probe (the
+        # other process_file producer classifies this (_enqueue_analysis_jobs
+        # phaze-ewen/phaze-p2qvv) -- this endpoint was the one gap, silently
+        # reporting success on a marker that was already cleared+committed above. So:
+        # classify before claiming success, and degrade a raising probe (the
         # lookup is itself a Postgres-backed SAQ call and can fail transiently) to "in_flight"
         # (benign) rather than letting a diagnostic-only lookup crash this interactive endpoint.
         try:
@@ -2552,233 +2552,6 @@ async def eligibility_trace(
         logger.warning("eligibility_trace degraded", file_id=str(file_id), stage=stage, exc_info=True)
         context["unavailable"] = True
     return templates.TemplateResponse(request=request, name="pipeline/partials/_eligibility_trace.html", context=context)
-
-
-@router.post("/pipeline/files/{file_id}/deepen", response_class=HTMLResponse)
-async def deepen_analysis(
-    request: Request,
-    file_id: uuid.UUID,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """HTMX endpoint: re-analyze ONE sampled file at the full (unbounded) window budget.
-
-    Phase 43 strides long files to bound per-file cost, leaving a "sampled" result. This
-    "deepen analysis" re-trigger re-enqueues that single file's ``process_file`` job with
-    ``fine_cap=0`` / ``coarse_cap=0`` -- the sentinel that ``analysis._stride_to_cap`` treats
-    as the analyze-ALL-windows no-op (D-04) -- so the operator gets a full re-analysis on
-    demand.
-
-    Incident guards (D-05, MANDATORY):
-    - Routing: the queue is resolved via ``enqueue_router.resolve_queue_for_task`` so the job
-      lands on the per-agent ``process_file`` queue, NEVER the consumer-less default queue
-      (Phase-30 misrouting incident). ``process_file`` is an AGENT_TASK; if no agent is online
-      ``NoActiveAgentError`` is caught and the endpoint returns a fragment WITHOUT enqueuing --
-      it never falls through to the default queue.
-    - Payload: the re-enqueue funnels through ``enqueue_process_file`` which builds the COMPLETE
-      ``ProcessFilePayload`` (v4.0.8 truncation incident -- a ``file_id``-only payload would
-      dead-letter under ``extra="forbid"``).
-    - Dedup: ``enqueue_process_file`` uses the deterministic ``process_file:<file_id>`` key, so a
-      re-deepen of a file with a live in-flight job dedups to a no-op (D-05); re-deepening an
-      already-ANALYZED file with no live job is a fresh enqueue.
-    - Collision classification (phaze-ewen): a ``None`` return is NOT unconditionally "already in
-      flight". SAQ's ``_enqueue`` upsert only overwrites a conflicting key whose status is in
-      ``('aborted', 'complete', 'failed')`` -- a dead ``aborting``/``failed``/``aborted`` row, or a
-      claimed-but-worker-dead ``active`` row past its timeout, holds the key forever without ever
-      processing the file. ``classify_process_file_collision`` (``services.analysis_enqueue``)
-      distinguishes the two so a BLOCKED collision renders an honest terminal fragment (and is
-      logged) instead of the unconditional "Queued — starting deepen…" + an eternal 2s poll that
-      will never see a matching ``analysis_completed_at``/``failed_at`` (the file's frozen
-      sampled-run counters never satisfy ``deepen_progress``'s non-terminal branches either).
-
-    The typed ``uuid.UUID`` path param yields a 422 on a malformed id; an unknown (well-formed)
-    id resolves to ``None`` and returns a not-found fragment -- never a raw 500 (T-44-10).
-    """
-    # quick-260707-cvz: capture the click epoch BEFORE the enqueue so the poll's completion
-    # predicate (analysis_completed_at > requested_at) only trips on a re-run stamped AFTER
-    # this click -- a stale pre-click sampled result never shows as "complete".
-    since = datetime.now(UTC).timestamp()
-
-    result = await session.execute(select(FileRecord).where(FileRecord.id == file_id))
-    file = result.scalar_one_or_none()
-
-    not_found = file is None
-    no_active_agent = False
-    already_in_flight = False
-    blocked = False
-
-    if file is not None:
-        try:
-            # phaze-c9w9: route to the FILE's owning agent, never the most-recently-seen fileserver.
-            routed = await enqueue_router.resolve_queue_for_task("process_file", request.app.state, session, agent_id=file.agent_id)
-        except enqueue_router.NoActiveAgentError:
-            # Do NOT fall through to the default queue (Phase-30 guard) -- surface gracefully.
-            no_active_agent = True
-        else:
-            # process_file is an AGENT_TASK -- resolve always returns a non-None agent_id;
-            # cast narrows str | None -> str for ProcessFilePayload.agent_id.
-            agent_id = cast("str", routed.agent_id)
-            # fine_cap=0 / coarse_cap=0 -> _stride_to_cap no-op -> analyze ALL windows (unbounded
-            # deepen, D-04). The single funnel guarantees the full payload + deterministic key.
-            job = await enqueue_process_file(routed.queue, file, agent_id, settings.models_path, fine_cap=0, coarse_cap=0)
-            if job is None:
-                # Deterministic-key collision -- classify it rather than assuming "in flight"
-                # (phaze-ewen). A dead job holding the key means this deepen was silently dropped.
-                try:
-                    existing = await routed.queue.job(process_file_job_key(file.id))
-                    collision = classify_process_file_collision(existing)
-                except Exception:
-                    # phaze-qim6c: the lookup itself (a Postgres pool query via SAQ's
-                    # PostgresQueue) can raise transiently -- a broker/pool hiccup must NOT
-                    # escape this interactive endpoint as a raw 500; the docstring above
-                    # promises T-44-10 ("never a raw 500") for exactly this collision path.
-                    # Degrade the same way classify_process_file_collision already treats an
-                    # unlookupable job (``job is None`` -> "in_flight", benign rather than
-                    # crying wolf) instead of leaving the exception to propagate.
-                    logger.warning(
-                        "deepen_analysis: collision lookup failed -- degrading to already-in-flight",
-                        file_id=str(file.id),
-                        key=process_file_job_key(file.id),
-                        exc_info=True,
-                    )
-                    collision = "in_flight"
-                if collision == "blocked":
-                    blocked = True
-                    logger.warning(
-                        "deepen_analysis: deterministic key held by a dead job -- deepen dropped",
-                        file_id=str(file.id),
-                        key=process_file_job_key(file.id),
-                    )
-                else:
-                    already_in_flight = True
-
-    return templates.TemplateResponse(
-        request=request,
-        name="pipeline/partials/deepen_response.html",
-        context={
-            "request": request,
-            "not_found": not_found,
-            "no_active_agent": no_active_agent,
-            "already_in_flight": already_in_flight,
-            "blocked": blocked,
-            # Consumed ONLY by the success/already-in-flight branches' bootstrap poller
-            # (guards/branches above are unchanged). since is a numeric float threaded into the
-            # poll URL.
-            "file_id": file_id,
-            "since": since,
-        },
-    )
-
-
-@router.get("/pipeline/files/{file_id}/deepen-progress", response_class=HTMLResponse)
-async def deepen_progress(
-    request: Request,
-    file_id: uuid.UUID,
-    since: float,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """HTMX poll target for the "Deepen analysis" progress surface (quick-260707-cvz).
-
-    ``since`` is the deepen-click epoch (seconds, float) threaded through the poll URL. It is a
-    typed query param -- FastAPI 422s a non-numeric value (T-cvz-01) and it is used ONLY in a
-    datetime compare, never rendered raw. The rendered counts are numeric ints (None-guarded to
-    0), never essentia strings (T-cvz-02). An unknown file_id returns a benign "gone" fragment,
-    never a 500 (T-cvz-04).
-
-    phaze-zut8: being a valid ``float`` does not make ``since`` a valid Unix timestamp -- NaN,
-    +/-infinity, and magnitudes beyond ``datetime``'s year range all raise ``ValueError`` /
-    ``OverflowError`` out of ``datetime.fromtimestamp``. Per request_guards.py contract rule 1
-    this is an ENVELOPE failure (a single scalar, nothing partial to do), so it is rejected with
-    ``422`` rather than escaping as the 500 this docstring's "never a 500" promise forbids.
-
-    COMPLETION PREDICATE (timestamp-gated): a re-run is complete only when ``put_analysis`` has
-    stamped ``analysis_completed_at`` AFTER this click (``> requested_at``). A stale pre-click
-    sampled result has ``completed_at <= requested_at`` and is NOT complete -- killing the
-    misleading-complete edge. ``post_analysis_progress`` is counter-only and never touches
-    ``analysis_completed_at``, so a re-deepen of an already-ANALYZED file keeps its OLD
-    completed_at until the fresh ``put_analysis`` lands.
-
-    FAILURE PREDICATE (phaze-l9nc, timestamp-gated, mirrors the completion predicate): a re-run
-    is failed only when ``report_analysis_failed`` has stamped ``failed_at`` AFTER this click
-    (``> requested_at``). Without this, a deepen that fails leaves the frozen fine_windows
-    counters (fine_done < fine_total) satisfying ``running`` forever -- the fragment never
-    reaches a terminal branch and polls every 2s for the life of the tab. A stale pre-click
-    ``failed_at`` (from an unrelated earlier failure) is NOT this re-run's failure and must not
-    short-circuit an in-flight retry.
-
-    State machine (evaluated in order): malformed ``since`` -> 422 (terminal, no query run);
-    missing file -> gone (terminal); failed predicate -> failed (terminal); complete predicate ->
-    complete (terminal); fine_total truthy AND fine_done < fine_total -> running (poll);
-    otherwise -> queued/starting (poll).
-    """
-    try:
-        requested_at = datetime.fromtimestamp(since, tz=UTC)
-    except (ValueError, OverflowError) as exc:
-        raise HTTPException(
-            status_code=MALFORMED_PAYLOAD_STATUS,
-            detail=f"since is not a valid timestamp: {exc}",
-        ) from exc
-
-    file_result = await session.execute(select(FileRecord).where(FileRecord.id == file_id))
-    file = file_result.scalar_one_or_none()
-
-    if file is None:
-        return templates.TemplateResponse(
-            request=request,
-            name="pipeline/partials/deepen_progress.html",
-            context={
-                "request": request,
-                "gone": True,
-                "failed": False,
-                "complete": False,
-                "running": False,
-                "fine_done": 0,
-                "fine_total": 0,
-                "file_id": file_id,
-                "since": since,
-            },
-        )
-
-    analysis_result = await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))
-    analysis = analysis_result.scalar_one_or_none()
-
-    # phaze-l9nc: read failed_at (never checked before this fix) so a deepen that terminally
-    # fails halts the poller instead of looping the running/queued branches forever. Gated on
-    # `> requested_at` for the same reason `complete` is: a stale pre-click failed_at (an
-    # unrelated earlier failure on this file, since cleared by a successful re-analysis or still
-    # pending a fresh retry) must not be read as THIS click's outcome.
-    #
-    # Known interaction (noted, not fixed here -- out of scope, phaze-ts1d owns agent_analysis.py):
-    # report_analysis_failed's CAS guard (`WHERE analysis_completed_at IS NULL`) makes the failure
-    # stamp a no-op whenever the deepen target already has a completed analysis -- exactly the
-    # common "sampled" case the Deepen button is offered on. In that case failed_at is never set
-    # for this re-run, `failed` stays False, and the fragment falls through to `running`/`queued`
-    # on the frozen fine_windows counters. This predicate still correctly halts the poller for
-    # every case where failed_at IS stamped (e.g. a deepen on a file with no prior completed
-    # analysis); it does not regress or worsen the CAS-guarded case, which was already unable to
-    # reach `complete` either.
-    failed = analysis is not None and analysis.failed_at is not None and analysis.failed_at > requested_at
-
-    complete = (not failed) and analysis is not None and analysis.analysis_completed_at is not None and analysis.analysis_completed_at > requested_at
-
-    fine_done = (analysis.fine_windows_analyzed or 0) if analysis is not None else 0
-    fine_total = (analysis.fine_windows_total or 0) if analysis is not None else 0
-    running = (not failed) and (not complete) and fine_total > 0 and fine_done < fine_total
-
-    return templates.TemplateResponse(
-        request=request,
-        name="pipeline/partials/deepen_progress.html",
-        context={
-            "request": request,
-            "gone": False,
-            "failed": failed,
-            "complete": complete,
-            "running": running,
-            "fine_done": fine_done,
-            "fine_total": fine_total,
-            "file_id": file_id,
-            "since": since,
-        },
-    )
 
 
 @router.post("/pipeline/proposals", response_class=HTMLResponse)

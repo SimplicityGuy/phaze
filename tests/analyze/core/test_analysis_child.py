@@ -51,12 +51,13 @@ def test_run_emits_progress_then_result(monkeypatch: pytest.MonkeyPatch) -> None
     assert [(ln["analyzed"], ln["total"]) for ln in progress] == [(0, 3), (1, 3), (2, 3), (3, 3)]
     assert lines[-1]["type"] == "result"
     result = lines[-1]["result"]
-    # The five-field coverage contract crosses the protocol intact.
+    # The four progress counts cross the protocol intact; the fifth (`sampled`) is gone
+    # with the window caps (phaze-w55w1) and must not reappear.
     assert result["fine_windows_analyzed"] == 3
     assert result["fine_windows_total"] == 3
     assert result["coarse_windows_analyzed"] == 1
     assert result["coarse_windows_total"] == 1
-    assert result["sampled"] is False
+    assert "sampled" not in result
 
 
 def test_run_passes_only_provided_windowing_flags(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -64,17 +65,16 @@ def test_run_passes_only_provided_windowing_flags(monkeypatch: pytest.MonkeyPatc
     rc, lines = _run_child(
         monkeypatch,
         f"{_STUBS}:fake_analyze",
-        ["/fake/audio.mp3", "--models-dir", "/fake/models", "--fine-cap", "7", "--coarse-window-sec", "120"],
+        ["/fake/audio.mp3", "--models-dir", "/fake/models", "--fine-min-sec", "7", "--coarse-window-sec", "120"],
     )
 
     assert rc == 0
     echo = lines[-1]["result"]["echo"]
     assert echo["file_path"] == "/fake/audio.mp3"
     assert echo["models_dir"] == "/fake/models"
-    assert echo["fine_cap"] == 7
+    assert echo["fine_min_sec"] == 7
     assert echo["coarse_window_sec"] == 120
-    for absent in ("fine_window_sec", "fine_min_sec", "coarse_cap"):
-        assert absent not in echo
+    assert "fine_window_sec" not in echo
 
 
 def test_run_error_path_emits_error_line_and_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -90,17 +90,20 @@ async def test_before_enqueue_preserves_explicit_overrides(monkeypatch: pytest.M
 
 
 # ----------------------------------------------------------------------
-# Behaviour 2b (phaze-plpnf): per-function policy floor -- process_file can never
-# land on the generic role default (600s/4 retries), regardless of producer or
-# replay path.
+# Behaviour 2b (phaze-plpnf, re-shaped by phaze-w55w1): per-function job policy -- process_file
+# can never land on the generic role default (600s/4 retries), regardless of producer or replay
+# path. Its policy is now `timeout=0` (SAQ's "disabled") plus a progress heartbeat, so the
+# timeout half is enforced as a PIN rather than a floor: 0 is below every value a floor could
+# raise from, and a floor would silently leave a replayed job on the 600s role default -- the
+# very defect this registry exists to prevent.
 # ----------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_process_file_floor_overrides_role_default_even_when_role_default_is_weaker(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A ``process_file`` Job with NO explicit policy must land on 7200s/retries=2, never the
+async def test_process_file_policy_overrides_role_default_even_when_role_default_is_weaker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``process_file`` Job with NO explicit policy must land on timeout=0/retries=2, never the
     role default -- even when the role default (as configured in production, 2026-08-11) is
-    600s/4 retries, i.e. BOTH weaker (shorter timeout) and more retry-happy than the pinned
+    600s/4 retries, i.e. BOTH wrong (a wall clock at all) and more retry-happy than the pinned
     policy. This is exactly the replay-with-NULL-bounds shape (``reenqueue._replay_row`` omits
     ``timeout``/``retries`` entirely for a legacy ledger row with NULL captured bounds), reproduced
     at the hook level: a bare ``Job(function="process_file")`` starts at the SAQ defaults
@@ -118,16 +121,16 @@ async def test_process_file_floor_overrides_role_default_even_when_role_default_
 
     await apply_project_job_defaults(job)
 
-    assert job.timeout == 7200, f"process_file must never run under its 7200s floor: got {job.timeout}"
+    assert job.timeout == 0, f"process_file must never carry a wall-clock timeout: got {job.timeout}"
     assert job.retries == 2, f"process_file must never run over its retries=2 policy: got {job.retries}"
 
 
 @pytest.mark.asyncio
-async def test_process_file_floor_is_a_noop_for_the_pinned_producer_policy(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A ``process_file`` Job already at its pinned policy (7200s/retries=2 -- what
+async def test_process_file_policy_is_a_noop_for_the_pinned_producer_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``process_file`` Job already at its pinned policy (timeout=0/retries=2 -- what
     ``services.analysis_enqueue.enqueue_process_file``, the sole current producer, always sets)
-    must be left byte-identical by the floor. The floor is a MINIMUM/MAXIMUM guard, not a
-    reset-to-policy: it must never re-clobber a value that is already at least as protective.
+    must be left byte-identical by the hook, and in particular the hook's generic "fill a job
+    still at a default" step must not treat 0 as a value in need of helping (phaze-w55w1).
     """
     fake_cfg = MagicMock(
         worker_job_timeout=600,
@@ -136,19 +139,21 @@ async def test_process_file_floor_is_a_noop_for_the_pinned_producer_policy(monke
     )
     monkeypatch.setattr("phaze.config.get_settings", lambda: fake_cfg)
 
-    job = Job(function="process_file", timeout=7200, retries=2)
+    job = Job(function="process_file", timeout=0, retries=2)
 
     await apply_project_job_defaults(job)
 
-    assert job.timeout == 7200
+    assert job.timeout == 0
     assert job.retries == 2
 
 
 @pytest.mark.asyncio
-async def test_process_file_floor_raises_a_shorter_explicit_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A ``process_file`` Job explicitly enqueued with a SHORTER-than-policy timeout (e.g. a
-    stray call site, or a replay that captured a stale pre-policy bound) must still be raised to
-    the 7200s floor -- the floor is unconditional, not gated on "still at a default".
+async def test_process_file_policy_pins_over_any_explicit_wall_clock_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``process_file`` Job explicitly enqueued with ANY wall-clock timeout -- a stray call
+    site, or a replay of a ledger row that captured the pre-phaze-w55w1 7200s bound -- is pinned
+    back to 0. This is the load-bearing direction now: those 7200s rows really are on disk, and
+    replaying one at its captured bound would kill a progressing multi-hour analysis at 2h, the
+    exact outcome ADR-0007 §7 removed.
     """
     fake_cfg = MagicMock(
         worker_job_timeout=600,
@@ -157,17 +162,17 @@ async def test_process_file_floor_raises_a_shorter_explicit_timeout(monkeypatch:
     )
     monkeypatch.setattr("phaze.config.get_settings", lambda: fake_cfg)
 
-    job = Job(function="process_file", timeout=120, retries=3)
+    job = Job(function="process_file", timeout=7200, retries=3)
 
     await apply_project_job_defaults(job)
 
-    assert job.timeout == 7200
+    assert job.timeout == 0
     assert job.retries == 2
 
 
 @pytest.mark.asyncio
-async def test_policy_floor_does_not_apply_to_other_functions(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The per-function floor must not leak onto functions absent from the registry -- the
+async def test_policy_pin_does_not_apply_to_other_functions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The per-function policy must not leak onto functions absent from the registry -- the
     generic "still at SAQ default" contract for every OTHER function is unchanged."""
     fake_cfg = MagicMock(
         worker_job_timeout=600,
@@ -259,3 +264,49 @@ def test_agent_worker_settings_construct_real_worker(monkeypatch: pytest.MonkeyP
     assert worker.before_process == [enforce_stage_pause_on_process]
     assert worker.after_process is not None
     assert worker.after_process[0] is repark_if_stage_paused
+
+
+@pytest.mark.asyncio
+async def test_process_file_heartbeat_is_pinned_even_when_the_job_carries_a_stale_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The heartbeat is PINNED, not filled-if-absent (phaze-w55w1).
+
+    A replayed row can carry a stale heartbeat from an older deployment's configuration just as
+    easily as none at all, and both must land on the CURRENT policy -- otherwise an operator who
+    raises the stall threshold leaves old rows supervised on the old, now-too-tight deadline.
+    """
+    fake_cfg = MagicMock(
+        worker_job_timeout=600,
+        worker_max_retries=4,
+        worker_keep_result=3600,
+        analysis_job_heartbeat_sec=3600,
+    )
+    monkeypatch.setattr("phaze.config.get_settings", lambda: fake_cfg)
+
+    job = Job(function="process_file", timeout=0, retries=2, heartbeat=120)
+
+    await apply_project_job_defaults(job)
+
+    assert job.heartbeat == 3600
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_pin_does_not_leak_onto_other_functions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only functions in the heartbeat registry are pinned; everything else keeps SAQ's default 0.
+
+    Other jobs carry a real wall-clock `timeout`, so `Job.stuck` already works for them and an
+    unasked-for heartbeat would make them sweepable on a signal nothing is emitting.
+    """
+    fake_cfg = MagicMock(
+        worker_job_timeout=600,
+        worker_max_retries=4,
+        worker_keep_result=3600,
+        analysis_job_heartbeat_sec=3600,
+    )
+    monkeypatch.setattr("phaze.config.get_settings", lambda: fake_cfg)
+
+    job = Job(function="extract_metadata")
+
+    await apply_project_job_defaults(job)
+
+    assert job.heartbeat == 0
+    assert job.timeout == 600

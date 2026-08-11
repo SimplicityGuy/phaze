@@ -269,7 +269,7 @@ async def scan_progress(
     stall reaper) renders the template's terminal `gone` branch with a 200 status rather than
     raising 404. HTMX 2.x's default responseHandling does not swap non-2xx bodies into the DOM,
     so a 404 here would leave the previous RUNNING card's outerHTML poller armed and 404-polling
-    forever; a 200 `gone` fragment replaces it and halts the poll (mirrors deepen_progress).
+    forever; a 200 `gone` fragment replaces it and halts the poll.
     """
     batch = await session.get(ScanBatch, batch_id)
     if batch is None:

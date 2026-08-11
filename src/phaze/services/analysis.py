@@ -168,7 +168,7 @@ _essentia_logging_suppressed = False
 
 # phaze-5lop: the streaming decode's sink-key namespace inside its per-tier essentia
 # ``Pool``. Prefixed and numbered by ORIGINAL window index (never renumbered), so a
-# strided window set maps back to `_stride_to_cap`'s indices without a side table.
+# chunk's window set maps back to whole-file window indices without a side table.
 _SINK_KEY_PREFIX = "phaze.window."
 
 
@@ -212,8 +212,9 @@ _SINK_KEY_PREFIX = "phaze.window."
 _DEFAULT_TF_BATCH_SIZE = 32
 
 # Deployment override. Read from the ENVIRONMENT at classifier construction, deliberately
-# not plumbed through the per-job windowing kwargs (`fine_cap`/`coarse_cap`): those are
-# per-FILE knobs the enqueue path varies per request, while this is a per-HOST sizing knob.
+# not plumbed through the per-job windowing kwargs (`fine_window_sec` / `coarse_window_sec` /
+# `fine_min_sec`): those are per-FILE knobs the enqueue path varies per request, while this is
+# a per-HOST sizing knob.
 # phaze-rvcn will make thread/concurrency sizing host-derived; when it does, the derivation
 # belongs in `_resolve_tf_batch_size` -- this one function is the seam.
 _TF_BATCH_SIZE_ENV = "PHAZE_ANALYSIS_TF_BATCH_SIZE"
@@ -710,11 +711,66 @@ _DEFAULT_FINE_WINDOW_SEC = 30
 _DEFAULT_COARSE_WINDOW_SEC = 180
 _DEFAULT_FINE_MIN_SEC = 15
 
-# Per-file cost caps (Phase 43): bound essentia work to a constant regardless of
-# duration. A file whose natural window count exceeds the cap is strided evenly
-# across the WHOLE file via ``_stride_to_cap`` rather than analyzed window-by-window.
-_DEFAULT_FINE_CAP = 60
-_DEFAULT_COARSE_CAP = 30
+# ---------------------------------------------------------------------------
+# D-07 DECISION RECORD -- exhaustive analysis, bounded by CHUNK not by CAP (phaze-w55w1)
+# ---------------------------------------------------------------------------
+#
+# WHAT CHANGED. Phase 43 bounded per-file cost with a window CAP (`analysis_fine_cap` = 60 /
+# `analysis_coarse_cap` = 30) and an even stride (`_stride_to_cap`) across the whole file, so a
+# file past 30 min (fine) / 90 min (coarse) was SAMPLED, not analyzed. The operator reviewed that
+# trade on 2026-08-11 and removed it (ADR-0007 section 7): every file now gets EVERY natural
+# window in both tiers, and `sampled` / `_stride_to_cap` / the per-job cap overrides are gone.
+#
+# WHY THE CAPS COULD NOT SIMPLY BE DELETED. Both passes held ALL of a tier's kept windows' PCM
+# concurrently -- deliberately, because the coarse inference is MODEL-major (phaze-15sw: one TF
+# graph built, swept across every buffer, released before the next; the alternative held ~4 GiB of
+# co-resident graphs). The cap was what made "all kept windows" a CONSTANT. Delete the cap and
+# that retention becomes O(duration): ADR-0007 section 3 extrapolates ~7.3 GiB of fine PCM and
+# ~2.8 GiB of coarse PCM on a 12-hour set, against a measured whole-process floor of 1.7383 GiB
+# and the ADR-0005 pod memory limit sized from it. That is a cgroup OOMKill, not an analysis.
+#
+# THE REPLACEMENT. The tiers now process their windows in bounded CHUNKS: decode a chunk, analyze
+# it, release it, move on. Peak PCM residency is a function of the CHUNK SIZE and never of the
+# file's duration -- the same invariant the caps provided ("retention stays bounded by the CAP and
+# never by duration"), re-derived from a knob that no longer discards audio.
+#
+# THE CHUNK SIZES ARE THE OLD CAPS, ON PURPOSE. 60 fine / 30 coarse reproduce EXACTLY the
+# per-tier residency the pre-removal code was measured at, so the whole ADR-0005 / phaze-esut /
+# phaze-7i0k / phaze-0582 memory corpus stays valid unchanged rather than needing re-derivation:
+#
+#   FINE   60 windows x 30 s x 44 100 Hz x 4 B (float32)  ~= 317 MB peak PCM per chunk
+#   COARSE 30 windows x 180 s x 16 000 Hz x 4 B (float32) ~= 345 MB peak PCM per chunk
+#
+# The two never stack: the fine tier's chunk is released and `malloc_trim`ed before the coarse
+# tier runs, exactly as before. The model-major invariant is PRESERVED and is per-chunk, not
+# per-file: within a chunk exactly one `TensorflowPredict*` graph is ever resident. The price the
+# chunking DOES pay is that each of the 34 graphs is now constructed once per COARSE CHUNK
+# instead of once per file (34 x ceil(coarse_windows / 30) constructions), and each chunk needs
+# its own decode pass because `MonoLoader` cannot seek -- see `_decode_windows_streaming`'s
+# `stop_at_sec` gate for how much of that second cost is bought back.
+#
+# NOT MEASURED HERE. These figures are the documented per-window buffer arithmetic carried
+# forward from the capped implementation, not a fresh peak-RSS measurement on a multi-hour file;
+# ADR-0007 follow-up 3 asks for that measurement and it is explicitly still owed. What IS
+# established by construction is the SHAPE: peak is O(chunk), not O(duration).
+_FINE_CHUNK_WINDOWS = 60
+_COARSE_CHUNK_WINDOWS = 30
+
+# Slack added to a chunk decode's early-stop gate (see `_decode_windows_streaming`). The gate
+# exists to stop the non-seeking loader once a chunk's last window has been read; a second of
+# over-read costs nothing and removes any chance that the stop lands a token early and truncates
+# that last window.
+_CHUNK_GATE_MARGIN_SEC = 1.0
+
+
+def _chunked(windows: list[tuple[int, float, float]], size: int) -> list[list[tuple[int, float, float]]]:
+    """Split a tier's window list into consecutive chunks of at most ``size`` entries.
+
+    Window order and original indices are preserved (chunk boundaries are the ONLY thing
+    introduced), so a chunked run analyzes the identical window set an unchunked one would.
+    An empty input yields no chunks, so a zero-window tier does no decode work at all.
+    """
+    return [windows[i : i + size] for i in range(0, len(windows), size)]
 
 
 def _probe_duration_sec(file_path: str) -> float:
@@ -750,35 +806,14 @@ def _iter_windows(total_sec: float, win_sec: int, min_sec: int, *, drop_short_tr
     return windows
 
 
-def _stride_to_cap(windows: list[tuple[int, float, float]], cap: int) -> tuple[list[tuple[int, float, float]], bool]:
-    """Even-stride ``windows`` down to ``<=cap`` entries, preserving original idx.
-
-    Bounds per-file analysis cost to a constant regardless of duration: when a
-    file's natural window count exceeds ``cap`` we sample evenly across the WHOLE
-    file (first and last window always kept) instead of truncating to first-N.
-
-    Returns ``(kept, sampled)``:
-      * ``cap <= 0`` or ``len(windows) <= cap`` → ``(windows, False)`` unchanged.
-      * otherwise → ``(kept, True)`` where ``kept`` retains each original tuple's
-        idx (NO renumbering), is sorted ascending by idx, and never exceeds
-        ``cap`` (rounding collisions dedup via a set, yielding ``<= cap``).
-
-    Math: endpoint-inclusive even stride ``round(i * (n - 1) / (cap - 1))`` for
-    ``i in 0..cap-1`` spans positions ``0 .. n-1`` so the first and last windows
-    are always included (RESEARCH §Q2).
-    """
-    n = len(windows)
-    if cap <= 0 or n <= cap:
-        return windows, False
-    if cap == 1:  # defense-in-depth: cap is validated ge=2 in config, but a direct call must not divide by zero
-        return windows[:1], True
-    picks = {round(i * (n - 1) / (cap - 1)) for i in range(cap)}  # set dedups rounding collisions
-    kept = [windows[p] for p in sorted(picks)]
-    return kept, True
-
-
-def _decode_windows_streaming(file_path: str, sample_rate: int, windows: Sequence[tuple[int, float, float]]) -> dict[int, Any]:
-    """Decode EVERY window of one tier in a SINGLE streaming pass (phaze-5lop).
+def _decode_windows_streaming(
+    file_path: str,
+    sample_rate: int,
+    windows: Sequence[tuple[int, float, float]],
+    *,
+    stop_at_sec: float | None = None,
+) -> dict[int, Any]:
+    """Decode EVERY window of one chunk in a SINGLE streaming pass (phaze-5lop).
 
     Returns ``{window_index: float32 buffer}``, omitting any window the pass produced no
     audio for. Raises if the network itself cannot be built or run -- :func:`_decode_windows`
@@ -827,15 +862,38 @@ def _decode_windows_streaming(file_path: str, sample_rate: int, windows: Sequenc
     mode-coupled behaviour that does touch phaze's set is ``EffnetDiscogs`` batch padding, and
     it cannot bind because the models stay in standard mode; only the DECODE moves.
     (phaze-rc1q 3c, 3d)
+
+    **``stop_at_sec`` -- the chunk gate (phaze-w55w1).** Exhaustive analysis processes a tier in
+    bounded chunks (D-07), and each chunk needs its own decode because ``MonoLoader`` cannot
+    seek. Left ungated that would decode the WHOLE file once per chunk. The gate turns trap 2
+    above from a hazard into the mechanism: a ``Trimmer`` hung STRAIGHT off the loader (no
+    ``Scale`` interposer) is exactly what stops the shared decode, so one interposed at the head
+    of the fan-out with ``endTime`` just past the chunk's last window ends the decode there.
+    Total decode across ``K`` chunks falls from ``K x duration`` to roughly
+    ``duration x (K + 1) / 2``. It is an OPTIMISATION only: ``startTime`` stays 0 so every window
+    keeps absolute file time, the margin (:data:`_CHUNK_GATE_MARGIN_SEC`) guarantees the last
+    window of the chunk is complete, and the final chunk is passed ``stop_at_sec=None`` because
+    it runs to EOF anyway. If the gated network cannot be built or run, :func:`_decode_windows`
+    retries UNGATED before falling back to the per-window loader, so a gate that misbehaves on
+    some future essentia costs wall clock and never correctness.
     """
     pool = essentia.Pool()
     loader = ess.MonoLoader(filename=file_path, sampleRate=sample_rate)
     branches: list[tuple[Any, Any]] = []  # holds the per-branch algos alive for the run
+    gate: Any = None
     try:
+        if stop_at_sec is None:
+            source = loader.audio
+        else:
+            # No Scale interposer here, deliberately: this Trimmer's parent MUST be the loader
+            # so that reaching endTime shuts the decode down (see the docstring's chunk gate).
+            gate = ess.Trimmer(sampleRate=sample_rate, startTime=0.0, endTime=stop_at_sec + _CHUNK_GATE_MARGIN_SEC)
+            loader.audio >> gate.signal
+            source = gate.signal
         for idx, start, end in windows:
             scale = ess.Scale(factor=1.0)
             trimmer = ess.Trimmer(sampleRate=sample_rate, startTime=start, endTime=end)
-            loader.audio >> scale.signal
+            source >> scale.signal
             scale.signal >> trimmer.signal
             trimmer.signal >> (pool, f"{_SINK_KEY_PREFIX}{idx}")
             branches.append((scale, trimmer))
@@ -858,7 +916,7 @@ def _decode_windows_streaming(file_path: str, sample_rate: int, windows: Sequenc
         # Drop the network before returning: the branches are what hold the per-window
         # C++ sinks, and the caller's `_malloc_trim` can only return pages that are free.
         branches.clear()
-        del loader, pool
+        del loader, pool, gate
 
 
 def _decode_windows(
@@ -866,8 +924,11 @@ def _decode_windows(
     sample_rate: int,
     windows: Sequence[tuple[int, float, float]],
     on_skip: Callable[[int, float, float, bool], None],
+    *,
+    stop_at_sec: float | None = None,
+    on_beat: Callable[[], None] | None = None,
 ) -> dict[int, Any]:
-    """Decode one tier's windows, streaming fan-out first, per-window ``EasyLoader`` as fallback.
+    """Decode one chunk's windows, streaming fan-out first, per-window ``EasyLoader`` as fallback.
 
     Returns ``{window_index: buffer}`` for the windows that decoded. ``on_skip(idx, start, end,
     exc_info)`` fires once per window that did not, with ``exc_info`` False when there is no
@@ -882,21 +943,56 @@ def _decode_windows(
     The ``malloc_trim`` is here rather than at the call sites because THIS is where the fan-out's
     transient dies: the ``Pool`` doubling slack is freed the moment the loop above finishes, and
     glibc keeps those pages unless asked. (phaze-rc1q rec. 4 -- measured -0.403 GiB for +0.13% wall.)
+
+    ``stop_at_sec`` is the chunk gate (phaze-w55w1). It is a pure wall-clock optimisation, so it
+    gets its OWN retry rung: a gated pass that fails is retried UNGATED before the per-window
+    fallback engages. Without that rung a gate broken by some future essentia would demote every
+    chunk of every file to the ``O(n_windows x duration)`` decode phaze-5lop removed -- a far
+    worse outcome than simply decoding each chunk from byte 0.
+
+    **``on_beat`` fires once per window of the FALLBACK loop, and it is not optional dressing.**
+    That loop is the longest silent stretch anywhere in the pipeline: each ``EasyLoader`` call
+    re-decodes the file from byte 0 (it cannot seek -- the whole reason phaze-5lop exists), so
+    on a long file a single window takes minutes and a chunk takes hours, with nothing emitted
+    in between. Under the stall watchdog (D-08) that silence is indistinguishable from a hang,
+    so an UNBEATEN fallback would be reliably killed and the file terminally marked
+    ANALYSIS_FAILED -- the degradation path destroying exactly the work it exists to salvage.
+    The beat says "still decoding", which is true and is all the watchdog needs.
+
+    The streaming rungs need no beat of their own: ``essentia.run`` is one blocking call that
+    cannot be instrumented from here, and the callers already beat immediately before invoking
+    a chunk decode, which covers it.
     """
-    try:
-        decoded = _decode_windows_streaming(file_path, sample_rate, windows)
-    except Exception:  # tier-level failure isolation: fall back to the per-window decode
-        log.warning("streaming decode pass failed at %d Hz; falling back to per-window EasyLoader", sample_rate, exc_info=True)
-        decoded = {}
-        for idx, start, end in windows:
-            try:
-                decoded[idx] = es.EasyLoader(filename=file_path, sampleRate=sample_rate, startTime=start, endTime=end)()
-            except Exception:  # per-window failure isolation: skip, never fail the file
-                on_skip(idx, start, end, True)
-    else:
-        for idx, start, end in windows:
-            if idx not in decoded:
-                on_skip(idx, start, end, False)
+
+    def _beat() -> None:
+        if on_beat is not None:
+            on_beat()
+
+    decoded: dict[int, Any] | None = None
+    if stop_at_sec is not None:
+        try:
+            decoded = _decode_windows_streaming(file_path, sample_rate, windows, stop_at_sec=stop_at_sec)
+        except Exception:  # gate-level isolation: retry the same pass without the early-stop gate
+            log.warning("gated streaming decode failed at %d Hz; retrying ungated", sample_rate, exc_info=True)
+            _beat()  # the gated attempt may itself have burned minutes before failing
+    if decoded is None:
+        try:
+            decoded = _decode_windows_streaming(file_path, sample_rate, windows)
+        except Exception:  # tier-level failure isolation: fall back to the per-window decode
+            log.warning("streaming decode pass failed at %d Hz; falling back to per-window EasyLoader", sample_rate, exc_info=True)
+            decoded = {}
+            for idx, start, end in windows:
+                try:
+                    decoded[idx] = es.EasyLoader(filename=file_path, sampleRate=sample_rate, startTime=start, endTime=end)()
+                except Exception:  # per-window failure isolation: skip, never fail the file
+                    on_skip(idx, start, end, True)
+                _beat()  # per WINDOW, and outside the try: a skip is progress too, and this loop's
+                # silence is what would otherwise get the whole fallback killed as stalled.
+            _malloc_trim()
+            return decoded
+    for idx, start, end in windows:
+        if idx not in decoded:
+            on_skip(idx, start, end, False)
     _malloc_trim()
     return decoded
 
@@ -952,19 +1048,27 @@ def _run_model_sets_over_windows(
     buffers: list[tuple[int, Any]],
     models_dir: str,
     on_failure: Callable[[int], None],
+    on_model_done: Callable[[], None] | None = None,
 ) -> tuple[dict[int, dict[str, Any]], set[int]]:
-    """Run all 11 characteristic model sets + the genre model over EVERY coarse buffer.
+    """Run all 11 characteristic model sets + the genre model over EVERY coarse buffer of a chunk.
 
     **Model-major** (phaze-15sw): models are the outer loop, windows the inner one, so
     exactly one ``TensorflowPredict*`` graph is resident at any instant instead of 34.
-    Each model is still constructed exactly once per file -- no per-window graph reload,
-    so the wall-clock optimization ``_classifier_cache`` existed to provide is fully
-    preserved -- and the price is holding the <=``coarse_cap`` decoded buffers
-    concurrently (30 x 180 s x 16 kHz x 4 B ~= 345 MB) instead of 4.09 GiB of idle graphs.
-    See the ``_classifier_cache`` comment for the measurement that motivated the reprice.
+    The price is holding the chunk's decoded buffers concurrently
+    (:data:`_COARSE_CHUNK_WINDOWS` x 180 s x 16 kHz x 4 B ~= 345 MB) instead of 4.09 GiB of
+    idle graphs. See the ``_classifier_cache`` comment for the measurement that motivated
+    the reprice.
+
+    Since phaze-w55w1 the CALLER passes one chunk at a time rather than the whole file, so
+    each graph is constructed once per chunk instead of once per file. That is the cost the
+    D-07 chunking pays to keep PCM residency independent of duration; the co-residency
+    invariant this function exists to hold -- ONE graph at a time -- is unchanged, and it is
+    the invariant that was worth 4 GiB.
 
     ``on_failure(window_index)`` fires once, in-handler, for each window an inference
-    fails on; that window is excluded from every later model.
+    fails on; that window is excluded from every later model. ``on_model_done()`` fires
+    after each of the 34 sweeps completes -- the liveness heartbeat for a chunk that can
+    otherwise spend many minutes inside C++ without emitting a window completion.
 
     Returns ``({window_index: features}, {failed window_index})``. Feature-dict key
     insertion order is pinned to ``MODEL_SETS`` order (pre-seeded) with ``"genre"`` last,
@@ -974,12 +1078,17 @@ def _run_model_sets_over_windows(
     features: dict[int, dict[str, Any]] = {key: {model_set.name: {} for model_set in MODEL_SETS} for key, _ in buffers}
     failed: set[int] = set()
 
+    def _tick() -> None:
+        if on_model_done is not None:
+            on_model_done()
+
     for model_set in MODEL_SETS:
         for model in model_set.models:
             for key, (predictions, labels) in _sweep_one_model(model, buffers, models_dir, failed, on_failure).items():
                 features[key][model_set.name][model.variant] = [
                     {"label": label, "prediction": float(pred)} for label, pred in zip(labels, predictions, strict=False)
                 ]
+            _tick()
 
     for key, (genre_predictions, genre_labels) in _sweep_one_model(GENRE_MODEL, buffers, models_dir, failed, on_failure).items():
         genre_pairs = list(zip(genre_labels, genre_predictions, strict=False))
@@ -987,6 +1096,7 @@ def _run_model_sets_over_windows(
         features[key]["genre"] = {
             "predictions": [{"label": label, "confidence": float(conf)} for label, conf in genre_pairs[:10]],
         }
+    _tick()
 
     return features, failed
 
@@ -1010,157 +1120,241 @@ def _run_model_sets(audio_16k: Any, models_dir: str) -> dict[str, Any]:
     return features[0]
 
 
+def _chunk_stop_sec(chunks: list[list[tuple[int, float, float]]], position: int) -> float | None:
+    """``endTime`` for a chunk's decode gate, or ``None`` for the last chunk.
+
+    The last chunk runs to EOF, so gating it buys nothing and could only risk clipping the
+    file's final window; every earlier chunk stops just past its own last window's end.
+    """
+    if position >= len(chunks) - 1:
+        return None
+    return chunks[position][-1][2]
+
+
 def _analyze_fine_windows(
     file_path: str,
     total_sec: float,
     win_sec: int,
     min_sec: int,
-    cap: int,
     *,
     progress_cb: Callable[[int, int], None] | None = None,
-) -> tuple[list[FineWindow], int, bool]:
-    """FINE pass: BPM + key per ``win_sec`` window off ONE 44.1 kHz streaming decode.
+    heartbeat_cb: Callable[[str, int, int], None] | None = None,
+) -> tuple[list[FineWindow], int]:
+    """FINE pass: BPM + key for EVERY ``win_sec`` window, in bounded 44.1 kHz chunks.
 
-    Returns ``(windows, total, sampled)`` where ``total`` is the natural window
-    count BEFORE striding and ``sampled`` is True when the cap forced an even
-    stride. ``len(windows)`` (analyzed) counts successful appends; per-window
-    failures are skipped, so it may be below the post-stride target.
+    Returns ``(windows, total)`` where ``total`` is the natural window count. Since
+    phaze-w55w1 every natural window is analyzed -- there is no stride and no cap -- so
+    ``len(windows)`` equals ``total`` except for per-window failures, which are skipped.
+
+    **Chunking (D-07).** The tier is processed :data:`_FINE_CHUNK_WINDOWS` windows at a time:
+    decode the chunk, extract BPM/key from it, drop it, trim, move on. Peak PCM residency is
+    therefore ``chunk x 30 s x 44 100 Hz x 4 B ~= 317 MB`` -- the SAME figure the capped
+    implementation was measured at, and independent of the file's duration. Each chunk needs
+    its own streaming decode (``MonoLoader`` cannot seek); the non-final chunks pass a
+    ``stop_at_sec`` gate so their decode ends at the chunk boundary instead of at EOF.
 
     Phase 57.1 (PROG-01): when ``progress_cb`` is provided it fires a START signal
     ``progress_cb(0, len(natural))`` BEFORE the loop and then ``progress_cb(len(fine_windows),
-    len(natural))`` after every successful append. The denominator is ``len(natural)`` —
-    the pre-stride natural count — IDENTICAL to the ``fine_windows_total`` the completion
-    PUT reports, so the in-flight bar and final coverage agree (denominator invariant).
-    This seam emits only an ``(int, int)`` count and does NO I/O; throttling and transport
-    live DOWNSTREAM in the lane bridge, never here (keeps the compute seam HTTP/pickle-free).
-    ``progress_cb=None`` (the default) leaves behavior byte-identical to before.
+    len(natural))`` after every successful append. The denominator is the natural count --
+    IDENTICAL to the ``fine_windows_total`` the completion PUT reports, so the in-flight bar
+    and final coverage agree (denominator invariant). This seam emits only an ``(int, int)``
+    count and does NO I/O; throttling and transport live DOWNSTREAM in the lane bridge, never
+    here (keeps the compute seam HTTP/pickle-free).
+
+    phaze-w55w1 adds ``heartbeat_cb(stage, done, total)`` alongside it: the LIVENESS channel.
+    It fires on window completions AND on chunk-decode boundaries, because the supervising
+    layer now kills only on absence of progress (never on elapsed time) and a chunk decode is
+    the longest stretch of this pass that completes no windows. ``progress_cb`` cannot serve
+    that role: it is fine-tier-only by design (WORK-04) and says nothing during decode.
 
     ``RhythmExtractor2013`` and ``KeyExtractor`` are constructed ONCE per file and reused
-    across every window (phaze-ap8y), not rebuilt per window: neither takes a per-window
-    parameter, and construction was 7.55 s of the 31.50 s fine tier on a 60-window file
-    (measured, phaze-i93a §6a). ``reset()`` between windows was verified NOT required —
+    across every window and every chunk (phaze-ap8y), not rebuilt per window: neither takes a
+    per-window parameter, and construction was 7.55 s of the 31.50 s fine tier on a 60-window
+    file (measured, phaze-i93a §6a). ``reset()`` between windows was verified NOT required —
     0/60 output mismatches with and without it, across the full ``(window_index, bpm, key,
     confidence)`` tuple — so it is deliberately not called here.
 
-    Since phaze-5lop the decode is ONE streaming pass for the whole tier
-    (:func:`_decode_windows`) instead of one non-seeking ``EasyLoader`` per window — that is
-    what makes per-window cost proportional to the WINDOW rather than to the whole file. Two
-    deliberate consequences. Decode failures are now discovered, and logged, before any
-    extraction rather than interleaved with it: only the ORDER of the warnings moves, never
-    which windows are dropped. And the tier briefly holds all ``<=cap`` 44.1 kHz buffers
-    (60 x 30 s ~= 317 MB) instead of one — a transient that lands entirely BEFORE the coarse
-    tier's model sweep and is dropped, and trimmed, before it starts. Retention stays bounded
-    by the CAP and never by duration, which is the invariant that matters.
+    Decode failures within a chunk are discovered, and logged, before that chunk's extraction
+    rather than interleaved with it (phaze-5lop): only the ORDER of the warnings moves, never
+    which windows are dropped.
     """
     natural = _iter_windows(total_sec, win_sec, min_sec, drop_short_trailing=True)
-    kept, sampled = _stride_to_cap(natural, cap)
+    total = len(natural)
     if progress_cb is not None:
-        progress_cb(0, len(natural))  # START: analyzed=0, total=natural pre-stride
+        progress_cb(0, total)  # START: analyzed=0, total=natural
 
     def _skip(idx: int, start: float, end: float, exc_info: bool = True) -> None:
         log.warning("fine window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=exc_info)
 
-    decoded = _decode_windows(file_path, _FINE_SAMPLE_RATE, kept, _skip)
+    def _beat(stage: str, done: int) -> None:
+        if heartbeat_cb is not None:
+            heartbeat_cb(stage, done, total)
+
     rhythm_extractor = es.RhythmExtractor2013(method="multifeature")
     key_extractor = es.KeyExtractor(profileType="edma")
     fine_windows: list[FineWindow] = []
-    for idx, start, end in kept:
-        buf = decoded.pop(idx, None)  # pop, not [], so each window's PCM dies as it is consumed
-        if buf is None:
-            continue  # no audio for this window; already reported by the decode above
-        try:
-            bpm, _beats, confidence, _, _beats_intervals = rhythm_extractor(buf)
-            key, scale, _strength = key_extractor(buf)
-            fine_windows.append(
-                FineWindow(
-                    window_index=idx,
-                    start_sec=start,
-                    end_sec=end,
-                    bpm=round(float(bpm), 1),
-                    musical_key=f"{key} {scale}",
-                    confidence=float(confidence),
+    chunks = _chunked(natural, _FINE_CHUNK_WINDOWS)
+    for position, chunk in enumerate(chunks):
+        _beat("fine_decode", len(fine_windows))
+        decoded = _decode_windows(
+            file_path,
+            _FINE_SAMPLE_RATE,
+            chunk,
+            _skip,
+            stop_at_sec=_chunk_stop_sec(chunks, position),
+            # Keeps the per-window EasyLoader fallback audible to the stall watchdog; see
+            # _decode_windows' docstring for why an unbeaten fallback is always killed.
+            on_beat=lambda: _beat("fine_decode", len(fine_windows)),
+        )
+        for idx, start, end in chunk:
+            buf = decoded.pop(idx, None)  # pop, not [], so each window's PCM dies as it is consumed
+            if buf is None:
+                continue  # no audio for this window; already reported by the decode above
+            try:
+                bpm, _beats, confidence, _, _beats_intervals = rhythm_extractor(buf)
+                key, scale, _strength = key_extractor(buf)
+                fine_windows.append(
+                    FineWindow(
+                        window_index=idx,
+                        start_sec=start,
+                        end_sec=end,
+                        bpm=round(float(bpm), 1),
+                        musical_key=f"{key} {scale}",
+                        confidence=float(confidence),
+                    )
                 )
-            )
-        except Exception:  # per-window failure isolation: skip, never fail the file
-            _skip(idx, start, end)
-            continue
-        finally:
-            del buf
-        if progress_cb is not None:
-            progress_cb(len(fine_windows), len(natural))  # bump (throttle lives downstream, not here)
-    _malloc_trim()  # the fine tier's PCM is gone; do not carry its freed pages into the coarse tier
-    return fine_windows, len(natural), sampled
+            except Exception:  # per-window failure isolation: skip, never fail the file
+                _skip(idx, start, end)
+                continue
+            finally:
+                del buf
+            if progress_cb is not None:
+                progress_cb(len(fine_windows), total)  # bump (throttle lives downstream, not here)
+            _beat("fine", len(fine_windows))
+        decoded.clear()  # this chunk's PCM is consumed; nothing crosses the chunk boundary
+        _malloc_trim()
+    return fine_windows, total
 
 
-def _analyze_coarse_windows(file_path: str, total_sec: float, win_sec: int, models_dir: str, cap: int) -> tuple[list[CoarseWindow], int, bool]:
-    """COARSE pass: mood/style/danceability per ``win_sec`` window (no length floor).
+def _make_span_reporter(
+    spans: list[tuple[int, float, float]],
+    on_skip: Callable[[int, float, float, bool], None],
+) -> Callable[[int], None]:
+    """Adapt ``on_skip(idx, start, end, exc_info)`` to the ``on_failure(idx)`` sweep contract.
 
-    Returns ``(windows, total, sampled)`` mirroring ``_analyze_fine_windows``:
-    ``total`` is the natural pre-stride count and ``sampled`` is True when the
-    cap forced an even stride.
+    A factory, not an inline lambda: the coarse pass builds one of these per CHUNK, and a
+    closure written inside that loop would capture the loop's binding rather than this
+    chunk's, so a late-firing report would render another chunk's window geometry.
+    """
+    geometry = {idx: (start, end) for idx, start, end in spans}
 
-    Three phases since phaze-15sw, because the inference is MODEL-major (see
-    :func:`_run_model_sets_over_windows`) and a model-major sweep needs every buffer in
-    hand before the first graph is built:
+    def _report(window_index: int) -> None:
+        start, end = geometry[window_index]
+        on_skip(window_index, start, end, True)
 
-    1. **decode** every kept window up front -- <=``cap`` buffers held concurrently
-       (30 x 180 s x 16 kHz x 4 B ~= 345 MB), deliberately, in exchange for not holding
-       34 co-resident TF graphs (~4 GiB);
-    1. **infer** model-major across all of them, one resident graph at a time;
-    1. **derive + assemble** in window order.
+    return _report
 
-    Per-window failure isolation is preserved across all three: a decode failure drops
-    that window before inference, an inference failure kills only that window (later
-    models skip it), and derivation failure drops it at assembly. Same warning, same
-    ``exc_info``; only the ORDER of the log lines changes, since a window's inference
-    failure is now discovered during the sweep rather than in window order.
 
-    phaze-5lop changed only HOW phase 1 produces those buffers — one streaming fan-out pass
-    for the whole tier (:func:`_decode_windows`) instead of one non-seeking ``EasyLoader``
-    per window, byte-identical output, 10.9x faster on a 60-minute file. **The buffers the
-    sweep holds are the same buffers, produced differently**: this tier's designed ~345 MB of
-    concurrent PCM is unchanged, and the fan-out's own ``Pool`` copy is dropped inside the
-    decode rather than kept alive underneath the sweep (phaze-rc1q §6b, rec. 3).
+def _analyze_coarse_windows(
+    file_path: str,
+    total_sec: float,
+    win_sec: int,
+    models_dir: str,
+    *,
+    heartbeat_cb: Callable[[str, int, int], None] | None = None,
+) -> tuple[list[CoarseWindow], int]:
+    """COARSE pass: mood/style/danceability for EVERY ``win_sec`` window (no length floor).
+
+    Returns ``(windows, total)`` mirroring :func:`_analyze_fine_windows`. Every natural
+    window is analyzed since phaze-w55w1 -- no stride, no cap.
+
+    **Chunking (D-07).** The tier is processed :data:`_COARSE_CHUNK_WINDOWS` windows at a
+    time, and each chunk runs the same three phases the whole tier used to:
+
+    1. **decode** the chunk's windows up front -- ``chunk x 180 s x 16 kHz x 4 B ~= 345 MB``
+       held concurrently, deliberately, in exchange for not holding 34 co-resident TF graphs
+       (~4 GiB, phaze-15sw). This is the SAME residency the capped implementation had; what
+       changed is that it is now bounded by the chunk rather than by the cap, so it no longer
+       grows with duration;
+    1. **infer** model-major across the chunk, one resident graph at a time;
+    1. **derive + assemble** in window order, then release the chunk.
+
+    The model-major sweep is why the coarse chunk cannot be 1: it needs every buffer of its
+    unit in hand before the first graph is built. Chunking therefore costs 34 graph
+    constructions per chunk instead of per file -- the deliberate price for a peak that does
+    not scale with duration. It does NOT weaken the phaze-15sw invariant: exactly one
+    ``TensorflowPredict*`` graph is resident at any instant, within a chunk and across chunk
+    boundaries alike (``_sweep_one_model``'s ``finally`` releases before the next is built).
+
+    Per-window failure isolation is preserved across all three phases: a decode failure drops
+    that window before inference, an inference failure kills only that window (later models
+    skip it), and derivation failure drops it at assembly. Same warning, same ``exc_info``;
+    only the ORDER of the log lines changes, since a window's inference failure is discovered
+    during the sweep rather than in window order.
+
+    ``heartbeat_cb(stage, done, total)`` is the liveness channel (phaze-w55w1). The coarse
+    tier is the part of a long analysis that goes longest without completing a window, so it
+    beats at chunk-decode start, after EVERY one of the 34 model sweeps, and at chunk
+    assembly -- enough that a live multi-hour analysis is never mistaken for a hang.
     """
     natural = _iter_windows(total_sec, win_sec, 0, drop_short_trailing=False)
-    kept, sampled = _stride_to_cap(natural, cap)
+    total = len(natural)
 
     def _skip(idx: int, start: float, end: float, exc_info: bool = True) -> None:
         log.warning("coarse window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=exc_info)
 
-    # (1) decode
-    decoded = _decode_windows(file_path, _COARSE_SAMPLE_RATE, kept, _skip)
-    spans: list[tuple[int, float, float]] = [(idx, start, end) for idx, start, end in kept if idx in decoded]
-    buffers: list[tuple[int, Any]] = [(idx, decoded.pop(idx)) for idx, _start, _end in spans]
-
-    # (2) infer, model-major
-    geometry = {idx: (start, end) for idx, start, end in spans}
-    features_by_window, failed = _run_model_sets_over_windows(buffers, models_dir, lambda idx: _skip(idx, *geometry[idx]))
-    buffers.clear()  # the peak is behind us; do not carry ~345 MB of PCM through assembly
-    _malloc_trim()
-
-    # (3) derive + assemble, in window order
     coarse_windows: list[CoarseWindow] = []
-    for idx, start, end in spans:
-        if idx in failed:
-            continue  # already reported, in-handler, by the model sweep that failed it
-        try:
-            features = features_by_window[idx]
-            coarse_windows.append(
-                CoarseWindow(
-                    window_index=idx,
-                    start_sec=start,
-                    end_sec=end,
-                    mood=derive_mood(features),
-                    style=derive_style(features["genre"]),
-                    danceability=derive_danceability(features),
-                    features=features,
+
+    def _beat(stage: str) -> None:
+        if heartbeat_cb is not None:
+            heartbeat_cb(stage, len(coarse_windows), total)
+
+    chunks = _chunked(natural, _COARSE_CHUNK_WINDOWS)
+    for position, chunk in enumerate(chunks):
+        # (1) decode
+        _beat("coarse_decode")
+        decoded = _decode_windows(
+            file_path,
+            _COARSE_SAMPLE_RATE,
+            chunk,
+            _skip,
+            stop_at_sec=_chunk_stop_sec(chunks, position),
+            on_beat=lambda: _beat("coarse_decode"),
+        )
+        spans: list[tuple[int, float, float]] = [(idx, start, end) for idx, start, end in chunk if idx in decoded]
+        buffers: list[tuple[int, Any]] = [(idx, decoded.pop(idx)) for idx, _start, _end in spans]
+
+        # (2) infer, model-major. The failure reporter is built by a factory rather than
+        # closed over the loop variable, so each chunk's callback holds ITS OWN geometry map
+        # instead of whatever the last iteration left behind (ruff B023).
+        features_by_window, failed = _run_model_sets_over_windows(
+            buffers, models_dir, _make_span_reporter(spans, _skip), lambda: _beat("coarse_model")
+        )
+        buffers.clear()  # the peak is behind us; do not carry ~345 MB of PCM through assembly
+        _malloc_trim()
+
+        # (3) derive + assemble, in window order
+        for idx, start, end in spans:
+            if idx in failed:
+                continue  # already reported, in-handler, by the model sweep that failed it
+            try:
+                features = features_by_window[idx]
+                coarse_windows.append(
+                    CoarseWindow(
+                        window_index=idx,
+                        start_sec=start,
+                        end_sec=end,
+                        mood=derive_mood(features),
+                        style=derive_style(features["genre"]),
+                        danceability=derive_danceability(features),
+                        features=features,
+                    )
                 )
-            )
-        except Exception:  # per-window failure isolation: skip, never fail the file
-            _skip(idx, start, end)
-            continue
-    return coarse_windows, len(natural), sampled
+            except Exception:  # per-window failure isolation: skip, never fail the file
+                _skip(idx, start, end)
+                continue
+        _beat("coarse")
+    return coarse_windows, total
 
 
 def _representative_features(coarse: list[CoarseWindow]) -> dict[str, Any]:
@@ -1183,9 +1377,8 @@ def analyze_file(
     fine_window_sec: int = _DEFAULT_FINE_WINDOW_SEC,
     coarse_window_sec: int = _DEFAULT_COARSE_WINDOW_SEC,
     fine_min_sec: int = _DEFAULT_FINE_MIN_SEC,
-    fine_cap: int = _DEFAULT_FINE_CAP,
-    coarse_cap: int = _DEFAULT_COARSE_CAP,
     progress_cb: Callable[[int, int], None] | None = None,
+    heartbeat_cb: Callable[[str, int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Analyze a single audio file via essentia as a two-tier time-series.
 
@@ -1205,19 +1398,26 @@ def analyze_file(
       * COARSE (16 kHz): the 34 TF model sets per ``coarse_window_sec`` window;
         every window with audio is analyzed (no minimum-length floor).
 
-    Each pass holds all of its own windows and nothing of the other's, deliberately.
-    COARSE (phaze-15sw) holds ALL its ``coarse_cap`` 16 kHz windows at once -- ~345 MB at
-    the default 30 -- because its inference is model-major: one ``TensorflowPredict*``
-    graph is built, run across every window, and released before the next is built. That
-    trades ~345 MB of PCM for the ~4 GiB of co-resident TF graphs the window-major loop
-    used to hold (phaze-esut / phaze-7i0k), at the same 34 model constructions per file.
-    FINE now holds its ``fine_cap`` 44.1 kHz windows the same way (~317 MB at the default
-    60) because a single decode pass is what makes the tier fast (phaze-5lop) -- but that
-    transient is released, and its pages returned to the OS, BEFORE the coarse pass runs,
-    so the two never stack. **The passes run in sequence, never fanned off one shared
-    decode: sharing is only 5.3% faster and holds +0.364 GiB, because the tiers' resamplers
-    differ and so the expensive stage cannot be shared at all (phaze-rc1q §8).** Both
-    passes stay bounded by the CAPS, not by duration.
+    **Coverage is EXHAUSTIVE (phaze-w55w1 / ADR-0007 §7).** Every natural window of both
+    tiers is analyzed, on files of every length; there is no cap, no even stride, and no
+    "sampled" result. What bounds per-file memory instead is CHUNKING: each tier is decoded
+    and analyzed :data:`_FINE_CHUNK_WINDOWS` / :data:`_COARSE_CHUNK_WINDOWS` windows at a
+    time, so peak PCM residency is ~317 MB (fine) / ~345 MB (coarse) regardless of duration
+    — the same per-tier figures the capped implementation was measured at. See the D-07
+    decision record above :data:`_FINE_CHUNK_WINDOWS` for why those numbers, and what the
+    chunking costs.
+
+    Each pass holds only its own current chunk and nothing of the other's, deliberately.
+    COARSE (phaze-15sw) holds a whole chunk's 16 kHz windows at once because its inference is
+    model-major: one ``TensorflowPredict*`` graph is built, run across every window of the
+    chunk, and released before the next is built. That trades ~345 MB of PCM for the ~4 GiB
+    of co-resident TF graphs the window-major loop used to hold (phaze-esut / phaze-7i0k).
+    FINE holds its 44.1 kHz chunk the same way because a single decode pass per chunk is what
+    makes the tier fast (phaze-5lop) — and that transient is released, and its pages returned
+    to the OS, BEFORE the coarse pass runs, so the two never stack. **The passes run in
+    sequence, never fanned off one shared decode: sharing is only 5.3% faster and holds
+    +0.364 GiB, because the tiers' resamplers differ and so the expensive stage cannot be
+    shared at all (phaze-rc1q §8).**
 
     Per-window failures are logged and skipped — one bad window never fails the
     file. The one floor (phaze-zibn): if EVERY window fails in BOTH passes while
@@ -1227,21 +1427,16 @@ def analyze_file(
     ``AgentSettings`` defaults (30/180/15) and may be overridden by the agent
     worker.
 
-    To keep per-file cost constant regardless of duration, each pass is bounded
-    by a cap (``fine_cap``/``coarse_cap``, defaults 60/30): a file whose natural
-    window count exceeds the cap is strided EVENLY across the whole file instead
-    of analyzed window-by-window (root cause of the 4h-timeout: cost was
-    O(duration)). Under the cap, behavior is unchanged (every window analyzed).
-
     Returns a dict with the representative aggregates
     (``bpm``/``musical_key``/``mood``/``style``/``danceability``/``features``)
     PLUS ``windows``: a flat list of fine + coarse window dicts, each ready for
-    ``AnalysisWindowPayload(**w)`` — PLUS a five-field coverage contract
+    ``AnalysisWindowPayload(**w)`` — PLUS four progress counts
     (``fine_windows_analyzed``/``fine_windows_total``/``coarse_windows_analyzed``/
-    ``coarse_windows_total``/``sampled``) so a sampled file can be re-deepened
-    later (Phase 44). ``*_total`` is the natural pre-stride window count;
-    ``*_analyzed`` is the count actually analyzed (post-stride, minus per-window
-    skips); ``sampled`` is True when either pass was strided.
+    ``coarse_windows_total``). ``*_total`` is the natural window count and
+    ``*_analyzed`` the count actually analyzed, so the two are EQUAL on a healthy file
+    and differ only by per-window skips. They no longer express a coverage gap — there
+    is none to express — they are the progress denominators the in-flight bar and the
+    completion PUT share.
 
     Phase 57.1 (PROG-01): an optional sync ``progress_cb(analyzed, total)`` is threaded
     into the FINE per-window loop (``_analyze_fine_windows``) — a START signal then a
@@ -1250,16 +1445,23 @@ def analyze_file(
     client (the Phase 101 exec'd-child JSON-protocol boundary, ``phaze.analysis_child`` /
     ``services.analysis_exec``, plus the ``tests/shared/core/test_task_split.py`` essentia import
     boundary, stay intact). Transport + throttle are the LANE's job. Fine-only is sufficient
-    for the in-flight bar (WORK-04); the COARSE pass is intentionally not instrumented.
+    for the in-flight bar (WORK-04); the COARSE pass is intentionally not on that channel.
+
+    phaze-w55w1 adds ``heartbeat_cb(stage, done, total)``: the same shape, but the LIVENESS
+    channel rather than the UI one. Both tiers beat on it, and so do the stages between
+    window completions (chunk decode, each coarse model sweep), because the supervising layer
+    now decides "stuck" from ABSENCE OF PROGRESS rather than from elapsed wall clock — see
+    ``services/analysis_exec.py``. It carries no I/O either; the child turns it into a
+    protocol line and the parent turns that into a watchdog reset.
     """
     _suppress_essentia_logging()
 
     total_sec = _probe_duration_sec(file_path)
 
-    fine_windows, fine_total, fine_sampled = _analyze_fine_windows(
-        file_path, total_sec, fine_window_sec, fine_min_sec, fine_cap, progress_cb=progress_cb
+    fine_windows, fine_total = _analyze_fine_windows(
+        file_path, total_sec, fine_window_sec, fine_min_sec, progress_cb=progress_cb, heartbeat_cb=heartbeat_cb
     )
-    coarse_windows, coarse_total, coarse_sampled = _analyze_coarse_windows(file_path, total_sec, coarse_window_sec, models_dir, coarse_cap)
+    coarse_windows, coarse_total = _analyze_coarse_windows(file_path, total_sec, coarse_window_sec, models_dir, heartbeat_cb=heartbeat_cb)
 
     # phaze-zibn: per-window failure isolation must not mask TOTAL decode failure. If the
     # file naturally had windows to analyze but every single one failed in BOTH passes, the
@@ -1291,5 +1493,4 @@ def analyze_file(
         "fine_windows_total": fine_total,
         "coarse_windows_analyzed": len(coarse_windows),
         "coarse_windows_total": coarse_total,
-        "sampled": fine_sampled or coarse_sampled,
     }

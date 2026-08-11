@@ -10,18 +10,23 @@ spike's job, not CI's).
 
 1. ``test_long_file_bounded`` — proves the *windowing loop* never accumulates with file
    LENGTH. essentia is mocked so the decode yields a realistically-sized (~5MB) buffer per
-   window. Phase 43 strides a long file down to 60 fine + 30 coarse windows (cost no longer
-   scales with length); if the pipeline wrongly retained buffers in proportion to the file's
-   ~240 natural fine windows it would add >1.2GB, and >7GB for the 12h file. This is the
-   bounded-memory proof.
+   window.
 
-   Both tiers now retain their ``<=cap`` buffers *deliberately*. COARSE has since
-   phaze-15sw, because model-major inference needs every window in hand before the first
-   graph is built — the trade that removed ~4 GiB of co-resident TF graphs. FINE does since
-   phaze-5lop, because its windows come off ONE streaming decode pass instead of one
-   non-seeking ``EasyLoader`` call each. So the invariant this test asserts is the one that
-   actually holds and the one that matters: retention is bounded by the CAPS, constants, and
-   never by duration.
+   **This test's subject changed with phaze-w55w1 and its assertions had to change with it.**
+   Under the Phase 43 caps a long file was STRIDED to 60 fine + 30 coarse windows, and
+   bounded memory came for free from analyzing less of the file. Analysis is now exhaustive
+   (ADR-0007 §7): the 12h file's ~1440 natural fine windows are ALL analyzed, so the old
+   proof (``len(fine) == cap``) is gone and the property it stood in for has to be proved
+   directly — peak RSS is bounded by the CHUNK, not by the file.
+
+   Both tiers still retain a whole unit of buffers *deliberately*. COARSE has since
+   phaze-15sw, because model-major inference needs every window of its unit in hand before
+   the first graph is built — the trade that removed ~4 GiB of co-resident TF graphs. FINE
+   does since phaze-5lop, because its windows come off ONE streaming decode pass instead of
+   one non-seeking ``EasyLoader`` call each. What phaze-w55w1 changed is what that unit IS:
+   a CHUNK (:data:`_FINE_CHUNK_WINDOWS` / :data:`_COARSE_CHUNK_WINDOWS`) rather than a cap on
+   the whole file. If chunking leaked — if a chunk's buffers outlived it — the 12h file would
+   add >7GB here, which is exactly what the peak assertions below refuse.
 
    Each duration is measured in its OWN forked process (``_peak_rss_for``). Differencing
    ``ru_maxrss`` across runs inside one process — what this test used to do — does not
@@ -58,7 +63,7 @@ import numpy as np
 import pytest
 
 import phaze.services.analysis as analysis_mod
-from phaze.services.analysis import _DEFAULT_COARSE_CAP, _DEFAULT_FINE_CAP, analyze_file
+from phaze.services.analysis import analyze_file
 
 
 if TYPE_CHECKING:
@@ -69,32 +74,38 @@ _SOURCE_RATE = 8000  # cheap source rate; EasyLoader resamples to 44.1k/16k rega
 _FINE_BUF_SAMPLES = 1_323_000  # 30s @ 44.1kHz float32 ~= 5.3MB per window buffer
 
 # Mocked-decode 2h-scale memory test durations.
-_SHORT_SEC = 240.0  # 4 min  -> 8 fine, 2 coarse (all under the caps)
-_LONG_SEC = 7210.0  # just over 2 hours -> ~240 natural fine, strided to 60/30
-_LONGER_SEC = 43_200.0  # 12 hours -> ~1440 natural fine, strided to the SAME 60/30
+_SHORT_SEC = 240.0  # 4 min  -> 8 fine, 2 coarse: ONE partial chunk per tier
+_LONG_SEC = 7210.0  # just over 2 hours -> ~240 fine windows = 4 fine chunks, ALL analyzed
+_LONGER_SEC = 43_200.0  # 12 hours -> ~1440 fine windows = 24 fine chunks, ALL analyzed
 
 _BUF_MB = _FINE_BUF_SAMPLES * 4 / 1024 / 1024  # ~5.05 MB per mocked window buffer
 
-# The designed concurrent retention, in buffers, of a file at or above BOTH caps. Since
-# phaze-5lop each tier decodes in ONE streaming pass and so holds its own cap's worth of
-# windows: FINE 60 x 30 s @ 44.1 kHz, then (after the fine buffers are dropped and trimmed)
-# COARSE 30 x 180 s @ 16 kHz, which phaze-15sw already required so a model-major sweep can
-# run one graph across every window. The two never overlap in the pipeline, but ru_maxrss is
-# a high-water mark and the platform running this test may not return the fine tier's pages
-# to the OS before the coarse tier faults its own (macOS has no `malloc_trim`), so the bound
-# is the SUM -- the honest worst case for this instrument.
-_DESIGNED_RETENTION_MB = (_DEFAULT_FINE_CAP + _DEFAULT_COARSE_CAP) * _BUF_MB
+# The designed concurrent retention, in buffers, of a file large enough to fill BOTH tiers'
+# chunks. Since phaze-5lop each tier decodes a whole unit in ONE streaming pass and so holds
+# that unit's worth of windows: FINE 60 x 30 s @ 44.1 kHz, then (after the fine buffers are
+# dropped and trimmed) COARSE 30 x 180 s @ 16 kHz, which phaze-15sw already required so a
+# model-major sweep can run one graph across every window. The two never overlap in the
+# pipeline, but ru_maxrss is a high-water mark and the platform running this test may not
+# return the fine tier's pages to the OS before the coarse tier faults its own (macOS has no
+# `malloc_trim`), so the bound is the SUM -- the honest worst case for this instrument.
+#
+# phaze-w55w1: the numbers are unchanged; only their SOURCE moved, from the removed caps to
+# the chunk sizes. That equality is the whole point of picking those chunk sizes (D-07), and
+# it is what keeps ADR-0005's memory limits valid across the cap removal.
+_DESIGNED_RETENTION_MB = (analysis_mod._FINE_CHUNK_WINDOWS + analysis_mod._COARSE_CHUNK_WINDOWS) * _BUF_MB
 
 # Headroom over that for interpreter, mock and allocator overhead. Measured 1.05x on macOS
-# (478.8 MB against a 454.2 MB design) for both the 2h and the 12h file; 1.35x is a ceiling
-# that a real duration-proportional retention could not fit under -- a 12h file's natural
-# 1440 fine windows would be ~7.3 GB.
+# (478.8 MB against a 454.2 MB design) for both the 2h and the 12h file under the caps; 1.35x
+# is a ceiling that a real duration-proportional retention could not fit under -- a 12h file's
+# 1440 fine windows are ~7.3 GB if a chunk's buffers ever outlive their chunk.
 _MAX_PEAK_RATIO = 1.35
 
-# 2h vs 12h stride to the SAME 60 fine + 30 coarse windows, so their designed retention is
-# identical and their peaks must be too. This is the sharp assertion -- it is what "cost does
-# not scale with duration" actually means. Measured difference: 0.1 MB (0.02%) on macOS.
-_MAX_CAPPED_DELTA_MB = 25.0
+# 2h and 12h now analyze 4 and 24 fine chunks respectively -- 6x the WORK -- but one chunk at
+# a time either way, so their designed retention is identical and their peaks must be too.
+# This is the sharp assertion, and it is sharper than it was under the caps: back then the two
+# runs did identical work, so an equal peak proved little. Now the work differs 6x and the
+# peak still must not move, which is what "memory is O(chunk), not O(duration)" actually means.
+_MAX_CHUNKED_DELTA_MB = 25.0
 
 
 def _ru_maxrss_mb() -> float:
@@ -148,22 +159,47 @@ def _mock_get_labels(model_filename: str, _models_dir: str) -> list[str]:
     return ["positive_class", "negative_class"]
 
 
+class _StubRhythm:
+    """Plain callable standing in for ``RhythmExtractor2013``. NOT a ``MagicMock`` -- see below."""
+
+    def __call__(self, _buf: Any) -> tuple[Any, ...]:
+        return (128.0, np.array([0.5]), 3.8, np.array([]), np.array([0.5]))
+
+
+class _StubKey:
+    """Plain callable standing in for ``KeyExtractor``. NOT a ``MagicMock`` -- see below."""
+
+    def __call__(self, _buf: Any) -> tuple[str, str, float]:
+        return ("C", "minor", 0.8)
+
+
 def _build_mock_es() -> MagicMock:
-    """essentia mock whose EasyLoader returns a FRESH ~5MB buffer per window call."""
+    """essentia mock whose EasyLoader returns a FRESH ~5MB buffer per window call.
+
+    **The per-window extractors are deliberately NOT ``MagicMock``s** (phaze-w55w1), and this
+    is load-bearing for the measurement rather than a style choice. A ``MagicMock`` records
+    every call in ``mock_calls``, which means it holds a STRONG REFERENCE to each argument it
+    was called with -- here, the decoded window buffer. Under the Phase 43 caps that was
+    invisible: 60 fine calls retained 60 buffers, ~318 MB, indistinguishable from the designed
+    retention the test was measuring. Exhaustive analysis makes it fatal to the instrument: a
+    12h file makes 1440 calls, so the mock alone accumulates ~3.7 GiB and the test reports a
+    duration-proportional peak that the pipeline does not actually have. Measured here before
+    the fix -- 5.365 GiB, against a real per-chunk design of 454 MB.
+
+    Plain callables record nothing, so what ``ru_maxrss`` sees is the pipeline's retention and
+    only the pipeline's. ``mock_es`` itself stays a ``MagicMock``: its calls carry a filename
+    and a few floats, never a buffer.
+    """
     mock_es = MagicMock()
 
     loader_instance = MagicMock()
-    # Fresh allocation each call so any accidental retention shows up in RSS.
+    # Fresh allocation each call so any accidental retention shows up in RSS. Called with NO
+    # arguments, so its own call recording retains nothing.
     loader_instance.side_effect = lambda: np.zeros(_FINE_BUF_SAMPLES, dtype=np.float32)
     mock_es.EasyLoader.return_value = loader_instance
 
-    rhythm = MagicMock()
-    rhythm.return_value = (128.0, np.array([0.5]), 3.8, np.array([]), np.array([0.5]))
-    mock_es.RhythmExtractor2013.return_value = rhythm
-
-    key = MagicMock()
-    key.return_value = ("C", "minor", 0.8)
-    mock_es.KeyExtractor.return_value = key
+    mock_es.RhythmExtractor2013.return_value = _StubRhythm()
+    mock_es.KeyExtractor.return_value = _StubKey()
     return mock_es
 
 
@@ -181,10 +217,15 @@ def _write_sine_wav(path: str, total_sec: int) -> None:
 
 def _run_at(duration_sec: float, mock_es: MagicMock) -> dict[str, object]:
     """analyze_file over a mocked file of ``duration_sec``."""
+    # `new=` rather than `side_effect=` for the two per-window seams, for the same reason
+    # `_build_mock_es` uses plain callables: a `side_effect=` patch still wraps the function in
+    # a MagicMock, and `_predict_single` is called once per (model, window) -- 34 x every coarse
+    # window -- so its call log would pin every coarse buffer of the whole file and turn this
+    # bounded-memory test into a measurement of unittest.mock.
     with (
         patch.object(analysis_mod, "es", mock_es),
-        patch.object(analysis_mod, "_predict_single", side_effect=_mock_predict_single),
-        patch.object(analysis_mod, "_get_labels", side_effect=_mock_get_labels),
+        patch.object(analysis_mod, "_predict_single", new=_mock_predict_single),
+        patch.object(analysis_mod, "_get_labels", new=_mock_get_labels),
         patch.object(analysis_mod, "_probe_duration_sec", return_value=duration_sec),
     ):
         return analyze_file("/fake/audio.mp3", "/fake/models")
@@ -209,22 +250,17 @@ def test_long_file_bounded() -> None:
 
     short_fine = [w for w in short_result["windows"] if w["tier"] == "fine"]
     long_fine = [w for w in long_result["windows"] if w["tier"] == "fine"]
+    longer_fine = [w for w in longer_result["windows"] if w["tier"] == "fine"]
 
-    # Phase 43: per-file cost is bounded by an even-stride cap. The loop still spans
-    # the whole >=2h file (its natural ~240 fine windows are recorded as coverage),
-    # but only the fine cap (60) are kept & decoded — cost no longer scales with length.
-    assert len(long_fine) == _DEFAULT_FINE_CAP, f"long file should be strided down to {_DEFAULT_FINE_CAP} fine windows; got {len(long_fine)}"
-    assert long_result["sampled"] is True
-    assert long_result["fine_windows_total"] >= 200, "coverage must record the full natural window count of the >=2h file"
-    # The short file is under the cap, so it is NOT strided: its count stays natural
-    # and below the cap, and the long file does NOT scale up with length (it is capped).
-    assert len(short_fine) < _DEFAULT_FINE_CAP
-    assert len(short_fine) < len(long_fine) <= _DEFAULT_FINE_CAP
-
-    # Both long files stride to the same 60/30, so their coverage differs but their work
-    # -- and their designed retention -- does not.
-    assert longer_result["fine_windows_total"] > long_result["fine_windows_total"] * 4
-    assert len([w for w in longer_result["windows"] if w["tier"] == "fine"]) == _DEFAULT_FINE_CAP
+    # phaze-w55w1: EXHAUSTIVE. Every natural window of every file is analyzed -- work now DOES
+    # scale with length, deliberately, and it is memory that must not. The counts below are the
+    # counterfactual to the Phase 43 assertion this replaces (`len(long_fine) == 60`).
+    assert len(long_fine) == long_result["fine_windows_total"] >= 200
+    assert len(longer_fine) == longer_result["fine_windows_total"] >= 1400
+    assert len(short_fine) == short_result["fine_windows_total"] == 8
+    # The 12h file really does do ~6x the fine-window work of the 2h file. That inequality is
+    # what makes the peak-equality assertion below meaningful rather than tautological.
+    assert len(longer_fine) > len(long_fine) * 4
 
     # Each peak is measured in its OWN process (see `_peak_rss_for`), so these are three
     # independent measurements rather than three points on one monotonic high-water curve.
@@ -232,26 +268,28 @@ def test_long_file_bounded() -> None:
     long_peak = _peak_rss_for(_LONG_SEC)
     longer_peak = _peak_rss_for(_LONGER_SEC)
 
-    # The absolute bound: a >=2h file's peak is the DESIGNED cap-bounded retention (fine cap
-    # then coarse cap, phaze-5lop / phaze-15sw) plus overhead -- not something proportional to
-    # its ~240 natural fine windows, which would be ~1.2 GB, nor to the 12h file's ~1440.
+    # The absolute bound: a >=2h file's peak is the DESIGNED chunk-bounded retention (one fine
+    # chunk, then one coarse chunk -- phaze-5lop / phaze-15sw / D-07) plus overhead, not
+    # something proportional to its ~240 fine windows (~1.2 GB) nor to the 12h file's ~1440
+    # (~7.3 GB). Both of those are now genuinely ANALYZED, so this is the only thing standing
+    # between exhaustive analysis and the ADR-0005 memory limit.
     ceiling_mb = _DESIGNED_RETENTION_MB * _MAX_PEAK_RATIO
     assert long_peak < ceiling_mb, (
         f"a 2h file peaked at {long_peak:.1f}MB, past {ceiling_mb:.0f}MB "
-        f"({_MAX_PEAK_RATIO}x the {_DESIGNED_RETENTION_MB:.0f}MB of designed cap-bounded retention); "
-        f"decoded buffers must be bounded by the caps, not by the natural window count"
+        f"({_MAX_PEAK_RATIO}x the {_DESIGNED_RETENTION_MB:.0f}MB of designed chunk-bounded retention); "
+        f"decoded buffers must be bounded by the chunk, not by the window count"
     )
-    # The short file is under both caps, so it must hold -- and peak at -- strictly less.
+    # The short file fits inside one partial chunk, so it must hold -- and peak at -- strictly less.
     assert short_peak < long_peak, f"a 4min file ({short_peak:.1f}MB) must not peak at or above a 2h file ({long_peak:.1f}MB)"
 
-    # The sharp one: 6x the duration, identical caps, so identical retention and identical
-    # peak. Anything that scales with duration rather than with the cap shows up here, and
-    # cannot hide behind the ceiling above.
-    capped_delta_mb = abs(longer_peak - long_peak)
-    assert capped_delta_mb < _MAX_CAPPED_DELTA_MB, (
-        f"peak RSS moved {capped_delta_mb:.1f}MB between a 2h file ({long_peak:.1f}MB) and a 12h file "
-        f"({longer_peak:.1f}MB) at identical caps; per-file memory must be bounded by the cap, not by "
-        f"duration (threshold {_MAX_CAPPED_DELTA_MB}MB)"
+    # The sharp one: 6x the duration AND 6x the analyzed windows, identical chunk size, so
+    # identical retention and identical peak. Anything that scales with duration rather than
+    # with the chunk shows up here, and cannot hide behind the ceiling above.
+    chunked_delta_mb = abs(longer_peak - long_peak)
+    assert chunked_delta_mb < _MAX_CHUNKED_DELTA_MB, (
+        f"peak RSS moved {chunked_delta_mb:.1f}MB between a 2h file ({long_peak:.1f}MB) and a 12h file "
+        f"({longer_peak:.1f}MB) at identical chunk sizes; per-file memory must be bounded by the chunk, "
+        f"not by duration (threshold {_MAX_CHUNKED_DELTA_MB}MB)"
     )
 
 
@@ -263,8 +301,8 @@ def test_real_decode_short_no_overflow(tmp_path: Path) -> None:
 
     # Real decode + real rhythm/key; only the TF model pass is mocked (no .pb in CI).
     with (
-        patch.object(analysis_mod, "_predict_single", side_effect=_mock_predict_single),
-        patch.object(analysis_mod, "_get_labels", side_effect=_mock_get_labels),
+        patch.object(analysis_mod, "_predict_single", new=_mock_predict_single),
+        patch.object(analysis_mod, "_get_labels", new=_mock_get_labels),
     ):
         result = analyze_file(path, "/fake/models")  # must NOT raise OnsetDetectionGlobal overflow
 

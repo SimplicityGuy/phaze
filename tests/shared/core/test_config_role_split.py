@@ -294,3 +294,43 @@ def test_env_example_explains_host_vs_container() -> None:
     text = _read_env_example()
     assert "localhost" in text, ".env.example must explain host-vs-container hostname swap"
     assert "docker compose" in text.lower(), ".env.example must reference docker compose context"
+
+
+# ---------------------------------------------------------------------------
+# phaze-w55w1: the analysis liveness deadlines' relationship to each other.
+# ---------------------------------------------------------------------------
+
+
+def test_outer_job_heartbeat_is_strictly_greater_than_the_inner_stall_threshold() -> None:
+    """The SAQ job heartbeat must leave the in-process watchdog room to win.
+
+    The two layers do NOT measure the same signal: the inner watchdog resets on ANY child output
+    (protocol lines and essentia's stderr banners alike), while the outer deadline resets only
+    when the lane relays a touch -- a strictly narrower signal that is also throttled and
+    best-effort. Equal deadlines would let SAQ sweep, abort and blind-retry a multi-hour analysis
+    the watchdog is correctly holding healthy, discarding a whole file's work. This restores, on
+    the new mechanism, the deliberate inner-below-outer skew Phase 43 kept (inner 6600 < 7200).
+    """
+    from phaze.config import ControlSettings
+
+    cfg = ControlSettings()
+
+    assert cfg.analysis_job_heartbeat_sec > cfg.analysis_stall_timeout_sec
+    # And by a real margin, not a rounding artifact: the inner layer gets a full extra stall
+    # window to detect, kill, and let the lane store a real error_message first.
+    assert cfg.analysis_job_heartbeat_sec >= cfg.analysis_stall_timeout_sec * 2
+
+
+def test_raising_the_stall_threshold_raises_the_outer_net_with_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The outer net is DERIVED, so the skew cannot be broken by tuning one knob.
+
+    An independently-configurable outer deadline is exactly how this invariant gets violated at
+    3am; deriving it means an operator who raises the stall threshold gets both.
+    """
+    from phaze.config import ControlSettings
+
+    monkeypatch.setenv("PHAZE_ANALYSIS_STALL_TIMEOUT_SEC", "5400")
+    cfg = ControlSettings()
+
+    assert cfg.analysis_stall_timeout_sec == 5400
+    assert cfg.analysis_job_heartbeat_sec > 5400

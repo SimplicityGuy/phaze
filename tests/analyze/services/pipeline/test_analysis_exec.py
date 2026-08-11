@@ -3,7 +3,7 @@
 Every test here runs the REAL ``python -m phaze.analysis_child`` subprocess — no
 essentia wheel needed, because ``PHAZE_ANALYSIS_CHILD_TARGET`` points the child at the
 ``tests.analyze._child_stubs`` targets. That makes these integration tests of the full
-parent↔child contract: spawn, protocol pump, stderr framing, timeout/cancel kill.
+parent↔child contract: spawn, protocol pump, stderr framing, stall/cancel kill.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import pytest
 from structlog.testing import capture_logs
 
 from phaze.analysis_child import _TARGET_ENV
-from phaze.services.analysis_exec import AnalysisSubprocessError, run_analysis_subprocess
+from phaze.services.analysis_exec import AnalysisStalledError, AnalysisSubprocessError, run_analysis_subprocess
 from tests.analyze._child_stubs import _result
 
 
@@ -70,13 +70,14 @@ async def test_windowing_overrides_forwarded_and_defaults_left_alone(monkeypatch
     """Only provided windowing kwargs become child flags; absent ones never reach the target."""
     _point_child_at(monkeypatch, "fake_analyze")
 
-    result = await run_analysis_subprocess("/fake/audio.mp3", "/fake/models", fine_cap=7, coarse_window_sec=120)
+    result = await run_analysis_subprocess("/fake/audio.mp3", "/fake/models", fine_min_sec=7, coarse_window_sec=120)
 
     echo = result["echo"]
-    assert echo["fine_cap"] == 7
+    assert echo["fine_min_sec"] == 7
     assert echo["coarse_window_sec"] == 120
-    for absent in ("fine_window_sec", "fine_min_sec", "coarse_cap"):
-        assert absent not in echo
+    # phaze-w55w1: `fine_cap` / `coarse_cap` are not merely absent here, they no longer exist
+    # as flags at all -- the child's argparse would reject them.
+    assert "fine_window_sec" not in echo
 
 
 async def test_child_stderr_is_framed_into_log_events(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -93,17 +94,82 @@ async def test_child_stderr_is_framed_into_log_events(monkeypatch: pytest.Monkey
     assert any("stray print from the analysis child" in line for line in framed)
 
 
-async def test_timeout_kills_the_child_and_raises_timeout_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A wedged child is SIGKILLed at the inner timeout and surfaces as builtins
-    TimeoutError — the same exception the pebble pool raised, so lane handlers keep working."""
+async def test_stalled_child_is_killed_and_raises_a_timeout_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A child that stops reporting progress is SIGKILLed at the stall threshold (phaze-w55w1).
+
+    ``hang_analyze`` emits one beat then wedges for 300 s. The raised
+    :class:`AnalysisStalledError` subclasses ``TimeoutError``, which is what both lanes already
+    catch to record a terminal, non-retried failure — so the disposition of a wedged child is
+    unchanged and only the evidence improves.
+    """
     _point_child_at(monkeypatch, "hang_analyze")
     started = time.monotonic()
 
-    with pytest.raises(TimeoutError, match="timed out"):
-        await run_analysis_subprocess("/fake/audio.mp3", "/fake/models", timeout=1.5)
+    with pytest.raises(AnalysisStalledError, match="stalled: no progress") as excinfo:
+        await run_analysis_subprocess("/fake/audio.mp3", "/fake/models", stall_timeout=1.5)
 
-    # Bounded promptly by the timeout + kill, not by the stub's 300s hang.
+    # The stored message must name the threshold AND the last stage the child reached -- that is
+    # the whole point of storing a real error rather than "timeout".
+    assert excinfo.value.stall_timeout == 1.5
+    assert excinfo.value.last_stage == "fine"
+    assert isinstance(excinfo.value, TimeoutError), "lane handlers catch TimeoutError; the subclass must stay one"
+    # Bounded promptly by the stall threshold + kill, not by the stub's 300s hang.
     assert time.monotonic() - started < 10.0
+
+
+async def test_slow_but_progressing_child_survives_far_past_the_stall_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """THE regression test for phaze-1b39 / ADR-0007 §7: elapsed time alone must never kill.
+
+    ``crawling_analyze`` runs for ~2 s -- roughly 7x the 0.3 s stall threshold armed here -- but
+    never goes quiet for more than ~0.05 s. Under the retired wall-clock bound this file died;
+    under the stall watchdog it completes, which is exactly the behaviour a multi-hour concert
+    set needs. The ratio, not the absolute durations, is what this test asserts.
+    """
+    _point_child_at(monkeypatch, "crawling_analyze")
+    monkeypatch.setenv("PHAZE_STUB_BEAT_SEC", "0.05")
+    monkeypatch.setenv("PHAZE_STUB_BEATS", "40")
+    stall_timeout = 0.3
+    beats: list[tuple[str, int, int]] = []
+    started = time.monotonic()
+
+    result = await run_analysis_subprocess(
+        "/fake/<set-01>",
+        "/fake/models",
+        heartbeat_cb=lambda stage, done, total: beats.append((stage, done, total)),
+        stall_timeout=stall_timeout,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result["fine_windows_analyzed"] == 3  # the stub's canned result: it ran to completion
+    assert elapsed > stall_timeout * 3, f"the run ({elapsed:.2f}s) must outlast the stall threshold several times over"
+    assert len(beats) == 40
+    assert beats[-1] == ("fine", 40, 40)
+
+
+async def test_stall_timeout_none_leaves_the_child_unbounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``stall_timeout=None`` arms no watchdog at all -- the pre-phaze-w55w1 burst-lane shape."""
+    _point_child_at(monkeypatch, "crawling_analyze")
+    monkeypatch.setenv("PHAZE_STUB_BEAT_SEC", "0.01")
+    monkeypatch.setenv("PHAZE_STUB_BEATS", "5")
+
+    result = await run_analysis_subprocess("/fake/audio.mp3", "/fake/models", stall_timeout=None)
+
+    assert result["fine_windows_analyzed"] == 3
+
+
+async def test_heartbeat_cb_error_never_fails_the_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A raising liveness callback is swallowed, like the progress one: reporting never kills a job."""
+    _point_child_at(monkeypatch, "crawling_analyze")
+    monkeypatch.setenv("PHAZE_STUB_BEAT_SEC", "0.01")
+    monkeypatch.setenv("PHAZE_STUB_BEATS", "3")
+
+    def _boom(_stage: str, _done: int, _total: int) -> None:
+        msg = "heartbeat relay exploded"
+        raise RuntimeError(msg)
+
+    result = await run_analysis_subprocess("/fake/audio.mp3", "/fake/models", heartbeat_cb=_boom, stall_timeout=5.0)
+
+    assert result["fine_windows_analyzed"] == 3
 
 
 async def test_cancellation_reaps_the_child(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -305,3 +371,58 @@ async def test_environment_reaches_the_child(monkeypatch: pytest.MonkeyPatch) ->
     result = await run_analysis_subprocess("/fake/audio.mp3", "/fake/models")
 
     assert result["echo"]["models_dir"] == "/fake/models"
+
+
+async def test_cancellation_mid_watchdog_stops_the_pumps_even_if_the_kill_does_not_land(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelling the driver must settle BOTH inner tasks, not just the watchdog (phaze-w55w1).
+
+    ``asyncio.wait`` does not cancel what it was waiting on. The original shape cancelled only the
+    watchdog in its ``finally``, leaving ``drive`` -- which owns both output pumps -- SCHEDULED
+    past the reap. A cancelled-but-unawaited pump resumes on a later loop iteration and keeps
+    invoking the callbacks; on the SAQ lane the heartbeat callback touches the SAQ job, so an
+    abandoned analysis would go on reporting itself alive to the broker.
+
+    **Why this test neuters ``kill``.** The obvious version of it -- cancel, then watch for a late
+    beat -- passes against the BROKEN code, verified by mutation. Killing the child stops its
+    output, so the orphaned pumps starve and finish quietly, and the guarantee looks like it holds
+    when it is only being masked by a favourable race. Making ``Process.kill`` a no-op removes the
+    mask: the child keeps emitting for the rest of its (short) run, so pumps that were merely
+    abandoned rather than settled are directly observable as callbacks arriving after the caller's
+    ``CancelledError``. That is also the real-world shape worth defending against -- a kill that is
+    slow or does not land is exactly when an orphaned pump has time to matter.
+    """
+    _point_child_at(monkeypatch, "crawling_analyze")
+    monkeypatch.setenv("PHAZE_STUB_BEAT_SEC", "0.02")
+    monkeypatch.setenv("PHAZE_STUB_BEATS", "60")  # ~1.2s: outlives the cancel, ends the test promptly
+    # No-op kill: the reap still awaits the child, but the child is not actually killed, so its
+    # output continues and any surviving pump keeps calling back.
+    monkeypatch.setattr(asyncio.subprocess.Process, "kill", lambda _self: None)
+    beats: list[str] = []
+
+    task = asyncio.ensure_future(
+        run_analysis_subprocess(
+            "/fake/audio.mp3",
+            "/fake/models",
+            heartbeat_cb=lambda stage, _d, _t: beats.append(stage),
+            stall_timeout=30.0,  # generous: cancellation, not a stall, is the subject
+        )
+    )
+    while len(beats) < 2:  # wait until the child is genuinely streaming into the pumps
+        await asyncio.sleep(0.02)
+
+    task.cancel()
+    # Snapshot HERE, not after `await task`. `cancel()` is synchronous and callbacks only run on
+    # the loop, so this count is exact -- whereas the reap itself awaits the child, and an
+    # abandoned pump does its damage DURING that await. Sampling afterwards was the flaw that let
+    # an earlier version of this test pass against the broken code.
+    seen_at_cancel = len(beats)
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # Plus extra turns, so a pump that resumes late is caught too.
+    for _ in range(20):
+        await asyncio.sleep(0.02)
+
+    assert len(beats) == seen_at_cancel, f"{len(beats) - seen_at_cancel} callback(s) fired after cancellation: a pump outlived the reap"

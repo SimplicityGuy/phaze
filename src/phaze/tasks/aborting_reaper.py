@@ -35,11 +35,13 @@ THREE GUARDS, all load-bearing:
   start, so ``now - started`` is the true age of the stuck state (spike phaze-qmc2.1, fact 4).
 - **Bound is PER-ROW, derived from that row's own ``timeout``, not a single fixed constant**
   (phaze-lqkz). The predicate measures the ATTEMPT'S RUNTIME (age since ``started``), so a fixed
-  bound is only correct for jobs whose timeout happens to match it. ``process_file`` runs with a
-  7200s job timeout (``services/analysis_enqueue.py``); a timed-out ``process_file`` enters
-  ``'aborting'`` at age 7200s -- already ~8x past the OLD 900s absolute bound -- so the every-minute
-  cron could steal the row from a worker still mid-finalization (SAQ's sweeper waits up to ~5s for
-  ``finish(ABORTED)`` to land). SAQ's ``Job.to_dict`` always serializes ``timeout`` once it differs
+  bound is only correct for jobs whose timeout happens to match it. The motivating case was
+  ``process_file``'s then-7200s job timeout: a timed-out one entered ``'aborting'`` at age 7200s --
+  already ~8x past the OLD 900s absolute bound -- so the every-minute cron could steal the row from
+  a worker still mid-finalization (SAQ's sweeper waits up to ~5s for ``finish(ABORTED)`` to land).
+  Since phaze-w55w1 ``process_file`` itself is out of scope for this reaper entirely: it runs
+  ``timeout=0``, and ``timeout: 0`` rows are EXCLUDED (see the guard below). The per-row derivation
+  is unchanged and still right for every other long job. SAQ's ``Job.to_dict`` always serializes ``timeout`` once it differs
   from the SAQ dataclass default (10s) -- true for every phaze producer via
   ``apply_project_job_defaults`` -- so the row's OWN blob already carries the bound needed; no side
   table or extra state is required. A row whose blob lacks ``timeout`` (a bare/legacy row) falls

@@ -10,7 +10,7 @@
    racing the reaper) is a terminal branch rendered with a 200 status -- never a 4xx. HTMX
    2.x's default responseHandling does not swap non-2xx responses, so a 404 here would leave
    the previous RUNNING card (and its armed hx-trigger) in the DOM, 404-polling forever.
-   Mirrors deepen_progress.html's gone handling.
+   Terminal 'gone' branch: a fragment whose subject vanished must stop polling, never loop.
 #}
 {% if gone %}
 <div class="bg-white dark:bg-phaze-bg border border-gray-200 dark:border-phaze-border rounded-lg p-4"
