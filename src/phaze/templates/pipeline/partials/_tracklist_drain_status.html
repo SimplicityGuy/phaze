@@ -16,18 +16,60 @@
      number can be read as more optimistic than the other actually is.
    * operator-flagged sets are counted separately (`flagged_queued`) from the funnel, since a
      flag changes ORDER, not the total amount of work.
+
+   phaze-6nrrf ARM/DISARM ROW: `arm` is the durable TracklistDrainArmState row (services.
+   tracklist_drain_arm.get_arm_state) -- the SAME row the continuous-drain cron
+   (tasks.tracklist_drain_control.continue_armed_tracklist_drain) reads, so this is never a
+   second, drifting status surface. Arm/Disarm POST their own endpoints and re-render this
+   WHOLE fragment (hx-swap="outerHTML" on this div's own id), so the badge, the reason, and the
+   funnel numbers below always agree with each other and with whatever the cron just did.
 #}
 <div id="tracklist-drain-status" class="rounded-xl border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel">
     <div class="flex items-center justify-between gap-2">
         <p class="font-jura text-[11px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">1001Tracklists drain</p>
-        <button type="button"
-                hx-post="/pipeline/run-tracklist-drain" hx-target="#drain-run-response" hx-swap="innerHTML"
-                hx-confirm="Queue a batch of tracklist lookups (up to 100) against the live 1001Tracklists host?"
-                aria-label="Run a bounded batch of 1001Tracklists lookups"
-                class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500">
-            Run tracklist lookups
-        </button>
+        <div class="flex items-center gap-2">
+            {% if arm.armed %}
+                <span class="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 font-jura text-[11px] font-medium uppercase tracking-wider text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">Armed</span>
+            {% else %}
+                <span class="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 font-jura text-[11px] font-medium uppercase tracking-wider text-gray-600 dark:bg-white/5 dark:text-gray-400">Disarmed</span>
+            {% endif %}
+            <button type="button"
+                    hx-post="/pipeline/run-tracklist-drain" hx-target="#drain-run-response" hx-swap="innerHTML"
+                    hx-confirm="Queue a batch of tracklist lookups (up to 100) against the live 1001Tracklists host?"
+                    aria-label="Run a bounded batch of 1001Tracklists lookups"
+                    class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500">
+                Run tracklist lookups
+            </button>
+            {% if arm.armed %}
+                <button type="button"
+                        hx-post="/pipeline/disarm-tracklist-drain" hx-target="#tracklist-drain-status" hx-swap="outerHTML"
+                        aria-label="Disarm the continuous 1001Tracklists drain"
+                        class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-red-300 dark:border-red-800 bg-white dark:bg-phaze-panel text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-red-500">
+                    Disarm
+                </button>
+            {% else %}
+                <button type="button"
+                        hx-post="/pipeline/arm-tracklist-drain" hx-target="#tracklist-drain-status" hx-swap="outerHTML"
+                        hx-confirm="Arm the continuous drain? Every completed slice will re-enqueue the next one automatically -- up to {{ '{:,}'.format(daily_ceiling) }} lookups/day -- until the queue is empty, the drain looks broken, or you disarm it."
+                        aria-label="Arm the continuous 1001Tracklists drain"
+                        class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-emerald-300 dark:border-emerald-800 bg-white dark:bg-phaze-panel text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    Arm
+                </button>
+            {% endif %}
+        </div>
     </div>
+    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+        {% if arm.armed %}
+            Armed since {{ arm.armed_at.strftime('%Y-%m-%d %H:%M') if arm.armed_at else '—' }} -- each completed slice re-enqueues the
+            next one automatically (a {{ '{:,}'.format(tracklist_drain_cooldown_sec) }}s cooldown between slices, operator-tunable).
+            Disarms itself when the queue empties or after 3 consecutive slice failures.
+        {% else %}
+            Disarmed -- "Run tracklist lookups" still dispenses one bounded batch on its own.
+            {% if arm.disarmed_reason %}
+                Last stopped ({{ arm.disarmed_reason.replace('_', ' ') }}){% if arm.disarmed_at %} at {{ arm.disarmed_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}.
+            {% endif %}
+        {% endif %}
+    </p>
     <div id="drain-run-response" class="mt-2 text-xs empty:hidden"></div>
 
     <dl class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -74,5 +116,13 @@
             those two numbers IS what dedup buys, and at a {{ '%.2f' | format(status.collapse_ratio) }} collapse ratio it is a
             few percent, not a shortcut.
         </p>
+        {% if arm.armed %}
+        <p class="mt-1">
+            That ~{{ '%.1f' | format(status.projected_days) }} days is also this armed pass's projected completion --
+            it is the same host-budget-bound figure, since the {{ '{:,}'.format(tracklist_drain_cooldown_sec) }}s
+            cooldown between slices is far shorter than one slice's own pacing at the default settings. A cooldown
+            configured longer than a slice takes would add idle time this figure does not account for.
+        </p>
+        {% endif %}
     </div>
 </div>
