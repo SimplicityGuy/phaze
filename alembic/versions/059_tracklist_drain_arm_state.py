@@ -51,9 +51,9 @@ def upgrade() -> None:
         # would in a model (phaze-x8tof / migration 056's whole reason for existing).
         sa.CheckConstraint(f"id = '{_SINGLETON_ID}'", name="singleton"),
     )
-    op.execute(
-        sa.text(f"INSERT INTO {_TABLE} (id, armed) VALUES ('{_SINGLETON_ID}', false)")  # noqa: S608 -- literal id, no user input
-    )
+    # Literal SQL + bound param (the migration-039 seed pattern) rather than an f-string, which
+    # trips Semgrep's avoid-sqlalchemy-text even with constant inputs.
+    op.execute(sa.text("INSERT INTO tracklist_drain_arm_state (id, armed) VALUES (:id, false)").bindparams(id=_SINGLETON_ID))
 
 
 def downgrade() -> None:
