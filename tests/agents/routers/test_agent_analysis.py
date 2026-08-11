@@ -570,7 +570,6 @@ async def test_analysis_put_advances_state_and_persists_coverage_columns(
                 "fine_windows_total": 40,
                 "coarse_windows_analyzed": 2,
                 "coarse_windows_total": 8,
-                "sampled": True,
             },
         )
 
@@ -585,7 +584,6 @@ async def test_analysis_put_advances_state_and_persists_coverage_columns(
     assert row.fine_windows_total == 40
     assert row.coarse_windows_analyzed == 2
     assert row.coarse_windows_total == 8
-    assert row.sampled is True
     # features must stay NULL -- no coverage field leaked into the JSONB overflow.
     assert row.features is None, "coverage fields must not funnel into features JSONB"
 

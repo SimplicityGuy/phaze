@@ -5,7 +5,13 @@ REAL ``phaze.analysis_child`` subprocess (and the ``phaze.services.analysis_exec
 driver above it) can be exercised end-to-end without an essentia wheel: the child
 imports THIS module instead of ``phaze.services.analysis``. Each stub mirrors the
 ``analyze_file`` call contract — ``(file_path, models_dir, *, progress_cb=None,
-**windowing)`` returning the aggregates + windows + five-field coverage dict.
+heartbeat_cb=None, **windowing)`` returning the aggregates + windows + the four
+progress counts.
+
+``heartbeat_cb`` is named EXPLICITLY on every stub rather than swept into ``**windowing``
+(phaze-w55w1). It has to be: ``_result`` echoes ``**windowing`` back through the JSON
+protocol, so a callable landing there makes the child die with "Object of type function is
+not JSON serializable" — a failure that looks like a protocol bug and is really a stub bug.
 
 Importable from a child subprocess because the test runner's cwd (the repo root) is
 on ``sys.path[0]`` under ``python -m``; driver tests pass the repo root cwd explicitly.
@@ -42,12 +48,18 @@ def _result(file_path: str, models_dir: str, **windowing: Any) -> dict[str, Any]
         "fine_windows_total": 3,
         "coarse_windows_analyzed": 1,
         "coarse_windows_total": 1,
-        "sampled": False,
         "echo": {"file_path": file_path, "models_dir": models_dir, **windowing},
     }
 
 
-def fake_analyze(file_path: str, models_dir: str, *, progress_cb: Callable[[int, int], None] | None = None, **windowing: Any) -> dict[str, Any]:
+def fake_analyze(
+    file_path: str,
+    models_dir: str,
+    *,
+    progress_cb: Callable[[int, int], None] | None = None,
+    heartbeat_cb: Callable[[str, int, int], None] | None = None,
+    **windowing: Any,
+) -> dict[str, Any]:
     """Happy path: START + three bumps, then the deterministic result."""
     if progress_cb is not None:
         for analyzed in (0, 1, 2, 3):
@@ -55,7 +67,14 @@ def fake_analyze(file_path: str, models_dir: str, *, progress_cb: Callable[[int,
     return _result(file_path, models_dir, **windowing)
 
 
-def slow_analyze(file_path: str, models_dir: str, *, progress_cb: Callable[[int, int], None] | None = None, **windowing: Any) -> dict[str, Any]:
+def slow_analyze(
+    file_path: str,
+    models_dir: str,
+    *,
+    progress_cb: Callable[[int, int], None] | None = None,
+    heartbeat_cb: Callable[[str, int, int], None] | None = None,
+    **windowing: Any,
+) -> dict[str, Any]:
     """Like fake_analyze but sleeps between bumps so a parent can observe MID-RUN progress."""
     if progress_cb is not None:
         for analyzed in (0, 1, 2, 3):
@@ -64,15 +83,40 @@ def slow_analyze(file_path: str, models_dir: str, *, progress_cb: Callable[[int,
     return _result(file_path, models_dir, **windowing)
 
 
-def hang_analyze(file_path: str, models_dir: str, *, progress_cb: Callable[[int, int], None] | None = None, **windowing: Any) -> dict[str, Any]:
-    """Emits START then wedges — for driver timeout/kill tests."""
+def _beat(heartbeat_cb: Callable[[str, int, int], None] | None, stage: str, done: int, total: int) -> None:
+    """Emit one liveness heartbeat if the caller wired the channel."""
+    if heartbeat_cb is not None:
+        heartbeat_cb(stage, done, total)
+
+
+def hang_analyze(
+    file_path: str,
+    models_dir: str,
+    *,
+    progress_cb: Callable[[int, int], None] | None = None,
+    heartbeat_cb: Callable[[str, int, int], None] | None = None,
+    **windowing: Any,
+) -> dict[str, Any]:
+    """Emits START then wedges, reporting NOTHING further — for the driver's stall/kill tests.
+
+    This is what a genuine hang looks like to the stall watchdog: some initial output, then
+    silence. Contrast ``crawling_analyze``, which is equally slow but keeps reporting.
+    """
     if progress_cb is not None:
         progress_cb(0, 5)
+    _beat(heartbeat_cb, "fine", 0, 5)
     time.sleep(300.0)
     return _result(file_path, models_dir, **windowing)  # pragma: no cover - killed long before
 
 
-def crash_analyze(file_path: str, models_dir: str, *, progress_cb: Callable[[int, int], None] | None = None, **windowing: Any) -> dict[str, Any]:
+def crash_analyze(
+    file_path: str,
+    models_dir: str,
+    *,
+    progress_cb: Callable[[int, int], None] | None = None,
+    heartbeat_cb: Callable[[str, int, int], None] | None = None,
+    **windowing: Any,
+) -> dict[str, Any]:
     """Raises mid-analysis — for the child error line + nonzero exit path."""
     if progress_cb is not None:
         progress_cb(0, 3)
@@ -80,7 +124,14 @@ def crash_analyze(file_path: str, models_dir: str, *, progress_cb: Callable[[int
     raise RuntimeError(msg)
 
 
-def noisy_analyze(file_path: str, models_dir: str, *, progress_cb: Callable[[int, int], None] | None = None, **windowing: Any) -> dict[str, Any]:
+def noisy_analyze(
+    file_path: str,
+    models_dir: str,
+    *,
+    progress_cb: Callable[[int, int], None] | None = None,
+    heartbeat_cb: Callable[[str, int, int], None] | None = None,
+    **windowing: Any,
+) -> dict[str, Any]:
     """Writes raw banner bytes to fd 1 (as essentia's C++ does) plus a stray print.
 
     After the child's fd re-route BOTH must land on stderr, keeping the protocol
@@ -91,4 +142,29 @@ def noisy_analyze(file_path: str, models_dir: str, *, progress_cb: Callable[[int
     if progress_cb is not None:
         progress_cb(0, 1)
         progress_cb(1, 1)
+    return _result(file_path, models_dir, **windowing)
+
+
+def crawling_analyze(
+    file_path: str,
+    models_dir: str,
+    *,
+    progress_cb: Callable[[int, int], None] | None = None,
+    heartbeat_cb: Callable[[str, int, int], None] | None = None,
+    **windowing: Any,
+) -> dict[str, Any]:
+    """SLOW but always progressing — the file the wall-clock timeout used to kill (phaze-w55w1).
+
+    Heartbeats every ``PHAZE_STUB_BEAT_SEC`` (default 0.05 s) for ``PHAZE_STUB_BEATS`` beats
+    (default 40), so total runtime is many multiples of the stall threshold a test arms while
+    no single gap between beats ever reaches it. This is a 6-hour concert set in miniature: the
+    property under test is that elapsed time alone never kills it.
+    """
+    beat_sec = float(os.environ.get("PHAZE_STUB_BEAT_SEC", "0.05"))
+    beats = int(os.environ.get("PHAZE_STUB_BEATS", "40"))
+    for i in range(beats):
+        time.sleep(beat_sec)
+        _beat(heartbeat_cb, "fine", i + 1, beats)
+    if progress_cb is not None:
+        progress_cb(beats, beats)
     return _result(file_path, models_dir, **windowing)

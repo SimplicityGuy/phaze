@@ -2,7 +2,8 @@
 
 ``services/analysis_enqueue.py`` owns the single source of truth for the
 deterministic SAQ job key (``process_file:<file_id>``), the complete 5-field
-``ProcessFilePayload``, and the job policy (``timeout=7200`` / ``retries=2``).
+``ProcessFilePayload``, and the job policy (``timeout=0`` + a progress ``heartbeat`` /
+``retries=2``).
 Both producers -- the dashboard "Run Analysis" path and the Wave-2 reboot
 re-enqueue path -- funnel through it so SAQ's per-queue deterministic-key dedup
 can collapse a repeat enqueue of an in-flight file to a no-op (32-RESEARCH §Q4).
@@ -20,6 +21,7 @@ import uuid
 
 import pytest
 
+from phaze.config import get_settings
 from phaze.schemas.agent_tasks import ProcessFilePayload
 from phaze.services.analysis_enqueue import classify_process_file_collision, enqueue_process_file, process_file_job_key
 from tests._queue_fakes import FakeQueue
@@ -50,7 +52,7 @@ async def test_enqueue_process_file_captures_deterministic_key() -> None:
 
 @pytest.mark.asyncio
 async def test_enqueue_process_file_complete_payload_and_policy() -> None:
-    """The enqueue carries the 5-field payload plus ``timeout=7200`` / ``retries=2``."""
+    """The enqueue carries the 5-field payload plus the progress-based job policy."""
     queue = FakeQueue("phaze-agent-nox")
     fid = uuid.uuid4()
     file = _fake_file(fid)
@@ -59,22 +61,18 @@ async def test_enqueue_process_file_complete_payload_and_policy() -> None:
 
     task_name, payload = queue.captured[0]
     assert task_name == "process_file"
-    # The five required ProcessFilePayload fields plus the two Phase-44 optional cap fields and the
-    # two Phase-50 optional cloud-push fields (all serialized as None when not overridden), nothing
-    # else (extra="forbid" contract).
+    # The five required ProcessFilePayload fields plus the two Phase-50 optional cloud-push
+    # fields (serialized as None when not overridden), nothing else (extra="forbid" contract).
+    # phaze-w55w1 removed the two Phase-44 cap fields from this set entirely.
     assert set(payload) == {
         "file_id",
         "original_path",
         "file_type",
         "agent_id",
         "models_path",
-        "fine_cap",
-        "coarse_cap",
         "expected_sha256",
         "scratch_path",
     }
-    assert payload["fine_cap"] is None
-    assert payload["coarse_cap"] is None
     assert payload["expected_sha256"] is None
     assert payload["scratch_path"] is None
     assert payload["file_id"] == str(fid)
@@ -86,72 +84,55 @@ async def test_enqueue_process_file_complete_payload_and_policy() -> None:
     assert str(ProcessFilePayload.model_validate(payload).file_id) == str(fid)
 
     policy = queue.captured_policy[0]
-    # Phase 43: outer SAQ safety net lowered 14400 -> 7200 (inner pebble
-    # analysis_inner_timeout_sec=6600 does the real, deterministic kill first).
-    assert policy["timeout"] == 7200
-    assert policy["timeout"] != 14400
+    # phaze-w55w1: NO wall-clock net (SAQ reads 0 as "disabled"), and a progress `heartbeat` in
+    # its place. Both halves are asserted: a heartbeat without timeout=0 would still let the
+    # elapsed-time bound kill a healthy multi-hour analysis, and timeout=0 without a heartbeat
+    # would leave the job with no liveness bound at all -- the burst lane's old failure.
+    assert policy["timeout"] == 0
+    # DERIVED from the stall threshold with slack, not equal to it: the outer net watches a
+    # narrower signal than the child's own watchdog, so equal deadlines let SAQ sweep a job the
+    # watchdog is correctly holding healthy (phaze-w55w1).
+    assert policy["heartbeat"] == get_settings().analysis_job_heartbeat_sec
+    assert policy["heartbeat"] > get_settings().analysis_stall_timeout_sec
     assert policy["retries"] == 2
     # retries explicitly NOT 1 -- apply_project_job_defaults would clobber 1 -> 4.
     assert policy["retries"] != 1
 
 
 @pytest.mark.asyncio
-async def test_enqueue_process_file_caps_default_none() -> None:
-    """Phase 44: with no cap kwargs the serialized payload carries fine_cap/coarse_cap None; key unchanged."""
+async def test_enqueue_process_file_rejects_the_removed_cap_kwargs() -> None:
+    """phaze-w55w1: `fine_cap` / `coarse_cap` are gone from the producer's signature.
+
+    A TypeError at the call site is the point: a caller still trying to request a per-file
+    window budget is asking for a lever that no longer exists, and a silently-swallowed kwarg
+    would let the (removed) deepen semantics look like they still worked.
+    """
     queue = FakeQueue("phaze-agent-nox")
-    fid = uuid.uuid4()
-    file = _fake_file(fid)
+    file = _fake_file(uuid.uuid4())
 
-    await enqueue_process_file(queue, file, "nox", "/models/pb")
-
-    _, payload = queue.captured[0]
-    assert payload["fine_cap"] is None
-    assert payload["coarse_cap"] is None
-    assert queue.captured_policy[0]["key"] == f"process_file:{fid}"
-    assert queue.captured_policy[0]["timeout"] == 7200
-    assert queue.captured_policy[0]["retries"] == 2
-
-
-@pytest.mark.asyncio
-async def test_enqueue_process_file_threads_explicit_caps() -> None:
-    """Phase 44: explicit fine_cap/coarse_cap (incl. 0) serialize into the payload; deterministic key unchanged."""
-    queue = FakeQueue("phaze-agent-nox")
-    fid = uuid.uuid4()
-    file = _fake_file(fid)
-
-    await enqueue_process_file(queue, file, "nox", "/models/pb", fine_cap=0, coarse_cap=0)
-
-    _, payload = queue.captured[0]
-    assert payload["fine_cap"] == 0
-    assert payload["coarse_cap"] == 0
-    # The exact kwargs the worker receives still validate against the schema.
-    validated = ProcessFilePayload.model_validate(payload)
-    assert validated.fine_cap == 0
-    assert validated.coarse_cap == 0
-    # Single funnel: deterministic key + policy preserved regardless of cap override.
-    assert queue.captured_policy[0]["key"] == process_file_job_key(fid)
-    assert queue.captured_policy[0]["timeout"] == 7200
-    assert queue.captured_policy[0]["retries"] == 2
+    with pytest.raises(TypeError):
+        await enqueue_process_file(queue, file, "nox", "/models/pb", fine_cap=0)  # type: ignore[call-arg]
 
 
 @pytest.mark.asyncio
 async def test_enqueue_policy_survives_apply_project_job_defaults() -> None:
-    """A Job built with the enqueue policy (timeout=7200/retries=2) is NOT clobbered.
+    """A Job built with the enqueue policy (timeout=0/retries=2) is NOT clobbered.
 
-    ``apply_project_job_defaults`` only overrides a Job attribute still sitting at
-    its SAQ default (timeout==10, retries==1, ttl==600). The Phase 43 enqueue
-    policy carries 7200/2 -- both differ from the SAQ defaults -- so the
-    before-enqueue hook MUST leave them untouched (RESEARCH Pitfall 1: retries=1
-    would be the trap that gets clobbered to worker_max_retries==4).
+    ``apply_project_job_defaults`` fills a Job attribute still sitting at its SAQ default
+    (timeout==10, retries==1, ttl==600) and then pins the per-function policy. phaze-w55w1
+    makes the timeout half of this sharper than it was: ``timeout=0`` IS the policy, but 0 is
+    also exactly the kind of value a "raise it to a sane default" hook would helpfully
+    overwrite -- which would silently restore the wall-clock kill this bead removed. retries=1
+    remains the other trap (RESEARCH Pitfall 1: it gets clobbered to worker_max_retries==4).
     """
     from saq import Job
 
     from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 
-    job = Job(function="process_file", timeout=7200, retries=2)
+    job = Job(function="process_file", timeout=0, retries=2)
     await apply_project_job_defaults(job)
 
-    assert job.timeout == 7200
+    assert job.timeout == 0
     assert job.retries == 2
 
 

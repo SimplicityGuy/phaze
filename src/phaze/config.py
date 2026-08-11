@@ -82,6 +82,12 @@ class Role(StrEnum):
     AGENT = "agent"
 
 
+# How much slack the OUTER (SAQ job heartbeat) analysis deadline gets over the INNER stall
+# threshold. See `BaseSettings.analysis_job_heartbeat_sec` for why this is >1 and why it is
+# derived rather than separately configurable (phaze-w55w1).
+_ANALYSIS_OUTER_HEARTBEAT_MULTIPLIER = 2
+
+
 class BaseSettings(PydanticBaseSettings):
     """Fields shared by both roles. Every existing call site `settings.<field>` resolves here unless overridden below."""
 
@@ -359,9 +365,9 @@ class BaseSettings(PydanticBaseSettings):
     #
     # phaze-lqkz: this used to be a single ABSOLUTE bound (900s) compared directly against a row's
     # age. That is correct for the common case (jobs falling back to worker_job_timeout=600) but
-    # wrong for any job enqueued with a LONGER explicit timeout (process_file: 7200s,
-    # services/analysis_enqueue.py) -- a timed-out process_file enters 'aborting' at age 7200s,
-    # already ~8x past a 900s absolute bound, so the reaper's every-minute cron could steal the row
+    # wrong for any job enqueued with a LONGER explicit timeout -- at the time, process_file's
+    # 7200s net -- because a timed-out process_file entered 'aborting' at age 7200s, already ~8x
+    # past a 900s absolute bound, so the reaper's every-minute cron could steal the row
     # from a worker still mid-finalization (a live worker calling finish(ABORTED) needs up to
     # ~1-5s, not a full cron tick, but the OLD bound gave it a negative safety margin, not a small
     # positive one). The reaper now derives its bound PER ROW from that row's own serialized
@@ -369,6 +375,12 @@ class BaseSettings(PydanticBaseSettings):
     # SAQ dataclass default -- true for every phaze producer via `apply_project_job_defaults`) plus
     # this SLACK, so a 7200s job gets a 7200s+slack grace window and a 600s job keeps the original
     # 900s-equivalent window when this stays at its default.
+    #
+    # phaze-w55w1: `process_file` no longer carries a wall-clock timeout at all (it runs
+    # `timeout=0` + a progress `heartbeat`, see services/analysis_enqueue.py), so it is now one of
+    # the `timeout: 0` rows tasks/_saq_reap.py deliberately EXCLUDES from both reapers. Its
+    # liveness is owned by SAQ's own heartbeat-based `Job.stuck` sweep instead -- the same
+    # division of labour `scan_directory` has had since phaze-mllxc.
     aborting_reap_slack_seconds: int = Field(
         default=300,
         validation_alias=AliasChoices("PHAZE_ABORTING_REAP_SLACK_SECONDS", "aborting_reap_slack_seconds"),
@@ -384,15 +396,75 @@ class BaseSettings(PydanticBaseSettings):
     # status CAS -- all in tasks/_saq_reap.py); only the slack differs.
     #
     # WHY 900 AND NOT 300: 'aborting' is a POST-give-up status, 'active' is a LIVE one, so the cost of
-    # being wrong is higher. `process_file` runs inside essentia's C extension, which does not yield to
-    # the event loop, so asyncio.wait_for's cancellation at the job's own timeout cannot land until the
-    # native call returns -- a genuinely-running job can outlive its timeout by a bounded margin. This
-    # is that margin, ADDITIVE on top of the row's own timeout (a 7200s process_file gets 8100s).
+    # being wrong is higher. A job whose work sits inside a C extension that does not yield to the
+    # event loop cannot have asyncio.wait_for's cancellation land until the native call returns -- a
+    # genuinely-running job can outlive its timeout by a bounded margin. This is that margin,
+    # ADDITIVE on top of the row's own timeout. (Since phaze-w55w1 `process_file` is not the
+    # motivating example any more: it runs `timeout=0` and is excluded from this reaper entirely --
+    # see the sibling knob above -- but the reasoning still holds for every other long job.)
     active_reap_slack_seconds: int = Field(
         default=900,
         validation_alias=AliasChoices("PHAZE_ACTIVE_REAP_SLACK_SECONDS", "active_reap_slack_seconds"),
         description="Seconds of grace ADDED ON TOP OF a job's own timeout before a row stranded in status='active' is reaped (deleted, releasing its deterministic key; its scheduling_ledger row is KEPT -- that row is what recovery replays). The bound is per-job (job_timeout + this), not a single fixed value -- a job with no explicit timeout in its serialized blob falls back to the bare SAQ default (10s) plus this slack. Wider than the 'aborting' slack because 'active' is a live status (phaze-o0n6).",
     )
+
+    # phaze-w55w1 (ADR-0007 §7): analysis liveness is PROGRESS-based, never wall-clock.
+    #
+    # This knob replaces `analysis_inner_timeout_sec` (6600s), which SIGKILLed the analysis child
+    # at a fixed elapsed time, and it is the value the SAQ `process_file` job's own `heartbeat`
+    # is set from (services/analysis_enqueue.py) so both supervising layers agree. Exhaustive
+    # analysis means a multi-hour concert set legitimately runs for many hours; a wall clock
+    # cannot tell that apart from a hang, and the repo has the incident (phaze-1b39, 2026-07-28)
+    # where trying killed real work and stalled the whole burst lane. The child heartbeats every
+    # window completion, chunk decode and model sweep; the supervisor kills only after this many
+    # seconds of TOTAL SILENCE.
+    #
+    # Default 1800s (30 min) is sized against the longest legitimately silent stretch of an
+    # exhaustive run -- one chunk's decode -- not against total analysis time. The worst case in
+    # the corpus is a 12-hour file, whose full per-tier streaming decode measures ~631s
+    # (docs/spikes/phaze-esut §8, remeasured for phaze-5lop); a chunk decode is bounded by that,
+    # so 1800 leaves a ~3x margin. gt=0 (a 0 threshold would kill instantly); lt=86400 caps it at
+    # a day so a misconfigured huge value cannot silently mean "no bound".
+    #
+    # On BaseSettings, not AgentSettings, because BOTH roles need it and must agree: the AGENT
+    # arms the in-process watchdog from it (services/analysis_exec.py) and the CONTROL plane
+    # derives the SAQ job's `heartbeat` from it at enqueue (services/analysis_enqueue.py). Two
+    # separately-tuned values would let the outer net sweep a job the inner watchdog considers
+    # healthy, which is precisely the inner-vs-outer skew Phase 43 had to reason about.
+    analysis_stall_timeout_sec: int = Field(
+        default=1800,
+        gt=0,
+        lt=86400,
+        validation_alias=AliasChoices("PHAZE_ANALYSIS_STALL_TIMEOUT_SEC", "analysis_stall_timeout_sec"),
+        description="Seconds of NO reported analysis progress before the analysis child is killed as stalled (phaze-w55w1). Bounds silence, never runtime: a progressing analysis is never killed by elapsed time. Default 1800 (30 min).",
+    )
+
+    @property
+    def analysis_job_heartbeat_sec(self) -> int:
+        """The SAQ ``process_file`` job heartbeat deadline -- the OUTER net, with real slack.
+
+        **The outer deadline must be strictly greater than the inner stall threshold, and the
+        two must not merely differ by rounding.** This restores, on the new mechanism, the
+        inner-below-outer skew Phase 43 maintained deliberately (inner 6600 < outer 7200): the
+        layer that can diagnose the failure has to reach it FIRST, so a kill is attributable
+        instead of a race between two supervisors.
+
+        Here the skew has to be wider than Phase 43's, because the two layers no longer measure
+        the same signal. The inner watchdog (``services/analysis_exec.py``) resets on ANY child
+        output -- protocol lines and essentia's stderr banners alike. The outer deadline resets
+        only when the lane relays a touch, which is a strictly NARROWER signal and is also
+        best-effort (a dropped ``job.update()`` is swallowed) and throttled. Equal deadlines
+        would therefore let SAQ sweep, abort and blind-retry a multi-hour analysis the inner
+        watchdog is correctly holding healthy -- a *whole file's* work discarded because the
+        broker's view of liveness is coarser than the child's.
+
+        ``2x`` gives the inner watchdog a full extra stall window to detect, kill, and let the
+        lane report a real ``error_message`` before the broker forms an opinion. It is derived
+        rather than separately configurable on purpose: an operator who raises the stall
+        threshold must get the outer net raised with it, and an independent knob is exactly how
+        that invariant gets violated in a hurry at 3am.
+        """
+        return self.analysis_stall_timeout_sec * _ANALYSIS_OUTER_HEARTBEAT_MULTIPLIER
 
     # DB connection footprint / pool hygiene (quick-260707-ryn). These live on BaseSettings
     # so BOTH the api engine (via the module-level `settings` singleton, database.py) AND the
@@ -922,16 +994,23 @@ class ControlSettings(BaseSettings):
 
     # Phase 44: how long an in-flight `process_file` analyze job may run before the dashboard
     # flags it as a STRAGGLER (still grinding, distinct from ANALYSIS_FAILED which gave up).
-    # Default tied to the agent's analysis_inner_timeout_sec (6600s): a job past the
-    # inner-timeout horizon is, by definition, overdue. Read by the control-plane dashboard
-    # (routers/pipeline.py) via get_straggler_count in services/pipeline.py -- it lives on
-    # ControlSettings because the dashboard reads the module-level (Control-typed) `settings`.
+    # Read by the control-plane dashboard (routers/pipeline.py) via get_straggler_count in
+    # services/pipeline.py -- it lives on ControlSettings because the dashboard reads the
+    # module-level (Control-typed) `settings`.
+    #
+    # phaze-w55w1: this is a DISPLAY threshold and nothing else -- it has never killed anything,
+    # and it must not be read as one now that liveness is progress-based. Its 6600s default used
+    # to mirror the (removed) analysis_inner_timeout_sec; it is kept at that value as a plain
+    # "this one has been going a while, take a look" marker. Under exhaustive analysis a
+    # multi-hour concert set will legitimately cross it and still be perfectly healthy, so raise
+    # it if the dashboard gets noisy -- do NOT treat a flagged job as stuck. `analysis_stall_
+    # timeout_sec` (AgentSettings) is the knob that decides stuck.
     straggler_threshold_sec: int = Field(
         default=6600,
         gt=0,
         lt=86400,
         validation_alias=AliasChoices("PHAZE_STRAGGLER_THRESHOLD_SEC", "straggler_threshold_sec"),
-        description="Running-age threshold (seconds) above which an active process_file analyze job is flagged a straggler on the pipeline dashboard (Phase 44). Default 6600 mirrors analysis_inner_timeout_sec; lt=86400 caps it at one day.",
+        description="Running-age threshold (seconds) above which an active process_file analyze job is flagged a straggler on the pipeline dashboard (Phase 44). DISPLAY ONLY -- it kills nothing; a long exhaustive analysis crossing it is normal (phaze-w55w1). lt=86400 caps it at one day.",
     )
 
     # Phase 49 D-07: files whose joined FileMetadata.duration is at/above this threshold
@@ -1327,34 +1406,12 @@ class AgentSettings(BaseSettings):
         description="Minimum audio length for a trailing FINE window; shorter trailing windows are dropped except window 0 (Phase 31).",
     )
 
-    # Phase 43: bound per-file analysis cost (kill-on-timeout). The agent worker passes
-    # analysis_inner_timeout_sec to the killable pebble ProcessPool (pool.py); the two
-    # caps bound the number of windows analyze_file decodes (consumed by Plan 02/04).
-    analysis_inner_timeout_sec: int = Field(
-        default=6600,
-        gt=0,
-        lt=7200,
-        validation_alias=AliasChoices("PHAZE_ANALYSIS_INNER_TIMEOUT_SEC", "analysis_inner_timeout_sec"),
-        description="Inner pebble per-task analysis timeout; MUST stay below the 7200s SAQ process_file net so the kill is deterministic (Phase 43, RESEARCH Pitfall 2). Enforced lt=7200 so a misconfig can't disable the deterministic kill.",
-    )
-    analysis_fine_cap: int = Field(
-        default=60,
-        ge=2,
-        validation_alias=AliasChoices("PHAZE_ANALYSIS_FINE_CAP", "analysis_fine_cap"),
-        description="Maximum number of FINE-tier (BPM/key) windows analyze_file decodes per file (Phase 43). ge=2: even-stride always keeps first+last, so a cap below 2 is invalid (and would divide-by-zero in _stride_to_cap).",
-    )
-    analysis_coarse_cap: int = Field(
-        default=30,
-        ge=2,
-        validation_alias=AliasChoices("PHAZE_ANALYSIS_COARSE_CAP", "analysis_coarse_cap"),
-        description="Maximum number of COARSE-tier (mood/style/danceability) windows analyze_file decodes per file (Phase 43). ge=2: even-stride always keeps first+last, so a cap below 2 is invalid (and would divide-by-zero in _stride_to_cap).",
-    )
-
     # Phase 57.1 (PROG-01, D-04): the parent/loop-side throttle for the mid-flight analyze
     # progress POST. analyze_file fires its progress_cb per FINE window, but the lane bridge
     # (tasks/functions.py drainer + job_runner.py cb) collapses bursts to at most one POST per
-    # this interval (monotonic-keyed) and always flushes the final count. Given the Phase 31
-    # window caps (≤~60 fine windows/file) the throttle only matters for short/fast files.
+    # this interval (monotonic-keyed) and always flushes the final count. Since phaze-w55w1
+    # removed the window caps a long file can emit thousands of fine bumps, so this throttle now
+    # matters for LONG files too, not just short/fast ones.
     analysis_progress_interval_sec: float = Field(
         default=5.0,
         ge=0.0,

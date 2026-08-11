@@ -3,7 +3,7 @@
 from datetime import datetime
 import uuid
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -22,14 +22,15 @@ class AnalysisResult(TimestampMixin, Base):
     mood: Mapped[str | None] = mapped_column(String(50), nullable=True)
     style: Mapped[str | None] = mapped_column(String(50), nullable=True)
     features: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    # Phase 43 windowed-analysis coverage (migration 021). All nullable: pre-43
-    # rows and empty-body PUTs leave coverage NULL. These are dedicated columns so
-    # the five-field coverage contract from analyze_file never funnels into `features`.
+    # Windowed-analysis progress counts (migration 021; `sampled` dropped by migration 060,
+    # phaze-w55w1). All nullable: pre-43 rows and empty-body PUTs leave them NULL. These are
+    # dedicated columns so the counts from analyze_file never funnel into `features`. Since
+    # analysis is exhaustive they express PROGRESS, not a coverage gap: `analyzed` equals `total`
+    # on a healthy file and falls short only where individual windows failed to decode.
     fine_windows_analyzed: Mapped[int | None] = mapped_column(Integer, nullable=True)
     fine_windows_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
     coarse_windows_analyzed: Mapped[int | None] = mapped_column(Integer, nullable=True)
     coarse_windows_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    sampled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     # Phase 57.1 completion discriminator (migration 028). NULL while a partial in-flight
     # row exists (D-03 upserts one at analysis START); stamped via func.now() ONLY in the
     # put_analysis completion branch that flips FileState.ANALYZED. The proposal convergence

@@ -28,9 +28,10 @@ FOUR GUARDS, all load-bearing:
   is EXCLUDED rather than reaped on incomplete data.
 - **The bound is PER-ROW, derived from that row's own serialized ``timeout``** (phaze-lqkz), never one
   fixed constant. The predicate measures the ATTEMPT'S RUNTIME, so a fixed bound is only correct for
-  jobs whose timeout happens to match it. ``process_file`` runs a 7200s job timeout
-  (``services/analysis_enqueue.py``) -- 8x the old 900s constant -- so a constant would make every
-  timed-out ``process_file`` INSTANTLY reap-eligible and race the owning worker's finalization.
+  jobs whose timeout happens to match it. The motivating case was ``process_file``'s then-7200s job
+  timeout -- 8x the old 900s constant -- which a fixed bound would have made INSTANTLY reap-eligible,
+  racing the owning worker's finalization. (Since phaze-w55w1 ``process_file`` runs ``timeout=0`` and
+  is excluded by the next guard entirely; the per-row derivation still governs every other job.)
   ``Job.to_dict`` always serializes ``timeout`` once it differs from the SAQ dataclass default (10s),
   true for every phaze producer via ``apply_project_job_defaults``, so the row's OWN blob already
   carries the bound; no side table is needed. A bare/legacy row without ``timeout`` falls back to

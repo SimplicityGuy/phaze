@@ -196,8 +196,11 @@ async def apply_deterministic_key(job: Job) -> None:
             async with sm() as session:
                 # apply_project_job_defaults is registered BEFORE this hook (queue_factory), so
                 # job.timeout / job.retries are the FINAL effective policy here -- capture them so
-                # recovery replays the SAME bound (critical for process_file's 7200s/retries=2,
-                # else a recovered long set falls back to the 600s default and times out).
+                # recovery replays the SAME bound, else a recovered long job falls back to the 600s
+                # role default and times out. NOTE (phaze-w55w1): `heartbeat` is NOT captured here,
+                # and process_file's liveness now depends on it (it runs timeout=0). That gap is
+                # closed at the other end -- apply_project_job_defaults PINS the heartbeat on every
+                # enqueue, replays included -- rather than by widening this table.
                 await upsert_ledger_entry(
                     session,
                     key=job.key,

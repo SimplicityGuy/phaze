@@ -379,6 +379,54 @@ transfers to the implementation bead as the validation its chunked rework needs.
 
 ______________________________________________________________________
 
+## 8. IMPLEMENTED BY `phaze-w55w1`
+
+The decision above shipped. What landed, and where the reasoning now lives:
+
+| §7 requirement | Implementation |
+| --- | --- |
+| Remove the caps; analyze every window | `analysis_fine_cap` / `analysis_coarse_cap`, `ProcessFilePayload.fine_cap`/`.coarse_cap`, `_stride_to_cap`, the `sampled` result field and the `analysis.sampled` column (migration 060) are all gone. `analyze_file` emits four progress counts where it emitted five coverage fields. |
+| Remove the `deepen` path | `deepen_analysis` / `deepen_progress` routes, `sampled_badge.html`, `deepen_response.html`, `deepen_progress.html`, and the "Deepen analysis" button are deleted. |
+| Chunked, bounded-memory passes | Both tiers process bounded chunks (60 fine / 30 coarse windows), so peak PCM is ~317 MB / ~345 MB **independent of duration**. The rationale, the arithmetic and the two costs it pays are the **D-07 decision record** in `services/analysis.py` (above `_FINE_CHUNK_WINDOWS`). The phaze-15sw model-major invariant is preserved — one resident TF graph at any instant, within and across chunks. |
+| Heartbeat/stall liveness replacing the wall clock | The **D-08 decision record** in `services/analysis_exec.py`. `analysis_inner_timeout_sec` is deleted and replaced by `analysis_stall_timeout_sec` (default 1800 s, on `BaseSettings` so both roles agree). The SAQ `process_file` job moves to `timeout=0` + SAQ's own `heartbeat`, touched by the lane off the child's heartbeat channel; the burst lane passes the same `stall_timeout` where it previously passed nothing. |
+
+**Chunk sizes are the old cap values, deliberately.** 60/30 reproduce exactly the per-tier PCM
+residency §2b documented (~317 MB / ~345 MB), which is what keeps ADR-0005's memory limits valid
+against the reworked passes rather than invalidated by this decision — the condition §7 attached
+to accepting §3's cost profile.
+
+**What §3's cost analysis got right, and what it now describes.** §3's memory projection
+(~7.3 GiB fine / ~2.8 GiB coarse on a 12-hour set) was the cost of exhaustive analysis *under the
+unchanged pass architecture*. That architecture changed, so those figures describe the
+counterfactual, not the shipped state — they are what the chunking exists to avoid, and
+`tests/analyze/services/pipeline/test_analysis_long_file.py` is the assertion that it does:
+peak RSS moves less than 25 MB between a 2-hour and a 12-hour file that now analyze 4× and 24×
+the windows respectively. §3's **wall-clock** analysis is unchanged and simply accepted: a
+12-hour set really does take many hours, which is exactly why §7 required the liveness rework
+rather than a bigger timeout.
+
+**Files already strided under the caps.** Removing `sampled` and `deepen` together removes both
+the marker for a partially-analyzed file and the per-file action that re-analyzed one. Those files
+remain **identifiable**, on a predicate verified against the live schema at head rather than
+assumed: migration 060 drops only `sampled`, so `fine_windows_analyzed` / `fine_windows_total`
+(and the coarse pair) survive as nullable integers, and a strided row still reads
+`analyzed < total`. Pre-Phase-43 rows carry NULL in all four and are correctly excluded — there
+were no caps then, so those analyses were already exhaustive. The predicate is a mild superset (it
+also catches files with per-window decode failures), which for a one-time re-enqueue is desirable.
+**The re-run itself is bead `phaze-kj8dl`** — the sanctioned one-time re-enqueue script and its
+deploy runbook — and this change must ship in the same release as that script's availability.
+
+**Still owed: follow-up 3.** The bounded-memory proof above is synthetic (mocked essentia,
+touched buffers, forked per-duration measurement). A real peak-RSS / wall-clock measurement on a
+genuine multi-hour file, in the style of `phaze-esut` / `phaze-rc1q` / `phaze-5lop`, has **not**
+been taken. Two things specifically remain unmeasured on real hardware: whether the chunk-decode
+gate (`_decode_windows_streaming`'s `stop_at_sec`) actually stops the loader early on the
+deployed essentia, and what the real end-to-end wall clock of an exhaustive multi-hour analysis
+is. Neither can regress correctness — the gate falls back to an ungated pass, and nothing is
+killed for running long — but both are load-bearing for lane scheduling and pod sizing.
+
+______________________________________________________________________
+
 ## Sources
 
 - `src/phaze/services/analysis.py` — `analyze_file`, `_iter_windows`, `_stride_to_cap`,

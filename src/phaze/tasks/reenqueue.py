@@ -523,22 +523,30 @@ async def _replay_row(queue: Any, row: SchedulingLedger, tally: dict[str, int]) 
     counts as skipped; otherwise reenqueued. extra='forbid' agent schemas re-validate the stored
     payload on dequeue, so a malformed row dead-letters rather than executing (T-45-10).
 
-    The stored SAQ Job policy (``row.timeout`` / ``row.retries``) is replayed too when present, so
-    a recovered long ``process_file`` keeps its 7200s/retries=2 bound explicitly. A NULL column
-    (legacy/backfilled row written before the Phase-45 capture columns existed, or a producer that
-    set no explicit policy) is left out of the enqueue kwargs entirely -- the queue's
+    The stored SAQ Job policy (``row.timeout`` / ``row.retries``) is replayed too when present. A
+    NULL column (legacy/backfilled row written before the Phase-45 capture columns existed, or a
+    producer that set no explicit policy) is left out of the enqueue kwargs entirely -- the queue's
     ``apply_project_job_defaults`` before_enqueue hook then fills the ROLE default (600s/4
     retries).
+
+    phaze-w55w1: for ``process_file`` the replayed ``timeout`` no longer matters either way. That
+    function now runs ``timeout=0`` (no wall clock at all -- exhaustive analysis legitimately runs
+    for hours, ADR-0007 §7) plus a progress ``heartbeat``, and BOTH are PINNED by
+    ``apply_project_job_defaults`` on every enqueue including this replay. So a row carrying the
+    old 7200s bound is corrected rather than honoured, which is the point: replaying that bound
+    would put a wall clock back on a job that must not have one. The ledger never captured
+    ``heartbeat``, and pinning is what closes that gap -- see
+    ``queue_defaults._FUNCTION_HEARTBEAT_POLICY``.
 
     phaze-plpnf: that role-default fallback used to be the FULL story, and it is exactly what
     turned "no captured bounds" into a live incident -- one queued-at cluster of legacy
     NULL-bounds ``process_file`` rows replayed straight onto the 600s/4-retries role default and
-    died on every attempt with a SAQ ``TimeoutError`` (12x short of the 7200s a long file needs).
-    ``apply_project_job_defaults`` now ALSO enforces a per-function policy floor
-    (``queue_defaults._FUNCTION_POLICY_FLOOR``) after its generic fill, so a NULL-bounds
-    ``process_file`` replay lands on 7200s/retries=2 regardless -- the omission above is now a
-    defense-in-depth choice (replay the captured bound when we have it) rather than the only
-    thing standing between a legacy row and the 600s role default.
+    died on every attempt with a SAQ ``TimeoutError`` (12x short of the bound a long file needed).
+    ``apply_project_job_defaults`` now ALSO enforces a per-function policy
+    (``queue_defaults._FUNCTION_JOB_POLICY`` / ``_FUNCTION_HEARTBEAT_POLICY``) after its generic
+    fill, so a NULL-bounds ``process_file`` replay lands on the current policy regardless -- the
+    omission above is now a defense-in-depth choice (replay the captured bound when we have it)
+    rather than the only thing standing between a legacy row and the 600s role default.
 
     phaze-71nz -- THE REPLAY-SAFETY REFUSAL (the general guard, deliberately NOT pinned to any one
     function). Before the enqueue, the payload is screened by ``find_time_limited_paths``. A hit
@@ -1187,8 +1195,9 @@ async def backfill_ledger_from_saq_jobs(session: AsyncSession) -> dict[str, int]
         if not isinstance(kwargs, dict):
             kwargs = {}
         # The SAQ default json.dumps serializer writes timeout/retries (Job dataclass fields) at the
-        # blob top level. Carry them through so even the in-flight transition cohort (e.g. the live
-        # backlog enqueued with timeout=7200) recovers with its real bound, not the 600s default.
+        # blob top level. Carry them through so an in-flight transition cohort recovers with its
+        # real bound, not the 600s default. (For process_file this is belt-and-braces since
+        # phaze-w55w1: apply_project_job_defaults pins its timeout=0 + heartbeat regardless.)
         timeout = data.get("timeout") if isinstance(data.get("timeout"), int) else None
         retries = data.get("retries") if isinstance(data.get("retries"), int) else None
         await insert_ledger_if_absent(session, key=key, function=function, kwargs=dict(kwargs), timeout=timeout, retries=retries)

@@ -106,9 +106,10 @@ async def test_pod_lane_end_to_end_progress_arrives_mid_analysis(job_env, monkey
         "fine_windows_total",
         "coarse_windows_analyzed",
         "coarse_windows_total",
-        "sampled",
     ):
         assert body[field] == stub[field], field
+    # phaze-w55w1: the `sampled` field left the wire with the window caps.
+    assert "sampled" not in body
 
 
 async def test_worker_lane_end_to_end_progress_arrives_mid_analysis() -> None:
@@ -116,9 +117,7 @@ async def test_worker_lane_end_to_end_progress_arrives_mid_analysis() -> None:
     from phaze.config import AgentSettings
 
     cfg = MagicMock(spec=AgentSettings)
-    cfg.analysis_inner_timeout_sec = 60
-    cfg.analysis_fine_cap = 60
-    cfg.analysis_coarse_cap = 30
+    cfg.analysis_stall_timeout_sec = 60
     cfg.analysis_progress_interval_sec = 0.0  # post every emitted count
 
     api = AsyncMock()
@@ -149,4 +148,3 @@ async def test_worker_lane_end_to_end_progress_arrives_mid_analysis() -> None:
     assert body.musical_key == stub["musical_key"]
     assert body.fine_windows_analyzed == stub["fine_windows_analyzed"]
     assert body.fine_windows_total == stub["fine_windows_total"]
-    assert body.sampled == stub["sampled"]

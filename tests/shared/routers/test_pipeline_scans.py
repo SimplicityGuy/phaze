@@ -799,7 +799,7 @@ async def test_get_scan_progress_unknown_id_renders_terminal_gone_fragment(
     bodies, so a 404 here would leave a previously-swapped-in RUNNING card's outerHTML
     poller (hx-get + hx-trigger="every 2s") armed in the DOM forever. Returning 200 with
     a terminal fragment (no hx-get/hx-trigger) lets the outerHTML swap replace it and
-    halt the poll, mirroring deepen_progress's `gone` handling.
+    halt the poll: a fragment whose subject vanished must stop polling, never loop.
     """
     ac, _ = smoke
     unknown_id = uuid.uuid4()

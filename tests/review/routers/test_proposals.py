@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import update
 
 import phaze
-from phaze.models.analysis import AnalysisResult, AnalysisWindow
+from phaze.models.analysis import AnalysisWindow
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.routers.proposals import BpmSpark, _bpm_spark
@@ -572,92 +572,35 @@ async def test_timeline_escapes_label_xss(client: AsyncClient, session: AsyncSes
 
 
 # ---------------------------------------------------------------------------
-# Phase 44 Plan 04 Task 2: sampled badge + Deepen-analysis button on the timeline
+# phaze-w55w1: the Phase 44 "Sampled" badge and "Deepen analysis" button are GONE
 #
-# The timeline route also fetches the 1:1 AnalysisResult and passes `analysis`
-# + `file_id` into the context. The badge renders ONLY when analysis.sampled is
-# truthy (NULL/false -> nothing, never an error); the Deepen button is gated on
-# the same condition and POSTs to the Plan-03 /pipeline/files/{file_id}/deepen
-# endpoint.
+# The three tests here previously pinned the badge's render-if-sampled behaviour and its
+# NULL/false no-op. They are replaced by ONE test asserting the whole surface is absent,
+# because there is no longer a sampled state to render: every file is analyzed exhaustively
+# (ADR-0007 §7), the `analysis.sampled` column is dropped (migration 060), and the timeline
+# route no longer fetches AnalysisResult at all.
 # ---------------------------------------------------------------------------
 
 
-async def add_analysis_result(
-    session: AsyncSession,
-    file_id: uuid.UUID,
-    *,
-    sampled: bool | None,
-    fine_analyzed: int | None = 20,
-    fine_total: int | None = 100,
-    coarse_analyzed: int | None = 5,
-    coarse_total: int | None = 30,
-) -> None:
-    """Seed the 1:1 AnalysisResult row driving the sampled badge."""
-    session.add(
-        AnalysisResult(
-            file_id=file_id,
-            bpm=128.0,
-            musical_key="Am",
-            sampled=sampled,
-            fine_windows_analyzed=fine_analyzed,
-            fine_windows_total=fine_total,
-            coarse_windows_analyzed=coarse_analyzed,
-            coarse_windows_total=coarse_total,
-        )
-    )
-    await session.commit()
-
-
 @pytest.mark.asyncio
-async def test_timeline_renders_sampled_badge_and_deepen_button(client: AsyncClient, session: AsyncSession) -> None:
-    """A file whose AnalysisResult.sampled is True shows the badge (with coverage tooltip) + Deepen button."""
+async def test_timeline_has_no_sampled_badge_or_deepen_action(client: AsyncClient, session: AsyncSession) -> None:
+    """The timeline renders windows only -- no sampled pill, no Deepen button, no /deepen link.
+
+    A dead `hx-post` to a removed route is worse than a missing button: it renders fine and
+    fails on click, so the absence is asserted rather than assumed.
+    """
     proposal = await create_test_proposal(session)
     await add_analysis_windows(session, proposal.file_id)
-    await add_analysis_result(session, proposal.file_id, sampled=True)
 
     response = await client.get(f"/proposals/{proposal.id}/timeline")
+
     assert response.status_code == 200
-    # Badge present.
-    assert "Sampled — more data available" in response.text
-    # The four coverage counts ride the tooltip.
-    assert "fine 20/100, coarse 5/30 windows — sampled" in response.text
-    # Deepen button POSTs to the Plan-03 endpoint for THIS file_id.
-    assert f'hx-post="/pipeline/files/{proposal.file_id}/deepen"' in response.text
-    assert "Deepen analysis" in response.text
-
-
-@pytest.mark.asyncio
-async def test_timeline_no_badge_when_sampled_false(client: AsyncClient, session: AsyncSession) -> None:
-    """A full-budget analysis (sampled=False) renders NEITHER the badge NOR the Deepen button."""
-    proposal = await create_test_proposal(session)
-    await add_analysis_windows(session, proposal.file_id)
-    await add_analysis_result(session, proposal.file_id, sampled=False)
-
-    response = await client.get(f"/proposals/{proposal.id}/timeline")
-    assert response.status_code == 200
-    assert "Sampled — more data available" not in response.text
-    assert "Deepen analysis" not in response.text
+    assert "Sampled" not in response.text
+    assert "Deepen" not in response.text
     assert "/deepen" not in response.text
+    # The windows themselves still render -- this is a removal, not a regression.
+    assert "BPM (fine windows)" in response.text
 
-
-@pytest.mark.asyncio
-async def test_timeline_no_badge_when_sampled_null(client: AsyncClient, session: AsyncSession) -> None:
-    """A pre-Phase-43 row (sampled=NULL coverage) renders NOTHING -- never an error (D-03 / T-44-12)."""
-    proposal = await create_test_proposal(session)
-    await add_analysis_windows(session, proposal.file_id)
-    await add_analysis_result(
-        session,
-        proposal.file_id,
-        sampled=None,
-        fine_analyzed=None,
-        fine_total=None,
-        coarse_analyzed=None,
-        coarse_total=None,
-    )
-
-    response = await client.get(f"/proposals/{proposal.id}/timeline")
-    assert response.status_code == 200
-    assert "Sampled — more data available" not in response.text
     assert "Deepen analysis" not in response.text
 
 

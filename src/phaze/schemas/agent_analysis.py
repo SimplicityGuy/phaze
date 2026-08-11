@@ -13,10 +13,10 @@ The wire type here matches CONTEXT.md D-26 exactly; storage representation
 is the router's concern.
 """
 
-from typing import Literal
+from typing import Any, Literal
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from phaze.schemas.wire_bounds import INT32_MAX
 from phaze.services.pg_text import find_pg_unsafe_json_reason
@@ -123,10 +123,11 @@ class AnalysisWritePayload(BaseModel):
 
     danceability: float | None = Field(default=None, ge=0.0, le=1.0)
     energy: float | None = Field(default=None, ge=0.0, le=1.0)
-    # Phase 43 windowed-analysis coverage (the five-field contract analyze_file
-    # returns). These land in dedicated `analysis` columns -- the router adds them
+    # Windowed-analysis progress counts (the four-field contract analyze_file
+    # returns; phaze-w55w1 dropped the fifth, `sampled`, with the window caps).
+    # These land in dedicated `analysis` columns -- the router adds them
     # to `_ANALYSIS_COLUMN_FIELDS` so they do NOT funnel into `features` JSONB. All
-    # optional so partial-PUT preserves unset coverage. Bounded by the SAME
+    # optional so partial-PUT preserves unset counts. Bounded by the SAME
     # realistic-windows-per-file domain as `windows` below (a 24h file at 30s
     # windows is ~2,880 fine windows; 50000 is generous) rather than the wider
     # int32 column fallback -- a count can never legitimately exceed the number of
@@ -135,7 +136,34 @@ class AnalysisWritePayload(BaseModel):
     fine_windows_total: int | None = Field(default=None, ge=0, le=50000)
     coarse_windows_analyzed: int | None = Field(default=None, ge=0, le=50000)
     coarse_windows_total: int | None = Field(default=None, ge=0, le=50000)
-    sampled: bool | None = None
+
+    # ---- LEGACY-KEY SHIM (phaze-w55w1) — REMOVABLE, see the removal condition below ----
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_removed_sampled_key(cls, data: Any) -> Any:
+        """Accept-and-discard the retired ``sampled`` coverage flag.
+
+        ``sampled`` was True when a file's windows had been strided down to the Phase 43 caps.
+        phaze-w55w1 removed the caps (ADR-0007 §7) and migration 060 dropped the column, so
+        there is nothing left for the field to mean or to land in.
+
+        **Why tolerate it instead of letting ``extra="forbid"`` reject it.** This is the
+        completion PUT — the callback an agent or burst pod makes at the END of an analysis
+        that may have been running for HOURS. During a rolling upgrade the control plane is new
+        while in-flight agents and already-dispatched Kueue pods are still on the old image, and
+        every one of them will send ``"sampled": <bool>`` when it finishes. A 422 there does not
+        retry into correctness: it discards a completed multi-hour analysis, and
+        ``FAILURE_IS_TERMINAL[ANALYZE]`` means the file does not simply come back around.
+        Dropping the key costs a datum that is already meaningless.
+
+        **Remove this shim when** no pre-phaze-w55w1 agent image or dispatched burst pod can
+        still be running — i.e. after every agent has been restarted onto the new image and the
+        longest in-flight analysis dispatched before the upgrade has drained.
+        """
+        if isinstance(data, dict) and "sampled" in data:
+            data = {k: v for k, v in data.items() if k != "sampled"}
+        return data
+
     # Per-window time-series (Phase 31). `| None` default preserves the partial-PUT
     # contract (router only replaces windows when this is not None).
     #

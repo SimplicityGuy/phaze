@@ -17,7 +17,8 @@ cloud. Part of that is DELETING the orphaned `process_file:<id>` scheduling-ledg
 candidate, after a lock-free `live_keys` snapshot (`phaze-l1km`) has already excluded any candidate
 with a currently-queued/active `saq_jobs` row.
 
-`phaze-g31m` closed the wider version of this race: a concurrent re-enqueue (`deepen_analysis` /
+`phaze-g31m` closed the wider version of this race: a concurrent re-enqueue (the since-removed
+`deepen_analysis`, a recovery replay, /
 `retry_analysis_failed`'s background loop) whose ledger write lands in the gap between the
 `live_keys` snapshot and the DELETE. The fix CAS-guards the DELETE on the exact `enqueued_at` value
 observed immediately before it runs, so a concurrent `upsert_ledger_entry` refresh in that gap

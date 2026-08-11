@@ -235,7 +235,8 @@ async def _maybe_sweep_scratch(cfg: AgentSettings, client: PhazeAgentClient | No
     dir, so it must NOT sweep. Runs off the event loop via ``asyncio.to_thread`` (parity with the
     ``ensure_models_present`` startup step).
 
-    The age ceiling (phaze-8z4u) -- ``push_timeout_sec + analysis_inner_timeout_sec`` -- is kept as
+    The age ceiling (phaze-8z4u) -- ``push_timeout_sec + analysis_stall_timeout_sec`` (phaze-w55w1;
+    it was ``analysis_inner_timeout_sec`` until that wall-clock kill was retired) -- is kept as
     the cheap FIRST filter (a young entry is never even a delete candidate), but phaze-5cvbz proved
     it is not a SAFE proxy on its own: a durable ``process_file`` job can sit ``queued`` far longer
     than any finite ceiling (behind a concurrency-1 clamp, or parked at the pause ``SENTINEL`` --
@@ -255,7 +256,7 @@ async def _maybe_sweep_scratch(cfg: AgentSettings, client: PhazeAgentClient | No
     if not (cfg.kind == "compute" and cfg.cloud_scratch_dir):
         return
     scratch_dir = Path(cfg.cloud_scratch_dir)
-    min_age_sec = cfg.push_timeout_sec + cfg.analysis_inner_timeout_sec
+    min_age_sec = cfg.push_timeout_sec + cfg.analysis_stall_timeout_sec
     stale = await asyncio.to_thread(_stale_scratch_entries, scratch_dir, min_age_sec)
     if not stale:
         return

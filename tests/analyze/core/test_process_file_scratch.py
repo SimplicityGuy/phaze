@@ -50,9 +50,8 @@ def _patch_agent_settings() -> Any:
     from phaze.config import AgentSettings
 
     stub = MagicMock(spec=AgentSettings)
-    stub.analysis_inner_timeout_sec = 6600
-    stub.analysis_fine_cap = 60
-    stub.analysis_coarse_cap = 30
+    stub.analysis_stall_timeout_sec = 1800
+    stub.analysis_job_heartbeat_sec = 3600  # a property on the real class; spec'd mocks need it stamped
     stub.analysis_progress_interval_sec = 5.0  # Phase 57.1: process_file's progress bridge reads this throttle knob
     with patch("phaze.tasks.functions.get_settings", return_value=stub) as m:
         yield m
@@ -417,7 +416,7 @@ async def test_enqueue_threads_expected_sha256_and_scratch_path() -> None:
     assert validated.scratch_path == "/scratch/" + fid.hex + ".mp3"
     # Single funnel: deterministic key + policy preserved regardless of the new kwargs.
     assert queue.captured_policy[0]["key"] == process_file_job_key(fid)
-    assert queue.captured_policy[0]["timeout"] == 7200
+    assert queue.captured_policy[0]["timeout"] == 0  # phaze-w55w1: no wall-clock net; liveness is the job heartbeat
     assert queue.captured_policy[0]["retries"] == 2
 
 
@@ -433,5 +432,5 @@ async def test_enqueue_scratch_fields_default_none_for_bulk_local_producer() -> 
     assert payload["expected_sha256"] is None
     assert payload["scratch_path"] is None
     assert queue.captured_policy[0]["key"] == process_file_job_key(fid)
-    assert queue.captured_policy[0]["timeout"] == 7200
+    assert queue.captured_policy[0]["timeout"] == 0  # phaze-w55w1: no wall-clock net; liveness is the job heartbeat
     assert queue.captured_policy[0]["retries"] == 2

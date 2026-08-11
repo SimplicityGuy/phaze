@@ -48,9 +48,22 @@ def streaming_decode_under_mocked_essentia() -> Iterator[None]:
     """
     real_streaming_decode = analysis_mod._decode_windows_streaming
 
-    def _stub(file_path: str, sample_rate: int, windows: Sequence[tuple[int, float, float]]) -> dict[int, Any]:
+    def _stub(
+        file_path: str,
+        sample_rate: int,
+        windows: Sequence[tuple[int, float, float]],
+        *,
+        stop_at_sec: float | None = None,
+    ) -> dict[int, Any]:
+        # `stop_at_sec` (phaze-w55w1's chunk gate) is accepted and IGNORED on purpose. It is a
+        # decode-network early-stop with no observable effect on the returned buffers -- the
+        # windows a chunk asks for are exactly the windows it gets, gated or not -- so a stub
+        # that honoured it would be modelling essentia's scheduler, not phaze's contract. What
+        # it MUST NOT do is reject the kwarg: that would send every chunk down the gated-retry
+        # then per-window fallback and quietly stop exercising the shipped path again, which is
+        # the exact failure mode this fixture exists to prevent.
         if not isinstance(analysis_mod.es, MagicMock):
-            return real_streaming_decode(file_path, sample_rate, windows)  # real essentia: real fan-out
+            return real_streaming_decode(file_path, sample_rate, windows, stop_at_sec=stop_at_sec)  # real essentia: real fan-out
         decoded: dict[int, Any] = {}
         for idx, start, end in windows:
             try:

@@ -70,10 +70,11 @@ Operator overrides and control-side agent callbacks for the pluggable multi-back
 | Method | Path                                   | Description                                                                 |
 |--------|----------------------------------------|-----------------------------------------------------------------------------|
 | POST   | `/pipeline/backfill-cloud`             | Backfill timed-out long files (`ANALYSIS_FAILED ∧ duration ≥ threshold`) to the cloud lane (HTMX) |
-| POST   | `/pipeline/files/{file_id}/deepen`     | Re-analyze one file at the full/unbounded window budget (`fine_cap=0`/`coarse_cap=0`) (HTMX) |
 | POST   | `/pipeline/routing/force-local`        | Flip the global force-local routing override (durable `route_control` `'global'` row) (HTMX) |
 
-`force-local` engages/reverts an all-local routing override in one click with no redeploy; it is the write surface for the `route_control` mechanism and returns the re-rendered header pill plus an OOB toast. `backfill-cloud` and `deepen` route through the same duration router / `enqueue_router` seams as "Run Analysis" (never the consumer-less default queue), and both honor the force-local / cloud-enabled gates.
+`force-local` engages/reverts an all-local routing override in one click with no redeploy; it is the write surface for the `route_control` mechanism and returns the re-rendered header pill plus an OOB toast. `backfill-cloud` routes through the same duration router / `enqueue_router` seams as "Run Analysis" (never the consumer-less default queue) and honors the force-local / cloud-enabled gates.
+
+> **Removed (phaze-w55w1):** `POST /pipeline/files/{file_id}/deepen` and `GET /pipeline/files/{file_id}/deepen-progress`. They re-analyzed one file at an unbounded window budget, which is now simply what analysis does — every file gets every window (ADR-0007 §7). There is nothing left to deepen.
 
 **Control-side agent callbacks (`/api/internal/agent`).** The Postgres-free file-server / compute / pod agents cannot touch the ORM, so the S3-staging and rsync-push transports report outcomes through these token-authed internal callbacks (same bearer-token contract as the Distributed Agent API below; `file_id` always on the URL path, never the body).
 
@@ -106,7 +107,6 @@ flowchart LR
     C -. cap exhausted .-> SP
     L -.timeout ANALYSIS_FAILED.-> BF[/backfill-cloud<br/>re-route long files/]:::override
     BF --> R
-    DP[/deepen: full-window<br/>re-analyze one file/]:::override --> R
     classDef override fill:#fde68a,stroke:#b45309,color:#000;
 ```
 
@@ -120,7 +120,7 @@ Operator controls that steer the two agent pipeline stages (`metadata` / `analyz
 | POST   | `/pipeline/stages/{stage}/pause`      | Drain-pause: active jobs finish, the queued backlog is parked           |
 | POST   | `/pipeline/stages/{stage}/resume`     | Un-park ONLY the pause-parked backlog rows                              |
 
-### Per-file drill-down, retry, skip, and deepen surfaces
+### Per-file drill-down, retry, and skip surfaces
 
 | Method | Path                                                | Description                                                              |
 |--------|-----------------------------------------------------|---------------------------------------------------------------------------|
@@ -130,7 +130,6 @@ Operator controls that steer the two agent pipeline stages (`metadata` / `analyz
 | GET    | `/pipeline/tracklist-sets`                          | Tracklist-sets table fragment (paginated + sortable)                       |
 | GET    | `/pipeline/lanes/{backend_id}`                      | Lane-detail body fragment for a backend lane (local/Kueue/cloud)           |
 | GET    | `/pipeline/files/{file_id}/trace/{stage}`           | Per-file, per-stage eligibility trace (diagnostic)                        |
-| GET    | `/pipeline/files/{file_id}/deepen-progress`         | HTMX poll target for the "Deepen analysis" progress surface               |
 | POST   | `/pipeline/files/{file_id}/skip/{stage}`            | Force-skip an ENRICH stage for one file (writes a `StageSkip` marker)      |
 | POST   | `/pipeline/analysis-failed/retry`                   | Bulk retry of every terminally `ANALYSIS_FAILED` file                     |
 | POST   | `/pipeline/metadata-failed/retry`                   | Bulk retry of every terminally-failed metadata file                       |

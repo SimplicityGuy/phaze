@@ -329,3 +329,172 @@ def test_malloc_trim_never_raises() -> None:
 
     with patch.object(analysis_mod, "_MALLOC_TRIM", MagicMock(side_effect=OSError("boom"))):
         analysis_mod._malloc_trim()
+
+
+# ---------------------------------------------------------------------------
+# phaze-w55w1: the chunk decode gate (`stop_at_sec`)
+#
+# Exhaustive analysis decodes a tier one CHUNK at a time, and MonoLoader cannot seek, so each
+# chunk pays its own decode. The gate is a Trimmer interposed at the HEAD of the fan-out --
+# deliberately without a Scale, so that reaching endTime stops the loader (the same upstream
+# behaviour the per-window Scale interposers exist to PREVENT). It is a wall-clock optimisation
+# only; these tests pin that it changes nothing else and that a broken gate degrades gracefully.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_the_chunk_gate_does_not_change_a_single_sample(audio: str) -> None:
+    """A gated pass returns byte-identical buffers to an ungated one, against real essentia.
+
+    This is the assertion that makes the gate safe to ship without a measurement: whatever it
+    does to the loader's stopping point, the windows it yields must be indistinguishable from
+    the ungated network's. The gate's endTime sits `_CHUNK_GATE_MARGIN_SEC` past the chunk's
+    last window precisely so the boundary window cannot be clipped, and a clipped buffer is
+    exactly what this would catch.
+    """
+    windows = [(0, 0.0, 5.0), (1, 5.0, 10.0)]
+
+    ungated = _decode_windows_streaming(audio, _COARSE_SAMPLE_RATE, windows)
+    gated = _decode_windows_streaming(audio, _COARSE_SAMPLE_RATE, windows, stop_at_sec=10.0)
+
+    assert sorted(gated) == sorted(ungated) == [0, 1]
+    for idx in (0, 1):
+        assert len(gated[idx]) == len(ungated[idx]), f"window {idx} was clipped by the gate"
+        assert _sha(gated[idx]) == _sha(ungated[idx]), f"window {idx} float32 bytes differ under the gate"
+
+
+@pytest.mark.integration
+def test_analyze_file_gates_every_chunk_but_the_last(audio: str) -> None:
+    """Across a real multi-chunk run: non-final chunks are gated, the final chunk is not.
+
+    Driven through `analyze_file` with a tiny fine window so the 40 s fixture produces several
+    fine chunks, and with the chunk size monkeypatched rather than the audio lengthened -- the
+    property is about chunk BOUNDARIES, and a 12-hour fixture is not CI-feasible.
+    """
+    seen: list[float | None] = []
+    real = analysis_mod._decode_windows_streaming
+
+    def _spy(path: str, rate: int, windows: Any, *, stop_at_sec: float | None = None) -> dict[int, Any]:
+        if rate == _FINE_SAMPLE_RATE:
+            seen.append(stop_at_sec)
+        return real(path, rate, windows, stop_at_sec=stop_at_sec)
+
+    with (
+        patch.object(analysis_mod, "_FINE_CHUNK_WINDOWS", 2),
+        patch.object(analysis_mod, "_decode_windows_streaming", side_effect=_spy),
+        patch.object(analysis_mod, "_predict_single", return_value=np.array([0.7, 0.3], dtype=np.float32)),
+        patch.object(analysis_mod, "_get_labels", return_value=["positive_class", "negative_class"]),
+    ):
+        result = analysis_mod.analyze_file(audio, "/fake/models", fine_window_sec=10, coarse_window_sec=20, fine_min_sec=5)
+
+    # 40 s / 10 s = 4 fine windows -> 2 chunks of 2. The first is gated at its own end, the last is not.
+    assert seen == [20.0, None]
+    # And the run still analyzed EVERY window, gate or no gate.
+    assert result["fine_windows_analyzed"] == result["fine_windows_total"] == 4
+
+
+def test_a_failing_gate_retries_ungated_before_the_per_window_fallback() -> None:
+    """A gate that cannot be built costs wall clock, never correctness.
+
+    The retry rung matters more than it looks: without it, a gate broken by some future essentia
+    would demote EVERY chunk of EVERY file to the per-window `EasyLoader` decode phaze-5lop
+    removed -- `O(n_windows x duration)`, i.e. the 4-hour-timeout shape -- which is far worse
+    than simply decoding each chunk from byte 0. So the fallback ladder has three rungs, and
+    this test pins that the middle one is real.
+    """
+    windows = [(0, 0.0, 5.0), (1, 5.0, 10.0)]
+    buffers = {0: np.zeros(4, dtype=np.float32), 1: np.zeros(4, dtype=np.float32)}
+    calls: list[float | None] = []
+
+    def _gate_only_fails(_path: str, _rate: int, _windows: Any, *, stop_at_sec: float | None = None) -> dict[int, Any]:
+        calls.append(stop_at_sec)
+        if stop_at_sec is not None:
+            msg = "Trimmer refused the head position"
+            raise RuntimeError(msg)
+        return buffers
+
+    mock_es = MagicMock()
+    mock_es.EasyLoader.side_effect = AssertionError("the per-window decode must not run: the ungated retry succeeded")
+    with (
+        patch.object(analysis_mod, "es", mock_es),
+        patch.object(analysis_mod, "_decode_windows_streaming", side_effect=_gate_only_fails),
+    ):
+        decoded = _decode_windows("/fake/audio.mp3", _COARSE_SAMPLE_RATE, windows, lambda *_a: None, stop_at_sec=10.0)
+
+    assert decoded == buffers
+    assert calls == [10.0, None], "the gated attempt must be followed by exactly one ungated retry"
+
+
+def test_the_per_window_fallback_beats_once_per_window() -> None:
+    """The fallback decode must stay audible to the stall watchdog (phaze-w55w1).
+
+    Each `EasyLoader` call in this loop re-decodes the file from byte 0 -- it cannot seek, which
+    is the whole reason phaze-5lop exists -- so on a long file one window takes minutes and a
+    chunk takes hours. Unbeaten, that silence is indistinguishable from a hang: the stall watchdog
+    would kill the fallback and the file would go terminally ANALYSIS_FAILED, i.e. the degradation
+    path would destroy exactly the work it exists to salvage. A beat per window is what prevents
+    that, and it must fire for SKIPPED windows too (a skip is still forward motion).
+    """
+    beats: list[int] = []
+    windows = [(i, i * 5.0, (i + 1) * 5.0) for i in range(8)]
+
+    def _easyloader(*, filename: str, sampleRate: int, startTime: float, endTime: float) -> Any:
+        if startTime == 15.0:  # one window fails, to prove the beat is outside the try
+            msg = "no decodable frames"
+            raise RuntimeError(msg)
+        loader = MagicMock()
+        loader.return_value = np.zeros(4, dtype=np.float32)
+        return loader
+
+    mock_es = MagicMock()
+    mock_es.EasyLoader.side_effect = _easyloader
+    with (
+        patch.object(analysis_mod, "es", mock_es),
+        patch.object(analysis_mod, "_decode_windows_streaming", side_effect=RuntimeError("network build failed")),
+    ):
+        decoded = _decode_windows(
+            "/fake/<set-01>",
+            _COARSE_SAMPLE_RATE,
+            windows,
+            lambda *_a: None,
+            on_beat=lambda: beats.append(len(beats)),
+        )
+
+    assert len(decoded) == 7, "the fallback still decodes every window it can"
+    assert len(beats) == len(windows), "one beat per window, including the one that failed"
+
+
+def test_a_failing_gated_attempt_beats_before_the_ungated_retry() -> None:
+    """A gated pass that burns minutes and then fails must report before retrying.
+
+    Both attempts decode the same audio, so a gate failure doubles an already-long silent stretch.
+    Beating between them keeps the retry from starting its clock already close to the threshold.
+    """
+    beats: list[int] = []
+    windows = [(0, 0.0, 5.0)]
+    buffers = {0: np.zeros(4, dtype=np.float32)}
+
+    def _gate_only_fails(_p: str, _r: int, _w: Any, *, stop_at_sec: float | None = None) -> dict[int, Any]:
+        if stop_at_sec is not None:
+            msg = "gate refused"
+            raise RuntimeError(msg)
+        return buffers
+
+    with patch.object(analysis_mod, "_decode_windows_streaming", side_effect=_gate_only_fails):
+        _decode_windows(
+            "/fake/audio.mp3",
+            _COARSE_SAMPLE_RATE,
+            windows,
+            lambda *_a: None,
+            stop_at_sec=5.0,
+            on_beat=lambda: beats.append(len(beats)),
+        )
+
+    assert beats, "a failed gated attempt must beat before the ungated retry begins"
+
+
+def test_decode_windows_without_a_beat_callback_is_inert() -> None:
+    """`on_beat=None` (the default, and every non-analysis caller) must not raise."""
+    windows = [(0, 0.0, 5.0)]
+    with patch.object(analysis_mod, "_decode_windows_streaming", return_value={0: np.zeros(4, dtype=np.float32)}):
+        assert _decode_windows("/fake/audio.mp3", _COARSE_SAMPLE_RATE, windows, lambda *_a: None) == {0: pytest.approx(np.zeros(4))}

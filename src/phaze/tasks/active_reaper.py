@@ -64,7 +64,7 @@ file. ``recover_orphaned_work`` re-enqueues exactly
 
 so while the stranded ``active`` row exists the key is LIVE and the ledger row is invisible to
 recovery; the moment this reaper deletes it the SAME ledger row becomes an orphan and recovery replays
-its stored payload (with its stored 7200s timeout) through the original keyed producer. Releasing the
+its stored payload through the original keyed producer. Releasing the
 SAQ key is therefore not merely necessary but SUFFICIENT -- provided the ledger row survives. Verified
 end-to-end against a test database in
 ``tests/analyze/tasks/test_active_reaper.py::test_reaped_active_row_makes_its_ledger_row_recoverable``,
@@ -77,12 +77,17 @@ owns the broker key, that one owns the finished-work ledger.
 WHY A WIDER SLACK THAN THE 'aborting' REAPER (900s vs 300s).
 ``'aborting'`` is a POST-give-up status: SAQ has already decided the job is dead. ``'active'`` is a LIVE
 status, so the cost of being wrong is higher, and there is one plausible way to be wrong that
-``'aborting'`` does not have: ``process_file`` spends its time inside essentia's C extension, which does
-not yield to the event loop, so ``asyncio.wait_for``'s cancellation at the job's own timeout cannot land
-until the native call returns. A genuinely-running job can therefore outlive its own timeout by a
-bounded margin. The slack is the margin, and it is additive on top of the row's own timeout (a 7200s
-``process_file`` gets 8100s, not 900s). Being wrong is not data loss either way -- the worst case is a
-duplicate analysis of one file -- but the wider default keeps that from being routine.
+``'aborting'`` does not have: a job whose work sits inside a C extension that does not yield to the
+event loop cannot have ``asyncio.wait_for``'s cancellation land until the native call returns, so a
+genuinely-running job can outlive its own timeout by a bounded margin. The slack is that margin, and
+it is additive on top of the row's own timeout. Being wrong is not data loss either way -- the worst
+case is a duplicate analysis of one file -- but the wider default keeps that from being routine.
+
+phaze-w55w1: ``process_file`` was the motivating example and is no longer in scope here at all. It
+runs ``timeout=0`` (exhaustive analysis has no wall clock, ADR-0007 §7), and ``timeout: 0`` rows are
+EXCLUDED from this statement by design (:mod:`phaze.tasks._saq_reap`). Its stranded-row liveness is
+owned by SAQ's own heartbeat-based ``Job.stuck`` sweep instead -- the division of labour
+``scan_directory`` has had since phaze-mllxc. The reasoning above still governs every other long job.
 
 Degrade-safe: the whole statement runs in a SAVEPOINT; a missing/unreadable ``saq_jobs`` table (a
 pre-migration env, or a malformed blob) rolls the nested scope back alone and returns ``reaped=0``. A

@@ -38,15 +38,72 @@ pass gets its windows from **one streaming decode network per tier** —
 `MonoLoader(sampleRate=tier_rate)` fanned out to a `Scale(1.0) → Trimmer` branch per window,
 run once — rather than one `EasyLoader` call per window:
 
-| Pass | Sample rate | Window | essentia algorithms | Features produced |
-| ---- | ----------- | ------ | ------------------- | ----------------- |
-| **FINE** (≤60 windows) | 44.1 kHz | 30 s | `RhythmExtractor2013(method="multifeature")` + `KeyExtractor(profileType="edma")` | `bpm`, `musical_key` (+ per-window time series) |
-| **COARSE** (≤30 windows) | 16 kHz | 180 s | 34 TensorFlow graphs (11 sets × 3 variants + `discogs-effnet` genre) | `mood`, `style`, `danceability`, full `features` JSONB |
+| Pass | Sample rate | Window | Chunk | essentia algorithms | Features produced |
+| ---- | ----------- | ------ | ----- | ------------------- | ----------------- |
+| **FINE** | 44.1 kHz | 30 s | 60 windows | `RhythmExtractor2013(method="multifeature")` + `KeyExtractor(profileType="edma")` | `bpm`, `musical_key` (+ per-window time series) |
+| **COARSE** | 16 kHz | 180 s | 30 windows | 34 TensorFlow graphs (11 sets × 3 variants + `discogs-effnet` genre) | `mood`, `style`, `danceability`, full `features` JSONB |
 
-Per-file cost is bounded by caps (`fine_cap=60`, `coarse_cap=30`): a file whose
-natural window count exceeds a cap is **strided evenly across the whole file**
-instead of analyzed window-by-window, so cost is O(constant), not O(duration)
-(the root-cause fix for the 4h-timeout incident).
+### Coverage is exhaustive; memory is bounded by the CHUNK
+
+**Every file gets every natural window of both tiers**, whatever its duration. There is no
+window cap, no even stride, and no `sampled` result — operator decision 2026-08-11, implemented
+by `phaze-w55w1`; see [ADR-0007](design/0007-windowed-analysis.md) for the rationale and the
+cost analysis it accepted.
+
+Phase 43 previously bounded per-file cost with `analysis_fine_cap=60` / `analysis_coarse_cap=30`
+and a stride across the whole file, so anything past ~30 min (fine) / ~90 min (coarse) — i.e.
+every concert set — was **sampled**. That made per-file cost `O(constant)`, which was the
+root-cause fix for the 4h-timeout incident, at the price of never fully analyzing the archive's
+most interesting files.
+
+What bounds cost now is **chunking**, not discarding audio. Each tier is decoded and analyzed a
+bounded number of windows at a time (`_FINE_CHUNK_WINDOWS` = 60, `_COARSE_CHUNK_WINDOWS` = 30 in
+`services/analysis.py`), so peak PCM residency is a function of the chunk and **not** of the
+file:
+
+| Tier | Peak PCM per chunk | Arithmetic |
+| ---- | ---: | --- |
+| FINE | ~317 MB | 60 × 30 s × 44 100 Hz × 4 B |
+| COARSE | ~345 MB | 30 × 180 s × 16 000 Hz × 4 B |
+
+The chunk sizes are the old cap values **on purpose**: they reproduce exactly the per-tier
+residency the capped implementation was measured at, so ADR-0005's Job memory limits stay valid
+across the removal instead of needing re-derivation. The two tiers never stack (fine's chunk is
+released and `malloc_trim`ed before coarse starts).
+
+Two costs are paid for that, both deliberate and both documented in the D-07 decision record
+above `_FINE_CHUNK_WINDOWS`:
+
+- each of the 34 TF graphs is constructed once per COARSE CHUNK rather than once per file
+  (the phaze-15sw model-major invariant — never more than one graph resident — is unchanged);
+- each chunk needs its own decode pass, because `MonoLoader` cannot seek. Non-final chunks
+  interpose a `Trimmer` directly on the loader so the decode stops at the chunk boundary,
+  which brings the total from `K × duration` down to roughly `duration × (K + 1) / 2`.
+
+> **Not yet measured on real hardware.** The table above is per-window buffer arithmetic carried
+> forward from the capped implementation, plus a synthetic 12-hour bounded-memory test
+> (`tests/analyze/services/pipeline/test_analysis_long_file.py`) that proves the SHAPE — peak
+> RSS moves <25 MB between a 2h and a 12h file despite 6× the analyzed windows. ADR-0007
+> follow-up 3's ask for a real peak-RSS/wall-clock measurement on a genuine multi-hour file
+> **is still open**.
+
+### Liveness is progress-based, never wall-clock
+
+Exhaustive analysis means a multi-hour set legitimately runs for many hours, so nothing kills an
+analysis for taking too long. The child heartbeats every unit of progress (window completions,
+chunk decodes, each coarse model sweep) and the supervising layer kills it only after
+`analysis_stall_timeout_sec` (default 1800 s) of **total silence**:
+
+| Layer | Before (Phase 43) | Now (phaze-w55w1) |
+| --- | --- | --- |
+| in-process child | `analysis_inner_timeout_sec` = 6600 s SIGKILL | stall watchdog in `services/analysis_exec.py` → `AnalysisStalledError` |
+| SAQ `process_file` job | `timeout=7200` | `timeout=0` (disabled) + `heartbeat=analysis_stall_timeout_sec`, touched by the lane |
+| k8s burst pod | no bound at all | the same stall watchdog (`job_runner` passes `stall_timeout`) |
+
+A wall clock cannot tell a long analysis from a hang — `phaze-1b39` (2026-07-28) is the incident
+where trying SIGTERM'd legitimate 2–6 hour concert sets and stalled the whole burst lane. A
+genuinely wedged child is still killed in bounded time, and the file gets a stored
+`error_message` naming the stall and the stage it died in.
 
 > **Removed, not essentia's concern:** audio **fingerprinting** was never part of essentia — it was
 > handled entirely by the `audfprint` and `panako` HTTP sidecars, which the app called over httpx.
@@ -94,6 +151,11 @@ Corollaries already settled in prior investigation:
 > | total wall | 3 205.05 s | **1 960.37 s** |
 > | audio decode + resample | 1 370.77 s (**42.8%**) | **126.98 s (6.5%)** |
 > | everything else (34 TF graphs × 20 windows, + `RhythmExtractor2013`/`KeyExtractor` × 60) | 1 834.28 s (57.2%) | 1 833.39 s (**93.5%**) |
+
+> *(That measurement predates `phaze-w55w1` and was taken at the then-saturated caps. Its
+> proportions still hold — the model step still dominates — but the absolute figures are now a
+> per-60-minutes rate rather than a per-file total, since a longer file analyzes proportionally
+> more windows instead of striding down to the same 60/20.)*
 >
 > **What survives.** Decode + native DSP really did dominate — decode alone was 43% of a
 > 60-minute analyze, and `phaze-esut` §8 found why: `EasyLoader` does not seek, so every one of
@@ -127,7 +189,7 @@ Stored on `AnalysisResult` (`models/analysis.py`) and per-window on `AnalysisWin
 | `style` | `discogs-effnet` genre (coarse) | column + LLM prompt |
 | `danceability` | danceability set × 3 variants | inside `features` / per-window |
 | `features` (full JSONB) | all 11 sets + genre — incl. `gender`, `tonality`, `voice_instrumental` | fed verbatim to the LLM |
-| coverage contract | `fine/coarse_windows_analyzed/total`, `sampled` | re-deepen a sampled file later |
+| progress counts | `fine/coarse_windows_analyzed/total` | the in-flight progress bar + the completion PUT (equal on a healthy file since phaze-w55w1) |
 
 Load-bearing coupling to note: `aggregate_bpm()` **excludes windows with
 `confidence == 0.0`**, and `analysis.py` unpacks `confidence` from

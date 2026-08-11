@@ -55,15 +55,18 @@ def _patch_agent_settings() -> Any:
     ``process_file`` reads the agent-only ``analysis_*`` fields via ``get_settings()``
     (the module-level ``settings`` singleton is ControlSettings-typed and lacks them).
     Tests run with the default control role, so every ``process_file`` call would
-    otherwise trip the agent-role guard. This default stub supplies the three Phase-43
-    knobs; tests that assert specific threading override the return value's attrs.
+    otherwise trip the agent-role guard. This default stub supplies the knobs
+    ``process_file`` reads; tests that assert specific threading override the return value's
+    attrs. phaze-w55w1 replaced the three Phase-43 knobs (inner timeout + the two window caps)
+    with the single stall threshold.
     """
     from phaze.config import AgentSettings
 
     stub = MagicMock(spec=AgentSettings)
-    stub.analysis_inner_timeout_sec = 6600
-    stub.analysis_fine_cap = 60
-    stub.analysis_coarse_cap = 30
+    stub.analysis_stall_timeout_sec = 1800
+    # Derived on the real settings class (a property), so a spec'd MagicMock does NOT compute it --
+    # it must be stamped or every throttle comparison hits a MagicMock (phaze-w55w1).
+    stub.analysis_job_heartbeat_sec = 3600
     stub.analysis_progress_interval_sec = 5.0
     with patch("phaze.tasks.functions.get_settings", return_value=stub) as m:
         yield m
@@ -376,15 +379,24 @@ async def test_process_file_propagates_pool_failure(mock_pool: AsyncMock) -> Non
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
-async def test_process_file_timeout_is_terminal(mock_pool: AsyncMock) -> None:
-    """An inner pebble TimeoutError is terminal: report reason='timeout', return normally.
+async def test_process_file_stall_is_terminal_and_stores_a_real_error(mock_pool: AsyncMock) -> None:
+    """A stalled child is terminal: report reason='timeout' WITH the stall detail, return normally.
 
-    The task returns ``status='analysis_failed'`` (normal return -> SAQ marks the job
-    COMPLETE -> NO retry of a deterministically-too-long file). ``put_analysis`` is
-    never called.
+    The task returns ``status='analysis_failed'`` (normal return -> SAQ marks the job COMPLETE ->
+    NO blind re-run of a file that wedged). ``put_analysis`` is never called.
+
+    phaze-w55w1 adds the ``error`` half, and it is the half that matters operationally: the
+    reason vocabulary stays ``"timeout"`` so every existing consumer is unchanged, but the file
+    now carries a stored message saying it STOPPED MAKING PROGRESS rather than merely that it
+    ran long -- the difference between "this file is too big" (no longer a thing that can
+    happen) and "this file wedged" (the only thing that can).
     """
+    from phaze.services.analysis_exec import AnalysisStalledError
+
     file_id = uuid.uuid4()
-    mock_pool.side_effect = TimeoutError("inner pebble timeout")
+    mock_pool.side_effect = AnalysisStalledError(
+        "analysis child stalled: no progress for 1800s (last stage: coarse_model)", stall_timeout=1800, last_stage="coarse_model"
+    )
     api = AsyncMock()
     api.put_analysis = AsyncMock()
     api.report_analysis_failed = AsyncMock(return_value=MagicMock())
@@ -397,6 +409,8 @@ async def test_process_file_timeout_is_terminal(mock_pool: AsyncMock) -> None:
     awaited = api.report_analysis_failed.await_args
     assert awaited.args[0] == file_id
     assert awaited.args[1].reason == "timeout"
+    assert "stalled" in awaited.args[1].error
+    assert "coarse_model" in awaited.args[1].error, "the stored error must name the stage the child died in"
     api.put_analysis.assert_not_awaited()
 
 
@@ -437,7 +451,7 @@ async def test_process_file_zero_natural_windows_is_terminal(mock_pool: AsyncMoc
     one natural window existed; it is a no-op when the duration probe itself reads 0 seconds
     (an undecodable file, or a container whose header nonetheless yields zero-length audio
     properties). Without this guard, that 0/0 result would reach ``put_analysis`` and be
-    recorded as a completed analysis (``sampled=False``, ``windows=[]``, all-None aggregates).
+    recorded as a completed analysis (``windows=[]``, all-None aggregates).
     """
     file_id = uuid.uuid4()
     mock_pool.return_value = {
@@ -453,7 +467,6 @@ async def test_process_file_zero_natural_windows_is_terminal(mock_pool: AsyncMoc
         "fine_windows_total": 0,
         "coarse_windows_analyzed": 0,
         "coarse_windows_total": 0,
-        "sampled": False,
     }
     api = AsyncMock()
     api.put_analysis = AsyncMock()
@@ -480,7 +493,6 @@ async def test_process_file_partial_windows_still_completes(mock_pool: AsyncMock
         "fine_windows_total": 1,
         "coarse_windows_analyzed": 0,
         "coarse_windows_total": 0,
-        "sampled": False,
     }
     api = AsyncMock()
     api.put_analysis = AsyncMock(return_value=MagicMock())
@@ -709,12 +721,15 @@ async def test_process_file_cancelled_no_job_in_ctx_cleans_scratch_copy(mock_poo
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
-async def test_process_file_threads_inner_timeout_and_caps(mock_pool: AsyncMock, _patch_agent_settings: MagicMock) -> None:
-    """The success path passes the inner timeout + 60/30 caps from AgentSettings to the pool."""
+async def test_process_file_threads_the_stall_threshold_and_no_caps(mock_pool: AsyncMock, _patch_agent_settings: MagicMock) -> None:
+    """The success path passes ``stall_timeout`` from AgentSettings -- and no wall clock, no caps.
+
+    The negative half is the load-bearing one (phaze-w55w1): a ``timeout=`` kwarg reaching the
+    driver would silently restore the elapsed-time kill this bead removed, and it would not fail
+    any other test in this file.
+    """
     stub = _patch_agent_settings.return_value
-    stub.analysis_inner_timeout_sec = 7100
-    stub.analysis_fine_cap = 50
-    stub.analysis_coarse_cap = 25
+    stub.analysis_stall_timeout_sec = 1234
     mock_pool.return_value = MOCK_ANALYSIS
     api = AsyncMock()
     api.put_analysis = AsyncMock(return_value=MagicMock())
@@ -724,62 +739,172 @@ async def test_process_file_threads_inner_timeout_and_caps(mock_pool: AsyncMock,
 
     mock_pool.assert_awaited_once()
     call = mock_pool.await_args
-    assert call.kwargs["timeout"] == 7100
-    assert call.kwargs["fine_cap"] == 50
-    assert call.kwargs["coarse_cap"] == 25
+    assert call.kwargs["stall_timeout"] == 1234
+    for gone in ("timeout", "fine_cap", "coarse_cap"):
+        assert gone not in call.kwargs
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
-async def test_process_file_payload_caps_override_agent_settings(mock_pool: AsyncMock, _patch_agent_settings: MagicMock) -> None:
-    """Phase 44: payload fine_cap/coarse_cap (incl. 0) override the AgentSettings defaults."""
+async def test_process_file_touches_the_saq_job_heartbeat_on_analysis_progress(mock_pool: AsyncMock, _patch_agent_settings: MagicMock) -> None:
+    """Each liveness heartbeat from the child touches the SAQ job (phaze-w55w1).
+
+    ``process_file`` runs ``timeout=0`` + a job ``heartbeat``, so ``Job.stuck`` reads ``touched``
+    -- and nothing else refreshes it during an analysis that can legitimately run for hours.
+    Without this relay the sweep would abort every long file at the stall threshold, which is
+    the same class of failure as the wall clock it replaced, just arriving from the broker.
+    """
     stub = _patch_agent_settings.return_value
-    stub.analysis_fine_cap = 60
-    stub.analysis_coarse_cap = 30
+    stub.analysis_progress_interval_sec = 0.0
     mock_pool.return_value = MOCK_ANALYSIS
+    job = AsyncMock()
     api = AsyncMock()
     api.put_analysis = AsyncMock(return_value=MagicMock())
     ctx = _make_ctx(api_client=api)
+    ctx["job"] = job
 
-    kwargs = _make_payload_kwargs()
-    kwargs["fine_cap"] = 0
-    kwargs["coarse_cap"] = 0
-    await process_file(ctx, **kwargs)
+    async def _beat_then_return(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+        kwargs["heartbeat_cb"]("fine_decode", 0, 9)
+        kwargs["heartbeat_cb"]("fine", 1, 9)
+        kwargs["heartbeat_cb"]("coarse_model", 1, 9)
+        return MOCK_ANALYSIS
 
-    call = mock_pool.await_args
-    # 0 is a meaningful override (analyze-ALL no-op), NOT the 60/30 AgentSettings default.
-    assert call.kwargs["fine_cap"] == 0
-    assert call.kwargs["coarse_cap"] == 0
+    mock_pool.side_effect = _beat_then_return
 
-
-@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
-async def test_process_file_caps_fall_back_to_agent_settings_when_none(mock_pool: AsyncMock, _patch_agent_settings: MagicMock) -> None:
-    """Phase 44: absent payload caps (None) fall back to the AgentSettings 60/30 defaults exactly as before."""
-    stub = _patch_agent_settings.return_value
-    stub.analysis_fine_cap = 55
-    stub.analysis_coarse_cap = 22
-    mock_pool.return_value = MOCK_ANALYSIS
-    api = AsyncMock()
-    api.put_analysis = AsyncMock(return_value=MagicMock())
-    ctx = _make_ctx(api_client=api)
-
-    # _make_payload_kwargs omits fine_cap/coarse_cap -> ProcessFilePayload defaults them None.
     await process_file(ctx, **_make_payload_kwargs())
 
-    call = mock_pool.await_args
-    assert call.kwargs["fine_cap"] == 55
-    assert call.kwargs["coarse_cap"] == 22
+    # The FIRST beat always touches (last_touch starts None), which is what proves the relay is
+    # wired to the heartbeat channel at all. The three beats here land in the same instant, so the
+    # cadence cap collapses the rest -- that collapsing is the subject of the throttle tests below,
+    # not of this one.
+    assert job.update.await_count >= 1
+    job.update.assert_awaited()
+
+
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_saq_heartbeat_touch_is_throttled(mock_pool: AsyncMock, _patch_agent_settings: MagicMock) -> None:
+    """A burst of heartbeats collapses to ONE broker write (phaze-w55w1).
+
+    Exhaustive analysis emits far more liveness events than the capped version did -- a 12-hour
+    file completes thousands of windows and hundreds of model sweeps -- and each untouched
+    ``job.update()`` is a Postgres write on the shared broker. The relay therefore rides the same
+    throttle gate as the progress POST: enough to keep ``touched`` fresh against a 30-minute
+    heartbeat, nowhere near enough to be a write storm.
+    """
+    stub = _patch_agent_settings.return_value
+    stub.analysis_progress_interval_sec = 5.0
+    stub.analysis_job_heartbeat_sec = 3600
+    job = AsyncMock()
+
+    async def _burst_then_return(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+        for i in range(25):
+            kwargs["heartbeat_cb"]("fine", i, 25)
+        return MOCK_ANALYSIS
+
+    mock_pool.side_effect = _burst_then_return
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = job
+
+    await process_file(ctx, **_make_payload_kwargs())
+
+    assert job.update.await_count == 1, "25 heartbeats inside one throttle window must collapse to a single touch"
+
+
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_saq_touch_cadence_is_capped_by_the_heartbeat_deadline_not_the_display_knob(
+    mock_pool: AsyncMock, _patch_agent_settings: MagicMock
+) -> None:
+    """Raising the UI progress interval must NOT starve the broker liveness touch (phaze-w55w1).
+
+    `analysis_progress_interval_sec` is a DISPLAY knob. An operator raising it to quieten the
+    progress bar has no reason to expect it to affect whether SAQ considers the job alive -- but
+    under a shared throttle it would, and setting it above the job's heartbeat deadline would get
+    every healthy multi-hour analysis swept. So the touch cadence is capped independently at a
+    third of the deadline: the display knob can only tighten it, never loosen it past safety.
+    """
+    stub = _patch_agent_settings.return_value
+    stub.analysis_progress_interval_sec = 86400.0  # absurd, and it must not matter
+    stub.analysis_job_heartbeat_sec = 3600
+    job = AsyncMock()
+    beats = 12
+    fake_now = iter(float(i * 601) for i in range(beats + 4))  # 601s apart: past 3600/3, under 86400
+
+    async def _spaced_beats(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+        for i in range(beats):
+            kwargs["heartbeat_cb"]("fine", i, beats)
+        return MOCK_ANALYSIS
+
+    mock_pool.side_effect = _spaced_beats
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = job
+
+    with patch("phaze.tasks.functions.time.monotonic", lambda: next(fake_now)):
+        await process_file(ctx, **_make_payload_kwargs())
+
+    # Under the old shared throttle this would be exactly 1 touch in 2 hours of simulated beats,
+    # against a 3600s deadline -- i.e. swept. The cap makes every beat past 1200s eligible.
+    assert job.update.await_count > 1, "the display knob must not be able to starve the liveness touch"
+
+
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_heartbeat_relay_is_inert_without_a_saq_job(mock_pool: AsyncMock, _patch_agent_settings: MagicMock) -> None:
+    """A bare ctx (direct call / test harness) has no ``job`` -- the relay must no-op, not raise."""
+    stub = _patch_agent_settings.return_value
+    stub.analysis_progress_interval_sec = 0.0
+
+    async def _beat_then_return(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+        kwargs["heartbeat_cb"]("fine", 1, 2)
+        return MOCK_ANALYSIS
+
+    mock_pool.side_effect = _beat_then_return
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+
+    result = await process_file(_make_ctx(api_client=api), **_make_payload_kwargs())
+
+    assert result["status"] == "analyzed"
+
+
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_saq_heartbeat_failure_never_fails_the_job(mock_pool: AsyncMock, _patch_agent_settings: MagicMock) -> None:
+    """A broker hiccup on ``job.update()`` is swallowed: liveness reporting never kills an analysis."""
+    stub = _patch_agent_settings.return_value
+    stub.analysis_progress_interval_sec = 0.0
+    job = AsyncMock()
+    job.update.side_effect = RuntimeError("broker pool hiccup")
+
+    async def _beat_then_return(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+        kwargs["heartbeat_cb"]("fine", 1, 2)
+        return MOCK_ANALYSIS
+
+    mock_pool.side_effect = _beat_then_return
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = job
+
+    result = await process_file(ctx, **_make_payload_kwargs())
+
+    assert result["status"] == "analyzed"
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_process_file_forwards_coverage_fields(mock_pool: AsyncMock) -> None:
-    """The five coverage fields from analyze_file are forwarded into AnalysisWritePayload."""
+    """The four progress counts from analyze_file are forwarded into AnalysisWritePayload.
+
+    The counts are equal here because exhaustive analysis makes them equal on a healthy file
+    (phaze-w55w1); a shortfall now means individual windows failed to decode, not that coverage
+    was deliberately skipped.
+    """
     analysis = {
         **MOCK_ANALYSIS,
-        "fine_windows_analyzed": 42,
+        "fine_windows_analyzed": 60,
         "fine_windows_total": 60,
-        "coarse_windows_analyzed": 18,
+        "coarse_windows_analyzed": 30,
         "coarse_windows_total": 30,
-        "sampled": True,
     }
     mock_pool.return_value = analysis
     api = AsyncMock()
@@ -789,11 +914,10 @@ async def test_process_file_forwards_coverage_fields(mock_pool: AsyncMock) -> No
     await process_file(ctx, **_make_payload_kwargs())
 
     body = api.put_analysis.await_args.args[1]
-    assert body.fine_windows_analyzed == 42
+    assert body.fine_windows_analyzed == 60
     assert body.fine_windows_total == 60
-    assert body.coarse_windows_analyzed == 18
+    assert body.coarse_windows_analyzed == 30
     assert body.coarse_windows_total == 30
-    assert body.sampled is True
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
@@ -811,7 +935,6 @@ async def test_process_file_coverage_fields_default_none_when_absent(mock_pool: 
     assert body.fine_windows_total is None
     assert body.coarse_windows_analyzed is None
     assert body.coarse_windows_total is None
-    assert body.sampled is None
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)

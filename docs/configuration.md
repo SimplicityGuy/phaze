@@ -400,7 +400,7 @@ LLM itself doesn't return a usable date.
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `PHAZE_STRAGGLER_THRESHOLD_SEC` (or `straggler_threshold_sec`) | No | `6600` | Running-age threshold (seconds) above which an in-flight `process_file` analyze job is flagged a **straggler** on the pipeline dashboard (Phase 44) — still grinding, distinct from `ANALYSIS_FAILED` which gave up. Default 6600 mirrors the agent's `analysis_inner_timeout_sec` (a job past the inner-timeout horizon is by definition overdue). Bounded `gt=0, lt=86400`. |
+| `PHAZE_STRAGGLER_THRESHOLD_SEC` (or `straggler_threshold_sec`) | No | `6600` | Running-age threshold (seconds) above which an in-flight `process_file` analyze job is flagged a **straggler** on the pipeline dashboard (Phase 44) — still grinding, distinct from `ANALYSIS_FAILED` which gave up. **Display only** — it kills nothing. Its 6600 default used to mirror the (removed) `analysis_inner_timeout_sec`; since phaze-w55w1 a multi-hour exhaustive analysis will legitimately cross it and still be perfectly healthy, so raise it if the dashboard gets noisy and never read a flagged job as stuck (`analysis_stall_timeout_sec` is the knob that decides stuck). Bounded `gt=0, lt=86400`. |
 
 ## Agent role settings (`PHAZE_ROLE=agent`)
 
@@ -437,11 +437,15 @@ The agent worker reads these to size the per-window decode loop in `services/ana
 | `PHAZE_ANALYSIS_FINE_WINDOW_SEC` (or `analysis_fine_window_sec`) | No | `30` | Fine-tier (BPM/key) window length in seconds (Phase 31). |
 | `PHAZE_ANALYSIS_COARSE_WINDOW_SEC` (or `analysis_coarse_window_sec`) | No | `180` | Coarse-tier (mood/style/danceability) window length in seconds (Phase 31). |
 | `PHAZE_ANALYSIS_FINE_MIN_SEC` (or `analysis_fine_min_sec`) | No | `15` | Minimum audio length for a trailing FINE window; shorter trailing windows are dropped except window 0 (Phase 31). |
-| `PHAZE_ANALYSIS_INNER_TIMEOUT_SEC` (or `analysis_inner_timeout_sec`) | No | `6600` | Inner per-analysis timeout (kill-on-timeout). The Phase 101 subprocess driver (`services/analysis_exec.py`) `SIGKILL`s the analysis child past this bound (retired the earlier pebble ProcessPool from Phase 43). MUST stay below the 7200s SAQ `process_file` net so the kill is deterministic; enforced `gt=0, lt=7200`. |
-| `PHAZE_ANALYSIS_FINE_CAP` (or `analysis_fine_cap`) | No | `60` | Max FINE-tier (BPM/key) windows `analyze_file` decodes per file. Bounded `ge=2` (even-stride keeps first+last) (Phase 43). |
-| `PHAZE_ANALYSIS_COARSE_CAP` (or `analysis_coarse_cap`) | No | `30` | Max COARSE-tier (mood/style/danceability) windows `analyze_file` decodes per file. Bounded `ge=2` (Phase 43). |
+| `PHAZE_ANALYSIS_STALL_TIMEOUT_SEC` (or `analysis_stall_timeout_sec`) | No | `1800` | Seconds of **no reported analysis progress** before the analysis child is killed as stalled (phaze-w55w1). This bounds SILENCE, never runtime: a file that keeps completing windows runs to completion however long it takes, which is the point — analysis is exhaustive, so a concert set legitimately runs for hours. The child heartbeats window completions, chunk decodes and model sweeps; the parent driver (`services/analysis_exec.py`) kills only on total silence past this bound. The SAQ `process_file` job's own `heartbeat` is DERIVED from this (2x, `config.BaseSettings.analysis_job_heartbeat_sec`) rather than equal to it — the outer net watches a narrower signal, so it needs slack or it sweeps jobs the inner watchdog is correctly holding healthy — and the job carries `timeout=0`, i.e. no wall clock at all. Bounded `gt=0, lt=86400`. Raising this raises the outer net with it, by construction. |
 | `PHAZE_ANALYSIS_PROGRESS_INTERVAL_SEC` (or `analysis_progress_interval_sec`) | No | `5.0` | Minimum seconds between mid-flight analyze-progress POSTs; the final count is always flushed regardless, and `0` disables throttling. Bounded `ge=0.0` (Phase 57.1 D-04). |
 | `PHAZE_ANALYSIS_TF_BATCH_SIZE` | No | `32` | `TensorflowPredict*` `batchSize` for the 33 tunable model graphs (phaze-0582). **Not** a `phaze.config` field: read straight from the process environment by `services/analysis.py::_resolve_tf_batch_size` at classifier construction, so a value set only in a `.env` file (and never exported into the environment) does not apply. Essentia's own default is `64`; `32` is the measured knee — `-33.7%` peak analysis RSS for `+0.36%` wall end to end, with lower values flat on memory and batch 1 costing `+55.7%` wall. A malformed or non-positive value logs a warning and falls back to `32`. `discogs-effnet-bs64-1` ignores this entirely and always uses `64`: its graph Placeholder is `[64, 128, 96]`. |
+
+> **Removed (phaze-w55w1):** `PHAZE_ANALYSIS_INNER_TIMEOUT_SEC` (the 6600 s wall-clock SIGKILL of
+> the analysis child) and `PHAZE_ANALYSIS_FINE_CAP` / `PHAZE_ANALYSIS_COARSE_CAP` (the 60/30 window
+> caps). Every file now receives every natural window of both tiers; per-file memory is bounded by
+> chunking rather than by discarding audio, and liveness is progress-based rather than wall-clock.
+> See [ADR-0007](design/0007-windowed-analysis.md) §7–§8. Setting any of the three has no effect.
 
 ### Thread sizing — derived from the host, not configured (phaze-rvcn)
 

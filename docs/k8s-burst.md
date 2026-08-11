@@ -619,8 +619,12 @@ Three things worth pulling out of that table:
   comfortably inside it.
 - **Nothing about the file predicts peak memory — the model set does.** `phaze-5lop` measured
   **1.3381 GiB** at 10 minutes against **1.7383 GiB** at 60: a 6× duration span for a 1.30× peak,
-  and the gap is the *cap*, not the duration, since the 60-minute file is the first that saturates
-  `fine_cap`. **Do not size `memory_request` or `memory_limit` on file duration or file size** —
+  and the gap was the *cap*, not the duration, since the 60-minute file was the first to saturate
+  `fine_cap`. **That conclusion survives phaze-w55w1 unchanged, for a re-derived reason:** the caps
+  are gone (every file is now analyzed exhaustively, ADR-0007 §7), but the tiers process bounded
+  CHUNKS whose sizes are exactly the old cap values, so the per-tier residency the figure above
+  reflects (~317 MB fine / ~345 MB coarse) is identical and still independent of duration.
+  **Do not size `memory_request` or `memory_limit` on file duration or file size** —
   duration-derived requests were considered and explicitly **rejected** in
   [ADR-0005](design/0005-analyze-job-memory-limits.md) (Decision, point 4).
 - **`3Gi`/`4Gi` are PROVISIONAL, and deliberately not being tightened.** `phaze-7i0k` §6d found 20

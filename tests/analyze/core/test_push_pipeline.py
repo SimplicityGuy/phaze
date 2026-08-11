@@ -766,11 +766,17 @@ async def test_startup_janitor_compute_only_gating(tmp_path: Path, monkeypatch: 
     old_mtime = time.time() - 10_000
     os.utime(stale_file, (old_mtime, old_mtime))
 
-    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=str(scratch_dir), push_timeout_sec=600, analysis_inner_timeout_sec=6600)
+    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=str(scratch_dir), push_timeout_sec=600, analysis_stall_timeout_sec=1800)
     # No client passed (unit-test caller) -- documented no-probe default: live_file_ids empty,
     # skip_partial False, matching the pre-phaze-5cvbz age-only shape.
     await aw._maybe_sweep_scratch(cfg)
-    assert calls == [(scratch_dir, 7200.0, frozenset(), False)]
+    # push_timeout_sec (600) + analysis_stall_timeout_sec (1800). phaze-w55w1 re-anchored the
+    # second term from the removed analysis_inner_timeout_sec (6600) onto the stall threshold:
+    # the ceiling is only a CHEAP FIRST FILTER (the control-plane liveness probe is what
+    # authorises a delete), so it wants to be "no analysis could plausibly still be starting",
+    # not "no analysis could still be running" -- a claim nothing can make now that a run is
+    # bounded by silence rather than by elapsed time.
+    assert calls == [(scratch_dir, 2400, frozenset(), False)]
 
     calls.clear()
     await aw._maybe_sweep_scratch(SimpleNamespace(kind="fileserver", cloud_scratch_dir=str(scratch_dir)))
@@ -784,7 +790,7 @@ async def test_startup_janitor_compute_only_gating(tmp_path: Path, monkeypatch: 
     empty_dir = tmp_path / "empty-scratch"
     empty_dir.mkdir()
     await aw._maybe_sweep_scratch(
-        SimpleNamespace(kind="compute", cloud_scratch_dir=str(empty_dir), push_timeout_sec=600, analysis_inner_timeout_sec=6600)
+        SimpleNamespace(kind="compute", cloud_scratch_dir=str(empty_dir), push_timeout_sec=600, analysis_stall_timeout_sec=1800)
     )
     assert calls == []
 
@@ -830,7 +836,7 @@ async def test_startup_janitor_keeps_entry_the_control_plane_confirms_live(tmp_p
     os.utime(dead_file, (old_mtime, old_mtime))
 
     client = _FakeScratchLivenessClient(live_file_ids=[live_id])
-    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=str(scratch), push_timeout_sec=600, analysis_inner_timeout_sec=6600)
+    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=str(scratch), push_timeout_sec=600, analysis_stall_timeout_sec=1800)
     await aw._maybe_sweep_scratch(cfg, client)
 
     assert live_file.exists(), "a durable queued/active job's scratch copy must survive the sweep"
@@ -852,7 +858,7 @@ async def test_startup_janitor_probe_failure_defers_entire_sweep_pass(tmp_path: 
     os.utime(stale_file, (old_mtime, old_mtime))
 
     client = _FakeScratchLivenessClient(raise_exc=RuntimeError("network blip"))
-    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=str(scratch), push_timeout_sec=600, analysis_inner_timeout_sec=6600)
+    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=str(scratch), push_timeout_sec=600, analysis_stall_timeout_sec=1800)
     await aw._maybe_sweep_scratch(cfg, client)
 
     assert stale_file.exists(), "a probe failure must defer deletion to the next sweep, never guess"
@@ -872,7 +878,7 @@ async def test_startup_janitor_push_file_active_keeps_rsync_partial(tmp_path: Pa
     os.utime(partial, (old_mtime, old_mtime))
 
     client = _FakeScratchLivenessClient(push_file_active=True)
-    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=str(scratch), push_timeout_sec=600, analysis_inner_timeout_sec=6600)
+    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=str(scratch), push_timeout_sec=600, analysis_stall_timeout_sec=1800)
     await aw._maybe_sweep_scratch(cfg, client)
 
     assert partial.exists(), "a live push_file job must keep the shared .rsync-partial dir this pass"
@@ -889,7 +895,7 @@ async def test_startup_janitor_no_live_push_file_sweeps_rsync_partial(tmp_path: 
     os.utime(partial, (old_mtime, old_mtime))
 
     client = _FakeScratchLivenessClient(push_file_active=False)
-    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=str(scratch), push_timeout_sec=600, analysis_inner_timeout_sec=6600)
+    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=str(scratch), push_timeout_sec=600, analysis_stall_timeout_sec=1800)
     await aw._maybe_sweep_scratch(cfg, client)
 
     assert not partial.exists()
@@ -908,7 +914,7 @@ async def test_startup_janitor_non_uuid_entry_swept_without_probing(tmp_path: Pa
     os.utime(garbage, (old_mtime, old_mtime))
 
     client = _FakeScratchLivenessClient()
-    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=str(scratch), push_timeout_sec=600, analysis_inner_timeout_sec=6600)
+    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=str(scratch), push_timeout_sec=600, analysis_stall_timeout_sec=1800)
     await aw._maybe_sweep_scratch(cfg, client)
 
     assert not garbage.exists()

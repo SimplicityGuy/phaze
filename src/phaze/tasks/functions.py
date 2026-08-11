@@ -55,6 +55,12 @@ logger = structlog.get_logger(__name__)
 # (max_length=2000); truncating here avoids shipping a huge traceback string at all.
 _ERROR_DETAIL_MAX = 2000
 
+# How many SAQ liveness touches must fit inside one job-heartbeat deadline (phaze-w55w1). 3 is
+# the smallest value that tolerates a dropped touch: `_touch_job_heartbeat` swallows broker
+# errors by design, so a cadence of exactly one-per-deadline would let a single transient
+# failure sweep a healthy multi-hour analysis.
+_HEARTBEAT_TOUCHES_PER_DEADLINE = 3
+
 
 def _agent_settings() -> AgentSettings:
     """Return the AgentSettings for this worker process (Phase 43).
@@ -104,16 +110,30 @@ async def _post_progress_count(api: PhazeAgentClient, file_id: uuid.UUID, count:
         logger.debug("process_file: progress POST dropped (best-effort)", file_id=str(file_id))
 
 
+async def _touch_job_heartbeat(job: Any) -> None:
+    """Best-effort SAQ heartbeat touch (phaze-w55w1).
+
+    ``process_file`` runs ``timeout=0`` with a ``heartbeat`` instead (see
+    ``services/analysis_enqueue.py``), so ``Job.stuck`` — and therefore SAQ's sweep and
+    ``classify_process_file_collision`` — reads ``touched``. This is what keeps ``touched``
+    fresh while a legitimately multi-hour analysis runs. Swallows every error for the same
+    reason the progress POST does: a broker hiccup must not fail an analysis that is working.
+    """
+    try:
+        await job.update()
+    except Exception:  # best-effort liveness; never fail the job
+        logger.debug("process_file: SAQ heartbeat touch dropped (best-effort)")
+
+
 async def _run_analysis_with_progress(
     api: PhazeAgentClient,
     cfg: AgentSettings,
     file_id: uuid.UUID,
     read_path: str,
     models_path: str,
-    fine_cap: int,
-    coarse_cap: int,
+    job: Any = None,
 ) -> Any:
-    """Run windowed analysis in the child subprocess while relaying throttled progress.
+    """Run exhaustive analysis in the child subprocess while relaying throttled progress.
 
     Phase 101: the shared driver (``run_analysis_subprocess``) execs the analysis child
     and invokes ``_progress`` ON the event loop per fine window — the Manager-queue
@@ -124,17 +144,43 @@ async def _run_analysis_with_progress(
     out even when the throttle swallowed it (D-04 final flush) — belt-and-suspenders
     with the completion PUT.
 
-    Returns the ``analyze_file`` result dict. Raises ``TimeoutError`` (the driver kills a
-    child exceeding ``analysis_inner_timeout_sec`` — the same exception the pebble SIGKILL
-    produced) and :class:`AnalysisSubprocessError` (child crash/nonzero exit — the
-    ``ProcessExpired`` replacement) for ``process_file``'s terminal handlers; the progress
-    bridge itself never alters the terminal mapping.
+    phaze-w55w1 adds the LIVENESS relay alongside it. The driver's ``heartbeat_cb`` fires on
+    every unit of analysis progress (both tiers, chunk decodes, model sweeps) and this bridge
+    turns it into ``job.update()`` — the SAQ-side touch that keeps ``Job.stuck`` false while
+    the analysis is genuinely working. It rides the SAME throttle gate and the same
+    fire-and-forget task set as the progress POST, so a chatty long file cannot turn liveness
+    into a write storm on the broker.
+
+    Returns the ``analyze_file`` result dict. Raises ``TimeoutError`` — specifically
+    :class:`AnalysisStalledError`, when the driver kills a child that stopped reporting
+    progress for ``analysis_stall_timeout_sec`` — and :class:`AnalysisSubprocessError`
+    (child crash/nonzero exit — the ``ProcessExpired`` replacement) for ``process_file``'s
+    terminal handlers; the progress bridge itself never alters the terminal mapping.
     """
     interval_sec = cfg.analysis_progress_interval_sec
+    # The SAQ liveness touch gets its OWN cadence, deliberately NOT the UI progress throttle
+    # (phaze-w55w1). `analysis_progress_interval_sec` is a DISPLAY knob -- an operator raising it
+    # to quieten the progress bar has no reason to expect it to affect broker liveness, but under
+    # a shared throttle it would: set it above the job's heartbeat deadline and every healthy
+    # analysis stops touching in time and gets swept. Coupling a correctness bound to a cosmetic
+    # knob is a trap regardless of the default, so the touch cadence is capped at a third of the
+    # deadline (>=3 touches per window, so two may be dropped -- the touch is best-effort -- and
+    # the job still stays live) and only tightened, never loosened, by the display knob.
+    touch_interval_sec = cfg.analysis_job_heartbeat_sec / _HEARTBEAT_TOUCHES_PER_DEADLINE
+    if interval_sec > 0.0:
+        touch_interval_sec = min(interval_sec, touch_interval_sec)
     last_post: float | None = None
     last_count: tuple[int, int] | None = None
     last_posted: tuple[int, int] | None = None
+    last_touch: float | None = None
     pending: set[asyncio.Task[None]] = set()
+
+    def _spawn(coro: Any) -> None:
+        # Fire-and-forget loop task (we're ON the loop); strong-ref'd so it is never GC'd
+        # mid-flight. Each coroutine swallows its own errors (best-effort, D-16).
+        task = asyncio.get_running_loop().create_task(coro)
+        pending.add(task)
+        task.add_done_callback(pending.discard)
 
     def _progress(analyzed: int, total: int) -> None:
         nonlocal last_post, last_count, last_posted
@@ -144,20 +190,25 @@ async def _run_analysis_with_progress(
             return
         last_post = now
         last_posted = (analyzed, total)
-        # Fire-and-forget loop task (we're ON the loop); strong-ref'd so it is never GC'd
-        # mid-flight. _post_progress_count swallows its own errors (best-effort, D-16).
-        task = asyncio.get_running_loop().create_task(_post_progress_count(api, file_id, (analyzed, total)))
-        pending.add(task)
-        task.add_done_callback(pending.discard)
+        _spawn(_post_progress_count(api, file_id, (analyzed, total)))
+
+    def _heartbeat(_stage: str, _done: int, _total: int) -> None:
+        nonlocal last_touch
+        if job is None:
+            return  # no SAQ job in this context (direct call / test harness): nothing to touch
+        now = time.monotonic()
+        if last_touch is not None and (now - last_touch) < touch_interval_sec:
+            return
+        last_touch = now
+        _spawn(_touch_job_heartbeat(job))
 
     try:
         return await run_analysis_subprocess(
             read_path,
             models_path,
-            fine_cap=fine_cap,
-            coarse_cap=coarse_cap,
             progress_cb=_progress,
-            timeout=cfg.analysis_inner_timeout_sec,
+            heartbeat_cb=_heartbeat,
+            stall_timeout=cfg.analysis_stall_timeout_sec,
         )
     finally:
         # Bounded, kill-safe teardown on every exit path (success, timeout kill, crash,
@@ -208,15 +259,11 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     api: PhazeAgentClient = ctx["api_client"]
 
     # CPU-bound analysis in a killable child process (D-23: original_path is in the payload).
-    # The inner per-task timeout (settings.analysis_inner_timeout_sec, default 6600s) has the
-    # driver SIGKILL a runaway essentia child; the 60/30 caps bound how many windows
-    # analyze_file decodes (Plan 02). Both are threaded from settings here so config drives them.
+    # phaze-w55w1: the child is bounded by SILENCE, not by elapsed time -- the driver kills it
+    # only after settings.analysis_stall_timeout_sec with no reported progress, so an exhaustive
+    # multi-hour analysis runs to completion (ADR-0007 §7). Threaded from settings here so config
+    # drives it. There is no window cap left to thread: every file gets every window.
     cfg = _agent_settings()
-    # Phase 44: a per-job payload cap override (the "deepen analysis" lever) takes precedence over
-    # the AgentSettings 60/30 defaults; absent it (None), fall back to config exactly as before. A
-    # cap of 0 reaches analysis.py::_stride_to_cap as the analyze-ALL-windows no-op (not special-cased here).
-    fine_cap = payload.fine_cap if payload.fine_cap is not None else cfg.analysis_fine_cap
-    coarse_cap = payload.coarse_cap if payload.coarse_cap is not None else cfg.analysis_coarse_cap
 
     # Phase 50 (D-11): when the control plane pinned a scratch_path, the agent reads/cleans that
     # ephemeral pushed copy instead of original_path -- the analyzer is path-agnostic so this is a
@@ -288,16 +335,19 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
                     payload.file_id,
                     read_path,
                     payload.models_path,
-                    fine_cap,
-                    coarse_cap,
+                    job=ctx.get("job"),
                 )
-        except TimeoutError:
-            # Inner kill (the driver SIGKILLs a child past analysis_inner_timeout_sec): the file
-            # is deterministically too long. TERMINAL -- report and return NORMALLY so SAQ marks
-            # the job COMPLETE (no blind re-run of a >timeout file; T-43-08). RESEARCH §Q5.
-            # The report is delivery-guarded (phaze-x3dg): a failed POST must not escape into
-            # the generic retry path and re-run the doomed analysis.
-            await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="timeout"))
+        except TimeoutError as exc:
+            # STALL kill (phaze-w55w1): the driver killed a child that reported no progress for
+            # analysis_stall_timeout_sec. A file that keeps producing windows is never killed here
+            # however long it runs, so reaching this branch means the child was genuinely wedged,
+            # which is deterministic. TERMINAL -- report and return NORMALLY so SAQ marks the job
+            # COMPLETE (no blind re-run; T-43-08). RESEARCH §Q5. The report is delivery-guarded
+            # (phaze-x3dg): a failed POST must not escape into the generic retry path and re-run
+            # the doomed analysis. ``reason`` stays "timeout" -- the stored vocabulary and every
+            # consumer of it are unchanged -- while ``error`` carries the stall detail, so the
+            # durable marker says "stopped making progress", not merely "ran too long".
+            await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="timeout", error=str(exc)[:_ERROR_DETAIL_MAX]))
             return {"file_id": str(payload.file_id), "status": "analysis_failed"}
         except AnalysisSubprocessError as exc:
             # essentia OOM/segfault/raise crashed the child (nonzero exit). Also deterministic ->
@@ -347,13 +397,13 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
                 style=style_dict,
                 danceability=analysis.get("danceability"),
                 energy=analysis.get("energy"),
-                # Phase 43 windowed-analysis coverage (the five-field contract analyze_file emits).
-                # Absent keys stay None so the partial-PUT contract preserves unset coverage.
+                # Windowed-analysis progress counts (the four-field contract analyze_file emits;
+                # phaze-w55w1 dropped the fifth, `sampled`, with the window caps). Absent keys stay
+                # None so the partial-PUT contract preserves unset counts.
                 fine_windows_analyzed=analysis.get("fine_windows_analyzed"),
                 fine_windows_total=analysis.get("fine_windows_total"),
                 coarse_windows_analyzed=analysis.get("coarse_windows_analyzed"),
                 coarse_windows_total=analysis.get("coarse_windows_total"),
-                sampled=analysis.get("sampled"),
                 windows=windows,
             ),
         )

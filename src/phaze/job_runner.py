@@ -310,7 +310,6 @@ def _build_payload(result: dict[str, Any]) -> AnalysisWritePayload:
         fine_windows_total=result.get("fine_windows_total"),
         coarse_windows_analyzed=result.get("coarse_windows_analyzed"),
         coarse_windows_total=result.get("coarse_windows_total"),
-        sampled=result.get("sampled"),
         windows=windows,
     )
 
@@ -409,15 +408,20 @@ async def run() -> None:
         # human-recognizable; event/step/elapsed_ms unchanged, sha256 is additive.
         log.info("job_runner_step_ok", file_id=fid, step="verify", elapsed_ms=_elapsed_ms(t_verify), sha256=actual_sha256[:12])
 
-        # (4) analyze — the windowed analyze_file runs in a REAL child process via the
+        # (4) analyze — the exhaustive analyze_file runs in a REAL child process via the
         # shared subprocess driver (Phase 101, OBS-03): the pod's event loop is no longer
         # GIL-starved, so the progress callback fires mid-analysis. No retry loop —
-        # fail-fast, D-02 / KJOB-03. models_dir from env (D-05). There is NO in-process
-        # timeout here (timeout=None) and, since phaze-202e, no Job deadline either --
-        # the analyze runs until it finishes. Bounding it by a wall clock is what killed
-        # every long concert set at 3h (incident 2026-07-28); a pod that can never start
-        # is instead detected by POD STATE in reconcile_cloud_jobs. Only a raised
-        # exception maps to EXIT_ANALYSIS (12).
+        # fail-fast, D-02 / KJOB-03. models_dir from env (D-05).
+        #
+        # LIVENESS (phaze-w55w1). This lane used to pass ``timeout=None`` and, since phaze-202e,
+        # carried no Job deadline either -- literally no bound at all, deliberately, because
+        # bounding it by a WALL CLOCK is what killed every long concert set at 3h (incident
+        # 2026-07-28, phaze-1b39). "No wall clock" was the right half of that lesson; "no bound"
+        # was the wrong half, and it left a wedged child occupying a burst lane slot indefinitely.
+        # The stall watchdog is the bound that lesson actually implies: silence is bounded,
+        # runtime is not, so a set that keeps completing windows still runs as long as it needs.
+        # A pod that can never START is still detected by POD STATE in reconcile_cloud_jobs.
+        # Only a raised exception maps to EXIT_ANALYSIS (12) -- a stall raises, so it does too.
         t_analyze = time.monotonic()
         progress_cb, pending_progress = _make_progress_cb(client, file_id, cfg.analysis_progress_interval_sec)
         # phaze-sfbx.4 markers, phaze-bo3p.3 capture: essentia's ``[ INFO ] MusicExtractor...``
@@ -434,9 +438,8 @@ async def run() -> None:
             result: Any = await run_analysis_subprocess(
                 str(tmp_path),
                 models_dir,
-                fine_cap=cfg.analysis_fine_cap,
-                coarse_cap=cfg.analysis_coarse_cap,
                 progress_cb=progress_cb,
+                stall_timeout=cfg.analysis_stall_timeout_sec,
             )
         except Exception:
             # Close the frame BEFORE the failure log so the (possibly noisy) essentia output above
@@ -488,13 +491,14 @@ async def run() -> None:
             sys.exit(EXIT_ANALYSIS)
         # OBS-02 (phaze-sfbx.3): surface the analyzed/total fine-window counts so the friendly
         # line reads "...step=analyze fine_windows_analyzed=94 fine_windows_total=94...".
-        # event/step/elapsed_ms/sampled unchanged; the window counts are additive human fields.
+        # event/step/elapsed_ms unchanged; the window counts are additive human fields. phaze-w55w1
+        # dropped the `sampled` field with the window caps -- analysis is exhaustive, so the two
+        # counts are equal on a healthy file and their difference is the only interesting signal.
         log.info(
             "job_runner_step_ok",
             file_id=fid,
             step="analyze",
             elapsed_ms=_elapsed_ms(t_analyze),
-            sampled=result.get("sampled"),
             fine_windows_analyzed=result.get("fine_windows_analyzed"),
             fine_windows_total=result.get("fine_windows_total"),
         )

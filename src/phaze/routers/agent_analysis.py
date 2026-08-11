@@ -99,13 +99,12 @@ _ANALYSIS_COLUMN_FIELDS: frozenset[str] = frozenset(
         "style",
         "fingerprint",
         "features",
-        # Phase 43 windowed-analysis coverage -- dedicated columns (migration 021),
+        # Windowed-analysis progress counts -- dedicated columns (migration 021),
         # so these hit real columns instead of the `features` JSONB overflow (Pitfall 3).
         "fine_windows_analyzed",
         "fine_windows_total",
         "coarse_windows_analyzed",
         "coarse_windows_total",
-        "sampled",
     }
 )
 
@@ -313,7 +312,7 @@ async def put_analysis(
     # is the earliest control-visible moment the analyze outcome is known. Key is reconstructed
     # from the fixed function name + the PATH file_id ONLY (never a body field -- AUTH-01 /
     # T-45-05: a body field cannot redirect the clear to another file's key).
-    # phaze-3yln: clear_ledger_entry carries its own ownership guard, so a "deepen analysis"
+    # phaze-3yln: clear_ledger_entry carries its own ownership guard, so a re-analysis
     # re-enqueue that lands its fresh ledger row + live saq_jobs row for this key BEFORE this
     # callback runs is not deleted here -- see scheduling_ledger.clear_ledger_entry's docstring.
     await clear_ledger_entry(session, f"process_file:{file_id}")
@@ -444,9 +443,10 @@ async def report_analysis_failed(
     see a mixed row (D-06). All writes commit in ONE transaction, ordered marker -> ledger ->
     staged-object-delete (RESEARCH Discretion #1).
 
-    WR-01-equivalent CAS guard (phaze-ts1d): ``deepen_analysis`` (routers/pipeline.py) deliberately
-    re-enqueues ``process_file`` for an ALREADY-COMPLETED file at an unbounded budget (fine_cap=0 /
-    coarse_cap=0), so this endpoint IS reachable for a row that already reads DONE
+    WR-01-equivalent CAS guard (phaze-ts1d): ``process_file`` can be re-enqueued for an
+    ALREADY-COMPLETED file (the removed ``deepen_analysis`` did it deliberately; the operator-gated
+    bulk/single retry endpoints and a recovery replay still do), so this endpoint IS reachable for
+    a row that already reads DONE
     (``analysis_completed_at IS NOT NULL``). Analyze failures are terminal and non-auto-retryable
     (``FAILURE_IS_TERMINAL`` / ``ELIGIBLE_AFTER_FAILURE``, enums/stage.py), so an unguarded stamp here
     would silently and permanently regress a completed file to ``ANALYSIS_FAILED`` -- the same class
@@ -473,7 +473,7 @@ async def report_analysis_failed(
         [{"file_id": file_id, "id": uuid.uuid4(), "failed_at": now, "error_message": error_message, "analysis_completed_at": None}]
     )
     # phaze-ts1d: guard the failure stamp so it NEVER downgrades a row that already reads DONE.
-    # `deepen_analysis` re-enqueues `process_file` for an already-COMPLETED file (unbounded budget), so
+    # a re-analysis of an already-COMPLETED file is a real, reachable case, so
     # a timeout on that re-run would otherwise null `analysis_completed_at` and stamp `failed_at` onto
     # the good row -- losing `propose` eligibility permanently (analyze failures are terminal /
     # non-auto-retryable). The `WHERE analysis_completed_at IS NULL` conflict predicate means the
@@ -511,7 +511,7 @@ async def report_analysis_failed(
         logger.warning("report_analysis_failed file vanished mid-write; holding with a no-op 200", file_id=str(file_id), agent_id=agent.id)
         return AnalysisFailureResponse(agent_id=agent.id, file_id=file_id)
     if result.rowcount == 0:
-        # CAS skip: the row was already COMPLETED. Log so an operator can see a failed deepen
+        # CAS skip: the row was already COMPLETED. Log so an operator can see a failed re-analysis
         # over a done file rather than it silently vanishing (fix hint's optional visibility ask).
         logger.info(
             "analysis_failed_skipped_already_completed",

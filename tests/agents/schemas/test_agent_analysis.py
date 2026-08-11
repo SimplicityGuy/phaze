@@ -220,21 +220,19 @@ def test_analysis_write_response_shape() -> None:
 
 
 def test_analysis_write_payload_accepts_coverage_fields() -> None:
-    """Phase 43: the five windowed-analysis coverage fields validate and round-trip."""
+    """The four windowed-analysis progress counts validate and round-trip."""
     payload = AnalysisWritePayload(
         bpm=128.0,
-        fine_windows_analyzed=10,
+        fine_windows_analyzed=40,
         fine_windows_total=40,
-        coarse_windows_analyzed=2,
+        coarse_windows_analyzed=8,
         coarse_windows_total=8,
-        sampled=True,
     )
 
-    assert payload.fine_windows_analyzed == 10
+    assert payload.fine_windows_analyzed == 40
     assert payload.fine_windows_total == 40
-    assert payload.coarse_windows_analyzed == 2
+    assert payload.coarse_windows_analyzed == 8
     assert payload.coarse_windows_total == 8
-    assert payload.sampled is True
 
 
 def test_analysis_write_payload_coverage_default_none() -> None:
@@ -245,7 +243,6 @@ def test_analysis_write_payload_coverage_default_none() -> None:
     assert payload.fine_windows_total is None
     assert payload.coarse_windows_analyzed is None
     assert payload.coarse_windows_total is None
-    assert payload.sampled is None
 
 
 def test_analysis_write_payload_rejects_negative_coverage_count() -> None:
@@ -448,3 +445,36 @@ def test_presign_download_response_rejects_malformed_sha256(bad_sha: str) -> Non
     """expected_sha256 is pinned to ^[0-9a-f]{64}$ so format skew fails fast (IN-02)."""
     with pytest.raises(pydantic.ValidationError):
         PresignDownloadResponse.model_validate({"download_url": "https://s3.example/obj", "expected_sha256": bad_sha})
+
+
+def test_legacy_completion_payload_with_sampled_still_validates() -> None:
+    """phaze-w55w1 upgrade window: an old-image agent's completion PUT must NOT be rejected.
+
+    This body is what an agent or burst pod running the pre-w55w1 image sends when it finishes.
+    During a rolling upgrade the control plane is new while those workers are not, and the
+    analysis they are completing may have been running for HOURS. A 422 does not retry into
+    correctness -- analyze failures are terminal (`FAILURE_IS_TERMINAL[ANALYZE]`), so the result
+    is simply discarded. Dropping the now-meaningless key costs nothing by comparison.
+    """
+    payload = AnalysisWritePayload.model_validate(
+        {
+            "bpm": 128.0,
+            "fine_windows_analyzed": 60,
+            "fine_windows_total": 240,
+            "coarse_windows_analyzed": 30,
+            "coarse_windows_total": 80,
+            "sampled": True,
+        }
+    )
+
+    assert payload.bpm == 128.0
+    # The surviving counts are what still identify this as a historically strided run.
+    assert payload.fine_windows_analyzed == 60
+    assert payload.fine_windows_total == 240
+    assert not hasattr(payload, "sampled")
+
+
+def test_tolerating_sampled_does_not_weaken_extra_forbid() -> None:
+    """Only `sampled` is forgiven -- any other unknown field is still a hard 422."""
+    with pytest.raises(pydantic.ValidationError):
+        AnalysisWritePayload.model_validate({"bpm": 128.0, "sampledd": True})

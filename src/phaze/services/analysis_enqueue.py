@@ -10,16 +10,18 @@ collapse a repeat enqueue of an already in-flight file to a clean no-op
 
 Import boundary (32-RESEARCH §Q4): this module MUST stay FastAPI-free. It imports
 neither ``fastapi`` nor ``phaze.routers`` -- only stdlib ``uuid`` (annotation-only),
-the ``ProcessFilePayload`` schema (a real import because it is constructed), and
-``FileRecord`` (annotation-only). The annotation-only names live under
-``TYPE_CHECKING`` so the reboot task and the router can both import this without
-pulling in the web layer.
+the ``ProcessFilePayload`` schema (a real import because it is constructed),
+``phaze.config`` (for the job's heartbeat policy -- role-agnostic, same import the
+shared ``before_enqueue`` hook already makes), and ``FileRecord`` (annotation-only).
+The annotation-only names live under ``TYPE_CHECKING`` so the reboot task and the
+router can both import this without pulling in the web layer.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from phaze.config import get_settings
 from phaze.schemas.agent_tasks import ProcessFilePayload
 
 
@@ -84,8 +86,6 @@ async def enqueue_process_file(
     agent_id: str,
     models_path: str,
     *,
-    fine_cap: int | None = None,
-    coarse_cap: int | None = None,
     expected_sha256: str | None = None,
     scratch_path: str | None = None,
 ) -> Any:
@@ -93,12 +93,12 @@ async def enqueue_process_file(
 
     Builds a COMPLETE ``ProcessFilePayload`` (the five required fields: the FileRecord's
     ``id`` / ``original_path`` / ``file_type`` plus the resolved ``agent_id`` and
-    ``models_path``, plus the optional Phase-44 ``fine_cap`` / ``coarse_cap`` overrides and
-    the optional Phase-50 ``expected_sha256`` / ``scratch_path`` cloud-push fields, all of
-    which default ``None``) and serializes it via ``model_dump(mode="json")`` so the UUID
-    round-trips as a string and the agent worker's ``ProcessFilePayload.model_validate``
-    (``extra="forbid"``) accepts it. Mirrors the working ``agent_files.py`` pattern --
-    the pre-Phase-30 bug enqueued only ``file_id`` and dead-lettered every job.
+    ``models_path``, plus the optional Phase-50 ``expected_sha256`` / ``scratch_path``
+    cloud-push fields, both of which default ``None``) and serializes it via
+    ``model_dump(mode="json")`` so the UUID round-trips as a string and the agent worker's
+    ``ProcessFilePayload.model_validate`` (``extra="forbid"``) accepts it. Mirrors the working
+    ``agent_files.py`` pattern -- the pre-Phase-30 bug enqueued only ``file_id`` and
+    dead-lettered every job.
 
     Returns whatever ``queue.enqueue`` returns: a ``saq.Job`` normally, or ``None``
     when SAQ deduped the deterministic key (the file is already in-flight) -- so the
@@ -110,11 +110,6 @@ async def enqueue_process_file(
         file_type=file.file_type,
         agent_id=agent_id,
         models_path=models_path,
-        # Phase 44: optional per-job cap override (the "deepen analysis" lever, Plan 03).
-        # Keyword-only + trailing so the positional bulk caller (_enqueue_analysis_jobs) is
-        # unchanged; default None preserves the legacy 60/30 AgentSettings behavior in the worker.
-        fine_cap=fine_cap,
-        coarse_cap=coarse_cap,
         # Phase 50 (D-11): pin the pushed scratch copy + control-side expected sha256 for a cloud
         # file. Keyword-only + trailing + default None so the bulk local producer (_enqueue_analysis_jobs)
         # that passes neither stays byte-identical under extra="forbid"; when set, the worker reads/
@@ -133,12 +128,28 @@ async def enqueue_process_file(
         # Deterministic key so a re-trigger (or the Wave-2 reboot re-enqueue) of an
         # already in-flight file dedups to a no-op (SAQ incomplete-set; 32-RESEARCH §Q4).
         key=process_file_job_key(file.id),
-        # Phase 43: outer SAQ safety net, lowered from the prior 4h bound to 2h (7200s). This is
-        # NOT the real bound any more -- the inner pebble per-task timeout (settings.analysis_inner_timeout_sec,
-        # default 6600s) SIGKILLs a runaway essentia child first, so the kill is deterministic
-        # (RESEARCH §Q5 / Pitfall 2: inner 6600 < outer 7200). The outer net only matters if a
-        # worker dies/restarts mid-job so SAQ can reclaim the slot. Hardcoded like pipeline_scans.py.
-        timeout=7200,
+        # phaze-w55w1: NO wall-clock net. Phase 43 pinned timeout=7200 as an outer bound under the
+        # (removed) 6600s inner SIGKILL. Exhaustive analysis (ADR-0007 §7) makes any elapsed-time
+        # bound wrong: a multi-hour concert set legitimately runs past both numbers, and a wall
+        # clock cannot tell that apart from a hang -- phaze-1b39 is the incident where trying
+        # killed real work. `timeout=0` is SAQ's documented "disabled", already used by
+        # `scan_directory` for the same reason (a full SHA-256 walk legitimately runs 1-2h) and
+        # already understood by both key reapers, which EXCLUDE `timeout: 0` rows by design
+        # (tasks/_saq_reap.py, phaze-mllxc).
+        timeout=0,
+        # ...and the liveness bound that REPLACES it, on SAQ's own progress primitive. `Job.stuck`
+        # is `(timeout and age > timeout) or (heartbeat and now - touched > heartbeat)`, so with
+        # the wall clock disabled a job is stuck exactly when it has stopped being touched. The
+        # agent lane touches it (`tasks/functions.py`) off the analysis child's heartbeat channel,
+        # so a job that keeps completing windows is never swept and one that goes silent is swept
+        # in bounded time -- which also keeps `classify_process_file_collision`'s `job.stuck` read
+        # honest, now on a progress signal instead of an elapsed one.
+        #
+        # DERIVED, not equal to the inner stall threshold: this outer deadline watches a strictly
+        # narrower signal than the child's own watchdog does, so it needs real slack or it will
+        # sweep jobs the watchdog is correctly holding healthy. See
+        # `config.BaseSettings.analysis_job_heartbeat_sec` for the full reasoning.
+        heartbeat=get_settings().analysis_job_heartbeat_sec,
         # retries=2 (NOT 1): apply_project_job_defaults (tasks/_shared/queue_defaults.py)
         # only fills jobs still at the SAQ default retries==1, clobbering it to
         # worker_max_retries(4). retries=2 is honored and stays in the locked 1-2 band,
