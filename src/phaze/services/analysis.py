@@ -388,10 +388,28 @@ def _get_labels(model_filename: str, models_dir: str) -> list[str]:
 
 
 def _predict_single(audio_16k: Any, model: ModelConfig, models_dir: str) -> Any:
-    """Run a single model prediction and return mean activations."""
+    """Run a single model prediction and return mean activations.
+
+    ``classifier(audio_16k)`` is documented (and normally observed) to return a 2D
+    ``[patches, classes]`` array, averaged over ``axis=0`` into the per-class mean
+    activation vector callers expect. But on a short enough buffer -- the trailing
+    coarse/fine window of a short file is the reproducing case (phaze-ouz0y) -- essentia
+    squeezes the patch dimension away and returns a bare 1D ``[classes]`` vector instead.
+    ``np.mean`` on a 1D array with ``axis=0`` has no batch axis left to reduce over, so it
+    collapses the WHOLE vector to a single 0-d ``numpy.float64`` scalar. That scalar then
+    reaches ``zip(labels, predictions)`` in ``_run_model_sets_over_windows``, and ``zip``
+    raises exactly the production crash: ``TypeError: 'numpy.float64' object is not
+    iterable``.
+
+    ``np.atleast_2d`` normalizes the single-patch case by prepending a length-1 batch axis
+    (``[classes]`` -> ``[1, classes]``) before the mean, so the reduction always has a real
+    axis to collapse and always returns the ``[classes]`` vector callers need -- a no-op for
+    the normal ``[patches, classes]`` shape, since ``atleast_2d`` never touches an
+    already-2D array.
+    """
     classifier = _get_classifier(model, models_dir)
     activations = classifier(audio_16k)
-    return np.mean(activations, axis=0)
+    return np.mean(np.atleast_2d(activations), axis=0)
 
 
 def _release_classifier(model_filename: str) -> None:

@@ -524,11 +524,21 @@ async def _replay_row(queue: Any, row: SchedulingLedger, tally: dict[str, int]) 
     payload on dequeue, so a malformed row dead-letters rather than executing (T-45-10).
 
     The stored SAQ Job policy (``row.timeout`` / ``row.retries``) is replayed too when present, so
-    a recovered long ``process_file`` keeps its 7200s/retries=2 bound. Were they omitted, the
-    queue's ``apply_project_job_defaults`` before_enqueue hook would stamp the job back to the 600s
-    role default -- a 12x reduction that times out every long concert set on recovery (the
-    recover-button timeout-loss bug). A NULL column (legacy/backfilled row, or a producer that set
-    no explicit policy) is left out so the default applies exactly as before.
+    a recovered long ``process_file`` keeps its 7200s/retries=2 bound explicitly. A NULL column
+    (legacy/backfilled row written before the Phase-45 capture columns existed, or a producer that
+    set no explicit policy) is left out of the enqueue kwargs entirely -- the queue's
+    ``apply_project_job_defaults`` before_enqueue hook then fills the ROLE default (600s/4
+    retries).
+
+    phaze-plpnf: that role-default fallback used to be the FULL story, and it is exactly what
+    turned "no captured bounds" into a live incident -- one queued-at cluster of legacy
+    NULL-bounds ``process_file`` rows replayed straight onto the 600s/4-retries role default and
+    died on every attempt with a SAQ ``TimeoutError`` (12x short of the 7200s a long file needs).
+    ``apply_project_job_defaults`` now ALSO enforces a per-function policy floor
+    (``queue_defaults._FUNCTION_POLICY_FLOOR``) after its generic fill, so a NULL-bounds
+    ``process_file`` replay lands on 7200s/retries=2 regardless -- the omission above is now a
+    defense-in-depth choice (replay the captured bound when we have it) rather than the only
+    thing standing between a legacy row and the 600s role default.
 
     phaze-71nz -- THE REPLAY-SAFETY REFUSAL (the general guard, deliberately NOT pinned to any one
     function). Before the enqueue, the payload is screened by ``find_time_limited_paths``. A hit
