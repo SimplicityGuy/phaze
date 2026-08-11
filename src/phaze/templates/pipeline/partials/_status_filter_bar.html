@@ -26,9 +26,13 @@
     ('review', 'Appr'),
     ('apply', 'Exec'),
 ] %}
+{# phaze-cavai: 'orphaned' is the recovery-candidate lens (scheduled, running nowhere, not
+   domain-complete) -- server-side it refines in_flight through orphaned_clause, so it is only
+   meaningful for the two enrich stages (metadata / analyze); other stages return the empty set. #}
 {% set _filter_buckets = [
     ('done', 'done'),
     ('in_flight', 'in flight'),
+    ('orphaned', 'orphaned'),
     ('not_started', 'not started'),
     ('failed', 'failed'),
     ('skipped', 'skipped'),

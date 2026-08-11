@@ -22,11 +22,12 @@
    #pipeline-stats poll target), then re-pushed by stats_bar.html as an hx-swap-oob fragment on
    every 5s poll (oob=True) so the count + hold reason stay live without re-rendering the DAG
    buttons. Same id on both renders is the OOB contract (mirrors straggler_failed_card.html). #}
+{# Heading removed (operator request 2026-08-10): renders inside the single "Cloud" pane; the
+   "Awaiting cloud" tile label already says what this is. #}
 <section id="awaiting-cloud-card"
-         aria-labelledby="awaiting-cloud-heading"
+         aria-label="Cloud routing"
          {% if oob %}hx-swap-oob="true"{% endif %}
-         class="border border-gray-200 dark:border-phaze-border rounded-lg p-4 space-y-3">
-    <h2 id="awaiting-cloud-heading" class="text-lg font-semibold">Cloud Routing</h2>
+         class="space-y-3">
     <div class="bg-sky-50 dark:bg-sky-950 rounded-lg p-4 text-center">
         <p class="text-2xl font-bold text-sky-700 dark:text-sky-400">{{ awaiting_cloud_count }}</p>
         <p class="text-sm text-sky-600 dark:text-sky-400">Awaiting cloud</p>

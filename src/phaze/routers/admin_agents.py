@@ -169,6 +169,37 @@ def _resolve_selected_compute_lane(clane: str | None, compute_lanes: list[Comput
     return clane if clane is not None and any(lane.backend_id == clane for lane in compute_lanes) else None
 
 
+def _unresolved_detail_carrier_ids(
+    agent: str | None,
+    clane: str | None,
+    *,
+    selected_agent: str | None,
+    selected_compute_lane: str | None,
+) -> list[str]:
+    """DOM ids of ``hx-preserve`` carrier rows for selections that arrived but failed lookup (phaze-w92dg).
+
+    The expanded detail row only survives a 5s table poll if the poll's response contains a node with
+    its id (``hx-preserve`` matches by id against incoming content). Lookup-in-known-set therefore had
+    a destructive side effect: one tick on which the selection failed to resolve — a degraded
+    ``derive_compute_lane_identities`` read returning ``[]``, an agent leaving the non-revoked set —
+    omitted the detail row from the response and htmx tore down the operator's live open row. The
+    operator rule is that the detail NEVER auto-collapses: only Esc/✕ (which drop the param from the
+    URL, so no carrier is emitted afterwards) may dismiss it.
+
+    For each selection param that is present-but-unresolved, return the detail-row DOM id (the same
+    format :attr:`TableRow.detail_row_id` produces) so ``agents_table.html`` can emit a minimal empty
+    carrier ``<tr>`` under that id. When an open row exists, hx-preserve keeps it in the carrier's
+    place; when none does (a bogus deep-link id), the carrier renders as an empty invisible row — the
+    hostile param reaches the template only as an autoescaped ``id`` attribute, never a query.
+    """
+    carriers: list[str] = []
+    if agent and selected_agent is None:
+        carriers.append(f"agent-detail-row-{agent}")
+    if clane and selected_compute_lane is None:
+        carriers.append(f"compute-lane-detail-row-{clane}")
+    return carriers
+
+
 @dataclass(frozen=True, slots=True)
 class TableRow:
     """One row of the merged ``/admin/agents`` table — an Agent OR a derived ComputeLane, normalized (phaze-rdxfu).
@@ -490,6 +521,9 @@ async def build_agents_pane_context(request: Request, session: AsyncSession) -> 
         "now": now,
         "refreshed_at_iso": now.isoformat(),
         "sort": sort_state,
+        "unresolved_detail_carrier_ids": _unresolved_detail_carrier_ids(
+            agent, clane, selected_agent=selected_agent, selected_compute_lane=selected_compute_lane
+        ),
         "enable_saq_ui": get_settings().enable_saq_ui,  # CLEAN-01: gate the discreet /saq footer link (presentation-only)
     }
 
@@ -577,6 +611,9 @@ async def table_partial(
             "now": now,
             "refreshed_at_iso": now.isoformat(),
             "sort": sort_state,
+            "unresolved_detail_carrier_ids": _unresolved_detail_carrier_ids(
+                agent, clane, selected_agent=selected_agent, selected_compute_lane=selected_compute_lane
+            ),
         },
     )
 

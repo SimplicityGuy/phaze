@@ -22,10 +22,10 @@
         <p class="font-jura text-[11px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">1001Tracklists drain</p>
         <button type="button"
                 hx-post="/pipeline/run-tracklist-drain" hx-target="#drain-run-response" hx-swap="innerHTML"
-                hx-confirm="Queue one drain slice (up to 100 lookups) against the live 1001Tracklists host?"
-                aria-label="Run a bounded 1001Tracklists drain slice"
+                hx-confirm="Queue a batch of tracklist lookups (up to 100) against the live 1001Tracklists host?"
+                aria-label="Run a bounded batch of 1001Tracklists lookups"
                 class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500">
-            Run a drain slice
+            Run tracklist lookups
         </button>
     </div>
     <div id="drain-run-response" class="mt-2 text-xs empty:hidden"></div>

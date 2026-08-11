@@ -38,8 +38,11 @@
         {% set lane_color = "text-gray-600 dark:text-gray-300" %}
     {% endif %}
     <div class="space-y-4">
-        {# Header: kind glyph/color + backend_id, plus the SAME 3-state badge compute_lanes.html renders. #}
-        <div class="flex items-center justify-between gap-2">
+        {# Header: kind glyph/color + backend_id, plus the SAME 3-state badge compute_lanes.html renders.
+           Left-aligned cluster (name then status, no justify-between) so the identity/status positions
+           match _agent_activity.html's liveness header — the two expanded-row bodies render in the same
+           table and must not put the same facts in different places. #}
+        <div class="flex flex-wrap items-center gap-2">
             <span class="text-sm font-medium {{ lane_color }}">{{ lane_glyph }} {{ lane.backend_id }}</span>
             {% if lane.state == "ACTIVE" %}
             <span class="inline-flex items-center gap-2 text-sm font-semibold text-emerald-700 dark:text-emerald-300">

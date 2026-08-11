@@ -3533,8 +3533,11 @@ async def test_dashboard_admission_card_carrier_always_renders(client: AsyncClie
 
     assert response.status_code == 200
     assert 'id="admission-state-card"' in response.text
-    # All-zero (no k8s activity) → empty carrier: no heading, no tiles.
-    assert "Cloud · Admission" not in response.text
+    # All-zero (no k8s activity) → empty carrier: no caption, no tiles. (The per-card "Cloud ·
+    # Admission" heading is gone — the single Cloud pane owns the heading — so the live-snapshot
+    # caption is the rendered-body discriminator now.)
+    assert "live — per reconcile" not in response.text
+    assert "Queued (quota)" not in response.text
 
 
 @pytest.mark.asyncio
@@ -3546,7 +3549,7 @@ async def test_dashboard_admission_card_renders_matching_tile(client: AsyncClien
 
     assert response.status_code == 200
     assert 'id="admission-state-card"' in response.text
-    assert "Cloud · Admission" in response.text
+    assert "live — per reconcile" in response.text
     assert "Admitted" in response.text
     assert "quota granted" in response.text
     # Phases with 0 files stay invisible — their tiles are not rendered.
@@ -3611,7 +3614,8 @@ async def test_dashboard_admission_card_quiet_for_null_cloud_phase(client: Async
 
     assert response.status_code == 200
     assert 'id="admission-state-card"' in response.text
-    assert "Cloud · Admission" not in response.text
+    assert "live — per reconcile" not in response.text
+    assert "Queued (quota)" not in response.text
 
 
 @pytest.mark.asyncio
@@ -3695,7 +3699,9 @@ async def test_dashboard_count_grid_holds_four_cards_outside_alert_carriers(clie
     assert response.status_code == 200
     text = response.text
 
-    grid_open = text.index("grid grid-cols-1 gap-4 px-6 pb-6 sm:grid-cols-2")
+    # The four count cards now render inside the single bordered "Cloud" pane; the 2-col grid moved
+    # inside it (padding lives on the pane's px-6 wrapper), so the grid class string is chrome-free.
+    grid_open = text.index("grid grid-cols-1 gap-4 sm:grid-cols-2")
     inadmissible_pos = text.index('id="inadmissible-card"')
     localqueue_pos = text.index('id="localqueue-card"')
     admission_pos = text.index('id="admission-state-card"')

@@ -58,6 +58,7 @@ from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.pipeline import (
     ANALYZE_FILTERS,
+    ORPHANED_BUCKET,
     _read_in_own_session,
     _stats_fanout,
     analyze_lanes_content_hash,
@@ -1231,7 +1232,9 @@ async def lane_detail(
     )
 
 
-_VALID_BUCKETS: frozenset[str] = frozenset(s.value for s in Status)
+# phaze-cavai: ORPHANED_BUCKET joins the lens allowlist -- a WHERE-only refinement of in_flight via
+# orphaned_clause (services.pipeline._files_page_stmt), never a sixth per-row CASE arm (D-01a).
+_VALID_BUCKETS: frozenset[str] = frozenset(s.value for s in Status) | {ORPHANED_BUCKET}
 
 
 # --- phaze-a6hm.1 sortable-column contracts ------------------------------------------------------

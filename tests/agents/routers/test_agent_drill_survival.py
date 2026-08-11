@@ -103,8 +103,14 @@ async def test_agents_table_reemits_selected_ring(smoke: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_agents_table_unknown_agent_highlights_nothing(smoke: AsyncClient) -> None:
-    """An unknown `?agent=` is a lookup-miss: 200 with NO highlight, never a 500 (T-88-01 known-set)."""
+    """An unknown `?agent=` is a lookup-miss: 200 with NO highlight, never a 500 (T-88-01 known-set).
+
+    phaze-w92dg: the response DOES now carry an empty hx-preserve carrier under the detail-row id —
+    that is the never-auto-collapse invariant, not a resolved selection. What must stay absent is
+    the ring and the real expanded-row body slot.
+    """
     response = await smoke.get("/admin/agents/_table", params={"agent": "__nonexistent__"})
     assert response.status_code == 200, response.text
     assert 'aria-current="true"' not in response.text
-    assert "agent-detail-row-" not in response.text
+    assert '<tr id="agent-detail-row-__nonexistent__" hx-preserve></tr>' in response.text
+    assert 'id="agent-activity-__nonexistent__"' not in response.text
