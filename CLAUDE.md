@@ -414,6 +414,18 @@ phaze is developed against a real personal music archive on real hardware. Inves
 Architecture not yet mapped. Follow existing patterns found in the codebase.
 <!-- GSD:architecture-end -->
 
+### Windowed analysis is being removed — caps are decided-for-removal, not yet gone
+
+`analyze_file` **today** still bounds per-file cost with a fine/coarse window cap
+(`analysis_fine_cap` / `analysis_coarse_cap` in `config.py`) rather than analyzing every window
+of every file, engaging only on long files (concert sets / live recordings past ~30–90 minutes).
+The operator reviewed the rationale and **decided (2026-08-11) to remove the caps entirely** —
+every file will get full fine+coarse analysis, and the `deepen` re-analysis path
+(`routers/pipeline.py`) becomes redundant and is being removed with it. That rework (chunked
+bounded-memory passes, raised/removed analysis timeouts, and deletion of the sampling machinery)
+is a separate, not-yet-landed implementation bead. See `docs/design/0007-windowed-analysis.md`
+for the full rationale, cost analysis, and the recorded decision/implementation scope.
+
 ## Beadhive Workflow Enforcement
 
 All work in this repo flows through beadhive. Do not make direct repo edits outside this workflow unless the user explicitly asks to bypass it.
