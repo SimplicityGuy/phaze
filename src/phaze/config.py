@@ -1175,6 +1175,29 @@ class ControlSettings(BaseSettings):
         ),
     )
 
+    # phaze-6nrrf: how long the continuous-drain CronJob (``tasks.tracklist_drain_control.
+    # continue_armed_tracklist_drain``) waits after one ``drain_tracklists`` slice finishes before
+    # enqueueing the next, WHILE ARMED. Named a "cooldown" rather than a rate limit because the
+    # real host-politeness ceiling is enforced elsewhere (``services.tracklist_scraper.
+    # reserve_host_request_slot``, ~1 req/8s for the whole system) and does not need a second,
+    # independent limiter here (see ``services.tracklist_drain`` module docstring, "adds NO rate
+    # limiting of its own"). This knob exists so the operator can widen the gap between slices
+    # beyond what the host budget alone would impose -- e.g. to spread a months-long drain more
+    # gently, or to leave headroom for other controller-queue work between slices -- without a
+    # redeploy. Default 600 (10 min); bounded (gt=0, lt=86400) like this module's other duration
+    # knobs so a misconfigured value fails fast at startup rather than reaching the cron.
+    tracklist_drain_cooldown_sec: int = Field(
+        default=600,
+        gt=0,
+        lt=86400,
+        validation_alias=AliasChoices("PHAZE_TRACKLIST_DRAIN_COOLDOWN_SEC", "tracklist_drain_cooldown_sec"),
+        description=(
+            "Seconds the continuous-drain cron waits after one armed slice finishes before enqueueing the next "
+            "(phaze-6nrrf). Operator-tunable pacing, distinct from the host politeness budget enforced in "
+            "reserve_host_request_slot. Default 600 (10 min); bounded gt=0, lt=86400."
+        ),
+    )
+
     # Phase 67 (REG-04, D-12): the flat kube cluster connection + Job-manifest surface (api-url /
     # namespace / local-queue / job-image / cpu-request / memory-request / workload-api-version /
     # ca-secret-name / env-configmap-name / env-secret-name / kubeconfig / sa-token) was REMOVED

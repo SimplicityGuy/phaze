@@ -99,6 +99,7 @@ from phaze.services.pipeline_counters import read_counters
 from phaze.services.route_control import get_route_control
 from phaze.services.stage_status import failed_clause, stage_status_sort_case
 from phaze.services.tracklist_candidate_queue import DAILY_LOOKUP_CEILING
+from phaze.services.tracklist_drain_arm import arm_drain, disarm_drain, get_arm_state
 from phaze.services.tracklist_priority import flag_file_for_lookup, get_file_tracklist_review, unflag_file
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 from phaze.tasks.reenqueue import recover_orphaned_work
@@ -3190,9 +3191,38 @@ async def unprioritize_tracklist_lookup_ui(
 # --- Drain progress fragment + manual slice trigger (phaze-fq9h.8) ---
 
 
+async def _render_drain_status(request: Request, session: AsyncSession) -> HTMLResponse:
+    """Shared render for the drain-status fragment -- read by the GET view and by both the
+    arm/disarm POST endpoints below (phaze-6nrrf), so all three always agree on exactly what
+    "the current state" means: funnel data from :func:`tracklist_drain_status` (no host
+    requests) plus the durable :class:`~phaze.models.tracklist_drain_arm_state.TracklistDrainArmState`
+    row (no queue at all -- a plain read).
+    """
+
+    @contextlib.asynccontextmanager
+    async def _session_factory() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    ctx: dict[str, Any] = {"async_session": _session_factory}
+    status = await tracklist_drain_status(ctx)
+    arm = await get_arm_state(session)
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/_tracklist_drain_status.html",
+        context={
+            "request": request,
+            "status": status,
+            "daily_ceiling": DAILY_LOOKUP_CEILING,
+            "arm": arm,
+            "tracklist_drain_cooldown_sec": settings.tracklist_drain_cooldown_sec,
+        },
+    )
+
+
 @router.get("/pipeline/tracklist-drain-status", response_class=HTMLResponse)
 async def tracklist_drain_status_ui(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
-    """HTMX fragment: queue depth, throughput vs the daily ceiling, and an honest ETA.
+    """HTMX fragment: queue depth, throughput vs the daily ceiling, an honest ETA, and the
+    ARM/DISARM state (phaze-6nrrf).
 
     Calls :func:`phaze.tasks.tracklist_drain.tracklist_drain_status` DIRECTLY (per its own
     docstring: it spends no host requests, so routing it through a queue and a poll would buy
@@ -3204,18 +3234,7 @@ async def tracklist_drain_status_ui(request: Request, session: AsyncSession = De
     SECOND connection outside this request's transaction (invisible to it under tests, and an
     unnecessary extra pool checkout in production).
     """
-
-    @contextlib.asynccontextmanager
-    async def _session_factory() -> AsyncIterator[AsyncSession]:
-        yield session
-
-    ctx: dict[str, Any] = {"async_session": _session_factory}
-    status = await tracklist_drain_status(ctx)
-    return templates.TemplateResponse(
-        request=request,
-        name="pipeline/partials/_tracklist_drain_status.html",
-        context={"request": request, "status": status, "daily_ceiling": DAILY_LOOKUP_CEILING},
-    )
+    return await _render_drain_status(request, session)
 
 
 @router.post("/pipeline/run-tracklist-drain", response_class=HTMLResponse)
@@ -3245,6 +3264,47 @@ async def run_tracklist_drain_ui(request: Request, session: AsyncSession = Depen
     # panel -- one bounded re-fetch per click, never an interval.
     response.headers["HX-Trigger"] = "drain-refresh"
     return response
+
+
+@router.post("/pipeline/arm-tracklist-drain", response_class=HTMLResponse)
+async def arm_tracklist_drain_ui(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+    """HTMX endpoint: the operator's ONE consent decision to continuously drain (phaze-6nrrf).
+
+    Persists ``armed=true`` on the durable :class:`~phaze.models.tracklist_drain_arm_state.TracklistDrainArmState`
+    row and returns immediately -- it does NOT enqueue a slice itself. The
+    ``continue_armed_tracklist_drain`` CronJob (``tasks/tracklist_drain_control.py``, every-minute
+    cadence like this controller's other reapers) picks the armed flag up on its next tick and
+    enqueues the first slice; letting the cron own every enqueue decision (rather than this
+    endpoint racing it for one) keeps ``in_flight`` a single source of truth with no double-enqueue
+    window to reason about. The single-slice ``Run tracklist lookups`` button above remains for an
+    immediate one-off boost that does not wait for the next tick.
+
+    The single-consent framing matters: this is the ONLY code path that ever sets ``armed=true`` --
+    a restart, a redeploy, or the continuous-drain cron itself never do (see that module's and the
+    model's own docstrings for the full ethics-bound rationale).
+    """
+    await arm_drain(session)
+    await session.commit()
+    return await _render_drain_status(request, session)
+
+
+@router.post("/pipeline/disarm-tracklist-drain", response_class=HTMLResponse)
+async def disarm_tracklist_drain_ui(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+    """HTMX endpoint: the operator's explicit "stop the continuous drain" control (phaze-6nrrf).
+
+    Persists ``armed=false`` immediately. A slice already ``in_flight`` (enqueued by the cron
+    before this click) is left completely alone -- this endpoint touches only the arm row, never
+    ``saq_jobs`` -- so it finishes normally; :func:`~phaze.tasks.tracklist_drain_control.record_drain_slice_completion`
+    clears ``in_flight`` when it does. The acceptance criterion is "disarm stops after the
+    in-flight slice, never kills one mid-flight", and doing nothing to the running job IS that:
+    there is no cancellation path here, deliberately.
+
+    A no-op (not an error) when already disarmed -- reachable at any time per the bead's own
+    acceptance criteria, including a double-click or a race with an auto-disarm that just fired.
+    """
+    await disarm_drain(session, reason="operator")
+    await session.commit()
+    return await _render_drain_status(request, session)
 
 
 # --- Manual recovery endpoint (Phase 42, D-02/D-05) ---
