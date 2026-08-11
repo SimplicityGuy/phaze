@@ -55,7 +55,12 @@
 <section id="agents-table-section"
          hx-get="{{ sort.poll_url() }}"
          hx-trigger="every 5s"
-         hx-vals='js:{agent: new URLSearchParams(location.search).get("agent"), clane: new URLSearchParams(location.search).get("clane")}'
+         {# phaze-w92dg: `|| ""` — URLSearchParams.get() returns null for an absent param, and a null
+            hx-vals value serializes as the literal string "null", which the carrier logic
+            (_unresolved_detail_carrier_ids) would read as a real unresolved selection and emit a
+            phantom agent-detail-row-null carrier on every idle poll. Empty string stays falsy on both
+            sides of the wire. #}
+         hx-vals='js:{agent: new URLSearchParams(location.search).get("agent") || "", clane: new URLSearchParams(location.search).get("clane") || ""}'
          hx-swap="outerHTML"
          data-refreshed-at="{{ refreshed_at_iso }}"
          aria-labelledby="agents-table-heading"
@@ -70,6 +75,21 @@
             Provision an agent token via psql, then run <code class="font-mono bg-gray-100 dark:bg-phaze-panel px-1 rounded">just up-agent</code> on the file server. Once the worker boots, it will appear here within a few seconds.
         </p>
     </div>
+    {# phaze-w92dg: the no-rows branch renders no <table>, but the never-auto-collapse invariant
+       ("every response carries the open detail row's id while the URL still asks for it" — see the
+       carrier comment in the tbody below) must hold here too, or one all-degraded tick would destroy
+       an open detail. A <tr> needs table context to survive HTML parsing, so the carriers ride in a
+       hidden single-purpose table: the preserved row stays alive (state, own-tick) though invisible
+       until rows return. #}
+    {% if unresolved_detail_carrier_ids | default([]) %}
+    <table hidden>
+        <tbody>
+            {% for _carrier_id in unresolved_detail_carrier_ids %}
+            <tr id="{{ _carrier_id }}" hx-preserve></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
     {% else %}
     <div class="overflow-x-auto">
         <table class="w-full text-sm text-left">
@@ -197,6 +217,20 @@
                     {% include "admin/partials/_agent_detail_row.html" %}
                     {% endif %}
                 {% endif %}
+                {% endfor %}
+                {# phaze-w92dg: never auto-collapse (operator rule: only Esc/✕ dismiss). A selection
+                   param that arrived but failed lookup-in-known-set (a degraded lane-registry tick, an
+                   agent gone from the non-revoked set) used to make this response omit the open detail
+                   row entirely — hx-preserve then had nothing to id-match and htmx tore the operator's
+                   live row down mid-session. These minimal carriers keep the detail-row id present in
+                   EVERY response for as long as the URL still asks for it, so hx-preserve keeps the
+                   real open row (Alpine state, own-tick, fetched body) in the carrier's place; on a
+                   degraded tick it sits at the end of the tbody until the trigger row returns. With no
+                   old node to preserve (a bogus deep-link id) the carrier itself renders: one empty,
+                   invisible <tr>. Esc/✕ (hide()) drop the param from the URL, so no carrier is emitted
+                   afterwards and dismissal still works exactly as before. #}
+                {% for _carrier_id in unresolved_detail_carrier_ids | default([]) %}
+                <tr id="{{ _carrier_id }}" hx-preserve></tr>
                 {% endfor %}
             </tbody>
         </table>

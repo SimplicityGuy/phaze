@@ -224,10 +224,16 @@ async def test_agent_deep_link_loads_the_activity_body(smoke: AsyncClient) -> No
 
 @pytest.mark.asyncio
 async def test_unknown_agent_param_emits_no_expanded_row(smoke: AsyncClient) -> None:
-    """An unknown ?agent highlights nothing and renders no expanded row at all."""
+    """An unknown ?agent highlights nothing and renders no REAL expanded row.
+
+    phaze-w92dg: the response now carries an EMPTY hx-preserve carrier <tr> under the detail-row id
+    (the never-auto-collapse invariant — a poll response must keep the id present while the URL
+    still asks for it). What must stay absent is the real expanded row: its body slot and its
+    activity fetch chrome.
+    """
     response = await smoke.get("/s/agents", params={"agent": "no-such-agent"})
     assert response.status_code == 200, response.text
-    assert "agent-detail-row-" not in response.text
+    assert '<tr id="agent-detail-row-no-such-agent" hx-preserve></tr>' in response.text
     assert "agent-activity-" not in response.text
 
 

@@ -107,6 +107,26 @@
                             {% endwith %}
                         {% endif %}
                     </div>
+                    {# phaze-cavai: the per-stage "why" line the pill alone cannot answer. FAILED shows
+                       the STORED failure reason (FileMetadata / AnalysisResult error_message) — the
+                       count cards say how many failed, this is the only place that says why THIS one
+                       did. ORPHANED shows the ledger facts recovery will replay (scheduled-when,
+                       replay budget) plus started-vs-never-started evidence for analyze. Both values
+                       are Jinja-autoescaped; both degrade to nothing when the reads degraded. #}
+                    {% if stage_buckets[stage_value] == 'failed' and stage_value in ('metadata', 'analyze') %}
+                    <p class="mt-1 text-xs text-red-600 dark:text-red-400 whitespace-pre-wrap break-all">
+                        {{ stage_failure_reasons[stage_value] or 'Failed — no error detail recorded.' }}
+                    </p>
+                    {% endif %}
+                    {% set _orphan = (orphan_details | default({})).get(stage_value) %}
+                    {% if _orphan is not none %}
+                    <p class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                        Orphaned — scheduled {{ _orphan.enqueued_at.strftime('%Y-%m-%d %H:%M UTC') if _orphan.enqueued_at else 'at an unrecorded time' }}, and nothing is running it now.
+                        {% if stage_value == 'analyze' %}{{ 'The analysis started but never completed.' if analyze_started else 'The analysis never started.' }}{% endif %}
+                        Replay budget: timeout {{ (_orphan.timeout ~ 's') if _orphan.timeout is not none else 'default' }} · retries {{ _orphan.retries if _orphan.retries is not none else 'default' }} · re-drives {{ _orphan.redrive_attempt or 0 }}.
+                        RECOVER re-enqueues it with this exact budget.
+                    </p>
+                    {% endif %}
                     <div id="trace-{{ stage_value }}-{{ file.id }}" class="empty:hidden"></div>
                 </div>
             {% endfor %}

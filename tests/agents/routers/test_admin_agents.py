@@ -1458,8 +1458,10 @@ async def test_sort_click_preserves_the_open_detail_pane(smoke: AsyncClient) -> 
 
     # The live selection rides in hx-vals on the polled section, inherited by the sort buttons.
     # phaze-2u8v.5 threads the SAME channel for ?clane= (the burst-lane drill-down selection).
+    # phaze-w92dg appends `|| ""`: a null from an absent param would serialize as the literal
+    # string "null", which the unresolved-selection carrier logic would treat as a real id.
     assert (
-        'hx-vals=\'js:{agent: new URLSearchParams(location.search).get("agent"), clane: new URLSearchParams(location.search).get("clane")}\''
+        'hx-vals=\'js:{agent: new URLSearchParams(location.search).get("agent") || "", clane: new URLSearchParams(location.search).get("clane") || ""}\''
     ) in body
     # ...and is NOT frozen into the armed poll URL, where it would go stale.
     assert "agent" not in _poll_vals(body), "a stale ?agent= was baked into the poll and will erase the selection"
@@ -1640,3 +1642,63 @@ async def test_unknown_clane_query_param_highlights_nothing(smoke: AsyncClient) 
     response = await smoke.get("/s/agents", params={"clane": "__hostile__"})
     assert response.status_code == 200, response.text
     assert 'aria-current="true"' not in response.text
+
+
+# ---------------------------------------------------------------------------
+# phaze-w92dg: never auto-collapse — unresolved-selection hx-preserve carriers
+# ---------------------------------------------------------------------------
+#
+# The expanded detail row survives the section's 5s outerHTML self-poll only via hx-preserve,
+# which matches by id against the INCOMING response. A selection param that failed
+# lookup-in-known-set for one tick (degraded derive_compute_lane_identities read -> [], an agent
+# leaving the non-revoked set) used to omit the detail row from that response entirely, so htmx
+# tore the operator's live open row down. The operator rule is that the detail only ever closes
+# on Esc/✕ — so every response must keep carrying the detail-row id for as long as the request
+# still asks for it, via a minimal empty carrier <tr> when the selection cannot be resolved.
+
+
+@pytest.mark.asyncio
+async def test_unresolved_agent_selection_still_carries_detail_row_id(smoke: AsyncClient) -> None:
+    """?agent= that fails lookup still emits an hx-preserve carrier under the SAME detail-row id."""
+    body = (await smoke.get("/admin/agents/_table", params={"agent": "gone-agent"})).text
+    assert '<tr id="agent-detail-row-gone-agent" hx-preserve></tr>' in body
+    # Unresolved stays unresolved: no ring, no real expanded row body.
+    assert 'aria-current="true"' not in body
+    assert 'id="agent-activity-gone-agent"' not in body
+
+
+@pytest.mark.asyncio
+async def test_unresolved_lane_selection_still_carries_detail_row_id(smoke: AsyncClient) -> None:
+    """?clane= that fails lookup (e.g. a degraded registry tick) still carries its detail-row id."""
+    body = (await smoke.get("/admin/agents/_table", params={"clane": "gone-lane"})).text
+    assert '<tr id="compute-lane-detail-row-gone-lane" hx-preserve></tr>' in body
+    assert 'aria-current="true"' not in body
+
+
+@pytest.mark.asyncio
+async def test_resolved_agent_selection_renders_real_detail_row_without_carrier(smoke: AsyncClient) -> None:
+    """A resolvable ?agent= renders the REAL expanded row exactly once — never a duplicate carrier id."""
+    body = (await smoke.get("/admin/agents/_table", params={"agent": "alive-agent"})).text
+    assert body.count('id="agent-detail-row-alive-agent"') == 1
+    # The real row, not the empty carrier: it hosts the self-fetching body slot.
+    assert 'id="agent-activity-alive-agent"' in body
+
+
+@pytest.mark.asyncio
+async def test_empty_selection_params_emit_no_carrier(smoke: AsyncClient) -> None:
+    """The idle poll's `agent=&clane=` (hx-vals null-coercion to "") must not emit phantom carriers."""
+    body = (await smoke.get("/admin/agents/_table", params={"agent": "", "clane": ""})).text
+    assert "agent-detail-row-" not in body
+    assert "compute-lane-detail-row-" not in body
+
+
+@pytest.mark.asyncio
+async def test_no_rows_branch_still_carries_detail_row_id(empty_smoke: AsyncClient) -> None:
+    """Even the empty-state render (no <table> at all) keeps an unresolved selection's id alive.
+
+    One all-degraded tick (no agents loaded, lane registry read failed) must not destroy an open
+    detail row — the carrier rides in the hidden fallback table the no-rows branch emits.
+    """
+    body = (await empty_smoke.get("/admin/agents/_table", params={"clane": "vanished-lane"})).text
+    assert "No agents registered yet" in body
+    assert '<tr id="compute-lane-detail-row-vanished-lane" hx-preserve></tr>' in body

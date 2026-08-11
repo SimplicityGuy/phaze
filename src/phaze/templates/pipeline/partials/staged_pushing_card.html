@@ -22,11 +22,12 @@
    (analyzing_cloud_card.html) it accounts for every backend's busy in-flight slots -- the two
    cards are the two halves of the same per-backend Backend.in_flight_count() window, just read
    globally here rather than scoped per lane (the lane cards own the per-lane breakdown). #}
+{# Heading removed (operator request 2026-08-10): renders inside the single "Cloud" pane; the
+   "Staged (pushing)" tile label already says what this is. #}
 <section id="staged-pushing-card"
-         aria-labelledby="staged-pushing-heading"
+         aria-label="Cloud staged"
          {% if oob %}hx-swap-oob="true"{% endif %}
-         class="border border-gray-200 dark:border-phaze-border rounded-lg p-4 space-y-3">
-    <h2 id="staged-pushing-heading" class="text-lg font-semibold">Cloud · Staged</h2>
+         class="space-y-3">
     <div class="bg-amber-50 dark:bg-amber-950 rounded-lg p-4 text-center">
         <p class="text-2xl font-bold text-amber-700 dark:text-amber-400">{{ pushing_count }}</p>
         <p class="text-sm text-amber-600 dark:text-amber-400">Staged (pushing)</p>

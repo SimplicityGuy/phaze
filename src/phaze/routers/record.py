@@ -31,11 +31,12 @@ from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.cloud_job import CloudJob
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
+from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.routers.proposals import TIMELINE_H, TIMELINE_W, _bpm_spark, _ribbons
 from phaze.services.agent_liveness import non_local_backend_kinds
-from phaze.services.pipeline import derive_file_lane, get_file_stage_buckets
+from phaze.services.pipeline import derive_file_lane, get_file_orphan_details, get_file_stage_buckets
 from phaze.services.tracklist_priority import get_file_tracklist_review
 
 
@@ -155,6 +156,20 @@ async def file_record(
     # Files matrix renders, single-file-scoped, so the Stage-Eligibility pills match that row.
     stage_buckets = await get_file_stage_buckets(session, file_id)
 
+    # phaze-cavai: the per-stage "why" facts the pills alone cannot answer. A failed pill gets the
+    # STORED failure reason (FileMetadata / AnalysisResult error_message — written on failure,
+    # previously never surfaced anywhere in the UI); an orphaned enrich stage gets the ledger facts
+    # that explain the strand (get_file_orphan_details — the same predicate recovery re-drives).
+    # `analysis` above is this file's AnalysisResult; started-vs-never-started evidence for an
+    # orphaned analyze is derived from data already loaded (partial analysis row / windows).
+    metadata_row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one_or_none()
+    stage_failure_reasons = {
+        "metadata": metadata_row.error_message if metadata_row is not None else None,
+        "analyze": analysis.error_message if analysis is not None else None,
+    }
+    orphan_details = await get_file_orphan_details(session, file_id)
+    analyze_started = bool(windows) or analysis is not None
+
     # phaze-fq9h.8: the per-file 1001Tracklists review -- scraped/propagated/attempted-but-absent/
     # never-looked-up, plus the operator priority flag. The file was already confirmed to exist
     # above, so this can never legitimately come back None here.
@@ -191,5 +206,8 @@ async def file_record(
         "tracklist_review": tracklist_review,
         "lane": lane,
         "lane_kind": lane_kind,
+        "stage_failure_reasons": stage_failure_reasons,
+        "orphan_details": orphan_details,
+        "analyze_started": analyze_started,
     }
     return templates.TemplateResponse(request=request, name="record/record_body.html", context=context)

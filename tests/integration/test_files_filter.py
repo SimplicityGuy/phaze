@@ -353,3 +353,50 @@ async def test_reload_after_status_filter_push_url_leaves_rows_clickable(client:
     assert f'hx-get="/record/{file_record.id}"' in body, "the seeded file's row must still hx-get its record"
     assert 'hx-target="#record-body"' in body, "the row's target must be #record-body, unchanged"
     assert 'id="record-body"' in body, "and #record-body itself must exist in the SAME document the row is in"
+
+
+@pytest.mark.asyncio
+async def test_orphaned_lens_lists_exactly_the_recovery_candidates(client: AsyncClient, session: AsyncSession) -> None:
+    """``?stage=analyze&bucket=orphaned`` lists a scheduled-then-lost file and nothing else (phaze-cavai).
+
+    The lens is ``stage_status_case(stage)=='in_flight' AND orphaned_clause(stage)`` — the per-file
+    twin of recovery's work set. Seeded: an orphan (ledger row, no live broker key, no analysis), a
+    genuinely-running file (ledger row + a live ``saq_jobs`` key), and a bare file. Only the orphan
+    may appear. ``saq_jobs`` is SAQ-owned and absent from ``Base.metadata``, so the test pins a
+    module-controlled minimal table the same way tests/integration/test_orphan_count.py does.
+    """
+    from sqlalchemy import text
+
+    from phaze.models.scheduling_ledger import SchedulingLedger
+
+    await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
+    await session.execute(text("CREATE TABLE saq_jobs (key TEXT PRIMARY KEY, status TEXT NOT NULL)"))
+    orphan = _make_file("orphanstrand")
+    running = _make_file("stillrunning")
+    plain = _make_file("bareplain")
+    session.add_all([orphan, running, plain])
+    await session.commit()
+    session.add(SchedulingLedger(key=f"process_file:{orphan.id}", function="process_file", routing="agent", payload={"file_id": str(orphan.id)}))
+    session.add(SchedulingLedger(key=f"process_file:{running.id}", function="process_file", routing="agent", payload={"file_id": str(running.id)}))
+    await session.commit()
+    await session.execute(text("INSERT INTO saq_jobs (key, status) VALUES (:k, 'queued')"), {"k": f"process_file:{running.id}"})
+    await session.commit()
+
+    resp = await client.get("/pipeline/files?stage=analyze&bucket=orphaned", headers={"HX-Request": "true"})
+    assert resp.status_code == 200
+    body = resp.text
+    assert "orphanstrand-" in body
+    assert "stillrunning-" not in body
+    assert "bareplain-" not in body
+
+
+@pytest.mark.asyncio
+async def test_orphaned_lens_on_a_non_enrich_stage_returns_the_empty_set(client: AsyncClient, session: AsyncSession) -> None:
+    """``?stage=propose&bucket=orphaned`` is not a defined concept — empty set, never a 500 (phaze-cavai)."""
+    stray = _make_file("strayrow")
+    session.add(stray)
+    await session.commit()
+
+    resp = await client.get("/pipeline/files?stage=propose&bucket=orphaned", headers={"HX-Request": "true"})
+    assert resp.status_code == 200
+    assert "strayrow-" not in resp.text

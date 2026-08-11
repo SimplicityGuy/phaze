@@ -62,10 +62,25 @@
             aria-label="Run analysis on all discovered files"
             class="{{ _btn }}">RUN ANALYSIS</button>
     <span id="analyze-trigger-spinner" class="htmx-indicator text-xs text-gray-500 dark:text-gray-400">Enqueuing…</span>
-    {# UI-SPEC Copywriting: ROUTE RULES + PAUSE (PAUSE is reversible -- no confirm, R-4). Presentation
-       row per the prototype; the live per-stage pause/route controls remain on the DAG canvas. #}
-    <button type="button" class="{{ _btn }}">ROUTE RULES</button>
-    <button type="button" class="{{ _btn }}">PAUSE</button>
+    {# phaze-toldl: ROUTE RULES removed — it was an inert prototype placeholder (no handler at all),
+       and the DAG canvas its original comment deferred the "live controls" to was deleted in the
+       Phase 62 cutover. PAUSE below is now the LIVE stage control, mirroring the rail's Pause/Resume
+       pair (same endpoints, hx-swap="none", $store.pipeline-driven visibility — reversible, so no
+       confirm, R-4). Operator rule 2026-08-10: Pause is enabled only while analyze work is actually
+       in flight (a stage with nothing running has nothing to pause). RESUME deliberately carries NO
+       busy-gate — a paused stage drains its busy count to zero, so gating Resume on busyness would
+       wedge the stage paused forever. #}
+    <button type="button"
+            x-show="!$store.pipeline.analyzePaused"
+            hx-post="/pipeline/stages/analyze/pause" hx-swap="none"
+            :disabled="$store.pipeline.analyzeBusy === 0"
+            aria-label="Pause analyze"
+            class="{{ _btn }}">PAUSE</button>
+    <button type="button"
+            x-show="$store.pipeline.analyzePaused" x-cloak
+            hx-post="/pipeline/stages/analyze/resume" hx-swap="none"
+            aria-label="Resume analyze"
+            class="{{ _btn }}">RESUME</button>
 {% endset %}
 {% call ws.workspace(title="ANALYZE", subcount=subcount, actions=actions, cloud_cards=true) %}
     {# Trigger response lands here (trigger_response.html branches: no_active_agent / split_counts / none
@@ -101,16 +116,26 @@
         {% include "pipeline/partials/localqueue_card.html" %}
     </div>
 
-    {# (b2) the FOUR always-on cloud-state count cards VERBATIM (do NOT restyle): admission_state_card
-       (k8s healthy progression -- NO role=alert), awaiting_cloud_card / staged_pushing_card /
-       analyzing_cloud_card (A1 sub-states). They carry their own ids so the poll's OOB swaps land here.
-       `oob` is unset here, so each renders its quiet always-on carrier. Exactly 4 cells -> Admission and
-       Cloud Routing share row 1's top edge; Staged and Analyzing share row 2's, same as before. #}
-    <div class="grid grid-cols-1 gap-4 px-6 pb-6 sm:grid-cols-2">
-        {% include "pipeline/partials/admission_state_card.html" %}
-        {% include "pipeline/partials/awaiting_cloud_card.html" %}
-        {% include "pipeline/partials/staged_pushing_card.html" %}
-        {% include "pipeline/partials/analyzing_cloud_card.html" %}
+    {# (b2) the FOUR always-on cloud-state count partials, now inside ONE bordered "Cloud" pane
+       (operator request 2026-08-10, mirrors the Analysis Health single-pane shape): their four
+       per-card "Cloud · X" headings were pure duplication of the tile labels the cards already
+       carry (Queued (quota) / Running / Finished / Awaiting cloud / Staged (pushing) / Analyzing
+       (cloud)), so the headings are gone and ONE "Cloud" heading owns the pane. Each partial keeps
+       its own <section id> + OOB contract UNTOUCHED — the poll's hx-swap-oob fragments land on the
+       same ids; only the chrome moved from the partials to this static wrapper. Cell order is the
+       structural contract (test_dashboard_count_grid_holds_four_cards_outside_alert_carriers):
+       Admission and Routing share row 1, Staged and Analyzing share row 2, as before. #}
+    <div class="px-6 pb-6">
+        <section aria-labelledby="cloud-pane-heading"
+                 class="border border-gray-200 dark:border-phaze-border rounded-lg p-4 space-y-3">
+            <h2 id="cloud-pane-heading" class="text-lg font-semibold">Cloud</h2>
+            <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                {% include "pipeline/partials/admission_state_card.html" %}
+                {% include "pipeline/partials/awaiting_cloud_card.html" %}
+                {% include "pipeline/partials/staged_pushing_card.html" %}
+                {% include "pipeline/partials/analyzing_cloud_card.html" %}
+            </div>
+        </section>
     </div>
 
     {# (b3) phaze-tyt3: the Phase-44 Analysis Health card (straggler + terminal analysis-failed

@@ -2568,12 +2568,27 @@ def _files_page_stmt(*, page: int, page_size: int, stage: Stage | None, bucket: 
     / ``ix_analysis_failed``), so the derivation touches only the page rows. The
     optional ``stage``+``bucket`` filter is applied as ``stage_status_case(stage) == bucket`` -- a pure
     ORM bound-param comparison (never f-string SQL, T-87-14); the caller validates ``stage``/``bucket``
-    against the ``Stage``/``Status`` allowlists.
+    against the ``Stage``/``Status`` allowlists (plus :data:`ORPHANED_BUCKET`, below).
+
+    phaze-cavai (the orphaned lens): ``bucket == ORPHANED_BUCKET`` is NOT a sixth per-row CASE arm --
+    D-01a deliberately keeps ``saq_jobs`` out of the hot per-row derivation, so the matrix pills stay
+    five-bucket. The lens instead narrows the ``in_flight`` rows through :func:`orphaned_clause`
+    (the per-file twin of recovery's work set) as a WHERE-only refinement: the unfiltered poll pays
+    nothing, and the filtered listing is exactly the stage's recovery candidate set.
+    ``orphaned_clause`` is defined only for the two enrich stages (``domain_completed_clause`` raises
+    otherwise), so any other stage yields the empty set via ``false()`` rather than a 500 into the
+    SAVEPOINT degrade path -- a propose/review/apply orphan is not a defined concept.
     """
     cols = [stage_status_case(s) for s in _FILES_PAGE_STAGES]
     stmt = select(FileRecord, *cols)
     if stage is not None and bucket is not None:
-        stmt = stmt.where(stage_status_case(stage) == bucket)
+        if bucket == ORPHANED_BUCKET:
+            if stage in (Stage.METADATA, Stage.ANALYZE):
+                stmt = stmt.where(stage_status_case(stage) == Status.IN_FLIGHT.value, orphaned_clause(stage))
+            else:
+                stmt = stmt.where(false())
+        else:
+            stmt = stmt.where(stage_status_case(stage) == bucket)
     # The paging contract (phaze.services.pagination): OFFSET + a page_size+1 sentinel for has_next
     # (never a whole-corpus COUNT -- T-87-11). FileRecord.id is the mandatory unique tiebreaker
     # (paging contract rule 4) regardless of `sort` -- an operator-chosen column ties far more often
@@ -2654,3 +2669,48 @@ async def get_file_stage_buckets(session: AsyncSession, file_id: uuid.UUID) -> d
     if row is None:
         return dict.fromkeys((s.value for s in _FILES_PAGE_STAGES), "not_started")
     return {stage_member.value: row[idx] for idx, stage_member in enumerate(_FILES_PAGE_STAGES)}
+
+
+# phaze-cavai: the (stage -> ledger function) pairs orphan diagnostics can explain. Exactly the two
+# enrich stages orphaned_clause is defined for; the key format is the deterministic-key contract's
+# "<function>:<natural_id>" with natural_id == file_id for both.
+_ORPHAN_DETAIL_STAGES: tuple[tuple[Stage, str], ...] = ((Stage.METADATA, "extract_file_metadata"), (Stage.ANALYZE, "process_file"))
+
+
+async def get_file_orphan_details(session: AsyncSession, file_id: uuid.UUID) -> dict[str, dict[str, Any] | None]:
+    """Return ONE file's per-enrich-stage orphan diagnostics, or ``None`` per non-orphaned stage (phaze-cavai).
+
+    Evaluates :func:`~phaze.services.stage_status.orphaned_clause` single-file — the SAME predicate the
+    Files orphaned lens filters on and recovery re-drives, so this pane can never disagree with either —
+    and, for an orphaned stage, reads the ``scheduling_ledger`` facts that explain the strand: when it
+    was scheduled (``enqueued_at``), and the ``timeout`` / ``retries`` / ``redrive_attempt`` replay
+    budget captured at enqueue time. The record pane pairs this with its own already-loaded
+    started-vs-never-started evidence (partial analysis / windows), which this read does not duplicate.
+
+    Degrade-safe (mirrors :func:`get_file_stage_buckets`): ANY error rolls back the SAVEPOINT alone and
+    returns the all-``None`` mapping — the record pane renders without diagnostics, never a 500.
+    """
+    out: dict[str, dict[str, Any] | None] = {stage_member.value: None for stage_member, _fn in _ORPHAN_DETAIL_STAGES}
+    try:
+        async with session.begin_nested():
+            flags = (
+                await session.execute(
+                    select(*[orphaned_clause(stage_member) for stage_member, _fn in _ORPHAN_DETAIL_STAGES]).where(FileRecord.id == file_id)
+                )
+            ).one_or_none()
+            if flags is None:
+                return out
+            for idx, (stage_member, function) in enumerate(_ORPHAN_DETAIL_STAGES):
+                if not flags[idx]:
+                    continue
+                ledger = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"{function}:{file_id}"))).scalar_one_or_none()
+                out[stage_member.value] = {
+                    "enqueued_at": ledger.enqueued_at if ledger is not None else None,
+                    "timeout": ledger.timeout if ledger is not None else None,
+                    "retries": ledger.retries if ledger is not None else None,
+                    "redrive_attempt": ledger.redrive_attempt if ledger is not None else None,
+                }
+    except Exception:
+        logger.warning("file_orphan_details_degraded", file_id=str(file_id), exc_info=True)
+        return {stage_member.value: None for stage_member, _fn in _ORPHAN_DETAIL_STAGES}
+    return out

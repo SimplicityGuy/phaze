@@ -33,12 +33,15 @@
    trigger buttons — T-55-CARD-03), then re-pushed by stats_bar.html as an hx-swap-oob fragment on
    every 5s poll (oob=True). Same id on both renders is the OOB contract (mirrors inadmissible_card).
    The empty carrier is always emitted so a previously-shown grid CLEARS the moment k8s drains. #}
+{# Heading removed (operator request 2026-08-10): the card renders inside analyze_workspace.html's
+   single "Cloud" pane, and "Cloud · Admission" duplicated the tile labels. aria-label replaces the
+   old aria-labelledby; the "live — per reconcile" caption is now also the rendered-body
+   discriminator the admission tests assert on. #}
 <section id="admission-state-card"
-         aria-labelledby="admission-state-heading"
+         aria-label="Cloud admission state"
          {% if oob %}hx-swap-oob="true"{% endif %}
-         class="border border-gray-200 dark:border-phaze-border rounded-lg p-4 space-y-3">
+         class="space-y-3">
     {% if queued_behind_quota_count or admitted_count or running_count or finished_count %}
-    <h2 id="admission-state-heading" class="text-lg font-semibold">Cloud · Admission</h2>
     {% if queued_behind_quota_count or admitted_count or running_count %}
     <p class="text-xs text-gray-400 dark:text-gray-500">live — per reconcile, updates ~5 min</p>
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">

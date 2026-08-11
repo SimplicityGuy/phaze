@@ -88,8 +88,13 @@ async def test_redirect_round_trip_lands_on_a_working_full_shell(client: AsyncCl
     assert 'id="stage-workspace"' in body
     assert 'id="agents-table-section"' in body
     # Unresolvable ids highlight nothing rather than erroring (acceptance rule 7's negative half).
-    assert "agent-detail-row-" not in body
-    assert "compute-lane-detail-row-" not in body
+    # phaze-w92dg: each unresolved selection now leaves an EMPTY hx-preserve carrier (the
+    # never-auto-collapse invariant) — no ring, no real expanded-row body slot.
+    assert 'aria-current="true"' not in body
+    assert '<tr id="agent-detail-row-no-such-agent" hx-preserve></tr>' in body
+    assert '<tr id="compute-lane-detail-row-no-such-lane" hx-preserve></tr>' in body
+    assert 'id="agent-activity-no-such-agent"' not in body
+    assert 'id="compute-lane-activity-no-such-lane"' not in body
 
 
 # ---------------------------------------------------------------------------
@@ -185,19 +190,32 @@ async def test_clane_deep_link_opens_its_row_via_the_shell(
 
 @pytest.mark.asyncio
 async def test_unknown_agent_deep_link_highlights_nothing_and_never_errors(client: AsyncClient) -> None:
-    """An unresolvable ?agent= on /s/agents highlights nothing and renders the pane at 200."""
+    """An unresolvable ?agent= on /s/agents highlights nothing and renders the pane at 200.
+
+    phaze-w92dg: "highlights nothing" now means no ring and no real expanded row — the response
+    deliberately carries an empty hx-preserve carrier under the detail-row id so an open detail can
+    never be torn down by a tick that fails to resolve its selection.
+    """
     response = await client.get("/s/agents", params={"agent": "no-such-agent-at-all"})
     assert response.status_code == 200, response.text
-    assert "agent-detail-row-" not in response.text
+    assert 'aria-current="true"' not in response.text
+    assert '<tr id="agent-detail-row-no-such-agent-at-all" hx-preserve></tr>' in response.text
+    assert 'id="agent-activity-no-such-agent-at-all"' not in response.text
     assert 'id="agents-table-section"' in response.text
 
 
 @pytest.mark.asyncio
 async def test_unknown_clane_deep_link_highlights_nothing_and_never_errors(client: AsyncClient) -> None:
-    """An unresolvable ?clane= on /s/agents highlights nothing and renders the pane at 200."""
+    """An unresolvable ?clane= on /s/agents highlights nothing and renders the pane at 200.
+
+    phaze-w92dg: same carrier contract as the ?agent= sibling above — empty carrier, no ring, no
+    real expanded-row body slot.
+    """
     response = await client.get("/s/agents", params={"clane": "no-such-lane-at-all"})
     assert response.status_code == 200, response.text
-    assert "compute-lane-detail-row-" not in response.text
+    assert 'aria-current="true"' not in response.text
+    assert '<tr id="compute-lane-detail-row-no-such-lane-at-all" hx-preserve></tr>' in response.text
+    assert 'id="compute-lane-activity-no-such-lane-at-all"' not in response.text
     assert 'id="agents-table-section"' in response.text
 
 
