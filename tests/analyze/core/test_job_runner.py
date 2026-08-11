@@ -22,7 +22,7 @@ the analyze seam is patched at ``phaze.job_runner.run_analysis_subprocess`` — 
 ``_driver_seam`` helper adapts the sync fake-analyze callables onto the driver's async
 signature. The unit tests still run without the GB essentia models AND without
 importing the platform-gated essentia wheel; the full parent↔child subprocess contract
-is covered by tests/analyze/services/test_analysis_exec.py.
+is covered by tests/analyze/services/pipeline/test_analysis_exec.py.
 """
 
 from __future__ import annotations

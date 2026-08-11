@@ -1,13 +1,13 @@
 """CI workflow wiring guard (Phase 63-02/63-03, CI-02 matrix wiring + CI-03 gate deferral).
 
 Two Phase 63 invariants are structurally fragile and had NO automated guard before this
-file: the parallel-CI matrix staying wired to the canonical bucket list (CI-02), and the
+file: the parallel-CI matrix staying wired to the canonical shard list (CI-02), and the
 combine/gate deferral protocol that makes the fan-out possible at all (CI-03).
 
 **CI-03 is the highest-value assertion here.** The `just test-bucket` recipe MUST defer
-pytest-cov's `fail_under` gate (`--cov-fail-under=0`) because a single bucket only
+pytest-cov's `fail_under` gate (`--cov-fail-under=0`) because a single shard only
 exercises a fraction of ``phaze`` — enforcing the pyproject-wide global coverage gate against
-one bucket's PARTIAL coverage fails every matrix leg (exit 1) before its shard is uploaded,
+one shard's PARTIAL coverage fails every matrix leg (exit 1) before its shard is uploaded,
 which starves the ``combine`` job (``needs: [test]``) of any input and the whole gate
 never runs. **This exact regression already happened once during this phase** — the
 verifier caught every matrix leg exiting 1 for precisely this reason before the fix
@@ -16,14 +16,23 @@ for that regression: it reads the ``test-bucket`` recipe body directly out of th
 justfile and fails loud if ``--cov-fail-under=0`` is ever dropped.
 
 The remaining tests assert the rest of the combine/gate protocol (the global coverage gate
-is enforced exactly once, on the COMBINED number) and the CI-02 matrix-to-``buckets.json``
+is enforced exactly once, on the COMBINED number) and the CI-02 matrix-to-``ci_shards.json``
 wiring (the matrix is derived via ``fromJSON`` of the setup job's output — not a
-hardcoded, driftable bucket list inline in the workflow — and the token used for the
-Codecov upload never leaks into a per-bucket matrix leg).
+hardcoded, driftable shard list inline in the workflow — and the token used for the
+Codecov upload never leaks into a per-shard matrix leg).
+
+phaze-crq9k split the flat ``tests/buckets.json`` bucket-name list (still the single source
+of truth for the ``tests/<bucket>/`` DIRECTORY partition the ``test_partition_guard.py``
+guard enforces) from a NEW ``tests/ci_shards.json`` — the CI matrix source. Every shard is a
+``{"name": ..., "paths": ...}`` object; most shards map 1:1 onto a ``tests/buckets.json``
+bucket directory, but a bucket whose wall time dominates the matrix (``analyze``, ``shared``
+as of this split) can be represented by SEVERAL shards, each a space-separated subset of
+that bucket's subdirectories. Splitting the file (rather than overloading buckets.json's
+shape) keeps the partition guard's directory-membership invariant untouched.
 
 This guard is DB-free and subprocess-free: it parses ``justfile`` as text and
 ``.github/workflows/tests.yml`` as YAML. It lives in ``tests/shared/`` so it rides the
-``shared`` bucket (see ``test_partition_guard.py`` for why bucket placement matters).
+``shared-rest`` shard (see ``test_partition_guard.py`` for why bucket placement matters).
 """
 
 from __future__ import annotations
@@ -41,6 +50,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _JUSTFILE = _REPO_ROOT / "justfile"
 _WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "tests.yml"
 _BUCKETS_JSON = _REPO_ROOT / "tests" / "buckets.json"
+_CI_SHARDS_JSON = _REPO_ROOT / "tests" / "ci_shards.json"
 
 
 def _extract_recipe(justfile_text: str, name: str) -> str:
@@ -83,8 +93,11 @@ def test_bucket_recipe_defers_the_coverage_gate() -> None:
     """
     recipe_body = _extract_recipe(_JUSTFILE.read_text(encoding="utf-8"), "test-bucket")
     assert "--cov-fail-under=0" in recipe_body, f"test-bucket recipe lost its gate deferral:\n{recipe_body}"
-    # Sanity: the recipe still runs pytest against a bucket-scoped path (not vacuous).
-    assert "pytest tests/" in recipe_body
+    # Sanity: the recipe still runs pytest against an explicit, caller-supplied shard path
+    # (not vacuous). phaze-crq9k: PATHS is now a parameter (one or more `tests/...` paths
+    # from tests/ci_shards.json) rather than always synthesizing `tests/<NAME>`, since a
+    # single bucket directory can be split across several shards.
+    assert "pytest {{PATHS}}" in recipe_body, f"test-bucket recipe must run pytest against the PATHS param:\n{recipe_body}"
 
 
 def test_coverage_combine_recipe_enforces_the_gate_exactly_once() -> None:
@@ -175,10 +188,14 @@ def test_matrix_bucket_list_is_derived_via_fromjson_not_hardcoded() -> None:
     assert test_job["needs"] == ["setup"], "test job must depend on setup to receive the buckets output"
 
 
-def test_setup_job_reads_the_canonical_buckets_json() -> None:
-    """CI-02: setup's `buckets` output is read from tests/buckets.json, the single source
-    of truth also consumed by `just test-bucket` and the partition guard — never a
-    copy hardcoded into the workflow.
+def test_setup_job_reads_the_canonical_ci_shards_json() -> None:
+    """CI-02: setup's `buckets` output is read from tests/ci_shards.json, the single source
+    of truth also consumed by `just test-bucket` — never a copy hardcoded into the workflow.
+
+    phaze-crq9k: this is deliberately `tests/ci_shards.json`, NOT `tests/buckets.json` (the
+    latter stays the partition guard's fixed 8-directory-name list — see
+    `test_partition_guard.py`). The two are related but distinct: every shard's `paths`
+    must resolve under a known bucket directory, checked below.
     """
     jobs = _load_workflow()["jobs"]
     setup_job = jobs["setup"]
@@ -186,15 +203,29 @@ def test_setup_job_reads_the_canonical_buckets_json() -> None:
     assert setup_job["outputs"]["buckets"] == "${{ steps.buckets.outputs.buckets }}"
 
     run_steps = [s.get("run", "") for s in setup_job["steps"] if "run" in s]
-    assert any("tests/buckets.json" in run for run in run_steps), (
-        f"setup job must read tests/buckets.json (single source of truth), steps were: {run_steps}"
+    assert any("tests/ci_shards.json" in run for run in run_steps), (
+        f"setup job must read tests/ci_shards.json (single source of truth), steps were: {run_steps}"
     )
 
-    # And that source of truth must actually be the canonical bucket list the matrix and
-    # `just test-bucket` both key off of (drift-proofing the drift-proofer): the nine Plan 01
-    # buckets, minus the two the phaze-0jpe molecule removed -- `fingerprint` (0jpe.2, the feature
-    # and all of tests/fingerprint/) and `services` (0jpe.3, which homed tests/services/, the
-    # audfprint + panako sidecar regressions; both the sidecars and that tree are deleted).
+    assert _CI_SHARDS_JSON.is_file(), f"missing canonical CI shard list: {_CI_SHARDS_JSON}"
+    shards = json.loads(_CI_SHARDS_JSON.read_text(encoding="utf-8"))
+    assert shards, "ci_shards.json parsed to an empty list"
+
+    names = [shard["name"] for shard in shards]
+    assert len(names) == len(set(names)), f"duplicate shard names in ci_shards.json: {names}"
+
+    # Every shard's paths must be non-empty and resolve under a bucket the partition guard
+    # actually knows about (drift-proofing the drift-proofer): a shard path of
+    # "tests/shared/routers" or "tests/shared --ignore=tests/shared/core" both key off the
+    # `shared` bucket; a typo'd bucket segment here would silently stop running real tests.
     assert _BUCKETS_JSON.is_file(), f"missing canonical bucket list: {_BUCKETS_JSON}"
-    canonical_buckets = json.loads(_BUCKETS_JSON.read_text(encoding="utf-8"))
-    assert len(canonical_buckets) == 8
+    known_buckets = set(json.loads(_BUCKETS_JSON.read_text(encoding="utf-8")))
+    for shard in shards:
+        assert shard.get("paths"), f"shard {shard.get('name')!r} has empty paths"
+        for token in shard["paths"].split():
+            if token.startswith("--"):
+                # A pytest flag (e.g. --ignore=tests/shared/core), not a collection path.
+                continue
+            assert token.startswith("tests/"), f"shard {shard['name']!r} path {token!r} must start with tests/"
+            bucket = token.removeprefix("tests/").split("/")[0]
+            assert bucket in known_buckets, f"shard {shard['name']!r} path {token!r} references unknown bucket {bucket!r}"

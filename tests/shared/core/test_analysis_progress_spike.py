@@ -9,7 +9,7 @@ Phase 101 (phaze-bo3p.4): the ``transport`` task group (pebble Manager-queue
 drainer + child-side httpx comparison) was removed with the pebble ProcessPool
 itself -- the exec'd analysis child (services.analysis_exec) superseded that
 transport, and its parent/child contract is covered by
-tests/analyze/services/test_analysis_exec.py. The surviving group:
+tests/analyze/services/pipeline/test_analysis_exec.py. The surviving group:
 
 * ``idempotent`` -- prove a file killed mid-analysis re-runs cleanly via the
   existing ``put_analysis`` ``file_id``-UQ replace path (PROG-02 / RESEARCH Q3):

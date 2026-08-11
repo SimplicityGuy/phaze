@@ -606,7 +606,7 @@ async def test_snapshot_renders_one_lane_per_compute_backend(session: AsyncSessi
 def _bound_compute(bid: str, rank: int, cap: int) -> ComputeAgentBackend:
     """Build a ComputeAgentBackend carrying a REAL bound ComputeBackend config (agent_ref == bid).
 
-    Mirrors the tests/analyze/services/test_backends.py ``_compute`` factory so ``is_available`` resolves
+    Mirrors the tests/analyze/services/backends/test_backends.py ``_compute`` factory so ``is_available`` resolves
     ``self.config.agent_ref`` against a seeded ``Agent.id`` via ``select_agent_by_id`` -- the real probe path
     Variant B must exercise (no ``config`` would fail loud in ``_agent_ref``).
     """

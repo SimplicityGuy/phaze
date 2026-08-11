@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 
 _STUBS = "tests.analyze._child_stubs"
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
 @pytest.fixture(autouse=True)

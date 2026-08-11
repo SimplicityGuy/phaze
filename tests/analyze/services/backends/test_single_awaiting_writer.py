@@ -19,8 +19,9 @@ from pathlib import Path
 
 
 # Repo-root-relative source root (mirror the sibling migration tests' parents[3] idiom): this file is
-# tests/analyze/services/test_single_awaiting_writer.py, so parents[3] is the repo root.
-_SRC_ROOT = Path(__file__).resolve().parents[3] / "src" / "phaze"
+# tests/analyze/services/backends/test_single_awaiting_writer.py (moved one level deeper by the
+# CI-shard split, phaze-crq9k), so parents[4] is the repo root.
+_SRC_ROOT = Path(__file__).resolve().parents[4] / "src" / "phaze"
 
 # The SOLE module allowed to WRITE cloud_job.status='awaiting' (the single go-forward writer, D-01/D-02).
 _ALLOWED_WRITERS = {_SRC_ROOT / "services" / "backends.py"}
