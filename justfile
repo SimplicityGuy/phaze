@@ -259,15 +259,21 @@ test-file FILE:
 vulture:
     uv run vulture src/phaze vulture_whitelist.py --min-confidence 80 --ignore-decorators "@router.*,@app.*,@field_validator,@model_validator,@validator,@pytest.fixture"
 
-# --cov-fail-under=0 is REQUIRED: a single bucket only exercises a fraction of
+# --cov-fail-under=0 is REQUIRED: a single shard only exercises a fraction of
 # phaze, so pytest-cov auto-enforcing pyproject's global fail_under gate against a
-# bucket's PARTIAL coverage would fail every leg (exit 1) before the shard is uploaded,
+# shard's PARTIAL coverage would fail every leg (exit 1) before the shard is uploaded,
 # and the combine job (needs: [test]) would never run. The global gate is enforced
 # once, on the COMBINED number, by `coverage-combine`.
-[doc('Run a single test bucket, writing coverage data to .coverage.<bucket> (CI shard). XDIST="" keeps DB buckets serial; DB-free buckets pass XDIST="-n auto".')]
+#
+# PATHS is one or more space-separated `tests/...` paths (phaze-crq9k: the CI matrix is
+# driven off tests/ci_shards.json, whose entries can split a single tests/<bucket>
+# directory into several parallel shards, e.g. "tests/shared/core" and
+# "tests/shared/routers tests/shared/services ..."). NAME is only the shard label used
+# for the .coverage.<NAME> shard filename -- it no longer has to equal a directory name.
+[doc('Run a single CI shard (one or more test paths), writing coverage data to .coverage.<name>. XDIST="" keeps DB shards serial; DB-free shards pass XDIST="-n auto".')]
 [group('test')]
-test-bucket NAME XDIST="":
-    COVERAGE_FILE=.coverage.{{NAME}} uv run pytest tests/{{NAME}} {{XDIST}} --cov=phaze --cov-report= --cov-fail-under=0 -q
+test-bucket NAME PATHS XDIST="":
+    COVERAGE_FILE=.coverage.{{NAME}} uv run pytest {{PATHS}} {{XDIST}} --cov=phaze --cov-report= --cov-fail-under=0 -q
 
 [doc('Combine per-bucket .coverage.* shards into coverage.xml and enforce the gate')]
 [group('test')]

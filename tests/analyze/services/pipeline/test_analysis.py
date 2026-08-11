@@ -866,7 +866,7 @@ def test_analysis_progress_interval_sec_config_default(monkeypatch: pytest.Monke
 
 def test_analysis_module_has_no_http_client_import() -> None:
     """analysis.py stays HTTP/pickle-free: no httpx / agent_client import crosses the compute seam."""
-    src = Path(__file__).resolve().parents[3] / "src" / "phaze" / "services" / "analysis.py"
+    src = Path(__file__).resolve().parents[4] / "src" / "phaze" / "services" / "analysis.py"
     text = src.read_text(encoding="utf-8")
     assert "import httpx" not in text
     assert "agent_client" not in text

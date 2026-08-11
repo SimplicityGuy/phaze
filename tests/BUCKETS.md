@@ -17,6 +17,21 @@ pre-reorg baseline the reorg must preserve (CI-03).
 > `tests/shared/config/test_cloud_target.py`, `test_kube_settings.py`, and
 > `test_s3_settings.py` (rows below, retained as the Phase-63 reorg record) were
 > DELETED in Phase 67 because they asserted the now-removed flat cloud fields.
+>
+> **phaze-crq9k (2026-08-11): CI-shard split, NOT a bucket rename.** The 8 buckets below are
+> still the complete, unchanged set `tests/buckets.json` and the partition guard
+> (`test_partition_guard.py`) key off of — every test file still lives under exactly one of
+> these 8 top-level `tests/<bucket>/` directories. What changed is the CI **matrix**: the two
+> buckets that dominated the `test / Tests (*)` wall clock (`analyze` 551s, `shared` 301s,
+> vs. an ~195s flat mean across the other 6) are now each split into multiple parallel matrix
+> legs, driven by the NEW `tests/ci_shards.json` (see `tests/shared/test_ci_workflow_wiring.py`
+> for the wiring guard). `analyze/services/` was physically split into
+> `analyze/services/pipeline/` (the core per-file analysis-pipeline tests) and
+> `analyze/services/backends/` (compute-backend / staging / queue tests) so the CI shard for
+> each stays a plain directory arg; `shared` was left in place and its second shard uses
+> `pytest tests/shared --ignore=tests/shared/core` so new subdirectories or new files added
+> directly under `tests/shared/` are never silently dropped from CI. See the durations comment
+> at the top of the `test` job in `.github/workflows/tests.yml` for the measured basis.
 
 ## Pre-reorg baseline (acceptance target for the reorg)
 
