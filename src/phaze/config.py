@@ -992,34 +992,13 @@ class ControlSettings(BaseSettings):
         ),
     )
 
-    # Phase 44: how long an in-flight `process_file` analyze job may run before the dashboard
-    # flags it as a STRAGGLER (still grinding, distinct from ANALYSIS_FAILED which gave up).
-    # Read by the control-plane dashboard (routers/pipeline.py) via get_straggler_count in
-    # services/pipeline.py -- it lives on ControlSettings because the dashboard reads the
-    # module-level (Control-typed) `settings`.
-    #
-    # phaze-w55w1: this is a DISPLAY threshold and nothing else -- it has never killed anything,
-    # and it must not be read as one now that liveness is progress-based. Its 6600s default used
-    # to mirror the (removed) analysis_inner_timeout_sec; it is kept at that value as a plain
-    # "this one has been going a while, take a look" marker. Under exhaustive analysis a
-    # multi-hour concert set will legitimately cross it and still be perfectly healthy, so raise
-    # it if the dashboard gets noisy -- do NOT treat a flagged job as stuck. `analysis_stall_
-    # timeout_sec` (AgentSettings) is the knob that decides stuck.
-    straggler_threshold_sec: int = Field(
-        default=6600,
-        gt=0,
-        lt=86400,
-        validation_alias=AliasChoices("PHAZE_STRAGGLER_THRESHOLD_SEC", "straggler_threshold_sec"),
-        description="Running-age threshold (seconds) above which an active process_file analyze job is flagged a straggler on the pipeline dashboard (Phase 44). DISPLAY ONLY -- it kills nothing; a long exhaustive analysis crossing it is normal (phaze-w55w1). lt=86400 caps it at one day.",
-    )
-
     # Phase 49 D-07: files whose joined FileMetadata.duration is at/above this threshold
     # are routed to a cloud compute agent (held in FileState.AWAITING_CLOUD) instead of the
     # on-prem file-server. The per-file router (Plan 02), backfill (Plan 03), and release
-    # cron (Plan 04) all compare against this single knob. Bounded (gt=0, lt=86400) like
-    # straggler_threshold_sec so an out-of-range operator value fails fast at startup (T-49-01)
-    # and never reaches the SQL `duration >= threshold` compare. Lives on ControlSettings
-    # because the control plane owns routing decisions.
+    # cron (Plan 04) all compare against this single knob. Bounded (gt=0, lt=86400) so an
+    # out-of-range operator value fails fast at startup (T-49-01) and never reaches the SQL
+    # `duration >= threshold` compare. Lives on ControlSettings because the control plane
+    # owns routing decisions.
     cloud_route_threshold_sec: int = Field(
         default=5400,
         gt=0,

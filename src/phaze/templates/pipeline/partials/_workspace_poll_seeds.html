@@ -79,15 +79,17 @@
    `cloud_cards=true` → these sinks are skipped so its real cards keep the ids (a duplicate id
    would steal the live swap).
 
-   phaze-tyt3: the Phase-44 #straggler-failed-card (Analysis Health -- straggler + terminal
-   analysis-failed counts, plus its bulk Retry control) sinks HERE now too, under the SAME gate
-   as the six cloud cards, instead of unconditionally in the block above. analyze_workspace.html
-   now mounts the REAL card (see that file), so on Analyze (cloud_cards=true) this sink is
-   skipped and the real card keeps the id; every other stage still needs the hidden sink or htmx
-   logs htmx:oobErrorNoTarget each 5s. #}
+   phaze-tyt3: the Phase-44 #analysis-health-card (Analysis Health -- terminal analysis-failed
+   count + the heartbeat-derived stalled subset, plus the failed tile's bulk Retry control)
+   sinks HERE now too, under the SAME gate as the six cloud cards, instead of unconditionally
+   in the block above. analyze_workspace.html now mounts the REAL card (see that file), so on
+   Analyze (cloud_cards=true) this sink is skipped and the real card keeps the id; every other
+   stage still needs the hidden sink or htmx logs htmx:oobErrorNoTarget each 5s. It used to
+   carry a STRAGGLER bucket (running-age guess) where STALLED (precise) now sits -- phaze-g84sk
+   swapped one for the other (see analysis_failed_card.html). #}
 {% if not workspace_has_cloud_cards %}
 <div class="hidden" aria-hidden="true">
-    <section id="straggler-failed-card"></section>
+    <section id="analysis-health-card"></section>
     <section id="admission-state-card"></section>
     <section id="inadmissible-card"></section>
     <section id="localqueue-card"></section>

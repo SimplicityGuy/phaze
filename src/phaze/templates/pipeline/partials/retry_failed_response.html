@@ -2,7 +2,7 @@
 
    Renders one of three branches from ints/bools ONLY (Jinja autoescape; no operator free-text,
    T-d79-04). It swaps into the button's #retry-failed-result span only -- it carries NO
-   hx-swap-oob id, so the 5s stats poll keeps re-pushing #straggler-failed-card untouched and the
+   hx-swap-oob id, so the 5s stats poll keeps re-pushing #analysis-health-card untouched and the
    red count drops on the next tick. #}
 {% if no_active_agent %}
 <span class="text-sm text-amber-600 dark:text-amber-400 font-medium">
