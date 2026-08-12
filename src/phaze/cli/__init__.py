@@ -1,12 +1,24 @@
 """`phaze` management CLI (stdlib argparse, no third-party dependency).
 
-Currently exposes a single command group:
+Command groups:
 
     phaze agents add --id <id> --name <name> --scan-roots /a,/b
+    phaze queue status --queue <name>
+    phaze backfill reenqueue-incomplete-analyses
 
 `agents add` mints a per-agent bearer token, inserts an `agents` row, and prints
 the cleartext token exactly once (it is NOT recoverable afterwards -- only the
 sha256 hash is persisted) alongside the derived `phaze-agent-<id>` queue name.
+
+`backfill reenqueue-incomplete-analyses` is the phaze-kj8dl one-time operator command: it
+re-enqueues every file whose prior analysis did not cover the whole file (the payoff step of the
+exhaustive-analysis decision, ADR-0007 section 7 / phaze-w55w1). It lives HERE, not under
+`scripts/` (a bare repo-tree script is never COPYed into the `api` image -- see
+`docs/runbook.md`'s "One-time exhaustive-analysis re-enqueue backfill" section for the full
+deployment ordering and the Dockerfile COPY list this depends on), so `docker compose exec api
+phaze backfill reenqueue-incomplete-analyses` actually works against a deployed container. All
+selection/routing logic lives in `phaze.services.reanalysis_backfill`; this module is a thin
+argparse + print wrapper, matching `agents add` / `queue status`'s own split.
 
 Design notes:
   - The token wire format and hashing are reused verbatim from the HTTP auth
@@ -26,10 +38,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections import Counter
 from pathlib import Path
 import re
 import secrets
 import sys
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import IntegrityError
@@ -39,7 +53,15 @@ from phaze.database import async_session
 from phaze.logging_config import configure_logging
 from phaze.models.agent import Agent
 from phaze.routers.agent_auth import hash_token
+from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.queue_introspection import ActiveJobBreakdown, summarize_active_jobs
+from phaze.services.reanalysis_backfill import (
+    ReanalysisOutcome,
+    compute_exit_code,
+    count_applied_incomplete_analyses_rows,
+    count_null_windows_columns_rows,
+    enqueue_incomplete_reanalysis,
+)
 
 
 if TYPE_CHECKING:
@@ -190,6 +212,25 @@ def _build_parser() -> argparse.ArgumentParser:
             "reason this override exists when it is not."
         ),
     )
+
+    # phaze-kj8dl: one-time operator backfill, see docs/runbook.md's "One-time exhaustive-analysis
+    # re-enqueue backfill" section for the full deployment ordering this command is step 4 of.
+    backfill_grp = subcommands.add_parser("backfill", help="One-time operator backfills.")
+    backfill_sub = backfill_grp.add_subparsers(dest="backfill_command", required=True)
+    backfill_sub.add_parser(
+        "reenqueue-incomplete-analyses",
+        help="Re-enqueue every file whose prior analysis did not cover the whole file (phaze-kj8dl).",
+        description=(
+            "Selects every file whose AnalysisResult windows coverage is incomplete "
+            "(fine_windows_analyzed < fine_windows_total OR the coarse equivalent -- never the "
+            "dropped 'sampled' column) and NOT already applied/moved, then routes each one: a file "
+            "already in the cloud pipeline is skipped, a long file (>= the duration threshold, cloud "
+            "enabled, not force-localed) is HELD for the bounded cloud drain, and everything else is "
+            "enqueued through the standard per-agent process_file funnel. Idempotent: safe to re-run. "
+            "See docs/runbook.md's phaze-kj8dl section for the full deployment ordering and the "
+            "per-outcome remediation guide."
+        ),
+    )
     return parser
 
 
@@ -208,6 +249,8 @@ def main(argv: list[str] | None = None) -> int:
     # AttributeError the moment a second group exists.
     if args.group == "queue":
         return _main_queue_status(args)
+    if args.group == "backfill":
+        return _main_backfill(args)
     return _main_agents_add(args)
 
 
@@ -230,6 +273,59 @@ async def _run_queue_status(queue_name: str, concurrency: int | None = None) -> 
     """Read the RUNNING vs CLAIMED-but-unrun vs STRANDED split for ``queue_name`` (phaze-grx3/o0n6)."""
     async with async_session() as session:
         return await summarize_active_jobs(session, queue_name, concurrency=concurrency)
+
+
+def _main_backfill(args: argparse.Namespace) -> int:
+    """Handle ``phaze backfill <command>``. Returns a process exit code."""
+    if args.backfill_command == "reenqueue-incomplete-analyses":
+        return asyncio.run(_run_reenqueue_incomplete_analyses())
+    msg = f"unhandled backfill command: {args.backfill_command!r}"  # pragma: no cover - exhaustive dispatch above
+    raise AssertionError(msg)  # pragma: no cover
+
+
+async def _run_reenqueue_incomplete_analyses() -> int:
+    """Run ``phaze backfill reenqueue-incomplete-analyses`` (phaze-kj8dl). Returns a process exit code.
+
+    Wires a database session + ``AgentTaskRouter`` the same way ``main.py``'s FastAPI lifespan does
+    (``process_file`` is an agent task, never a controller task, so the bare ``SimpleNamespace``
+    ``app_state`` needs only ``.task_router``), prints an auditable report, and returns
+    :func:`~phaze.services.reanalysis_backfill.compute_exit_code`'s verdict. All selection/routing
+    logic lives in ``phaze.services.reanalysis_backfill`` -- see its module docstring for the full
+    rationale, and ``docs/runbook.md``'s phaze-kj8dl section for the deployment ordering this command
+    is step 4 of.
+    """
+    settings = get_settings()
+    task_router = AgentTaskRouter(queue_url=settings.queue_url, cache_redis_url=settings.redis_url, ledger_sessionmaker=async_session)
+    app_state = SimpleNamespace(task_router=task_router)
+    try:
+        async with async_session() as session:
+            legacy_null_count = await count_null_windows_columns_rows(session)
+            print(
+                f"{legacy_null_count} pre-Phase-43 legacy row(s) with all windows columns NULL -- "
+                "deliberately SKIPPED (already exhaustive before caps existed; see "
+                "phaze.services.reanalysis_backfill module docstring for the recorded decision)"
+            )
+
+            moved_count = await count_applied_incomplete_analyses_rows(session)
+            print(
+                f"{moved_count} file(s) with incomplete prior coverage already executed/moved -- "
+                "deliberately SKIPPED (re-analysis at the recorded path would fail; see "
+                "phaze.services.reanalysis_backfill module docstring for the recorded decision)"
+            )
+
+            def _print_outcome(outcome: ReanalysisOutcome) -> None:
+                # Printed AS EACH OUTCOME HAPPENS (not batched until the run returns) so a partial
+                # run still leaves a durable, readable audit trail if something interrupts it.
+                print(f"  {outcome.file_id}  {outcome.outcome:<18}  {outcome.original_path}", flush=True)
+
+            outcomes = await enqueue_incomplete_reanalysis(session, app_state, on_outcome=_print_outcome)
+            print(f"{len(outcomes)} file(s) with incomplete prior analysis coverage routed")
+
+            tally = Counter(outcome.outcome for outcome in outcomes)
+            print("summary: " + " ".join(f"{key}={tally.get(key, 0)}" for key in sorted(tally)))
+    finally:
+        await task_router.close()
+    return compute_exit_code(outcomes)
 
 
 def _main_agents_add(args: argparse.Namespace) -> int:
