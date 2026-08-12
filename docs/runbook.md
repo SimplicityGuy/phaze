@@ -18,6 +18,9 @@ legacy `GET /pipeline/` 302-redirects there):
 - **[Removing fingerprint-era data (phaze-0jpe)](#removing-fingerprint-era-data-phaze-0jpe)** — a
   one-time, manual, post-deployment cleanup of the retired `audfprint`/Panako sidecars' on-host
   volumes and published images. Not part of routine operation.
+- **[One-time exhaustive-analysis re-enqueue backfill (phaze-kj8dl)](#one-time-exhaustive-analysis-re-enqueue-backfill-phaze-kj8dl)**
+  — a one-time, manual, post-deployment re-enqueue of every file whose prior analysis was capped
+  under the pre-exhaustive pipeline. Not part of routine operation.
 
 For the **config model** behind all of this — the `backends.toml` registry, the `[[backends]]` /
 `[[buckets]]` schema, and the trivial `cloud_target`→`backends` mapping — see
@@ -389,6 +392,140 @@ from any re-read, and phaze-2akf carried that allowlist into the on-demand `refr
 still holds on the facts. The operator's call was that a
 tracklist attributed to a retired engine is not worth keeping as a record.
 
+## One-time exhaustive-analysis re-enqueue backfill (phaze-kj8dl)
+
+> **Manual, operator-run, post-deployment only.** This is a one-time archive backfill, not an
+> automated step in any deploy pipeline. Run it once after the ordering below has completed;
+> re-running it later (e.g. after fixing a failed file) is safe and picks up whatever is still
+> incomplete.
+
+The exhaustive-analysis decision (ADR-0007 section 7, implemented by `phaze-w55w1`) removed the
+fine/coarse window caps: every file now gets every natural window of both tiers analyzed, not a
+strided subset. Files analyzed **before** that change have a partial analysis on record — every
+concert set past roughly 30/90 minutes was capped, not fully covered. This backfill re-enqueues
+exactly those files for a full re-analysis under the new, uncapped pipeline.
+
+`phaze backfill reenqueue-incomplete-analyses` (a `phaze.cli` command, alongside `agents add` /
+`queue status`) is the operator entry point; the selection query, the NULL-legacy-row decision, the
+already-executed/moved exclusion, the duration-based cloud routing, and the enqueue/classify loop
+all live in `phaze.services.reanalysis_backfill` (see that module's docstring for the full
+rationale). It is a `phaze.cli` command rather than a bare `scripts/` file specifically so it ships
+in the deployed `api` image: the Dockerfile's `COPY src/ src/` brings `src/phaze/cli/` along, but
+`scripts/` is never `COPY`ed at all — a bare script here would exist in the repo and NOWHERE the
+operator can actually run it. This section is the five-step deployment ordering that makes the
+command safe to run — it is a hard dependency, not just a suggestion: the command's selection
+deliberately never references the `analysis.sampled` column, because by the time it can run, that
+column is guaranteed to already be gone.
+
+### 1. Merge to main
+
+Both `phaze-w55w1` (removes the window caps, ships migration
+`060_drop_analysis_sampled.py`) and `phaze-kj8dl` (this backfill) merge to `main`. `phaze-kj8dl`
+depends on `phaze-w55w1`, so this is naturally satisfied by the dependency graph — call it out
+explicitly here because it is what makes step 3 below true.
+
+### 2. Cut a release and build/deploy images
+
+The CI `docker-publish` workflow (`.github/workflows/docker-publish.yml`, called from `ci.yml`)
+already builds and pushes the application-server image on every push to `main` — no separate
+manual build step is required. Pull the new tag and redeploy both compose stacks (Docker Compose
+on the home server): the application server (`docker-compose.yml`) and every file server
+(`docker-compose.agent.yml`). See [deployment.md](deployment.md) for the full compose topology and
+rollout mechanics.
+
+### 3. Startup migration runs BEFORE any operator action is possible
+
+The deployed `api` service runs `alembic upgrade head` at process startup
+(`phaze.database.run_migrations`, called from `main.py`'s FastAPI lifespan, gated by
+`PHAZE_AUTO_MIGRATE` — on by default). This is what drops `analysis.sampled`
+(migration `060`). Because that migration runs automatically and unconditionally at boot, the
+column is guaranteed absent in every environment where this script can even be invoked — which is
+exactly why `reanalysis_backfill`'s selection query is windows-columns-only and never references
+`sampled`: reading a dropped column would be a hard runtime error, not a style problem, at this
+point in the sequence.
+
+Confirm the migration applied before proceeding:
+
+```bash
+docker compose logs api | grep "schema at head"
+```
+
+### 4. Run the one-time command
+
+From the `api` (or `worker` — both build from the same `Dockerfile`, both have `DATABASE_URL` /
+`PHAZE_QUEUE_URL` / `PHAZE_REDIS_URL` wired) container:
+
+```bash
+docker compose exec api phaze backfill reenqueue-incomplete-analyses
+```
+
+The command prints, in order: the count of pre-Phase-43 legacy rows it is deliberately leaving
+alone (all four windows columns NULL — see the module docstring for why), the count of
+incomplete-coverage files it is deliberately leaving alone because they have already been
+executed/moved by the approval workflow (re-analysis at their recorded `original_path` would fail —
+see the module docstring's "already-executed/moved decision"), one line per routed file
+(`<file_id>  <outcome>  <original_path>`, flushed to stdout as each outcome happens so a partial run
+still leaves a readable audit trail), and a final summary tally. `<outcome>` is one of:
+
+| Outcome | Meaning |
+|---|---|
+| `queued` | A fresh `process_file` job was enqueued locally. |
+| `in_flight` | The deterministic key is already held by a live job (a prior run, or a concurrent trigger); nothing new was enqueued. |
+| `awaiting_cloud` | The file is long enough to route to cloud analysis (duration ≥ `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC`, cloud enabled, not force-localed) and was **held** for the bounded cloud drain — never enqueued locally (CLOUDROUTE-02: a held long file is never silently analyzed locally). |
+| `in_cloud_pipeline` | The file already carries an active `cloud_job` row; skipped without being routed again (the same double-dispatch guard the dashboard's pending-set query applies). |
+| `blocked` | The deterministic key is held by a DEAD job (`aborting`/`failed`/`aborted`, or a stale claimed row) — see **"blocked" remediation** below. |
+| `unknown` | The key collided but the diagnostic collision-classification probe itself failed; the file was **not** enqueued, but whether it is genuinely in-flight or blocked could not be determined this run. Safe to just re-run the command. |
+| `enqueue_error` | The enqueue call itself raised (a transient broker/pool error); unknown whether a job now exists for this file. Safe to just re-run the command. |
+| `no_active_agent` | The file's owning fileserver agent was offline at run time; never rerouted to a different agent. |
+
+Local candidates are enqueued **at once** — an explicit operator decision (no throttling/batching)
+— and drain under the existing lane concurrency caps over the following days; held long files drain
+under the existing `stage_cloud_window` bounded window.
+
+Exit code: **0** when there was genuinely nothing to do (no incomplete-coverage candidates) or at
+least one file made real progress (`queued` / `in_flight` / `awaiting_cloud` / `in_cloud_pipeline`).
+**Non-zero** when candidates existed but NONE of them could be productively routed — e.g. every
+owning agent was offline. Treat a non-zero exit from a monitor as worth investigating; a zero exit
+needs no operator action.
+
+#### "blocked" remediation
+
+`process_file` runs `timeout=0` (ADR-0007 section 8 / phaze-w55w1) — SAQ treats `timeout=0` as
+unbounded, so a `process_file` row stuck in `status='aborting'` or stranded `status='active'` is
+**excluded** from both automatic key reapers (`aborting_reaper` / `active_reaper`, both built on
+the shared `timeout <> 0` guard in `tasks/_saq_reap.py`) and will **not** self-heal on any timer.
+Manual remediation, mirroring the DELETE-not-transition precedent those reapers use (vacates the
+key entirely so the next enqueue is a plain INSERT, never Robert's 2026-07-19 approved manual
+cleanup redone by hand each time):
+
+```bash
+docker compose exec postgres psql -U phaze -d phaze -c \
+  "DELETE FROM saq_jobs WHERE key = 'process_file:<file-id>' AND status IN ('aborting', 'active', 'failed', 'aborted');"
+```
+
+**Never delete the matching `scheduling_ledger` row** — that is the durable "this file was
+scheduled" fact `recover_orphaned_work` replays from; deleting it (rather than just the `saq_jobs`
+row above) destroys the only record that the file was ever owed work. After clearing the key,
+re-run `phaze backfill reenqueue-incomplete-analyses` — the selection re-derives from the current
+`analysis` rows, so it is safe to run over an unrelated backlog too, and the now-vacated key lets
+this file re-queue cleanly.
+
+### 5. Watch the drain
+
+There is no dedicated dashboard for this backfill specifically; use the standard Analyze workspace
+lane cards and `phaze queue status --queue phaze-agent-<agent>-analyze` (see "Stranded `active` SAQ
+jobs" above for reading that output) to watch the `analyze` lane work through the queued jobs, and
+the Awaiting-cloud card / `phaze queue status` for held long files. A file re-analyzed through this
+path ends with `fine_windows_analyzed == fine_windows_total` and `coarse_windows_analyzed ==
+coarse_windows_total` on its `analysis` row once its job completes — the stale historical gap heals
+organically, row by row, as each re-run finishes; nothing zeroes the columns by hand.
+
+If the run reports any `no_active_agent` outcomes, no file server was reachable for those files'
+owning agent at run time. Bring that agent back online and re-run the command — it is idempotent
+(the selection re-derives from the current `analysis` rows, and SAQ's deterministic-key dedup makes
+a repeat enqueue of an already-queued file a clean no-op reported as `in_flight`) — no manual
+bookkeeping is needed to avoid double-enqueuing.
+
 ## See also
 
 - [configuration.md → Backend registry](configuration.md#backend-registry-backendstoml) — the
@@ -400,6 +537,8 @@ tracklist attributed to a retired engine is not worth keeping as a record.
 - [design/0002-fingerprint-removal.md](design/0002-fingerprint-removal.md) — the ADR for why
   audio fingerprinting was removed in full, including the evidence the volume-removal step above
   protects.
+- [design/0007-windowed-analysis.md](design/0007-windowed-analysis.md) — the ADR for removing the
+  fine/coarse window caps (ADR-0007 section 7), the decision the re-enqueue backfill above pays off.
 
 The removal epic's file-by-file inventory was deleted on 2026-07-29 once the removal was
 complete: ADR-0002 and the git history of epic phaze-0jpe are the record of what changed.
