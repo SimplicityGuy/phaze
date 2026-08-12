@@ -1,16 +1,27 @@
-{# Phase 44 (44-04): straggler + ANALYSIS_FAILED count card.
+{# Phase 44 (44-04): the Analysis Health card -- STALLED (amber) + ANALYSIS_FAILED (red) counts.
 
-   Two DISTINCT buckets (44-02 D-02), never merged into the linear stat bar:
-     - straggler_count       = long-running in-flight process_file jobs ("still grinding")
-     - analysis_failed_count = files terminally in ANALYSIS_FAILED ("gave up")
+   Originally TWO buckets: this ANALYSIS_FAILED tile plus a STRAGGLER tile (long-running
+   in-flight process_file jobs past a running-age threshold, "still grinding"). phaze-g84sk
+   removed the straggler tile: phaze-w55w1 (ADR-0007 §7) retired wall-clock analysis timeouts
+   for progress-heartbeat liveness, so running AGE stopped being a "stuck" proxy (a multi-hour
+   exhaustive analysis now legitimately crosses any such threshold while perfectly healthy).
+
+   Per operator follow-up (phaze-g84sk), the amber tile was NOT dropped outright -- it was
+   replaced with STALLED, a PRECISE count instead of the running-age guess. A heartbeat-stall
+   kill is a fact phaze-w55w1's watchdog already records: it is TERMINAL and lands in
+   ANALYSIS_FAILED with `error_message` composed as "timeout: <detail>"
+   (routers/agent_analysis.py::report_analysis_failed), distinguishable from a crashed child
+   ("crashed: ...") or any other terminal error ("error: ..."). STALLED is therefore a SUBSET
+   of ANALYSIS_FAILED (get_analysis_stalled_count), not a second live-job read and not a new
+   age comparison -- see the phaze-g84sk bead comment for the full writeup.
 
    Both counts arrive in the context from the Plan-02 degrade-safe service reads
-   (get_straggler_count / get_analysis_failed_count); a degraded read surfaces as 0, so the
-   card always renders a (possibly zero) number and NEVER raises (T-44-11). The values are
+   (get_analysis_stalled_count / get_analysis_failed_count); a degraded read surfaces as 0, so
+   the card always renders (possibly zero) numbers and NEVER raises (T-44-11). The values are
    plain ints rendered through Jinja autoescape -- no operator free-text is interpolated.
 
    phaze-tyt3: rendered inline in pipeline/partials/analyze_workspace.html on first load
-   (#straggler-failed-card lives OUTSIDE the #pipeline-stats poll target), then re-pushed by
+   (#analysis-health-card lives OUTSIDE the #pipeline-stats poll target), then re-pushed by
    stats_bar.html as an hx-swap-oob fragment on every 5s poll (oob=True) so the counts stay
    live without re-rendering the DAG buttons. Same id on both renders is the OOB contract. On
    every OTHER stage, _workspace_poll_seeds.html carries a hidden sink under this same id so
@@ -23,17 +34,19 @@
    invariant is that every included partial degrades an Undefined value via truthy `{% if %}`
    rather than a comparison, since Jinja's default Undefined raises on `>` but not on a bare
    boolean test. `analysis_failed_count > 0` broke that invariant; `{% if analysis_failed_count %}`
-   is equivalent for the real (non-negative int) values every live caller supplies. #}
-<section id="straggler-failed-card"
-         aria-labelledby="straggler-failed-heading"
+   is equivalent for the real (non-negative int) values every live caller supplies. Bare
+   `{{ analysis_stalled_count }}` interpolation needs no such guard (Undefined stringifies to ""). #}
+<section id="analysis-health-card"
+         aria-labelledby="analysis-health-heading"
          {% if oob %}hx-swap-oob="true"{% endif %}
          class="border border-gray-200 dark:border-phaze-border rounded-lg p-4 space-y-3">
-    <h2 id="straggler-failed-heading" class="text-lg font-semibold">Analysis Health</h2>
+    <h2 id="analysis-health-heading" class="text-lg font-semibold">Analysis Health</h2>
     <div class="grid grid-cols-2 gap-4">
-        <div class="bg-amber-50 dark:bg-amber-950 rounded-lg p-4 text-center">
-            <p class="text-2xl font-bold text-amber-700 dark:text-amber-400">{{ straggler_count }}</p>
-            <p class="text-sm text-amber-600 dark:text-amber-400">Stragglers</p>
-            <p class="text-xs text-amber-500 dark:text-amber-500 mt-1">still grinding (long-running)</p>
+        <div class="bg-amber-50 dark:bg-amber-950 rounded-lg p-4 text-center"
+             title="Killed by the heartbeat watchdog: no analysis progress was reported for the configured stall window (analysis_stall_timeout_sec). A subset of Analysis failed, not a separate still-running gauge.">
+            <p class="text-2xl font-bold text-amber-700 dark:text-amber-400">{{ analysis_stalled_count }}</p>
+            <p class="text-sm text-amber-600 dark:text-amber-400">Stalled</p>
+            <p class="text-xs text-amber-500 dark:text-amber-500 mt-1">no progress (heartbeat killed)</p>
         </div>
         <div class="bg-red-50 dark:bg-red-950 rounded-lg p-4 text-center">
             <p class="text-2xl font-bold text-red-700 dark:text-red-400">{{ analysis_failed_count }}</p>

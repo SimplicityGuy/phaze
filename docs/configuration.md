@@ -396,12 +396,6 @@ LLM itself doesn't return a usable date.
 | `DISCOGSOGRAPHY_URL`        | No       | `http://discogsography:8000`  | Discogsography service endpoint.     |
 | `DISCOGS_MATCH_CONCURRENCY` | No       | `5`                           | Concurrent Discogs match tasks.      |
 
-### Pipeline dashboard settings
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `PHAZE_STRAGGLER_THRESHOLD_SEC` (or `straggler_threshold_sec`) | No | `6600` | Running-age threshold (seconds) above which an in-flight `process_file` analyze job is flagged a **straggler** on the pipeline dashboard (Phase 44) — still grinding, distinct from `ANALYSIS_FAILED` which gave up. **Display only** — it kills nothing. Its 6600 default used to mirror the (removed) `analysis_inner_timeout_sec`; since phaze-w55w1 a multi-hour exhaustive analysis will legitimately cross it and still be perfectly healthy, so raise it if the dashboard gets noisy and never read a flagged job as stuck (`analysis_stall_timeout_sec` is the knob that decides stuck). Bounded `gt=0, lt=86400`. |
-
 ## Agent role settings (`PHAZE_ROLE=agent`)
 
 These fields exist only on `AgentSettings` (the file server). When `PHAZE_ROLE=agent`, a model validator fails fast at startup if any **required** field is missing.
