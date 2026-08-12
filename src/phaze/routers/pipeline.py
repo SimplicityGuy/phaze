@@ -90,7 +90,6 @@ from phaze.services.pipeline import (
     get_stage_busy_counts,
     get_stage_controls,
     get_stage_progress,
-    get_straggler_count,
     get_tracklist_sets_page,
     queue_progress_percent,
 )
@@ -880,18 +879,21 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # stage_progress is passed through so _build_dag_context reuses the same read (no 2nd query).
     dag_ctx = await _build_dag_context(app_state, session, activity, stage_progress)
 
-    # Phase 44 (44-04): the STRAGGLER count (long-running in-flight process_file jobs,
-    # "still grinding") and the ANALYSIS_FAILED count ("gave up") -- two distinct buckets
-    # (44-02 D-02). Both reads are degrade-safe (the Plan-02 services own the never-500
-    # SAVEPOINT/_safe_count degrade and return 0 on any DB error), so NO try/except is added
-    # here -- same service-owns-degrade wiring idiom as the busy counts above (175-178).
-    straggler_count = await get_straggler_count(session, settings.straggler_threshold_sec)
+    # Phase 44 (44-04): the ANALYSIS_FAILED count ("gave up") -- the Analysis Health card's
+    # remaining bucket (44-02 D-02). The Phase 44 STRAGGLER count (long-running in-flight
+    # process_file jobs) was removed by phaze-g84sk: phaze-w55w1's stall watchdog now turns a
+    # genuinely wedged job into an ANALYSIS_FAILED row (reason="timeout") before any dashboard
+    # poll could observe it as "still running", and a healthy long analysis is no longer
+    # distinguishable from a stuck one by running age. The read is degrade-safe (the Plan-02
+    # service owns the never-500 _safe_count degrade and returns 0 on any DB error), so NO
+    # try/except is added here -- same service-owns-degrade wiring idiom as the busy counts
+    # above (175-178).
     analysis_failed_count = await get_analysis_failed_count(session)
 
     # Phase 49 (49-02, D-05): the "Awaiting cloud" held-file count -- long files held back
     # because no compute agent was online when analysis routed them. get_awaiting_cloud_count
     # owns the never-500 _safe_count degrade (returns 0 on any DB error), so NO try/except is
-    # added here -- same service-owns-degrade wiring idiom as the straggler/failed counts above.
+    # added here -- same service-owns-degrade wiring idiom as the analysis-failed count above.
     awaiting_cloud_count = await get_awaiting_cloud_count(session)
 
     # Phase 50 (50-07, D-09; re-seamed phaze-zyoag): the two bounded cloud-window count cards --
@@ -970,7 +972,6 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
         "settings_batch_size": settings.llm_batch_size,
         "agents": agents,
         "recent_scans": recent_scans_rows,
-        "straggler_count": straggler_count,
         "analysis_failed_count": analysis_failed_count,
         "awaiting_cloud_count": awaiting_cloud_count,
         "awaiting_hold_reason": awaiting_hold_reason,
@@ -1055,7 +1056,6 @@ async def pipeline_stats_partial(
     fanout = _stats_fanout()
     (
         activity,
-        straggler_count,
         analysis_failed_count,
         awaiting_cloud_count,
         pushing_count,
@@ -1068,7 +1068,7 @@ async def pipeline_stats_partial(
         # mypy (mirrors the identical cast in services/pipeline.py:get_stage_progress) -- pin the
         # exact per-read tuple shape with a single cast.
     ) = cast(
-        "tuple[dict[str, int], int, int, int, int, int, int, dict[str, int], list[dict[str, Any]], str]",
+        "tuple[dict[str, int], int, int, int, int, int, dict[str, int], list[dict[str, Any]], str]",
         await asyncio.gather(
             # Phase 34: surface live queue depth through the EXISTING 5s poll (no new loop).
             # get_queue_activity degrades to zeros on a Redis hiccup / missing app.state, so the
@@ -1080,14 +1080,14 @@ async def pipeline_stats_partial(
                 lambda s: get_queue_activity(request.app.state, s),
                 {"agent_queued": 0, "agent_active": 0, "controller_queued": 0, "controller_active": 0, "agent_busy": 0, "controller_busy": 0},
             ),
-            # Phase 44 (44-04): the same straggler + ANALYSIS_FAILED buckets the dashboard seeds,
-            # re-pushed on every 5s poll so the straggler_failed_card stays live. Degrade-safe at the
-            # service layer (44-02), so NO router try/except -- mirrors the dashboard() wiring.
-            _read_in_own_session(fanout, lambda s: get_straggler_count(s, settings.straggler_threshold_sec), 0),
+            # Phase 44 (44-04): the same ANALYSIS_FAILED bucket the dashboard seeds, re-pushed on
+            # every 5s poll so the Analysis Health card stays live. The STRAGGLER bucket this used
+            # to ride alongside was removed by phaze-g84sk (see services/pipeline.py). Degrade-safe
+            # at the service layer (44-02), so NO router try/except -- mirrors the dashboard() wiring.
             _read_in_own_session(fanout, lambda s: get_analysis_failed_count(s), 0),
             # Phase 49 (49-02, D-05): the same AWAITING_CLOUD held count the dashboard seeds, re-pushed
             # on every 5s poll so the awaiting_cloud_card stays live via its OOB swap. Degrade-safe at the
-            # service layer (Plan 01), so NO router try/except -- mirrors the straggler/failed wiring.
+            # service layer (Plan 01), so NO router try/except -- mirrors the analysis-failed wiring.
             _read_in_own_session(fanout, lambda s: get_awaiting_cloud_count(s), 0),
             # Phase 50 (50-07, D-09): the same PUSHING/PUSHED window counts the dashboard seeds, re-pushed
             # on every 5s poll so the staged_pushing_card / analyzing_cloud_card stay live via their OOB
@@ -1153,7 +1153,6 @@ async def pipeline_stats_partial(
             "stats": stats,
             "settings_batch_size": settings.llm_batch_size,
             "oob_counts": True,
-            "straggler_count": straggler_count,
             "analysis_failed_count": analysis_failed_count,
             "awaiting_cloud_count": awaiting_cloud_count,
             "awaiting_hold_reason": awaiting_hold_reason,

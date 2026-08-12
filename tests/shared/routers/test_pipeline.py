@@ -1779,7 +1779,7 @@ async def test_retry_button_renders_only_when_count_positive(client: AsyncClient
     """The "Retry failed" button appears in the Analysis Health card ONLY when analysis_failed_count > 0.
 
     Rendered via the existing 5s /pipeline/stats poll (which seeds analysis_failed_count into the
-    straggler_failed_card). With no ANALYSIS_FAILED files the button + endpoint reference are absent;
+    analysis_failed_card). With no ANALYSIS_FAILED files the button + endpoint reference are absent;
     with >0 the hx-post + hx-confirm are present.
     """
     # count == 0: no button, no endpoint reference.
@@ -3017,24 +3017,26 @@ async def test_dashboard_seeds_busy_on_first_load(client: AsyncClient, session: 
 
 
 # ---------------------------------------------------------------------------
-# Phase 44 Plan 04 Task 1: straggler + ANALYSIS_FAILED counts on the dashboard
+# Phase 44 Plan 04 Task 1: the ANALYSIS_FAILED count on the dashboard
 #
-# The two counts ride the EXISTING 5s /pipeline/stats poll context (seeded into
-# BOTH dashboard() and pipeline_stats_partial()), sourced from the Plan-02
-# degrade-safe service reads (get_straggler_count / get_analysis_failed_count).
-# The straggler_failed_card renders both buckets; it is re-pushed hx-swap-oob on
-# every poll so the counts stay live without re-rendering the DAG buttons.
+# The count rides the EXISTING 5s /pipeline/stats poll context (seeded into BOTH dashboard()
+# and pipeline_stats_partial()), sourced from the Plan-02 degrade-safe service read
+# (get_analysis_failed_count). The analysis_failed_card renders it; it is re-pushed
+# hx-swap-oob on every poll so the count stays live without re-rendering the DAG buttons.
+#
+# This card originally carried a SECOND bucket -- a straggler count of long-running in-flight
+# process_file jobs -- removed by phaze-g84sk once phaze-w55w1's heartbeat-stall watchdog made
+# running age meaningless as a "stuck" proxy (a genuine stall now lands in ANALYSIS_FAILED
+# itself, reason="timeout").
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_dashboard_renders_straggler_failed_card(client: AsyncClient) -> None:
-    """GET /pipeline/ renders the straggler/ANALYSIS_FAILED card with both buckets (zero by default)."""
+async def test_dashboard_renders_analysis_health_card(client: AsyncClient) -> None:
+    """GET /pipeline/ renders the Analysis Health card with the ANALYSIS_FAILED bucket (zero by default)."""
     response = await client.get("/pipeline/stats", headers={"HX-Request": "true"})
     assert response.status_code == 200
-    # Card present with its two distinct buckets (44-02 D-02).
-    assert 'id="straggler-failed-card"' in response.text
-    assert "Stragglers" in response.text
+    assert 'id="analysis-health-card"' in response.text
     assert "Analysis failed" in response.text
 
 
@@ -3050,43 +3052,28 @@ async def test_dashboard_seeds_analysis_failed_count(client: AsyncClient, sessio
     # The count value reaches the card (degrade-safe service returns the real count).
     import re
 
-    card = re.search(r'id="straggler-failed-card".*', response.text, re.DOTALL)
+    card = re.search(r'id="analysis-health-card".*', response.text, re.DOTALL)
     assert card is not None
     assert ">3<" in card.group(0)
 
 
 @pytest.mark.asyncio
 async def test_stats_partial_seeds_counts_and_oob_card(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /pipeline/stats re-pushes the straggler/failed card out-of-band on the 5s poll.
+    """GET /pipeline/stats re-pushes the Analysis Health card out-of-band on the 5s poll.
 
-    The stats partial seeds straggler_count + analysis_failed_count into context and emits the
-    card with hx-swap-oob="true" (it lives outside #pipeline-stats, so the innerHTML swap can
-    never reach it). A seeded ANALYSIS_FAILED file proves the failed count rides the poll.
+    The stats partial seeds analysis_failed_count into context and emits the card with
+    hx-swap-oob="true" (it lives outside #pipeline-stats, so the innerHTML swap can never
+    reach it). A seeded ANALYSIS_FAILED file proves the failed count rides the poll.
     """
     await _seed_analysis_failed(session, 2)
 
     response = await client.get("/pipeline/stats")
     assert response.status_code == 200
     # OOB card re-render on the poll tick.
-    assert 'id="straggler-failed-card"' in response.text
+    assert 'id="analysis-health-card"' in response.text
     assert 'hx-swap-oob="true"' in response.text
-    # Both buckets present; the seeded failed count (2) rides the poll context.
-    assert "Stragglers" in response.text
+    # The seeded failed count (2) rides the poll context.
     assert "Analysis failed" in response.text
-
-
-@pytest.mark.asyncio
-async def test_dashboard_straggler_count_zero_when_no_stragglers(client: AsyncClient) -> None:
-    """With no in-flight process_file jobs, the straggler bucket renders 0 (degrade-safe, never 500)."""
-    response = await client.get("/pipeline/stats", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    import re
-
-    card = re.search(r'id="straggler-failed-card".*?</section>', response.text, re.DOTALL)
-    assert card is not None
-    # The amber stragglers panel reads 0 (no saq_jobs seeded).
-    assert "Stragglers" in card.group(0)
-    assert ">0<" in card.group(0)
 
 
 def test_queue_progress_percent_formula() -> None:

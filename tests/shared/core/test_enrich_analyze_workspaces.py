@@ -208,7 +208,7 @@ async def test_shell_store_seeds_phase58_keys(client: AsyncClient) -> None:
 async def test_shell_sinks_legacy_oob_fragments(client: AsyncClient) -> None:
     """WORK-05 -- the shell carries a target for every OOB fragment the shared poll re-emits.
 
-    ``stats_bar.html`` re-renders the Phase-44 ``#straggler-failed-card`` out-of-band on every
+    ``stats_bar.html`` re-renders the Phase-44 ``#analysis-health-card`` out-of-band on every
     ``/pipeline/stats`` tick. The v7.0 shell has no Analysis Health surface (Phase 61 owns
     observability), but once 58-01 wired the shared poll the card arrives each tick; without a
     landing target htmx logs ``htmx:oobErrorNoTarget`` every 5s. The seed host provides a hidden
@@ -216,7 +216,7 @@ async def test_shell_sinks_legacy_oob_fragments(client: AsyncClient) -> None:
     """
     shell = await client.get("/")
     assert shell.status_code == 200
-    assert 'id="straggler-failed-card"' in shell.text, "shell must carry a sink for the legacy straggler-failed-card OOB fragment"
+    assert 'id="analysis-health-card"' in shell.text, "shell must carry a sink for the legacy analysis-health-card OOB fragment"
 
 
 @pytest.mark.asyncio
@@ -266,13 +266,13 @@ async def test_workspaces_sink_analyze_lanes_oob_grid(client: AsyncClient) -> No
 
 @pytest.mark.asyncio
 async def test_analyze_workspace_hosts_the_real_analysis_health_card(client: AsyncClient, session: AsyncSession) -> None:
-    """Regression (phaze-tyt3): the Analyze workspace mounts a VISIBLE #straggler-failed-card host.
+    """Regression (phaze-tyt3): the Analyze workspace mounts a VISIBLE #analysis-health-card host.
 
     Before the fix, EVERY stage (including Analyze) sank this OOB-emitted card into a `hidden
-    aria-hidden` div, so the aggregate straggler + terminal analysis-failed counts were invisible
-    everywhere. With at least one file seeded (so Analyze renders the real workspace, not the
-    empty-state guide), the card must render for real: not hidden, carrying its live counts and
-    heading, exactly once, and the bulk Retry control gated on a non-zero failed count.
+    aria-hidden` div, so the terminal analysis-failed count was invisible everywhere. With at
+    least one file seeded (so Analyze renders the real workspace, not the empty-state guide),
+    the card must render for real: not hidden, carrying its live count and heading, exactly
+    once, and the bulk Retry control gated on a non-zero failed count.
     """
     file = await _seed_file(session)
     await _seed_analysis(session, file.id, None, None, completed=False)
@@ -284,8 +284,8 @@ async def test_analyze_workspace_hosts_the_real_analysis_health_card(client: Asy
     assert frag.status_code == 200
     body = frag.text
 
-    assert body.count('id="straggler-failed-card"') == 1, "exactly one Analysis Health card"
-    card = body.split('id="straggler-failed-card"')[1].split("</section>")[0]
+    assert body.count('id="analysis-health-card"') == 1, "exactly one Analysis Health card"
+    card = body.split('id="analysis-health-card"')[1].split("</section>")[0]
     assert "Analysis Health" in body
     assert "Analysis failed" in body
     assert "1" in card, "the seeded terminal failure must be counted"
@@ -298,7 +298,7 @@ async def test_analyze_workspace_hosts_the_real_analysis_health_card(client: Asy
     hidden_wrapper_ids = []
     for chunk in body.split('<div class="hidden" aria-hidden="true">')[1:]:
         hidden_wrapper_ids.append(chunk.split("</div>")[0])
-    assert not any("straggler-failed-card" in chunk for chunk in hidden_wrapper_ids), (
+    assert not any("analysis-health-card" in chunk for chunk in hidden_wrapper_ids), (
         "the real card must not also be sunk into a hidden wrapper on Analyze"
     )
 
@@ -323,7 +323,7 @@ async def test_analysis_health_card_hosts_the_backfill_to_cloud_trigger(client: 
     frag = await client.get("/s/analyze", headers={"HX-Request": "true"})
     assert frag.status_code == 200
     body = frag.text
-    card = body.split('id="straggler-failed-card"')[1].split("</section>")[0]
+    card = body.split('id="analysis-health-card"')[1].split("</section>")[0]
 
     assert 'hx-post="/pipeline/backfill-cloud"' in card
     assert "Backfill to cloud" in card
@@ -339,7 +339,7 @@ async def test_other_workspaces_still_sink_the_analysis_health_card_hidden(clien
     """Regression (phaze-tyt3): every OTHER stage still needs the hidden OOB sink.
 
     Only Analyze renders the real card; the other enrich-rail stages must still carry the
-    hidden `#straggler-failed-card` sink (gated the same way as the six cloud cards) or the
+    hidden `#analysis-health-card` sink (gated the same way as the six cloud cards) or the
     shared 5s poll's OOB re-push logs `htmx:oobErrorNoTarget`.
 
     phaze-0jpe: `fingerprint` was dropped from this sweep with the stage itself -- `/s/fingerprint`
@@ -350,7 +350,7 @@ async def test_other_workspaces_still_sink_the_analysis_health_card_hidden(clien
         frag = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
         assert frag.status_code == 200
         body = frag.text
-        assert body.count('id="straggler-failed-card"') == 1, f"{stage} fragment must have exactly one sink"
+        assert body.count('id="analysis-health-card"') == 1, f"{stage} fragment must have exactly one sink"
         # It must be the hidden sink, not a visible card: no "Analysis Health" heading text.
         assert "Analysis Health" not in body, f"{stage} must not render the real (visible) card"
 
