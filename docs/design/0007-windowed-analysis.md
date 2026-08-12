@@ -416,14 +416,30 @@ also catches files with per-window decode failures), which for a one-time re-enq
 **The re-run itself is bead `phaze-kj8dl`** — the sanctioned one-time re-enqueue script and its
 deploy runbook — and this change must ship in the same release as that script's availability.
 
-**Still owed: follow-up 3.** The bounded-memory proof above is synthetic (mocked essentia,
-touched buffers, forked per-duration measurement). A real peak-RSS / wall-clock measurement on a
-genuine multi-hour file, in the style of `phaze-esut` / `phaze-rc1q` / `phaze-5lop`, has **not**
-been taken. Two things specifically remain unmeasured on real hardware: whether the chunk-decode
-gate (`_decode_windows_streaming`'s `stop_at_sec`) actually stops the loader early on the
-deployed essentia, and what the real end-to-end wall clock of an exhaustive multi-hour analysis
-is. Neither can regress correctness — the gate falls back to an ungated pass, and nothing is
-killed for running long — but both are load-bearing for lane scheduling and pod sizing.
+**Follow-up 3 is DISCHARGED, and it did not confirm this section.** `phaze-b2qs9`
+([report](../spikes/phaze-b2qs9-exhaustive-analysis-measurement.md)) took the measurement on vox,
+on this code, on a duration-stratified sample of **real corpus audio** from 1:00 to 12:04. The
+synthetic proof above measured the right *quantity* on the wrong *scope*, and the difference is
+the whole finding:
+
+| claim in this section | measured |
+| --- | --- |
+| peak PCM is ~317 MB (fine) / ~345 MB (coarse) **independent of duration** | true of the **live PCM**, false of the **process**. Whole-process peak RSS is **linear in duration**: `peak_after_fine_tier ≈ 0.7634 + 0.3108 × n_fine_chunks` GiB (R² 0.99959, 25 chunk boundaries, 4 files), i.e. **+0.31 GiB per 30 minutes of audio**, with no saturation over a 12× span |
+| "ADR-0005's memory limits stay valid across the removal" | **they do not.** Measured whole-process peak: **2.1107** GiB at 1:00, **2.9287** at 2:00, **4.1854** at 4:00, **5.5211** at 5:38, **10.2768** at 12:04 — the last three are **over** the deployed `memory_limit: 4Gi`, the last by **2.57x**. Every file past roughly 3 hours is an `OOMKilled` pod, which both lanes map to a terminal, un-retried failure |
+| the chunk gate takes decode from `K × duration` to `duration × (K+1)/2` | the gate **is** taken on the deployed essentia (zero fallbacks, correct output) and **is** worth 18.5–27% of a non-final chunk's decode in a controlled fresh-process A/B — but per-chunk decode wall clock is **not** proportional to the chunk boundary, so that arithmetic does not describe wall clock |
+| `test_analysis_long_file.py` proves "peak RSS moves less than 25 MB between a 2-hour and a 12-hour file" | it proves that of a **mocked** essentia. On real essentia the same comparison moves **gigabytes** |
+
+The wall-clock half of the ask is answered and is usable: end-to-end exhaustive analysis runs at
+**0.56–0.79× the file's own duration** on this node, one file at a time, and the longest healthy
+heartbeat gap observed rises with duration (105.762 s at 1:00 → 565.256 s at 4:00 against a
+1 800 s stall threshold).
+
+**None of this regresses correctness** — coverage was exhaustive and complete in every run
+(`analyzed == total`, zero skips, on all seven files) — but the memory result invalidates the
+condition §7 attached to accepting §3's cost profile. The spike files nothing and fixes nothing;
+its §7 proposes the follow-ups, headed by the peak-RSS growth and a re-opening of ADR-0005's
+"peak is uncorrelated with duration" premise, which was true of the pre-`w55w1` pipeline and is
+false of this one.
 
 ______________________________________________________________________
 
