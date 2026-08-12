@@ -138,16 +138,19 @@
         </section>
     </div>
 
-    {# (b3) phaze-tyt3: the Phase-44 Analysis Health card (terminal analysis-failed count, plus
-       its gated bulk Retry control) -- the v7.0 shell's first real host for it. It used to be
-       OOB-emitted every 5s by stats_bar.html into a hidden `_workspace_poll_seeds.html` sink on
-       every stage (Phase 61 observability was deferred and never landed a surface), so the count
-       and the Retry button were invisible everywhere. It also used to carry a second STRAGGLER
-       bucket, removed by phaze-g84sk (see analysis_failed_card.html). `analysis_failed_count`
-       already rides the Analyze context via build_dashboard_context, so no new read is added --
-       only a real, visible target for the swap that was already firing. `oob` is unset here
-       (this IS the initial render); the poll's OOB re-push (oob=True) then lands on this same id
-       every 5s, exactly like the four cloud-state cards above. #}
+    {# (b3) phaze-tyt3: the Phase-44 Analysis Health card (terminal analysis-failed count +
+       the heartbeat-derived stalled subset, plus the failed tile's gated bulk Retry control)
+       -- the v7.0 shell's first real host for it. It used to be OOB-emitted every 5s by
+       stats_bar.html into a hidden `_workspace_poll_seeds.html` sink on every stage (Phase 61
+       observability was deferred and never landed a surface), so the counts and the Retry
+       button were invisible everywhere. It used to carry a STRAGGLER bucket (running-age
+       guess) in place of the current STALLED bucket (precise, heartbeat-derived) --
+       phaze-g84sk swapped one for the other (see analysis_failed_card.html).
+       `analysis_failed_count` / `analysis_stalled_count` already ride the Analyze context via
+       build_dashboard_context, so no new read is added -- only a real, visible target for the
+       swap that was already firing. `oob` is unset here (this IS the initial render); the
+       poll's OOB re-push (oob=True) then lands on this same id every 5s, exactly like the
+       four cloud-state cards above. #}
     <div class="px-6 pb-6">
         {% include "pipeline/partials/analysis_failed_card.html" %}
     </div>

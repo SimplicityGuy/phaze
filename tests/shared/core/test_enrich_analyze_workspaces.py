@@ -271,13 +271,16 @@ async def test_analyze_workspace_hosts_the_real_analysis_health_card(client: Asy
     Before the fix, EVERY stage (including Analyze) sank this OOB-emitted card into a `hidden
     aria-hidden` div, so the terminal analysis-failed count was invisible everywhere. With at
     least one file seeded (so Analyze renders the real workspace, not the empty-state guide),
-    the card must render for real: not hidden, carrying its live count and heading, exactly
-    once, and the bulk Retry control gated on a non-zero failed count.
+    the card must render for real: not hidden, carrying its live counts (Analysis failed +
+    Stalled, phaze-g84sk) and heading, exactly once, and the bulk Retry control gated on a
+    non-zero failed count.
     """
     file = await _seed_file(session)
     await _seed_analysis(session, file.id, None, None, completed=False)
     failed = await _seed_file(session, original_filename="terminal.mp3")
-    session.add(AnalysisResult(id=uuid.uuid4(), file_id=failed.id, failed_at=datetime.now(UTC), error_message="boom", analysis_completed_at=None))
+    session.add(
+        AnalysisResult(id=uuid.uuid4(), file_id=failed.id, failed_at=datetime.now(UTC), error_message="crashed: boom", analysis_completed_at=None)
+    )
     await session.commit()
 
     frag = await client.get("/s/analyze", headers={"HX-Request": "true"})
@@ -288,7 +291,9 @@ async def test_analyze_workspace_hosts_the_real_analysis_health_card(client: Asy
     card = body.split('id="analysis-health-card"')[1].split("</section>")[0]
     assert "Analysis Health" in body
     assert "Analysis failed" in body
+    assert "Stalled" in body
     assert "1" in card, "the seeded terminal failure must be counted"
+    assert "0" in card, "the seeded failure was crashed, not stalled -- the Stalled tile reads 0"
     # The bulk retry control is gated on analysis_failed_count > 0 -- it must render for real here.
     assert 'hx-post="/pipeline/analysis-failed/retry"' in card
     assert "Retry failed" in card

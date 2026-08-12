@@ -32,6 +32,7 @@ from phaze.services.pipeline import (
     get_agent_reconciliations,
     get_analysis_failed_count,
     get_analysis_failed_files,
+    get_analysis_stalled_count,
     get_analyze_files_page,
     get_analyze_working_set,
     get_awaiting_cloud_count,
@@ -77,14 +78,18 @@ def _failed_file(i: int) -> FileRecord:
     )
 
 
-def _failed_analysis_for(file_id: uuid.UUID) -> AnalysisResult:
+def _failed_analysis_for(file_id: uuid.UUID, error_message: str = "boom") -> AnalysisResult:
     """Build an analyze-FAILURE marker (analysis row, ``failed_at`` set) for ``file_id`` (Phase 90 D-09).
 
     This is the DERIVED source the cutover reads via ``failed_clause(Stage.ANALYZE)`` -- an
     ``analysis`` row whose ``failed_at`` is non-NULL. Distinct from a completed row (``failed_at``
     NULL, ``analysis_completed_at`` set); the XOR CHECK forbids both being set.
+
+    ``error_message`` defaults to a generic detail (crashed/error shape). Pass the real
+    ``"timeout: <detail>"`` prefix (``routers/agent_analysis.py::report_analysis_failed``'s
+    composed format) to seed a heartbeat-STALLED marker for :func:`get_analysis_stalled_count`.
     """
-    return AnalysisResult(id=uuid.uuid4(), file_id=file_id, failed_at=datetime.now(UTC), error_message="boom")
+    return AnalysisResult(id=uuid.uuid4(), file_id=file_id, failed_at=datetime.now(UTC), error_message=error_message)
 
 
 def _completed_analysis_for(file_id: uuid.UUID, fine_done: int | None = None, fine_total: int | None = None) -> AnalysisResult:
@@ -149,6 +154,67 @@ async def test_get_analysis_failed_count_degrades_to_zero_on_db_error() -> None:
             raise RuntimeError("files table unavailable")
 
     assert await get_analysis_failed_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# STALLED bucket (Phase 44, D-02 follow-up; phaze-g84sk) -- a heartbeat-derived SUBSET of
+# ANALYSIS_FAILED, replacing the removed running-age STRAGGLER bucket.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_analysis_stalled_count_counts_only_timeout_reason(session: AsyncSession) -> None:
+    """Counts only ANALYSIS_FAILED files whose error_message carries the "timeout: " reason prefix.
+
+    Mirrors report_analysis_failed's composed detail (routers/agent_analysis.py):
+    `f"{body.reason}: {body.error}"` for `body.reason` in {"timeout", "crashed", "error"}. A
+    stalled kill is the ONLY reason that should count here; crashed/error and a done file must not.
+    """
+    stalled, crashed, errored, done = _failed_file(0), _failed_file(1), _failed_file(2), _failed_file(3)
+    session.add_all([stalled, crashed, errored, done])
+    await session.flush()
+    session.add_all(
+        [
+            _failed_analysis_for(stalled.id, error_message="timeout: no progress for 1800s (last stage: coarse window 12/40)"),
+            _failed_analysis_for(crashed.id, error_message="crashed: essentia child exited 139"),
+            _failed_analysis_for(errored.id, error_message="error: unexpected exception"),
+            _completed_analysis_for(done.id),
+        ]
+    )
+    await session.commit()
+    assert await get_analysis_stalled_count(session) == 1
+    # The stalled file is still counted in the broader ANALYSIS_FAILED bucket (subset, not a
+    # separate live-job read) -- STALLED never exceeds FAILED.
+    assert await get_analysis_failed_count(session) == 3
+
+
+@pytest.mark.asyncio
+async def test_get_analysis_stalled_count_zero_when_no_stalls(session: AsyncSession) -> None:
+    """With only non-stall failures (or none at all) the stalled count is 0, not an error."""
+    crashed = _failed_file(0)
+    session.add(crashed)
+    await session.flush()
+    session.add(_failed_analysis_for(crashed.id, error_message="crashed: boom"))
+    await session.commit()
+    assert await get_analysis_stalled_count(session) == 0
+
+
+@pytest.mark.asyncio
+async def test_get_analysis_stalled_count_degrades_to_zero_on_db_error() -> None:
+    """A forced read error degrades the count to 0 (poll-safe via _safe_count), never raising.
+
+    Mirrors test_get_analysis_failed_count_degrades_to_zero_on_db_error -- the hot 5s
+    /pipeline/stats poll must keep serving instead of 500ing when the read fails.
+    """
+
+    class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("files table unavailable")
+
+    assert await get_analysis_stalled_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio

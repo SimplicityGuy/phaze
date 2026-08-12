@@ -70,11 +70,13 @@
 {% for key, value in dag.items() %}
 <p id="dag-seed-{{ key }}" hx-swap-oob="true" x-init="$store.pipeline.{{ key }} = {{ value }}" class="hidden"></p>
 {% endfor %}
-{# Phase 44 (44-04): re-render the ANALYSIS_FAILED card OUT-OF-BAND on the same 5s tick (it
-   lives outside #pipeline-stats, so the innerHTML swap never reaches it). Same id
-   (#analysis-health-card) is the OOB contract; oob=True flips the partial to emit hx-swap-oob.
-   analysis_failed_count rides this poll context (degrade-safe, never 500). It used to also
-   ride a straggler_count for a second bucket, removed by phaze-g84sk. #}
+{# Phase 44 (44-04): re-render the Analysis Health card (ANALYSIS_FAILED + STALLED)
+   OUT-OF-BAND on the same 5s tick (it lives outside #pipeline-stats, so the innerHTML swap
+   never reaches it). Same id (#analysis-health-card) is the OOB contract; oob=True flips the
+   partial to emit hx-swap-oob. analysis_failed_count / analysis_stalled_count ride this poll
+   context (degrade-safe, never 500). The amber tile used to ride a straggler_count
+   running-age guess instead of analysis_stalled_count -- phaze-g84sk swapped one for the
+   other. #}
 {% with oob = True %}{% include "pipeline/partials/analysis_failed_card.html" %}{% endwith %}
 {# Phase 49 (49-02, D-05): re-render the "Awaiting cloud" held-file count card OUT-OF-BAND on the
    same 5s tick (it lives outside #pipeline-stats, so the innerHTML swap never reaches it). Same id
