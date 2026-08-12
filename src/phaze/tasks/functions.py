@@ -39,6 +39,7 @@ from phaze.schemas.agent_tasks import ProcessFilePayload
 from phaze.services.analysis_exec import AnalysisSubprocessError, run_analysis_subprocess
 from phaze.services.analysis_wire import _features_to_mood_dict, _features_to_style_dict
 from phaze.services.hashing import compute_sha256
+from phaze.services.video_audio import AudioExtractionError, NoAudioTrackError, extract_audio_track
 
 
 if TYPE_CHECKING:
@@ -277,6 +278,14 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     # FileNotFoundError, and strands the file in PUSHED forever (permanently jamming the bounded
     # cloud window). Default True: every terminal path cleans up.
     cleanup_scratch = True
+    # phaze-3ea41: the video-audio extraction scratch file (services/video_audio.py runs for
+    # EVERY file now, format-scope operator decision -- no file-type gate here). Unlike
+    # ``payload.scratch_path`` -- preserved across a retryable failure because re-fetching it
+    # means a network re-push -- this is ALWAYS deleted in the outer ``finally`` regardless of
+    # retry: re-extracting from the still-present source (``read_path``) is a cheap local
+    # operation, so there is no reason to keep it around, and always deleting bounds extraction
+    # scratch disk to one file's audio track at a time no matter how many attempts a job takes.
+    extracted_audio_path: str | None = None
     try:
         # CLOUDPIPE-03: integrity-verify the pushed bytes BEFORE trusting them. sha256 is computed
         # OFF the event loop (chunked stdlib hash; the scan.py pattern). A mismatch means a
@@ -329,14 +338,62 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             # the single call needs no bound.
             semaphore: asyncio.Semaphore | None = ctx.get("analysis_semaphore")
             async with semaphore if semaphore is not None else contextlib.nullcontext():
+                # phaze-3ea41 (operator decision, format scope): pre-analysis audio-track
+                # extraction runs for EVERY file, not just recognized video extensions -- see
+                # services/video_audio.py's decision record. ffprobe is the sole authority on
+                # whether read_path has an audio stream at all; there is no payload.file_type
+                # gate here anymore. Runs INSIDE the concurrency semaphore, same as the analysis
+                # it feeds, so a burst of files cannot spawn unbounded concurrent ffmpeg
+                # extractions alongside the essentia-bounded pool.
+                job = ctx.get("job")
+
+                async def _extraction_heartbeat() -> None:
+                    # Extraction runs BEFORE run_analysis_subprocess spawns the analysis
+                    # child, so the driver's inner stall watchdog isn't armed yet -- only the
+                    # SAQ job's OWN outer heartbeat deadline (analysis_job_heartbeat_sec) can
+                    # expire during a long extraction, and this keeps it touched exactly like
+                    # _run_analysis_with_progress's _heartbeat does for the analysis phase.
+                    await _touch_job_heartbeat(job)
+
+                read_path_for_analysis = await extract_audio_track(
+                    read_path,
+                    file_id=str(payload.file_id),
+                    # phaze-3ea41 (review correction): thread the agent's configured scratch
+                    # dir -- a directory provisioned for large landed files (the SAME one
+                    # push_file rsyncs pushed containers into) -- rather than leaving the
+                    # extracted-audio intermediate to fall back to bare /tmp, which is often a
+                    # small tmpfs unfit for a multi-hour set's audio track. None (unset on a
+                    # pure local-only agent) still falls back to tempfile.gettempdir() inside
+                    # extract_audio_track itself.
+                    scratch_dir=cfg.cloud_scratch_dir,
+                    heartbeat_cb=_extraction_heartbeat if job is not None else None,
+                    heartbeat_interval_sec=cfg.analysis_job_heartbeat_sec / _HEARTBEAT_TOUCHES_PER_DEADLINE,
+                )
+                extracted_audio_path = read_path_for_analysis
                 analysis = await _run_analysis_with_progress(
                     api,
                     cfg,
                     payload.file_id,
-                    read_path,
+                    read_path_for_analysis,
                     payload.models_path,
                     job=ctx.get("job"),
                 )
+        except NoAudioTrackError as exc:
+            # phaze-3ea41: the container has no audio stream at all -- deterministic and
+            # TERMINAL (retrying ffprobe against the same bytes reports the same absence every
+            # time), so this reports immediately and does NOT fall into the generic retry path
+            # below, mirroring the TimeoutError/AnalysisSubprocessError "no blind re-run" handling.
+            await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="error", error=str(exc)[:_ERROR_DETAIL_MAX]))
+            return {"file_id": str(payload.file_id), "status": "analysis_failed"}
+        except AudioExtractionError as exc:
+            # phaze-3ea41 (review correction): ffprobe/ffmpeg failed for a reason OTHER than
+            # "no audio track" -- dominantly a corrupt/truncated container, which is just as
+            # deterministic as an essentia child crash (AnalysisSubprocessError below): the
+            # SAME bytes reproduce the SAME failure on retry. TERMINAL immediately (T-43-08:
+            # no blind re-run of a deterministically-doomed file), NOT the generic
+            # retryable-aware handler this used to fall through to.
+            await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="error", error=str(exc)[:_ERROR_DETAIL_MAX]))
+            return {"file_id": str(payload.file_id), "status": "analysis_failed"}
         except TimeoutError as exc:
             # STALL kill (phaze-w55w1): the driver killed a child that reported no progress for
             # analysis_stall_timeout_sec. A file that keeps producing windows is never killed here
@@ -455,3 +512,9 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         # (T-50-scratch-dos still holds: a terminal failure always reclaims the disk).
         if payload.scratch_path and cleanup_scratch:
             Path(payload.scratch_path).unlink(missing_ok=True)
+        # phaze-3ea41: the video-audio extraction scratch file, if one was produced, ALWAYS on
+        # every exit path -- success, timeout, crash, no-audio-track, or a retryable failure
+        # (unlike the pushed scratch copy above, re-extraction is a cheap local operation, so
+        # there is no retry case worth preserving it for; see the variable's own comment above).
+        if extracted_audio_path is not None:
+            Path(extracted_audio_path).unlink(missing_ok=True)

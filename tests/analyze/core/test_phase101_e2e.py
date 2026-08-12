@@ -58,6 +58,26 @@ def _real_child_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     yield
 
 
+@pytest.fixture(autouse=True)
+def _patch_extract_audio_track(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default extraction stub on BOTH lanes: fabricates a distinct synthetic extracted path.
+
+    phaze-3ea41 operator decision: extraction now runs for EVERY file. This module's tests
+    are about the progress-relay done-gate, not extraction, so this keeps both the pod lane
+    (``phaze.job_runner``) and the worker lane (``phaze.tasks.functions``) oblivious to it --
+    neither the presign/download/verify path nor the real analysis-child subprocess this
+    module deliberately exercises unpatched needs to change.
+    """
+    import phaze.job_runner as jr
+    import phaze.tasks.functions as tf
+
+    async def _fake_extract(read_path: str, **_kwargs: Any) -> str:
+        return f"{read_path}.extracted.mka"
+
+    monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
+    monkeypatch.setattr(tf, "extract_audio_track", _fake_extract)
+
+
 @respx.mock
 async def test_pod_lane_end_to_end_progress_arrives_mid_analysis(job_env, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Pod lane, no seams patched: real driver, real child subprocess, respx control plane."""
@@ -119,6 +139,7 @@ async def test_worker_lane_end_to_end_progress_arrives_mid_analysis() -> None:
     cfg = MagicMock(spec=AgentSettings)
     cfg.analysis_stall_timeout_sec = 60
     cfg.analysis_progress_interval_sec = 0.0  # post every emitted count
+    cfg.cloud_scratch_dir = None  # phaze-3ea41: extraction's scratch_dir source; unconfigured here
 
     api = AsyncMock()
     api.put_analysis = AsyncMock(return_value=MagicMock())

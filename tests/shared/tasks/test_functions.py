@@ -68,7 +68,43 @@ def _patch_agent_settings() -> Any:
     # it must be stamped or every throttle comparison hits a MagicMock (phaze-w55w1).
     stub.analysis_job_heartbeat_sec = 3600
     stub.analysis_progress_interval_sec = 5.0
+    # phaze-3ea41: process_file now reads this to thread extraction's scratch_dir; stamped
+    # None (unconfigured -- extract_audio_track falls back to tempfile.gettempdir()) so a
+    # spec'd mock does not raise AttributeError the moment ANY test reaches extraction.
+    stub.cloud_scratch_dir = None
     with patch("phaze.tasks.functions.get_settings", return_value=stub) as m:
+        yield m
+
+
+@pytest.fixture(autouse=True)
+def _patch_extract_audio_track() -> Any:
+    """Default extraction stub: fabricates a DISTINCT synthetic extracted path.
+
+    phaze-3ea41 operator decision: extraction now runs for EVERY file (format-scope decision,
+    no extension whitelist), so every ``process_file`` call reaches ``extract_audio_track``.
+    Most tests in this module exercise process_file's OTHER behavior and have no interest in
+    extraction at all -- patching it here keeps them oblivious to it, exactly as they were
+    before this bead.
+
+    Deliberately NOT a passthrough (returning ``read_path`` unchanged): production
+    ``extract_audio_track`` ALWAYS returns a NEW scratch file distinct from its input, and
+    ``process_file``'s outer ``finally`` unconditionally unlinks whatever path this returns.
+    A literal passthrough would make ``extracted_audio_path == payload.scratch_path`` for any
+    test that sets ``scratch_path``, so that unconditional unlink would delete the SAME file
+    the scratch-copy-preservation tests below assert survives a retryable cancellation --
+    correct in production (extraction never aliases its input) but a test-fixture artifact
+    that would falsely break those tests, not a issue in the real code path.
+
+    Tests that DO care about extraction itself (track selection, no-audio failure, cleanup,
+    heartbeat relay -- see the phaze-3ea41 section below) override this with their own
+    ``@patch("phaze.tasks.functions.extract_audio_track", ...)``, which shadows this fixture's
+    patch for the duration of that test only.
+    """
+
+    async def _fake_extract(read_path: str, **_kwargs: Any) -> str:
+        return f"{read_path}.extracted.mka"
+
+    with patch("phaze.tasks.functions.extract_audio_track", side_effect=_fake_extract) as m:
         yield m
 
 
@@ -334,14 +370,16 @@ async def test_process_file_skips_non_analyzable(mock_pool: AsyncMock) -> None:
 
 
 @pytest.mark.parametrize("video_type", ["mp4", "mkv", "webm", "mov"])
+@patch("phaze.tasks.functions.extract_audio_track", new_callable=AsyncMock)
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
-async def test_process_file_analyzes_video(mock_pool: AsyncMock, video_type: str) -> None:
+async def test_process_file_analyzes_video(mock_pool: AsyncMock, mock_extract: AsyncMock, video_type: str) -> None:
     """phaze-p0l9: video file_types are analyzed (not skipped), so they cross the HTTP boundary.
 
     A skipped video crossed no callback, so its scheduling-ledger row never cleared -- the analyze
     stage never converged and recovery re-enqueued it forever. Videos must reach put_analysis (or a
     terminal failure ack) exactly like audio.
     """
+    mock_extract.return_value = "/scratch/extracted-audio.mka"
     mock_pool.return_value = {"bpm": 120.0, "musical_key": "A minor", "features": {}, "windows": []}
     api = AsyncMock()
     api.put_analysis = AsyncMock()
@@ -350,8 +388,249 @@ async def test_process_file_analyzes_video(mock_pool: AsyncMock, video_type: str
     result = await process_file(ctx, **_make_payload_kwargs(file_type=video_type))
 
     assert result["status"] == "analyzed"  # NOT skipped
+    mock_extract.assert_awaited_once()
     mock_pool.assert_awaited_once()
     api.put_analysis.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# phaze-3ea41: video-container pre-analysis audio extraction
+# ---------------------------------------------------------------------------
+
+
+@patch("phaze.tasks.functions.extract_audio_track", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_video_analyzes_the_extracted_audio_path_not_the_original(mock_pool: AsyncMock, mock_extract: AsyncMock) -> None:
+    """The essentia analysis driver must receive the EXTRACTED audio path, not the original
+    container -- extraction is a pre-step in front of the SAME analysis call, unchanged."""
+    mock_extract.return_value = "/scratch/extracted-audio.mka"
+    mock_pool.return_value = MOCK_ANALYSIS
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+
+    await process_file(ctx, **_make_payload_kwargs(file_type="mkv"))
+
+    mock_extract.assert_awaited_once()
+    assert mock_extract.await_args.args[0] == "/music/track.mp3"  # the container's read_path
+    mock_pool.assert_awaited_once()
+    assert mock_pool.await_args.args[0] == "/scratch/extracted-audio.mka"
+
+
+@patch("phaze.tasks.functions.extract_audio_track", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_audio_also_goes_through_extraction(mock_pool: AsyncMock, mock_extract: AsyncMock) -> None:
+    """phaze-3ea41 operator decision (format scope): extraction runs for EVERY file, audio
+    included -- there is no ``payload.file_type`` gate any more. ``ffprobe`` is the sole
+    authority on whether a file has an audio stream, so plain audio types reach
+    ``extract_audio_track`` exactly like video ones (a lossless stream copy for an
+    already-bare-audio file, per the module's decision record)."""
+    mock_extract.return_value = "/scratch/extracted-audio.mka"
+    mock_pool.return_value = MOCK_ANALYSIS
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+
+    await process_file(ctx, **_make_payload_kwargs(file_type="mp3"))
+
+    mock_extract.assert_awaited_once()
+    assert mock_extract.await_args.args[0] == "/music/track.mp3"
+    mock_pool.assert_awaited_once()
+    assert mock_pool.await_args.args[0] == "/scratch/extracted-audio.mka"
+
+
+@patch("phaze.tasks.functions.extract_audio_track", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_video_with_no_audio_track_fails_cleanly(mock_pool: AsyncMock, mock_extract: AsyncMock) -> None:
+    """Acceptance criterion: a video with NO audio track fails cleanly with a stored
+    error_message -- never a jam/perpetual in-flight, and never a blind SAQ retry (the failure
+    is deterministic: re-probing the same bytes reports the same absence every time)."""
+    from phaze.services.video_audio import NoAudioTrackError
+
+    mock_extract.side_effect = NoAudioTrackError("no audio stream found in '/music/track.mp3'")
+    api = AsyncMock()
+    api.report_analysis_failed = AsyncMock()
+    api.put_analysis = AsyncMock()
+    ctx = _make_ctx(api_client=api)
+
+    result = await process_file(ctx, **_make_payload_kwargs(file_type="mkv"))
+
+    assert result["status"] == "analysis_failed"
+    mock_pool.assert_not_awaited()  # never reaches essentia at all
+    api.put_analysis.assert_not_awaited()
+    api.report_analysis_failed.assert_awaited_once()
+    failure = api.report_analysis_failed.await_args.args[1]
+    assert failure.reason == "error"
+    assert "no audio stream" in failure.error
+
+
+@patch("phaze.tasks.functions.extract_audio_track", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_corrupt_container_is_terminal_no_blind_retry(mock_pool: AsyncMock, mock_extract: AsyncMock) -> None:
+    """Review correction #4: AudioExtractionError (dominantly a corrupt/truncated container --
+    deterministic, same T-43-08 reasoning as AnalysisSubprocessError below) gets the SAME
+    immediate-terminal treatment as NoAudioTrackError, NOT the generic retryable-aware handler
+    it used to fall through to. A non-retryable job.retryable=False attempt still only reports
+    ONCE (not twice) and does not re-raise for SAQ to retry."""
+    from phaze.services.video_audio import AudioExtractionError
+
+    mock_extract.side_effect = AudioExtractionError("ffmpeg audio extraction failed (exit 1): Invalid data found when processing input")
+    api = AsyncMock()
+    api.report_analysis_failed = AsyncMock()
+    api.put_analysis = AsyncMock()
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = MagicMock(retryable=True)  # even a RETRYABLE attempt must not blind-retry this
+
+    result = await process_file(ctx, **_make_payload_kwargs(file_type="mkv"))
+
+    assert result["status"] == "analysis_failed"
+    mock_pool.assert_not_awaited()  # never reaches essentia at all
+    api.put_analysis.assert_not_awaited()
+    api.report_analysis_failed.assert_awaited_once()
+    failure = api.report_analysis_failed.await_args.args[1]
+    assert failure.reason == "error"
+    assert "Invalid data" in failure.error
+
+
+@patch("phaze.tasks.functions.extract_audio_track", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_threads_configured_scratch_dir_to_extraction(
+    mock_pool: AsyncMock, mock_extract: AsyncMock, _patch_agent_settings: MagicMock
+) -> None:
+    """Review correction #5: the agent's configured ``cloud_scratch_dir`` -- a directory
+    already provisioned for large landed files -- is threaded to extraction rather than
+    silently falling back to bare /tmp for a multi-hour set's audio track."""
+    stub = _patch_agent_settings.return_value
+    stub.cloud_scratch_dir = "/data/phaze-scratch"
+    mock_extract.return_value = "/data/phaze-scratch/extracted-audio.mka"
+    mock_pool.return_value = MOCK_ANALYSIS
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+
+    await process_file(ctx, **_make_payload_kwargs(file_type="mkv"))
+
+    mock_extract.assert_awaited_once()
+    assert mock_extract.await_args.kwargs["scratch_dir"] == "/data/phaze-scratch"
+
+
+@patch("phaze.tasks.functions.extract_audio_track", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_scratch_dir_none_when_unconfigured(
+    mock_pool: AsyncMock, mock_extract: AsyncMock, _patch_agent_settings: MagicMock
+) -> None:
+    """An agent with no configured cloud_scratch_dir (a pure local fileserver agent) passes
+    None through -- extract_audio_track itself falls back to tempfile.gettempdir()."""
+    stub = _patch_agent_settings.return_value
+    stub.cloud_scratch_dir = None
+    mock_extract.return_value = "/scratch/extracted-audio.mka"
+    mock_pool.return_value = MOCK_ANALYSIS
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+
+    await process_file(ctx, **_make_payload_kwargs(file_type="mkv"))
+
+    assert mock_extract.await_args.kwargs["scratch_dir"] is None
+
+
+@patch("phaze.tasks.functions.extract_audio_track", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_extraction_scratch_cleaned_up_on_success(mock_pool: AsyncMock, mock_extract: AsyncMock, tmp_path: Any) -> None:
+    """The extracted-audio scratch file is deleted in the outer ``finally`` on SUCCESS."""
+    extracted = tmp_path / "extracted-audio.mka"
+    extracted.write_bytes(b"fake-audio")
+    mock_extract.return_value = str(extracted)
+    mock_pool.return_value = MOCK_ANALYSIS
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+
+    result = await process_file(ctx, **_make_payload_kwargs(file_type="mkv"))
+
+    assert result["status"] == "analyzed"
+    assert not extracted.exists()
+
+
+@patch("phaze.tasks.functions.extract_audio_track", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_extraction_scratch_cleaned_up_on_analysis_failure(mock_pool: AsyncMock, mock_extract: AsyncMock, tmp_path: Any) -> None:
+    """The extracted-audio scratch file is ALSO deleted when the analysis step AFTER
+    extraction fails (crash, stall, or a generic error) -- cleanup is unconditional."""
+    extracted = tmp_path / "extracted-audio.mka"
+    extracted.write_bytes(b"fake-audio")
+    mock_extract.return_value = str(extracted)
+    mock_pool.side_effect = RuntimeError("essentia segfaulted")
+    api = AsyncMock()
+    api.report_analysis_failed = AsyncMock()
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = MagicMock(retryable=False)  # non-retryable (terminal) attempt -> report + reraise
+
+    with pytest.raises(RuntimeError, match="essentia segfaulted"):
+        await process_file(ctx, **_make_payload_kwargs(file_type="mkv"))
+
+    assert not extracted.exists()
+    api.report_analysis_failed.assert_awaited_once()
+
+
+@patch("phaze.tasks.functions.extract_audio_track", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_extraction_scratch_cleaned_up_on_no_audio_track(mock_pool: AsyncMock, mock_extract: AsyncMock) -> None:
+    """extract_audio_track itself never hands back a path on NoAudioTrackError (nothing was
+    produced), so the cleanup finally is simply a no-op -- assert it doesn't error either way."""
+    from phaze.services.video_audio import NoAudioTrackError
+
+    mock_extract.side_effect = NoAudioTrackError("no audio stream found")
+    api = AsyncMock()
+    api.report_analysis_failed = AsyncMock()
+    ctx = _make_ctx(api_client=api)
+
+    result = await process_file(ctx, **_make_payload_kwargs(file_type="mkv"))
+
+    assert result["status"] == "analysis_failed"
+    mock_pool.assert_not_awaited()
+
+
+@patch("phaze.tasks.functions.extract_audio_track", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_extraction_heartbeat_touches_the_saq_job(
+    mock_pool: AsyncMock, mock_extract: AsyncMock, _patch_agent_settings: MagicMock
+) -> None:
+    """A long extraction must touch the SAQ job's OWN heartbeat -- run_analysis_subprocess's
+    inner stall watchdog is not armed yet during extraction (the child hasn't spawned), so only
+    the outer job-heartbeat deadline is at risk of expiring across a slow extraction."""
+
+    async def _extract_with_heartbeat(_read_path: str, **kwargs: Any) -> str:
+        await kwargs["heartbeat_cb"]()
+        return "/scratch/extracted-audio.mka"
+
+    mock_extract.side_effect = _extract_with_heartbeat
+    mock_pool.return_value = MOCK_ANALYSIS
+    job = AsyncMock()
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = job
+
+    await process_file(ctx, **_make_payload_kwargs(file_type="mkv"))
+
+    job.update.assert_awaited()
+
+
+@patch("phaze.tasks.functions.extract_audio_track", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_extraction_without_saq_job_passes_no_heartbeat_cb(mock_pool: AsyncMock, mock_extract: AsyncMock) -> None:
+    """A bare test/direct-call ctx (no ``ctx['job']``) must pass ``heartbeat_cb=None`` to
+    extraction rather than a callback that would explode touching a nonexistent job."""
+    mock_extract.return_value = "/scratch/extracted-audio.mka"
+    mock_pool.return_value = MOCK_ANALYSIS
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)  # no ctx["job"]
+
+    await process_file(ctx, **_make_payload_kwargs(file_type="mkv"))
+
+    assert mock_extract.await_args.kwargs["heartbeat_cb"] is None
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
