@@ -1,12 +1,13 @@
 """Unit tests for the Phase 49 `cloud_route_threshold_sec` config knob (D-07)
 (the held-state concept is now the `cloud_job.status == 'awaiting'` sidecar, not a scalar enum).
 
-`cloud_route_threshold_sec` mirrors `straggler_threshold_sec`: a bounded pydantic
-int Field (gt=0, lt=86400) on `ControlSettings`, bound from
-`PHAZE_CLOUD_ROUTE_THRESHOLD_SEC` via `AliasChoices`. An out-of-range value fails
-validation at construction time (T-49-01) and never reaches the SQL `duration >=
-threshold` compare. These are pure pydantic-settings / StrEnum tests — no DB, no
-Redis required.
+`cloud_route_threshold_sec` is a bounded pydantic int Field (gt=0, lt=86400) on
+`ControlSettings`, bound from `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC` via `AliasChoices`
+(the same bounded-int pattern `ControlSettings` uses throughout, e.g.
+`convention_date_min_supporting`). An out-of-range value fails validation at
+construction time (T-49-01) and never reaches the SQL `duration >= threshold`
+compare. These are pure pydantic-settings / StrEnum tests — no DB, no Redis
+required.
 """
 
 from __future__ import annotations

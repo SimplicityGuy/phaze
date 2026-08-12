@@ -132,7 +132,7 @@ async def test_summary_stage_route_and_fragment(client: AsyncClient) -> None:
     assert "<html" not in fragment
     assert "<head" not in fragment
     # The OOB seed host rides in via _workspace_scaffold.html -> _workspace_poll_seeds.html.
-    assert 'id="straggler-failed-card"' in fragment
+    assert 'id="analysis-health-card"' in fragment
     # No second poll loop.
     assert 'hx-trigger="every' not in fragment
     assert "setInterval" not in fragment
