@@ -78,7 +78,7 @@ class LocalBackend(BaseModel):
     kind: Literal["local"]
     id: str
     # Cost-tier rank: lower runs sooner. Bounded so an out-of-range operator value fails fast at
-    # construction (T-67-01-04), mirroring config.py's bounded-int fields (e.g. straggler_threshold_sec).
+    # construction (T-67-01-04), mirroring config.py's bounded-int fields (e.g. cloud_route_threshold_sec).
     rank: int = Field(ge=0, lt=1000)
     # Concurrency cap: at least one in-flight (gt=0) so a backend can never be silently starved.
     cap: int = Field(gt=0, lt=1000)

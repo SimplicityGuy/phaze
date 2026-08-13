@@ -41,6 +41,30 @@ _GOOD_SHA = hashlib.sha256(_AUDIO).hexdigest()
 _DOWNLOAD_URL = "http://bucket.test/obj"
 
 
+@pytest.fixture(autouse=True)
+def _patch_extract_audio_track(monkeypatch):  # type: ignore[no-untyped-def]
+    """Default extraction stub: fabricates a DISTINCT synthetic extracted path.
+
+    phaze-3ea41 operator decision: extraction runs for EVERY downloaded file (format-scope
+    decision, no extension whitelist), so every ``jr.run()`` call reaches
+    ``extract_audio_track``. Most tests in this file exercise job_runner's OTHER behavior and
+    have no interest in extraction at all -- patching it here keeps them oblivious to it,
+    exactly as they were before this bead. A module-level import is safe (no env/settings
+    read at import time -- only inside ``run()``), so this needs no ``job_env`` dependency and
+    applies uniformly whether or not a given test also requests it.
+
+    Tests that DO care about extraction itself override this with their own
+    ``monkeypatch.setattr(jr, "extract_audio_track", ...)``, which shadows this fixture's
+    patch for the duration of that test only.
+    """
+    import phaze.job_runner as jr
+
+    async def _fake_extract(read_path, **_kwargs):  # type: ignore[no-untyped-def]
+        return f"{read_path}.extracted.mka"
+
+    monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
+
+
 def _fake_result() -> dict:
     """A representative ``analyze_file`` return dict (windowed contract)."""
     return {
@@ -101,13 +125,29 @@ def _driver_seam(sync_analyze):  # type: ignore[no-untyped-def]
 # ---------------------------------------------------------------------------
 
 
+def _capturing_extract(paths: list[str]):  # type: ignore[no-untyped-def]
+    """Build a fake ``extract_audio_track`` that records the path it was handed and returns a
+    synthetic extracted path (mirrors ``_capturing_analyze`` for the extraction seam)."""
+
+    async def _extract(read_path, **_kwargs):  # type: ignore[no-untyped-def]
+        paths.append(read_path)
+        return f"{read_path}.extracted.mka"
+
+    return _extract
+
+
 @respx.mock
 async def test_temp_file_suffix_derives_from_real_audio_ext(job_env, monkeypatch):  # type: ignore[no-untyped-def]
-    """The temp file passed to analyze_file is suffixed from the threaded ``audio_ext`` (regression).
+    """The downloaded temp file handed to extraction is suffixed from the threaded
+    ``audio_ext`` (regression).
 
     Pre-fix this used ``Path(urlparse(url).path).suffix or ".audio"`` on an extension-less
     staged key -> ``.audio`` (undecodable) -> the empty-analysis bug. Asserting ``.mp3`` here
-    FAILS on the old fallback and PASSES once the real extension is threaded through.
+    FAILS on the old fallback and PASSES once the real extension is threaded through. Phase
+    3ea41 moved the consumer of this suffix from ``analyze_file`` to ``extract_audio_track``
+    (extraction now runs first for every file) -- ``ffprobe``/``ffmpeg`` are the tools that
+    actually need the real extension to identify the container, exactly as essentia's
+    ``MetadataReader`` did before.
     """
     import phaze.job_runner as jr
 
@@ -124,7 +164,8 @@ async def test_temp_file_suffix_derives_from_real_audio_ext(job_env, monkeypatch
     )
 
     seen: list[str] = []
-    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_capturing_analyze(seen)))
+    monkeypatch.setattr(jr, "extract_audio_track", _capturing_extract(seen))
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _fake_result()))
 
     with pytest.raises(SystemExit) as exc:
         await jr.run()
@@ -155,7 +196,8 @@ async def test_temp_file_suffix_falls_back_to_url_suffix_when_ext_absent(job_env
     )
 
     seen: list[str] = []
-    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_capturing_analyze(seen)))
+    monkeypatch.setattr(jr, "extract_audio_track", _capturing_extract(seen))
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _fake_result()))
 
     with pytest.raises(SystemExit) as exc:
         await jr.run()
@@ -296,6 +338,374 @@ async def test_analysis_result_forwarded_to_put_unchanged(job_env, monkeypatch):
     for sent, produced in zip(body["windows"], expected["windows"], strict=True):
         for key, value in produced.items():
             assert sent[key] == value, key
+
+
+# ---------------------------------------------------------------------------
+# phaze-3ea41: video-container pre-analysis audio extraction (cloud/burst lane)
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_video_extracts_audio_before_analyzing(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """A downloaded video container (audio_ext=mkv) is extracted BEFORE the shared analysis
+    driver runs, and the driver receives the EXTRACTED path, never the raw container."""
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "audio_ext": "mkv"}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    respx.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    extract_calls: list[str] = []
+
+    async def _fake_extract(read_path, **_kwargs):  # type: ignore[no-untyped-def]
+        extract_calls.append(read_path)
+        return f"{read_path}.extracted.mka"
+
+    monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
+
+    seen: list[str] = []
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_capturing_analyze(seen)))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == 0
+    assert len(extract_calls) == 1
+    assert Path(extract_calls[0]).suffix == ".mkv"  # the downloaded container, not extracted yet
+    assert len(seen) == 1
+    assert seen[0] != extract_calls[0]  # the analysis driver got the EXTRACTED path
+    assert seen[0].endswith(".mka") or seen[0].endswith(".extracted.mka")
+
+
+@respx.mock
+async def test_audio_file_also_goes_through_extraction(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """phaze-3ea41 operator decision (format scope): extraction runs for EVERY downloaded
+    file, audio included -- there is no ``audio_ext``/suffix gate any more. ``ffprobe`` is
+    the sole authority on whether the download has an audio stream."""
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "audio_ext": "mp3"}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    respx.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    extract_calls: list[str] = []
+
+    async def _fake_extract(read_path, **_kwargs):  # type: ignore[no-untyped-def]
+        extract_calls.append(read_path)
+        return f"{read_path}.extracted.mka"
+
+    monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
+
+    seen: list[str] = []
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_capturing_analyze(seen)))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == 0
+    assert len(extract_calls) == 1
+    assert Path(extract_calls[0]).suffix == ".mp3"
+    assert seen[0] == f"{extract_calls[0]}.extracted.mka"
+
+
+@respx.mock
+async def test_video_with_no_audio_track_exits_analysis_code(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """Acceptance criterion (cloud lane): a video with no audio track fails cleanly --
+    EXIT_ANALYSIS (12), never a silent 0, and the analysis driver is never even reached."""
+    import phaze.job_runner as jr
+    from phaze.services.video_audio import NoAudioTrackError
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "audio_ext": "mkv"}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    put = respx.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    async def _raise_no_audio(*_a, **_k):  # type: ignore[no-untyped-def]
+        raise NoAudioTrackError("no audio stream found")
+
+    monkeypatch.setattr(jr, "extract_audio_track", _raise_no_audio)
+    driver_called = []
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: driver_called.append(True) or _fake_result()))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_ANALYSIS == 12
+    assert driver_called == []
+    assert not put.called
+
+
+@respx.mock
+async def test_video_with_no_audio_track_stores_a_terminal_error_no_redrive_bait(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """Review correction #1: NoAudioTrackError must NOT be silently swallowed by a blanket
+    except -- the pod's D-09-claimed 'stored error_message' path must actually fire before it
+    exits, closing the gap where a deterministic no-audio failure was completely undiagnosable
+    (this pod's ONLY other HTTP write is the success-path put_analysis) and cost a full
+    download-cycle's bandwidth per bounded cloud re-drive before ever being recorded anywhere."""
+    import phaze.job_runner as jr
+    from phaze.services.video_audio import NoAudioTrackError
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "audio_ext": "mkv"}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    failed = respx.post(f"{base}/api/internal/agent/analysis/{file_id}/failed").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    async def _raise_no_audio(*_a, **_k):  # type: ignore[no-untyped-def]
+        raise NoAudioTrackError("no audio stream found in 'container.mkv'")
+
+    monkeypatch.setattr(jr, "extract_audio_track", _raise_no_audio)
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_ANALYSIS
+    assert failed.called
+    import json as _json
+
+    body = _json.loads(failed.calls.last.request.content)
+    assert body["reason"] == "error"
+    assert "no audio stream" in body["error"]
+
+
+@respx.mock
+async def test_corrupt_container_stores_a_terminal_error_and_exits_analysis(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """Review correction #4 (extended to the cloud lane): AudioExtractionError (dominantly a
+    corrupt/truncated container -- deterministic, same T-43-08 reasoning as an essentia child
+    crash) ALSO gets a stored error_message before EXIT_ANALYSIS, via the SAME generic-Exception
+    safety net that still catches anything video_audio.py itself doesn't wrap."""
+    import phaze.job_runner as jr
+    from phaze.services.video_audio import AudioExtractionError
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "audio_ext": "mkv"}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    failed = respx.post(f"{base}/api/internal/agent/analysis/{file_id}/failed").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    async def _raise_corrupt(*_a, **_k):  # type: ignore[no-untyped-def]
+        raise AudioExtractionError("ffmpeg audio extraction failed (exit 1): Invalid data found when processing input")
+
+    monkeypatch.setattr(jr, "extract_audio_track", _raise_corrupt)
+    driver_called = []
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: driver_called.append(True) or _fake_result()))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_ANALYSIS
+    assert driver_called == []  # never reaches essentia
+    assert failed.called
+    import json as _json
+
+    body = _json.loads(failed.calls.last.request.content)
+    assert body["reason"] == "error"
+    assert "Invalid data" in body["error"]
+
+
+@respx.mock
+async def test_extraction_failure_report_post_failure_does_not_change_exit_code(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """Delivery-guarded (mirrors ``_report_terminal_failure`` in tasks/functions.py): a failed
+    POST to /failed must not change the exit code or raise past the extraction handler."""
+    import phaze.job_runner as jr
+    from phaze.services.video_audio import NoAudioTrackError
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "audio_ext": "mkv"}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    respx.post(f"{base}/api/internal/agent/analysis/{file_id}/failed").mock(return_value=httpx.Response(500))
+
+    async def _raise_no_audio(*_a, **_k):  # type: ignore[no-untyped-def]
+        raise NoAudioTrackError("no audio stream found")
+
+    monkeypatch.setattr(jr, "extract_audio_track", _raise_no_audio)
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_ANALYSIS
+
+
+@respx.mock
+async def test_extraction_gate_removed_video_still_extracted_when_audio_ext_absent(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """Review correction #2: extraction must NOT be keyed off the downloaded temp file's
+    suffix (nor the raw ``audio_ext`` field) -- with ``audio_ext=None`` AND an extension-less
+    staged URL (the real ``.audio`` sentinel case ``_temp_suffix`` documents), a video must
+    STILL be extracted, never silently handed raw to essentia. There is no gate left to skip
+    it at all -- extraction runs for every downloaded file unconditionally."""
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    # No audio_ext AND an extension-less staged key -> _temp_suffix falls all the way to the
+    # ".audio" last-resort sentinel (test_temp_suffix_precedence covers that unit in isolation).
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    respx.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    extract_calls: list[str] = []
+
+    async def _fake_extract(read_path, **_kwargs):  # type: ignore[no-untyped-def]
+        extract_calls.append(read_path)
+        return f"{read_path}.extracted.mka"
+
+    monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _fake_result()))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == 0
+    assert len(extract_calls) == 1, "extraction must run even when audio_ext is None and the URL has no suffix"
+    assert Path(extract_calls[0]).suffix == ".audio"  # confirms this exercised the sentinel path
+
+
+@respx.mock
+async def test_extraction_uses_the_downloaded_temp_file_directory_as_scratch_dir(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """Review correction #5: the pod threads an EXPLICIT scratch_dir (its own downloaded
+    file's directory) rather than leaving extract_audio_track to its own tempfile.gettempdir()
+    default silently -- 'the parameter exists and nobody uses it' no longer holds."""
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "audio_ext": "mkv"}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    respx.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    seen_kwargs: dict = {}
+
+    async def _fake_extract(read_path, **kwargs):  # type: ignore[no-untyped-def]
+        seen_kwargs.update(kwargs)
+        return f"{read_path}.extracted.mka"
+
+    monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _fake_result()))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == 0
+    assert seen_kwargs.get("scratch_dir") is not None
+    # Same directory the downloaded temp file itself lives in (tempfile.gettempdir() by
+    # convention here -- this pod has no OTHER configured scratch location of its own).
+    import tempfile as _tempfile
+
+    assert str(seen_kwargs["scratch_dir"]) == _tempfile.gettempdir()
+
+
+@respx.mock
+async def test_video_extraction_scratch_cleaned_up_on_success(job_env, monkeypatch, tmp_path):  # type: ignore[no-untyped-def]
+    """The extracted-audio scratch file never outlives the pod, on the success path."""
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "audio_ext": "mkv"}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    respx.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    extracted = tmp_path / "extraction-output" / "extracted-audio.mka"
+    extracted.parent.mkdir(parents=True, exist_ok=True)
+
+    async def _fake_extract(_read_path, **_kwargs):  # type: ignore[no-untyped-def]
+        extracted.write_bytes(b"fake-extracted-audio")
+        return str(extracted)
+
+    monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _fake_result()))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == 0
+    assert not extracted.exists()
+
+
+@respx.mock
+async def test_video_extraction_scratch_cleaned_up_on_analysis_failure(job_env, monkeypatch, tmp_path):  # type: ignore[no-untyped-def]
+    """The extracted-audio scratch file is ALSO removed when the LATER analysis step fails."""
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "audio_ext": "mkv"}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    respx.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    extracted = tmp_path / "extraction-output" / "extracted-audio.mka"
+    extracted.parent.mkdir(parents=True, exist_ok=True)
+
+    async def _fake_extract(_read_path, **_kwargs):  # type: ignore[no-untyped-def]
+        extracted.write_bytes(b"fake-extracted-audio")
+        return str(extracted)
+
+    def _boom(*_a, **_k):  # type: ignore[no-untyped-def]
+        msg = "essentia segfaulted"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_boom))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_ANALYSIS
+    assert not extracted.exists()
 
 
 @respx.mock
@@ -845,8 +1255,9 @@ async def test_step_events_preserve_machine_keys_and_add_human_fields(job_env, m
 
     assert exc.value.code == 0
     steps = {e["step"]: e for e in logs if e["event"] == "job_runner_step_ok"}
-    # Machine keys preserved on ALL five steps (parsers depend on them).
-    assert set(steps) == {"presign", "download", "verify", "analyze", "callback"}
+    # Machine keys preserved on ALL six steps (parsers depend on them). "extract" joined the
+    # set in phaze-3ea41 -- extraction now runs for every file between verify and analyze.
+    assert set(steps) == {"presign", "download", "verify", "extract", "analyze", "callback"}
     for step_event in steps.values():
         assert step_event["event"] == "job_runner_step_ok"
         assert "step" in step_event

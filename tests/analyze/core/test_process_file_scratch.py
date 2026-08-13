@@ -53,7 +53,29 @@ def _patch_agent_settings() -> Any:
     stub.analysis_stall_timeout_sec = 1800
     stub.analysis_job_heartbeat_sec = 3600  # a property on the real class; spec'd mocks need it stamped
     stub.analysis_progress_interval_sec = 5.0  # Phase 57.1: process_file's progress bridge reads this throttle knob
+    stub.cloud_scratch_dir = None  # phaze-3ea41: extraction's scratch_dir source; unconfigured here
     with patch("phaze.tasks.functions.get_settings", return_value=stub) as m:
+        yield m
+
+
+@pytest.fixture(autouse=True)
+def _patch_extract_audio_track() -> Any:
+    """Default extraction stub: fabricates a DISTINCT synthetic extracted path.
+
+    phaze-3ea41 operator decision: extraction now runs for EVERY file (format-scope decision,
+    no extension whitelist). This module's tests exercise the scratch-copy read/cleanup path
+    and have no interest in extraction itself -- patching it here keeps them oblivious to it.
+    Deliberately NOT a passthrough (returning ``read_path`` unchanged): the outer ``finally``
+    unconditionally unlinks whatever ``extract_audio_track`` returns, and several tests here
+    assert the REAL scratch copy at ``payload.scratch_path`` survives a retryable failure --
+    a passthrough would alias ``extracted_audio_path`` onto that same file and falsely delete
+    it (a test-fixture artifact only; production extraction never aliases its input).
+    """
+
+    async def _fake_extract(read_path: str, **_kwargs: Any) -> str:
+        return f"{read_path}.extracted.mka"
+
+    with patch("phaze.tasks.functions.extract_audio_track", side_effect=_fake_extract) as m:
         yield m
 
 
@@ -122,8 +144,9 @@ async def test_sha256_match_analyzes_the_scratch_copy(
 
     assert result["status"] == "analyzed"
     mock_pool.assert_awaited_once()
-    # read_path is the 1st positional arg to run_analysis_subprocess -> the scratch copy, NOT original_path.
-    assert mock_pool.await_args.args[0] == str(scratch)
+    # read_path is the 1st positional arg to extract_audio_track -> the scratch copy, NOT
+    # original_path; run_analysis_subprocess then gets the EXTRACTED path (phaze-3ea41).
+    assert mock_pool.await_args.args[0] == f"{scratch}.extracted.mka"
     api.put_analysis.assert_awaited_once()
     api.report_push_mismatch.assert_not_awaited()
     # finally cleanup on the success path.
@@ -166,7 +189,8 @@ async def test_sha256_verify_skipped_without_expected_hash(
     result = await process_file(_ctx(api), **_kwargs(scratch_path=str(scratch)))
 
     assert result["status"] == "analyzed"
-    assert mock_pool.await_args.args[0] == str(scratch)
+    # run_analysis_subprocess gets the EXTRACTED path, derived from the scratch copy (phaze-3ea41).
+    assert mock_pool.await_args.args[0] == f"{scratch}.extracted.mka"
     api.report_push_mismatch.assert_not_awaited()
     assert not scratch.exists()
 
@@ -378,8 +402,9 @@ async def test_local_file_without_scratch_is_byte_identical(
     result = await process_file(_ctx(api), **_kwargs(original_path="/music/local.mp3"))
 
     assert result["status"] == "analyzed"
-    # read_path == original_path (no scratch swap).
-    assert mock_pool.await_args.args[0] == "/music/local.mp3"
+    # read_path == original_path (no scratch swap); run_analysis_subprocess then gets the
+    # EXTRACTED path derived from it (phaze-3ea41).
+    assert mock_pool.await_args.args[0] == "/music/local.mp3.extracted.mka"
     api.report_push_mismatch.assert_not_awaited()
 
 

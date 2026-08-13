@@ -3,22 +3,28 @@
 Fire-once orchestrator for the v6.0 burst flow: it analyzes EXACTLY ONE file and
 translates each pipeline step's outcome into a distinct process exit code, then
 ``sys.exit(code)``. This is the structural divergence from the v5.0 SAQ
-``process_file`` task (``phaze.tasks.functions``): that path reports failure via an
-HTTP callback and RETURNS a dict so SAQ marks the job COMPLETE; the one-shot pod
-must instead exit NON-ZERO so Kueue/Workload reads the failure from pod status
-(D-01 / KJOB-04). A failed analysis never exits 0.
+``process_file`` task (``phaze.tasks.functions``): that path reports EVERY terminal
+failure via an HTTP callback and RETURNS a dict so SAQ marks the job COMPLETE; the
+one-shot pod's PRIMARY failure signal is instead the process exit code, so
+Kueue/Workload reads it from pod status regardless of whether any HTTP write landed
+(D-01 / KJOB-04). A failed analysis never exits 0. The one exception (phaze-3ea41):
+video-audio extraction failures (step 3.5 below) ALSO call back
+``report_analysis_failed`` before exiting 12 -- see that step's own comment for why
+this lane needed that despite the exit-code-is-primary design.
 
-Flow: presign -> download -> sha256-verify -> windowed analyze -> callback PUT -> exit.
+Flow: presign -> download -> sha256-verify -> extract audio -> windowed analyze -> callback PUT -> exit.
 
 Exit-code contract (D-01):
     0   success
     10  presign request OR download failure (fail-fast, no retry — D-02)
     11  sha256(downloaded) != expected_sha256 (corrupt/partial transfer)
-    12  windowed analysis raised / OOM (fail-fast — D-02). There is NO wall-clock
-        bound on the analysis, in-process or otherwise (phaze-202e): the Job
-        carries no activeDeadlineSeconds by default, so a 2-6 h concert set runs
-        to completion. A pod that can never start is recovered by the control
-        plane's pod-state wedge detection, not by killing the run.
+    12  windowed analysis raised / OOM (fail-fast — D-02), OR video-audio extraction
+        failed (phaze-3ea41: no audio stream / corrupt container / missing ffmpeg —
+        see step 3.5). There is NO wall-clock bound on the analysis, in-process or
+        otherwise (phaze-202e): the Job carries no activeDeadlineSeconds by default,
+        so a 2-6 h concert set runs to completion. A pod that can never start is
+        recovered by the control plane's pod-state wedge detection, not by killing
+        the run.
     13  callback PUT failed after the shared bounded retry (D-02)
     20  startup/precondition failure: wrong PHAZE_ROLE, missing PHAZE_JOB_FILE_ID,
         or a malformed file_id UUID. This is a PERMANENT misconfiguration, not a
@@ -57,10 +63,17 @@ import structlog
 
 from phaze.config import AgentSettings, get_settings
 from phaze.logging_config import _parse_bool, configure_logging
-from phaze.schemas.agent_analysis import AnalysisProgressPayload, AnalysisWindowPayload, AnalysisWritePayload, PresignDownloadMetadata
+from phaze.schemas.agent_analysis import (
+    AnalysisFailurePayload,
+    AnalysisProgressPayload,
+    AnalysisWindowPayload,
+    AnalysisWritePayload,
+    PresignDownloadMetadata,
+)
 from phaze.services.analysis_exec import run_analysis_subprocess
 from phaze.services.analysis_wire import _features_to_mood_dict, _features_to_style_dict
 from phaze.services.hashing import compute_sha256
+from phaze.services.video_audio import NoAudioTrackError, extract_audio_track
 from phaze.tasks._shared.agent_bootstrap import construct_agent_client
 
 
@@ -86,6 +99,9 @@ _MODELS_DIR_ENV = "PHAZE_MODELS_DIR"
 _DOWNLOAD_CHUNK_BYTES = 1 << 16  # 64 KiB, matches compute_sha256 chunking
 _DOWNLOAD_CONNECT_TIMEOUT_S = 30.0
 _DOWNLOAD_READ_TIMEOUT_S = 300.0
+# Mirrors the SAQ lane's cap (tasks/functions.py::_ERROR_DETAIL_MAX): bound the stored error
+# text before it crosses the HTTP boundary (AnalysisFailurePayload.error is max_length=2000).
+_ERROR_DETAIL_MAX = 2000
 
 
 class PresignedDownloadError(RuntimeError):
@@ -165,6 +181,26 @@ def _log_banner(file_id: str, metadata: PresignDownloadMetadata | None) -> None:
         log.info("job_runner_banner", **fields)
     except Exception:  # cosmetic banner: NEVER fail the job for odd/missing metadata (D-01 untouched)
         log.debug("job_runner_banner_failed", file_id=file_id)
+
+
+async def _report_extraction_failure(client: Any, file_id: uuid.UUID, fid: str, exc: Exception) -> None:
+    """Store a terminal ``error_message`` for a video-audio extraction failure (phaze-3ea41,
+    review correction) before the pod exits EXIT_ANALYSIS.
+
+    Without this the D-09 decision record's claim ("callers map straight to a stored
+    error_message") was FALSE for this lane: the pod has no other failure-report path at all
+    (its ONLY other HTTP write is the success-path ``put_analysis``), so a bare ``sys.exit``
+    left NoAudioTrackError/AudioExtractionError indistinguishable from any other analysis
+    failure and undiagnosable without reading pod logs. Delivery-guarded (mirrors
+    ``_report_terminal_failure`` in ``tasks/functions.py``): a failed POST here must not
+    change the exit code or raise past this function -- the pod still exits EXIT_ANALYSIS
+    either way, and reconcile/recovery's existing redrive-then-local-fallback safety net is
+    unaffected by whether this particular report landed.
+    """
+    try:
+        await client.report_analysis_failed(file_id, AnalysisFailurePayload(reason="error", error=str(exc)[:_ERROR_DETAIL_MAX]))
+    except Exception:
+        log.warning("job_runner_extraction_failure_report_failed", file_id=fid, step="extract")
 
 
 def _temp_suffix(audio_ext: str | None, url: str) -> str:
@@ -357,6 +393,11 @@ async def run() -> None:
     client = construct_agent_client(cfg)
 
     tmp_path: Path | None = None
+    # phaze-3ea41: the video-audio extraction scratch file (set only when the downloaded file is
+    # a video container -- see services/video_audio.py's decision record). Symmetric with the SAQ
+    # lane (tasks/functions.py::process_file): this pod extracts locally from the file it already
+    # downloaded rather than pushing a second, extracted artifact through the staging pipeline.
+    extracted_audio_path: str | None = None
     try:
         # (1) presign — fail-fast, no extra retry loop (D-02).
         t_presign = time.monotonic()
@@ -408,6 +449,55 @@ async def run() -> None:
         # human-recognizable; event/step/elapsed_ms unchanged, sha256 is additive.
         log.info("job_runner_step_ok", file_id=fid, step="verify", elapsed_ms=_elapsed_ms(t_verify), sha256=actual_sha256[:12])
 
+        # (3.5) video-audio extraction (phaze-3ea41, operator decision: format scope) —
+        # symmetric with the SAQ lane (tasks/functions.py::process_file); see
+        # services/video_audio.py's decision record for track-selection, disk-headroom and
+        # lane-symmetry rationale. Runs for EVERY downloaded file, unconditionally -- ffprobe is
+        # the sole authority on whether it has an audio stream, not the downloaded suffix or the
+        # raw ``audio_ext`` field. There is no SAQ job in this one-shot pod (D-25: it never
+        # imports the agent worker or its liveness machinery -- test_task_split.py enforces
+        # that), so this call passes no progress/liveness callback -- the pod has no wall-clock
+        # bound at all on THIS step, matching every other step's D-01/phaze-202e "no bound"
+        # discipline; the inner analysis stall watchdog only arms once run_analysis_subprocess
+        # spawns the analysis child below.
+        #
+        # NoAudioTrackError/AudioExtractionError get an EXPLICIT catch (review correction,
+        # phaze-3ea41) -- a bare ``except Exception`` here silently swallowed the distinction
+        # and, worse, never stored an error_message at all before exiting (this pod's ONLY
+        # other HTTP write is the success-path put_analysis below), leaving a deterministic
+        # no-audio/corrupt-container failure completely undiagnosable except by reading pod
+        # logs, on top of costing a full download-cycle's bandwidth per bounded cloud re-drive
+        # before reconcile's redrive-then-local-fallback safety net (tasks/reconcile_cloud_jobs.py)
+        # finally spills the row to local. ``scratch_dir=tmp_path.parent`` keeps the extracted
+        # audio in the SAME directory as the already-larger downloaded original (this pod has
+        # no other configured scratch location -- ``AgentSettings.cloud_scratch_dir`` is a
+        # DIFFERENT host's rsync landing zone for the SAQ compute lane, not this pod's own
+        # ephemeral filesystem).
+        t_extract = time.monotonic()
+        try:
+            extracted_audio_path = await extract_audio_track(str(tmp_path), file_id=fid, scratch_dir=tmp_path.parent)
+        except NoAudioTrackError as exc:
+            # Its OWN branch (not folded into the generic one below) purely for a distinct,
+            # greppable log event -- "no audio in this container" is an operationally
+            # different signal from "ffmpeg/ffprobe itself failed", even though both now get
+            # identical stored-error/exit treatment.
+            log.error("job_runner_no_audio_track", file_id=fid, step="extract", error=str(exc)[:_ERROR_DETAIL_MAX])
+            await _report_extraction_failure(client, file_id, fid, exc)
+            sys.exit(EXIT_ANALYSIS)
+        except Exception as exc:
+            # AudioExtractionError (dominantly a corrupt/truncated container -- deterministic,
+            # same T-43-08 reasoning as the no-audio case) AND any other genuinely unexpected
+            # failure (e.g. an OSError making the scratch dir) alike: ALL still get a stored
+            # error_message before the pod exits, closing the SAME "undiagnosable except via
+            # pod logs" gap the no-audio case had. Deliberately ``Exception``, not narrowed to
+            # AudioExtractionError alone, so this remains the safety net the old bare
+            # ``except Exception`` was for anything video_audio.py does not itself wrap.
+            log.exception("job_runner_extraction_failed", file_id=fid, step="extract")
+            await _report_extraction_failure(client, file_id, fid, exc)
+            sys.exit(EXIT_ANALYSIS)
+        log.info("job_runner_step_ok", file_id=fid, step="extract", elapsed_ms=_elapsed_ms(t_extract))
+        read_path = extracted_audio_path
+
         # (4) analyze — the exhaustive analyze_file runs in a REAL child process via the
         # shared subprocess driver (Phase 101, OBS-03): the pod's event loop is no longer
         # GIL-starved, so the progress callback fires mid-analysis. No retry loop —
@@ -436,7 +526,7 @@ async def run() -> None:
             # (the seam is monkeypatched in tests, and KJOB-04 wants a loud EXIT_ANALYSIS on
             # any malformed analysis output), not be optimized away by the driver's annotation.
             result: Any = await run_analysis_subprocess(
-                str(tmp_path),
+                read_path,
                 models_dir,
                 progress_cb=progress_cb,
                 stall_timeout=cfg.analysis_stall_timeout_sec,
@@ -524,6 +614,11 @@ async def run() -> None:
         # connection pool is released regardless of outcome.
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
+        # phaze-3ea41: the extracted-audio scratch file, on every exit path (success, analysis
+        # failure, extraction failure itself already cleans up on its own error paths -- this is
+        # belt-and-suspenders for a successfully-extracted file whose LATER step failed).
+        if extracted_audio_path is not None:
+            Path(extracted_audio_path).unlink(missing_ok=True)
         await client.close()
 
 
