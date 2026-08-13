@@ -1,0 +1,47 @@
+From cc509b5cc81589639ecef7cadbad265af0a1198b Mon Sep 17 00:00:00 2001
+From: SimplicityGuy <robert@simplicityguy.com>
+Date: Wed, 12 Aug 2026 18:17:36 -0700
+Subject: [PATCH 2/3] fix(audioloader): set pkt_timebase so decoded frame
+ timestamps are correct
+
+AVCodecContext::pkt_timebase tells libavcodec the time base of the packets it
+is being fed. It is never set here, so it stays at its 0/1 default.
+
+libavcodec uses it whenever it has to move a timestamp by a sample count -- most
+importantly when it discards a codec's initial padding (Opus pre-skip, AAC/MP3
+encoder delay) and then advances frame->pts by the number of samples skipped.
+With an invalid pkt_timebase that adjustment is meaningless, so frame->pts does
+not correspond to the samples actually returned.
+
+Nothing in AudioLoader consumed frame->pts before, which is why this was
+invisible; it becomes load-bearing as soon as timestamps are used to locate the
+decoder in the stream. Measured on an Ogg Opus file, the error is exactly the
+312-sample (6.5 ms) Opus pre-skip.
+
+Setting pkt_timebase before avcodec_open2() is the standard, documented
+requirement and changes no existing output.
+---
+ src/algorithms/io/audioloader.cpp | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/src/algorithms/io/audioloader.cpp b/src/algorithms/io/audioloader.cpp
+index 89bd331..69f2344 100644
+--- a/src/algorithms/io/audioloader.cpp
++++ b/src/algorithms/io/audioloader.cpp
+@@ -115,6 +115,13 @@ void AudioLoader::openAudioFile(const string& filename) {
+         throw EssentiaException("AudioLoader: Could not copy codec parameters");
+     }
+ 
++    // Tell the decoder what time base the packets we feed it are in. libavcodec needs this to
++    // report frame timestamps correctly -- in particular it advances frame->pts by however many
++    // samples it skipped (codec delay / pre-skip), and that adjustment is expressed in
++    // pkt_timebase. Left unset the adjustment is computed against an invalid time base, so
++    // frame->pts is wrong for every format that carries an encoder delay.
++    _audioCtx->pkt_timebase = _demuxCtx->streams[_streamIdx]->time_base;
++
+     if (avcodec_open2(_audioCtx, _audioCodec, NULL) < 0) {
+         avcodec_free_context(&_audioCtx);
+         throw EssentiaException("AudioLoader: Unable to instantiate codec...");
+-- 
+2.50.1 (Apple Git-155)
+

@@ -245,6 +245,10 @@ split-on-trailing-comma = true
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "scripts/parity/**" = ["T201"]
+# Spike measurement harnesses. These are standalone, manually-run scripts whose ENTIRE output is
+# what they print -- they are the evidence a spike doc cites, not library code (see
+# docs/spikes/phaze-han03-essentia-seek.md). Same rationale as scripts/parity/**.
+"docs/spikes/**" = ["T201"]
 "services/**" = ["S603", "S607"]
 "src/phaze/cli/**" = ["T201"]
 "src/phaze/main.py" = ["T201"]
