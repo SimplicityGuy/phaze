@@ -28,6 +28,19 @@ spike's job, not CI's).
    the whole file. If chunking leaked — if a chunk's buffers outlived it — the 12h file would
    add >7GB here, which is exactly what the peak assertions below refuse.
 
+   **What that paragraph promised, and could not deliver — read this before trusting it
+   again (phaze-u1n7j).** Chunking DID leak, this test stayed green, and the pod OOMKilled
+   on every file past ~3 hours. The reason is structural and no assertion tuning fixes it:
+   essentia is MOCKED here, so the mock's Python buffers are all this can weigh, and the
+   thing that actually grew was C++ — the streaming network's connection buffers, retained
+   per chunk because dropping a Python proxy does not disconnect an essentia edge (D-09).
+   A mocked decode has no edges, so it cannot leak them, and this test would pass just as
+   happily on the broken code as on the fixed code. It is a real proof about the WINDOWING
+   LOOP and nothing at all about the decode's native memory. The property it appears to
+   promise is held by
+   ``test_analysis_streaming_decode.py::test_repeated_gated_chunk_decodes_do_not_grow_peak_rss``,
+   which runs the real network over real audio for exactly this reason.
+
    Each duration is measured in its OWN forked process (``_peak_rss_for``). Differencing
    ``ru_maxrss`` across runs inside one process — what this test used to do — does not
    measure per-run retention: the mark is monotonic, so it only moves when a run exceeds
@@ -52,6 +65,7 @@ Both marked ``integration`` (deselected by the default unit run).
 
 from __future__ import annotations
 
+import gc
 import multiprocessing
 import resource
 import sys
@@ -116,7 +130,28 @@ def _ru_maxrss_mb() -> float:
 
 
 def _peak_rss_child(duration_sec: float, queue: Any) -> None:  # pragma: no cover -- runs in a forked child
-    """Analyze one mocked file of ``duration_sec`` and post this child's own peak RSS delta."""
+    """Analyze one mocked file of ``duration_sec`` and post this child's own peak RSS delta.
+
+    **``gc.freeze()`` first, and it is the instrument, not a tweak (phaze-u1n7j).** This child
+    is ``fork``ed, so its pages start copy-on-write shared with the pytest parent. A
+    ``gc.collect()`` anywhere in the code under test then WRITES to the GC header of every
+    object inherited from that parent, un-sharing the whole parent heap into this child and
+    charging it to this child's ``ru_maxrss``. The pipeline gained exactly such a collect in
+    D-09 (`_release_decode_network`), and the effect is not subtle -- measured here, forking
+    from a parent holding 3.0 M objects: child peak **7.8 MiB** with no collect, **597.7 MiB**
+    with one, **7.9 MiB** with this freeze in front of it. Without the freeze this test
+    measures the size of the pytest process that happened to run it, which is why it passed
+    against this file alone and failed inside the wider suite.
+
+    ``gc.freeze()`` moves everything already allocated into a permanent generation the
+    collector does not touch, so the collect still does its job on what the ANALYSIS allocates
+    -- the only thing this test is trying to weigh -- while the inherited heap stays shared.
+
+    Production is unaffected either way and that is why the fix belongs here rather than in the
+    pipeline: `analysis_child` is an EXEC'd child with a fresh address space (phaze-b2qs9 §1,
+    "one exec'd child per file"), so it has no COW-shared parent heap to un-share.
+    """
+    gc.freeze()
     before = _ru_maxrss_mb()
     mock_es = _build_mock_es()
     # A *touched* buffer, unlike `np.zeros`, actually faults its pages -- which is what makes
