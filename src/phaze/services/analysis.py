@@ -734,6 +734,12 @@ _DEFAULT_FINE_MIN_SEC = 15
 # file's duration -- the same invariant the caps provided ("retention stays bounded by the CAP and
 # never by duration"), re-derived from a knob that no longer discards audio.
 #
+# ^ TRUE OF THE PCM, AND IT WAS NOT TRUE OF THE PROCESS UNTIL D-09. As shipped, this paragraph
+# was read as a statement about peak RSS and phaze-b2qs9 measured that it was not one: the chunk
+# GATE this design needs leaked its whole streaming network per chunk, so peak RSS was linear in
+# duration and breached the 4Gi pod limit at four hours. The live-PCM arithmetic below is correct
+# and always was; what it never covered is the network carrying the PCM. See D-09.
+#
 # THE CHUNK SIZES ARE THE OLD CAPS, ON PURPOSE. 60 fine / 30 coarse reproduce EXACTLY the
 # per-tier residency the pre-removal code was measured at, so the whole ADR-0005 / phaze-esut /
 # phaze-7i0k / phaze-0582 memory corpus stays valid unchanged rather than needing re-derivation:
@@ -749,10 +755,12 @@ _DEFAULT_FINE_MIN_SEC = 15
 # its own decode pass because `MonoLoader` cannot seek -- see `_decode_windows_streaming`'s
 # `stop_at_sec` gate for how much of that second cost is bought back.
 #
-# NOT MEASURED HERE. These figures are the documented per-window buffer arithmetic carried
-# forward from the capped implementation, not a fresh peak-RSS measurement on a multi-hour file;
-# ADR-0007 follow-up 3 asks for that measurement and it is explicitly still owed. What IS
-# established by construction is the SHAPE: peak is O(chunk), not O(duration).
+# MEASURED SINCE. This was written as "NOT MEASURED HERE ... established by construction", and
+# that gap is exactly where the defect lived: phaze-b2qs9 did the owed measurement on vox and
+# found peak RSS linear in duration, and phaze-u1n7j then found the retention and closed it
+# (D-09). The per-window arithmetic above is still arithmetic, not a peak-RSS measurement -- but
+# the SHAPE it claims is now enforced by a test that runs the real streaming network rather than
+# argued from construction (`test_repeated_gated_chunk_decodes_do_not_grow_peak_rss`).
 _FINE_CHUNK_WINDOWS = 60
 _COARSE_CHUNK_WINDOWS = 30
 
@@ -761,6 +769,163 @@ _COARSE_CHUNK_WINDOWS = 30
 # over-read costs nothing and removes any chance that the stop lands a token early and truncates
 # that last window.
 _CHUNK_GATE_MARGIN_SEC = 1.0
+
+
+# ---------------------------------------------------------------------------
+# D-09 DECISION RECORD -- a streaming network must be DISCONNECTED, not just dropped (phaze-u1n7j)
+# ---------------------------------------------------------------------------
+#
+# THE BUG D-07 SHIPPED. D-07 below claims the chunked passes make peak memory "a function of
+# the CHUNK SIZE and never of the total duration". phaze-b2qs9 measured that on real hardware
+# and real audio and it is FALSE of the process: whole-process peak RSS is LINEAR in duration,
+# `0.7634 + 0.3108 x n_fine_chunks` GiB (R^2 0.99959), reaching 4.1854 GiB at four hours and
+# 10.2768 GiB at twelve -- against a deployed `memory_limit` of 4Gi. Every file past ~3 hours
+# was an OOMKilled pod. D-07's live-PCM arithmetic is correct and simply does not describe the
+# process, because it accounts for the audio and not for the NETWORK that carries it.
+#
+# THE MECHANISM. `essentia.streaming` connections are C++-side. `>>` calls into
+# `_essentia.connect` / `_essentia.poolConnect`, which allocate a fixed-size ring buffer per
+# connected source (essentia's `BufferUsage::forLargeAudioStream`) and, for a Pool sink, an
+# entire `PoolStorage` algorithm that Python never holds a reference to at all -- `poolConnect`
+# returns it and the caller drops it on the floor. Dropping the Python proxies (`branches
+# .clear()`, `del loader, pool, gate`) frees the PROXIES and leaves all of that behind, because
+# essentia's Python bindings expose no network object and therefore no destructor that walks it.
+# `malloc_trim` cannot help: the pages are still live-referenced, not merely un-returned to the
+# OS. `gc.collect()` alone does not help either -- measured, it reclaims 210-231 objects per call
+# and leaves the curve unchanged -- but it turns out to be REQUIRED as the second half of the
+# fix, for the separate reason below.
+#
+# MEASURED, not inferred (macOS/arm64, essentia-tensorflow 2.1b6.dev1438, one process, RSS read
+# from `ps` / `ru_maxrss` after `gc.collect()`, repeated calls with the SAME file and window set,
+# so any growth is retention and not the audio):
+#
+#   leak per `_decode_windows_streaming` call = ~5 MiB x n_windows. It is per BRANCH, not per
+#   sample: 10 / 20 / 40 windows leak 50.2 / 100.4 / 200.9 MB, while 20 windows of 15 s, 30 s
+#   and 60 s all leak the same 100.4 MB. Per-branch retention held at 5.03-5.34 MiB at 44.1 kHz
+#   and 4.22-5.16 MiB at 16 kHz across every shape tried.
+#
+# AND IT IS THE CHUNK GATE THAT DOES IT -- the single most useful fact here, because it is what
+# makes the bug phaze-w55w1's and not phaze-5lop's. Holding file, window set and span fixed and
+# varying ONLY `stop_at_sec`: gated leaks 5.14 MiB/branch, ungated leaks 0.02. The gate is the
+# `Trimmer` hung STRAIGHT off the loader with no `Scale` interposer (see
+# `_decode_windows_streaming`'s docstring for why it must be), and a network that is merely
+# BUILT with one and never run already leaks the full amount, so the retention is created at
+# CONNECT time and not by the decode. A bare `MonoLoader`, a loader plus gate with no fan-out,
+# and unconnected `Trimmer`/`Scale` algorithms are all FLAT across rounds. That also explains
+# phaze-b2qs9 §2b's control cleanly: the pre-w55w1 capped code has no gate, and its peak moved
+# +1.3% across a 4x duration span.
+#
+# Two corollaries worth keeping, because both mislead:
+#   - The per-branch constant predicts BOTH of phaze-b2qs9's slopes from one number: 60 fine
+#     branches x ~5 MiB = ~0.29 GiB per fine chunk (measured +0.3108) and 30 coarse branches
+#     x ~5 MiB = ~0.15 GiB per coarse chunk (measured +0.13 +/- 0.02).
+#   - The near-match to the ~317 MB of live fine PCM is a COINCIDENCE. The leak does not scale
+#     with window length at all, and reading it as "the PCM is retained" sends the next
+#     investigation at the buffers instead of at the edges.
+#
+# THE FIX, AND IT HAS TWO HALVES -- EITHER ALONE LEAVES THE CURVE LINEAR.
+#
+#   1. DISCONNECT every edge before dropping the algorithms. `_StreamConnector.disconnect` wraps
+#      `_essentia.disconnect` / `poolDisconnect`, the only exposed calls that release the C++
+#      side, so `_disconnect_network` walks each algorithm's `connections` map and severs it.
+#   2. `gc.collect()` after the frame is gone. Every streaming algorithm is born into a
+#      reference CYCLE: `StreamingAlgo.__init__` builds a `_StreamConnector(self, self, name)`
+#      and stores it as a KEY of `self.connections`, so the algorithm reaches itself through its
+#      own connection map. Refcounting therefore never destroys the proxy, and the C++
+#      algorithm -- which owns buffers of its own -- dies only when the proxy does. The collect
+#      lives in `_decode_windows`, not in the `finally` below, because inside that `finally` the
+#      frame's own locals (`source` still holds the gate's connector) keep the network reachable
+#      and the collect would be a no-op.
+#
+# Measured on the same probe, 20 windows x 8 calls of the SHIPPED function: before, RSS
+# 650 -> 1181 MB still climbing +106 MB/call; after, high-water reaches 654.7 MB on call 1 and
+# does not move again through call 8. Decoded output is byte-identical (asserted in
+# `tests/analyze/services/pipeline/test_analysis_streaming_decode.py`).
+#
+# WHY IT RUNS IN A `finally` AND SWALLOWS. A half-built network -- the build raised partway
+# through the branch loop -- still holds edges, and that is exactly the path where leaking is
+# least affordable because `_decode_windows` is about to RETRY the same chunk ungated. The
+# teardown therefore runs on every exit and never raises: a disconnect that fails must not
+# replace the caller's exception with its own, so it is logged and the walk continues.
+#
+# VERIFIED ON VOX, 2026-08-13 -- the numbers above are macOS, and this paragraph is the reason
+# they are not the whole story. `docs/spikes/phaze-u1n7j-vox-fix-verification.md` has the full
+# record; the load-bearing results, all on the deployed image against the SAME real corpus files
+# phaze-b2qs9 measured, on the same node, peak from `wait4()` `ru_maxrss`:
+#
+#   band          fine chunks   before (GiB)   after (GiB)   wall delta
+#   1:00                    2        2.1107        1.4985       -0.22%
+#   4:00                    8        4.1854        1.6500       -0.52%
+#   12:04                  25       10.2768        1.6725       -0.83%
+#
+# Three things in that table are worth more than the headline. **The 12-hour file needed 2.57x
+# the deployed 4Gi limit and now sits at 41.8% of it.** **Wall clock did not move** -- this fix
+# recreates nothing per chunk, it severs edges the teardown already meant to release, and the
+# isolated chunk loop measured 60.0-60.7 s per gated chunk on both arms. And the same file
+# analyzed before and after returns a **byte-identical** 128 118-byte result payload, every
+# window and every feature, so the `gc.collect()` through the reference cycle perturbs nothing.
+#
+# READ THE RESIDUE CORRECTLY, because the obvious reading is wrong. 1:00 -> 12:04 is +11.6%, but
+# that is not a slope: `_COARSE_CHUNK_WINDOWS = 30` and the 1-hour file is the only one whose
+# coarse chunk is PART FULL (20 windows), so it sits one bounded step below every longer file.
+# Between the two bands that both have full coarse chunks the spread is **+1.4% for 3.1x the
+# fine chunks** -- a residual 0.0013 GiB/chunk against the defect's 0.3108, i.e. 99.6% of the
+# slope gone, and what is left is capped by the chunk size rather than by the file's length.
+#
+# AND IT IS NOT GLIBC. Arena fragmentation was the standing candidate a macOS-only diagnosis
+# could not rule out. Under Debian 13 / glibc 2.41 the shipped chunk loop retains 5.42 MiB per
+# window branch before this fix (macOS: 5.14) and 0.00 after, and `scripts/
+# essentia_gated_network_leak.py` -- which imports NO phaze at all -- shows the same 5.28 MiB
+# per branch and goes flat under `--teardown disconnect`. Two allocators, one constant. Its
+# `--no-gate` arm is flat on the broken teardown, which is what pins the retention to the GATE.
+def _disconnect_network(algos: Sequence[Any]) -> None:
+    """Sever every connection held by ``algos`` so essentia releases the C++ side (D-09).
+
+    Dropping a streaming algorithm's Python proxy does NOT free its connection buffers or the
+    ``PoolStorage`` a Pool sink creates; only an explicit disconnect does. Without this, each
+    chunk decode leaks ~5 MB per window branch and whole-process peak RSS grows linearly with
+    the file's duration until the pod is OOMKilled (phaze-b2qs9 measured it; phaze-u1n7j found
+    it here).
+
+    Tolerant by construction: it accepts a partially built network (``None`` entries, algorithms
+    with no ``connections`` map, edges already severed) because its most important caller is the
+    failure path. It never raises.
+    """
+    for algo in algos:
+        # Snapshot both levels BEFORE touching anything, and inside the guard: `disconnect`
+        # mutates the very list it is iterating, and `connections` is whatever the object
+        # happens to carry -- on the failure path that includes objects this module never
+        # built. Reading it must not be the thing that raises out of a `finally`.
+        try:
+            edges = [
+                (connector, target) for connector, targets in list((getattr(algo, "connections", None) or {}).items()) for target in list(targets)
+            ]
+        except Exception:
+            log.warning("could not read a streaming algorithm's connections; its network will leak", exc_info=True)
+            continue
+        for connector, target in edges:
+            try:
+                connector.disconnect(target)
+            except Exception:  # a stuck edge leaks, but must never mask the caller's error
+                log.warning("failed to disconnect a streaming edge; this chunk's network will leak", exc_info=True)
+
+
+def _release_decode_network() -> None:
+    """Complete a chunk decode's teardown: collect the network's proxies, then trim (D-09).
+
+    The second half of the phaze-u1n7j fix, and it must run OUTSIDE
+    :func:`_decode_windows_streaming` -- that function's own ``finally`` still has ``source``
+    bound to the gate's connector, so the network is reachable there and a collect would do
+    nothing. By the time this runs the frame is gone and the only thing keeping each streaming
+    algorithm alive is the reference cycle it was born with (``self.connections`` is keyed by a
+    connector holding ``self``), which is exactly what the cyclic collector is for.
+
+    The ``malloc_trim`` that follows is unchanged and still the phaze-rc1q backstop; it is
+    ordered after the collect deliberately, so it trims pages the collect has just freed rather
+    than pages it is about to.
+    """
+    gc.collect()
+    _malloc_trim()
 
 
 def _chunked(windows: list[tuple[int, float, float]], size: int) -> list[list[tuple[int, float, float]]]:
@@ -913,8 +1078,14 @@ def _decode_windows_streaming(
             decoded[idx] = buf
         return decoded
     finally:
-        # Drop the network before returning: the branches are what hold the per-window
-        # C++ sinks, and the caller's `_malloc_trim` can only return pages that are free.
+        # Drop the network before returning. Clearing `branches` and deleting the names is NOT
+        # sufficient and was the phaze-u1n7j defect: it frees the Python proxies and leaves
+        # essentia's C++ connection buffers -- ~5 MB per branch -- live, so every chunk leaked
+        # one network's worth and peak RSS grew linearly with duration until the pod OOMKilled.
+        # The edges must be severed explicitly; see D-09. Branches first, then the shared head
+        # of the fan-out (gate, then loader) -- teardown measured flat in either direction, so
+        # this order is for readability, not correctness.
+        _disconnect_network([*(algo for branch in branches for algo in branch), gate, loader])
         branches.clear()
         del loader, pool, gate
 
@@ -988,12 +1159,12 @@ def _decode_windows(
                     on_skip(idx, start, end, True)
                 _beat()  # per WINDOW, and outside the try: a skip is progress too, and this loop's
                 # silence is what would otherwise get the whole fallback killed as stalled.
-            _malloc_trim()
+            _release_decode_network()
             return decoded
     for idx, start, end in windows:
         if idx not in decoded:
             on_skip(idx, start, end, False)
-    _malloc_trim()
+    _release_decode_network()
     return decoded
 
 
