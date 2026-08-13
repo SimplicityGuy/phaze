@@ -1,7 +1,7 @@
-From 0f25928715f16f9bd5aadb31daeaddc9e3272527 Mon Sep 17 00:00:00 2001
+From e468720dd284ac0ef52a2b1a0a5a5994f99f5f11 Mon Sep 17 00:00:00 2001
 From: SimplicityGuy <robert@simplicityguy.com>
 Date: Wed, 12 Aug 2026 18:18:16 -0700
-Subject: [PATCH 3/3] feat(audioloader): add startTime/endTime seeking to
+Subject: [PATCH 3/5] feat(audioloader): add startTime/endTime seeking to
  AudioLoader and MonoLoader
 
 Closes the head of #771. EasyLoader has exposed startTime/endTime since forever,
@@ -26,11 +26,23 @@ a packet boundary, and the packet it lands on is not independently decodable --
 MP3 carries a bit reservoir between frames and every MDCT codec needs the
 previous window. So we deliberately land before the target, decode forward
 discarding output until the exact requested sample, and only then start
-producing. The exact sample is located from the first decoded frame's pts (hence
-the preceding pkt_timebase fix), NOT assumed to be the packet boundary.
+producing. The exact sample is located from the first decoded frame's pts, NOT
+assumed to be the packet boundary, which is why setting pkt_timebase (submitted
+separately) matters for Ogg/Opus.
 
-Verified against the decode-from-zero-and-trim path on synthetic audio at
-several offsets:
+Seconds are converted to samples the way Trimmer has always done it -- truncation
+-- so that the composites which already expose these parameters can be switched
+over to seeking without moving a single sample. The multiplication is done in
+double rather than in Real: Trimmer's float32 mantissa cannot represent every
+sample index past ~380 s at 44.1 kHz, so its cut points drift off the sample grid
+on long files, and there is no reason to reproduce that here.
+
+An inverted range (startTime > endTime) is an error, as it already was; an EMPTY
+range (startTime == endTime) is not, and yields no audio, which is also what
+Trimmer does today.
+
+Verified against the decode-from-zero-and-trim path on synthetic audio at several
+offsets:
 
   wav / mp3 / flac    bit-identical
   ogg (Opus)          bit-identical, apart from one 2^-24 ULP at one offset
@@ -49,31 +61,36 @@ That is exactly today's behaviour -- slow, but correct -- so no format that
 works now can break.
 
 MonoLoader forwards both parameters. Note that when it also RESAMPLES, the
-resampled output is not bit-identical to a from-zero decode, because
+resampled output is not bit-identical to a from-zero decode, at either end:
 libsamplerate's filter state and phase accumulator depend on how much input it
-has already seen; measured at -49 dB relative RMS, with BPM and key estimates
-unchanged. EasyLoader is deliberately left alone in this commit so its existing
-semantics are untouched.
+has already seen, and its last output samples depend on input past the end of the
+slice. Measured at -49 dB relative RMS, with BPM and key estimates unchanged.
+
+Signed-off-by: SimplicityGuy <robert@simplicityguy.com>
 ---
- src/algorithms/io/audioloader.cpp | 159 +++++++++++++++++++++++++++++-
+ src/algorithms/io/audioloader.cpp | 171 +++++++++++++++++++++++++++++-
  src/algorithms/io/audioloader.h   |  18 +++-
  src/algorithms/io/monoloader.cpp  |   8 +-
  src/algorithms/io/monoloader.h    |   4 +
- 4 files changed, 181 insertions(+), 8 deletions(-)
+ 4 files changed, 193 insertions(+), 8 deletions(-)
 
 diff --git a/src/algorithms/io/audioloader.cpp b/src/algorithms/io/audioloader.cpp
-index 69f2344..33208b6 100644
+index 89bd331b..017bec84 100644
 --- a/src/algorithms/io/audioloader.cpp
 +++ b/src/algorithms/io/audioloader.cpp
-@@ -45,10 +45,112 @@ void AudioLoader::configure() {
+@@ -45,10 +45,124 @@ void AudioLoader::configure() {
      av_log_set_level(AV_LOG_QUIET);   // choices: {AV_LOG_VERBOSE, AV_LOG_QUIET}
      _computeMD5 = parameter("computeMD5").toBool();
      _selectedStream = parameter("audioStream").toInt();
 +
 +    _startTime = parameter("startTime").toReal();
 +    _endTime   = parameter("endTime").toReal();
-+    if (_endTime <= _startTime) {
-+        throw EssentiaException("AudioLoader: 'endTime' must be larger than 'startTime'");
++    // Same rule Trimmer has always enforced for the composites that expose these parameters
++    // (EasyLoader, EqloudLoader): an inverted range is an error, an EMPTY range is not -- it
++    // simply yields no audio. Rejecting startTime == endTime here would break callers that
++    // work today.
++    if (_endTime < _startTime) {
++        throw EssentiaException("AudioLoader: 'startTime' cannot be larger than 'endTime'");
 +    }
 +
      reset();
@@ -114,8 +131,16 @@ index 69f2344..33208b6 100644
 +    _anchorPending   = false;
 +
 +    int sampleRate = _audioCtx->sample_rate;
-+    _startSample = (int64_t)(_startTime * sampleRate + 0.5);
-+    _endSample   = (_endTime >= 1.0e6) ? -1 : (int64_t)(_endTime * sampleRate + 0.5);
++
++    // TRUNCATION, not rounding, and in double: this is exactly Trimmer's seconds -> samples
++    // rule, which is what EasyLoader/EqloudLoader have always used to cut their slices. Keeping
++    // the same rule is what allows those composites to switch from decode-and-trim to seeking
++    // without moving a single sample. (Trimmer does the multiplication in Real, i.e. float32,
++    // whose 24-bit mantissa cannot represent every sample index past ~380 s at 44.1 kHz; doing
++    // it in double here removes that drift, so a slice taken deep into a long file lands where
++    // the parameters say it should.)
++    _startSample = (int64_t)((double)_startTime * sampleRate);
++    _endSample   = (_endTime >= 1.0e6) ? -1 : (int64_t)((double)_endTime * sampleRate);
 +
 +    if (_startSample <= 0) return;   // nothing to seek to
 +
@@ -178,7 +203,7 @@ index 69f2344..33208b6 100644
  void AudioLoader::openAudioFile(const string& filename) {
      E_DEBUG(EAlgorithm, "AudioLoader: opening file: " << filename);
  
-@@ -160,6 +262,10 @@ void AudioLoader::openAudioFile(const string& filename) {
+@@ -153,6 +267,10 @@ void AudioLoader::openAudioFile(const string& filename) {
      }
  
      av_md5_init(_md5Encoded);
@@ -189,7 +214,7 @@ index 69f2344..33208b6 100644
  }
  
  
-@@ -271,7 +377,18 @@ AlgorithmStatus AudioLoader::process() {
+@@ -264,7 +382,18 @@ AlgorithmStatus AudioLoader::process() {
      
      // needs to be freed using modern API !!
      av_packet_unref(&_packet);
@@ -209,7 +234,7 @@ index 69f2344..33208b6 100644
      return OK;
  }
  
-@@ -492,6 +609,35 @@ void AudioLoader::copyFFmpegOutput() {
+@@ -485,6 +614,35 @@ void AudioLoader::copyFFmpegOutput() {
      int nsamples = _dataSize / (bytesPerSample * _nChannels);
      if (nsamples == 0) return;
  
@@ -245,7 +270,7 @@ index 69f2344..33208b6 100644
      // acquire necessary data
      bool ok = _audio.acquire(nsamples);
      if (!ok) {
-@@ -504,16 +650,17 @@ void AudioLoader::copyFFmpegOutput() {
+@@ -497,16 +655,17 @@ void AudioLoader::copyFFmpegOutput() {
  
      if (_nChannels == 1) {
          for (int i=0; i<nsamples; i++) {
@@ -266,7 +291,7 @@ index 69f2344..33208b6 100644
      _audio.release(nsamples);
  }
  
-@@ -575,7 +722,9 @@ void AudioLoader::createInnerNetwork() {
+@@ -568,7 +727,9 @@ void AudioLoader::createInnerNetwork() {
  void AudioLoader::configure() {
      _loader->configure(INHERIT("filename"),
                         INHERIT("computeMD5"),
@@ -278,7 +303,7 @@ index 69f2344..33208b6 100644
  
  void AudioLoader::compute() {
 diff --git a/src/algorithms/io/audioloader.h b/src/algorithms/io/audioloader.h
-index 7c18886..4c9cc20 100644
+index 7c188866..4c9cc205 100644
 --- a/src/algorithms/io/audioloader.h
 +++ b/src/algorithms/io/audioloader.h
 @@ -67,9 +67,19 @@ class AudioLoader : public Algorithm {
@@ -331,7 +356,7 @@ index 7c18886..4c9cc20 100644
  
    void configure();
 diff --git a/src/algorithms/io/monoloader.cpp b/src/algorithms/io/monoloader.cpp
-index f360308..85a10f9 100644
+index f360308b..85a10f9c 100644
 --- a/src/algorithms/io/monoloader.cpp
 +++ b/src/algorithms/io/monoloader.cpp
 @@ -60,7 +60,9 @@ void MonoLoader::configure() {
@@ -357,7 +382,7 @@ index f360308..85a10f9 100644
  
  void MonoLoader::compute() {
 diff --git a/src/algorithms/io/monoloader.h b/src/algorithms/io/monoloader.h
-index eebaa4f..6c8b770 100644
+index eebaa4fc..6c8b7702 100644
 --- a/src/algorithms/io/monoloader.h
 +++ b/src/algorithms/io/monoloader.h
 @@ -57,6 +57,8 @@ class MonoLoader : public AlgorithmComposite {

@@ -1,0 +1,410 @@
+From febfee0a7f318f2af4770dda5630a9dd84722797 Mon Sep 17 00:00:00 2001
+From: SimplicityGuy <robert@simplicityguy.com>
+Date: Wed, 12 Aug 2026 21:00:41 -0700
+Subject: [PATCH 5/5] test(io): cover startTime/endTime seeking and its
+ boundary cases
+
+Extends the four existing loader test files rather than adding a layout, and uses
+only fixtures that are already in test/audio.
+
+Every accuracy test compares against the same reference: read the whole file, cut
+the slice out afterwards. That is what a caller had to do before there was a
+seek, so agreeing with it is the definition of correct. Covered per container --
+wav, mp3, flac, ogg -- at several offsets, including one that is not a whole
+number of samples, so the seconds-to-samples rule is pinned too.
+
+Boundary cases: startTime 0, endTime past EOF, endTime exactly at EOF, startTime
+past EOF (empty, not an error), an empty slice, an inverted slice (an error), and
+a file shorter than the seek preroll.
+
+AAC is asserted as a documented expectation rather than skipped: the slice must
+match to within a stated tolerance, and the comment says why exactness is
+impossible there (Perceptual Noise Substitution) and what proves it is the
+codec's doing rather than the loader's.
+
+EasyLoader and EqloudLoader additionally assert that a RESAMPLED slice is still
+bit-identical to a full read, which is what holds them to the old path in that
+case.
+
+Mutation-checked, so these are not tests that only pass: removing the preroll
+fails 8 of them, converting seconds to samples by rounding instead of truncating
+fails 4, and ignoring endTime fails 21.
+
+Signed-off-by: SimplicityGuy <robert@simplicityguy.com>
+---
+ .../io/test_audioloader_streaming.py          | 111 ++++++++++++++++++
+ .../unittests/io/test_easyloader_streaming.py | 101 ++++++++++++++++
+ .../io/test_eqloudloader_streaming.py         |  51 ++++++++
+ test/src/unittests/io/test_monoloader.py      |  60 ++++++++++
+ 4 files changed, 323 insertions(+)
+
+diff --git a/test/src/unittests/io/test_audioloader_streaming.py b/test/src/unittests/io/test_audioloader_streaming.py
+index bfcba0de..04fac895 100644
+--- a/test/src/unittests/io/test_audioloader_streaming.py
++++ b/test/src/unittests/io/test_audioloader_streaming.py
+@@ -143,6 +143,117 @@ class TestAudioLoader_Streaming(TestCase):
+         self.compressed(22050, join(mp3path, 'impulses_1second_22050.mp3'))
+         self.compressed(22050, join(mp3path, 'impulses_1second_22050_st.mp3'), True)
+ 
++    # ------------------------------------------------------------------------------------
++    # startTime / endTime -- issue #771
++    #
++    # The reference for all of these is the decode-and-discard path: decode the whole file
++    # and cut the slice out afterwards. That is exactly what a caller had to do before, so
++    # agreeing with it IS the definition of a correct seek. Slices are cut with Trimmer's
++    # seconds -> samples rule, which is the rule the loader uses as well.
++
++    def slice(self, audio, sampleRate, startTime, endTime):
++        return numpy.array(audio)[int(startTime*sampleRate):int(endTime*sampleRate)]
++
++    def seeked(self, filename, startTime, endTime):
++        from essentia.standard import AudioLoader as stdAudioLoader
++        audio, _, _, _, _, _ = stdAudioLoader(filename=filename,
++                                              startTime=startTime,
++                                              endTime=endTime)()
++        return numpy.array(audio)
++
++    def sliceIsExact(self, filename, spans):
++        from essentia.standard import AudioLoader as stdAudioLoader
++        filename = join(testdata.audio_dir, filename)
++        whole, sampleRate, _, _, _, _ = stdAudioLoader(filename=filename)()
++        for startTime, endTime in spans:
++            found = self.seeked(filename, startTime, endTime)
++            expected = self.slice(whole, sampleRate, startTime, endTime)
++            self.assertEqual(len(found), len(expected))
++            self.assert_(numpy.array_equal(found, expected),
++                         'seeking to %s s did not reproduce the decode-and-discard reference'
++                         % startTime)
++
++    def testSeekPcm(self):
++        spans = [(0., 2.), (1., 3.), (12.345, 14.345), (30., 45.)]
++        self.sliceIsExact(join('recorded', 'musicbox.wav'), spans)
++
++    def testSeekFlac(self):
++        self.sliceIsExact(join('recorded', 'dubstep.flac'), [(0., 2.), (1.5, 3.5), (4., 6.)])
++
++    def testSeekMp3(self):
++        self.sliceIsExact(join('recorded', 'techno_loop.mp3'),
++                          [(0., 2.), (1.5, 3.5), (10., 12.), (25., 30.)])
++
++    def testSeekOgg(self):
++        self.sliceIsExact(join('recorded', 'dubstep.ogg'), [(0., 2.), (1.5, 3.5), (4., 6.)])
++
++    def testSeekAac(self):
++        # AAC is the one format a seek cannot reproduce exactly, and it is the codec's doing,
++        # not the loader's: Perceptual Noise Substitution synthesises noise bands from a PRNG
++        # whose state depends on the whole decode history, so a decoder that starts anywhere
++        # but at sample 0 fills those bands with different noise. No amount of preroll fixes
++        # it (the residual is flat from 0.05 s to 10 s of preroll) and it disappears entirely
++        # when the same audio is encoded with -aac_pns 0. The affected bands are synthesised
++        # noise by construction, so this is a documented expectation, not a defect.
++        from essentia.standard import AudioLoader as stdAudioLoader
++        filename = join(testdata.audio_dir, 'recorded', 'dubstep.aac')
++        whole, sampleRate, _, _, _, _ = stdAudioLoader(filename=filename)()
++        for startTime, endTime in [(1.5, 3.5), (4., 6.)]:
++            found = self.seeked(filename, startTime, endTime)
++            expected = self.slice(whole, sampleRate, startTime, endTime)
++            self.assertEqual(len(found), len(expected))
++            self.assertAlmostEqualVectorAbs(found.flatten(), expected.flatten(), 5e-2)
++
++    def testSeekBoundaries(self):
++        from essentia.standard import AudioLoader as stdAudioLoader
++        filename = join(testdata.audio_dir, 'recorded', 'musicbox.wav')
++        whole, sampleRate, _, _, _, _ = stdAudioLoader(filename=filename)()
++        duration = len(whole) / float(sampleRate)
++
++        # startTime 0 with no endTime is the default, and must still read the whole file
++        self.assert_(numpy.array_equal(self.seeked(filename, 0., 1e6), numpy.array(whole)))
++
++        # an endTime past the end of the file simply stops at the end of the file
++        found = self.seeked(filename, duration - 1., duration + 100.)
++        self.assert_(numpy.array_equal(found, self.slice(whole, sampleRate, duration - 1., 1e6)))
++
++        # so does an endTime landing exactly on it
++        self.assert_(numpy.array_equal(self.seeked(filename, 0., duration), numpy.array(whole)))
++
++        # a startTime past the end of the file yields nothing at all, it is not an error
++        self.assertEqual(len(self.seeked(filename, duration + 10., duration + 20.)), 0)
++
++        # neither is an empty slice: startTime == endTime yields no samples
++        self.assertEqual(len(self.seeked(filename, 0., 0.)), 0)
++        self.assertEqual(len(self.seeked(filename, 1., 1.)), 0)
++
++        # an INVERTED slice is an error, as it has always been for the algorithms that
++        # expose these parameters
++        self.assertConfigureFails(sAudioLoader(), {'filename': filename,
++                                                   'startTime': 10., 'endTime': 1.})
++        self.assertConfigureFails(sAudioLoader(), {'filename': filename, 'startTime': -1.})
++        self.assertConfigureFails(sAudioLoader(), {'filename': filename, 'endTime': -1.})
++
++    def testSeekShortFile(self):
++        # a file shorter than the seek preroll must still come back with the right audio
++        from essentia.standard import AudioLoader as stdAudioLoader
++        filename = join(testdata.audio_dir, 'recorded', 'vignesh.wav')
++        whole, sampleRate, _, _, _, _ = stdAudioLoader(filename=filename)()
++        for startTime, endTime in [(0.1, 0.2), (2., 3.), (0.25, 1e6)]:
++            found = self.seeked(filename, startTime, endTime)
++            expected = self.slice(whole, sampleRate, startTime, endTime)
++            self.assertEqual(len(found), len(expected))
++            self.assert_(numpy.array_equal(found, expected))
++
++    def testSeekedMD5(self):
++        # a slice does not read the whole payload, so its md5 cannot be the file's md5;
++        # report nothing rather than a checksum that means nothing.
++        from essentia.standard import AudioLoader as stdAudioLoader
++        filename = join(testdata.audio_dir, 'recorded', 'dubstep.wav')
++        _, _, _, md5, _, _ = stdAudioLoader(filename=filename, computeMD5=True,
++                                            startTime=1., endTime=2.)()
++        self.assertEqual(md5, '')
++
+     def testInvalidFile(self):
+         for ext in ['wav', 'aiff', 'flac', 'mp3', 'ogg']:
+             self.assertRaises(RuntimeError, lambda: sAudioLoader(filename='unknown.'+ext))
+diff --git a/test/src/unittests/io/test_easyloader_streaming.py b/test/src/unittests/io/test_easyloader_streaming.py
+index d36d536e..4349c2c2 100644
+--- a/test/src/unittests/io/test_easyloader_streaming.py
++++ b/test/src/unittests/io/test_easyloader_streaming.py
+@@ -66,6 +66,107 @@ class TestEasyLoader_Streaming(TestCase):
+         self.load(44100, 48000, filename, "right", -15., 3.34, 5.68)
+         self.load(44100, 11025, filename, "mix"  , 30., 0.168, 8.32)
+ 
++    # ------------------------------------------------------------------------------------
++    # startTime / endTime are no longer applied by a Trimmer after decoding everything: the
++    # loader seeks (issue #771). That has to be invisible to callers, so every test below
++    # compares against the decode-and-discard path -- read the whole file, cut the slice out
++    # afterwards -- which is what this algorithm used to compute.
++
++    def readSlice(self, filename, sampleRate, startTime, endTime, replayGain=-6.):
++        loader = EasyLoader(filename=filename, sampleRate=sampleRate, downmix='mix',
++                            startTime=startTime, endTime=endTime, replayGain=replayGain)
++        pool = Pool()
++        loader.audio >> (pool, 'audio')
++        run(loader)
++        if 'audio' not in pool.descriptorNames():
++            return numpy.array([], dtype='float32')
++        return numpy.array(pool['audio'])
++
++    def slice(self, audio, sampleRate, startTime, endTime):
++        return audio[int(startTime*sampleRate):int(endTime*sampleRate)]
++
++    def sliceIsExact(self, name, sampleRate, spans):
++        filename = join(testdata.audio_dir, name)
++        whole = self.readSlice(filename, sampleRate, 0., 1e6)
++        for startTime, endTime in spans:
++            found = self.readSlice(filename, sampleRate, startTime, endTime)
++            expected = self.slice(whole, sampleRate, startTime, endTime)
++            self.assertEqual(len(found), len(expected))
++            self.assert_(numpy.array_equal(found, expected),
++                         '%s: the slice [%s, %s) is not the one a full read would give'
++                         % (name, startTime, endTime))
++
++    def testSeekPcm(self):
++        self.sliceIsExact(join('recorded', 'musicbox.wav'), 44100,
++                          [(0., 2.), (1.5, 3.5), (12.345, 14.345), (30., 45.)])
++
++    def testSeekMp3(self):
++        self.sliceIsExact(join('recorded', 'techno_loop.mp3'), 44100,
++                          [(0., 2.), (1.5, 3.5), (10., 12.), (25., 30.)])
++
++    def testSeekFlac(self):
++        self.sliceIsExact(join('recorded', 'dubstep.flac'), 44100,
++                          [(0., 2.), (1.5, 3.5), (4., 6.)])
++
++    def testSeekOgg(self):
++        self.sliceIsExact(join('recorded', 'dubstep.ogg'), 44100,
++                          [(0., 2.), (1.5, 3.5), (4., 6.)])
++
++    def testSeekResampledIsUnchanged(self):
++        # A resampled slice is NOT seeked, deliberately: libsamplerate's output depends on
++        # how much input it has already consumed, so a converter started at startTime does
++        # not reproduce one started at 0 (about -49 dB relative, uniformly, and no bounded
++        # preroll removes it). Rather than silently move every existing caller's output,
++        # EasyLoader keeps the decode-and-trim path whenever it has to resample. This test
++        # is what says so: the result must stay bit-identical to a full read.
++        self.sliceIsExact(join('recorded', 'musicbox.wav'), 22050, [(1.5, 3.5), (5., 6.)])
++        self.sliceIsExact(join('recorded', 'guitar_triads.flac'), 44100, [(1.5, 3.5), (5., 6.)])
++
++    def testSeekReplayGain(self):
++        # the gain is applied after the slice, so seeking must not disturb it either
++        filename = join(testdata.audio_dir, 'recorded', 'musicbox.wav')
++        whole = self.readSlice(filename, 44100, 0., 1e6, replayGain=-12.)
++        found = self.readSlice(filename, 44100, 2., 4., replayGain=-12.)
++        self.assertEqualVector(found, self.slice(whole, 44100, 2., 4.))
++
++    def testSeekBoundaries(self):
++        filename = join(testdata.audio_dir, 'recorded', 'musicbox.wav')
++        whole = self.readSlice(filename, 44100, 0., 1e6)
++        duration = len(whole)/44100.
++
++        # startTime 0 and no endTime is the default: the whole file
++        self.assertEqual(len(whole), 2003649)
++
++        # an endTime past the end of the file stops at the end of the file
++        found = self.readSlice(filename, 44100, duration - 1., duration + 100.)
++        self.assertEqualVector(found, self.slice(whole, 44100, duration - 1., 1e6))
++
++        # an endTime landing exactly on it reads everything
++        self.assertEqual(len(self.readSlice(filename, 44100, 0., duration)), len(whole))
++
++        # a startTime past the end of the file is empty, not an error
++        self.assertEqual(len(self.readSlice(filename, 44100, duration + 10., duration + 20.)), 0)
++
++        # and so is an empty slice
++        self.assertEqual(len(self.readSlice(filename, 44100, 0., 0.)), 0)
++        self.assertEqual(len(self.readSlice(filename, 44100, 3., 3.)), 0)
++
++    def testSeekShortFile(self):
++        # shorter than the seek preroll, so the seek lands at the start of the stream
++        self.sliceIsExact(join('recorded', 'vignesh.wav'), 44100,
++                          [(0.1, 0.2), (2., 3.), (0.25, 1e6)])
++
++    def testSeekStandard(self):
++        from essentia.standard import EasyLoader as stdEasyLoader
++        filename = join(testdata.audio_dir, 'recorded', 'musicbox.wav')
++        whole = numpy.array(stdEasyLoader(filename=filename)())
++        for startTime, endTime in [(1.5, 3.5), (12.345, 14.345)]:
++            found = numpy.array(stdEasyLoader(filename=filename, startTime=startTime,
++                                              endTime=endTime)())
++            expected = self.slice(whole, 44100, startTime, endTime)
++            self.assertEqual(len(found), len(expected))
++            self.assert_(numpy.array_equal(found, expected))
++
+     def testInvalidParam(self):
+         filename = join(testdata.audio_dir, 'generated','synthesised','impulse','resample',
+                         'impulses_1samp_44100.wav')
+diff --git a/test/src/unittests/io/test_eqloudloader_streaming.py b/test/src/unittests/io/test_eqloudloader_streaming.py
+index 8cc5c1ab..118cb107 100644
+--- a/test/src/unittests/io/test_eqloudloader_streaming.py
++++ b/test/src/unittests/io/test_eqloudloader_streaming.py
+@@ -69,6 +69,57 @@ class TestEqloudLoader_Streaming(TestCase):
+ 
+ 
+ 
++    # ------------------------------------------------------------------------------------
++    # EqloudLoader gained the same seeking as EasyLoader (issue #771), and the same
++    # obligation: the slice it returns must be the slice a full read would have given.
++
++    def readSlice(self, filename, sampleRate, startTime, endTime):
++        loader = EqloudLoader(filename=filename, sampleRate=sampleRate, downmix='mix',
++                              startTime=startTime, endTime=endTime, replayGain=-6.)
++        pool = Pool()
++        loader.audio >> (pool, 'audio')
++        run(loader)
++        if 'audio' not in pool.descriptorNames():
++            return numpy.array([], dtype='float32')
++        return numpy.array(pool['audio'])
++
++    def sliceIsExact(self, name, sampleRate, spans):
++        # The reference cannot be a slice of a full EqloudLoader read: the equal-loudness
++        # filter is an IIR whose state depends on everything it has already seen, so a slice
++        # of a whole-file read has never equalled a read of that slice, patch or no patch.
++        # EqloudLoader IS EasyLoader followed by EqualLoudness, so compose the reference
++        # that way instead -- exact, and independent of where the loader started.
++        from essentia.standard import EqualLoudness
++        filename = join(testdata.audio_dir, name)
++        for startTime, endTime in spans:
++            found = self.readSlice(filename, sampleRate, startTime, endTime)
++            easy = EasyLoader(filename=filename, sampleRate=sampleRate, downmix='mix',
++                              startTime=startTime, endTime=endTime, replayGain=-6.)
++            pool = Pool()
++            easy.audio >> (pool, 'audio')
++            run(easy)
++            expected = EqualLoudness(sampleRate=sampleRate)(pool['audio'])
++            self.assertEqual(len(found), len(expected))
++            self.assertAlmostEqualVector(found, expected, 1e-6)
++
++    def testSeek(self):
++        self.sliceIsExact(join('recorded', 'musicbox.wav'), 44100,
++                          [(0., 2.), (1.5, 3.5), (12.345, 14.345)])
++        self.sliceIsExact(join('recorded', 'techno_loop.mp3'), 44100,
++                          [(1.5, 3.5), (25., 30.)])
++
++    def testSeekResampledIsUnchanged(self):
++        # see EasyLoader: a resampled slice deliberately keeps the decode-and-trim path
++        self.sliceIsExact(join('recorded', 'musicbox.wav'), 32000, [(1.5, 3.5), (5., 6.)])
++
++    def testSeekBoundaries(self):
++        filename = join(testdata.audio_dir, 'recorded', 'musicbox.wav')
++        whole = self.readSlice(filename, 44100, 0., 1e6)
++        duration = len(whole)/44100.
++        self.assertEqual(len(self.readSlice(filename, 44100, 0., duration)), len(whole))
++        self.assertEqual(len(self.readSlice(filename, 44100, duration + 10., duration + 20.)), 0)
++        self.assertEqual(len(self.readSlice(filename, 44100, 3., 3.)), 0)
++
+     def testInvalidParam(self):
+         filename = join(testdata.audio_dir, 'generated','synthesised','impulse','resample',
+                         'impulses_1samp_44100.wav')
+diff --git a/test/src/unittests/io/test_monoloader.py b/test/src/unittests/io/test_monoloader.py
+index ea60080b..e9ae118b 100644
+--- a/test/src/unittests/io/test_monoloader.py
++++ b/test/src/unittests/io/test_monoloader.py
+@@ -232,6 +232,66 @@ class TestMonoLoader(TestCase):
+     def testInvalidFilename(self):
+         self.assertConfigureFails(MonoLoader(),{'filename':'unknown.wav'})
+ 
++    # ------------------------------------------------------------------------------------
++    # startTime / endTime -- issue #771. MonoLoader forwards them to AudioLoader, which
++    # seeks. The reference is the decode-and-discard path: load the whole file and cut the
++    # slice out afterwards, using Trimmer's seconds -> samples rule.
++
++    def slice(self, audio, sampleRate, startTime, endTime):
++        return numpy.array(audio)[int(startTime*sampleRate):int(endTime*sampleRate)]
++
++    def testSeek(self):
++        # at the file's own rate Resample is a fastcopy, so the seeked read is EXACT
++        for name, sampleRate in [(join('recorded', 'musicbox.wav'), 44100),
++                                 (join('recorded', 'techno_loop.mp3'), 44100),
++                                 (join('recorded', 'dubstep.flac'), 44100),
++                                 (join('recorded', 'guitar_triads.flac'), 48000)]:
++            filename = join(testdata.audio_dir, name)
++            whole = MonoLoader(filename=filename, sampleRate=sampleRate)()
++            for startTime, endTime in [(0., 2.), (1.5, 3.5), (5., 6.)]:
++                found = numpy.array(MonoLoader(filename=filename, sampleRate=sampleRate,
++                                               startTime=startTime, endTime=endTime)())
++                expected = self.slice(whole, sampleRate, startTime, endTime)
++                self.assertEqual(len(found), len(expected))
++                self.assert_(numpy.array_equal(found, expected),
++                             '%s: seeked read differs from the reference at %s s'
++                             % (name, startTime))
++
++    def testSeekResampled(self):
++        # When the loader also RESAMPLES, the seeked read is close but not identical, and
++        # the reason is libsamplerate rather than the seek: its output depends on how much
++        # input it has already consumed (filter history plus a phase accumulator), so a
++        # converter started at startTime is not in the same state as one started at 0. The
++        # difference is uniform across the slice rather than a startup transient, and no
++        # bounded amount of preroll removes it. This test pins the size of that residual so
++        # a regression in the seek itself -- which would be far larger -- is still caught.
++        filename = join(testdata.audio_dir, 'recorded', 'musicbox.wav')
++        whole = MonoLoader(filename=filename, sampleRate=22050)()
++        for startTime, endTime in [(1.5, 3.5), (5., 6.)]:
++            found = numpy.array(MonoLoader(filename=filename, sampleRate=22050,
++                                           startTime=startTime, endTime=endTime)())
++            expected = self.slice(whole, 22050, startTime, endTime)
++            # the length may differ by a sample, as it does between architectures
++            self.assert_(abs(len(found) - len(expected)) <= 1)
++            n = min(len(found), len(expected))
++            residual = numpy.sqrt(numpy.mean((found[:n] - expected[:n])**2.))
++            reference = numpy.sqrt(numpy.mean(expected[:n]**2.))
++            self.assert_(residual < reference/100.,
++                         'resampled seek residual %e is too large against %e'
++                         % (residual, reference))
++
++    def testSeekBoundaries(self):
++        filename = join(testdata.audio_dir, 'recorded', 'musicbox.wav')
++        whole = MonoLoader(filename=filename)()
++        duration = len(whole)/44100.
++
++        self.assertEqualVector(MonoLoader(filename=filename, startTime=0., endTime=1e6)(), whole)
++        self.assertEqual(len(MonoLoader(filename=filename, startTime=duration + 10.,
++                                        endTime=duration + 20.)()), 0)
++        self.assertEqual(len(MonoLoader(filename=filename, startTime=2., endTime=2.)()), 0)
++        self.assertConfigureFails(MonoLoader(), {'filename': filename,
++                                                 'startTime': 10., 'endTime': 1.})
++
+     def testResetStandard(self):
+         audiofile = join(testdata.audio_dir,'recorded','musicbox.wav')
+         loader = MonoLoader(filename=audiofile)
+-- 
+2.50.1 (Apple Git-155)
+
