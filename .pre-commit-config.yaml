@@ -27,7 +27,11 @@ repos:
         # (phaze-fq9h.1): they are EVIDENCE of what the live site served, and each
         # one cost a request from a budget of one per 8 seconds. Whitespace-fixing
         # them would quietly edit the record the detail parser is developed against.
-        exclude: &byte-identical ^(src/phaze/static/vendor/|tests/identify/fixtures/tracklist_render/)
+        # Same rule again for the `git format-patch` series under docs/spikes/*/patches/
+        # (phaze-han03): a patch file is a CHECKSUMMED-BY-CONTEXT format. Diff context
+        # lines legitimately carry trailing whitespace and the trailer ends "-- ", so
+        # stripping either makes `git am` fail to apply — verified, it did.
+        exclude: &byte-identical ^(src/phaze/static/vendor/|tests/identify/fixtures/tracklist_render/|docs/spikes/[^/]+/patches/)
       - id: mixed-line-ending
         exclude: *byte-identical
       - id: trailing-whitespace
