@@ -175,6 +175,14 @@ should be submitted upstream — one build fix, one bug fix, one feature.
 | `0001` | `build: use sysconfig instead of the removed distutils in the python bindings` | 4 |
 | `0002` | `fix(audioloader): set pkt_timebase so decoded frame timestamps are correct` | 8 |
 | `0003` | `feat(audioloader): add startTime/endTime seeking to AudioLoader and MonoLoader` | ~170 |
+| `0004` | `feat(easyloader): let EasyLoader and EqloudLoader seek instead of decode-and-trim` | 57 |
+| `0005` | `test(io): cover startTime/endTime seeking and its boundary cases` | 323 |
+
+`0004` and `0005` were added by `phaze-0ni3v`, which also folded two semantic corrections into
+`0003` (truncation rather than rounding in the seconds→samples conversion; an empty range is no
+longer an error). The exported `0003` here is therefore the corrected one, not the one this spike
+originally measured — see
+[`phaze-0ni3v-easyloader-seek.md`](phaze-0ni3v-easyloader-seek.md) §1.
 
 ### 3a. How the seek works
 
@@ -524,9 +532,13 @@ conflict here, because:
 1. **PR 3 — patch 0003** (`startTime`/`endTime`), rebased on whatever 1 and 2 became, and shaped by
    the answers to the intent comment. Must carry tests (§8c) and must state the AAC/PNS and
    resampler bounds in the PR body, not bury them.
-1. **`EasyLoader` is deliberately out of scope of the current patch.** #771 names it, and it is the
-   algorithm most users touch, but changing it changes existing semantics for existing callers.
-   Propose it as a follow-up once `AudioLoader` lands.
+1. ~~**`EasyLoader` is deliberately out of scope of the current patch.**~~ **SUPERSEDED by
+   `phaze-0ni3v` (2026-08-12).** Operator review overruled this, correctly: #771's own title names
+   `EasyLoader`, so a PR citing that issue while skipping it does not answer it. `EasyLoader` and
+   `EqloudLoader` now seek, and their output is verified bit-identical to the pre-patch build. The
+   "changes existing semantics" worry turned out to be real in exactly one place — a slice that
+   also RESAMPLES — and that case keeps the old path for the reason §4c gives. See
+   [`phaze-0ni3v-easyloader-seek.md`](phaze-0ni3v-easyloader-seek.md) §4.
 
 ### 8c. Tests essentia will expect
 
@@ -535,8 +547,11 @@ algorithm — `test/src/unittests/io/test_audioloader.py` exists. A submittable 
 
 - sample-accuracy against the decode-and-discard path at several offsets, per container — the
   assertions in [`verify_accuracy.py`](phaze-han03/verify_accuracy.py) translated to their harness;
-- `startTime`/`endTime` boundary cases: zero, past EOF, `endTime <= startTime` (must raise),
-  slice ending exactly at EOF;
+- `startTime`/`endTime` boundary cases: zero, past EOF, `endTime < startTime` (must raise),
+  slice ending exactly at EOF. **Correction (`phaze-0ni3v`):** this list originally said
+  `endTime <= startTime` must raise. It must not. `Trimmer` compares sample *indices* and so allows
+  `startTime == endTime`, returning an empty slice; rejecting it would break callers that work
+  today;
 - an unseekable-input case asserting the **fallback**, not an exception;
 - the AAC/PNS caveat encoded as a **documented expectation**, not a skipped test.
 

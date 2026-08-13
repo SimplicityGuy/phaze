@@ -1,0 +1,138 @@
+From f8b9a47c4dc070282558b3e6ef1e09eedcc59fb7 Mon Sep 17 00:00:00 2001
+From: SimplicityGuy <robert@simplicityguy.com>
+Date: Wed, 12 Aug 2026 21:00:30 -0700
+Subject: [PATCH 4/5] feat(easyloader): let EasyLoader and EqloudLoader seek
+ instead of decode-and-trim
+
+The other half of #771. Both composites have exposed startTime/endTime for years
+and both implement them the expensive way: MonoLoader decodes the whole stream
+and a Trimmer downstream keeps the part that was asked for. Pulling a 10 s slice
+out of a two-hour recording costs the whole two hours, which is precisely the
+complaint in the issue.
+
+Hand the two parameters to the loader instead. It seeks to startTime and stops
+at endTime, so the cost becomes proportional to the slice. Nothing about the
+parameters changes -- same names, same defaults, same ranges, same meaning -- and
+nothing about the audio changes either: the loader converts seconds to samples
+with Trimmer's own truncation rule, so it selects exactly the samples the Trimmer
+used to select. Verified bit-identical against the pre-patch build across
+wav / mp3 / flac / Ogg-Opus, at four offsets each, plus the boundary cases.
+
+ONE CASE DELIBERATELY STAYS ON THE OLD PATH: a read that also RESAMPLES.
+libsamplerate's output depends on how much input it has already consumed -- filter
+history plus a phase accumulator -- so a converter started at startTime does not
+reproduce one started at zero. Measured at about -49 dB relative RMS, spread
+uniformly across the slice rather than as a startup transient, and not removable
+by any bounded amount of preroll: feeding it progressively more history only
+reaches -78.5 dB at 60 s, and the head becomes exactly zero only with the full
+history, i.e. only by not seeking. Making a resampled slice seek would therefore
+silently change what every existing caller gets. So when sampleRate differs from
+the file's own rate -- exactly Resample's `src_ratio == 1.0` short circuit -- both
+composites keep decoding and trimming as before, and the Trimmer stays in the
+chain for that purpose. Callers who want the win there and can accept the
+residual have MonoLoader's own startTime/endTime.
+
+Lifting that restriction means prerolling THROUGH the resampler and discarding
+after it, which changes the composites' shape rather than a parameter; happy to
+follow up on it if you would like that.
+
+Measured on a 3600 s MP3, reading one 30 s window 1800 s in, EasyLoader at the
+file's own rate: 2.07 s before, 0.085 s after, and reading the second half of the
+file now costs 53% of reading all of it instead of 92%.
+
+Signed-off-by: SimplicityGuy <robert@simplicityguy.com>
+---
+ src/algorithms/io/easyloader.cpp   | 42 ++++++++++++++++++++++++++----
+ src/algorithms/io/eqloudloader.cpp | 23 +++++++++++++---
+ 2 files changed, 57 insertions(+), 8 deletions(-)
+
+diff --git a/src/algorithms/io/easyloader.cpp b/src/algorithms/io/easyloader.cpp
+index 0d4823e7..a10285bc 100644
+--- a/src/algorithms/io/easyloader.cpp
++++ b/src/algorithms/io/easyloader.cpp
+@@ -63,11 +63,43 @@ void EasyLoader::configure() {
+                          INHERIT("downmix"),
+                          INHERIT("audioStream"));
+ 
+-  _params.add("originalSampleRate", _monoLoader->parameter("originalSampleRate"));
+-
+-  _trimmer->configure(INHERIT("sampleRate"),
+-                      INHERIT("startTime"),
+-                      INHERIT("endTime"));
++  Parameter originalSampleRate = _monoLoader->parameter("originalSampleRate");
++  _params.add("originalSampleRate", originalSampleRate);
++
++  // Issue #771: startTime/endTime used to be applied by the Trimmer AFTER the whole stream had
++  // been decoded, so a 10 s slice of a 2 h recording cost the whole 2 h. Hand them to the
++  // loader instead -- it seeks to startTime and stops at endTime, making the cost proportional
++  // to the slice. The parameters keep exactly their meaning, and they select exactly the same
++  // samples: the loader converts seconds to samples with Trimmer's own truncation rule.
++  //
++  // ONE CASE STAYS ON THE OLD PATH, and it is not laziness: when the output rate differs from
++  // the file's rate, libsamplerate's output depends on how much input it has already consumed
++  // (filter history plus a phase accumulator). A converter started at startTime therefore does
++  // not produce the samples a converter started at 0 produces -- measured at about -49 dB
++  // relative RMS, uniformly across the slice, and NOT removable by any bounded amount of
++  // preroll. Seeking here would silently change what EasyLoader returns for every existing
++  // caller that resamples, so we do not. Callers that want the win and can accept that residual
++  // have MonoLoader's own startTime/endTime.
++  // Equality of the two rates is exactly Resample's own `src_ratio == 1.0` short circuit, i.e.
++  // precisely the condition under which the converter is a fastcopy and carries no state.
++  if (originalSampleRate.toReal() == parameter("sampleRate").toReal()) {
++    _monoLoader->configure(INHERIT("filename"),
++                           INHERIT("sampleRate"),
++                           INHERIT("downmix"),
++                           INHERIT("audioStream"),
++                           INHERIT("startTime"),
++                           INHERIT("endTime"));
++
++    // The loader already delivered exactly the requested slice.
++    _trimmer->configure("sampleRate", parameter("sampleRate"),
++                        "startTime", 0.0,
++                        "endTime", 1.0e6);
++  }
++  else {
++    _trimmer->configure(INHERIT("sampleRate"),
++                        INHERIT("startTime"),
++                        INHERIT("endTime"));
++  }
+ 
+   // apply a 6dB preamp, as done by all audio players.
+   Real scalingFactor = db2amp(parameter("replayGain").toReal() + 6.0);
+diff --git a/src/algorithms/io/eqloudloader.cpp b/src/algorithms/io/eqloudloader.cpp
+index 337ad3a5..1ab6419f 100644
+--- a/src/algorithms/io/eqloudloader.cpp
++++ b/src/algorithms/io/eqloudloader.cpp
+@@ -59,9 +59,26 @@ void EqloudLoader::configure() {
+                          INHERIT("sampleRate"),
+                          INHERIT("downmix"));
+ 
+-  _trimmer->configure(INHERIT("sampleRate"),
+-                      INHERIT("startTime"),
+-                      INHERIT("endTime"));
++  // Same change, and the same one exception, as EasyLoader::configure() -- see the comment
++  // there. The loader seeks to startTime and stops at endTime unless a resampler is in the way,
++  // in which case the old decode-and-trim path is kept so existing output does not move.
++  if (_monoLoader->parameter("originalSampleRate").toReal()
++      == parameter("sampleRate").toReal()) {
++    _monoLoader->configure(INHERIT("filename"),
++                           INHERIT("sampleRate"),
++                           INHERIT("downmix"),
++                           INHERIT("startTime"),
++                           INHERIT("endTime"));
++
++    _trimmer->configure("sampleRate", parameter("sampleRate"),
++                        "startTime", 0.0,
++                        "endTime", 1.0e6);
++  }
++  else {
++    _trimmer->configure(INHERIT("sampleRate"),
++                        INHERIT("startTime"),
++                        INHERIT("endTime"));
++  }
+ 
+   // apply a 6dB preamp, as done by all audio players.
+   Real scalingFactor = db2amp(parameter("replayGain").toReal() + 6.0);
+-- 
+2.50.1 (Apple Git-155)
+
