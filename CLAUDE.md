@@ -421,11 +421,16 @@ length. There is no window cap, no even stride, no `sampled` flag, and no `deepe
 removed by `phaze-w55w1`. Two invariants replace what the caps used to provide, and both are
 easy to break by accident:
 
-- **Memory is bounded by the CHUNK, not by the file.** Each tier decodes and analyzes 60 (fine)
-  / 30 (coarse) windows at a time, so peak PCM stays ~317 MB / ~345 MB regardless of duration.
-  Do not "simplify" either pass back into a single whole-tier decode: on a 12-hour set that is
-  ~7.3 GiB and a cgroup OOMKill. The chunk sizes are the old cap values on purpose, so
-  ADR-0005's memory limits still hold.
+- **Live PCM is bounded by the CHUNK — but process peak RSS is NOT, and that is an open bug.**
+  Each tier decodes and analyzes 60 (fine) / 30 (coarse) windows at a time, so live PCM stays
+  ~317 MB / ~345 MB regardless of duration. Do not "simplify" either pass back into a single
+  whole-tier decode: on a 12-hour set that is ~7.3 GiB and a cgroup OOMKill. **What the chunking
+  did NOT deliver is a duration-independent peak.** Measured on vox against real audio
+  (`phaze-b2qs9`, 2026-08-12): whole-process peak grows **+0.31 GiB per fine chunk** — i.e. per
+  30 minutes of audio, R² 0.99959 — reaching **4.1854 GiB at 4 hours** and **5.5211 GiB at
+  5h38m**, both **over** the deployed `memory_limit: 4Gi`. So ADR-0005's limits do **not** still
+  hold, and anything past ~3 hours OOMKills on the burst lane. Do not raise the limit to paper
+  over it (`backends.toml` says so explicitly); the growth is the bug.
 - **Nothing is killed for running long.** A multi-hour concert set is expected to take hours.
   Liveness is progress-based (`analysis_stall_timeout_sec`, default 1800 s of *silence*): the
   child heartbeats window completions, chunk decodes and model sweeps, and only total silence
@@ -437,8 +442,13 @@ The decision records live with the code: **D-07** (chunking) in `services/analys
 **D-08** (stall liveness) in `services/analysis_exec.py`.
 `docs/design/0007-windowed-analysis.md` has the full rationale and cost analysis (§7 the
 operator decision, §8 what shipped); `docs/essentia-analysis.md` has the operational view.
-**Still owed:** a real peak-RSS / wall-clock measurement on a genuine multi-hour file — the
-current bounded-memory proof is synthetic (ADR-0007 §8).
+**Measured, 2026-08-12:** `docs/spikes/phaze-b2qs9-exhaustive-analysis-measurement.md` is the real
+peak-RSS / wall-clock measurement on genuine multi-hour corpus files that ADR-0007 §8 was owed.
+Read it before touching either invariant: it confirms exhaustive coverage and the chunk gate's
+correctness, gives the end-to-end wall clock (**0.56–0.79× the file's own duration**, solo on
+vox), and **refutes** the duration-independent-peak claim above. The synthetic long-file test
+(`tests/analyze/services/pipeline/test_analysis_long_file.py`) proves that claim of a *mocked*
+essentia only.
 
 ## Beadhive Workflow Enforcement
 

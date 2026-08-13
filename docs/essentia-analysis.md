@@ -77,15 +77,25 @@ above `_FINE_CHUNK_WINDOWS`:
 - each of the 34 TF graphs is constructed once per COARSE CHUNK rather than once per file
   (the phaze-15sw model-major invariant — never more than one graph resident — is unchanged);
 - each chunk needs its own decode pass, because `MonoLoader` cannot seek. Non-final chunks
-  interpose a `Trimmer` directly on the loader so the decode stops at the chunk boundary,
-  which brings the total from `K × duration` down to roughly `duration × (K + 1) / 2`.
+  interpose a `Trimmer` directly on the loader so the decode stops at the chunk boundary. That
+  gate **is** taken on the deployed essentia — measured, zero fallbacks, full window sets — and is
+  worth **18.5–27%** of a non-final chunk's decode in a controlled A/B. The
+  `duration × (K + 1) / 2` figure describes the *audio volume* decoded and **not** the wall clock:
+  measured per-chunk decode time is not proportional to the chunk boundary (`phaze-b2qs9` §4).
 
-> **Not yet measured on real hardware.** The table above is per-window buffer arithmetic carried
-> forward from the capped implementation, plus a synthetic 12-hour bounded-memory test
-> (`tests/analyze/services/pipeline/test_analysis_long_file.py`) that proves the SHAPE — peak
-> RSS moves <25 MB between a 2h and a 12h file despite 6× the analyzed windows. ADR-0007
-> follow-up 3's ask for a real peak-RSS/wall-clock measurement on a genuine multi-hour file
-> **is still open**.
+> **⚠️ Measured on real hardware, and the table above does NOT describe the process.**
+> `phaze-b2qs9` (2026-08-12, [report](spikes/phaze-b2qs9-exhaustive-analysis-measurement.md)) ran
+> the shipped code on vox against real corpus audio from 1:00 to 12:04. The per-chunk PCM figures
+> are correct as *live working set*. **Whole-process peak RSS is not bounded by them and grows
+> linearly with duration** — `peak_after_fine_tier ≈ 0.7634 + 0.3108 × n_fine_chunks` GiB
+> (R² 0.99959), i.e. **+0.31 GiB for every 30 minutes of audio**, measured end-to-end at
+> **2.1107 / 2.9287 / 4.1854 / 5.5211 GiB** for 1:00 / 2:00 / 4:00 / 5:38 files. The last two are
+> **above** the deployed `memory_limit: 4Gi`, so on the burst lane a file past roughly **3 hours**
+> is an `OOMKilled` pod, not a slow one. The synthetic test
+> (`tests/analyze/services/pipeline/test_analysis_long_file.py`) proves the shape of a **mocked**
+> essentia and does not hold on the real one. Coverage itself is unaffected and was verified
+> exhaustive and complete on every measured file. Fixing this is a follow-up, not something this
+> page's numbers should be quietly adjusted around.
 
 ### Liveness is progress-based, never wall-clock
 
