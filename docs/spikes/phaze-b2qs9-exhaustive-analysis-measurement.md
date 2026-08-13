@@ -524,6 +524,20 @@ ______________________________________________________________________
 
 ### FU-1 — BUG, P0: exhaustive analysis's peak RSS is linear in duration and breaches the 4Gi limit at 4 hours
 
+> **RESOLVED — `phaze-u1n7j`, 2026-08-13. See `phaze-u1n7j-vox-fix-verification.md`.** The cause was
+> none of the three guesses below: a chunk's essentia streaming network was **dropped but never
+> disconnected**, so each *gated* chunk retained ~5 MiB per window branch (D-09 in
+> `services/analysis.py`). Re-measured on this node, this image and these same files, the peaks
+> below become **1.4985 / 1.6500 / 1.6725 GiB** at 1:00 / 4:00 / 12:04 — the longest file in the
+> corpus goes from **2.57× the 4Gi limit to 41.8% of it** — for **−0.22% / −0.52% / −0.83%** of
+> wall clock and a **byte-identical** analysis result. Two guesses to strike explicitly, because
+> they cost time: **glibc arena fragmentation is NOT the mechanism** (the retention measures
+> 5.42 MiB/branch under glibc 2.41 and 5.14 on macOS — two allocators, one constant), and it is
+> **not the hoisted extractors** either. The acceptance line below reads **+11.6%** rather than
+> ≤10%, and that residue is a bounded step, not a slope: `<set-01>` is the only file whose coarse
+> chunk is part-full. Between the two bands with full coarse chunks it is **+1.4%** for 3.1× the
+> fine chunks.
+
 - **Evidence:** §3b. `peak_after_fine_tier ≈ 0.7634 + 0.3108 × n_fine_chunks` GiB, R² 0.99959 over
   four files and 25 chunk boundaries; whole-process peaks 2.1107 / 2.9287 / 4.1854 / 5.5211 GiB at
   1 / 2 / 4 / 5.6 hours. `<set-04>` and `<set-05>` are **over** the deployed `memory_limit: 4Gi`.

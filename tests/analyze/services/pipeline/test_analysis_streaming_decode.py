@@ -29,8 +29,10 @@ on the Linux burst node) and live in the bead's before/after tables.
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import math
+import resource
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 import wave
@@ -49,6 +51,24 @@ if TYPE_CHECKING:
 _SOURCE_RATE = 8000  # cheap source rate; both tiers resample away from it, exercising Resample
 _TOTAL_SEC = 40
 
+# phaze-u1n7j leak-guard sizing — every number here was measured, not chosen for comfort.
+#
+# The shape matters more than the size: the leak only appears on a GATED decode (the chunk gate
+# phaze-w55w1 added), and only once the gate's span is beyond ~100 s. A 40 s span leaks nothing
+# even gated, which is why the 40 s `audio` fixture above cannot host this test and
+# `long_audio` exists. Measured per-branch retention across shapes: 5.03-5.34 MiB at 44.1 kHz
+# and 4.22-5.16 MiB at 16 kHz, i.e. essentially constant per BRANCH and independent of the
+# window's LENGTH. 16 kHz and a 120 s span are simply the cheapest combination that still
+# reproduces it — 464 MiB of growth in 1.7 s.
+_LEAK_WINDOW_SEC = 4.0
+_LEAK_WINDOWS = 30  # 30 x 4 s = a 120 s gate span; below ~100 s the leak does not appear at all
+_LEAK_SPAN_SEC = _LEAK_WINDOWS * _LEAK_WINDOW_SEC
+_LEAK_WARMUP = 1
+_LEAK_MEASURED = 3
+# The MEASURED retention of one branch. This is the unit the budget is written in, NOT a tuning
+# knob: lowering it to quiet a red test is re-accepting the bug that OOMKilled the pod.
+_LEAK_BYTES_PER_BRANCH = 5 * 1024 * 1024
+
 
 def _write_sine_wav(path: str, total_sec: int) -> None:
     """Write a mono int16 WAV of two summed sines — content that survives resampling legibly."""
@@ -65,6 +85,18 @@ def _write_sine_wav(path: str, total_sec: int) -> None:
 def audio(tmp_path: Path) -> str:
     path = str(tmp_path / "sine.wav")
     _write_sine_wav(path, _TOTAL_SEC)
+    return path
+
+
+@pytest.fixture
+def long_audio(tmp_path: Path) -> str:
+    """Audio long enough to host a gated chunk decode — the only shape that leaks (phaze-u1n7j).
+
+    Separate from `audio` because the 40 s clip is deliberately cheap and, measured, a gate span
+    that short retains nothing at all. ~2 MB of int16 at the fixture's 8 kHz source rate.
+    """
+    path = str(tmp_path / "sine_long.wav")
+    _write_sine_wav(path, int(_LEAK_SPAN_SEC) + 10)
     return path
 
 
@@ -498,3 +530,155 @@ def test_decode_windows_without_a_beat_callback_is_inert() -> None:
     windows = [(0, 0.0, 5.0)]
     with patch.object(analysis_mod, "_decode_windows_streaming", return_value={0: np.zeros(4, dtype=np.float32)}):
         assert _decode_windows("/fake/audio.mp3", _COARSE_SAMPLE_RATE, windows, lambda *_a: None) == {0: pytest.approx(np.zeros(4))}
+
+
+# ---------------------------------------------------------------------------
+# phaze-u1n7j — the chunk decode must not leak its network (D-09)
+# ---------------------------------------------------------------------------
+#
+# phaze-b2qs9 measured whole-process peak RSS growing +0.31 GiB per fine chunk on real audio —
+# linear in duration, 4.1854 GiB at four hours, past the deployed 4Gi limit — while
+# `test_analysis_long_file.py` reported the memory claim GREEN. That test drives a MOCKED
+# essentia, so it proved a property of the mock and never touched the C++ allocation that was
+# actually growing. These two tests exist so that cannot happen twice, and BOTH are built to be
+# unsatisfiable by a mock: they run the real streaming network over real audio and read the
+# kernel's own accounting.
+
+
+def _hwm_bytes() -> int:
+    """Whole-process peak RSS, in bytes, from the kernel's high-water mark.
+
+    `ru_maxrss` and not a sampler: it is a high-water mark the kernel maintains, so it cannot
+    miss a spike between ticks and it cannot be starved of the GIL (phaze-7i0k §9). Linux
+    reports KiB, macOS bytes — the one platform difference that matters here.
+    """
+    import sys
+
+    raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return raw if sys.platform == "darwin" else raw * 1024
+
+
+@pytest.mark.integration
+def test_repeated_gated_chunk_decodes_do_not_grow_peak_rss(long_audio: str) -> None:
+    """The bug itself: N identical chunk decodes must not cost N times one chunk's memory.
+
+    Nothing about the chunk changes between calls — same file, same windows, same rate, same
+    gate — so the process cannot legitimately need more memory on call 3 than on call 1. Before
+    the D-09 fix each call retained its whole streaming network, ~5 MiB per window branch, which
+    is exactly how a per-chunk constant became a duration-linear curve: 60 fine branches per
+    chunk x ~5 MiB ≈ the +0.31 GiB per 30 minutes of audio that phaze-b2qs9 measured on vox.
+
+    **`stop_at_sec` is load-bearing and must not be dropped from this test.** The retention is a
+    property of the GATED network specifically; the same decode ungated leaks 0.02 MiB/branch
+    against the gated 5.14 (measured, one file, one window set, the gate the only variable). In
+    production every non-final chunk of every tier is gated, so the gated path is the one that
+    runs ~K-1 times per file — but an ungated version of this test would pass on the broken code.
+
+    The threshold is deliberately loose: it asserts that THREE further decodes together stay
+    under a SINGLE decode's leak. That still fails the pre-fix code by ~3x (measured 464 MiB of
+    growth against a 150 MiB budget) while leaving room for allocator noise and whatever
+    essentia caches on first use.
+    """
+    windows = [(i, i * _LEAK_WINDOW_SEC, (i + 1) * _LEAK_WINDOW_SEC) for i in range(_LEAK_WINDOWS)]
+
+    for _ in range(_LEAK_WARMUP):  # the first call also pays one-off essentia/allocator init
+        _decode_windows_streaming(long_audio, _COARSE_SAMPLE_RATE, windows, stop_at_sec=_LEAK_SPAN_SEC)
+    gc.collect()
+    settled = _hwm_bytes()
+
+    for _ in range(_LEAK_MEASURED):
+        decoded = _decode_windows_streaming(long_audio, _COARSE_SAMPLE_RATE, windows, stop_at_sec=_LEAK_SPAN_SEC)
+        assert len(decoded) == _LEAK_WINDOWS, "the decode must keep working — a leak-free decode that drops windows is not a fix"
+        decoded.clear()
+        gc.collect()
+
+    grew = _hwm_bytes() - settled
+    budget = _LEAK_WINDOWS * _LEAK_BYTES_PER_BRANCH  # ONE decode's worth of leak, for three decodes
+    assert grew < budget, (
+        f"peak RSS grew {grew / 2**20:.1f} MiB across {_LEAK_MEASURED} identical gated chunk decodes "
+        f"(budget {budget / 2**20:.1f} MiB). The streaming network is being retained per chunk — see "
+        f"D-09 in services/analysis.py. That is duration-linear memory growth, and it OOMKills the pod "
+        f"on any file past roughly three hours."
+    )
+
+
+@pytest.mark.integration
+def test_the_chunk_decode_leaves_no_connected_network_behind(audio: str) -> None:
+    """The mechanism, asserted directly: every edge the decode built is severed before it returns.
+
+    The RSS test above proves the SYMPTOM is gone; this one pins the CAUSE, so a regression
+    reports "the teardown stopped disconnecting" instead of "memory went up somewhere". It also
+    fails fast and deterministically, with no allocator noise in the loop.
+
+    essentia's Python bindings expose no network object, so a connection can only be released by
+    `_StreamConnector.disconnect`. A live edge here means the C++ buffers behind it — and the
+    `PoolStorage` a Pool sink creates, which Python never holds at all — stay allocated.
+    """
+    made: list[Any] = []
+
+    def _recording(real: Any) -> Any:
+        def _make(**kwargs: Any) -> Any:
+            algo = real(**kwargs)
+            made.append(algo)
+            return algo
+
+        return _make
+
+    with (
+        patch.object(analysis_mod.ess, "MonoLoader", _recording(analysis_mod.ess.MonoLoader)),
+        patch.object(analysis_mod.ess, "Scale", _recording(analysis_mod.ess.Scale)),
+        patch.object(analysis_mod.ess, "Trimmer", _recording(analysis_mod.ess.Trimmer)),
+    ):
+        _decode_windows_streaming(audio, _COARSE_SAMPLE_RATE, _WINDOWS, stop_at_sec=20.0)
+
+    assert made, "the recording patch never saw an algorithm — this test is not exercising the real network"
+    live = [(algo.name(), connector.name, len(targets)) for algo in made for connector, targets in algo.connections.items() if targets]
+    assert not live, f"the chunk decode returned with {len(live)} connection(s) still live: {live}. See D-09 in services/analysis.py"
+
+
+def test_a_stuck_disconnect_never_masks_the_callers_exception() -> None:
+    """The teardown runs in a ``finally`` on the failure path, so it must not raise there.
+
+    `_decode_windows` retries a failed gated pass UNGATED, and that retry is exactly when the
+    network being torn down is half-built. If a disconnect could raise from the ``finally`` it
+    would replace the decode's real exception with its own, and the caller's retry rung — the
+    thing standing between a broken gate and a re-run of the O(n_windows x duration) decode
+    phaze-5lop deleted — would never be reached. A stuck edge is allowed to leak; it is not
+    allowed to change control flow.
+    """
+
+    class _StuckConnector:
+        name = "signal"
+
+        def disconnect(self, _target: Any) -> None:
+            msg = "essentia refused to disconnect"
+            raise RuntimeError(msg)
+
+    class _StuckAlgo:
+        def __init__(self) -> None:
+            self.connections = {_StuckConnector(): ["some-sink"]}
+
+    analysis_mod._disconnect_network([_StuckAlgo()])  # must return normally
+
+
+def test_disconnecting_a_partially_built_network_is_inert() -> None:
+    """A build that raised mid-loop leaves `None`s and connection-less objects; teardown eats them.
+
+    `_decode_windows_streaming` builds `gate` lazily and appends branches one at a time, so the
+    `finally` can see a list containing `None` and algorithms that were constructed but never
+    connected. That is the ordinary shape of the failure path, not an exotic one.
+    """
+    analysis_mod._disconnect_network([None, object(), analysis_mod.ess.Scale(factor=1.0)])
+
+
+def test_an_unreadable_connections_map_is_survived_too() -> None:
+    """Reading `connections` must not be the thing that raises out of the ``finally`` either.
+
+    The snapshot is taken inside the guard, not before it, so an object whose `connections` is
+    present but not a mapping leaks its network rather than replacing the decode's exception.
+    """
+
+    class _WeirdAlgo:
+        connections = "not a mapping"  # truthy, has no .items()
+
+    analysis_mod._disconnect_network([_WeirdAlgo()])  # must return normally

@@ -421,16 +421,34 @@ length. There is no window cap, no even stride, no `sampled` flag, and no `deepe
 removed by `phaze-w55w1`. Two invariants replace what the caps used to provide, and both are
 easy to break by accident:
 
-- **Live PCM is bounded by the CHUNK — but process peak RSS is NOT, and that is an open bug.**
-  Each tier decodes and analyzes 60 (fine) / 30 (coarse) windows at a time, so live PCM stays
-  ~317 MB / ~345 MB regardless of duration. Do not "simplify" either pass back into a single
-  whole-tier decode: on a 12-hour set that is ~7.3 GiB and a cgroup OOMKill. **What the chunking
-  did NOT deliver is a duration-independent peak.** Measured on vox against real audio
-  (`phaze-b2qs9`, 2026-08-12): whole-process peak grows **+0.31 GiB per fine chunk** — i.e. per
-  30 minutes of audio, R² 0.99959 — reaching **4.1854 GiB at 4 hours** and **5.5211 GiB at
-  5h38m**, both **over** the deployed `memory_limit: 4Gi`. So ADR-0005's limits do **not** still
-  hold, and anything past ~3 hours OOMKills on the burst lane. Do not raise the limit to paper
-  over it (`backends.toml` says so explicitly); the growth is the bug.
+- **Live PCM is bounded by the CHUNK, and since D-09 so is process peak RSS.** Each tier decodes
+  and analyzes 60 (fine) / 30 (coarse) windows at a time, so live PCM stays ~317 MB / ~345 MB
+  regardless of duration. Do not "simplify" either pass back into a single whole-tier decode: on
+  a 12-hour set that is ~7.3 GiB and a cgroup OOMKill. **The process peak did not follow the PCM
+  until D-09**, and that gap was a P0: measured on vox against real audio (`phaze-b2qs9`,
+  2026-08-12) whole-process peak grew **+0.31 GiB per fine chunk** (R² 0.99959), reaching
+  **4.1854 GiB at 4 hours** and **10.2768 at 12h04** against a deployed `memory_limit: 4Gi`, so
+  every file past ~3 hours OOMKilled. Re-measured on the same node, same image and the **same
+  files** after the fix (`phaze-u1n7j`, 2026-08-13): **1.4985 / 1.6500 / 1.6725 GiB** at 1:00 /
+  4:00 / 12:04 — the longest file in the corpus at **41.8%** of the limit, and a residual
+  **0.0013 GiB per fine chunk** (99.6% of the slope gone). If you are re-deriving pod sizing,
+  read `docs/spikes/phaze-u1n7j-vox-fix-verification.md` for what those numbers do and do not
+  license; and if peak ever starts tracking duration again, the teardown below is the first
+  suspect, not the buffers. Do not raise the limit to paper over a regression
+  (`backends.toml` says so explicitly); duration-linear growth is a bug, not a sizing input.
+- **A chunk's streaming network must be DISCONNECTED, not just dropped** (D-09, `phaze-u1n7j`).
+  This is the half the chunking originally missed and it cost a deploy: dropping the Python
+  proxies leaves essentia's C++ edges — and the `PoolStorage` a Pool sink creates, which Python
+  never holds at all — allocated, so every **gated** chunk decode retained ~5 MiB per window
+  branch. That turned a per-chunk constant into **+0.31 GiB per 30 minutes of audio** and
+  OOMKilled every file past ~3 hours against the 4Gi limit (measured on vox by `phaze-b2qs9`;
+  diagnosed and fixed by `phaze-u1n7j`). `gc.collect()` is required alongside the disconnect —
+  every streaming algorithm is born into a reference cycle, so refcounting alone never destroys
+  it — and `malloc_trim` cannot help, because the pages are live-referenced rather than merely
+  un-returned. Two tests hold the line and **neither can be satisfied by a mocked essentia**
+  (the original long-file test was mocked, which is why this shipped):
+  `test_repeated_gated_chunk_decodes_do_not_grow_peak_rss` and
+  `test_the_chunk_decode_leaves_no_connected_network_behind`.
 - **Nothing is killed for running long.** A multi-hour concert set is expected to take hours.
   Liveness is progress-based (`analysis_stall_timeout_sec`, default 1800 s of *silence*): the
   child heartbeats window completions, chunk decodes and model sweeps, and only total silence
@@ -446,9 +464,15 @@ operator decision, §8 what shipped); `docs/essentia-analysis.md` has the operat
 peak-RSS / wall-clock measurement on genuine multi-hour corpus files that ADR-0007 §8 was owed.
 Read it before touching either invariant: it confirms exhaustive coverage and the chunk gate's
 correctness, gives the end-to-end wall clock (**0.56–0.79× the file's own duration**, solo on
-vox), and **refutes** the duration-independent-peak claim above. The synthetic long-file test
-(`tests/analyze/services/pipeline/test_analysis_long_file.py`) proves that claim of a *mocked*
-essentia only.
+vox), and **refuted** the duration-independent-peak claim, which is what opened `phaze-u1n7j`.
+**Re-measured, 2026-08-13:** `docs/spikes/phaze-u1n7j-vox-fix-verification.md` is the after side —
+same node, same image, the same three files — and it restores that claim, with the mechanism
+(D-09) and an equivalence check showing the analysis output is byte-identical across the fix.
+Its §3 also **rules glibc arena fragmentation out**, which `phaze-b2qs9` §7 FU-1 had listed as a
+prime suspect. The synthetic long-file test
+(`tests/analyze/services/pipeline/test_analysis_long_file.py`) proves the claim of a *mocked*
+essentia only and always did — the guards that hold it now are in
+`test_analysis_streaming_decode.py`, on the real network.
 
 ## Beadhive Workflow Enforcement
 
