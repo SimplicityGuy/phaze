@@ -28,6 +28,7 @@ import pytest
 from phaze.schemas.agent_tasks import ProcessFilePayload
 from phaze.services.analysis_enqueue import enqueue_process_file, process_file_job_key
 from phaze.services.hashing import compute_sha256
+from phaze.services.video_audio import AudioSource
 from phaze.tasks.functions import process_file
 from tests._queue_fakes import FakeQueue
 
@@ -65,15 +66,16 @@ def _patch_extract_audio_track() -> Any:
     phaze-3ea41 operator decision: extraction now runs for EVERY file (format-scope decision,
     no extension whitelist). This module's tests exercise the scratch-copy read/cleanup path
     and have no interest in extraction itself -- patching it here keeps them oblivious to it.
-    Deliberately NOT a passthrough (returning ``read_path`` unchanged): the outer ``finally``
-    unconditionally unlinks whatever ``extract_audio_track`` returns, and several tests here
-    assert the REAL scratch copy at ``payload.scratch_path`` survives a retryable failure --
-    a passthrough would alias ``extracted_audio_path`` onto that same file and falsely delete
-    it (a test-fixture artifact only; production extraction never aliases its input).
+    Deliberately NOT the phaze-l832u SKIP shape (``AudioSource(read_path, None)``): these tests
+    are about the EXTRACTION branch's interaction with the pushed scratch copy, where the outer
+    ``finally`` unlinks ``cleanup_path`` and several tests here assert the REAL scratch copy at
+    ``payload.scratch_path`` survives a retryable failure. Returning a distinct scratch file
+    keeps those two paths from aliasing, exactly as production does.
     """
 
-    async def _fake_extract(read_path: str, **_kwargs: Any) -> str:
-        return f"{read_path}.extracted.mka"
+    async def _fake_extract(read_path: str, **_kwargs: Any) -> AudioSource:
+        extracted = f"{read_path}.extracted.mka"
+        return AudioSource(analysis_path=extracted, cleanup_path=extracted)
 
     with patch("phaze.tasks.functions.extract_audio_track", side_effect=_fake_extract) as m:
         yield m

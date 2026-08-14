@@ -11,11 +11,23 @@ from pydantic import ValidationError
 import pytest
 from saq import Status
 
+from phaze.services.video_audio import AudioSource
 from phaze.tasks.functions import (
     _features_to_mood_dict,
     _features_to_style_dict,
     process_file,
 )
+
+
+def _extracted(path: str) -> AudioSource:
+    """An ``extract_audio_track`` result for the EXTRACTION branch (phaze-l832u).
+
+    ``analysis_path`` and ``cleanup_path`` are the same newly-created scratch file, which is
+    what the real function returns whenever it actually ran ffmpeg. The SKIP branch is the
+    other shape -- ``AudioSource(<the input>, None)`` -- and it is spelled out at each of the
+    few tests that are about it, because "nothing to clean up" is the whole point there.
+    """
+    return AudioSource(analysis_path=path, cleanup_path=path)
 
 
 # Mock essentia analyze_file return value matching analysis.py contract.
@@ -101,8 +113,8 @@ def _patch_extract_audio_track() -> Any:
     patch for the duration of that test only.
     """
 
-    async def _fake_extract(read_path: str, **_kwargs: Any) -> str:
-        return f"{read_path}.extracted.mka"
+    async def _fake_extract(read_path: str, **_kwargs: Any) -> AudioSource:
+        return _extracted(f"{read_path}.extracted.mka")
 
     with patch("phaze.tasks.functions.extract_audio_track", side_effect=_fake_extract) as m:
         yield m
@@ -379,7 +391,7 @@ async def test_process_file_analyzes_video(mock_pool: AsyncMock, mock_extract: A
     stage never converged and recovery re-enqueued it forever. Videos must reach put_analysis (or a
     terminal failure ack) exactly like audio.
     """
-    mock_extract.return_value = "/scratch/extracted-audio.mka"
+    mock_extract.return_value = _extracted("/scratch/extracted-audio.mka")
     mock_pool.return_value = {"bpm": 120.0, "musical_key": "A minor", "features": {}, "windows": []}
     api = AsyncMock()
     api.put_analysis = AsyncMock()
@@ -403,7 +415,7 @@ async def test_process_file_analyzes_video(mock_pool: AsyncMock, mock_extract: A
 async def test_process_file_video_analyzes_the_extracted_audio_path_not_the_original(mock_pool: AsyncMock, mock_extract: AsyncMock) -> None:
     """The essentia analysis driver must receive the EXTRACTED audio path, not the original
     container -- extraction is a pre-step in front of the SAME analysis call, unchanged."""
-    mock_extract.return_value = "/scratch/extracted-audio.mka"
+    mock_extract.return_value = _extracted("/scratch/extracted-audio.mka")
     mock_pool.return_value = MOCK_ANALYSIS
     api = AsyncMock()
     api.put_analysis = AsyncMock(return_value=MagicMock())
@@ -425,7 +437,7 @@ async def test_process_file_audio_also_goes_through_extraction(mock_pool: AsyncM
     authority on whether a file has an audio stream, so plain audio types reach
     ``extract_audio_track`` exactly like video ones (a lossless stream copy for an
     already-bare-audio file, per the module's decision record)."""
-    mock_extract.return_value = "/scratch/extracted-audio.mka"
+    mock_extract.return_value = _extracted("/scratch/extracted-audio.mka")
     mock_pool.return_value = MOCK_ANALYSIS
     api = AsyncMock()
     api.put_analysis = AsyncMock(return_value=MagicMock())
@@ -502,7 +514,7 @@ async def test_process_file_threads_configured_scratch_dir_to_extraction(
     silently falling back to bare /tmp for a multi-hour set's audio track."""
     stub = _patch_agent_settings.return_value
     stub.cloud_scratch_dir = "/data/phaze-scratch"
-    mock_extract.return_value = "/data/phaze-scratch/extracted-audio.mka"
+    mock_extract.return_value = _extracted("/data/phaze-scratch/extracted-audio.mka")
     mock_pool.return_value = MOCK_ANALYSIS
     api = AsyncMock()
     api.put_analysis = AsyncMock(return_value=MagicMock())
@@ -523,7 +535,7 @@ async def test_process_file_scratch_dir_none_when_unconfigured(
     None through -- extract_audio_track itself falls back to tempfile.gettempdir()."""
     stub = _patch_agent_settings.return_value
     stub.cloud_scratch_dir = None
-    mock_extract.return_value = "/scratch/extracted-audio.mka"
+    mock_extract.return_value = _extracted("/scratch/extracted-audio.mka")
     mock_pool.return_value = MOCK_ANALYSIS
     api = AsyncMock()
     api.put_analysis = AsyncMock(return_value=MagicMock())
@@ -540,7 +552,7 @@ async def test_process_file_extraction_scratch_cleaned_up_on_success(mock_pool: 
     """The extracted-audio scratch file is deleted in the outer ``finally`` on SUCCESS."""
     extracted = tmp_path / "extracted-audio.mka"
     extracted.write_bytes(b"fake-audio")
-    mock_extract.return_value = str(extracted)
+    mock_extract.return_value = _extracted(str(extracted))
     mock_pool.return_value = MOCK_ANALYSIS
     api = AsyncMock()
     api.put_analysis = AsyncMock(return_value=MagicMock())
@@ -559,7 +571,7 @@ async def test_process_file_extraction_scratch_cleaned_up_on_analysis_failure(mo
     extraction fails (crash, stall, or a generic error) -- cleanup is unconditional."""
     extracted = tmp_path / "extracted-audio.mka"
     extracted.write_bytes(b"fake-audio")
-    mock_extract.return_value = str(extracted)
+    mock_extract.return_value = _extracted(str(extracted))
     mock_pool.side_effect = RuntimeError("essentia segfaulted")
     api = AsyncMock()
     api.report_analysis_failed = AsyncMock()
@@ -571,6 +583,78 @@ async def test_process_file_extraction_scratch_cleaned_up_on_analysis_failure(mo
 
     assert not extracted.exists()
     api.report_analysis_failed.assert_awaited_once()
+
+
+@pytest.mark.parametrize("analysis_fails", [False, True], ids=["on_success", "on_failure"])
+@patch("phaze.tasks.functions.extract_audio_track", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_never_deletes_the_archive_original_on_the_skip_branch(
+    mock_pool: AsyncMock, mock_extract: AsyncMock, tmp_path: Any, analysis_fails: bool
+) -> None:
+    """phaze-l832u, THE archive-safety test: the input file survives the SKIP branch.
+
+    On the local lane with no pushed copy, ``read_path`` is ``payload.original_path`` -- the
+    operator's REAL ARCHIVE FILE, not a staged copy -- and the outer ``finally`` unlinks
+    ``extracted_audio_path`` unconditionally. So the skip branch reporting its input as "the
+    scratch path you own and delete" would silently delete the archive, one file per analysis.
+    ``AudioSource.cleanup_path`` is None here, which is what makes that impossible. Asserted on
+    BOTH exits, because the failure path runs the same ``finally``.
+    """
+    original = tmp_path / "archive-original.mp3"
+    original.write_bytes(b"the operator's only copy")
+    # The skip branch: analyze the input where it lies, nothing created, nothing to clean up.
+    mock_extract.return_value = AudioSource(analysis_path=str(original), cleanup_path=None)
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    api.report_analysis_failed = AsyncMock()
+    ctx = _make_ctx(api_client=api)
+    payload = _make_payload_kwargs()
+    payload["original_path"] = str(original)
+
+    if analysis_fails:
+        mock_pool.side_effect = RuntimeError("essentia segfaulted")
+        ctx["job"] = MagicMock(retryable=False)
+        with pytest.raises(RuntimeError, match="essentia segfaulted"):
+            await process_file(ctx, **payload)
+    else:
+        mock_pool.return_value = MOCK_ANALYSIS
+        assert (await process_file(ctx, **payload))["status"] == "analyzed"
+
+    assert original.exists(), "process_file deleted the file it was asked to analyze"
+    assert original.read_bytes() == b"the operator's only copy"
+    assert mock_pool.await_args.args[0] == str(original), "the analyzer must read the original directly on the skip branch"
+
+
+@pytest.mark.parametrize("analysis_fails", [False, True], ids=["on_success", "on_failure"])
+@patch("phaze.tasks.functions.extract_audio_track", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_never_deletes_the_archive_original_on_the_extraction_branch(
+    mock_pool: AsyncMock, mock_extract: AsyncMock, tmp_path: Any, analysis_fails: bool
+) -> None:
+    """The same invariant on the EXTRACTION branch: the scratch file goes, the input stays."""
+    original = tmp_path / "archive-original.mkv"
+    original.write_bytes(b"the operator's only copy")
+    extracted = tmp_path / "extracted-audio.mka"
+    extracted.write_bytes(b"fake-audio")
+    mock_extract.return_value = _extracted(str(extracted))
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    api.report_analysis_failed = AsyncMock()
+    ctx = _make_ctx(api_client=api)
+    payload = _make_payload_kwargs(file_type="mkv")
+    payload["original_path"] = str(original)
+
+    if analysis_fails:
+        mock_pool.side_effect = RuntimeError("essentia segfaulted")
+        ctx["job"] = MagicMock(retryable=False)
+        with pytest.raises(RuntimeError, match="essentia segfaulted"):
+            await process_file(ctx, **payload)
+    else:
+        mock_pool.return_value = MOCK_ANALYSIS
+        assert (await process_file(ctx, **payload))["status"] == "analyzed"
+
+    assert original.exists(), "process_file deleted the file it was asked to analyze"
+    assert not extracted.exists(), "the extraction scratch file leaked"
 
 
 @patch("phaze.tasks.functions.extract_audio_track", new_callable=AsyncMock)
@@ -600,9 +684,9 @@ async def test_process_file_extraction_heartbeat_touches_the_saq_job(
     inner stall watchdog is not armed yet during extraction (the child hasn't spawned), so only
     the outer job-heartbeat deadline is at risk of expiring across a slow extraction."""
 
-    async def _extract_with_heartbeat(_read_path: str, **kwargs: Any) -> str:
+    async def _extract_with_heartbeat(_read_path: str, **kwargs: Any) -> AudioSource:
         await kwargs["heartbeat_cb"]()
-        return "/scratch/extracted-audio.mka"
+        return _extracted("/scratch/extracted-audio.mka")
 
     mock_extract.side_effect = _extract_with_heartbeat
     mock_pool.return_value = MOCK_ANALYSIS
@@ -622,7 +706,7 @@ async def test_process_file_extraction_heartbeat_touches_the_saq_job(
 async def test_process_file_extraction_without_saq_job_passes_no_heartbeat_cb(mock_pool: AsyncMock, mock_extract: AsyncMock) -> None:
     """A bare test/direct-call ctx (no ``ctx['job']``) must pass ``heartbeat_cb=None`` to
     extraction rather than a callback that would explode touching a nonexistent job."""
-    mock_extract.return_value = "/scratch/extracted-audio.mka"
+    mock_extract.return_value = _extracted("/scratch/extracted-audio.mka")
     mock_pool.return_value = MOCK_ANALYSIS
     api = AsyncMock()
     api.put_analysis = AsyncMock(return_value=MagicMock())

@@ -46,6 +46,21 @@ _N_MODELS = 34
 _DURATION_SEC = 900.0  # 5 coarse (180s) windows -- enough for window/model mix-ups to show
 
 
+@pytest.fixture(autouse=True)
+def _stub_duration_probe() -> Any:
+    """phaze-l832u: ``_probe_duration_sec`` is a REAL ``ffprobe`` subprocess now, not essentia.
+
+    Every test in this module hands ``analyze_file`` a synthetic path with a mocked essentia
+    behind it. The duration used to come out of that mock (``es.MetadataReader``); since D-10 it
+    comes from ffprobe, which would go looking for a file that does not exist. Stubbing the
+    probe -- rather than the binary -- keeps these tests exactly as mocked as they were, and
+    leaves the real probe to the tests that exercise it on real audio
+    (``tests/analyze/services/pipeline/test_extraction_analysis_handoff.py``).
+    """
+    with patch("phaze.services.analysis._probe_duration_sec", return_value=_DURATION_SEC):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # A mock whose outputs are distinct per (model, window)
 # ---------------------------------------------------------------------------
@@ -72,12 +87,10 @@ def _predictions_for(graph_filename: str, audio: np.ndarray) -> np.ndarray:
     return np.tile(row, (10, 1))
 
 
-def _build_mock_es(duration_sec: float = _DURATION_SEC) -> MagicMock:
+def _build_mock_es() -> MagicMock:
+    """Mock essentia. NOT the source of the file's duration any more (phaze-l832u D-10): that
+    comes from ``_instrumented_analyze(duration_sec=...)``, which stubs the ffprobe probe."""
     mock_es = MagicMock()
-
-    mock_metadata = MagicMock()
-    mock_metadata.return_value = ("", "", "", "", "", "", "", MagicMock(), duration_sec, 128, 16000, 1)
-    mock_es.MetadataReader.return_value = mock_metadata
 
     def _easyloader(*, filename: str, sampleRate: int, startTime: float, endTime: float) -> MagicMock:
         loader = MagicMock()
@@ -129,8 +142,14 @@ def _clean_caches() -> Iterator[None]:
 # ---------------------------------------------------------------------------
 
 
-def _instrumented_analyze(mock_es: MagicMock, **kwargs: Any) -> tuple[dict[str, Any], list[str], list[int]]:
-    """Run analyze_file, recording every graph construction and the cache size at each."""
+def _instrumented_analyze(mock_es: MagicMock, duration_sec: float = _DURATION_SEC, **kwargs: Any) -> tuple[dict[str, Any], list[str], list[int]]:
+    """Run analyze_file, recording every graph construction and the cache size at each.
+
+    ``duration_sec`` drives the (now ffprobe-backed, phaze-l832u D-10) duration probe, which is
+    where the file's length enters analyze_file. It used to arrive through the mock essentia's
+    ``MetadataReader``; passing it here keeps the caller's intent -- "a file this long" -- in
+    one place instead of two.
+    """
     built: list[str] = []
     resident_at_build: list[int] = []
     real_get_classifier = analysis_mod._get_classifier
@@ -148,6 +167,7 @@ def _instrumented_analyze(mock_es: MagicMock, **kwargs: Any) -> tuple[dict[str, 
         patch.object(analysis_mod, "es", mock_es),
         patch.object(analysis_mod, "_get_labels", side_effect=_mock_labels),
         patch.object(analysis_mod, "_get_classifier", side_effect=counting),
+        patch.object(analysis_mod, "_probe_duration_sec", return_value=duration_sec),
     ):
         result = analyze_file("/fake/audio.mp3", "/fake/models", **kwargs)
     return result, built, resident_at_build
@@ -191,8 +211,8 @@ def test_construction_count_scales_with_chunks_not_with_windows() -> None:
     the 7 200 s file (40 coarse windows, 2 chunks) differ 8x in windows and only 2x in
     constructions -- if graphs were rebuilt per window the second figure would be 34 x 40.
     """
-    result_5, built_5, _ = _instrumented_analyze(_build_mock_es(900.0))
-    result_40, built_40, resident_40 = _instrumented_analyze(_build_mock_es(7200.0))
+    result_5, built_5, _ = _instrumented_analyze(_build_mock_es(), duration_sec=900.0)
+    result_40, built_40, resident_40 = _instrumented_analyze(_build_mock_es(), duration_sec=7200.0)
 
     assert result_5["coarse_windows_analyzed"] == 5  # 1 chunk
     assert result_40["coarse_windows_analyzed"] == 40  # 2 chunks (30 + 10)
@@ -401,10 +421,10 @@ def _predictions_for_squeezed(graph_filename: str, audio: np.ndarray) -> np.ndar
     return _predictions_for(graph_filename, audio)[0]
 
 
-def _build_mock_es_single_frame(duration_sec: float = _DURATION_SEC) -> MagicMock:
+def _build_mock_es_single_frame() -> MagicMock:
     """Same registry as ``_build_mock_es``, but every ``TensorflowPredict*`` classifier
     returns the squeezed single-frame shape essentia yields on a short-enough buffer."""
-    mock_es = _build_mock_es(duration_sec)
+    mock_es = _build_mock_es()
 
     for cls_name in ("TensorflowPredictMusiCNN", "TensorflowPredictVGGish", "TensorflowPredictEffnetDiscogs"):
 
