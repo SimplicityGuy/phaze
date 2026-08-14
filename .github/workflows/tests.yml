@@ -132,6 +132,24 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: 🎬 Install ffmpeg
+        # phaze-l832u: `analysis.py::_probe_duration_sec` shells out to `ffprobe` (D-10), so the
+        # analysis path now needs the BINARY, not just essentia's bundled decode libraries. Before
+        # D-10 the probe was `es.MetadataReader` (in-process), which is why no CI job ever
+        # installed ffmpeg and why the runtime images -- which have shipped it since phaze-3ea41
+        # for `video_audio.py`'s extraction -- were the only place it was needed. Without this
+        # step, every real-audio test in the analyze-svc-pipeline shard fails with
+        # `AnalysisProbeError: ffprobe could not be run`. Installed for ALL shards rather than
+        # gated to that one: the probe is reachable from any test that analyzes real audio, and a
+        # per-shard gate would silently re-break the moment a real-audio test moves shard.
+        #
+        # Deliberately NOT solved by falling back to MetadataReader when ffprobe is missing --
+        # that fallback returns 0 for Matroska, which is the exact defect this bead fixed. A host
+        # without ffmpeg must fail loudly.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: 🐘 Create migrations test database
         env:
           PGPASSWORD: phaze
