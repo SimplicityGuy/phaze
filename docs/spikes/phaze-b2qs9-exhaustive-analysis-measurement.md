@@ -5,9 +5,10 @@
 - **Date:** 2026-08-11
 - **Tree:** branch `wt/bead/issue/phaze-b2qs9`, forked off `main` at `75e7575d` (the
   `phaze-w55w1` merge)
-- **Code under test:** the deployed analyze image `ghcr.io/simplicityguy/phaze/job:2026.8.1`
-  with `main@75e7575d`'s `src/phaze/` overlaid — the post-`phaze-w55w1` exhaustive/chunked
-  pipeline. Overlay proven by digest inside the container and inside every measured child (§1c)
+- **Code under test:** **`main@75e7575d`** — the `phaze-w55w1` merge commit, whose `src/phaze`
+  tree is byte-identical to the bead tip `1db98ca6` — overlaid onto the deployed analyze image
+  `ghcr.io/simplicityguy/phaze/job:2026.8.1` for its wheels. Identity proven four ways, and the
+  reason it is not an image build is that CI failed at that commit so none was published (§1c)
 - **Status:** measurement only. **No product code changed.**
 
 ______________________________________________________________________
@@ -43,7 +44,7 @@ ______________________________________________________________________
 | | |
 | --- | --- |
 | **Host** | `vox` — Debian 13 (trixie), kernel 6.12.100, glibc 2.41, Xeon E3-1271 v3, **4 physical cores / 8 logical (SMT)**, 31.31 GiB total, k0s burst node (k0s v1.36.2), **taken out of the phaze backend registry for the measurement window** and otherwise idle |
-| **Runtime** | the deployed job image `job:2026.8.1` verbatim — Python 3.14.7, `essentia-tensorflow` 2.1b6.dev1438, numpy 2.5.1 — with `main@75e7575d`'s `src/phaze` overlaid at `/scratch/src` and put ahead of the image's own `/app/src` on `PYTHONPATH` |
+| **Runtime** | the deployed job image `job:2026.8.1` **for its wheels only** — Python 3.14.7, `essentia-tensorflow` 2.1b6.dev1438, numpy 2.5.1 — with **`main@75e7575d`'s `src/phaze`** (tree `93c846bc…`) overlaid at `/scratch/src` and put ahead of the image's own `/app/src` on `PYTHONPATH`. No image exists at that commit; see §1c |
 | **Models** | the deployed `phaze-models` PVC, mounted **read-only** (68 files, the 34 graphs + labels) |
 | **Thread sizing** | `derive_sizing()` on this node returns `physical_cores=4, intra_op=4, inter_op=1, omp=4, concurrency=1` (`source='sysfs:thread_siblings_list'`) — the production derivation, applied by `services/analysis.py` at import |
 | **Pod** | a bare `sleep infinity` pod on `vox`, **no Kueue queue label** (consumes no quota) and **no memory limit** — the limit is deliberately absent so a peak above ADR-0005's 4Gi tier would be *observed* rather than OOMKilled |
@@ -123,7 +124,33 @@ a 1 → 12 concurrency sweep.
 The node was verified idle before the matrix started (load average 0.68 / 0.94 / 1.09, zero
 `phaze` analyze pods, `analysis_child` process count 0).
 
-### 1c. The overlay, and the proof it took
+### 1c. Code identity — what was measured, proven, and why not an image
+
+**Everything in this document was measured against `main@75e7575d`'s `src/phaze`** — the
+`phaze-w55w1` merge commit — carrying the post-review fixes (heartbeat pinned on replays,
+per-window beats in the fallback decode loop, the derived 2× outer net, both-tasks cancellation).
+Verified four ways rather than assumed:
+
+| check | evidence |
+| --- | --- |
+| the merge commit and the bead tip are the same code | `75e7575d:src/phaze` and `1db98ca6:src/phaze` resolve to the **same git tree object**, `93c846bcf0410f05a7b44fbf97fb74925ebc5681` |
+| the file that produced the numbers | `git show 75e7575d:src/phaze/services/analysis.py` hashes to **`38be362d…`** — the digest the container reported and every child re-reported |
+| the four post-review fixes are present | `_beat()` per window in the fallback loop (`analysis.py:989`), `_ANALYSIS_OUTER_HEARTBEAT_MULTIPLIER = 2` (`config.py:88`), `await _settle(drive, watch)` on the cancellation path (`analysis_exec.py:321`), and the pinned `timeout=0` + `heartbeat` on the replay path (`reenqueue.py:1200`) |
+| what the deployed image would have given instead | its own `services/analysis.py` is **`a8c30496…`** — the pre-`w55w1` capped implementation. Measuring the image as shipped would have answered the wrong question |
+
+**There is no published image at or after `75e7575d`, and none can be waited for.** The `main` push
+at `75e7575d` ran CI **run 31544941830**, which **failed** on `test / Tests (shared-rest)`;
+`ci.yml`'s `docker-publish` job is `needs: [detect-changes, aggregate-results]`, so it never ran and
+no `job:` tag was produced for that commit. (That red run on `main` is a real finding in its own
+right and is reported upstream; it is not caused by this spike, which changes no code.)
+
+The overlay is therefore not a second-best substitute — it is the *only* way to run the merged sha,
+and on the axis that matters it is stronger than an image would be: the source is the merge commit's
+own bytes, re-hashed inside the container **and inside the process that produced every number**,
+while the runtime underneath (Python 3.14.7, `essentia-tensorflow` 2.1b6.dev1438, numpy 2.5.1, the
+`phaze-models` PVC) is exactly what production runs.
+
+### 1c-i. The overlay, and the proof it took
 
 The deployed image predates `phaze-w55w1`, so measuring it directly would answer the wrong
 question — and a *silent* fallback to the image's own module would answer the wrong question while
@@ -601,10 +628,41 @@ it was changed back.
 | what | opening the window | closing it |
 | --- | --- | --- |
 | in-flight cloud work | four analyses were **allowed to finish** (drained 23:13Z → 23:53Z); none was evicted, requeued or lost | — |
-| Kueue `vox-cluster-queue` | `stopPolicy: None` → **`Hold`** (stops admitting; never `HoldAndDrain`, which would have evicted running work) | back to **`None`**; the queue drained 82 pending → 0 within minutes and resumed analyzing |
-| phaze backend registry | the `vox` `[[backends]]` block commented out in the deployed `backends.toml`; `phaze-api` + `phaze-worker` restarted; registry logged as `local` only, `cloud_enabled: false` | file restored **byte-identical** (`diff -q` clean, temporary backup then deleted); both services restarted; registry logged back as `vox` + `local`, `cloud_enabled: true` |
+| Kueue `vox-cluster-queue` | **held 2026-08-11T23:13:35Z** — `stopPolicy: None` → **`Hold`** (stops admitting; never `HoldAndDrain`, which would have evicted running work) | **released 2026-08-12T21:56:07Z** — back to **`None`**; the queue drained 82 pending → 0 within minutes and resumed analyzing |
+| phaze backend registry | **removed 2026-08-11T23:54:20Z** — the `vox` `[[backends]]` block commented out in the deployed `backends.toml`, `phaze-api` + `phaze-worker` restarted, registry logged as `local` only with `cloud_enabled: false` | **restored 2026-08-12T21:55:39Z** — file put back **byte-identical** from a capture taken *before* removal (`diff -q` clean; the capture then deleted), both services restarted, registry logged back as `vox` + `local` with `cloud_enabled: true`. Verified in §8a |
 | the measurement pod | a `sleep infinity` pod on `vox`, **no Kueue queue label** (consumed no quota), no memory limit | deleted |
 | scratch | 3.3 GB under a vox-local `/scratch` path — read-only copies of seven files, the harness, the outputs | removed entirely |
+
+### 8a. Restoration, verified
+
+Restoration is a deliverable, so it is evidenced rather than asserted. The registry entry was
+captured **before** removal and restored by copying that capture back, so the revert is byte-faithful
+rather than reconstructed:
+
+```
+diff -q backends.toml backends.toml.<pre-removal-capture>   ->   (no output: identical)
+```
+
+The control plane's **own** lane snapshot (`services/backends.get_backend_lane_snapshot`, the same
+degrade-safe probe the operator lane grid renders) after restoration, secret-free projection:
+
+```
+REGISTRY: [{"id":"vox","kind":"kueue","rank":10,"cap":4},{"id":"local","kind":"local","rank":99,"cap":1}]
+LANE:     {"id":"vox","kind":"kueue","rank":10,"cap":4,"available":true,
+           "in_flight":4,"working":4,"quota_wait":0,"inadmissible":0}
+```
+
+`available: true` is the live availability probe, not a config echo. And the lane is not merely
+reachable — **work routed to it and is running**: `in_flight`/`working` climbed 2 → 4, i.e. the lane
+is saturated at its `cap = 4`, with four healthy analyze pods on the node (ages 4m42s–20m at the
+final check) and `cloud_job` showing `running: 4` for `backend_id = vox`. The Kueue queue drained
+from 82 pending to 0 within minutes of the un-hold.
+
+No completion landed inside the observation window, and that is expected rather than a gap: the
+files now on the lane are multi-hour concert sets and §2 measures them at 0.56–0.79× their own
+duration, so the first completions are hours out. Admission + running pods + a true availability
+probe is the routing evidence; a completion count would only have been available by waiting out an
+analysis.
 
 - **No original file was opened for write**, and nothing was written back to the archive or to the
   staging bucket. Every measured file is a read-only copy.
