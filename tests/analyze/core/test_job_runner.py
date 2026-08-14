@@ -36,6 +36,19 @@ import pytest
 import respx
 
 
+def _extracted(path: str):  # type: ignore[no-untyped-def]
+    """An ``extract_audio_track`` result for the EXTRACTION branch (phaze-l832u).
+
+    The real function returns an ``AudioSource``, not a path: ``analysis_path`` is what the
+    analyzer reads and ``cleanup_path`` is the ONLY thing the pod may delete. On this branch
+    they are the same newly-created scratch file. The SKIP branch -- ``AudioSource(<input>,
+    None)`` -- is spelled out at the tests that are about it.
+    """
+    from phaze.services.video_audio import AudioSource
+
+    return AudioSource(analysis_path=path, cleanup_path=path)
+
+
 _AUDIO = b"deterministic-audio-bytes-for-sha256"
 _GOOD_SHA = hashlib.sha256(_AUDIO).hexdigest()
 _DOWNLOAD_URL = "http://bucket.test/obj"
@@ -60,7 +73,7 @@ def _patch_extract_audio_track(monkeypatch):  # type: ignore[no-untyped-def]
     import phaze.job_runner as jr
 
     async def _fake_extract(read_path, **_kwargs):  # type: ignore[no-untyped-def]
-        return f"{read_path}.extracted.mka"
+        return _extracted(f"{read_path}.extracted.mka")
 
     monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
 
@@ -131,7 +144,7 @@ def _capturing_extract(paths: list[str]):  # type: ignore[no-untyped-def]
 
     async def _extract(read_path, **_kwargs):  # type: ignore[no-untyped-def]
         paths.append(read_path)
-        return f"{read_path}.extracted.mka"
+        return _extracted(f"{read_path}.extracted.mka")
 
     return _extract
 
@@ -366,7 +379,7 @@ async def test_video_extracts_audio_before_analyzing(job_env, monkeypatch):  # t
 
     async def _fake_extract(read_path, **_kwargs):  # type: ignore[no-untyped-def]
         extract_calls.append(read_path)
-        return f"{read_path}.extracted.mka"
+        return _extracted(f"{read_path}.extracted.mka")
 
     monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
 
@@ -406,7 +419,7 @@ async def test_audio_file_also_goes_through_extraction(job_env, monkeypatch):  #
 
     async def _fake_extract(read_path, **_kwargs):  # type: ignore[no-untyped-def]
         extract_calls.append(read_path)
-        return f"{read_path}.extracted.mka"
+        return _extracted(f"{read_path}.extracted.mka")
 
     monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
 
@@ -586,7 +599,7 @@ async def test_extraction_gate_removed_video_still_extracted_when_audio_ext_abse
 
     async def _fake_extract(read_path, **_kwargs):  # type: ignore[no-untyped-def]
         extract_calls.append(read_path)
-        return f"{read_path}.extracted.mka"
+        return _extracted(f"{read_path}.extracted.mka")
 
     monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
     monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _fake_result()))
@@ -621,7 +634,7 @@ async def test_extraction_uses_the_downloaded_temp_file_directory_as_scratch_dir
 
     async def _fake_extract(read_path, **kwargs):  # type: ignore[no-untyped-def]
         seen_kwargs.update(kwargs)
-        return f"{read_path}.extracted.mka"
+        return _extracted(f"{read_path}.extracted.mka")
 
     monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
     monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _fake_result()))
@@ -659,7 +672,7 @@ async def test_video_extraction_scratch_cleaned_up_on_success(job_env, monkeypat
 
     async def _fake_extract(_read_path, **_kwargs):  # type: ignore[no-untyped-def]
         extracted.write_bytes(b"fake-extracted-audio")
-        return str(extracted)
+        return _extracted(str(extracted))
 
     monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
     monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _fake_result()))
@@ -692,7 +705,7 @@ async def test_video_extraction_scratch_cleaned_up_on_analysis_failure(job_env, 
 
     async def _fake_extract(_read_path, **_kwargs):  # type: ignore[no-untyped-def]
         extracted.write_bytes(b"fake-extracted-audio")
-        return str(extracted)
+        return _extracted(str(extracted))
 
     def _boom(*_a, **_k):  # type: ignore[no-untyped-def]
         msg = "essentia segfaulted"
@@ -1453,3 +1466,45 @@ def test_analyze_framing_source_guard():  # type: ignore[no-untyped-def]
     assert "dup2(" not in src
     assert "os.dup(" not in src
     assert "Phase 101" in src, "a comment must record the subprocess execution model (Phase 101)"
+
+
+@respx.mock
+async def test_plain_audio_download_is_analyzed_directly_and_still_cleaned_up(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """phaze-l832u: on the SKIP branch the pod analyzes its download in place.
+
+    ``AudioSource.cleanup_path`` is None, so the outer ``finally``'s extraction-scratch unlink
+    is a no-op -- but ``tmp_path`` (the download) is deleted by its OWN line in that same
+    ``finally``, so nothing outlives the pod either way. This is the cloud-lane mirror of the
+    local lane's archive-safety test: same result type, same rule, different consequence for
+    getting it wrong (here the input is the pod's own download, there it is the archive).
+    """
+    import phaze.job_runner as jr
+    from phaze.services.video_audio import AudioSource
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "audio_ext": "mp3"}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    respx.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    downloads: list[str] = []
+
+    async def _skip_extraction(read_path, **_kwargs):  # type: ignore[no-untyped-def]
+        downloads.append(read_path)
+        return AudioSource(analysis_path=read_path, cleanup_path=None)
+
+    analyzed: list[str] = []
+    monkeypatch.setattr(jr, "extract_audio_track", _skip_extraction)
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_capturing_analyze(analyzed)))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == 0
+    assert analyzed == downloads, "the skip branch must hand the analyzer the downloaded file itself"
+    assert not Path(downloads[0]).exists(), "the downloaded temp file must never outlive the pod"

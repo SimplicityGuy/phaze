@@ -206,12 +206,13 @@ async def _report_extraction_failure(client: Any, file_id: uuid.UUID, fid: str, 
 def _temp_suffix(audio_ext: str | None, url: str) -> str:
     """Pick the downloaded temp file's suffix so essentia can decode it.
 
-    essentia detects the audio format from the FILE EXTENSION (``es.MetadataReader``),
-    so the temp file MUST carry the file's real extension. The staged S3 key
-    (``phaze-staging/<file_id>``) has no extension, so deriving the suffix from the
-    presign URL path yields nothing and the old ``.audio`` fallback produced an
-    undecodable file → duration 0 → 0 windows → a silent empty-but-"successful"
-    analysis (cloud-analyze-empty-no-ext).
+    essentia detects the audio format from the FILE EXTENSION, so the temp file MUST carry the
+    file's real extension. The staged S3 key (``phaze-staging/<file_id>``) has no extension, so
+    deriving the suffix from the presign URL path yields nothing and the old ``.audio`` fallback
+    produced an undecodable file → duration 0 → 0 windows → a silent empty-but-"successful"
+    analysis (cloud-analyze-empty-no-ext). (phaze-l832u moved the DURATION probe itself off
+    essentia onto ffprobe, which sniffs content rather than trusting the suffix -- but the
+    decode that follows it is still essentia's, so the suffix still has to be right.)
 
     Prefer the server-threaded ``audio_ext`` (``FileRecord.file_type``, dotless);
     fall back to the URL path suffix (older control plane omits ``audio_ext``); and
@@ -475,7 +476,7 @@ async def run() -> None:
         # ephemeral filesystem).
         t_extract = time.monotonic()
         try:
-            extracted_audio_path = await extract_audio_track(str(tmp_path), file_id=fid, scratch_dir=tmp_path.parent)
+            audio_source = await extract_audio_track(str(tmp_path), file_id=fid, scratch_dir=tmp_path.parent)
         except NoAudioTrackError as exc:
             # Its OWN branch (not folded into the generic one below) purely for a distinct,
             # greppable log event -- "no audio in this container" is an operationally
@@ -495,8 +496,20 @@ async def run() -> None:
             log.exception("job_runner_extraction_failed", file_id=fid, step="extract")
             await _report_extraction_failure(client, file_id, fid, exc)
             sys.exit(EXIT_ANALYSIS)
-        log.info("job_runner_step_ok", file_id=fid, step="extract", elapsed_ms=_elapsed_ms(t_extract))
-        read_path = extracted_audio_path
+        # phaze-l832u: ``cleanup_path`` is the ONLY thing this pod may delete -- it is None when
+        # the download was already plain audio and nothing was extracted, in which case the
+        # analyzer reads the downloaded file itself (which the finally deletes anyway, as
+        # ``tmp_path``). Never assign this from ``analysis_path``: on the OTHER lane the same
+        # mistake deletes the operator's archive original, and the two call sites must not drift.
+        extracted_audio_path = audio_source.cleanup_path
+        log.info(
+            "job_runner_step_ok",
+            file_id=fid,
+            step="extract",
+            elapsed_ms=_elapsed_ms(t_extract),
+            extracted=audio_source.cleanup_path is not None,
+        )
+        read_path = audio_source.analysis_path
 
         # (4) analyze — the exhaustive analyze_file runs in a REAL child process via the
         # shared subprocess driver (Phase 101, OBS-03): the pod's event loop is no longer

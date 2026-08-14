@@ -71,8 +71,14 @@ def _patch_extract_audio_track(monkeypatch: pytest.MonkeyPatch) -> None:
     import phaze.job_runner as jr
     import phaze.tasks.functions as tf
 
-    async def _fake_extract(read_path: str, **_kwargs: Any) -> str:
-        return f"{read_path}.extracted.mka"
+    async def _fake_extract(read_path: str, **_kwargs: Any) -> Any:
+        # phaze-l832u: the real call returns an AudioSource -- ``analysis_path`` for the
+        # analyzer, ``cleanup_path`` for the caller's finally. This is the EXTRACTION branch
+        # (a distinct scratch file), never the skip branch, so nothing here aliases the input.
+        from phaze.services.video_audio import AudioSource
+
+        extracted = f"{read_path}.extracted.mka"
+        return AudioSource(analysis_path=extracted, cleanup_path=extracted)
 
     monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
     monkeypatch.setattr(tf, "extract_audio_track", _fake_extract)

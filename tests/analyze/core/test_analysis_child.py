@@ -17,20 +17,33 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from phaze import analysis_child
 from phaze.analysis_child import _TARGET_ENV, _parse_args, run
-from tests.analyze.services.pipeline.test_analysis import _build_mock_essentia, _mock_labels_file
-
-
-if TYPE_CHECKING:
-    import pytest
+from tests.analyze.services.pipeline.test_analysis import _MOCK_DURATION_SEC, _build_mock_essentia, _mock_labels_file
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _STUBS = "tests.analyze._child_stubs"
+
+
+@pytest.fixture(autouse=True)
+def _stub_duration_probe() -> Any:
+    """phaze-l832u: ``_probe_duration_sec`` is a REAL ``ffprobe`` subprocess now, not essentia.
+
+    Every test in this module hands ``analyze_file`` a synthetic path with a mocked essentia
+    behind it. The duration used to come out of that mock (``es.MetadataReader``); since D-10 it
+    comes from ffprobe, which would go looking for a file that does not exist. Stubbing the
+    probe -- rather than the binary -- keeps these tests exactly as mocked as they were, and
+    leaves the real probe to the tests that exercise it on real audio
+    (``tests/analyze/services/pipeline/test_extraction_analysis_handoff.py``).
+    """
+    with patch("phaze.services.analysis._probe_duration_sec", return_value=_MOCK_DURATION_SEC):
+        yield
 
 
 def _run_child(monkeypatch: pytest.MonkeyPatch, target: str, argv: list[str]) -> tuple[int, list[dict[str, Any]]]:
