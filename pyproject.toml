@@ -13,7 +13,7 @@ dependencies = [
     # PUT + just-in-time GET URLs and to delete/abort staged objects. The control plane never
     # reads file bytes (DIST-01); it only orchestrates presigned URLs the agent/pod transfer over.
     "aioboto3>=15.5.0",
-    "alembic>=1.19.0",
+    "alembic>=1.19.1",
     "asyncpg>=0.31.0",
     "beautifulsoup4>=4.15.0",
     "cryptography>=50.0.0",
@@ -35,10 +35,10 @@ dependencies = [
     # pip-audit and osv-scanner report nothing against it, and the full suite passes. Note
     # this cap is now the ONLY control on this package: the repo-wide `exclude-newer`
     # cooldown was removed the same day, so there is no waiting window behind it.
-    "litellm>=1.94.1,<1.95.0",
+    "litellm>=1.96.0,<1.97.0",
     "lxml>=6.1.1",
     "mutagen>=1.48.1",
-    "numpy>=2.5.1",
+    "numpy>=2.5.2",
     # phaze-fq9h.1: 1001Tracklists detail pages deliver their track listing via JS behind a
     # Cloudflare Turnstile widget, and spike phaze-dmvs proved a HEADFUL Patchright (a
     # CDP-patched Playwright fork) is the only non-evasive client that clears it -- vanilla
@@ -76,7 +76,7 @@ dependencies = [
     "redis>=8.1.0,<9.0",
     # Phase 36: postgres extra pulls psycopg[pool]>=3.3.4 for the PostgresQueue broker.
     "saq[postgres]>=0.26.4",
-    "sqlalchemy>=2.0.51",
+    "sqlalchemy>=2.0.52",
     "sse-starlette>=3.4.8",
     "structlog>=26.1.0",
     "tenacity>=9.1.4",
