@@ -50,6 +50,21 @@ _DURATION_SEC = 600.0  # 20 fine (30s) + 4 coarse (180s) windows
 
 
 @pytest.fixture(autouse=True)
+def _stub_duration_probe() -> Any:
+    """phaze-l832u: ``_probe_duration_sec`` is a REAL ``ffprobe`` subprocess now, not essentia.
+
+    Every test in this module hands ``analyze_file`` a synthetic path with a mocked essentia
+    behind it. The duration used to come out of that mock (``es.MetadataReader``); since D-10 it
+    comes from ffprobe, which would go looking for a file that does not exist. Stubbing the
+    probe -- rather than the binary -- keeps these tests exactly as mocked as they were, and
+    leaves the real probe to the tests that exercise it on real audio
+    (``tests/analyze/services/pipeline/test_extraction_analysis_handoff.py``).
+    """
+    with patch("phaze.services.analysis._probe_duration_sec", return_value=_DURATION_SEC):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _clean_caches() -> Iterator[None]:
     """The module caches are process-global; a cached graph would skip construction."""
     analysis_mod._classifier_cache.clear()

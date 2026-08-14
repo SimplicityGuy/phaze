@@ -36,6 +36,19 @@ import pytest
 import respx
 
 
+def _extracted(path: str):  # type: ignore[no-untyped-def]
+    """An ``extract_audio_track`` result for the EXTRACTION branch (phaze-l832u).
+
+    The real function returns an ``AudioSource``, not a path: ``analysis_path`` is what the
+    analyzer reads and ``cleanup_path`` is the ONLY thing the pod may delete. On this branch
+    they are the same newly-created scratch file. The SKIP branch -- ``AudioSource(<input>,
+    None)`` -- is spelled out at the tests that are about it.
+    """
+    from phaze.services.video_audio import AudioSource
+
+    return AudioSource(analysis_path=path, cleanup_path=path)
+
+
 _AUDIO = b"deterministic-audio-bytes-for-sha256"
 _GOOD_SHA = hashlib.sha256(_AUDIO).hexdigest()
 _DOWNLOAD_URL = "http://bucket.test/obj"
@@ -60,7 +73,7 @@ def _patch_extract_audio_track(monkeypatch):  # type: ignore[no-untyped-def]
     import phaze.job_runner as jr
 
     async def _fake_extract(read_path, **_kwargs):  # type: ignore[no-untyped-def]
-        return f"{read_path}.extracted.mka"
+        return _extracted(f"{read_path}.extracted.mka")
 
     monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
 
@@ -131,7 +144,7 @@ def _capturing_extract(paths: list[str]):  # type: ignore[no-untyped-def]
 
     async def _extract(read_path, **_kwargs):  # type: ignore[no-untyped-def]
         paths.append(read_path)
-        return f"{read_path}.extracted.mka"
+        return _extracted(f"{read_path}.extracted.mka")
 
     return _extract
 
@@ -224,6 +237,16 @@ def test_temp_suffix_precedence(audio_ext, url, expected):  # type: ignore[no-un
     assert jr._temp_suffix(audio_ext, url) == expected
 
 
+def _empty_result() -> dict:
+    r = _fake_result()
+    r["windows"] = []
+    r["fine_windows_analyzed"] = 0
+    r["fine_windows_total"] = 0
+    r["coarse_windows_analyzed"] = 0
+    r["coarse_windows_total"] = 0
+    return r
+
+
 @respx.mock
 async def test_zero_window_analysis_fails_loudly(job_env, monkeypatch):  # type: ignore[no-untyped-def]
     """A zero-window analyze result exits EXIT_ANALYSIS (12), never a false success (hardening).
@@ -244,15 +267,9 @@ async def test_zero_window_analysis_fails_loudly(job_env, monkeypatch):  # type:
     put = respx.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
         return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
     )
-
-    def _empty_result() -> dict:
-        r = _fake_result()
-        r["windows"] = []
-        r["fine_windows_analyzed"] = 0
-        r["fine_windows_total"] = 0
-        r["coarse_windows_analyzed"] = 0
-        r["coarse_windows_total"] = 0
-        return r
+    respx.post(f"{base}/api/internal/agent/analysis/{file_id}/failed").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
 
     monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _empty_result()))
 
@@ -262,6 +279,63 @@ async def test_zero_window_analysis_fails_loudly(job_env, monkeypatch):  # type:
     assert exc.value.code == jr.EXIT_ANALYSIS == 12
     # The empty result must NEVER be PUT back as a completion.
     assert not put.called
+
+
+@respx.mock
+async def test_zero_window_analysis_stores_a_terminal_error(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """phaze-l832u.2: the zero-window guard used to exit EXIT_ANALYSIS WITHOUT storing an
+    error_message at all -- the asymmetry with the extraction-failure branches (which DO
+    report) that let 11.5 hours of cloud zero-window failures (phaze-l832u) leave zero trace
+    in the analysis table, diagnosable only from pod logs. It must now report the SAME shape
+    the extraction-failure path produces, before exiting."""
+    import json as _json
+
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "audio_ext": "mp3"}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    failed = respx.post(f"{base}/api/internal/agent/analysis/{file_id}/failed").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _empty_result()))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_ANALYSIS
+    assert failed.called
+    body = _json.loads(failed.calls.last.request.content)
+    assert body["reason"] == "crashed"
+    assert "zero natural analysis windows" in body["error"]
+
+
+@respx.mock
+async def test_zero_window_report_post_failure_does_not_change_exit_code(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """Delivery-guarded like every other ``_report_analysis_failure`` call site: a failed POST
+    to /failed must not change the exit code or raise past the guard."""
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "audio_ext": "mp3"}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    respx.post(f"{base}/api/internal/agent/analysis/{file_id}/failed").mock(return_value=httpx.Response(500))
+
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _empty_result()))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_ANALYSIS
 
 
 @respx.mock
@@ -366,7 +440,7 @@ async def test_video_extracts_audio_before_analyzing(job_env, monkeypatch):  # t
 
     async def _fake_extract(read_path, **_kwargs):  # type: ignore[no-untyped-def]
         extract_calls.append(read_path)
-        return f"{read_path}.extracted.mka"
+        return _extracted(f"{read_path}.extracted.mka")
 
     monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
 
@@ -406,7 +480,7 @@ async def test_audio_file_also_goes_through_extraction(job_env, monkeypatch):  #
 
     async def _fake_extract(read_path, **_kwargs):  # type: ignore[no-untyped-def]
         extract_calls.append(read_path)
-        return f"{read_path}.extracted.mka"
+        return _extracted(f"{read_path}.extracted.mka")
 
     monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
 
@@ -586,7 +660,7 @@ async def test_extraction_gate_removed_video_still_extracted_when_audio_ext_abse
 
     async def _fake_extract(read_path, **_kwargs):  # type: ignore[no-untyped-def]
         extract_calls.append(read_path)
-        return f"{read_path}.extracted.mka"
+        return _extracted(f"{read_path}.extracted.mka")
 
     monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
     monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _fake_result()))
@@ -621,7 +695,7 @@ async def test_extraction_uses_the_downloaded_temp_file_directory_as_scratch_dir
 
     async def _fake_extract(read_path, **kwargs):  # type: ignore[no-untyped-def]
         seen_kwargs.update(kwargs)
-        return f"{read_path}.extracted.mka"
+        return _extracted(f"{read_path}.extracted.mka")
 
     monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
     monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _fake_result()))
@@ -659,7 +733,7 @@ async def test_video_extraction_scratch_cleaned_up_on_success(job_env, monkeypat
 
     async def _fake_extract(_read_path, **_kwargs):  # type: ignore[no-untyped-def]
         extracted.write_bytes(b"fake-extracted-audio")
-        return str(extracted)
+        return _extracted(str(extracted))
 
     monkeypatch.setattr(jr, "extract_audio_track", _fake_extract)
     monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _fake_result()))
@@ -692,7 +766,7 @@ async def test_video_extraction_scratch_cleaned_up_on_analysis_failure(job_env, 
 
     async def _fake_extract(_read_path, **_kwargs):  # type: ignore[no-untyped-def]
         extracted.write_bytes(b"fake-extracted-audio")
-        return str(extracted)
+        return _extracted(str(extracted))
 
     def _boom(*_a, **_k):  # type: ignore[no-untyped-def]
         msg = "essentia segfaulted"
@@ -787,6 +861,181 @@ async def test_exit_code_matrix(job_env, monkeypatch, scenario, expected_code): 
 
     assert exc.value.code == expected_code
     assert exc.value.code != 0
+
+
+# ---------------------------------------------------------------------------
+# phaze-l832u.2: every other bare sys.exit(EXIT_ANALYSIS) in the analyze step must ALSO
+# store a terminal error_message before exiting -- the audit companion to the zero-window
+# fix above. All three share the analyze step's failed-report endpoint.
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_analysis_driver_exception_stores_a_terminal_error(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """A generic exception raised by ``run_analysis_subprocess`` now reports before exiting,
+    reason="error" for an unclassified exception (mirrors ``_reason_for_analysis_exception``)."""
+    import json as _json
+
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    failed = respx.post(f"{base}/api/internal/agent/analysis/{file_id}/failed").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    def _boom(*_a, **_k):  # type: ignore[no-untyped-def]
+        msg = "essentia crashed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_boom))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_ANALYSIS
+    assert failed.called
+    body = _json.loads(failed.calls.last.request.content)
+    assert body["reason"] == "error"
+    assert "essentia crashed" in body["error"]
+
+
+@respx.mock
+async def test_analysis_driver_crash_reports_reason_crashed(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """An ``AnalysisSubprocessError`` (essentia child crash) reports ``reason="crashed"``,
+    mirroring the SAQ lane's ``AnalysisSubprocessError`` -> ``reason="crashed"`` mapping."""
+    import json as _json
+
+    import phaze.job_runner as jr
+    from phaze.services.analysis_exec import AnalysisSubprocessError
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    failed = respx.post(f"{base}/api/internal/agent/analysis/{file_id}/failed").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    def _boom(*_a, **_k):  # type: ignore[no-untyped-def]
+        raise AnalysisSubprocessError("child exited 1", exit_code=1, stderr_tail=("segfault",))
+
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_boom))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_ANALYSIS
+    assert failed.called
+    body = _json.loads(failed.calls.last.request.content)
+    assert body["reason"] == "crashed"
+
+
+@respx.mock
+async def test_analysis_stall_reports_reason_timeout(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """A stalled analysis child (``AnalysisStalledError``, a ``TimeoutError`` subclass) reports
+    ``reason="timeout"``, mirroring the SAQ lane's ``TimeoutError`` -> ``reason="timeout"``."""
+    import json as _json
+
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    failed = respx.post(f"{base}/api/internal/agent/analysis/{file_id}/failed").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    def _boom(*_a, **_k):  # type: ignore[no-untyped-def]
+        raise TimeoutError("analysis stalled for 1800s, last stage: fine window 4/10")
+
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_boom))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_ANALYSIS
+    assert failed.called
+    body = _json.loads(failed.calls.last.request.content)
+    assert body["reason"] == "timeout"
+
+
+@respx.mock
+async def test_bad_result_type_stores_a_terminal_error(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """A non-dict analyze result now reports before exiting EXIT_ANALYSIS (12)."""
+    import json as _json
+
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    failed = respx.post(f"{base}/api/internal/agent/analysis/{file_id}/failed").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: ["not", "a", "dict"]))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_ANALYSIS
+    assert failed.called
+    body = _json.loads(failed.calls.last.request.content)
+    assert body["reason"] == "error"
+    assert "list" in body["error"]
+
+
+@respx.mock
+async def test_payload_build_failure_stores_a_terminal_error(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """A window dict that fails ``AnalysisWindowPayload`` validation (extra="forbid") during
+    payload build now reports before exiting EXIT_ANALYSIS (12), not just EXIT_CALLBACK-shaped
+    silence (WR-01: payload build is part of the analyze step)."""
+    import json as _json
+
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    failed = respx.post(f"{base}/api/internal/agent/analysis/{file_id}/failed").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    def _bad_window_result() -> dict:
+        result = _fake_result()
+        result["windows"] = [{"tier": "fine", "window_index": 0, "unexpected_key": "boom"}]
+        return result
+
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _bad_window_result()))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_ANALYSIS
+    assert failed.called
+    body = _json.loads(failed.calls.last.request.content)
+    assert body["reason"] == "error"
 
 
 _PRESIGNED_URL_WITH_SIGNATURE = (
@@ -1453,3 +1702,45 @@ def test_analyze_framing_source_guard():  # type: ignore[no-untyped-def]
     assert "dup2(" not in src
     assert "os.dup(" not in src
     assert "Phase 101" in src, "a comment must record the subprocess execution model (Phase 101)"
+
+
+@respx.mock
+async def test_plain_audio_download_is_analyzed_directly_and_still_cleaned_up(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """phaze-l832u: on the SKIP branch the pod analyzes its download in place.
+
+    ``AudioSource.cleanup_path`` is None, so the outer ``finally``'s extraction-scratch unlink
+    is a no-op -- but ``tmp_path`` (the download) is deleted by its OWN line in that same
+    ``finally``, so nothing outlives the pod either way. This is the cloud-lane mirror of the
+    local lane's archive-safety test: same result type, same rule, different consequence for
+    getting it wrong (here the input is the pod's own download, there it is the archive).
+    """
+    import phaze.job_runner as jr
+    from phaze.services.video_audio import AudioSource
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "audio_ext": "mp3"}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    respx.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    downloads: list[str] = []
+
+    async def _skip_extraction(read_path, **_kwargs):  # type: ignore[no-untyped-def]
+        downloads.append(read_path)
+        return AudioSource(analysis_path=read_path, cleanup_path=None)
+
+    analyzed: list[str] = []
+    monkeypatch.setattr(jr, "extract_audio_track", _skip_extraction)
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_capturing_analyze(analyzed)))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == 0
+    assert analyzed == downloads, "the skip branch must hand the analyzer the downloaded file itself"
+    assert not Path(downloads[0]).exists(), "the downloaded temp file must never outlive the pod"

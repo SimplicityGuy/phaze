@@ -278,13 +278,18 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     # FileNotFoundError, and strands the file in PUSHED forever (permanently jamming the bounded
     # cloud window). Default True: every terminal path cleans up.
     cleanup_scratch = True
-    # phaze-3ea41: the video-audio extraction scratch file (services/video_audio.py runs for
-    # EVERY file now, format-scope operator decision -- no file-type gate here). Unlike
-    # ``payload.scratch_path`` -- preserved across a retryable failure because re-fetching it
-    # means a network re-push -- this is ALWAYS deleted in the outer ``finally`` regardless of
-    # retry: re-extracting from the still-present source (``read_path``) is a cheap local
-    # operation, so there is no reason to keep it around, and always deleting bounds extraction
-    # scratch disk to one file's audio track at a time no matter how many attempts a job takes.
+    # phaze-3ea41: the video-audio extraction scratch file. Unlike ``payload.scratch_path`` --
+    # preserved across a retryable failure because re-fetching it means a network re-push --
+    # this is ALWAYS deleted in the outer ``finally`` regardless of retry: re-extracting from
+    # the still-present source (``read_path``) is a cheap local operation, so there is no reason
+    # to keep it around, and always deleting bounds extraction scratch disk to one file's audio
+    # track at a time no matter how many attempts a job takes.
+    #
+    # phaze-l832u: this holds ``AudioSource.cleanup_path`` and NOTHING ELSE. It stays None when
+    # extraction was skipped (the file was already plain audio), because the finally below
+    # unlinks it unconditionally and the file that would otherwise be sitting here is the
+    # operator's archive original -- ``read_path`` is the real file on the local lane, not a
+    # staged copy. Assigning the analyzer's read path here would delete the archive.
     extracted_audio_path: str | None = None
     try:
         # CLOUDPIPE-03: integrity-verify the pushed bytes BEFORE trusting them. sha256 is computed
@@ -339,12 +344,20 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             semaphore: asyncio.Semaphore | None = ctx.get("analysis_semaphore")
             async with semaphore if semaphore is not None else contextlib.nullcontext():
                 # phaze-3ea41 (operator decision, format scope): pre-analysis audio-track
-                # extraction runs for EVERY file, not just recognized video extensions -- see
+                # extraction is offered EVERY file (probed, then extracted only if it is not
+                # already plain audio), not just recognized video extensions -- see
                 # services/video_audio.py's decision record. ffprobe is the sole authority on
                 # whether read_path has an audio stream at all; there is no payload.file_type
                 # gate here anymore. Runs INSIDE the concurrency semaphore, same as the analysis
                 # it feeds, so a burst of files cannot spawn unbounded concurrent ffmpeg
                 # extractions alongside the essentia-bounded pool.
+                #
+                # phaze-l832u: the call returns an AudioSource, NOT a path, and the two fields
+                # are not interchangeable. ``cleanup_path`` is None whenever nothing was created
+                # (the already-plain-audio skip), which is what keeps the outer finally's
+                # unconditional unlink off ``read_path`` -- on this lane, with no pushed copy,
+                # read_path IS the operator's archive original. Never assign
+                # ``extracted_audio_path`` from ``analysis_path``.
                 job = ctx.get("job")
 
                 async def _extraction_heartbeat() -> None:
@@ -355,7 +368,7 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
                     # _run_analysis_with_progress's _heartbeat does for the analysis phase.
                     await _touch_job_heartbeat(job)
 
-                read_path_for_analysis = await extract_audio_track(
+                audio_source = await extract_audio_track(
                     read_path,
                     file_id=str(payload.file_id),
                     # phaze-3ea41 (review correction): thread the agent's configured scratch
@@ -369,12 +382,14 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
                     heartbeat_cb=_extraction_heartbeat if job is not None else None,
                     heartbeat_interval_sec=cfg.analysis_job_heartbeat_sec / _HEARTBEAT_TOUCHES_PER_DEADLINE,
                 )
-                extracted_audio_path = read_path_for_analysis
+                # Register the scratch file for cleanup BEFORE the analysis that can fail (and
+                # ``None`` when there is no scratch file at all -- the skip branch).
+                extracted_audio_path = audio_source.cleanup_path
                 analysis = await _run_analysis_with_progress(
                     api,
                     cfg,
                     payload.file_id,
-                    read_path_for_analysis,
+                    audio_source.analysis_path,
                     payload.models_path,
                     job=ctx.get("job"),
                 )

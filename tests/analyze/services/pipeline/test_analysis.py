@@ -15,6 +15,7 @@ from phaze.services.analysis import (
     GENRE_MODEL,
     MODEL_SETS,
     AnalysisDecodeError,
+    AnalysisProbeError,
     CoarseWindow,
     FineWindow,
     ModelConfig,
@@ -172,6 +173,22 @@ def test_derive_style_replaces_triple_dash() -> None:
 _MOCK_DURATION_SEC = 600.0  # 10 min -> 20 fine (30s) + 4 coarse (180s) windows
 
 
+@pytest.fixture(autouse=True)
+def _stub_duration_probe() -> Any:
+    """phaze-l832u: ``_probe_duration_sec`` is a REAL ``ffprobe`` subprocess now, not essentia.
+
+    Every test in this module hands ``analyze_file`` a synthetic path with a mocked essentia
+    behind it. The duration used to come out of that mock (``es.MetadataReader``); since D-10 it
+    comes from ffprobe, which would go looking for a file that does not exist. Stubbing the
+    probe -- rather than the binary -- keeps these tests exactly as mocked as they were, and
+    leaves the real probe to the tests that actually exercise it on real audio
+    (``test_extraction_analysis_handoff.py``). A test that needs a different duration still
+    overrides this with its own ``@patch(..., return_value=...)``, which shadows this fixture.
+    """
+    with patch("phaze.services.analysis._probe_duration_sec", return_value=_MOCK_DURATION_SEC):
+        yield
+
+
 def _build_mock_essentia(duration_sec: float = _MOCK_DURATION_SEC) -> MagicMock:
     """Build a mock essentia.standard module with all required classes."""
     mock_es = MagicMock()
@@ -275,16 +292,18 @@ def test_analyze_file_features_has_all_model_sets(_mock_es: MagicMock, mock_get_
 
 
 @patch("phaze.services.analysis.es")
-def test_analyze_file_raises_on_corrupt_file(mock_es: MagicMock) -> None:
+def test_analyze_file_raises_on_corrupt_file(_mock_es: MagicMock, _stub_duration_probe: Any) -> None:
     """analyze_file propagates (does not swallow) a fatal duration-probe failure.
 
-    A whole-file-unreadable error surfaces at the ``_probe_duration_sec`` stage
-    (es.MetadataReader) and is fatal — unlike per-window decode failures, which
-    are isolated and skipped.
+    A whole-file-unreadable error surfaces at the ``_probe_duration_sec`` stage and is fatal —
+    unlike per-window decode failures, which are isolated and skipped. phaze-l832u moved the
+    probe from ``es.MetadataReader`` to ``ffprobe`` (D-10) and gave the failure its own type;
+    the CONTRACT under test is unchanged, which is the point of keeping this test.
     """
-    mock_es.MetadataReader.side_effect = RuntimeError("Corrupt audio file")
-
-    with pytest.raises(RuntimeError, match="Corrupt audio file"):
+    with (
+        patch("phaze.services.analysis._probe_duration_sec", side_effect=AnalysisProbeError("ffprobe failed: Invalid data found")),
+        pytest.raises(AnalysisProbeError, match="Invalid data found"),
+    ):
         analyze_file("/fake/corrupt.mp3", "/fake/models")
 
 

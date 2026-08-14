@@ -10,6 +10,13 @@ confidence in the argv shape when ``ffmpeg``/``ffprobe`` are available.
 
 Review correction (phaze-3ea41, round 2): the ten near-identical ``_fake_exec`` closures a
 first draft repeated per-test are collapsed into the ``make_fake_exec`` factory fixture below.
+
+phaze-l832u adds the already-plain-audio SKIP branch and, with it, the ownership invariant
+this module's last section exists for: ``cleanup_path`` is NEVER the input path. Two things
+follow for the fixtures. The probe now reads the WHOLE container, so a fixture's stream list
+has to say what else is in there — ``make_fake_exec``'s ``other_streams`` defaults to a real
+video track, which is what every pre-existing test here was always describing. And a test that
+wants the SKIP branch says so explicitly with ``other_streams=[]``.
 """
 
 from __future__ import annotations
@@ -24,11 +31,23 @@ import pytest
 
 from phaze.services.video_audio import (
     AudioExtractionError,
+    AudioSource,
     NoAudioTrackError,
+    _is_already_plain_audio,
     _select_track,
     extract_audio_track,
-    probe_audio_streams,
+    probe_container_streams,
 )
+
+
+# phaze-l832u: the probe now reads the WHOLE container, so a fixture's stream list has to say
+# what else is in there. This is the "real video track" every fixture below carries by default
+# -- the shape that must still be EXTRACTED, which is what every phaze-3ea41 test was written
+# against (a video container) even though its fixture only listed the audio side of it.
+_VIDEO_TRACK = {"index": 0, "codec_name": "h264", "codec_type": "video", "disposition": {"default": 1, "attached_pic": 0}}
+# Embedded cover art: a "video" stream that is a single still frame in the tag payload. NOT a
+# video track, and ubiquitous in the real corpus (see _is_already_plain_audio).
+_COVER_ART = {"index": 1, "codec_name": "mjpeg", "codec_type": "video", "disposition": {"default": 0, "attached_pic": 1}}
 
 
 # ---------------------------------------------------------------------------
@@ -93,10 +112,21 @@ def _probe_json(streams: list[dict[str, Any]]) -> bytes:
     return json.dumps({"streams": streams}).encode()
 
 
+def _video_container_json(audio_streams: list[dict[str, Any]]) -> bytes:
+    """ffprobe JSON for a VIDEO container carrying ``audio_streams`` (phaze-l832u).
+
+    The probe reads the whole container now, so a fixture that lists only audio describes a
+    file that would take the already-plain-audio SKIP branch. Tests about the extraction
+    branch state the video track explicitly -- via ``make_fake_exec``'s ``other_streams``
+    default, or via this helper where the test builds its own subprocess double.
+    """
+    return _probe_json([_VIDEO_TRACK, *({"codec_type": "audio", **s} for s in audio_streams)])
+
+
 def _make_fake_exec(procs: list[Any]) -> Any:
     """Return an async ``create_subprocess_exec`` replacement that yields ``procs`` in order.
 
-    Used only by the ffprobe-only tests below (``probe_audio_streams``, the no-streams case),
+    Used only by the ffprobe-only tests below (``probe_container_streams``, the no-streams case),
     which never touch ffmpeg at all -- ``make_fake_exec`` (below) is for everything that does.
     """
     remaining = list(procs)
@@ -122,6 +152,7 @@ def make_fake_exec(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
     def _factory(
         streams: list[dict[str, Any]],
         *,
+        other_streams: list[dict[str, Any]] | None = None,
         ffmpeg_returncode: int = 0,
         ffmpeg_stdout_lines: list[bytes] | None = None,
         ffmpeg_stderr_lines: list[bytes] | None = None,
@@ -129,7 +160,14 @@ def make_fake_exec(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
         write_output: bool = True,
         missing_ffmpeg: bool = False,
     ) -> Any:
-        probe_proc = _FakeCommunicateProc(0, stdout=_probe_json(streams))
+        # phaze-l832u: ``streams`` describes the AUDIO side (its historical meaning, and what
+        # the old ``-select_streams a`` probe returned); ``other_streams`` is everything else in
+        # the container, defaulting to one real video track so a fixture that says nothing about
+        # it describes a VIDEO CONTAINER -- the shape these tests have always been about, and
+        # the one that must still be extracted. Pass ``other_streams=[]`` for a bare audio file.
+        others = [_VIDEO_TRACK] if other_streams is None else other_streams
+        container = [*others, *({"codec_type": "audio", **s} for s in streams)]
+        probe_proc = _FakeCommunicateProc(0, stdout=_probe_json(container))
         extract_proc = (
             ffmpeg_proc
             if ffmpeg_proc is not None
@@ -207,51 +245,51 @@ def test_select_track_single_stream_no_others() -> None:
 
 
 # ---------------------------------------------------------------------------
-# probe_audio_streams
+# probe_container_streams
 # ---------------------------------------------------------------------------
 
 
-async def test_probe_audio_streams_returns_the_stream_list(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_probe_container_streams_returns_the_stream_list(monkeypatch: pytest.MonkeyPatch) -> None:
     streams = [{"index": 1, "codec_name": "aac", "codec_type": "audio"}]
     proc = _FakeCommunicateProc(0, stdout=_probe_json(streams))
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _make_fake_exec([proc]))
 
-    result = await probe_audio_streams("/video/concert.mkv")
+    result = await probe_container_streams("/video/concert.mkv")
 
     assert result == streams
 
 
-async def test_probe_audio_streams_empty_when_no_audio(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_probe_container_streams_empty_when_no_audio(monkeypatch: pytest.MonkeyPatch) -> None:
     proc = _FakeCommunicateProc(0, stdout=_probe_json([]))
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _make_fake_exec([proc]))
 
-    assert await probe_audio_streams("/video/silent.mkv") == []
+    assert await probe_container_streams("/video/silent.mkv") == []
 
 
-async def test_probe_audio_streams_nonzero_exit_raises_audio_extraction_error(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_probe_container_streams_nonzero_exit_raises_audio_extraction_error(monkeypatch: pytest.MonkeyPatch) -> None:
     proc = _FakeCommunicateProc(1, stderr=b"Invalid data found when processing input")
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _make_fake_exec([proc]))
 
     with pytest.raises(AudioExtractionError, match="ffprobe failed"):
-        await probe_audio_streams("/video/corrupt.mkv")
+        await probe_container_streams("/video/corrupt.mkv")
 
 
-async def test_probe_audio_streams_non_json_output_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_probe_container_streams_non_json_output_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     proc = _FakeCommunicateProc(0, stdout=b"not json")
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _make_fake_exec([proc]))
 
     with pytest.raises(AudioExtractionError, match="non-JSON"):
-        await probe_audio_streams("/video/weird.mkv")
+        await probe_container_streams("/video/weird.mkv")
 
 
-async def test_probe_audio_streams_missing_binary_raises_audio_extraction_error(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_probe_container_streams_missing_binary_raises_audio_extraction_error(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _raise_fnf(*_args: Any, **_kwargs: Any) -> Any:
         raise FileNotFoundError(2, "No such file or directory", "ffprobe")
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _raise_fnf)
 
     with pytest.raises(AudioExtractionError, match="ffprobe binary not found"):
-        await probe_audio_streams("/video/concert.mkv")
+        await probe_container_streams("/video/concert.mkv")
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +313,7 @@ async def test_extract_audio_track_falls_back_to_first_stream_when_none_default(
 
     result = await extract_audio_track("/video/multi_angle.mkv")
 
-    assert Path(result).exists()
+    assert Path(result.analysis_path).exists()
     argv = _ffmpeg_argv(make_fake_exec)
     assert argv[argv.index("-map") + 1] == "0:2"
     assert argv[argv.index("-c:a") + 1] == "copy"
@@ -292,7 +330,7 @@ async def test_extract_audio_track_prefers_default_flagged_stream_over_first(mak
 
     result = await extract_audio_track("/video/multi_angle.mkv")
 
-    assert Path(result).exists()
+    assert Path(result.analysis_path).exists()
     argv = _ffmpeg_argv(make_fake_exec)
     assert argv[argv.index("-map") + 1] == "0:3"
 
@@ -324,7 +362,7 @@ async def test_extract_audio_track_uses_scratch_dir_when_given(make_fake_exec: A
 
     result = await extract_audio_track("/video/concert.mkv", scratch_dir=scratch)
 
-    assert Path(result).parent == scratch
+    assert Path(result.analysis_path).parent == scratch
     assert scratch.is_dir()
 
 
@@ -384,7 +422,7 @@ async def test_extract_audio_track_cancellation_kills_and_cleans_up(monkeypatch:
     """No-orphan discipline (analysis_exec.py convention): cancelling the caller's task kills
     the child and removes any partial scratch file rather than leaking either."""
     streams = [{"index": 1, "codec_name": "aac"}]
-    probe_proc = _FakeCommunicateProc(0, stdout=_probe_json(streams))
+    probe_proc = _FakeCommunicateProc(0, stdout=_video_container_json(streams))
 
     class _NeverEndingStream:
         """Blocks forever (until cancelled) instead of ever yielding EOF -- models a wedged
@@ -428,7 +466,7 @@ async def test_extract_audio_track_cancellation_settles_a_pending_heartbeat_task
     awaited (``_settle_pending``), not left running orphaned against a job nobody is
     watching -- the same ``_settle`` discipline ``analysis_exec.py`` uses."""
     streams = [{"index": 1, "codec_name": "aac"}]
-    probe_proc = _FakeCommunicateProc(0, stdout=_probe_json(streams))
+    probe_proc = _FakeCommunicateProc(0, stdout=_video_container_json(streams))
 
     class _OneLineThenHangStream:
         """Yields ONE progress line (enough to spawn a heartbeat), then hangs forever --
@@ -567,7 +605,7 @@ async def test_extract_audio_track_heartbeat_error_is_swallowed(make_fake_exec: 
 
     result = await extract_audio_track("/video/concert.mkv", heartbeat_cb=_boom, heartbeat_interval_sec=0.0)
 
-    assert Path(result).exists()
+    assert Path(result.analysis_path).exists()
 
 
 async def test_extract_audio_track_no_heartbeat_cb_is_fine(make_fake_exec: Any) -> None:
@@ -575,7 +613,7 @@ async def test_extract_audio_track_no_heartbeat_cb_is_fine(make_fake_exec: Any) 
 
     result = await extract_audio_track("/video/concert.mkv")
 
-    assert Path(result).exists()
+    assert Path(result.analysis_path).exists()
 
 
 async def test_extract_audio_track_hung_heartbeat_does_not_stall_the_pump(make_fake_exec: Any) -> None:
@@ -598,7 +636,7 @@ async def test_extract_audio_track_hung_heartbeat_does_not_stall_the_pump(make_f
         timeout=5.0,
     )
 
-    assert Path(result).exists()
+    assert Path(result.analysis_path).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -636,9 +674,9 @@ async def test_real_extract_audio_track_from_synthetic_video(tmp_path: Path) -> 
 
     result = await extract_audio_track(str(src), scratch_dir=tmp_path)
 
-    assert Path(result).exists()
-    assert Path(result).stat().st_size > 0
-    extracted_streams = await probe_audio_streams(result)
+    assert Path(result.analysis_path).exists()
+    assert Path(result.analysis_path).stat().st_size > 0
+    extracted_streams = await probe_container_streams(result.analysis_path)
     assert len(extracted_streams) == 1
 
 
@@ -697,8 +735,134 @@ async def test_real_extract_audio_track_prefers_default_flagged_stream(tmp_path:
     await proc.wait()
     assert src.exists()
 
-    streams = await probe_audio_streams(str(src))
+    streams = await probe_container_streams(str(src))
     assert len(streams) == 2
     selected, _others = _select_track(streams)
     assert selected["index"] == 1  # the SECOND stream is the one flagged default above
     assert selected["disposition"]["default"] == 1
+
+
+# ---------------------------------------------------------------------------
+# phaze-l832u: the already-plain-audio SKIP branch, and who owns which path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("streams", "expected", "why"),
+    [
+        ([{"codec_type": "audio", "index": 0}], True, "a bare audio file"),
+        ([_COVER_ART, {"codec_type": "audio", "index": 0}], True, "embedded cover art is a still frame, not a video track"),
+        ([_VIDEO_TRACK, {"codec_type": "audio", "index": 1}], False, "a real video track is phaze-3ea41's feature"),
+        (
+            [{"codec_type": "audio", "index": 0}, {"codec_type": "audio", "index": 1}],
+            False,
+            "two audio tracks: which one essentia would pick is the opacity this module removes",
+        ),
+        (
+            [{"codec_type": "audio", "index": 0}, {"codec_type": "subtitle", "index": 1}],
+            False,
+            "subtitles mean it is not merely audio",
+        ),
+        ([{"codec_type": "audio", "index": 0}, {"codec_type": "data", "index": 1}], False, "a timed-data stream is not cover art"),
+        (
+            [{"codec_type": "audio", "index": 0}, {"codec_type": "video", "index": 1, "disposition": {"attached_pic": 0}}],
+            False,
+            "a video stream NOT flagged attached_pic is a video track",
+        ),
+        ([], False, "no audio at all is not plain audio (it raises NoAudioTrackError upstream)"),
+    ],
+)
+def test_is_already_plain_audio(streams: list[dict[str, Any]], expected: bool, why: str) -> None:
+    assert _is_already_plain_audio(streams) is expected, why
+
+
+async def test_extract_audio_track_skips_the_remux_for_a_plain_audio_file(make_fake_exec: Any) -> None:
+    """phaze-l832u decision 2: a single-audio-stream container is analyzed where it lies.
+
+    ffmpeg is never spawned, ``analysis_path`` IS the input, and -- the part that matters --
+    ``cleanup_path`` is None so the caller's unconditional unlink has nothing to reach.
+    """
+    make_fake_exec([{"index": 0, "codec_name": "mp3"}], other_streams=[])
+
+    result = await extract_audio_track("/music/track.mp3")
+
+    assert result == AudioSource(analysis_path="/music/track.mp3", cleanup_path=None)
+    assert not [c for c in make_fake_exec.calls if c[0][0] == "ffmpeg"], "a plain audio file must not be remuxed"
+
+
+async def test_extract_audio_track_skips_the_remux_for_audio_with_cover_art(make_fake_exec: Any) -> None:
+    """Embedded artwork must not read as "video container" -- that would put the remux back in
+    front of essentially the whole corpus and leave the skip with nothing to do."""
+    make_fake_exec([{"index": 0, "codec_name": "mp3"}], other_streams=[_COVER_ART])
+
+    result = await extract_audio_track("/music/track_with_art.mp3")
+
+    assert result.cleanup_path is None
+    assert result.analysis_path == "/music/track_with_art.mp3"
+
+
+async def test_extract_audio_track_still_extracts_a_video_container(make_fake_exec: Any) -> None:
+    """The complement: phaze-3ea41's actual feature is untouched by the skip branch."""
+    make_fake_exec([{"index": 1, "codec_name": "aac"}])
+
+    result = await extract_audio_track("/video/concert.mkv")
+
+    assert result.cleanup_path == result.analysis_path
+    assert result.analysis_path != "/video/concert.mkv"
+    assert Path(result.analysis_path).suffix == ".mka"
+
+
+async def test_extract_audio_track_never_reports_its_input_as_the_path_to_delete(make_fake_exec: Any, tmp_path: Path) -> None:
+    """THE archive-safety invariant, stated directly: ``cleanup_path`` is never the input.
+
+    Both lanes unlink ``cleanup_path`` in an outer ``finally``, and on the local lane the input
+    is the operator's REAL ARCHIVE FILE. Asserted for BOTH branches over a real on-disk input,
+    which must still exist afterwards either way.
+    """
+    for other_streams in ([], [_VIDEO_TRACK]):
+        source = tmp_path / f"input_{len(other_streams)}.mkv"
+        source.write_bytes(b"pretend-container-bytes")
+        make_fake_exec([{"index": 1, "codec_name": "aac"}], other_streams=other_streams)
+
+        result = await extract_audio_track(str(source), scratch_dir=tmp_path)
+
+        assert result.cleanup_path != str(source)
+        # Simulate exactly what both callers do with the result, on their success path.
+        if result.cleanup_path is not None:
+            Path(result.cleanup_path).unlink(missing_ok=True)
+        assert source.exists(), "extraction deleted its own input -- on the local lane this is the archive original"
+
+
+async def test_extract_audio_track_leaves_its_input_alone_when_ffmpeg_fails(make_fake_exec: Any, tmp_path: Path) -> None:
+    """The failure path owns the same invariant: a failed extraction cleans up ITS OWN output
+    and touches nothing of the caller's."""
+    source = tmp_path / "input.mkv"
+    source.write_bytes(b"pretend-container-bytes")
+    make_fake_exec([{"index": 1, "codec_name": "aac"}], ffmpeg_returncode=1)
+
+    with pytest.raises(AudioExtractionError):
+        await extract_audio_track(str(source), scratch_dir=tmp_path)
+
+    assert source.exists()
+
+
+@pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg/ffprobe not installed on this runner")
+async def test_real_plain_audio_file_is_not_remuxed_and_survives(tmp_path: Path) -> None:
+    """The skip branch against REAL ffprobe on a REAL audio file: no remux, no deletion.
+
+    A hand-built stream list can be wrong about what ffprobe reports for an ordinary track;
+    this cannot be.
+    """
+    src = tmp_path / "track.mp3"
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-c:a", "libmp3lame", "-q:a", "9", str(src)
+    )
+    await proc.wait()
+    assert src.exists()
+    before = src.read_bytes()
+
+    result = await extract_audio_track(str(src), scratch_dir=tmp_path)
+
+    assert result == AudioSource(analysis_path=str(src), cleanup_path=None)
+    assert src.read_bytes() == before, "the input was rewritten or replaced"
+    assert list(tmp_path.iterdir()) == [src], "the skip branch left a scratch file behind"

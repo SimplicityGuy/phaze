@@ -37,11 +37,9 @@ file-type parameter and callers (``tasks/functions.py::process_file``,
 ``job_runner.py::run``) no longer branch on ``payload.file_type``/``audio_ext`` before
 calling it. Two consequences worth being explicit about:
 
-  * ``-c:a copy`` is a lossless stream copy (never a re-encode), so for an ALREADY-bare-audio
-    file (mp3, flac, ...) this demux-and-remux round-trip produces bit-identical audio to what
-    essentia would have decoded from the original -- "existing audio-file analysis is
-    unchanged" is a claim about ANALYSIS OUTPUT, not about this module being skipped for
-    audio-typed inputs.
+  * ``-c:a copy`` is a lossless stream copy (never a re-encode), so where a remux DOES happen
+    it produces bit-identical audio to what essentia would have decoded from the original --
+    "existing audio-file analysis is unchanged" is a claim about ANALYSIS OUTPUT.
   * Discovery/scan (``services/pipeline.py``'s enqueue-time gate, ``tasks/functions.py``'s own
     ``_ANALYZABLE_FILE_TYPES`` companion/unknown skip) KEEPS its broad, extension-based
     classification -- that gate answers "should this file be enqueued for analysis at all",
@@ -49,6 +47,23 @@ calling it. Two consequences worth being explicit about:
     stream", which only ``ffprobe`` can answer authoritatively. The two gates are
     deliberately NOT unified: scan-time classification never opens the file; this module
     always does.
+
+**D-10 NARROWING (phaze-l832u): every file is still PROBED, but a file that is already plain
+audio is no longer REMUXED.** phaze-3ea41's decision above was "extraction runs on every file";
+2026.8.3 shipped it alongside phaze-w55w1's exhaustive analysis and the pair stopped the
+pipeline dead for 11.5 hours -- the ``.mka`` intermediate is Matroska, ``es.MetadataReader`` is
+TagLib, and TagLib reads duration 0 out of Matroska, so every file produced zero natural
+windows. The CORRECTNESS half of the fix is in ``services/analysis.py`` (D-10: probe duration
+with ffprobe, which reads the ``.mka`` correctly -- gating the remux alone would have left
+phaze-3ea41's actual feature, video containers, broken in exactly the same way, since a video's
+extracted ``.mka`` hits the identical gap). This module carries the COST half, and only that:
+:func:`_is_already_plain_audio` sends a single-audio-stream container straight to the analyzer
+instead of copying it through ffmpeg first, removing a full remux of every audio file in an
+11,428-file corpus from the hot path. ``ffprobe`` remains the sole authority -- the predicate
+reads the container's real stream list, never the suffix or ``file_type``, so the extension
+whitelist phaze-3ea41 removed stays removed. What changes for CALLERS is the return type: see
+:class:`AudioSource`, which exists because a skip branch cannot express itself as a bare
+"scratch path you own and delete" without deleting the operator's archive original.
 
 **Disk headroom (``-c:a copy``, never a decode-to-PCM/WAV intermediate).** A multi-hour
 concert set decoded to raw PCM would be the multi-GiB-per-hour blowup ``services/analysis.py``
@@ -59,11 +74,11 @@ scratch file stays close to the SIZE OF THE ORIGINAL COMPRESSED AUDIO TRACK (typ
 a few hundred MB for a multi-hour set, and correspondingly tiny for an ordinary track),
 regardless of how long the source runs. The Matroska audio container (``.mka``) is the output
 wrapper because it accepts arbitrary audio codecs without a forced re-encode, so ``-c:a copy``
-is always legal regardless of the source codec. Because extraction now runs unconditionally
-(the format-scope decision above), this bound applies uniformly to every file in the
-archive, not just recognized video containers -- an ordinary track's scratch file is a few MB
-and gone within the same job attempt, so the aggregate scratch footprint at any instant is
-still O(concurrent in-flight files), never O(archive size).
+is always legal regardless of the source codec. This bound applies to every file that is
+actually extracted -- any container that is not already plain audio (the D-10 narrowing above),
+not just recognized video extensions -- and such a scratch file is gone within the same job
+attempt, so the aggregate scratch footprint at any instant is O(concurrent in-flight files),
+never O(archive size). A file that skips extraction contributes nothing to it at all.
 
 **Cloud lane vs local lane (both extract locally, no audio-push plumbing) -- operator
 decision (phaze-3ea41).** ``ffmpeg`` is already installed in both the app/agent images AND
@@ -128,6 +143,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 import contextlib
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import tempfile
@@ -163,6 +179,34 @@ _DEFAULT_HEARTBEAT_INTERVAL_SEC = 5.0
 # (diagnosis without an unbounded string), so one definition is the source of truth.
 
 
+@dataclass(frozen=True, slots=True)
+class AudioSource:
+    """What :func:`extract_audio_track` produced: what to ANALYZE, and what to DELETE.
+
+    **This type exists to make ownership impossible to get wrong (phaze-l832u).** The old
+    return was a bare ``str`` under the contract "a scratch path the caller owns and deletes",
+    and both lanes unlink it in an outer ``finally``. That contract is safe only while the
+    function ALWAYS creates a new file. The moment a skip branch exists, returning the input
+    path under it would make the caller delete its own input -- and on the local lane
+    (``tasks/functions.py::process_file`` with no pushed copy) the input is the operator's REAL
+    ARCHIVE FILE, not a staged copy. A bare string cannot express the difference; two named
+    fields can:
+
+    * :attr:`analysis_path` -- hand THIS to the analyzer. It may be the input path.
+    * :attr:`cleanup_path` -- delete THIS, and only this, in your ``finally``. ``None`` means
+      nothing was created and there is nothing to delete. It is NEVER the input path.
+
+    Callers must not reconstruct one from the other. The correct shape is literally::
+
+        source = await extract_audio_track(read_path, ...)
+        cleanup = source.cleanup_path       # may be None -- unlink guarded on that
+        analysis_path = source.analysis_path
+    """
+
+    analysis_path: str
+    cleanup_path: str | None
+
+
 class NoAudioTrackError(RuntimeError):
     """The container has no audio stream at all -- a clean, deterministic, TERMINAL failure.
 
@@ -190,19 +234,25 @@ class AudioExtractionError(RuntimeError):
     """
 
 
-async def probe_audio_streams(file_path: str) -> list[dict[str, Any]]:
-    """Return ffprobe's audio-stream list for ``file_path`` (possibly empty).
+async def probe_container_streams(file_path: str) -> list[dict[str, Any]]:
+    """Return ffprobe's stream list for ``file_path`` -- EVERY stream, not just the audio ones.
 
     Reads container/stream headers only -- never decodes PCM, mirroring
-    ``services/analysis.py::_probe_duration_sec``'s ``MetadataReader`` discipline one layer
-    up the stack. Each entry carries at least ``index`` (the file's absolute stream index,
-    directly usable as ffmpeg's ``-map 0:<index>``), ``codec_name``, and a nested
+    ``services/analysis.py::_probe_duration_sec``'s own ffprobe discipline one layer up the
+    stack. Each entry carries at least ``index`` (the file's absolute stream index, directly
+    usable as ffmpeg's ``-map 0:<index>``), ``codec_name``, ``codec_type``, and a nested
     ``disposition`` dict whose ``default`` key is the track-selection signal (phaze-3ea41
-    operator decision: prefer the container's DEFAULT-flagged stream).
+    operator decision: prefer the container's DEFAULT-flagged stream) and whose
+    ``attached_pic`` key marks a cover-art "video" stream (phaze-l832u: what separates an mp3
+    with embedded artwork from a real video container).
 
     This is ALSO the sole authority for whether ``file_path`` is analyzable at all (the
-    format-scope operator decision in this module's docstring) -- an empty return means "no
-    audio here", regardless of what the file's extension claims.
+    format-scope operator decision in this module's docstring) and for whether it needs
+    extracting at all (:func:`_is_already_plain_audio`) -- regardless of what the file's
+    extension claims. **phaze-l832u widened this from ``-select_streams a`` to the whole
+    container**: "does this file have audio" can be answered from the audio streams alone, but
+    "is this file ALREADY just that audio" cannot -- it is a statement about what else is in
+    there. One probe answers both; do not split it back into two ffprobe invocations.
     """
     argv = [
         "ffprobe",
@@ -211,9 +261,7 @@ async def probe_audio_streams(file_path: str) -> list[dict[str, Any]]:
         "-print_format",
         "json",
         "-show_entries",
-        "stream=index,codec_name,codec_type,channels,sample_rate:stream_disposition=default",
-        "-select_streams",
-        "a",
+        "stream=index,codec_name,codec_type,channels,sample_rate:stream_disposition=default,attached_pic",
         file_path,
     ]
     try:
@@ -233,6 +281,48 @@ async def probe_audio_streams(file_path: str) -> list[dict[str, Any]]:
         raise AudioExtractionError(msg) from exc
     streams = payload.get("streams") if isinstance(payload, dict) else None
     return streams if isinstance(streams, list) else []
+
+
+def _audio_streams(streams: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The ``codec_type == "audio"`` entries of a :func:`probe_container_streams` result."""
+    return [s for s in streams if s.get("codec_type") == "audio"]
+
+
+def _is_already_plain_audio(streams: list[dict[str, Any]]) -> bool:
+    """True when the container is ALREADY nothing but one audio track (phaze-l832u).
+
+    The remux-skip predicate for decision 2 of the phaze-l832u epic: a file that is already a
+    single-audio-stream container is analyzed DIRECTLY, instead of being copied through ffmpeg
+    into a ``.mka`` first. That removes a full remux of every one of the ~11,428 audio files in
+    the corpus from the hot path -- correctness is decision 1's job (the ffprobe duration probe,
+    ``services/analysis.py`` D-10), this is cost.
+
+    ffprobe remains the SOLE authority (phaze-3ea41's format-scope operator decision is
+    narrowed here, not reverted): the predicate reads what the container actually holds, never
+    the suffix or ``FileRecord.file_type``. Two shapes are deliberately still EXTRACTED:
+
+    * **More than one audio stream** -- which track essentia would pick is exactly the opacity
+      this module exists to remove; :func:`_select_track` must make that choice explicitly.
+    * **Any non-audio stream that is not cover art** -- a real video track, subtitles, chapters,
+      timed data. That is phaze-3ea41's actual feature and it keeps working unchanged.
+
+    An ``attached_pic`` "video" stream (embedded album artwork, ubiquitous in mp3/m4a) is NOT a
+    video track: it is a single still frame in the tag payload, and essentia decoded such files
+    directly for the whole life of the project before phaze-3ea41 -- every completed analysis in
+    the corpus came through that path. Treating artwork as "this is a video container" would
+    put the remux back in front of essentially the entire archive and give the skip nothing to
+    do.
+    """
+    audio = _audio_streams(streams)
+    if len(audio) != 1:
+        return False
+    for stream in streams:
+        if stream.get("codec_type") == "audio":
+            continue
+        if (stream.get("disposition") or {}).get("attached_pic") == 1:
+            continue
+        return False
+    return True
 
 
 def _select_track(streams: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -258,26 +348,52 @@ async def extract_audio_track(
     scratch_dir: str | Path | None = None,
     heartbeat_cb: Callable[[], Awaitable[None]] | None = None,
     heartbeat_interval_sec: float = _DEFAULT_HEARTBEAT_INTERVAL_SEC,
-) -> str:
+) -> AudioSource:
     """Demux the container's DEFAULT-flagged audio stream (or the first, as fallback) to a
-    scratch file.
+    scratch file -- unless the file is ALREADY just that audio, in which case nothing is copied.
 
-    Returns the extracted-audio scratch path. Raises :class:`NoAudioTrackError` when the
-    container has no audio stream, or :class:`AudioExtractionError` for any other
-    ffprobe/ffmpeg failure. The caller owns cleanup of the returned path (this function
-    never leaves a partial/empty file behind on its OWN failure paths, but the success path
-    hands ownership of a real file to the caller) -- see ``tasks/functions.py::process_file``'s
-    outer ``finally``, which deletes it on every terminal exit, success or failure alike.
+    Returns an :class:`AudioSource`; read its docstring before touching either field. Raises
+    :class:`NoAudioTrackError` when the container has no audio stream, or
+    :class:`AudioExtractionError` for any other ffprobe/ffmpeg failure.
+
+    **The skip branch (phaze-l832u, epic decision 2).** When :func:`_is_already_plain_audio`
+    holds, this returns ``AudioSource(analysis_path=file_path, cleanup_path=None)``: the
+    analyzer reads the ORIGINAL file and the caller has nothing to delete. ``cleanup_path`` is
+    ``None`` -- NOT the input path -- because both lanes unlink ``cleanup_path`` in an outer
+    ``finally`` and on the local lane the input is the operator's REAL ARCHIVE FILE. Returning
+    the input path here under the old delete-me contract would delete the archive original;
+    this is the single highest-risk line in the change and the reason the return type is a pair
+    of named fields rather than a string.
+
+    On the EXTRACTION branch ``cleanup_path`` is the newly created scratch file and equals
+    ``analysis_path``. This function never leaves a partial/empty file behind on its own failure
+    paths (it unlinks its own output before raising), but on a successful return ownership of
+    that scratch file transfers to the caller -- see ``tasks/functions.py::process_file``'s and
+    ``job_runner.py::run``'s outer ``finally``, which delete it on every terminal exit, success
+    or failure alike.
 
     ``file_id`` is OPTIONAL and purely for log attribution (the "log the other streams'
     existence in the analysis record" operator decision) -- callers that have one (both real
     lanes do) pass it so a multi-track pick is attributable to the file it was made for in the
     structured log stream without threading a DB write through an essentia/DB-free module.
     """
-    streams = await probe_audio_streams(file_path)
+    container = await probe_container_streams(file_path)
+    streams = _audio_streams(container)
     if not streams:
         msg = f"no audio stream found in {file_path!r}"
         raise NoAudioTrackError(msg)
+
+    if _is_already_plain_audio(container):
+        # phaze-l832u decision 2: nothing to demux and nothing to disambiguate -- analyze the
+        # file where it lies. cleanup_path is None precisely so the caller's unconditional
+        # unlink cannot reach this path (see AudioSource's docstring).
+        logger.info(
+            "video_audio_extraction_skipped_plain_audio",
+            file=file_path,
+            file_id=file_id,
+            codec=streams[0].get("codec_name"),
+        )
+        return AudioSource(analysis_path=file_path, cleanup_path=None)
 
     selected, others = _select_track(streams)
     if others:
@@ -465,4 +581,6 @@ async def extract_audio_track(
         msg = f"ffmpeg audio extraction failed (exit {returncode}) for {file_path!r}: {detail}"
         raise AudioExtractionError(msg)
 
-    return str(dest_path)
+    # Extraction branch: analysis_path IS the scratch file, so cleanup_path is the same path --
+    # the caller deletes exactly what this call created, and never its input.
+    return AudioSource(analysis_path=str(dest_path), cleanup_path=str(dest_path))
