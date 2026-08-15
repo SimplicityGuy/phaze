@@ -104,21 +104,20 @@
 
 {% macro refresh_status(text='Up to date', refreshing_text='Refreshing…', indicator_id='') %}
 <span{% if indicator_id %} id="{{ indicator_id }}"{% endif %} role="status" aria-live="polite" class="inline-flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
-    <span aria-hidden="true" class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
-    <span>{{ text }}</span>
-    <span class="htmx-indicator inline-flex items-center gap-1 text-blue-700 dark:text-blue-400"><span aria-hidden="true">↻</span> {{ refreshing_text }}</span>
+    <span class="htmx-idle inline-flex items-center gap-1.5"><span aria-hidden="true" class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span> {{ text }}</span>
+    <span class="htmx-loading items-center gap-1 text-blue-700 dark:text-blue-400"><span aria-hidden="true">↻</span> {{ refreshing_text }}</span>
 </span>
 {% endmacro %}
 
 {% macro confirmation(id, title, message, action, method='post', target='', confirm_label='Confirm', cancel_label='Cancel', tone='attention') %}
-<dialog id="{{ id }}" aria-labelledby="{{ id }}-title" class="m-auto w-[calc(100%-2rem)] max-w-md rounded-2xl border border-gray-200 bg-white p-0 text-gray-900 shadow-xl backdrop:bg-black/60 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-100">
+<dialog id="{{ id }}" aria-labelledby="{{ id }}-title" onpointerdown="if (event.target === this) this.close()" class="m-auto w-[calc(100%-2rem)] max-w-md rounded-2xl border border-gray-200 bg-white p-0 text-gray-900 shadow-xl backdrop:bg-black/60 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-100">
     <div class="p-5">
         <h2 id="{{ id }}-title" class="font-jura text-sm font-medium uppercase tracking-[0.15em]">{{ title }}</h2>
         <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">{{ message }}</p>
         <div class="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <form method="dialog"><button class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm dark:border-phaze-border {{ _focus }}">{{ cancel_label }}</button></form>
             <form hx-{{ method }}="{{ action }}"{% if target %} hx-target="{{ target }}"{% endif %} hx-swap="innerHTML" hx-on::after-request="if(event.detail.successful) this.closest('dialog').close()">
-                <button class="w-full rounded-md px-3 py-2 text-sm font-semibold text-white {% if tone == 'danger' %}bg-red-600 hover:bg-red-500{% else %}bg-amber-600 hover:bg-amber-500{% endif %} {{ _focus }}">{{ confirm_label }}</button>
+                <button class="w-full rounded-md px-3 py-2 text-sm font-semibold text-white {% if tone == 'danger' %}bg-red-700 hover:bg-red-600{% else %}bg-amber-800 hover:bg-amber-700{% endif %} {{ _focus }}">{{ confirm_label }}</button>
             </form>
         </div>
     </div>
@@ -126,7 +125,7 @@
 {% endmacro %}
 
 {% macro detail_drawer(id, title) %}
-<dialog id="{{ id }}" aria-labelledby="{{ id }}-title" class="m-0 ml-auto h-full max-h-none w-full max-w-md border-0 border-l border-gray-200 bg-white p-0 text-gray-900 shadow-xl backdrop:bg-black/40 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-100">
+<dialog id="{{ id }}" aria-labelledby="{{ id }}-title" onpointerdown="if (event.target === this) this.close()" class="m-0 ml-auto h-full max-h-none w-full max-w-md border-0 border-l border-gray-200 bg-white p-0 text-gray-900 shadow-xl backdrop:bg-black/40 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-100">
     <div class="flex h-full flex-col">
         <div class="flex items-center justify-between gap-3 border-b border-gray-200 p-4 dark:border-phaze-border">
             <h2 id="{{ id }}-title" tabindex="-1" class="font-jura text-sm font-medium uppercase tracking-[0.15em]">{{ title }}</h2>
