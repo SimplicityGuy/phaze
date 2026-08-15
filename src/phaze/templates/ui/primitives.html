@@ -1,0 +1,138 @@
+{# Shared, content-only UI primitives. Callers own endpoint behavior and stable swap-target ids. #}
+{% set _focus = "focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg" %}
+
+{% macro page_header(title, subtitle='', actions='', subtitle_id='') %}
+<div class="flex flex-col gap-3 border-b border-gray-200 px-4 py-4 sm:flex-row sm:items-start sm:justify-between sm:px-6 dark:border-phaze-border">
+    <div class="min-w-0">
+        <h1 tabindex="-1" class="font-jura text-lg font-medium uppercase tracking-[0.15em] text-gray-900 focus:outline-none dark:text-gray-100">{{ title }}</h1>
+        {% if subtitle %}<p{% if subtitle_id %} id="{{ subtitle_id }}"{% endif %} class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ subtitle }}</p>{% endif %}
+    </div>
+    {% if actions %}<div class="flex flex-wrap items-center gap-2 sm:shrink-0">{{ actions }}</div>{% endif %}
+</div>
+{% endmacro %}
+
+{% macro metric_strip(label='Metrics') %}
+<section aria-label="{{ label }}" class="overflow-x-auto rounded-lg border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel">
+    <dl class="grid min-w-max auto-cols-fr grid-flow-col divide-x divide-gray-200 dark:divide-phaze-border">{{ caller() }}</dl>
+</section>
+{% endmacro %}
+
+{% macro metric(label, value, detail='', tone='neutral') %}
+{% set tones = {
+    'accent': 'text-blue-700 dark:text-blue-400',
+    'attention': 'text-amber-700 dark:text-amber-400',
+    'success': 'text-emerald-700 dark:text-emerald-400',
+    'danger': 'text-red-700 dark:text-red-400',
+    'neutral': 'text-gray-900 dark:text-gray-100'
+} %}
+<div class="min-w-32 px-4 py-3">
+    <dt class="font-jura text-[10px] uppercase tracking-[0.2em] text-gray-500 dark:text-gray-400">{{ label }}</dt>
+    <dd class="mt-1 font-mono text-xl font-semibold tabular-nums {{ tones.get(tone, tones.neutral) }}">{{ value }}</dd>
+    {% if detail %}<dd class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{{ detail }}</dd>{% endif %}
+</div>
+{% endmacro %}
+
+{% macro status_badge(label, status, tone='neutral', icon='—', pulse=false, aria_label='') %}
+{% set tones = {
+    'accent': 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-400',
+    'attention': 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300',
+    'success': 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-400',
+    'danger': 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400',
+    'skipped': 'bg-violet-100 text-violet-700 ring-1 ring-dashed ring-violet-400/60 dark:bg-violet-950 dark:text-violet-300',
+    'neutral': 'bg-gray-100 text-gray-500 dark:bg-gray-800/60 dark:text-gray-400'
+} %}
+<span class="text-xs font-semibold px-2 py-0.5 rounded-full {{ tones.get(tone, tones.neutral) }}{% if pulse %} motion-safe:animate-pulse{% endif %}" aria-label="{{ aria_label or (label ~ ': ' ~ status) }}"><span aria-hidden="true">{{ icon }}</span> {{ status }}</span>
+{% endmacro %}
+
+{% macro actionable_alert(title, message, tone='attention', id='', oob=false) %}
+{% set tones = {
+    'attention': 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300',
+    'danger': 'border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300',
+    'info': 'border-blue-300 bg-blue-50 text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-300'
+} %}
+<section{% if id %} id="{{ id }}"{% endif %}{% if oob %} hx-swap-oob="true"{% endif %} role="alert" class="rounded-lg border p-4 {{ tones.get(tone, tones.attention) }}">
+    <div class="flex items-start gap-3">
+        <span aria-hidden="true" class="mt-0.5 shrink-0">{% if tone == 'danger' %}✕{% elif tone == 'info' %}ⓘ{% else %}⚠{% endif %}</span>
+        <div class="min-w-0 flex-1">
+            <h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em]">{{ title }}</h2>
+            <p class="mt-1 text-sm opacity-90">{{ message }}</p>
+            {% if caller is defined %}<div class="mt-3 flex flex-wrap gap-2">{{ caller() }}</div>{% endif %}
+        </div>
+    </div>
+</section>
+{% endmacro %}
+
+{% macro filter_toolbar(id, url, target, push_url=false, trigger='change', label='Filters') %}
+<form id="{{ id }}" aria-label="{{ label }}" hx-get="{{ url }}" hx-target="{{ target }}" hx-swap="innerHTML"{% if push_url %} hx-push-url="true"{% endif %} hx-trigger="{{ trigger }}" class="flex flex-col gap-2 border-y border-gray-200 px-4 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:px-6 dark:border-phaze-border">
+    {{ caller() }}
+</form>
+{% endmacro %}
+
+{% macro data_table(label, describedby='') %}
+<div class="overflow-x-auto">
+    <table aria-label="{{ label }}"{% if describedby %} aria-describedby="{{ describedby }}"{% endif %} class="w-full text-left text-sm">{{ caller() }}</table>
+</div>
+{% endmacro %}
+
+{% macro data_table_controls(label='Table controls') %}
+<nav aria-label="{{ label }}" class="mt-6 flex flex-col gap-2 px-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">{{ caller() }}</nav>
+{% endmacro %}
+
+{% macro data_table_button(label, url='', target='', disabled=false) %}
+{% if disabled %}
+<span aria-disabled="true" class="cursor-not-allowed rounded-md border border-gray-200 px-3 py-1.5 text-sm text-gray-400 dark:border-phaze-border dark:text-gray-500">{{ label }}</span>
+{% else %}
+<button type="button" hx-get="{{ url }}"{% if target %} hx-target="{{ target }}"{% endif %} hx-swap="innerHTML" class="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-300 dark:hover:bg-white/5 {{ _focus }}">{{ label }}</button>
+{% endif %}
+{% endmacro %}
+
+{% macro state(kind, title, message, id='') %}
+{% set tones = {
+    'empty': 'text-blue-500',
+    'loading': 'text-blue-500',
+    'error': 'text-red-600 dark:text-red-400'
+} %}
+<section{% if id %} id="{{ id }}"{% endif %}{% if kind == 'error' %} role="alert"{% else %} role="status"{% endif %} class="grid place-items-center px-4 py-10 text-center sm:px-6">
+    <div class="max-w-lg">
+        <span aria-hidden="true" class="inline-flex h-8 w-8 items-center justify-center rounded-full border border-current {{ tones.get(kind, tones.empty) }}{% if kind == 'loading' %} motion-safe:animate-pulse{% endif %}">{% if kind == 'error' %}✕{% elif kind == 'loading' %}…{% else %}—{% endif %}</span>
+        <h2 class="mt-3 text-sm font-semibold text-gray-900 dark:text-gray-100">{{ title }}</h2>
+        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ message }}</p>
+        {% if caller is defined %}<div class="mt-4 flex flex-wrap justify-center gap-2">{{ caller() }}</div>{% endif %}
+    </div>
+</section>
+{% endmacro %}
+
+{% macro refresh_status(text='Up to date', refreshing_text='Refreshing…', indicator_id='') %}
+<span{% if indicator_id %} id="{{ indicator_id }}"{% endif %} role="status" aria-live="polite" class="inline-flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+    <span aria-hidden="true" class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
+    <span>{{ text }}</span>
+    <span class="htmx-indicator inline-flex items-center gap-1 text-blue-700 dark:text-blue-400"><span aria-hidden="true">↻</span> {{ refreshing_text }}</span>
+</span>
+{% endmacro %}
+
+{% macro confirmation(id, title, message, action, method='post', target='', confirm_label='Confirm', cancel_label='Cancel', tone='attention') %}
+<dialog id="{{ id }}" aria-labelledby="{{ id }}-title" class="m-auto w-[calc(100%-2rem)] max-w-md rounded-2xl border border-gray-200 bg-white p-0 text-gray-900 shadow-xl backdrop:bg-black/60 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-100">
+    <div class="p-5">
+        <h2 id="{{ id }}-title" class="font-jura text-sm font-medium uppercase tracking-[0.15em]">{{ title }}</h2>
+        <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">{{ message }}</p>
+        <div class="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <form method="dialog"><button class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm dark:border-phaze-border {{ _focus }}">{{ cancel_label }}</button></form>
+            <form hx-{{ method }}="{{ action }}"{% if target %} hx-target="{{ target }}"{% endif %} hx-swap="innerHTML" hx-on::after-request="if(event.detail.successful) this.closest('dialog').close()">
+                <button class="w-full rounded-md px-3 py-2 text-sm font-semibold text-white {% if tone == 'danger' %}bg-red-600 hover:bg-red-500{% else %}bg-amber-600 hover:bg-amber-500{% endif %} {{ _focus }}">{{ confirm_label }}</button>
+            </form>
+        </div>
+    </div>
+</dialog>
+{% endmacro %}
+
+{% macro detail_drawer(id, title) %}
+<dialog id="{{ id }}" aria-labelledby="{{ id }}-title" class="m-0 ml-auto h-full max-h-none w-full max-w-md border-0 border-l border-gray-200 bg-white p-0 text-gray-900 shadow-xl backdrop:bg-black/40 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-100">
+    <div class="flex h-full flex-col">
+        <div class="flex items-center justify-between gap-3 border-b border-gray-200 p-4 dark:border-phaze-border">
+            <h2 id="{{ id }}-title" tabindex="-1" class="font-jura text-sm font-medium uppercase tracking-[0.15em]">{{ title }}</h2>
+            <form method="dialog"><button aria-label="Close {{ title }}" class="rounded-md p-2 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100 {{ _focus }}"><span aria-hidden="true">✕</span></button></form>
+        </div>
+        <div class="min-h-0 flex-1 overflow-y-auto p-4">{{ caller() }}</div>
+    </div>
+</dialog>
+{% endmacro %}

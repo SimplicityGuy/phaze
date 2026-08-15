@@ -38,10 +38,8 @@
     ('skipped', 'skipped'),
 ] %}
 {% set _select = 'text-sm rounded-md border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-bg text-gray-900 dark:text-gray-100 px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500' %}
-<form id="status-filter-bar"
-      hx-get="/pipeline/files" hx-target="#files-table-view" hx-swap="innerHTML"
-      hx-push-url="true" hx-trigger="change"
-      class="flex flex-wrap items-center gap-2 px-6 py-3">
+{% import "ui/primitives.html" as ui %}
+{% call ui.filter_toolbar('status-filter-bar', '/pipeline/files', '#files-table-view', true, 'change', 'File status filters') %}
     <span class="font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:text-gray-500">Show files where</span>
     <label class="sr-only" for="filter-stage">Stage</label>
     <select id="filter-stage" name="stage" aria-label="Filter by stage" class="{{ _select }}">
@@ -64,4 +62,4 @@
        hx-get="/pipeline/files" hx-target="#files-table-view" hx-swap="innerHTML" hx-push-url="true"
        class="text-sm px-2 py-1 rounded text-blue-600 dark:text-blue-400 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500">Clear filter</a>
     {% endif %}
-</form>
+{% endcall %}
