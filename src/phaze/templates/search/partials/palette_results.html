@@ -135,15 +135,18 @@
    test_cmdk_palette_default_option.py enforces both by role + htmx verb, not by id. #}
 <div role="presentation" class="{{ head_class }}">Commands</div>
 <button id="cmdk-cmd-analyze" type="button" role="option" aria-selected="false" tabindex="-1"
-        hx-post="/pipeline/analyze" hx-swap="none" hx-confirm="Route all discovered files into analysis?"
+        hx-post="/pipeline/analyze" hx-target="#cmdk-command-result" hx-swap="innerHTML" hx-disabled-elt="this"
+        hx-confirm="Route all discovered files into analysis?" aria-describedby="cmdk-command-result"
         class="{{ row_class }} w-full text-left">
   <span aria-hidden="true">▶</span><span class="flex-1 text-gray-900 dark:text-gray-100">Run analysis</span>
 </button>
 <button id="cmdk-cmd-metadata" type="button" role="option" aria-selected="false" tabindex="-1"
-        hx-post="/pipeline/extract-metadata" hx-swap="none" hx-confirm="Enqueue metadata extraction for all pending files?"
+        hx-post="/pipeline/extract-metadata" hx-target="#cmdk-command-result" hx-swap="innerHTML" hx-disabled-elt="this"
+        hx-confirm="Enqueue metadata extraction for all pending files?" aria-describedby="cmdk-command-result"
         class="{{ row_class }} w-full text-left">
   <span aria-hidden="true">▶</span><span class="flex-1 text-gray-900 dark:text-gray-100">Extract metadata</span>
 </button>
+<div id="cmdk-command-result" role="status" aria-live="polite" aria-atomic="true" class="min-h-6 px-3 py-1 text-sm text-gray-500 dark:text-gray-400"></div>
 {% if query and not file_results and not tracklist_results and not discogs_results and not artists %}
   <div class="px-3 py-6 text-center text-sm text-gray-500 dark:text-gray-500">
     No results found for "{{ query }}". Try a different search or one of the commands above.

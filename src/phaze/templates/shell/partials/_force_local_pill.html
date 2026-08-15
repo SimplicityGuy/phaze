@@ -39,6 +39,9 @@
     <span>CLOUD&nbsp;ROUTING</span>
     {% endif %}
 </button>
+{% if update_header_warning | default(false) %}
+{% with oob = true %}{% include "shell/partials/_routing_override_warning.html" %}{% endwith %}
+{% endif %}
 {% if toast_message is defined and toast_message %}
 <div hx-swap-oob="beforeend:#toast-container">
     <div class="bg-gray-800 text-white text-sm px-4 py-2 rounded shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg" role="status" aria-live="polite"

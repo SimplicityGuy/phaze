@@ -54,12 +54,24 @@ def test_every_navigation_destination_has_one_current_page_semantic() -> None:
         assert current[0].get("data-rail-stage") == stage
 
 
+def test_review_current_page_keeps_a_visible_amber_treatment() -> None:
+    soup = BeautifulSoup(_render("shell/partials/rail.html", stage="rename"), "html.parser")
+    current = soup.select_one('a[data-rail-stage="rename"][aria-current="page"]')
+    assert isinstance(current, Tag)
+    classes = set(current.get("class", []))
+    assert "text-amber-700" in classes
+    assert "aria-[current=page]:bg-amber-500/15" in classes
+    assert "aria-[current=page]:shadow-[inset_3px_0_0_var(--color-amber-500)]" in classes
+
+
 def test_header_uses_canonical_workers_route_and_read_only_override_warning() -> None:
     normal = _render("shell/partials/header.html", force_local=False)
     forced = _render("shell/partials/header.html", force_local=True)
     assert 'href="/s/agents"' in normal
     assert 'href="/admin/agents"' not in normal
     assert 'hx-post="/pipeline/routing/force-local"' not in normal + forced
+    assert normal.count('id="routing-override-warning"') == 1
+    assert forced.count('id="routing-override-warning"') == 1
     assert "FORCED&nbsp;LOCAL" in forced
     assert "FORCED&nbsp;LOCAL" not in normal
 
@@ -80,6 +92,14 @@ def test_palette_has_close_control_platform_shortcuts_and_required_groups() -> N
     assert "'⌘K' : 'Ctrl K'" in header
     assert ">Navigate<" in results
     assert ">Commands<" in results
+    command_soup = BeautifulSoup(results, "html.parser")
+    outcome = command_soup.select_one('#cmdk-command-result[role="status"][aria-live="polite"]')
+    assert isinstance(outcome, Tag)
+    for command in command_soup.select('button[id^="cmdk-cmd-"]'):
+        assert command.get("hx-target") == "#cmdk-command-result"
+        assert command.get("hx-swap") == "innerHTML"
+        assert command.get("hx-disabled-elt") == "this"
+        assert command.has_attr("hx-confirm")
     populated = _render(
         "search/partials/palette_results.html",
         query="song",
@@ -89,3 +109,14 @@ def test_palette_has_close_control_platform_shortcuts_and_required_groups() -> N
         artists=[],
     )
     assert ">Files<" in populated
+
+
+def test_agents_page_links_use_the_canonical_shell_route() -> None:
+    agent_detail = (_TEMPLATES / "admin" / "partials" / "_agent_detail_row.html").read_text()
+    lane_detail = (_TEMPLATES / "admin" / "partials" / "_compute_lane_detail_row.html").read_text()
+    empty_state = (_TEMPLATES / "pipeline" / "partials" / "empty_state.html").read_text()
+    assert "history.replaceState({}, '', '/s/agents?" in agent_detail
+    assert "history.replaceState({}, '', '/s/agents?" in lane_detail
+    assert 'href="/s/agents?agent={{ agent.id }}"' in empty_state
+    assert 'href="/s/agents"' in empty_state
+    assert 'href="/admin/agents' not in empty_state

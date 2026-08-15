@@ -219,6 +219,9 @@ async def test_force_local_toggle_roundtrip(client: AsyncClient, session: AsyncS
     assert "FORCED" in engaged.text
     assert 'aria-checked="true"' in engaged.text
     assert "forced to LOCAL" in engaged.text  # OOB engage toast copy
+    assert 'id="routing-override-warning"' in engaged.text
+    assert 'hx-swap-oob="true"' in engaged.text
+    assert 'aria-label="Routing override active: forced local"' in engaged.text
     assert await get_route_control(session) is True
 
     # Revert -> row false; pill CLOUD ROUTING (aria-checked=false) + revert toast.
@@ -227,6 +230,9 @@ async def test_force_local_toggle_roundtrip(client: AsyncClient, session: AsyncS
     assert "CLOUD" in reverted.text
     assert 'aria-checked="false"' in reverted.text
     assert "Cloud routing restored" in reverted.text  # OOB revert toast copy
+    assert 'id="routing-override-warning"' in reverted.text
+    assert 'hx-swap-oob="true"' in reverted.text
+    assert 'aria-label="Routing override active: forced local"' not in reverted.text
     assert await get_route_control(session) is False
 
 

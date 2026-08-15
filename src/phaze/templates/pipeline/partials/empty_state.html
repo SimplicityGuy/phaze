@@ -45,7 +45,7 @@
             <div class="rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-4 text-left">
                 <div class="flex items-center justify-between gap-3 mb-2">
                     <span class="font-jura text-xs uppercase tracking-wider text-gray-700 dark:text-gray-300">{{ agent.name }}</span>
-                    <a href="/admin/agents#{{ agent.id }}"
+                    <a href="/s/agents?agent={{ agent.id }}"
                        class="text-xs text-blue-600 dark:text-blue-400 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500 rounded">
                         Configure roots →
                     </a>
@@ -74,13 +74,13 @@
                 </ul>
                 {% else %}
                 <p class="text-xs text-gray-400 dark:text-gray-500">
-                    No scan roots configured. <a href="/admin/agents#{{ agent.id }}" class="text-blue-600 dark:text-blue-400 hover:underline">Configure roots →</a>
+                    No scan roots configured. <a href="/s/agents?agent={{ agent.id }}" class="text-blue-600 dark:text-blue-400 hover:underline">Configure roots →</a>
                 </p>
                 {% endif %}
             </div>
             {% else %}
             <div class="rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-4 text-sm text-gray-500 dark:text-gray-400">
-                No agents registered yet. <a href="/admin/agents" class="text-blue-600 dark:text-blue-400 hover:underline">Register an agent →</a>
+                No agents registered yet. <a href="/s/agents" class="text-blue-600 dark:text-blue-400 hover:underline">Register an agent →</a>
             </div>
             {% endfor %}
         </div>
