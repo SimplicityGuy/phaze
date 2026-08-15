@@ -39,7 +39,7 @@ These characteristics make the interface recognizably Phaze and must remain stab
 9. **Compact operational density.** Controls and rows are intentionally concise, with strong alignment, tabular/monospace data where useful, and progressive disclosure for detail. Spacious marketing-page rhythm is outside the product character.
 10. **Visible blue keyboard focus.** Interactive elements expose an approximately 2 px cyan-blue ring. Focus is an interaction state, not optional decoration.
 11. **State is never color alone.** Statuses combine color with a word and, where compact, a glyph or shape. For example, `✓ done`, `● in flight`, `✗ failed`, `⊘ skipped`, and `- not started` remain distinguishable without hue.
-12. **Restrained motion.** Motion communicates state changes: 200 ms color/opacity transitions, loading pulse, overlay transitions, and HTMX activity. It is functional, short, and never ambient spectacle.
+12. **Restrained motion.** Motion communicates state changes: 200 ms color/opacity transitions, loading pulse, the lane-detail pane transition, and HTMX activity. It is functional, short, and never ambient spectacle.
 
 ### Components allowed to evolve
 
@@ -118,7 +118,7 @@ Amber has two related but distinct jobs: it identifies the human review domain a
 - One-pixel `#232832` borders create most grouping. Light mode uses gray 200/300 equivalents.
 - Cards generally use `rounded-lg` or `rounded-xl`; overlays use `rounded-2xl` and a stronger shadow.
 - Dark surfaces avoid routine shadows. Toasts replace a dark shadow with a border/ring; overlays retain shadow where depth is interaction-critical.
-- Active navigation is a translucent cyan-blue fill plus an inset 3 px cyan-blue rail, not a large filled button.
+- Active pipeline-stage navigation is a translucent cyan-blue fill plus an inset 3 px cyan-blue rail, not a large filled button. Utility-pane nodes such as Audit and Agents use a neutral gray active fill without the cyan inset.
 - Hover usually changes the surface only slightly: gray 50 in light mode or white at about 5% in dark mode.
 - Warning/error fills are low-chroma light tints (`amber-50`, `red-50`) and deep dark tints (`amber-950`, `red-950`), bounded by a matching border when the whole block is an alert.
 
@@ -127,7 +127,7 @@ Amber has two related but distinct jobs: it identifies the human review domain a
 The production rhythm follows Tailwind's 4 px scale:
 
 - Persistent header: 56 px (`h-14`), 16 px horizontal inset, 16 px principal gap.
-- Expanded rail: 280 px; compact rail: 64 px at `max-lg`, with labels/counts hidden and icons centered.
+- Expanded rail: 280 px; compact rail: 64 px at `max-lg`, with labels visually hidden but retained for assistive technology, counts hidden, and icons centered.
 - Workspace header: 24 px horizontal, 16 px vertical; stage body sections commonly use 24 px.
 - Top-level cards: commonly 16 px padding with 12-16 px internal gaps.
 - Table headers: 24 px horizontal and 10 px vertical; data rows: 24 px horizontal and 12 px vertical.
@@ -175,13 +175,13 @@ Additional operational states follow the same redundant-channel rule: emerald `A
 - HTMX indicators fade opacity over 200 ms and become visible only during a request.
 - Toast departure uses a 200 ms ease-in opacity fade.
 - Stage `in flight` pills and skeletons pulse to indicate ongoing work.
-- Overlays animate entry/exit and opacity but do not rearrange the persistent shell.
+- The lane-detail pane uses a 200 ms transform transition and floats without rearranging the persistent shell. The current record and command-palette overlays do not declare entry/exit transitions.
 
-Motion should explain loading, continuity, or layer changes. New components should avoid infinite animation except for an active/loading state, avoid large transforms, preserve focus throughout transitions, and add reduced-motion behavior when touching the relevant component.
+Motion should explain loading, continuity, or layer changes. Future component evolution may add restrained overlay transitions, but new components should avoid infinite animation except for an active/loading state, avoid large transforms, preserve focus throughout transitions, and add reduced-motion behavior when touching the relevant component.
 
 ## Representative States
 
-`docs/ui-reference-fixtures.html` is a self-contained fixture sheet, not served product code. It uses the current token values and component shapes with invented, privacy-safe data. It covers:
+`docs/ui-reference-fixtures.html` is a standalone fixture sheet, not served product code. It references the same Google Fonts stylesheet as production, then uses local CSS and invented, privacy-safe data for all fixture content. It covers:
 
 | Requirement | Fixture state |
 | --- | --- |
