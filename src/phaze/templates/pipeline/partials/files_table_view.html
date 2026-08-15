@@ -38,6 +38,7 @@
    Appr reads the `review` bucket, Exec reads the `apply` bucket; tracklist is never shown.
    The LABELS (element 0) are also the strings FILES_SORT whitelists, so the header row derives them
    from here rather than restating them -- see the header loop below. #}
+{% import "ui/primitives.html" as ui %}
 {% set _stage_cols = [
     ('Meta', 'metadata'),
     ('Analyze', 'analyze'),
@@ -78,22 +79,13 @@
     {% if not files_page.rows %}
     {% if active_bucket == 'failed' and active_stage %}
     {# Failed-filter empty state (Copywriting Contract): reassures nothing is stuck in the chosen stage. #}
-    <div class="px-6 py-12 text-center">
-        <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">No failed files in {{ _stage_display }}</p>
-        <p class="text-sm text-gray-500 dark:text-gray-400">Nothing is stuck in {{ _stage_display }} right now.</p>
-    </div>
+    {{ ui.state('empty', 'No failed files in ' ~ _stage_display, 'Nothing is stuck in ' ~ _stage_display ~ ' right now.') }}
     {% elif active_stage or active_bucket %}
     {# Any other active filter that matched nothing -- point the operator at Clear filter above. #}
-    <div class="px-6 py-12 text-center">
-        <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">No files match this filter</p>
-        <p class="text-sm text-gray-500 dark:text-gray-400">Try a different stage or status, or clear the filter above.</p>
-    </div>
+    {{ ui.state('empty', 'No files match this filter', 'Try a different stage or status, or clear the filter above.') }}
     {% else %}
     {# Unfiltered empty state (Copywriting Contract). #}
-    <div class="px-6 py-12 text-center">
-        <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">No files yet</p>
-        <p class="text-sm text-gray-500 dark:text-gray-400">Discovered files will appear here with their per-stage status.</p>
-    </div>
+    {{ ui.state('empty', 'No files yet', 'Discovered files will appear here with their per-stage status.') }}
     {% endif %}
     {% else %}
     {# Bulk "Retry all failed · {stage}" (87-07, UI-02 / D-04): one primary (accent) button on the
@@ -134,11 +126,11 @@
        their pill+Retry content fully visible, never clipped) -- auto-layout enforces their natural
        content width as a floor no matter how far a handle is dragged inward, so shrinking never
        breaks the no-wrap contract or forces a second line; dragging outward still widens them. #}
-    <div class="overflow-x-auto" x-data="colResizer()">
+    <div x-data="colResizer()">
         {# x-data gives the click-bound rows an Alpine scope so $dispatch('record:open') wires (CR-01);
            the shell root has no x-data (x-data on <html> is inert). colResizer() (registered globally
            in base.html/shell.html) additionally exposes startResize() for the header drag handles. #}
-        <table class="w-full text-left text-sm">
+        {% call ui.data_table('Files and pipeline stage status') %}
             <colgroup>
                 {% for col in ['File', 'Type'] + _stage_cols | map(attribute=0) | list %}
                 <col data-col="{{ col }}" :style="{ width: $store.colResize.width('{{ col }}') + 'px' }">
@@ -266,7 +258,7 @@
                 </tr>
                 {% endfor %}
             </tbody>
-        </table>
+        {% endcall %}
     </div>
     {% endif %}
     {# phaze-3db8: the pager lives OUTSIDE the rows-present/empty-state guard above, matching
@@ -279,19 +271,19 @@
        the end simply yields an empty page" contract. #}
     {% if files_page.page > 1 or files_page.has_next %}
     {# Cursor-style Prev/Next -- no whole-corpus COUNT (the T-87-11 DoS mitigation). #}
-    <nav aria-label="Files pagination" class="flex items-center justify-between mt-6 px-6">
+    {% call ui.data_table_controls('Files pagination') %}
         <p class="text-sm text-gray-500 dark:text-gray-400">Page {{ files_page.page }}</p>
         <div class="flex gap-1">
             {% if files_page.page > 1 %}
-            <button hx-get="/pipeline/files?page={{ files_page.page - 1 }}{{ _qs }}" hx-target="#files-table-view" hx-swap="innerHTML" class="text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">Previous</button>
+            {{ ui.data_table_button('Previous', '/pipeline/files?page=' ~ (files_page.page - 1) ~ _qs, '#files-table-view') }}
             {% else %}
-            <span class="text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-gray-400 dark:text-gray-500 cursor-not-allowed">Previous</span>
+            {{ ui.data_table_button('Previous', disabled=true) }}
             {% endif %}
             {% if files_page.has_next %}
-            <button hx-get="/pipeline/files?page={{ files_page.page + 1 }}{{ _qs }}" hx-target="#files-table-view" hx-swap="innerHTML" class="text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">Next</button>
+            {{ ui.data_table_button('Next', '/pipeline/files?page=' ~ (files_page.page + 1) ~ _qs, '#files-table-view') }}
             {% else %}
-            <span class="text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-gray-400 dark:text-gray-500 cursor-not-allowed">Next</span>
+            {{ ui.data_table_button('Next', disabled=true) }}
             {% endif %}
         </div>
-    </nav>
+    {% endcall %}
     {% endif %}

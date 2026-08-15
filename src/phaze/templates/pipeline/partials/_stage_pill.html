@@ -16,14 +16,15 @@
    Pure template: no HTMX, no self-poll. The stage_label crosses only trusted-constant text
    (column labels), and bucket is a derived enum value -- both autoescape.
 #}
+{% import "ui/primitives.html" as ui %}
 {% if bucket == 'done' %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400" aria-label="{{ stage_label }}: done"><span aria-hidden="true">✓</span> done</span>
+{{ ui.status_badge(stage_label, 'done', 'success', '✓') }}
 {% elif bucket == 'in_flight' %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400 animate-pulse" aria-label="{{ stage_label }}: in flight"><span aria-hidden="true">●</span> in flight</span>
+{{ ui.status_badge(stage_label, 'in flight', 'accent', '●', true) }}
 {% elif bucket == 'failed' %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-400" aria-label="{{ stage_label }}: failed"><span aria-hidden="true">✗</span> failed</span>
+{{ ui.status_badge(stage_label, 'failed', 'danger', '✗') }}
 {% elif bucket == 'skipped' %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-violet-100 dark:bg-violet-950 text-violet-700 dark:text-violet-300 ring-1 ring-dashed ring-violet-400/60" aria-label="{{ stage_label }}: skipped (force-completed)"><span aria-hidden="true">⊘</span> skipped</span>
+{{ ui.status_badge(stage_label, 'skipped', 'skipped', '⊘', false, stage_label ~ ': skipped (force-completed)') }}
 {% else %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800/60 text-gray-500 dark:text-gray-400" aria-label="{{ stage_label }}: not started"><span aria-hidden="true">—</span> not started</span>
+{{ ui.status_badge(stage_label, 'not started', 'neutral', '—') }}
 {% endif %}
