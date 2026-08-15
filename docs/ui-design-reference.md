@@ -193,7 +193,7 @@ Motion should explain loading, continuity, or layer changes. Future component ev
 | Warning | Kueue Inadmissible operator alert. |
 | Error | Terminal analysis failure card and retry action. |
 
-The fixture intentionally does not load production data, make requests, or simulate application behavior. Placeholder paths and invented names follow the repository privacy convention. It is evidence for review and discussion, not a parallel component implementation or pixel-perfect visual regression baseline.
+The fixture intentionally does not load production data, call Phaze application endpoints, or simulate product behavior. Its only external requests are the Google Fonts stylesheet and font files described above. Placeholder paths and invented names follow the repository privacy convention. It is evidence for review and discussion, not a parallel component implementation or pixel-perfect visual regression baseline.
 
 ## Current Inconsistencies
 
