@@ -1,0 +1,16 @@
+{% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% call ws.workspace(title="ROUTING OPERATIONS") %}
+<div class="p-6">
+    <section aria-labelledby="routing-override-heading" class="max-w-3xl rounded-lg border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-4">
+        <div class="flex flex-wrap items-start justify-between gap-4">
+            <div class="max-w-xl">
+                <h2 id="routing-override-heading" class="font-jura text-sm uppercase tracking-[0.15em] text-gray-900 dark:text-gray-100">Analysis routing override</h2>
+                <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                    Normal routing selects configured compute lanes by rank. Force local is an incident control that bypasses cloud and Kueue backends until reverted.
+                </p>
+            </div>
+            {% include "shell/partials/_force_local_pill.html" %}
+        </div>
+    </section>
+</div>
+{% endcall %}

@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Phaze</title>
+    <title>{{ document_title }} | Phaze</title>
 
     <!-- Favicon -->
     <link rel="icon" type="image/x-icon" href="{{ static_url('favicon.ico') }}">
@@ -232,7 +232,7 @@
 
         <!-- Center workspace — the single stable swap target every rail node innerHTML-swaps. -->
         <main class="flex-1 min-w-0 bg-white dark:bg-phaze-bg">
-            <div id="stage-workspace" data-stage="{{ stage }}" class="h-full overflow-y-auto">{% include stage_partial %}</div>
+            <div id="stage-workspace" data-stage="{{ stage }}" data-document-title="{{ document_title }}" class="h-full overflow-y-auto">{% include stage_partial %}</div>
         </main>
     </div>
 
@@ -315,10 +315,18 @@
                 heading.focus();
             }
         }
+        function syncDocumentTitle() {
+            const ws = document.getElementById('stage-workspace');
+            if (!ws) return;
+            const marker = ws.querySelector('[data-document-title]');
+            const title = marker ? marker.dataset.documentTitle : ws.dataset.documentTitle;
+            if (title) document.title = title + ' | Phaze';
+        }
         document.body.addEventListener('htmx:historyRestore', function () {
             const ws = document.getElementById('stage-workspace');
             if (ws && window.Alpine) Alpine.initTree(ws);
             syncRailSelection(location.pathname);
+            syncDocumentTitle();
             _focusStageHeading();
         });
         document.body.addEventListener('htmx:beforeSwap', function (event) {
@@ -374,6 +382,7 @@
                 // re-rendered, so re-sync the active node from the just-pushed URL
                 // (hx-push-url has updated location.pathname by afterSwap).
                 syncRailSelection(location.pathname);
+                syncDocumentTitle();
                 _focusStageHeading();
             }
         });

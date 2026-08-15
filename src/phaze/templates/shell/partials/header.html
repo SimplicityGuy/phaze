@@ -31,7 +31,7 @@
         <span class="font-jura font-medium text-sm tracking-[0.25em] text-gray-800 dark:text-gray-200 hidden sm:inline">PHAZE</span>
     </a>
 
-    {# ⌘K search affordance — opens the skeleton command palette (D-04). #}
+    {# Search affordance; the displayed shortcut follows the current platform. #}
     <button type="button"
             id="cmdk-trigger"
             x-data
@@ -42,24 +42,29 @@
             <path stroke-linecap="round" stroke-width="2" d="M21 21l-4.35-4.35M11 18a7 7 0 110-14 7 7 0 010 14z"/>
         </svg>
         <span class="truncate text-left hidden sm:inline">Search files, artists, tracklists — or type a command…</span>
-        <span class="ml-auto font-mono text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-phaze-border text-gray-400 dark:text-gray-400 shrink-0">⌘K</span>
+        <span class="ml-auto font-mono text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-phaze-border text-gray-400 dark:text-gray-400 shrink-0"
+              x-text="/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K'">⌘K</span>
     </button>
 
     {# D-05 status strip: agent dot + "Agents · {n}" link, bound to $store.pipeline.agentOnline,
        refreshed by the existing /pipeline/stats OOB poll — no second timer here. #}
     <div class="ml-auto flex items-center gap-2.5 text-xs text-gray-500 dark:text-gray-400" x-data>
-        {# Phase 71 (BEUI-02): the force-local master routing override pill — a global incident control,
-           so it rides the status-strip cluster immediately LEFT of the Agents pill. Its state is seeded
-           on every page from get_route_control (shell.py _render_stage base context); it hx-posts the
-           thin write endpoint and swaps itself in place from the authoritative server response. #}
-        {% include "shell/partials/_force_local_pill.html" %}
+        {# Routing is read-only in the header. Normal routing needs no extra chrome; an override is
+           an explicit warning linked to the Operations control that can revert it. #}
+        {% if force_local %}
+        <a href="/s/operations" hx-get="/s/operations" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+           role="status" aria-label="Routing override active: forced local"
+           class="font-jura tracking-wider px-3 h-8 flex items-center gap-1.5 rounded-lg border bg-amber-500/15 border-amber-500/40 text-amber-700 dark:text-amber-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+            <span aria-hidden="true">△</span><span>FORCED&nbsp;LOCAL</span>
+        </a>
+        {% endif %}
         <span class="flex items-center" aria-hidden="true">
             <span class="w-2 h-2 rounded-full"
                   :class="($store.pipeline.agentOnline + $store.pipeline.computeLanesActive) > 0 ? 'bg-emerald-400' : 'bg-gray-400 dark:bg-gray-600'"></span>
         </span>
-        <a href="/admin/agents"
+        <a href="/s/agents" hx-get="/s/agents" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
            class="font-jura tracking-wider px-3 h-8 flex items-center rounded-lg bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5 text-gray-700 dark:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
-            <span>Agents&nbsp;·&nbsp;</span><span
+            <span>Workers&nbsp;·&nbsp;</span><span
                   x-text="$store.pipeline.agentOnline + $store.pipeline.computeLanesActive"
                   :title="($store.pipeline.agentOnline + $store.pipeline.computeLanesActive) + ' heartbeating agents and active compute lanes online'"
                   :aria-label="($store.pipeline.agentOnline + $store.pipeline.computeLanesActive) + ' heartbeating agents and active compute lanes online'">0</span>

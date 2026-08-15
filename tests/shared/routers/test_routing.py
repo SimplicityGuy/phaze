@@ -231,22 +231,30 @@ async def test_force_local_toggle_roundtrip(client: AsyncClient, session: AsyncS
 
 
 @pytest.mark.asyncio
-async def test_force_local_pill_seeded_on_shell_page(client: AsyncClient) -> None:
-    """A NON-Analyze shell page seeds the header pill from the persisted row on EVERY page.
+async def test_force_local_control_lives_in_operations_and_header_only_warns(client: AsyncClient) -> None:
+    """Operations owns the mutation while the persistent header only warns when it is active.
 
     The seed reads ``get_route_control`` in ``shell.py`` ``_render_stage`` (base shell context),
     NOT the Analyze-only dashboard context -- so the global control shows correct state everywhere.
     """
-    # Engage, then load a non-Analyze stage: the header pill must reflect the persisted engaged state.
+    # Engage, then load a non-Analyze stage: the header warning reflects the persisted state but cannot mutate it.
     await client.post("/pipeline/routing/force-local", data={"engage": "true"})
     page = await client.get("/s/discover")
     assert page.status_code == 200
-    assert 'id="force-local-pill"' in page.text
-    assert 'aria-checked="true"' in page.text
+    assert 'aria-label="Routing override active: forced local"' in page.text
+    header = page.text.split("</header>", maxsplit=1)[0]
+    assert 'hx-post="/pipeline/routing/force-local"' not in header
     assert "FORCED" in page.text
 
-    # Revert, then reload: the pill must now show the normal CLOUD ROUTING state.
+    operations = await client.get("/s/operations")
+    assert operations.status_code == 200
+    assert 'id="force-local-pill"' in operations.text
+    assert 'aria-checked="true"' in operations.text
+
+    # Revert, then reload: normal routing is quiet in the header and remains controllable in Operations.
     await client.post("/pipeline/routing/force-local", data={"engage": "false"})
     page2 = await client.get("/s/discover")
-    assert 'aria-checked="false"' in page2.text
-    assert "CLOUD" in page2.text
+    assert 'aria-label="Routing override active: forced local"' not in page2.text
+    operations2 = await client.get("/s/operations")
+    assert 'aria-checked="false"' in operations2.text
+    assert "CLOUD" in operations2.text

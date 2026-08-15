@@ -54,6 +54,7 @@ _RAIL_STAGES = [
     "move",
     "dedupe",
     "cue",
+    "apply",
 ]
 
 # phaze-uvmcr.1: the two below-the-line UTILITY_PANES ids (Audit Log, Compute/Agents) --
@@ -64,6 +65,7 @@ _RAIL_STAGES = [
 # utility -- so registering a pane in UTILITY_PANES is what buys it this coverage, with no
 # bespoke per-pane test of its own.
 _UTILITY_PANE_STAGES = [
+    "operations",
     "audit",
     "agents",
 ]
@@ -176,7 +178,7 @@ async def test_files_rail_node_is_reachable_and_accessible(client: AsyncClient) 
     """UI-01 (87-09) -- the shipped shell exposes a keyboard-accessible Files rail node wired to /s/files.
 
     The gap this closes: the files matrix was unreachable because NOTHING navigated to it. Assert the
-    rail carries a Files node whose hx-get points at /s/files, that it is a native <button> (keyboard-
+    rail carries a Files node whose hx-get points at /s/files, that it is a native <a> (keyboard-
     operable, focus-visible) carrying its visible+sr-only label, an aria-hidden glyph, a title tooltip,
     and the aria-current binding -- matching the sibling nav nodes' a11y exactly.
     """
@@ -187,11 +189,12 @@ async def test_files_rail_node_is_reachable_and_accessible(client: AsyncClient) 
     # The Files node is wired to the reachable route.
     assert 'hx-get="/s/files"' in body
 
-    # Locate the Files node's opening <button ...> tag and assert its a11y contract.
-    node = re.search(r'<button\b[^>]*data-rail-stage="files"[^>]*>', body, re.DOTALL)
-    assert node is not None, 'no data-rail-stage="files" nav <button> in the rail'
+    # Locate the Files node's opening <a ...> tag and assert its native + enhanced navigation contract.
+    node = re.search(r'<a\b[^>]*href="/s/files"[^>]*data-rail-stage="files"[^>]*>', body, re.DOTALL)
+    assert node is not None, 'no data-rail-stage="files" nav <a> in the rail'
     attrs = node.group(0)
     assert 'hx-get="/s/files"' in attrs, "Files node not wired to /s/files"
+    assert 'href="/s/files"' in attrs, "Files node must retain native navigation"
     assert 'hx-target="#stage-workspace"' in attrs and 'hx-push-url="true"' in attrs
     assert 'title="Files"' in attrs, "Files node missing its native title tooltip"
     assert "focus-visible:" in attrs, "Files node missing a focus-visible ring (keyboard a11y)"
@@ -299,6 +302,20 @@ async def test_unknown_stage_404(client: AsyncClient) -> None:
     assert response.status_code == 404
 
 
+@pytest.mark.parametrize("stage", _RAIL_STAGES + _UTILITY_PANE_STAGES)
+@pytest.mark.asyncio
+async def test_every_workspace_has_route_specific_document_title(client: AsyncClient, stage: str) -> None:
+    response = await client.get(f"/s/{stage}")
+    assert response.status_code == 200
+    title = re.search(r"<title>([^<]+)</title>", response.text)
+    assert title is not None
+    assert title.group(1) != "Phaze"
+    assert title.group(1).endswith(" | Phaze")
+
+    fragment = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
+    assert f'data-document-title="{title.group(1).removesuffix(" | Phaze")}"' in fragment.text
+
+
 @pytest.mark.asyncio
 async def test_rail_nodes_wired(client: AsyncClient) -> None:
     """SHELL-02 -- every navigable rail node carries the HTMX swap wiring; summary is active.
@@ -393,7 +410,7 @@ async def test_tabbar_removed_header_present(client: AsyncClient) -> None:
     # Agent status strip: the dot/count bind to the existing $store.pipeline.agentOnline key,
     # and the Agents link points at the existing /admin/agents route.
     assert "agentOnline" in body
-    assert 'href="/admin/agents"' in body
+    assert 'href="/s/agents"' in body
 
 
 @pytest.mark.asyncio

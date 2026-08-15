@@ -7,8 +7,8 @@ rail swap -- the fork decided by ``response_shape.wants_fragment`` (contract rul
 the same predicate ``admin_agents.page`` (``routers/admin_agents.py``) composes.
 
 Stage resolution is a strict whitelist across TWO static maps: ``STAGE_PARTIALS`` for the DAG
-pipeline rail nodes (D-01), and its sibling ``UTILITY_PANES`` (phaze-uvmcr.1) for the two
-below-the-line utility panes -- Audit Log and Compute/Agents -- that are NOT DAG stages and so
+pipeline rail nodes (D-01), and its sibling ``UTILITY_PANES`` for Operations, Audit Log, and
+Agents & Compute Lanes -- workspaces that are NOT DAG stages and so
 are kept out of ``STAGE_PARTIALS``, whose own docstring pins its key set AND order verbatim to
 the 57-UI-SPEC "DAG Rail" table. ``stage`` is NEVER interpolated into a template path -- the
 partial name always comes from one of these two static dicts, closing the
@@ -165,8 +165,8 @@ STAGE_PARTIALS: dict[str, str] = {
 }
 
 
-# phaze-uvmcr.1: rail-node id -> bridged content partial for the two BELOW-THE-LINE utility
-# panes (Audit Log, Compute/Agents) -- the sibling of STAGE_PARTIALS above, deliberately kept
+# Rail-node id -> content partial for the Operations workspaces -- the sibling of
+# STAGE_PARTIALS above, deliberately kept
 # SEPARATE from it rather than folded in. STAGE_PARTIALS' own comment pins its key set AND
 # order VERBATIM to the 57-UI-SPEC "DAG Rail" table; Audit and Agents are not DAG pipeline
 # stages -- they sit below the rail's border-t divider, carry no pipeline count/badge and never
@@ -194,8 +194,28 @@ STAGE_PARTIALS: dict[str, str] = {
 # bead -- shared so the shell-hosted pane and the (now-redirecting) legacy route can never diverge
 # on what a render of this content needs. See the ``elif stage == "agents"`` branch below.
 UTILITY_PANES: dict[str, str] = {
+    "operations": "shell/partials/operations.html",
     "audit": "execution/audit_log.html",
     "agents": "admin/agents.html",
+}
+
+DOCUMENT_TITLES: dict[str, str] = {
+    "summary": "Summary",
+    "files": "Files",
+    "discover": "Discover",
+    "metadata": "Metadata",
+    "analyze": "Analyze",
+    "tracklist": "Tracklists",
+    "propose": "Propose changes",
+    "rename": "Rename and paths",
+    "tagwrite": "Tag changes",
+    "move": "Destinations",
+    "dedupe": "Duplicates",
+    "cue": "Cue sheets",
+    "apply": "Execute approved",
+    "operations": "Routing operations",
+    "audit": "Audit log",
+    "agents": "Agents and compute lanes",
 }
 
 
@@ -400,6 +420,7 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         "request": request,
         "stage": stage,
         "stage_partial": _stage_partial(stage),
+        "document_title": DOCUMENT_TITLES[stage],
         "oob_counts": False,
         # Phase 71 (71-04, BEUI-02): seed the header force-local pill's state on EVERY page from the
         # durable route_control 'global' row (get_route_control is degrade-safe -> False on any DB

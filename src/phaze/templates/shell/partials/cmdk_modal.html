@@ -56,7 +56,7 @@
         <div x-trap.inert.noscroll.noreturn="open"
              class="absolute left-1/2 top-24 -translate-x-1/2 w-[640px] max-w-[92vw] bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border rounded-2xl shadow-2xl overflow-hidden">
 
-            {# Header row: search icon + combobox input + esc hint. #}
+            {# Header row: search icon + combobox input + explicit close control. #}
             <div class="flex items-center gap-3 px-4 h-14 border-b border-gray-200 dark:border-phaze-border">
                 <svg class="w-5 h-5 text-gray-400 dark:text-gray-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-width="2" d="M21 21l-4.35-4.35M11 18a7 7 0 110-14 7 7 0 010 14z"/>
@@ -79,7 +79,11 @@
                        @keydown.up.prevent="move(-1)"
                        @keydown.enter.prevent="activate()"
                        class="flex-1 bg-transparent outline-none text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-600">
-                <span class="font-mono text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-phaze-border text-gray-400 dark:text-gray-500 shrink-0">esc</span>
+                <span class="font-mono text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-phaze-border text-gray-400 dark:text-gray-500 shrink-0">Esc</span>
+                <button type="button" x-ref="close" @click="hide()" aria-label="Close command palette"
+                        class="inline-flex h-8 w-8 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="h-5 w-5" aria-hidden="true"><path stroke-linecap="round" d="M6 6l12 12M18 6 6 18"/></svg>
+                </button>
             </div>
 
             {# Results listbox — the debounced hx-get swaps grouped palette rows into here.
@@ -122,7 +126,8 @@
                 // <body> as the just-focused in-panel element is hidden on the same tick.
                 this.$nextTick(() => {
                     const trigger = document.getElementById('cmdk-trigger');
-                    if (trigger) trigger.focus();
+                    // Let x-trap finish releasing inert state before focus leaves the panel.
+                    if (trigger) window.setTimeout(() => trigger.focus(), 0);
                 });
             },
             onResults() {

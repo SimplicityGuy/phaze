@@ -25,8 +25,21 @@
 {% set head_class = "px-3 pt-3 pb-1 font-jura text-[11px] uppercase tracking-wider text-gray-500 dark:text-gray-500" %}
 {% set badge_base = "shrink-0 text-[11px] px-1.5 py-0.5 rounded" %}
 
-{% if file_results %}
+<div role="presentation" class="{{ head_class }}">Navigate</div>
+<a id="cmdk-nav-summary" role="option" aria-selected="false" tabindex="-1" href="/s/summary" class="{{ row_class }}">
+  <span aria-hidden="true">→</span><span class="flex-1 text-gray-900 dark:text-gray-100">Overview</span>
+</a>
+<a id="cmdk-nav-review" role="option" aria-selected="false" tabindex="-1" href="/s/rename" class="{{ row_class }}">
+  <span aria-hidden="true">→</span><span class="flex-1 text-gray-900 dark:text-gray-100">Changes review</span>
+</a>
+<a id="cmdk-nav-workers" role="option" aria-selected="false" tabindex="-1" href="/s/agents" class="{{ row_class }}">
+  <span aria-hidden="true">→</span><span class="flex-1 text-gray-900 dark:text-gray-100">Agents &amp; compute lanes</span>
+</a>
+
+{% if file_results or tracklist_results or discogs_results or artists %}
   <div role="presentation" class="{{ head_class }}">Files</div>
+{% endif %}
+{% if file_results %}
   {% for r in file_results %}
     <div id="cmdk-file-{{ loop.index }}"
          role="option"
@@ -46,7 +59,6 @@
 {% endif %}
 
 {% if tracklist_results %}
-  <div role="presentation" class="{{ head_class }}">Tracklists</div>
   {% for r in tracklist_results %}
     <a id="cmdk-tracklist-{{ loop.index }}"
        role="option"
@@ -78,7 +90,6 @@
    If a real DiscogsLink destination is ever added, restore role="option"/tabindex and give the
    row an href or hx-get in the SAME change; the actionability test will fail otherwise. #}
 {% if discogs_results %}
-  <div role="presentation" class="{{ head_class }}">Discogs</div>
   {% for r in discogs_results %}
     <div class="{{ row_static_class }}">
       <span aria-hidden="true">💿</span>
@@ -89,7 +100,6 @@
 {% endif %}
 
 {% if artists %}
-  <div role="presentation" class="{{ head_class }}">Artists</div>
   {% for a in artists %}
     <a id="cmdk-artist-{{ loop.index }}"
        role="option"
@@ -124,33 +134,16 @@
    Keep any future state-changing command LAST and confirmed; tests/shared/core/
    test_cmdk_palette_default_option.py enforces both by role + htmx verb, not by id. #}
 <div role="presentation" class="{{ head_class }}">Commands</div>
-<a id="cmdk-cmd-stage"
-   role="option"
-   aria-selected="false"
-   tabindex="-1"
-   href="/s/analyze"
-   class="{{ row_class }}">
-  <span aria-hidden="true">→</span>
-  <span class="flex-1 text-gray-900 dark:text-gray-100">Jump to a stage</span>
-</a>
-<a id="cmdk-cmd-review"
-   role="option"
-   aria-selected="false"
-   tabindex="-1"
-   href="/s/rename"
-   class="{{ row_class }}">
-  <span aria-hidden="true">✓</span>
-  <span class="flex-1 text-gray-900 dark:text-gray-100">Jump to a review queue</span>
-</a>
-<a id="cmdk-cmd-agents"
-   role="option"
-   aria-selected="false"
-   tabindex="-1"
-   href="/admin/agents"
-   class="{{ row_class }}">
-  <span aria-hidden="true">⎈</span>
-  <span class="flex-1 text-gray-900 dark:text-gray-100">Open Agents</span>
-</a>
+<button id="cmdk-cmd-analyze" type="button" role="option" aria-selected="false" tabindex="-1"
+        hx-post="/pipeline/analyze" hx-swap="none" hx-confirm="Route all discovered files into analysis?"
+        class="{{ row_class }} w-full text-left">
+  <span aria-hidden="true">▶</span><span class="flex-1 text-gray-900 dark:text-gray-100">Run analysis</span>
+</button>
+<button id="cmdk-cmd-metadata" type="button" role="option" aria-selected="false" tabindex="-1"
+        hx-post="/pipeline/extract-metadata" hx-swap="none" hx-confirm="Enqueue metadata extraction for all pending files?"
+        class="{{ row_class }} w-full text-left">
+  <span aria-hidden="true">▶</span><span class="flex-1 text-gray-900 dark:text-gray-100">Extract metadata</span>
+</button>
 {% if query and not file_results and not tracklist_results and not discogs_results and not artists %}
   <div class="px-3 py-6 text-center text-sm text-gray-500 dark:text-gray-500">
     No results found for "{{ query }}". Try a different search or one of the commands above.
