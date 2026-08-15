@@ -170,7 +170,7 @@ async def test_record_renders_with_both_history_types(  # type: ignore[no-untype
 
 @pytest.mark.asyncio
 async def test_cmdk_grouped_results(client: AsyncClient, seed_distinct_artists) -> None:  # type: ignore[no-untyped-def]
-    """RECORD-02: the grouped palette endpoint returns Files/Tracklists/Artists/Commands as an ARIA listbox."""
+    """RECORD-02: the palette exposes the accepted Navigate/Files/Commands information architecture."""
     await seed_distinct_artists()
     r = await client.get("/search/", params={"q": "bonobo"}, headers={"HX-Request": "true"})
     assert r.status_code == 200
@@ -178,9 +178,10 @@ async def test_cmdk_grouped_results(client: AsyncClient, seed_distinct_artists) 
     # Selectable rows are role="option"; group headers are role="presentation" (skipped by roving nav).
     assert 'role="option"' in body
     assert 'role="presentation"' in body
-    # The four command-palette groups.
-    for group in ("Files", "Artists", "Commands"):
+    # Domain results share Files; route links and mutations have distinct groups.
+    for group in ("Navigate", "Files", "Commands"):
         assert group in body
+    assert ">Artists<" not in body
 
 
 @pytest.mark.asyncio
@@ -200,24 +201,18 @@ async def test_distinct_artists_query(session: AsyncSession, seed_distinct_artis
 
 
 @pytest.mark.asyncio
-async def test_cmdk_commands_and_artist_nav(client: AsyncClient, seed_distinct_artists) -> None:  # type: ignore[no-untyped-def]
-    """RECORD-02: the palette renders its navigation commands; an artist row re-searches with q=.
-
-    phaze-0jpe: the one state-changing command (Scan for new live sets -> POST
-    /pipeline/scan-live-sets) went with the fingerprint-scan task, so the commands group is now
-    navigation-only. ``test_cmdk_palette_default_option.py`` still enforces, by role and htmx verb,
-    that any command added back is confirmed and never row 0.
-    """
+async def test_cmdk_current_navigation_and_mutation_commands(client: AsyncClient, seed_distinct_artists) -> None:  # type: ignore[no-untyped-def]
+    """RECORD-02: current route links and confirmed mutation commands replace the retired command set."""
     await seed_distinct_artists()
     r = await client.get("/search/", params={"q": "bonobo"}, headers={"HX-Request": "true"})
     assert r.status_code == 200
     body = r.text
-    # The navigation commands are always present so the roving nav has selectable targets (D-03).
-    assert 'id="cmdk-cmd-stage"' in body
-    assert 'id="cmdk-cmd-agents"' in body
-    # An Artist option must re-search with q= (WR-03): search_page only runs a query when q is
-    # truthy, so an artist= only URL would return an empty palette. The artist row carries q=.
-    assert 'hx-get="/search/?q=' in body
+    for row_id in ("cmdk-nav-summary", "cmdk-nav-review", "cmdk-nav-workers", "cmdk-cmd-analyze", "cmdk-cmd-metadata"):
+        assert f'id="{row_id}"' in body
+    assert 'id="cmdk-cmd-stage"' not in body
+    assert 'id="cmdk-cmd-agents"' not in body
+    assert body.count('hx-target="#cmdk-command-result"') == 2
+    assert body.count('hx-disabled-elt="this"') == 2
 
 
 # ---------------------------------------------------------------------------

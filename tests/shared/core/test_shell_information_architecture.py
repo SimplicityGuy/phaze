@@ -54,14 +54,21 @@ def test_every_navigation_destination_has_one_current_page_semantic() -> None:
         assert current[0].get("data-rail-stage") == stage
 
 
-def test_review_current_page_keeps_a_visible_amber_treatment() -> None:
+def test_review_current_page_uses_cyan_location_inside_the_amber_domain() -> None:
     soup = BeautifulSoup(_render("shell/partials/rail.html", stage="rename"), "html.parser")
+    review_heading = soup.select_one("#nav-review")
     current = soup.select_one('a[data-rail-stage="rename"][aria-current="page"]')
+    unselected = soup.select_one('a[data-rail-stage="tagwrite"]')
+    assert isinstance(review_heading, Tag)
     assert isinstance(current, Tag)
+    assert isinstance(unselected, Tag)
+    assert "text-amber-600" in review_heading.get("class", [])
+    assert "text-amber-700" in unselected.get("class", [])
     classes = set(current.get("class", []))
-    assert "text-amber-700" in classes
-    assert "aria-[current=page]:bg-amber-500/15" in classes
-    assert "aria-[current=page]:shadow-[inset_3px_0_0_var(--color-amber-500)]" in classes
+    assert "aria-[current=page]:bg-blue-500/10" in classes
+    assert "aria-[current=page]:text-blue-700" in classes
+    assert "aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]" in classes
+    assert not any("aria-[current=page]" in one and "amber" in one for one in classes)
 
 
 def test_header_uses_canonical_workers_route_and_read_only_override_warning() -> None:
