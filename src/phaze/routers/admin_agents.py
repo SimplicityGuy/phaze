@@ -269,7 +269,7 @@ class TableRow:
     @property
     def push_url(self) -> str:
         """The base ``hx-push-url`` this row's click pushes (before ``sort.query_state()`` is appended)."""
-        return f"/admin/agents?{self.selection_param}={self.id}"
+        return f"/s/agents?{self.selection_param}={self.id}"
 
 
 def _agent_sort_value(agent: Agent, key: str) -> Any:

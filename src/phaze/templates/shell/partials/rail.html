@@ -1,421 +1,65 @@
-{#
-  v7.0 DAG rail — the navigation spine (SHELL-02). Replaces the Plan-02 placeholder
-  <aside> in shell.html via {% include %}. Node order is VERBATIM from the prototype RAIL
-  config (docs/.../prototype.html:97-116) and the 57-UI-SPEC "DAG Rail" table:
+{# Persistent product navigation. Destinations remain native links; HTMX enhances ordinary navigation. #}
+{% macro nav_link(route, label, icon, tone='pipeline') %}
+<a href="/s/{{ route }}"
+   data-rail-stage="{{ route }}"
+   hx-get="/s/{{ route }}" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+   title="{{ label }}"
+   {% if stage == route %}aria-current="page"{% endif %}
+   class="rail-node w-full rounded-md px-2.5 py-2 flex items-center gap-2.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:justify-center max-lg:px-0 {% if tone == 'review' %}text-amber-700 dark:text-amber-300 hover:bg-amber-500/10 aria-[current=page]:bg-blue-500/10 aria-[current=page]:text-blue-700 dark:aria-[current=page]:text-blue-300 aria-[current=page]:font-semibold aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]{% elif tone == 'operations' %}text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5 aria-[current=page]:bg-gray-200 dark:aria-[current=page]:bg-white/10{% else %}text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]{% endif %}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="{{ icon }}"/></svg>
+    <span class="flex-1 text-sm max-lg:sr-only">{{ label }}</span>
+    {% if caller %}{{ caller() }}{% endif %}
+</a>
+{% endmacro %}
 
-      0 summary (landing/overview — the node `/` renders; PLACEHOLDER, no store key)
-      1 discover (live: discovered)
-      group Enrich · parallel: metadata (metadataDone)
-                             · analyze (analyzeActive, blue-pulse, one click away at /s/analyze)
-      group Identify: tracklist (tracklistDone)
-      propose (proposalsDone)
-      group Review & Apply (AMBER): rename · tagwrite · move · dedupe · cue · apply (all STATIC)
-      below-the-line (border-t): audit → /s/audit , agents → /s/agents (phaze-uvmcr.1: hx-driven
-        UTILITY_PANES nodes, wired like their stage siblings -- NOT plain <a href> full-page
-        navigations any more; see routers/shell.py UTILITY_PANES for why they are a SEPARATE map
-        from STAGE_PARTIALS rather than two more DAG rows here)
+{% set count_class = "font-mono text-xs text-gray-500 max-lg:hidden shrink-0 whitespace-nowrap" %}
+{% set group_class = "mx-2 rounded-lg border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel px-2 py-1.5 max-lg:mx-0 max-lg:border-transparent max-lg:bg-transparent max-lg:px-0" %}
+{% set heading_class = "font-jura text-[10px] uppercase tracking-[0.2em] text-gray-500 px-1.5 mb-1 max-lg:sr-only" %}
 
-  Live-vs-static rule (locked): an x-text count renders ONLY for a node whose key already
-  exists in $store.pipeline (phaze-uvmcr.5: base.html deleted, the store now lives at
-  shell/shell.html:115-159). summary + the six Review & Apply items carry NO count. Counts
-  are numeric server/store values only.
-
-  Phase 87 (87-08) ambient enrich-node additions (each rides the SAME #pipeline-stats OOB
-  fanout — no self-poll; store keys now live in shell/shell.html):
-    • UI-05 — amber orphaned/stuck (recovery-candidate) badge bound to
-      $store.pipeline.{metadata,analyze}Orphan, role="status", hidden at 0.
-    • PRIO-01 — per-enrich-stage priority stepper (▲/▼) + pause/resume toggle, re-wired to the
-      LIVE durable-control endpoints POST /pipeline/stages/{stage}/{priority,pause,resume}
-      (routers/pipeline_stages.py). The interactive controls live in a sub-row OUTSIDE the nav
-      <button> (never nested interactive elements); hx-swap="none" (the {stage,priority,paused}
-      JSON is not swapped — the label reads the store, refreshed each 5s poll from the durable row).
-
-  HTMX wiring (every navigable node): hx-get="/s/<id>" hx-target="#stage-workspace"
-  hx-swap="innerHTML" hx-push-url="true". The active node (node id == the shell `stage`
-  context var) carries aria-current="page"; the active visual (blue tint + inset bar) is
-  driven entirely from that attribute via the aria-[current=page] variant, so the
-  history-restore / afterSwap handler only needs to toggle the attribute (syncRailSelection).
-  data-rail-stage="<id>" is the JS hook (distinct from #stage-workspace's data-stage).
-
-  CUT-04 (Phase 62 — D-07 / D-08): the rail collapses to a 64px icon-only strip below
-  1024px via the pure-CSS Tailwind `max-lg:` breakpoint (no JS, no persistence). Each node
-  carries a per-stage inline-SVG glyph copied verbatim from heroicons v2 OUTLINE (MIT), and
-  the SVG wrapper mirrors the existing theme-toggle / wave-logo idiom (24×24, 1.5 stroke,
-  currentColor, w-5 h-5, aria-hidden). Collapse transform (class additions only):
-    • aside      → + max-lg:w-16
-    • label span → + max-lg:sr-only  (HARD CONTRACT: NOT max-lg:hidden — the collapsed
-                    strip must stay screen-reader-navigable; glyphs are aria-hidden, so the
-                    sr-only label is the node's accessible name)
-    • count span → + max-lg:hidden   (visual-only numeric data)
-    • group boxes/eyebrows → chrome neutralised / label hidden at narrow width
-    • node inner → + max-lg:justify-center max-lg:px-0  (centres the glyph, ~40px hit target)
-    • each node  → native title="{label}" (same text as the visible/sr-only label)
-  Active-state (aria-[current=page] tint + inset bar) and the focus-visible ring are
-  preserved verbatim in BOTH states. The Review & Apply group is unrolled from its former
-  {% for %} into explicit buttons (five at CUT-04, six since phaze-vvmh added Execute) so each
-  can carry its own distinct glyph.
-  The compiled CSS (src/phaze/static/css/app.css) is GITIGNORED and rebuilt by
-  `just tailwind` / at Docker image-build via the @source template scan in assets/src/app.css.
-#}
-{# Phase 93 (CONSOLE-02): the bare x-data on the rail root is LOAD-BEARING. Alpine only walks
-   subtrees rooted at an x-data element, and this aside had none — every x-text numeral,
-   x-show orphan badge, and pause/priority binding below was silently inert, so the rail
-   forever rendered its server-side "0" defaults no matter what $store.pipeline held (the
-   badge read 0 while 2,183 analyze jobs were in flight). Only a live browser catches this
-   (markup tests see the attribute either way); tests/shared/core/test_a11y_guards.py locks it. #}
 <aside x-data class="w-[280px] max-lg:w-16 shrink-0 overflow-y-auto border-r border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel py-4" aria-label="Pipeline navigation">
+    <nav aria-label="Pipeline stages" class="space-y-2">
+        <section class="{{ group_class }}" aria-labelledby="nav-overview">
+            <h2 id="nav-overview" class="{{ heading_class }} text-blue-500 dark:text-blue-400/80">Overview</h2>
+            {% call nav_link('summary', 'Summary', 'M10.5 6a7.5 7.5 0 1 0 7.5 7.5h-7.5V6Zm3 4.5H21A7.5 7.5 0 0 0 13.5 3v7.5Z') %}{% endcall %}
+            {% call nav_link('files', 'Files', 'M3.75 4.5h16.5v15H3.75v-15Zm0 4.5h16.5M8.25 9v10.5') %}{% endcall %}
+        </section>
 
-    {# Pipeline eyebrow (section label for the DAG rail). #}
-    <div class="px-4 pb-2 flex items-center max-lg:justify-center max-lg:px-0">
-        <span class="font-jura text-[11px] uppercase tracking-[0.25em] text-blue-500 dark:text-blue-400/80 max-lg:hidden">Pipeline</span>
-    </div>
+        <section class="{{ group_class }}" aria-labelledby="nav-pipeline">
+            <h2 id="nav-pipeline" class="{{ heading_class }}">Pipeline</h2>
+            {% call nav_link('discover', 'Discover', 'M3.75 9.75h16.5l-.9 8.1a2.25 2.25 0 0 1-2.24 2H6.89a2.25 2.25 0 0 1-2.24-2l-.9-8.1Zm2.25 0V5.25h4.5l1.5 1.5h6v3') %}
+                <span class="{{ count_class }}" x-text="$store.pipeline.discovered" :title="$store.pipeline.discovered + ' files discovered'" :aria-label="$store.pipeline.discovered + ' files discovered'">0</span>
+            {% endcall %}
+            {% call nav_link('metadata', 'Metadata', 'M6 3.75h7.5l4.5 4.5v12H6v-16.5Zm7.5 0v4.5H18M9 13.5h6M9 16.5h4.5') %}
+                <span class="{{ count_class }}" x-text="`${$store.pipeline.metadataDone} / ${$store.pipeline.metadataTotal}`" :title="$store.pipeline.metadataDone + ' of ' + $store.pipeline.metadataTotal + ' metadata files done'" :aria-label="$store.pipeline.metadataDone + ' of ' + $store.pipeline.metadataTotal + ' metadata files done'">0 / 0</span>
+                <span x-show="$store.pipeline.metadataOrphan > 0" x-cloak role="status" :title="$store.pipeline.metadataOrphan + ' orphaned metadata file(s) awaiting recovery'" :aria-label="$store.pipeline.metadataOrphan + ' orphaned metadata file(s) awaiting recovery'" class="{{ count_class }} font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400" x-text="$store.pipeline.metadataOrphan">0</span>
+            {% endcall %}
+            {% call nav_link('analyze', 'Analyze', 'M9.75 3v6l-4.5 7.5h13.5L14.25 9V3M8.25 3h7.5') %}
+                <span class="{{ count_class }}" x-text="`${$store.pipeline.analyzeDone} / ${$store.pipeline.analyzeTotal}`" :title="$store.pipeline.analyzeDone + ' of ' + $store.pipeline.analyzeTotal + ' analyze files done'" :aria-label="$store.pipeline.analyzeDone + ' of ' + $store.pipeline.analyzeTotal + ' analyze files done'">0 / 0</span>
+                <span x-show="$store.pipeline.analyzeOrphan > 0" x-cloak role="status" :title="$store.pipeline.analyzeOrphan + ' orphaned analyze file(s) awaiting recovery'" :aria-label="$store.pipeline.analyzeOrphan + ' orphaned analyze file(s) awaiting recovery'" class="{{ count_class }} font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400" x-text="$store.pipeline.analyzeOrphan">0</span>
+            {% endcall %}
+            {% call nav_link('tracklist', 'Tracklists', 'M8.25 6.75h12M8.25 12h12M8.25 17.25h12M3.75 6.75h.01M3.75 12h.01M3.75 17.25h.01') %}
+                <span class="{{ count_class }}" x-text="$store.pipeline.tracklistDone" :title="$store.pipeline.tracklistDone + ' tracklist files done'" :aria-label="$store.pipeline.tracklistDone + ' tracklist files done'">0</span>
+            {% endcall %}
+            {% call nav_link('propose', 'Propose changes', 'M12 3v18M3 12h18M5.5 5.5l13 13M18.5 5.5l-13 13') %}
+                <span class="{{ count_class }}" x-text="`${$store.pipeline.proposalsDone} / ${$store.pipeline.proposalsTotal}`" :title="$store.pipeline.proposalsDone + ' of ' + $store.pipeline.proposalsTotal + ' proposals done'" :aria-label="$store.pipeline.proposalsDone + ' of ' + $store.pipeline.proposalsTotal + ' proposals done'">0 / 0</span>
+            {% endcall %}
+        </section>
 
-    <nav aria-label="Pipeline stages">
+        <section class="{{ group_class }} bg-amber-500/[0.06] border-amber-500/25" aria-labelledby="nav-review">
+            <h2 id="nav-review" class="{{ heading_class }} text-amber-600 dark:text-amber-400/80">Review</h2>
+            {% call nav_link('rename', 'Rename / paths', 'M16.5 3.75 20.25 7.5 9 18.75l-4.5.75.75-4.5L16.5 3.75Z', 'review') %}{% endcall %}
+            {% call nav_link('tagwrite', 'Tag changes', 'M3.75 3.75h7.5l9 9-7.5 7.5-9-9v-7.5ZM7.5 7.5h.01', 'review') %}{% endcall %}
+            {% call nav_link('move', 'Destinations', 'M3.75 6.75h6l1.5 1.5h9v10.5H3.75v-12Zm8.25 4.5v5.25m0 0-2.25-2.25M12 16.5l2.25-2.25', 'review') %}{% endcall %}
+            {% call nav_link('dedupe', 'Duplicates', 'M6 6.75V4.5h13.5v13.5h-2.25M4.5 6.75h12.75V19.5H4.5V6.75Z', 'review') %}{% endcall %}
+            {% call nav_link('cue', 'Cue sheets', 'M9 9l10.5-3v10.5a2.25 2.25 0 1 1-1.5-2.12V3L9 6v10.5a2.25 2.25 0 1 1-1.5-2.12', 'review') %}{% endcall %}
+            {% call nav_link('apply', 'Execute approved', 'M5.25 5.65v12.7c0 .86.92 1.4 1.67.99l11.54-6.35a1.13 1.13 0 0 0 0-1.98L6.92 4.67a1.13 1.13 0 0 0-1.67.98Z', 'review') %}{% endcall %}
+        </section>
 
-        {# 0 — Summary (top-level node · the `/` landing page, quick 260707-sq3).
-           Placement: Summary is what `/` renders, so it reads first. It sits INSIDE this
-           existing Pipeline <nav> landmark (rather than above the eyebrow) so every navigable
-           rail node stays within one labelled nav landmark. Label-only — Summary is a static
-           placeholder with NO backing $store.pipeline key, so it carries no x-text count
-           (locked live-vs-static rule; matches the Track-ID node). #}
-        <button type="button"
-                data-rail-stage="summary"
-                hx-get="/s/summary" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-                title="Summary"
-                {% if stage == 'summary' %}aria-current="page"{% endif %}
-                class="rail-node w-[calc(100%-1rem)] mx-2 rounded-lg px-3 py-2.5 flex items-center gap-3 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M10.5 6a7.5 7.5 0 1 0 7.5 7.5h-7.5V6Z"/><path d="M13.5 10.5H21A7.5 7.5 0 0 0 13.5 3v7.5Z"/></svg>
-            <span class="flex-1 text-sm text-gray-700 dark:text-gray-200 max-lg:sr-only">Summary</span>
-        </button>
-
-        {# 0b — Files (top-level node · the derived per-file stage-matrix overview, Phase 87 87-09,
-           UI-01/UI-02). Placement: right after Summary — the file-level "where's this file at?"
-           overview sibling of the stage-level Summary landing. A PLAIN nav node (like Summary /
-           Track-ID): NO backing $store.pipeline key, so it carries no x-text count (locked
-           live-vs-static rule), and NO priority stepper / pause sub-row (those belong only to the
-           three enrich agent nodes). Wired identically to every navigable node: hx-get="/s/files"
-           innerHTML-swaps #stage-workspace with hx-push-url; aria-current="page" when active. The
-           label span carries max-lg:sr-only (NEVER max-lg:hidden — CUT-04 ↔ CUT-01: the collapsed
-           strip must stay screen-reader-navigable) and the glyph is aria-hidden. #}
-        <button type="button"
-                data-rail-stage="files"
-                hx-get="/s/files" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-                title="Files"
-                {% if stage == 'files' %}aria-current="page"{% endif %}
-                class="rail-node w-[calc(100%-1rem)] mx-2 mt-1.5 rounded-lg px-3 py-2.5 flex items-center gap-3 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 0 1-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0 1 12 18.375m9.75-12.75c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125m19.5 0v1.5c0 .621-.504 1.125-1.125 1.125M2.25 5.625v1.5c0 .621.504 1.125 1.125 1.125m0 0h17.25m-17.25 0h7.5c.621 0 1.125.504 1.125 1.125M3.375 8.25c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125m0-3.75h7.5c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125m-9.75 0h9.75"/></svg>
-            <span class="flex-1 text-sm text-gray-700 dark:text-gray-200 max-lg:sr-only">Files</span>
-        </button>
-
-        {# 1 — Discover (top-level node · done) #}
-        <button type="button"
-                data-rail-stage="discover"
-                hx-get="/s/discover" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-                title="Discover"
-                {% if stage == 'discover' %}aria-current="page"{% endif %}
-                class="rail-node w-[calc(100%-1rem)] mx-2 mt-1.5 rounded-lg px-3 py-2.5 flex items-center gap-3 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6A2.25 2.25 0 0 1 6 3.75h3.879a1.5 1.5 0 0 1 1.06.44l2.122 2.12a1.5 1.5 0 0 0 1.06.44H18A2.25 2.25 0 0 1 20.25 9v.776"/></svg>
-            <span class="flex-1 text-sm text-gray-700 dark:text-gray-200 max-lg:sr-only">Discover</span>
-            {# phaze-nebh: every rail numeral gets an explicit, store-bound title + aria-label naming
-               what it measures — a bare number is unlabeled in BOTH the visual and accessible channel
-               otherwise (verified previously true for every count span in this file). #}
-            <span class="font-mono text-xs text-gray-500 max-lg:hidden"
-                  x-text="$store.pipeline.discovered"
-                  :title="$store.pipeline.discovered + ' files discovered'"
-                  :aria-label="$store.pipeline.discovered + ' files discovered'">0</span>
-        </button>
-
-        {# 2 — Enrich · parallel (group) #}
-        <div class="mx-2 mt-1.5 rounded-lg border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel px-2 py-1.5 max-lg:mx-0 max-lg:border-transparent max-lg:bg-transparent max-lg:px-0 max-lg:py-0 max-lg:mt-0">
-            <div class="font-jura text-[10px] uppercase tracking-[0.2em] text-gray-500 px-1.5 mb-1 max-lg:hidden">Enrich · parallel</div>
-
-            {# 2a — Metadata (done) #}
-            <button type="button"
-                    data-rail-stage="metadata"
-                    hx-get="/s/metadata" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-                    title="Metadata"
-                    {% if stage == 'metadata' %}aria-current="page"{% endif %}
-                    class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg>
-                <span class="flex-1 text-sm text-gray-700 dark:text-gray-300 max-lg:sr-only">Metadata</span>
-                {# phaze-nebh: render done/total (never a bare numeral -- ambiguous no matter how good
-                   the tooltip is) and bind an explicit :title + :aria-label naming the stage and the
-                   measure, so the two channels agree and neither is empty. #}
-                {# phaze-cvn6.2: shrink-0 + whitespace-nowrap keep this "done / total" pair from being
-                   squeezed onto two lines by the flex-1 label + the orphan badge below -- see the
-                   Analyze node's fuller note (the row that actually hit this with a live badge). #}
-                <span class="font-mono text-xs text-gray-500 max-lg:hidden shrink-0 whitespace-nowrap"
-                      x-text="`${$store.pipeline.metadataDone} / ${$store.pipeline.metadataTotal}`"
-                      :title="$store.pipeline.metadataDone + ' of ' + $store.pipeline.metadataTotal + ' metadata files done'"
-                      :aria-label="$store.pipeline.metadataDone + ' of ' + $store.pipeline.metadataTotal + ' metadata files done'">0 / 0</span>
-                {# Phase 87 (87-08, UI-05 / D-05): amber orphaned/stuck (recovery-candidate) badge — the
-                   count recover_orphaned_work would re-enqueue. Rides the #pipeline-stats OOB fanout via
-                   $store.pipeline.metadataOrphan (seeded 0 in shell/shell.html, no self-poll); hidden at 0 via
-                   x-show. role="status"; amber = "needs attention, not failure" (never red).
-                   phaze-nebh: :title added so a sighted operator hovering gets the SAME sentence
-                   assistive tech already gets from aria-label -- previously title-less, aria-only. #}
-                <span x-show="$store.pipeline.metadataOrphan > 0" x-cloak
-                      role="status"
-                      :title="$store.pipeline.metadataOrphan + ' orphaned metadata file(s) awaiting recovery'"
-                      :aria-label="$store.pipeline.metadataOrphan + ' orphaned metadata file(s) awaiting recovery'"
-                      class="font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400 max-lg:hidden shrink-0"
-                      x-text="$store.pipeline.metadataOrphan">0</span>
-            </button>
-
-            {# 2a-controls — Phase 87 (87-08, PRIO-01 / D-11): metadata priority stepper + pause/resume,
-               re-wired to the LIVE durable-control endpoints (routers/pipeline_stages.py — do NOT resurrect
-               the removed Phase-38 templates). The {stage,priority,paused} JSON response is NOT swapped
-               (hx-swap="none"); the label reads $store.pipeline.metadataPriority/Paused, refreshed each 5s
-               poll from the durable control row. Hidden in the collapsed icon-rail (max-lg:hidden). #}
-            <div class="mt-0.5 mb-1 pl-9 pr-2 flex items-center gap-1 max-lg:hidden" role="group" aria-label="Metadata priority and pause controls">
-                <span class="flex-1 text-[11px] text-gray-500 dark:text-gray-400 max-lg:hidden"
-                      x-text="'Priority: ' + ($store.pipeline.metadataPriority < 50 ? 'High' : ($store.pipeline.metadataPriority > 50 ? 'Low' : 'Normal')) + ' (' + $store.pipeline.metadataPriority + ')'">Priority: Normal (50)</span>
-                <button type="button"
-                        hx-post="/pipeline/stages/metadata/priority" hx-vals='{"delta": -10}' hx-swap="none"
-                        aria-label="Raise metadata priority"
-                        title="▲ Higher priority runs sooner (lowers the queue number). ▼ lowers priority."
-                        class="rounded px-1 text-xs leading-none text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">▲</button>
-                <button type="button"
-                        hx-post="/pipeline/stages/metadata/priority" hx-vals='{"delta": 10}' hx-swap="none"
-                        aria-label="Lower metadata priority"
-                        title="▲ Higher priority runs sooner (lowers the queue number). ▼ lowers priority."
-                        class="rounded px-1 text-xs leading-none text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">▼</button>
-                <button type="button"
-                        x-show="!$store.pipeline.metadataPaused"
-                        hx-post="/pipeline/stages/metadata/pause" hx-swap="none"
-                        aria-label="Pause metadata"
-                        class="rounded px-1.5 text-[11px] leading-none text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Pause</button>
-                <button type="button"
-                        x-show="$store.pipeline.metadataPaused" x-cloak
-                        hx-post="/pipeline/stages/metadata/resume" hx-swap="none"
-                        aria-label="Resume metadata"
-                        class="rounded px-1.5 text-[11px] leading-none font-semibold text-amber-700 dark:text-amber-400 hover:bg-amber-100/60 dark:hover:bg-amber-950/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Resume</button>
-                <span x-show="$store.pipeline.metadataPaused" x-cloak class="text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">Paused</span>
-            </div>
-
-            {# 2c — Analyze (live · blue pulse · the / default node) #}
-            <button type="button"
-                    data-rail-stage="analyze"
-                    hx-get="/s/analyze" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-                    title="Analyze"
-                    {% if stage == 'analyze' %}aria-current="page"{% endif %}
-                    class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M9.75 3.104v5.714a2.25 2.25 0 0 1-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 0 1 4.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0 1 12 15a9.065 9.065 0 0 0-6.23-.693L5 14.5m14.8.8 1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0 1 12 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5"/></svg>
-                <span class="flex-1 text-sm text-gray-700 dark:text-gray-300 max-lg:sr-only">Analyze</span>
-                {# phaze-nebh: this numeral used to bind analyzeActive (files IN FLIGHT) while the
-                   identically-styled Metadata numerals bind *Done (files DONE) -- three
-                   visually-identical grey numerals reading as three different measures, precisely
-                   inverted at a glance ("Analyze 3134" read as "nearly done" actually meant "3,134
-                   still running"). Switch to analyzeDone/analyzeTotal so all three enrich stages
-                   agree on DONE (matches the bead's preferred resolution: "done" reads more naturally
-                   next to a stage name, and in-flight is still surfaced by the ANALYZE workspace's own
-                   sub-count, which analyzeActive continues to drive -- see analyze_workspace.html /
-                   phaze-xd8k). done/total + matching :title/:aria-label, same as Metadata. #}
-                {# phaze-cvn6.2: this is the node that actually hit the wrap. The count span is a flex
-                   sibling of the flex-1 label -- by default a flex item can shrink below its content
-                   width, so once the orphan badge below ALSO claims horizontal space (analyze runs
-                   with a live orphan count where Metadata currently sits at 0), the browser
-                   had room to break "1701 / 11428" at the " / " and stacked it onto a second line,
-                   growing this row taller than its done/in-flight/not-started neighbours. shrink-0
-                   pins the count (and the badge) to their natural width and whitespace-nowrap forbids
-                   the internal break; the flex-1 label absorbs any squeeze instead (a single word, so
-                   it can only overflow its own box, never push a sibling). Applied to all three
-                   enrich-stage nodes (Metadata above) so a future non-zero orphan count on
-                   THEM doesn't reproduce the same wrap. #}
-                <span class="font-mono text-xs text-gray-500 max-lg:hidden shrink-0 whitespace-nowrap"
-                      x-text="`${$store.pipeline.analyzeDone} / ${$store.pipeline.analyzeTotal}`"
-                      :title="$store.pipeline.analyzeDone + ' of ' + $store.pipeline.analyzeTotal + ' analyze files done'"
-                      :aria-label="$store.pipeline.analyzeDone + ' of ' + $store.pipeline.analyzeTotal + ' analyze files done'">0 / 0</span>
-                {# Phase 87 (87-08, UI-05 / D-05): amber orphaned/stuck (recovery-candidate) badge.
-                   phaze-nebh: :title added to match the pre-existing :aria-label. #}
-                <span x-show="$store.pipeline.analyzeOrphan > 0" x-cloak
-                      role="status"
-                      :title="$store.pipeline.analyzeOrphan + ' orphaned analyze file(s) awaiting recovery'"
-                      :aria-label="$store.pipeline.analyzeOrphan + ' orphaned analyze file(s) awaiting recovery'"
-                      class="font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400 max-lg:hidden shrink-0"
-                      x-text="$store.pipeline.analyzeOrphan">0</span>
-            </button>
-
-            {# 2c-controls — Phase 87 (87-08, PRIO-01 / D-11): analyze priority stepper + pause/resume
-               (LIVE endpoints; hx-swap="none"; store-driven label; collapsed-rail hidden). #}
-            <div class="mt-0.5 mb-1 pl-9 pr-2 flex items-center gap-1 max-lg:hidden" role="group" aria-label="Analyze priority and pause controls">
-                <span class="flex-1 text-[11px] text-gray-500 dark:text-gray-400 max-lg:hidden"
-                      x-text="'Priority: ' + ($store.pipeline.analyzePriority < 50 ? 'High' : ($store.pipeline.analyzePriority > 50 ? 'Low' : 'Normal')) + ' (' + $store.pipeline.analyzePriority + ')'">Priority: Normal (50)</span>
-                <button type="button"
-                        hx-post="/pipeline/stages/analyze/priority" hx-vals='{"delta": -10}' hx-swap="none"
-                        aria-label="Raise analyze priority"
-                        title="▲ Higher priority runs sooner (lowers the queue number). ▼ lowers priority."
-                        class="rounded px-1 text-xs leading-none text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">▲</button>
-                <button type="button"
-                        hx-post="/pipeline/stages/analyze/priority" hx-vals='{"delta": 10}' hx-swap="none"
-                        aria-label="Lower analyze priority"
-                        title="▲ Higher priority runs sooner (lowers the queue number). ▼ lowers priority."
-                        class="rounded px-1 text-xs leading-none text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">▼</button>
-                <button type="button"
-                        x-show="!$store.pipeline.analyzePaused"
-                        hx-post="/pipeline/stages/analyze/pause" hx-swap="none"
-                        aria-label="Pause analyze"
-                        class="rounded px-1.5 text-[11px] leading-none text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Pause</button>
-                <button type="button"
-                        x-show="$store.pipeline.analyzePaused" x-cloak
-                        hx-post="/pipeline/stages/analyze/resume" hx-swap="none"
-                        aria-label="Resume analyze"
-                        class="rounded px-1.5 text-[11px] leading-none font-semibold text-amber-700 dark:text-amber-400 hover:bg-amber-100/60 dark:hover:bg-amber-950/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Resume</button>
-                <span x-show="$store.pipeline.analyzePaused" x-cloak class="text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">Paused</span>
-            </div>
-        </div>
-
-        {# 3 — Identify (group) #}
-        <div class="mx-2 mt-1.5 rounded-lg border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel px-2 py-1.5 max-lg:mx-0 max-lg:border-transparent max-lg:bg-transparent max-lg:px-0 max-lg:py-0 max-lg:mt-0">
-            <div class="font-jura text-[10px] uppercase tracking-[0.2em] text-gray-500 px-1.5 mb-1 max-lg:hidden">Identify</div>
-
-            {# 3b — Tracklist (idle · live tracklistDone) #}
-            <button type="button"
-                    data-rail-stage="tracklist"
-                    hx-get="/s/tracklist" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-                    title="Tracklist"
-                    {% if stage == 'tracklist' %}aria-current="page"{% endif %}
-                    class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"/></svg>
-                <span class="flex-1 text-sm text-gray-700 dark:text-gray-300 max-lg:sr-only">Tracklist</span>
-                {# phaze-nebh: sweep -- tracklistDone had no title/aria-label either. No tracklistTotal
-                   key exists in the store (shell/shell.html), so this stays a bare DONE count (unambiguous on
-                   its own, unlike the metadata/analyze mix above); label it. #}
-                <span class="font-mono text-xs text-gray-500 max-lg:hidden"
-                      x-text="$store.pipeline.tracklistDone"
-                      :title="$store.pipeline.tracklistDone + ' tracklist files done'"
-                      :aria-label="$store.pipeline.tracklistDone + ' tracklist files done'">0</span>
-            </button>
-        </div>
-
-        {# 4 — Propose (top-level node · idle) #}
-        <button type="button"
-                data-rail-stage="propose"
-                hx-get="/s/propose" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-                title="Propose"
-                {% if stage == 'propose' %}aria-current="page"{% endif %}
-                class="rail-node w-[calc(100%-1rem)] mx-2 mt-1.5 rounded-lg px-3 py-2.5 flex items-center gap-3 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
-            <span class="flex-1 text-sm text-gray-700 dark:text-gray-200 max-lg:sr-only">Propose</span>
-            {# phaze-nebh: sweep -- proposalsTotal is already in the store (shell/shell.html), so render
-               done/total (same self-explanatory form as metadata/analyze) with a matching
-               :title/:aria-label rather than a bare, unlabeled DONE count. #}
-            <span class="font-mono text-xs text-gray-500 max-lg:hidden"
-                  x-text="`${$store.pipeline.proposalsDone} / ${$store.pipeline.proposalsTotal}`"
-                  :title="$store.pipeline.proposalsDone + ' of ' + $store.pipeline.proposalsTotal + ' proposals done'"
-                  :aria-label="$store.pipeline.proposalsDone + ' of ' + $store.pipeline.proposalsTotal + ' proposals done'">0 / 0</span>
-        </button>
-
-        {# 5 — Review & Apply (AMBER group · all items STATIC, no store keys in 57).
-           CUT-04: the former {% for %} is unrolled to explicit buttons so each carries its own
-           distinct heroicons glyph (a single loop body cannot emit per-item SVGs). phaze-vvmh
-           appended a sixth, Execute -- the group's terminal node. #}
-        <div class="mx-2 mt-1.5 rounded-lg border bg-amber-500/[0.06] border-amber-500/25 px-2 py-1.5 max-lg:mx-0 max-lg:border-transparent max-lg:bg-transparent max-lg:px-0 max-lg:py-0 max-lg:mt-0">
-            <div class="font-jura text-[10px] uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400/80 px-1.5 mb-1 max-lg:hidden">Review &amp; Apply</div>
-
-            {# 5a — Rename / Path #}
-            <button type="button"
-                    data-rail-stage="rename"
-                    hx-get="/s/rename" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-                    title="Rename / Path"
-                    {% if stage == 'rename' %}aria-current="page"{% endif %}
-                    class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-amber-500/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10"/></svg>
-                <span class="flex-1 text-sm text-amber-700 dark:text-amber-300 max-lg:sr-only">Rename / Path</span>
-            </button>
-
-            {# 5b — Tag write #}
-            <button type="button"
-                    data-rail-stage="tagwrite"
-                    hx-get="/s/tagwrite" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-                    title="Tag write"
-                    {% if stage == 'tagwrite' %}aria-current="page"{% endif %}
-                    class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-amber-500/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M9.568 3H5.25A2.25 2.25 0 0 0 3 5.25v4.318c0 .597.237 1.17.659 1.591l9.581 9.581c.699.699 1.78.872 2.607.33a18.095 18.095 0 0 0 5.223-5.223c.542-.827.369-1.908-.33-2.607L11.16 3.66A2.25 2.25 0 0 0 9.568 3Z"/><path d="M6 6h.008v.008H6V6Z"/></svg>
-                <span class="flex-1 text-sm text-amber-700 dark:text-amber-300 max-lg:sr-only">Tag write</span>
-            </button>
-
-            {# 5c — Move files #}
-            <button type="button"
-                    data-rail-stage="move"
-                    hx-get="/s/move" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-                    title="Move files"
-                    {% if stage == 'move' %}aria-current="page"{% endif %}
-                    class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-amber-500/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="m9 13.5 3 3m0 0 3-3m-3 3v-6m1.06-4.19-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/></svg>
-                <span class="flex-1 text-sm text-amber-700 dark:text-amber-300 max-lg:sr-only">Move files</span>
-            </button>
-
-            {# 5d — Dedupe #}
-            <button type="button"
-                    data-rail-stage="dedupe"
-                    hx-get="/s/dedupe" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-                    title="Dedupe"
-                    {% if stage == 'dedupe' %}aria-current="page"{% endif %}
-                    class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-amber-500/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 0 0-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 0 1-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 0 0-3.375-3.375h-1.5a1.125 1.125 0 0 1-1.125-1.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H9.75"/></svg>
-                <span class="flex-1 text-sm text-amber-700 dark:text-amber-300 max-lg:sr-only">Dedupe</span>
-            </button>
-
-            {# 5e — Cue sheets #}
-            <button type="button"
-                    data-rail-stage="cue"
-                    hx-get="/s/cue" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-                    title="Cue sheets"
-                    {% if stage == 'cue' %}aria-current="page"{% endif %}
-                    class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-amber-500/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="m9 9 10.5-3m0 6.553v3.75a2.25 2.25 0 0 1-1.632 2.163l-1.32.377a1.803 1.803 0 1 1-.99-3.467l2.31-.66a2.25 2.25 0 0 0 1.632-2.163Zm0 0V2.25L9 5.25v10.303m0 0v3.75a2.25 2.25 0 0 1-1.632 2.163l-1.32.377a1.803 1.803 0 0 1-.99-3.467l2.31-.66A2.25 2.25 0 0 0 9 15.553Z"/></svg>
-                <span class="flex-1 text-sm text-amber-700 dark:text-amber-300 max-lg:sr-only">Cue sheets</span>
-            </button>
-
-            {# 5f — Execute (phaze-vvmh). The group's terminal node and the ONLY in-product trigger for
-               POST /execution/start. Its predecessor lived in proposals/partials/stats_bar.html, which
-               the v7 cutover left renderable ONLY as an OOB fragment aimed at the deleted `#stats-bar`
-               id -- so from that cutover until this node landed, approving proposals was possible and
-               applying them was not, from anywhere in the UI. Wired identically to every navigable
-               node; STATIC label with no count (locked live-vs-static rule -- the approved/pending
-               numbers live in the workspace itself, where they are labelled). heroicons v2 outline
-               "play". #}
-            <button type="button"
-                    data-rail-stage="apply"
-                    hx-get="/s/apply" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-                    title="Execute"
-                    {% if stage == 'apply' %}aria-current="page"{% endif %}
-                    class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-amber-500/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 0 1 0 1.971l-11.54 6.347a1.125 1.125 0 0 1-1.667-.985V5.653Z"/></svg>
-                <span class="flex-1 text-sm text-amber-700 dark:text-amber-300 max-lg:sr-only">Execute</span>
-            </button>
-        </div>
+        <section class="{{ group_class }}" aria-labelledby="nav-operations">
+            <h2 id="nav-operations" class="{{ heading_class }}">Operations</h2>
+            {% call nav_link('operations', 'Routing', 'M4.5 6.75h10.75m0 0-3-3m3 3-3 3m7.25 7.5H8.75m0 0 3 3m-3-3 3-3', 'operations') %}{% endcall %}
+            {% call nav_link('audit', 'Audit log', 'M8.25 3.75h7.5M9 7.5h6M6 3.75h12v16.5H6V3.75Zm3 8.25h6m-6 3h6', 'operations') %}{% endcall %}
+            {% call nav_link('agents', 'Agents & compute lanes', 'M8.25 3v1.5M12 3v1.5M15.75 3v1.5M4.5 8.25H3m18 0h-1.5M6.75 4.5h10.5a2.25 2.25 0 0 1 2.25 2.25v10.5a2.25 2.25 0 0 1-2.25 2.25H6.75a2.25 2.25 0 0 1-2.25-2.25V6.75A2.25 2.25 0 0 1 6.75 4.5Z', 'operations') %}{% endcall %}
+        </section>
     </nav>
-
-    {# Below-the-line — phaze-uvmcr.1: hx-driven UTILITY_PANES nodes (Audit Log, Compute/Agents),
-       wired IDENTICALLY to their /s/ stage siblings above (hx-get/hx-target/hx-swap/hx-push-url,
-       data-rail-stage for syncRailSelection, the {% if stage == '<id>' %}aria-current="page"{%
-       endif %} idiom) EXCEPT for the active-state visual: these are utility panes, not DAG
-       pipeline stages (routers/shell.py's UTILITY_PANES, kept separate from STAGE_PARTIALS), so
-       the active tint here is a neutral gray -- NEVER the aria-[current=page]:bg-blue-500/10 +
-       blue inset-bar treatment the stage buttons use, which would misrepresent these as pipeline
-       nodes. Same collapse treatment as every other node (glyph + max-lg:sr-only label + title;
-       CUT-04 ↔ CUT-01: NEVER max-lg:hidden on the label). #}
-    <div class="mx-2 mt-3 pt-3 border-t border-gray-200 dark:border-phaze-border max-lg:mx-0">
-        <button type="button"
-                data-rail-stage="audit"
-                hx-get="/s/audit" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-                title="Audit log"
-                {% if stage == 'audit' %}aria-current="page"{% endif %}
-                class="rail-node w-full flex items-center gap-2.5 rounded-md px-2.5 py-1.5 font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:text-gray-600 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-gray-200 dark:aria-[current=page]:bg-white/10 aria-[current=page]:text-gray-700 dark:aria-[current=page]:text-gray-300 max-lg:justify-center max-lg:px-0">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 0 0 2.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 0 0-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75 2.25 2.25 0 0 0-.1-.664m-5.8 0A2.251 2.251 0 0 1 13.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25ZM6.75 12h.008v.008H6.75V12Zm0 3h.008v.008H6.75V15Zm0 3h.008v.008H6.75V18Z"/></svg>
-            <span class="max-lg:sr-only">Audit log</span>
-        </button>
-        <button type="button"
-                data-rail-stage="agents"
-                hx-get="/s/agents" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-                title="Compute / agents"
-                {% if stage == 'agents' %}aria-current="page"{% endif %}
-                class="rail-node w-full flex items-center gap-2.5 rounded-md px-2.5 py-1.5 font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:text-gray-600 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-gray-200 dark:aria-[current=page]:bg-white/10 aria-[current=page]:text-gray-700 dark:aria-[current=page]:text-gray-300 max-lg:justify-center max-lg:px-0">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M8.25 3v1.5M4.5 8.25H3m18 0h-1.5M4.5 12H3m18 0h-1.5m-15 3.75H3m18 0h-1.5M8.25 19.5V21M12 3v1.5m0 15V21m3.75-18v1.5m0 15V21m-9-1.5h10.5a2.25 2.25 0 0 0 2.25-2.25V6.75a2.25 2.25 0 0 0-2.25-2.25H6.75A2.25 2.25 0 0 0 4.5 6.75v10.5a2.25 2.25 0 0 0 2.25 2.25Zm.75-12h9v9h-9v-9Z"/></svg>
-            <span class="max-lg:sr-only">Compute / agents</span>
-        </button>
-    </div>
-
 </aside>

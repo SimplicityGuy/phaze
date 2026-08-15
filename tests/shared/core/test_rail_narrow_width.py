@@ -30,6 +30,8 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
+from jinja2 import Environment, FileSystemLoader
+
 
 _RAIL_HTML = Path(__file__).resolve().parents[3] / "src" / "phaze" / "templates" / "shell" / "partials" / "rail.html"
 
@@ -42,7 +44,8 @@ _SPAN_TAG = re.compile(r"<span\b(?P<attrs>[^>]*)>", re.DOTALL)
 
 
 def _rail_source() -> str:
-    return _RAIL_HTML.read_text()
+    env = Environment(loader=FileSystemLoader(str(_RAIL_HTML.parents[2])), autoescape=True)
+    return env.get_template("shell/partials/rail.html").render(stage="summary")
 
 
 def _navigable_node_tags() -> list[str]:
@@ -139,7 +142,7 @@ def test_focus_and_current_preserved() -> None:
     tags = _navigable_node_tags()
     for attrs in tags:
         assert "focus-visible:" in attrs, f"navigable node lost its focus-visible ring: <...{attrs}>"
-    stage_buttons = [attrs for attrs in tags if "data-rail-stage=" in attrs]
-    assert len(stage_buttons) >= 12, f"expected >=12 /s/ stage buttons, found {len(stage_buttons)}"
-    for attrs in stage_buttons:
-        assert 'aria-current="page"' in attrs, f"stage button lost the aria-current='page' idiom: <...{attrs}>"
+    stage_links = [attrs for attrs in tags if "data-rail-stage=" in attrs]
+    assert len(stage_links) >= 14, f"expected >=14 /s/ stage links, found {len(stage_links)}"
+    current = [attrs for attrs in stage_links if 'aria-current="page"' in attrs]
+    assert len(current) == 1, f"rendered rail must expose exactly one current page, found {len(current)}"

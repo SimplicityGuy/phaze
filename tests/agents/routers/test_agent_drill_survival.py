@@ -81,7 +81,7 @@ async def test_agent_row_trigger_markup(smoke: AsyncClient) -> None:
     assert f'hx-vals=\'{{"agent": "{AGENT_ID}"}}\'' in body
     assert 'hx-target="#agents-table-section"' in body
     assert 'hx-swap="outerHTML"' in body
-    assert f"/admin/agents?agent={AGENT_ID}" in body  # hx-push-url carries the ?agent= selection
+    assert f"/s/agents?agent={AGENT_ID}" in body  # canonical hx-push-url carries the ?agent= selection
     # Space activation for a role=button row is not native — the inline onkeydown handler is REQUIRED.
     assert "onkeydown" in body
     # The old side-panel target must be gone from this surface entirely.

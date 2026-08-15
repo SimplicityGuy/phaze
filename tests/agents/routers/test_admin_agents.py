@@ -1367,12 +1367,12 @@ async def test_poll_default_tick_does_not_reset_to_a_different_order(smoke: Asyn
 async def test_drill_in_push_url_keeps_the_sort(smoke: AsyncClient) -> None:
     """Opening a row must not rewrite the URL to a sort-less one.
 
-    The row pushes "/admin/agents?agent=<id>". Without the sort appended, a reload after drilling in
+    The row pushes "/s/agents?agent=<id>". Without the sort appended, a reload after drilling in
     drops the operator back into the default order — the same reset as the poll bug, via a different
     door.
     """
     body = (await smoke.get("/admin/agents/_table", params={"sort": "kind", "order": "desc"})).text
-    assert 'hx-push-url="/admin/agents?agent=alive-agent&amp;sort=kind&amp;order=desc"' in body
+    assert 'hx-push-url="/s/agents?agent=alive-agent&amp;sort=kind&amp;order=desc"' in body
 
 
 @pytest.mark.asyncio
@@ -1559,7 +1559,7 @@ async def test_lane_row_is_a_drill_in_trigger_matching_the_agent_row_pattern(
     assert 'role="button"' in body
     assert """hx-vals='{"clane": "vox"}'""" in body
     assert 'hx-target="#agents-table-section"' in body
-    assert 'hx-push-url="/admin/agents?clane=vox' in body
+    assert 'hx-push-url="/s/agents?clane=vox' in body
 
 
 @pytest.mark.asyncio

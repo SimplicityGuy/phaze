@@ -1,0 +1,9 @@
+<span id="routing-override-warning" {% if oob | default(false) %}hx-swap-oob="true"{% endif %}>
+{% if force_local %}
+<a href="/s/operations" hx-get="/s/operations" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+   role="status" aria-label="Routing override active: forced local"
+   class="font-jura tracking-wider px-3 h-8 flex items-center gap-1.5 rounded-lg border bg-amber-500/15 border-amber-500/40 text-amber-700 dark:text-amber-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+    <span aria-hidden="true">△</span><span>FORCED&nbsp;LOCAL</span>
+</a>
+{% endif %}
+</span>

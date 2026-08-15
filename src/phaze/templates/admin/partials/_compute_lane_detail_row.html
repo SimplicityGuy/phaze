@@ -42,7 +42,7 @@
             this.open = false;
             const el = document.getElementById('compute-lane-activity-{{ row.id }}');
             if (el) el.innerHTML = '';
-            try { history.replaceState({}, '', '/admin/agents?{{ sort.query_params() }}'); } catch (e) { /* history unavailable: degrade */ }
+            try { history.replaceState({}, '', '/s/agents?{{ sort.query_params() }}'); } catch (e) { /* history unavailable: degrade */ }
             document.getElementById('{{ row.trigger_id }}')?.focus();
             this.$el.remove();
         }

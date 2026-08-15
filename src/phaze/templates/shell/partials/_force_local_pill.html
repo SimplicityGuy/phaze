@@ -1,6 +1,6 @@
 {#
-  BEUI-02 force-local master toggle pill (Phase 71, Plan 04). A `role="switch"` button living in the
-  header `ml-auto` status-strip cluster, immediately LEFT of the Agents pill. Two SERVER-RENDERED
+  Force-local routing control. This mutation lives in the Operations workspace; the header only
+  renders a read-only warning while the override is active. Two SERVER-RENDERED
   states from `force_local` (state carried by the WORD label, NEVER hue-only — WCAG 1.4.1):
 
     - normal  (force_local False): neutral pill, `CLOUD ROUTING`,  aria-checked="false"
@@ -39,6 +39,9 @@
     <span>CLOUD&nbsp;ROUTING</span>
     {% endif %}
 </button>
+{% if update_header_warning | default(false) %}
+{% with oob = true %}{% include "shell/partials/_routing_override_warning.html" %}{% endwith %}
+{% endif %}
 {% if toast_message is defined and toast_message %}
 <div hx-swap-oob="beforeend:#toast-container">
     <div class="bg-gray-800 text-white text-sm px-4 py-2 rounded shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg" role="status" aria-live="polite"

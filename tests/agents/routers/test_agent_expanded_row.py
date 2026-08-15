@@ -213,7 +213,7 @@ def _dismiss_component(source: Path) -> str:
 async def test_dismiss_url_rewrite_keeps_sort_and_order(smoke: AsyncClient) -> None:
     """phaze-trof4: hide()'s history.replaceState must keep ?sort=/?order=, not just clear ?agent=.
 
-    A bare '/admin/agents' discards the operator's chosen sort, so a reload/bookmark restore after
+    A bare '/s/agents' discards the operator's chosen sort, so a reload/bookmark restore after
     dismissing the detail row silently snaps the table back to the default last_seen-desc order --
     the same invisible reset the poll-carries-the-sort fix (phaze-a6hm.4) and the drill-in push-url
     fix (test_drill_in_push_url_keeps_the_sort) both close for their own paths. The dismiss path is a
@@ -223,9 +223,9 @@ async def test_dismiss_url_rewrite_keeps_sort_and_order(smoke: AsyncClient) -> N
     start = body.find(f'id="agent-detail-row-{AGENT_ID}"')
     assert start != -1
     row = body[start : body.find("</tr>", start)]
-    assert "history.replaceState({}, '', '/admin/agents?sort=queue&amp;order=desc')" in row
+    assert "history.replaceState({}, '', '/s/agents?sort=queue&amp;order=desc')" in row
     # And the bare, sort-dropping form the bug produced must be gone.
-    assert "history.replaceState({}, '', '/admin/agents')" not in row
+    assert "history.replaceState({}, '', '/s/agents')" not in row
 
 
 @pytest.mark.asyncio
@@ -235,7 +235,7 @@ async def test_dismiss_url_rewrite_keeps_the_default_sort_too(smoke: AsyncClient
     start = body.find(f'id="agent-detail-row-{AGENT_ID}"')
     assert start != -1
     row = body[start : body.find("</tr>", start)]
-    assert "history.replaceState({}, '', '/admin/agents?sort=last_seen&amp;order=desc')" in row
+    assert "history.replaceState({}, '', '/s/agents?sort=last_seen&amp;order=desc')" in row
 
 
 @pytest.mark.asyncio
@@ -289,8 +289,8 @@ async def test_compute_lane_dismiss_url_rewrite_keeps_sort_and_order(
     start = body.find('id="compute-lane-detail-row-vox"')
     assert start != -1
     row = body[start : body.find("</tr>", start) + len("</tr>")]
-    assert "history.replaceState({}, '', '/admin/agents?sort=name&amp;order=asc')" in row
-    assert "history.replaceState({}, '', '/admin/agents')" not in row
+    assert "history.replaceState({}, '', '/s/agents?sort=name&amp;order=asc')" in row
+    assert "history.replaceState({}, '', '/s/agents')" not in row
     assert "this.$el.remove()" in row, "hide() must remove the row node, not only set open = false"
 
 
@@ -298,7 +298,7 @@ async def test_compute_lane_dismiss_url_rewrite_keeps_sort_and_order(
 async def test_agent_detail_row_hide_component_source_contract() -> None:
     """Source-level pin: both fixes hold in _agent_detail_row.html even outside a rendered request."""
     component = _dismiss_component(_DETAIL_ROW)
-    assert re.search(r"history\.replaceState\(\{\}, '', '/admin/agents\?\{\{\s*sort\.query_params\(\)\s*\}\}'\)", component)
+    assert re.search(r"history\.replaceState\(\{\}, '', '/s/agents\?\{\{\s*sort\.query_params\(\)\s*\}\}'\)", component)
     assert "this.$el.remove()" in component
 
 
@@ -306,5 +306,5 @@ async def test_agent_detail_row_hide_component_source_contract() -> None:
 async def test_compute_lane_detail_row_hide_component_source_contract() -> None:
     """Source-level pin: both fixes hold in _compute_lane_detail_row.html too (mirrors the agent row)."""
     component = _dismiss_component(_COMPUTE_LANE_DETAIL_ROW)
-    assert re.search(r"history\.replaceState\(\{\}, '', '/admin/agents\?\{\{\s*sort\.query_params\(\)\s*\}\}'\)", component)
+    assert re.search(r"history\.replaceState\(\{\}, '', '/s/agents\?\{\{\s*sort\.query_params\(\)\s*\}\}'\)", component)
     assert "this.$el.remove()" in component

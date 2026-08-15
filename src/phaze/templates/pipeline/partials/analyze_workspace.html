@@ -87,6 +87,14 @@
        ready). A SIBLING of the RUN ANALYSIS button, never its ancestor (phaze-thd6 shape) -- see
        metadata_workspace.html / apply_workspace.html for the same pattern. #}
     <div id="analyze-trigger-response" class="px-6 pt-4 empty:hidden"></div>
+    <div class="px-6 pt-4 flex flex-wrap items-center gap-1" role="group" aria-label="Analyze priority controls">
+        <span class="mr-1 text-[11px] text-gray-500 dark:text-gray-400"
+              x-text="'Priority: ' + ($store.pipeline.analyzePriority < 50 ? 'High' : ($store.pipeline.analyzePriority > 50 ? 'Low' : 'Normal')) + ' (' + $store.pipeline.analyzePriority + ')'">Priority: Normal (50)</span>
+        <button type="button" hx-post="/pipeline/stages/analyze/priority" hx-vals='{"delta": -10}' hx-swap="none"
+                aria-label="Raise analyze priority" title="Higher priority runs sooner (lowers the queue number)." class="{{ _btn }} px-2">▲</button>
+        <button type="button" hx-post="/pipeline/stages/analyze/priority" hx-vals='{"delta": 10}' hx-swap="none"
+                aria-label="Lower analyze priority" title="Lower priority runs later (raises the queue number)." class="{{ _btn }} px-2">▼</button>
+    </div>
     {# phaze-5c6i2 (acceptance rule 2): the global TOTAL QUEUED (analyze) figure, ABOVE the per-lane
        grid -- one global number that accounts for files not yet routed to any lane, complementing the
        per-lane queued/working/processed breakdown below. NO `oob` here -> the initial full-page render;

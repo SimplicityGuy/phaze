@@ -32,10 +32,10 @@
    tags), and it includes _workspace_poll_seeds.html so the shell's one persistent /pipeline/stats
    poll has landing targets here too, exactly like every other UTILITY_PANES/STAGE_PARTIALS host. #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
-{% call ws.workspace(title="COMPUTE / AGENTS") %}
+{% call ws.workspace(title="AGENTS & COMPUTE LANES") %}
     <div class="px-6 pt-4">
         <p class="text-sm text-gray-500 dark:text-gray-400">
-            Live status of every heartbeating file-server agent and every ephemeral k8s burst lane, in one table. Refreshes every 5 seconds.
+            Live status of every heartbeating file-server agent and configured compute lane, in one table. Refreshes every 5 seconds.
         </p>
     </div>
     <div class="p-6">

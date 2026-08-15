@@ -34,6 +34,18 @@
     <span id="metadata-trigger-spinner" class="htmx-indicator text-xs text-gray-500 dark:text-gray-400">Enqueuing…</span>
 {% endset %}
 {% call ws.workspace(title="METADATA", subcount=subcount, actions=actions) %}
+    <div class="px-6 pt-4 flex flex-wrap items-center gap-1" role="group" aria-label="Metadata priority and pause controls">
+        <span class="mr-1 text-[11px] text-gray-500 dark:text-gray-400"
+              x-text="'Priority: ' + ($store.pipeline.metadataPriority < 50 ? 'High' : ($store.pipeline.metadataPriority > 50 ? 'Low' : 'Normal')) + ' (' + $store.pipeline.metadataPriority + ')'">Priority: Normal (50)</span>
+        <button type="button" hx-post="/pipeline/stages/metadata/priority" hx-vals='{"delta": -10}' hx-swap="none"
+                aria-label="Raise metadata priority" title="Higher priority runs sooner (lowers the queue number)." class="{{ _btn }} px-2">▲</button>
+        <button type="button" hx-post="/pipeline/stages/metadata/priority" hx-vals='{"delta": 10}' hx-swap="none"
+                aria-label="Lower metadata priority" title="Lower priority runs later (raises the queue number)." class="{{ _btn }} px-2">▼</button>
+        <button type="button" x-show="!$store.pipeline.metadataPaused" hx-post="/pipeline/stages/metadata/pause" hx-swap="none"
+                :disabled="$store.pipeline.metadataBusy === 0" aria-label="Pause metadata" class="{{ _btn }}">PAUSE</button>
+        <button type="button" x-show="$store.pipeline.metadataPaused" x-cloak hx-post="/pipeline/stages/metadata/resume" hx-swap="none"
+                aria-label="Resume metadata" class="{{ _btn }}">RESUME</button>
+    </div>
     {# Trigger response lands here (trigger_response.html branches: no_active_agent / count>0 / none ready). #}
     <div id="metadata-trigger-response" class="px-6 pt-4 empty:hidden"></div>
     <div class="p-6">
