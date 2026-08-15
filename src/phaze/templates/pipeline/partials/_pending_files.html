@@ -17,6 +17,7 @@
                         "metadata" is the only stage today; the branch below is the per-stage seam.
      * host_id       -- the id of the host div this fragment is swapped into (hx-target for the pager).
 #}
+{% import "ui/primitives.html" as ui %}
 {% set _is_metadata = stage == "metadata" %}
 {% if _is_metadata %}
     {% set columns = ["File", "Format", "Size", "Existing tags"] %}
@@ -49,7 +50,11 @@
         {% endif %}
     {% endfor %}
     {% set rows = ns.rows %}
-    {% include "pipeline/partials/_file_table.html" %}
+    {% if _is_metadata and not rows %}
+        {{ ui.state('empty', empty_heading, 'The metadata queue is idle. Recent completion and throughput context remain available above.') }}
+    {% else %}
+        {% include "pipeline/partials/_file_table.html" %}
+    {% endif %}
 
     {% if pending_page.show_pager %}
     {# Prev/Next only -- NO "page X of Y", because that needs the whole-corpus COUNT the paging

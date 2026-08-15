@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 import time
@@ -46,7 +47,6 @@ from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
-    from datetime import datetime
     import uuid
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -899,17 +899,13 @@ async def get_stage_controls(session: AsyncSession) -> dict[str, dict[str, int |
         return {s: dict(v) for s, v in _DEFAULT_CONTROLS.items()}
 
 
-# Per-stage in-flight gate (Phase 38 follow-up, t7k FIX2). ``saq_jobs`` has NO ``function`` column;
-# the deterministic key is ``<function>:<file_id>`` (Phase 35), so the per-stage in-flight count is
-# bucketed by the key's function prefix. Static SQL with NO interpolated operator input — the only
-# literals are ``split_part`` and the ``status`` allowlist (T-t7k-01, mirroring the Phase-37
-# stage_control discipline). One grouped scan covers all three agent stages.
-_STAGE_BUSY_SQL = text("SELECT split_part(key, ':', 1) AS fn, COUNT(*) AS n FROM saq_jobs WHERE status IN ('queued', 'active') GROUP BY fn")
-
 # Registered-function-name -> stage label (the inverse of STAGE_TO_FUNCTION), built locally so the
 # bucket loop maps each saq_jobs key prefix back to its agent stage; non-stage functions
 # (generate_proposals, scan_directory, ...) are absent here and therefore ignored.
 _BUSY_FUNCTION_TO_STAGE: dict[str, str] = {fn: stage for stage, fn in STAGE_TO_FUNCTION.items()}
+
+# Combined queue activity remains shared by controller-stage busy readers below.
+_STAGE_BUSY_SQL = text("SELECT split_part(key, ':', 1) AS fn, COUNT(*) AS n FROM saq_jobs WHERE status IN ('queued', 'active') GROUP BY fn")
 
 
 async def get_stage_busy_counts(session: AsyncSession) -> dict[str, int]:
@@ -933,18 +929,56 @@ async def get_stage_busy_counts(session: AsyncSession) -> dict[str, int]:
     lazy load) and WITHOUT poisoning later queries. The function then logs a warning and returns
     all-zeros -- it NEVER raises into the hot 5s /pipeline/stats poll.
     """
-    out: dict[str, int] = {"metadata": 0, "analyze": 0}
+    activity = await get_stage_activity_counts(session)
+    return {stage: counts["queued"] + counts["active"] for stage, counts in activity.items()}
+
+
+_STAGE_ACTIVITY_SQL = text(
+    "SELECT split_part(key, ':', 1) AS fn, status, COUNT(*) AS n FROM saq_jobs WHERE status IN ('queued', 'active') GROUP BY fn, status"
+)
+
+
+async def get_stage_activity_counts(session: AsyncSession) -> dict[str, dict[str, int]]:
+    """Return queued and active job counts for each agent stage, degrade-safe."""
+    out = {
+        "metadata": {"queued": 0, "active": 0},
+        "analyze": {"queued": 0, "active": 0},
+    }
     try:
         async with session.begin_nested():
-            rows = (await session.execute(_STAGE_BUSY_SQL)).all()
+            rows = (await session.execute(_STAGE_ACTIVITY_SQL)).all()
     except Exception:
-        logger.warning("stage_busy_degraded", exc_info=True)
+        logger.warning("stage_activity_degraded", exc_info=True)
         return out
-    for row in rows:
-        stage = _BUSY_FUNCTION_TO_STAGE.get(row[0])
+    for function_name, status, count in rows:
+        stage = _BUSY_FUNCTION_TO_STAGE.get(function_name)
         if stage is not None:
-            out[stage] = int(row[1])
+            out[stage][status] = int(count)
     return out
+
+
+@dataclass(frozen=True)
+class MetadataActivitySummary:
+    """Bounded completion context for the Metadata workspace."""
+
+    completed_24h: int = 0
+    latest_completed_at: datetime | None = None
+
+
+async def get_metadata_activity_summary(session: AsyncSession) -> MetadataActivitySummary:
+    """Return recent successful metadata throughput, degrading to an empty summary."""
+    cutoff = datetime.now(UTC) - timedelta(hours=24)
+    stmt = select(
+        func.count(FileMetadata.id).filter(FileMetadata.failed_at.is_(None), FileMetadata.updated_at >= cutoff),
+        func.max(FileMetadata.updated_at).filter(FileMetadata.failed_at.is_(None)),
+    )
+    try:
+        async with session.begin_nested():
+            completed_24h, latest_completed_at = (await session.execute(stmt)).one()
+    except Exception:
+        logger.warning("metadata_activity_summary_degraded", exc_info=True)
+        return MetadataActivitySummary()
+    return MetadataActivitySummary(completed_24h=int(completed_24h or 0), latest_completed_at=latest_completed_at)
 
 
 # Live-broker key set (Phase 45). ``saq_jobs`` is SAQ-owned -- this is a READ-ONLY probe of the

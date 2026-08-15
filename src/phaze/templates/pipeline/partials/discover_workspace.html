@@ -1,73 +1,64 @@
-{# Phase 58 (58-02, WORK-01): the Discover stage workspace.
-
-   Content-only fragment swapped into #stage-workspace. Composes the shared scaffold
-   (_workspace_scaffold.html) -> one <h1 tabindex="-1"> focus target + a live sub-count bound
-   to $store.pipeline (refreshed by the SINGLE chrome poll -- no second loop, WORK-05/R-2) +
-   a secondary-style action row + the body. The OOB seed-target host rides in via the scaffold.
-
-   Body = the EXISTING recent-scans data (build_recent_scans, loaded by shell._render_stage)
-   rendered through recent_scans_table.html.
-
-   phaze-8f9j: this header used to read "We do NOT reuse recent_scans_table.html directly because it
-   self-polls -- that would be a second poll loop (A3 / Pitfall 4 / T-58-POLL)". The poll concern was
-   real; the conclusion drawn from it was not. Substituting the text-only _file_table.html left
-   `id="recent-scans"` unmounted in every served document, which silently killed the per-row delete
-   control (the sole caller of DELETE /pipeline/scans/{id}), the failed-row error_message, the PR4
-   stall indicator and the sortable-header contract. The poll is now opt-out (`scans_poll=False`,
-   propagated as `poll=0` through the sort URLs and the delete URL), so the workspace gets the whole
-   table and still starts no second loop.
-
-   Actions (UI-SPEC Copywriting): SCAN (reveals the reused Trigger Scan form -> POST /pipeline/scans)
-   and RECOVER (POST /pipeline/recover, the existing Phase-42 gated all-stages recovery). RECOVER
-   carries the R-4 bulk-enqueue guard: hx-confirm + a :disabled busy-gate.
-#}
+{# Discover keeps scan/recovery endpoint contracts intact while applying the shared page hierarchy. #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% import "ui/primitives.html" as ui %}
 {% set last_scan_when = recent_scans[0].created_at.strftime('%Y-%m-%d %H:%M') if recent_scans and recent_scans[0].created_at else 'never' %}
 {% set subcount = '`${$store.pipeline.discovered} files · last scan ' ~ last_scan_when ~ ' · ${$store.pipeline.notYetEnriched} not yet enriched`' %}
-{% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
-{% set actions %}
-    <button type="button" @click="scanOpen = !scanOpen" :aria-expanded="scanOpen" aria-controls="discover-scan-form" class="{{ _btn }}">SCAN</button>
-    {# R-4 bulk-enqueue guard: hx-confirm + :disabled busy-gate (don't force recovery while agents churn).
+{% set _secondary = 'inline-flex h-9 items-center justify-center rounded-lg border border-gray-300 bg-white px-3 font-jura text-xs font-medium uppercase tracking-wider text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-300 dark:hover:bg-white/5' %}
+{% set _recover = 'inline-flex h-9 items-center justify-center rounded-lg border border-amber-400 px-3 font-jura text-xs font-medium uppercase tracking-wider text-amber-800 hover:bg-amber-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950' %}
 
-       phaze-thd6: this wrapper carries NO id and is NOT the swap target. It used to BE
-       `#discover-recover-response`, so the success swap (innerHTML into the wrapper) destroyed the
-       RECOVER button, its `#discover-recover-spinner` indicator and the x-show error hint — every
-       one of them a descendant of the element the response replaced. POST /pipeline/recover returns
-       200 unconditionally (it fire-and-forgets the background task), so that was the NORMAL path,
-       not an edge case, and the control only survived when the request FAILED (htmx 2 does not swap
-       non-2xx). The response now lands in a sibling sink in the body, matching the
-       `#<stage>-trigger-response` pattern every other workspace uses (metadata, fingerprint,
-       propose, rename, tagwrite, dedupe). #}
-    <span class="inline-flex items-center gap-2" x-data="{ error: false }" @htmx:after-request="error = !$event.detail.successful">
-        <button type="button"
-                hx-post="/pipeline/recover" hx-target="#discover-recover-response" hx-swap="innerHTML"
-                hx-confirm="Re-enqueue orphaned work across all pipeline stages?"
-                hx-indicator="#discover-recover-spinner"
-                @click="error = false"
-                :disabled="$store.pipeline.agentBusy > 0"
-                aria-label="Recover orphaned work across all pipeline stages"
-                class="{{ _btn }}">RECOVER</button>
-        <span id="discover-recover-spinner" class="htmx-indicator text-xs text-gray-500 dark:text-gray-400">Recovering…</span>
-        <span x-show="error" class="text-xs text-rose-600 dark:text-rose-400">Couldn't recover. Retry.</span>
-    </span>
-{% endset %}
-{% call ws.workspace(title="DISCOVER", subcount=subcount, actions=actions, x_data="{ scanOpen: false }") %}
-    {# RECOVER's response sink (phaze-thd6). Deliberately a SIBLING of the button, never an ancestor
-       of it — recover_response.html is swapped in here with innerHTML, so anything inside this div
-       is disposable and the control in the header survives every recovery. #}
-    <div id="discover-recover-response" class="px-6 pt-4 text-sm empty:hidden" aria-live="polite"></div>
-    {# Reused Trigger Scan form (POST /pipeline/scans), revealed by SCAN. Hidden by default. #}
-    <div id="discover-scan-form" x-show="scanOpen" x-cloak class="border-b border-gray-200 p-6 dark:border-phaze-border">
-        {% include "pipeline/partials/trigger_scan_card.html" %}
-    </div>
-    {# Recent scans (phaze-8f9j): the REAL recent_scans_table.html, mounted with its self-poll
-       switched off (shell._render_stage passes scans_poll=False and threads poll=0 through the
-       sort contract). This used to be a hand-rolled _file_table.html projection, whose cell
-       contract is text-only -- no Actions column, no failed-row error sub-row. The consequence was
-       not just a thinner table: `id="recent-scans"` then existed in NO served document, so
-       DELETE /pipeline/scans/{id} had no caller anywhere in the app, the failed-row error_message
-       was unreadable after a reload, and the whole sortable-header contract was dead markup. #}
-    <div class="p-6">
+{% call ws.workspace(title="DISCOVER", subcount=subcount) %}
+    <div class="space-y-6 p-4 sm:p-6">
+        <section aria-labelledby="scan-files-heading">
+            <div class="mb-3">
+                <h2 id="scan-files-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-900 dark:text-gray-100">SCAN FILES</h2>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Choose the agent and directory below. These routine settings stay visible so a scan can start without opening another panel.</p>
+            </div>
+            {% include "pipeline/partials/trigger_scan_card.html" %}
+        </section>
+
+        <section aria-labelledby="recovery-heading" class="border-t border-gray-200 pt-5 dark:border-phaze-border">
+            <div class="mb-3">
+                <h2 id="recovery-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-900 dark:text-gray-100">EXCEPTIONAL RECOVERY</h2>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Recovery re-enqueues scheduled work that no queue or agent is currently processing. It is not required for routine scans.</p>
+            </div>
+            <div x-show="$store.pipeline.metadataOrphan + $store.pipeline.analyzeOrphan > 0" x-cloak>
+                {% call ui.actionable_alert('Orphaned work detected', 'Metadata or analysis work was scheduled but is no longer present in a live queue. Recover replays only that orphaned ledger work; already-running jobs remain deduplicated.', 'attention') %}
+                    <span class="inline-flex flex-wrap items-center gap-2" x-data="{ error: false }" @htmx:after-request="error = !$event.detail.successful">
+                        <button type="button"
+                                hx-post="/pipeline/recover" hx-target="#discover-recover-response" hx-swap="innerHTML"
+                                hx-confirm="Re-enqueue orphaned work across all pipeline stages?"
+                                hx-indicator="#discover-recover-spinner"
+                                @click="error = false"
+                                :disabled="$store.pipeline.agentBusy > 0"
+                                aria-describedby="recover-gate-copy"
+                                class="{{ _recover }}">Recover orphaned work</button>
+                        <span id="discover-recover-spinner" class="htmx-indicator text-xs">Recovering…</span>
+                        <span x-show="error" class="text-xs text-red-700 dark:text-red-300">Recovery could not start. Retry.</span>
+                    </span>
+                    <span id="recover-gate-copy" x-show="$store.pipeline.agentBusy > 0" class="text-xs">Recovery is gated while agent jobs are active. Wait for the active queue to settle.</span>
+                {% endcall %}
+            </div>
+            <details x-show="$store.pipeline.metadataOrphan + $store.pipeline.analyzeOrphan === 0" class="rounded-lg border border-gray-200 bg-gray-50 dark:border-phaze-border dark:bg-phaze-panel">
+                <summary class="cursor-pointer px-4 py-3 text-sm font-semibold text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-gray-300">No orphaned enrich work detected</summary>
+                <div class="border-t border-gray-200 p-4 dark:border-phaze-border">
+                    <p class="text-sm text-gray-500 dark:text-gray-400">Use recovery only after diagnostics identify lost scheduled work. Active jobs disable the action to avoid competing with normal queue processing.</p>
+                    <span class="mt-3 inline-flex flex-wrap items-center gap-2" x-data="{ error: false }" @htmx:after-request="error = !$event.detail.successful">
+                        <button type="button"
+                                hx-post="/pipeline/recover" hx-target="#discover-recover-response" hx-swap="innerHTML"
+                                hx-confirm="No orphaned enrich work is currently reported. Run recovery across all pipeline stages anyway?"
+                                hx-indicator="#discover-recover-spinner-idle"
+                                @click="error = false"
+                                :disabled="$store.pipeline.agentBusy > 0"
+                                class="{{ _secondary }}">Run recovery check</button>
+                        <span id="discover-recover-spinner-idle" class="htmx-indicator text-xs text-gray-500 dark:text-gray-400">Recovering…</span>
+                        <span x-show="error" class="text-xs text-red-700 dark:text-red-400">Recovery could not start. Retry.</span>
+                    </span>
+                    <p x-show="$store.pipeline.agentBusy > 0" class="mt-2 text-xs text-amber-700 dark:text-amber-400">Unavailable while agent jobs are active.</p>
+                </div>
+            </details>
+            <div id="discover-recover-response" class="mt-3 text-sm empty:hidden" aria-live="polite"></div>
+        </section>
+
         {% include "pipeline/partials/recent_scans_table.html" %}
     </div>
 {% endcall %}

@@ -41,6 +41,7 @@ from phaze.services.pipeline import (
     get_global_reconciliation,
     get_match_busy_count,
     get_match_pending_tracklists,
+    get_metadata_activity_summary,
     get_metadata_pending_files,
     get_proposal_busy_count,
     get_proposal_pending_batches,
@@ -48,6 +49,7 @@ from phaze.services.pipeline import (
     get_pushing_count,
     get_queue_activity,
     get_scanned_total,
+    get_stage_activity_counts,
     get_stage_busy_counts,
     get_stage_progress,
     get_untracked_files,
@@ -461,14 +463,14 @@ async def test_get_stage_busy_counts_buckets_by_function_prefix() -> None:
     """
 
     class _FakeResult:
-        def __init__(self, rows: list[tuple[str, int]]) -> None:
+        def __init__(self, rows: list[tuple[str, str, int]]) -> None:
             self._rows = rows
 
-        def all(self) -> list[tuple[str, int]]:
+        def all(self) -> list[tuple[str, str, int]]:
             return self._rows
 
     class _FakeSession:
-        def __init__(self, rows: list[tuple[str, int]]) -> None:
+        def __init__(self, rows: list[tuple[str, str, int]]) -> None:
             self._rows = rows
 
         def begin_nested(self) -> _NullSavepoint:
@@ -478,13 +480,65 @@ async def test_get_stage_busy_counts_buckets_by_function_prefix() -> None:
             return _FakeResult(self._rows)
 
     rows = [
-        ("extract_file_metadata", 4),
-        ("process_file", 2),
-        ("generate_proposals", 9),  # not an agent stage → ignored
-        ("scan_directory", 3),  # not an agent stage → ignored
+        ("extract_file_metadata", "queued", 3),
+        ("extract_file_metadata", "active", 1),
+        ("process_file", "active", 2),
+        ("generate_proposals", "queued", 9),  # not an agent stage → ignored
+        ("scan_directory", "active", 3),  # not an agent stage → ignored
     ]
     counts = await get_stage_busy_counts(_FakeSession(rows))  # type: ignore[arg-type]
     assert counts == {"metadata": 4, "analyze": 2}
+
+
+@pytest.mark.asyncio
+async def test_get_stage_activity_counts_separates_queued_and_active() -> None:
+    """The workspace can explain waiting and running jobs without changing the combined gate."""
+
+    class _FakeResult:
+        def all(self) -> list[tuple[str, str, int]]:
+            return [
+                ("extract_file_metadata", "queued", 4),
+                ("extract_file_metadata", "active", 2),
+                ("process_file", "active", 3),
+                ("generate_proposals", "queued", 8),
+            ]
+
+    class _FakeSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> _FakeResult:
+            return _FakeResult()
+
+    counts = await get_stage_activity_counts(_FakeSession())  # type: ignore[arg-type]
+
+    assert counts == {
+        "metadata": {"queued": 4, "active": 2},
+        "analyze": {"queued": 0, "active": 3},
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_metadata_activity_summary_reports_recent_successes(session: AsyncSession) -> None:
+    recent = FileRecord(
+        agent_id="test-fileserver",
+        sha256_hash="a" * 64,
+        original_path="/test/music/recent.mp3",
+        original_filename="recent.mp3",
+        current_path="/test/music/recent.mp3",
+        file_type="mp3",
+        file_size=1,
+    )
+    session.add(recent)
+    await session.flush()
+    completed_at = datetime.now(UTC) - timedelta(hours=2)
+    session.add(FileMetadata(file_id=recent.id, failed_at=None, updated_at=completed_at))
+    await session.flush()
+
+    summary = await get_metadata_activity_summary(session)
+
+    assert summary.completed_24h == 1
+    assert summary.latest_completed_at == completed_at
 
 
 @pytest.mark.asyncio
