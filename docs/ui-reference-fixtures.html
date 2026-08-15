@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phaze UI reference fixtures</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&amp;family=Jura:wght@300;500&amp;display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --accent: #00b0d8;
+      --accent-soft: #1abbdb;
+      --bg: #0a0c12;
+      --panel: #10141c;
+      --border: #232832;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --quiet: #6b7280;
+      --amber: #fbbf24;
+      --amber-bg: #2b1d08;
+      --green: #34d399;
+      --green-bg: #052e25;
+      --red: #f87171;
+      --red-bg: #360b12;
+      --rose: #fda4af;
+      --violet: #c4b5fd;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #06080d;
+      color: var(--text);
+      font: 14px/1.45 Inter, sans-serif;
+    }
+    button { font: inherit; }
+    code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .jura {
+      font-family: Jura, sans-serif;
+      font-weight: 500;
+      letter-spacing: .15em;
+      text-transform: uppercase;
+    }
+    .fixture-page { max-width: 1440px; margin: 0 auto; padding: 32px; }
+    .fixture-intro { display: flex; justify-content: space-between; gap: 24px; align-items: end; margin-bottom: 24px; }
+    .fixture-intro h1 { margin: 0; font-size: 24px; letter-spacing: .2em; }
+    .fixture-intro p { max-width: 720px; margin: 8px 0 0; color: var(--muted); }
+    .privacy { color: var(--green); font-size: 12px; }
+    .fixture-label {
+      margin: 28px 0 8px;
+      color: var(--accent-soft);
+      font: 500 11px Jura, sans-serif;
+      letter-spacing: .25em;
+      text-transform: uppercase;
+    }
+    .frame { overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); box-shadow: 0 24px 80px #0008; }
+    .header { height: 56px; display: flex; align-items: center; gap: 16px; padding: 0 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+    .brand { display: flex; align-items: center; gap: 8px; flex: none; }
+    .brand span { font-size: 14px; letter-spacing: .25em; }
+    .search { display: flex; align-items: center; gap: 9px; width: 390px; height: 36px; padding: 0 14px; color: var(--quiet); border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+    .search svg { width: 16px; }
+    .search kbd { margin-left: auto; padding: 1px 6px; border-radius: 4px; background: var(--border); color: var(--muted); }
+    .agent { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+    .dot { width: 8px; height: 8px; border-radius: 99px; background: var(--green); }
+    .outline-button, .small-button {
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    .outline-button { height: 32px; padding: 0 12px; }
+    .theme-icon { display: grid; width: 36px; height: 36px; place-items: center; color: var(--muted); }
+    .theme-icon svg { width: 20px; }
+    .shell-body { display: grid; grid-template-columns: 280px minmax(0, 1fr); min-height: 700px; }
+    .rail { padding: 16px 8px; border-right: 1px solid var(--border); background: var(--panel); }
+    .rail-title { margin: 0 12px 10px; color: var(--accent-soft); font-size: 11px; letter-spacing: .25em; }
+    .rail-group { margin-top: 8px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; }
+    .rail-group.amber { border-color: #784b19; background: #f59e0b0d; }
+    .group-title { margin: 0 4px 6px; color: var(--quiet); font-size: 10px; letter-spacing: .2em; }
+    .rail-group.amber .group-title { color: var(--amber); }
+    .rail-item { display: flex; align-items: center; gap: 10px; min-height: 34px; margin: 2px 0; padding: 6px 10px; border-radius: 6px; color: #d1d5db; }
+    .rail-item svg { width: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    .rail-item.active { color: var(--accent-soft); background: #00b0d81a; box-shadow: inset 3px 0 var(--accent); }
+    .rail-count { margin-left: auto; color: var(--quiet); font-size: 11px; }
+    .rail-group.amber .rail-count { color: var(--amber); }
+    .workspace { min-width: 0; }
+    .workspace-head { display: flex; align-items: start; justify-content: space-between; gap: 16px; padding: 16px 24px; border-bottom: 1px solid var(--border); }
+    .workspace-head h2 { margin: 0; font-size: 18px; }
+    .workspace-head p { margin: 4px 0 0; color: var(--muted); }
+    .actions { display: flex; gap: 8px; }
+    .small-button { height: 36px; padding: 0 12px; font: 500 12px Jura, sans-serif; letter-spacing: .1em; text-transform: uppercase; }
+    .focus-demo { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .workspace-content { padding: 24px; }
+    .section-heading { margin: 0 0 12px; font-size: 16px; }
+    .lanes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .card { padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+    .card-top { display: flex; justify-content: space-between; gap: 12px; }
+    .card-title { font-weight: 600; }
+    .rank { color: var(--quiet); font-size: 11px; }
+    .metric { margin: 14px 0 4px; font-size: 24px; font-weight: 600; }
+    .caption { color: var(--muted); font-size: 12px; }
+    .bar { height: 6px; margin-top: 12px; overflow: hidden; border-radius: 99px; background: var(--border); }
+    .bar span { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+    .amber-text { color: var(--amber); }
+    .amber-bar span { background: var(--amber); }
+    .table-wrap { margin-top: 24px; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; text-align: left; white-space: nowrap; }
+    th { padding: 10px 16px; color: var(--quiet); background: var(--panel); font: 500 11px Jura, sans-serif; letter-spacing: .2em; text-transform: uppercase; }
+    td { padding: 12px 16px; border-top: 1px solid var(--border); }
+    td:first-child { font-size: 12px; }
+    .pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 99px; font-size: 12px; font-weight: 600; }
+    .done { color: #86efac; background: #052e16; }
+    .flight { color: #67e8f9; background: #083344; }
+    .failed { color: var(--red); background: var(--red-bg); }
+    .skipped { color: var(--violet); background: #2e1065; box-shadow: inset 0 0 0 1px #a78bfa99; }
+    .idle { color: var(--muted); background: #1f2937; }
+    .reference-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .state { min-height: 250px; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); }
+    .state-head { padding: 12px 16px; border-bottom: 1px solid var(--border); color: var(--accent-soft); background: var(--panel); font: 500 11px Jura, sans-serif; letter-spacing: .2em; text-transform: uppercase; }
+    .state-body { padding: 20px; }
+    .diff-row { padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+    .diff-top { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+    .diff-actions { display: flex; gap: 6px; }
+    .action { height: 28px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--panel); font: 500 11px Jura, sans-serif; letter-spacing: .08em; }
+    .approve { border-color: transparent; background: #059669; color: white; }
+    .diff { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; margin-top: 12px; font-size: 12px; }
+    .diff code { overflow: hidden; padding: 5px 8px; border-radius: 4px; text-overflow: ellipsis; white-space: nowrap; }
+    .before { color: var(--rose); background: #4c051933; text-decoration: line-through; }
+    .after { color: #6ee7b7; background: #064e3b55; }
+    .empty { display: grid; min-height: 210px; place-items: center; text-align: center; }
+    .empty h3 { margin: 12px 0 8px; font-size: 20px; letter-spacing: .2em; }
+    .empty p { max-width: 440px; margin: 0; color: var(--muted); }
+    .alert { padding: 16px; border: 1px solid #b7791f; border-radius: 8px; background: var(--amber-bg); }
+    .alert h3 { margin: 0 0 4px; color: #fcd34d; font-size: 16px; }
+    .alert p { margin: 0; color: #fbbf24; }
+    .health { border: 1px solid var(--border); border-radius: 8px; }
+    .health h3 { margin: 0; padding: 14px 16px; font-size: 16px; }
+    .health-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 0 16px 16px; }
+    .health-tile { padding: 16px; border-radius: 8px; text-align: center; }
+    .health-tile strong { display: block; font-size: 24px; }
+    .health-tile span { display: block; font-size: 12px; }
+    .warning-tile { color: var(--amber); background: var(--amber-bg); }
+    .error-tile { color: var(--red); background: var(--red-bg); }
+    .retry { margin-top: 10px; padding: 6px 10px; border: 0; border-radius: 6px; color: white; background: #dc2626; font-weight: 600; }
+    .theme-pair { display: grid; grid-template-columns: 1fr 1fr; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; }
+    .theme-sample { padding: 20px; }
+    .theme-sample h3 { margin: 0 0 12px; font-size: 14px; }
+    .theme-dark { background: var(--bg); color: var(--text); }
+    .theme-light { background: white; color: #111827; }
+    .theme-card { padding: 14px; border: 1px solid; border-radius: 8px; }
+    .theme-dark .theme-card { border-color: var(--border); background: var(--panel); }
+    .theme-light .theme-card { border-color: #e5e7eb; background: #f9fafb; }
+    .swatches { display: flex; gap: 8px; margin-top: 12px; }
+    .swatch { width: 32px; height: 32px; border: 1px solid #ffffff33; border-radius: 6px; }
+    .fixture-note { margin: 24px 0 0; color: var(--quiet); font-size: 12px; }
+    @media (max-width: 900px) {
+      .fixture-page { padding: 16px; }
+      .fixture-intro { display: block; }
+      .privacy { margin-top: 12px; }
+      .shell-body { grid-template-columns: 64px minmax(620px, 1fr); }
+      .frame { overflow-x: auto; }
+      .rail { padding-left: 4px; padding-right: 4px; }
+      .rail-title, .group-title, .rail-item span, .rail-count { display: none; }
+      .rail-group { padding: 4px; border-color: transparent; background: transparent !important; }
+      .rail-item { justify-content: center; padding-left: 0; padding-right: 0; }
+      .reference-grid, .theme-pair { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="fixture-page">
+    <div class="fixture-intro">
+      <div>
+        <h1 class="jura">Phaze UI reference fixtures</h1>
+        <p>Static fixture states derived from the served templates. This file is documentation only: controls are inert, values are invented, and no production data or application code is loaded.</p>
+      </div>
+      <div class="privacy">Privacy-safe: synthetic names and repository placeholders only</div>
+    </div>
+
+    <div class="fixture-label">Persistent shell + operational + tabular</div>
+    <section class="frame" aria-label="Persistent shell with Analyze operational workspace">
+      <div class="header">
+        <div class="brand">
+          <svg width="28" height="28" viewBox="0 0 100 100" fill="none" aria-hidden="true">
+            <circle cx="50" cy="50" r="34" stroke="#00b0d8" stroke-width="3"/>
+            <path d="M50 8 C44 25 38 38 38 50 C38 62 44 75 50 92" stroke="#1abbdb" stroke-width="3.5" stroke-linecap="round"/>
+            <circle cx="50" cy="50" r="3" fill="#1abbdb"/>
+          </svg>
+          <span class="jura">Phaze</span>
+        </div>
+        <div class="search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+          Search files, artists, tracklists
+          <kbd>Cmd K</kbd>
+        </div>
+        <div class="agent"><span class="dot"></span><button class="outline-button">Agents - 3</button></div>
+        <button class="outline-button theme-icon" aria-label="Theme: auto">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="14" rx="2"/><path d="M3 13h18M9 21h6m-4-4-1 4m3-4 1 4"/></svg>
+        </button>
+      </div>
+      <div class="shell-body">
+        <nav class="rail" aria-label="Pipeline navigation fixture">
+          <div class="rail-title jura">Pipeline</div>
+          <div class="rail-item">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M8 12h8M12 8v8"/></svg><span>Discover</span><span class="rail-count mono">24</span>
+          </div>
+          <div class="rail-group">
+            <div class="group-title jura">Enrich - parallel</div>
+            <div class="rail-item"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6zM9 10h6M9 14h6"/></svg><span>Metadata</span><span class="rail-count mono">18/24</span></div>
+            <div class="rail-item active"><svg viewBox="0 0 24 24"><path d="M9 4v6l-4 7h14l-4-7V4M8 4h8"/></svg><span>Analyze</span><span class="rail-count mono">6 active</span></div>
+          </div>
+          <div class="rail-item"><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg><span>Identify</span><span class="rail-count mono">12</span></div>
+          <div class="rail-group amber">
+            <div class="group-title jura">Review &amp; apply</div>
+            <div class="rail-item"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4zM13 7l4 4"/></svg><span>Rename / Path</span><span class="rail-count mono">7</span></div>
+            <div class="rail-item"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9h8M8 13h5"/></svg><span>Tag write</span><span class="rail-count mono">3</span></div>
+          </div>
+        </nav>
+        <div class="workspace">
+          <div class="workspace-head">
+            <div><h2 class="jura">Analyze</h2><p>6 files in the analyze stage</p></div>
+            <div class="actions"><button class="small-button focus-demo">Run analysis</button><button class="small-button">Pause</button></div>
+          </div>
+          <div class="workspace-content">
+            <h3 class="section-heading">Compute lanes</h3>
+            <div class="lanes">
+              <div class="card"><div class="card-top"><span class="card-title">Local agent</span><span class="rank jura">Rank 1</span></div><div class="metric">2 / 4</div><div class="caption">working - local capacity</div><div class="bar"><span style="width:50%"></span></div></div>
+              <div class="card"><div class="card-top"><span class="card-title">Cloud compute</span><span class="rank jura">Rank 2</span></div><div class="metric">1 / 2</div><div class="caption">working - remote compute</div><div class="bar"><span style="width:50%"></span></div></div>
+              <div class="card"><div class="card-top"><span class="card-title">Kueue burst</span><span class="rank jura">Rank 3</span></div><div class="metric amber-text">3 waiting</div><div class="caption">healthy quota wait</div><div class="bar amber-bar"><span style="width:28%"></span></div></div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>File</th><th>Meta</th><th>Analyze</th><th>Prop</th><th>Appr</th><th>Exec</th></tr></thead>
+                <tbody>
+                  <tr><td class="mono">&lt;set-01&gt;.flac</td><td><span class="pill done">✓ done</span></td><td><span class="pill flight">● in flight</span></td><td><span class="pill idle">- not started</span></td><td><span class="pill idle">- not started</span></td><td><span class="pill idle">- not started</span></td></tr>
+                  <tr><td class="mono">&lt;track-01&gt;.mp3</td><td><span class="pill done">✓ done</span></td><td><span class="pill failed">✗ failed</span></td><td><span class="pill skipped">⊘ skipped</span></td><td><span class="pill idle">- not started</span></td><td><span class="pill idle">- not started</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="fixture-label">Review + empty</div>
+    <div class="reference-grid">
+      <section class="state" aria-label="Review surface fixture">
+        <div class="state-head">Review surface</div>
+        <div class="state-body">
+          <div class="diff-row">
+            <div class="diff-top"><span>&lt;track-02&gt;.mp3</span><div class="diff-actions"><button class="action approve">Approve</button><button class="action">Edit</button><button class="action">Skip</button></div></div>
+            <div class="diff"><code class="before">&lt;track-02&gt;.mp3</code><span>-></span><code class="after">Artist - Event - Title (2024).mp3</code></div>
+          </div>
+          <p class="caption" style="margin-top:12px">Rose marks the current value; emerald marks the proposed value. Text and direction preserve meaning without color.</p>
+        </div>
+      </section>
+      <section class="state" aria-label="Empty surface fixture">
+        <div class="state-head">Empty surface</div>
+        <div class="state-body empty">
+          <div>
+            <svg width="64" height="64" viewBox="0 0 64 64" fill="none" aria-hidden="true"><path d="M4 32c6-16 12-16 18 0s12 16 18 0 12-16 18 0" stroke="#00b0d8" stroke-width="3" stroke-linecap="round"/></svg>
+            <h3 class="jura">Point Phaze at your music</h3>
+            <p>No files yet. Scan a configured root such as <code>&lt;archive-mount&gt;/incoming</code> to begin discovery.</p>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="fixture-label">Warning + error</div>
+    <div class="reference-grid">
+      <section class="state" aria-label="Warning surface fixture">
+        <div class="state-head">Warning surface</div>
+        <div class="state-body">
+          <div class="alert" role="alert"><h3>K8s Jobs not admitting - check LocalQueue config</h3><p>2 cloud jobs are Inadmissible. This is configuration attention, not healthy quota waiting.</p></div>
+          <p class="caption" style="margin-top:12px">Amber combines a visible border, low-chroma fill, explicit heading, count, and corrective context.</p>
+        </div>
+      </section>
+      <section class="state" aria-label="Error surface fixture">
+        <div class="state-head">Error surface</div>
+        <div class="state-body">
+          <div class="health">
+            <h3>Analysis Health</h3>
+            <div class="health-grid">
+              <div class="health-tile warning-tile"><strong>1</strong><span>Stalled</span><span>no progress (heartbeat killed)</span></div>
+              <div class="health-tile error-tile"><strong>2</strong><span>Analysis failed</span><span>gave up (terminal)</span><button class="retry">Retry failed</button></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="fixture-label">Light and dark theme parity</div>
+    <section class="theme-pair" aria-label="Light and dark surface comparison">
+      <div class="theme-sample theme-dark"><h3 class="jura">Dark - primary character</h3><div class="theme-card">Near-black canvas, cool raised panel, quiet border, cyan-blue focus and navigation.</div><div class="swatches"><span class="swatch" style="background:#0a0c12"></span><span class="swatch" style="background:#10141c"></span><span class="swatch" style="background:#232832"></span><span class="swatch" style="background:#00b0d8"></span><span class="swatch" style="background:#fbbf24"></span></div></div>
+      <div class="theme-sample theme-light"><h3 class="jura">Light - supported peer</h3><div class="theme-card">White canvas, gray-50 panel, gray-200 border, the same semantic accent families and hierarchy.</div><div class="swatches"><span class="swatch" style="background:#fff;border-color:#d1d5db"></span><span class="swatch" style="background:#f9fafb;border-color:#d1d5db"></span><span class="swatch" style="background:#e5e7eb;border-color:#d1d5db"></span><span class="swatch" style="background:#00b0d8"></span><span class="swatch" style="background:#f59e0b"></span></div></div>
+    </section>
+
+    <p class="fixture-note">Fixture coverage: persistent shell, operational lanes, tabular matrix, review diff, empty state, warning alert, terminal error, focus treatment, and both themes. Static documentation only; no controls perform actions.</p>
+  </main>
+</body>
+</html>
