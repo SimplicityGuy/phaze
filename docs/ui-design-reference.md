@@ -181,7 +181,7 @@ Motion should explain loading, continuity, or layer changes. Future component ev
 
 ## Representative States
 
-`docs/ui-reference-fixtures.html` is a standalone fixture sheet, not served product code. It references the same Google Fonts stylesheet as production, then uses local CSS and invented, privacy-safe data for all fixture content. It covers:
+`docs/ui-reference-fixtures.html` is a single HTML fixture sheet, not served product code. Like production, its typography depends on external Google Fonts stylesheet and font-file requests; all other CSS and all invented, privacy-safe fixture data live in the file. It covers:
 
 | Requirement | Fixture state |
 | --- | --- |
