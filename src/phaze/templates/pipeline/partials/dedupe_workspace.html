@@ -1,22 +1,8 @@
-{# Phase 60 (60-04, REVIEW-03/REVIEW-05, D-07): the Dedupe keeper-select workspace.
-
-   Content-only fragment swapped into #stage-workspace -- composes the shared scaffold
-   (_workspace_scaffold.html): one <h1 tabindex="-1"> focus target + a live sub-count + a
-   secondary/attention action row + the keeper-group card list. Body = the scored duplicate groups
-   (shell._render_stage -> dedupe_groups, via services/review.get_dedupe_groups). Each group renders
-   through _dupe_group.html: a radio keeper-select wired to the VERIFIED resolve contract
-   (POST /duplicates/{sha256_hash}/resolve, Form canonical_id) -- NOT the UI-SPEC sketch's group_id/
-   keeper_id. Resolving swaps the card to resolve_response.html, whose OOB toast carries the
-   resolved_file_states blob so UNDO round-trips it to /duplicates/{hash}/undo (REVIEW-05).
-
-   Bulk header (D-07): AUTO-KEEP HIGHEST QUALITY POSTs /duplicates/resolve-all with the EXACT
-   sha256_hash of every group actually rendered below (hidden ``name="group_hashes"`` inputs, pulled in
-   via ``hx-include`` since the button sits outside any ``<form>``) -- NOT a page/page_size re-derivation.
-   phaze-81bu: re-deriving "the current page" via a fresh LIMIT/OFFSET query let the server bulk-resolve
-   a group the operator never saw (display set != write set, and it could drift further if another
-   resolve committed between render and click). Acting on the rendered hashes closes that gap. The R-4
-   mass-action guard (hx-confirm naming the count + hx-disabled-elt) still stops a second bulk write from
-   firing mid-run. Its response's OOB bulk toast carries all_file_states for a reversible UNDO ALL.
+{# The Dedupe workspace stages keeper choices before any resolution write. Each _dupe_group form
+   holds a local canonical_id radio choice and POSTs the existing resolve endpoint only from its
+   explicit confirmation button. The bulk header submits exactly the hashes rendered below to the
+   read-only /duplicates/review-all summary; only that summary offers the existing /resolve-all commit.
+   The resolve responses continue to carry server-produced prior state for Undo and Undo All.
 
    NO second poll (R-2 -- the live sub-count would ride the single chrome poll's OOB seeds); NO | safe.
    KEEP/archive are text tags, never hue-only (WCAG 1.4.1).
@@ -31,19 +17,17 @@
 {% set _bulk_btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-amber-500/40 text-amber-700 dark:text-amber-200 hover:bg-amber-500/10 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
 {% set actions %}
     <button type="button"
-            hx-post="/duplicates/resolve-all"
+            hx-post="/duplicates/review-all"
             hx-include="#dedupe-group-hash-inputs"
             hx-target="#dedupe-bulk-response" hx-swap="innerHTML"
-            hx-confirm="Auto-keep the highest-quality copy in every duplicate group and archive the rest? {{ dedupe_groups | length }} groups · reversible via undo."
             hx-disabled-elt="this"
-            aria-label="Auto-keep the highest-quality copy in every duplicate group"
-            class="{{ _bulk_btn }}">AUTO-KEEP HIGHEST QUALITY</button>
+            aria-label="Review highest-quality choices for every duplicate group"
+            class="{{ _bulk_btn }}">REVIEW AUTO-SELECTION</button>
 {% endset %}
 {% call ws.workspace(title="Review & Apply · Dedupe", subcount=subcount, actions=actions) %}
-    {# Bulk-resolve response (bulk_resolve_response.html) lands here; empty:hidden until it fires. #}
-    <div id="dedupe-bulk-response" class="px-6 pt-4 empty:hidden"></div>
-    {# The AUTO-KEEP button's hx-include target: one hidden input per group ACTUALLY rendered below, so
-       the bulk resolve acts on exactly what the operator was shown (phaze-81bu). #}
+    {# The review summary and subsequent bulk-resolve response share this stable target. #}
+    <div id="dedupe-bulk-response" class="px-4 pt-4 empty:hidden sm:px-6"></div>
+    {# Review exactly what was rendered; the summary carries only its still-live groups into commit. #}
     <div id="dedupe-group-hash-inputs" class="hidden">
         {% for group in dedupe_groups %}
         <input type="hidden" name="group_hashes" value="{{ group.sha256_hash }}">
@@ -62,7 +46,7 @@
        (hx-swap-oob="beforeend:#dedupe-group-list"). Append, never innerHTML: a group the operator
        resolved SINGLY before the bulk still owns a hidden #group-{hash} placeholder in this list
        that its own 10s undo toast targets, and a wholesale innerHTML replace would delete it. #}
-    <div id="dedupe-group-list" class="space-y-3 p-6">
+    <div id="dedupe-group-list" class="space-y-3 p-4 sm:p-6">
         {% for group in dedupe_groups %}
             {% include "pipeline/partials/_dupe_group.html" %}
         {% endfor %}

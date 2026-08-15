@@ -306,6 +306,7 @@ async def generate_cue(
     if hx_target.startswith("cue-card-"):
         card = {
             "tracklist_id": tracklist.id,
+            "file_id": file_record.id,
             "set_name": audio_path.stem,
             "eligible": True,
             "cue_text": content,
@@ -374,6 +375,7 @@ async def _build_generate_error_card(
 
     return {
         "tracklist_id": tracklist.id,
+        "file_id": file_record.id if file_record is not None else None,
         "set_name": Path(file_record.current_path).stem if file_record is not None else str(tracklist.id),
         "eligible": eligible,
         "cue_text": cue_text,
@@ -467,6 +469,7 @@ async def _build_cue_preview_card(
     content = generate_cue_content(audio_path.name, file_record.file_type, cue_tracks)
     return {
         "tracklist_id": tracklist.id,
+        "file_id": file_record.id,
         "set_name": audio_path.stem,
         "eligible": True,
         "cue_text": content,

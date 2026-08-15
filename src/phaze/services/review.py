@@ -18,7 +18,7 @@ the templates never touch an ORM object and the hot render/poll path can NEVER 5
   a COMPLETED ``TagWriteLog``). Each row also carries ``has_prior_write`` (phaze-o5rf) so the
   workspace only surfaces UNDO where it can actually revert something.
 * :func:`get_dedupe_groups`         -- scored duplicate groups + keeper flag (Dedupe, Plan 60-04;
-  keeper == ``score_group``'s ``canonical_id``; the radio resolves via ``/duplicates/{hash}/resolve``).
+  keeper == ``score_group``'s ``canonical_id``; confirmation resolves via ``/duplicates/{hash}/resolve``).
 * :func:`get_cue_review_cards`      -- eligible + gated cue cards with an IN-MEMORY ``.cue`` preview
   (Cue, Plan 60-04; ``generate_cue_content`` only -- NO ``write_cue_file``, the render never mutates disk).
 """
@@ -459,11 +459,15 @@ def build_dupe_group_card(group: dict[str, Any]) -> dict[str, Any]:
         "group_name": Path(files[0]["original_path"]).name if files else group["sha256_hash"][:12],
         "count": len(files),
         "truncated": group.get("truncated", False),
+        "rationale": group.get("rationale", "highest-quality ranking"),
         "files": [
             {
                 "id": f["id"],
                 "name": Path(f["original_path"]).name,
+                "path": f["original_path"],
                 "quality": _format_quality(f),
+                "duration": f.get("duration"),
+                "tag_label": f.get("tag_label", "None"),
                 "keeper": f["id"] == canonical_id,
             }
             for f in files
@@ -505,7 +509,7 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
     * **eligible** -- ``>= 1`` timestamped track (``_get_eligible_tracklist_query``). For each, the ``.cue``
       preview text is built ENTIRELY IN MEMORY via ``_build_cue_tracks`` + ``generate_cue_content`` -- the
       render NEVER calls ``write_cue_file`` and NEVER touches disk (T-60-CUE; the write happens only on an
-      explicit APPROVE -> ``POST /cue/{id}/generate``, which IS the approve/write -- there is no /approve route).
+       explicit Generate -> ``POST /cue/{id}/generate``, which queues the write -- there is no /approve route).
     * **gated** -- approved + applied but NO timestamped track (the "awaiting tracklist match…" ineligible
       card, rendered ``opacity-60`` with no approve control).
 
@@ -545,6 +549,7 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
                     cards.append(
                         {
                             "tracklist_id": tracklist.id,
+                            "file_id": file_record.id,
                             "set_name": Path(file_record.current_path).stem,
                             "eligible": False,
                             "cue_text": None,
@@ -555,6 +560,7 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
                 cards.append(
                     {
                         "tracklist_id": tracklist.id,
+                        "file_id": file_record.id,
                         "set_name": Path(file_record.current_path).stem,
                         "eligible": True,
                         "cue_text": cue_text,
@@ -585,6 +591,7 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
                 cards.append(
                     {
                         "tracklist_id": tracklist.id,
+                        "file_id": file_record.id,
                         "set_name": Path(file_record.current_path).stem,
                         "eligible": False,
                         "cue_text": None,

@@ -1,0 +1,30 @@
+<section aria-labelledby="bulk-review-title" class="rounded-xl border border-amber-300 bg-amber-50 p-4 dark:border-amber-700 dark:bg-amber-950/40">
+    <h2 id="bulk-review-title" class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-amber-900 dark:text-amber-200">Review auto-selection</h2>
+    {% if dedupe_groups %}
+    <p class="mt-1 text-sm text-amber-800 dark:text-amber-300">
+        {{ dedupe_groups | length }} groups · {{ dedupe_groups | sum(attribute='count') }} copies reviewed. No files have been archived yet.
+    </p>
+    <ul class="mt-3 max-h-64 space-y-2 overflow-y-auto" aria-label="Proposed duplicate resolutions">
+        {% for group in dedupe_groups %}
+        {% set keeper = group.files | selectattr('keeper') | first %}
+        <li class="rounded-lg border border-amber-200 bg-white/70 p-3 dark:border-amber-800 dark:bg-phaze-panel">
+            <p class="break-words text-sm font-medium text-gray-900 dark:text-gray-100">{{ group.group_name }}</p>
+            <p class="mt-1 break-words text-xs text-gray-600 dark:text-gray-300">Keep {{ keeper.name }} · {{ keeper.quality }} · {{ group.rationale }}</p>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Archive {{ group.count - 1 }} other {{ "copy" if group.count == 2 else "copies" }}</p>
+        </li>
+        {% endfor %}
+    </ul>
+    {% if stale_count %}<p role="status" class="mt-3 text-xs text-amber-800 dark:text-amber-300">{{ stale_count }} stale or already-resolved groups were excluded.</p>{% endif %}
+    <form class="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"
+          hx-post="/duplicates/resolve-all" hx-target="#dedupe-bulk-response" hx-swap="innerHTML"
+          hx-confirm="Confirm these reviewed keepers and archive the other copies? The audit toast provides Undo All.">
+        {% for group in dedupe_groups %}<input type="hidden" name="group_hashes" value="{{ group.sha256_hash }}">{% endfor %}
+        <button type="button" onclick="this.closest('#dedupe-bulk-response').replaceChildren()"
+                class="h-9 rounded-lg border border-gray-300 px-3 text-sm text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border dark:text-gray-300">Cancel</button>
+        <button type="submit" hx-disabled-elt="this"
+                class="h-9 rounded-lg bg-amber-700 px-3 font-jura text-xs font-medium uppercase tracking-wider text-white hover:bg-amber-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50">Confirm {{ dedupe_groups | length }} resolutions</button>
+    </form>
+    {% else %}
+    <p class="mt-2 text-sm text-amber-800 dark:text-amber-300">None of the shown groups are still available to resolve. Refresh Dedupe before continuing.</p>
+    {% endif %}
+</section>

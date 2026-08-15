@@ -207,6 +207,33 @@ async def resolve_group_endpoint(
     )
 
 
+@router.post("/review-all", response_class=HTMLResponse)
+async def review_bulk_resolve(
+    request: Request,
+    group_hashes: list[str] = Form(default_factory=list),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Render the highest-quality bulk plan without resolving any duplicate group."""
+    safe_hashes = [group_hash for group_hash in group_hashes if not contains_pg_invalid_chars(group_hash)]
+    groups = await find_duplicate_groups_by_hashes(session, safe_hashes)
+    cards: list[dict[str, Any]] = []
+    for group in groups:
+        if group["count"] <= 1:
+            continue
+        score_group(group)
+        cards.append(build_dupe_group_card(group))
+
+    return templates.TemplateResponse(
+        request=request,
+        name="duplicates/partials/bulk_review.html",
+        context={
+            "request": request,
+            "dedupe_groups": cards,
+            "stale_count": len(group_hashes) - len(cards),
+        },
+    )
+
+
 @router.post("/{group_hash}/undo", response_class=HTMLResponse)
 async def undo_resolve_endpoint(
     request: Request,

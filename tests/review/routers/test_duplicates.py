@@ -245,6 +245,34 @@ async def test_bulk_resolve(session: AsyncSession, client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_bulk_review_summarizes_without_resolving(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /duplicates/review-all is a read-only boundary before the existing bulk commit."""
+    from sqlalchemy import select
+
+    from phaze.models.dedup_resolution import DedupResolution
+
+    lower_quality = _make_file("/dir/lower.mp3", "mp3", HASH_A, file_size=1000)
+    higher_quality = _make_file("/dir/higher.mp3", "mp3", HASH_A, file_size=2000)
+    session.add_all([lower_quality, higher_quality])
+    await session.flush()
+    session.add_all(
+        [
+            _make_metadata(lower_quality.id, bitrate=128_000),
+            _make_metadata(higher_quality.id, bitrate=320_000),
+        ]
+    )
+    await session.commit()
+
+    response = await client.post("/duplicates/review-all", data={"group_hashes": [HASH_A]})
+
+    assert response.status_code == 200
+    assert "No files have been archived yet" in response.text
+    assert "higher.mp3" in response.text and "320 kbps" in response.text and "highest bitrate" in response.text
+    assert 'hx-post="/duplicates/resolve-all"' in response.text
+    assert list((await session.execute(select(DedupResolution))).scalars()) == []
+
+
+@pytest.mark.asyncio
 async def test_bulk_resolve_only_touches_submitted_hashes(session: AsyncSession, client: AsyncClient) -> None:
     """POST /duplicates/resolve-all leaves a duplicate group untouched if its hash was NOT submitted.
 
@@ -613,7 +641,7 @@ async def test_undo_endpoint_returns_shell_shaped_dupe_group_card(session: Async
     assert undo.status_code == 200
     assert f'id="dupe-group-{HASH_A}"' in undo.text, "undo did not restore the shell-shaped _dupe_group.html card"
     assert f'hx-post="/duplicates/{HASH_A}/resolve"' in undo.text, "restored card lost its keeper-select resolve wiring"
-    assert f'name="group-{HASH_A}"' in undo.text
+    assert 'name="canonical_id"' in undo.text
     assert "Compare" not in undo.text, "undo rendered the legacy accordion row shape (group_card.html), not the shell shape"
 
 
