@@ -1,8 +1,11 @@
 {% import "ui/primitives.html" as ui %}
-{% set lane_state = namespace(over_cap=none) %}
+{% set lane_state = namespace(over_cap=none, at_cap=none) %}
 {% for candidate in lanes | default([]) %}
     {% if lane_state.over_cap is none and candidate.in_flight is defined and candidate.in_flight is not none and candidate.cap and candidate.in_flight > candidate.cap %}
         {% set lane_state.over_cap = candidate %}
+    {% endif %}
+    {% if lane_state.at_cap is none and candidate.in_flight is defined and candidate.in_flight is not none and candidate.cap and candidate.in_flight == candidate.cap %}
+        {% set lane_state.at_cap = candidate %}
     {% endif %}
 {% endfor %}
 <section id="analysis-health-card" {% if oob %}hx-swap-oob="true"{% endif %} {% if analysis_failed_count or lane_state.over_cap or inadmissible_count or localqueue_unreachable %}role="alert"{% else %}role="status"{% endif %} class="rounded-lg border {% if analysis_failed_count or lane_state.over_cap %}border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950{% elif inadmissible_count or localqueue_unreachable or awaiting_cloud_count %}border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950{% else %}border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel{% endif %}">
@@ -20,6 +23,9 @@
             {% elif localqueue_unreachable %}
                 <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Cloud lane", "OFFLINE", "attention", "!") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-amber-800 dark:text-amber-300">K8s LocalQueue is unreachable</h2></div>
                 <p class="mt-1 text-sm text-amber-700 dark:text-amber-300">Cloud dispatch is paused for this lane. Verify cluster connectivity and the configured LocalQueue key.</p>
+            {% elif lane_state.at_cap %}
+                <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Lane capacity", "CONGESTED", "attention", "!") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-amber-800 dark:text-amber-300">{{ lane_state.at_cap.kind|upper }} · {{ lane_state.at_cap.id }} is at capacity</h2></div>
+                <p class="mt-1 text-sm text-amber-700 dark:text-amber-300">{{ lane_state.at_cap.in_flight }} in-flight jobs fill scheduler cap {{ lane_state.at_cap.cap }}. New work remains queued; wait for a slot or safely raise configured capacity.</p>
             {% elif awaiting_cloud_count %}
                 <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Routing", "WAITING", "attention", "!") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-amber-800 dark:text-amber-300">{{ awaiting_cloud_count }} file(s) awaiting route</h2></div>
                 <p class="mt-1 text-sm text-amber-700 dark:text-amber-300">{{ awaiting_hold_reason }}. Work remains safely held until compatible capacity is available.</p>
@@ -28,10 +34,10 @@
                 <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Routing and lane health are within configured limits.</p>
             {% endif %}
         </div>
-        <a href="#analysis-diagnostics" onclick="document.getElementById('analysis-diagnostics').open = true" class="shrink-0 rounded-md border border-current px-3 py-1.5 font-jura text-[11px] font-medium uppercase tracking-wider focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">View diagnostics</a>
+        <a id="analysis-view-diagnostics" href="#analysis-diagnostics" onclick="document.getElementById('analysis-diagnostics').open = true" class="shrink-0 rounded-md border border-current px-3 py-1.5 font-jura text-[11px] font-medium uppercase tracking-wider focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">View diagnostics</a>
     </div>
     <details id="analysis-health-details" data-poll-preserve-disclosure class="border-t border-current/10">
-        <summary class="cursor-pointer px-4 py-2 text-xs font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Analysis Health and recovery details</summary>
+        <summary id="analysis-health-summary" class="cursor-pointer px-4 py-2 text-xs font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Analysis Health and recovery details</summary>
         <div class="grid gap-3 border-t border-current/10 p-4 sm:grid-cols-2">
             <div class="rounded-md border border-amber-300/60 p-3 dark:border-amber-700/60" title="Killed by the heartbeat watchdog after no analysis progress for the configured stall window.">
                 <p class="font-mono text-lg font-semibold text-amber-700 dark:text-amber-400">{{ analysis_stalled_count }}</p>
@@ -44,10 +50,10 @@
                 <p class="text-xs opacity-75">terminal; recovery action required</p>
                 {% if analysis_failed_count %}
                 <div class="mt-3 flex flex-wrap gap-2">
-                    <button type="button" hx-post="/pipeline/analysis-failed/retry" hx-target="#retry-failed-result" hx-swap="innerHTML"
+                    <button id="analysis-retry-failed" type="button" hx-post="/pipeline/analysis-failed/retry" hx-target="#retry-failed-result" hx-swap="innerHTML"
                             hx-confirm="Re-queue {{ analysis_failed_count }} failed file(s) for analysis?"
                             class="rounded-md bg-red-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Retry failed</button>
-                    <button type="button" hx-post="/pipeline/backfill-cloud" hx-target="#backfill-response" hx-swap="innerHTML"
+                    <button id="analysis-backfill-cloud" type="button" hx-post="/pipeline/backfill-cloud" hx-target="#backfill-response" hx-swap="innerHTML"
                             hx-confirm="Backfill the timed-out long failed files to the cloud?"
                             class="rounded-md bg-blue-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Backfill to cloud</button>
                 </div>

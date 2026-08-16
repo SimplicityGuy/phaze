@@ -1,0 +1,10 @@
+{% import "ui/primitives.html" as ui %}
+{% set active = namespace(total=0, unknown=false) %}
+{% for lane in lanes | default([]) %}
+    {% if lane.working is not defined or lane.working is none %}
+        {% set active.unknown = true %}
+    {% else %}
+        {% set active.total = active.total + lane.working %}
+    {% endif %}
+{% endfor %}
+{{ ui.metric("Active", "—" if active.unknown else active.total, "lane-attributed active work", "accent", "analyze-active-total-card", oob | default(false)) }}

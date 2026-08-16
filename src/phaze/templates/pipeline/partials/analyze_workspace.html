@@ -26,7 +26,7 @@
     <div class="space-y-4 px-4 pt-4 sm:px-6">
         {% call ui.metric_strip(label="Analyze flow metrics") %}
             {% include "pipeline/partials/_analyze_queue_total.html" %}
-            {{ ui.metric("Active", '<span x-text="$store.pipeline.analyzeActive">0</span>' | safe, "executing now", "accent") }}
+            {% include "pipeline/partials/_analyze_active_total.html" %}
             {% include "pipeline/partials/awaiting_cloud_card.html" %}
             {{ ui.metric("Completed", '<span x-text="$store.pipeline.analyzeDone">0</span>' | safe, "all analyzed files", "success") }}
         {% endcall %}

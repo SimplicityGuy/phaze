@@ -15,6 +15,7 @@
 {% set _processed_24h = lane.processed_24h if lane.processed_24h is defined and lane.processed_24h is not none else none %}
 {% set _processed_lifetime = lane.processed_lifetime if lane.processed_lifetime is defined and lane.processed_lifetime is not none else none %}
 {% set _capacity_over = _in_flight is not none and lane.cap and _in_flight > lane.cap %}
+{% set _capacity_full = _in_flight is not none and lane.cap and _in_flight == lane.cap %}
 {% set selected_lane = selected_lane | default(none) %}
 <div id="lane-trigger-{{ lane.id }}" role="button" tabindex="0"
      aria-label="Open lane {{ lane.kind }} {{ lane.id }} detail" {% if selected_lane == lane.id %}aria-current="true"{% endif %}
@@ -34,6 +35,7 @@
             {% if _capacity_over %}{{ ui.status_badge("Lane status", "OVER LIMIT", "danger", "✕") }}
             {% elif not lane.available %}{{ ui.status_badge("Lane status", "OFFLINE", "attention", "!") }}
             {% elif _kind == "kueue" and lane.inadmissible %}{{ ui.status_badge("Lane status", "BLOCKED", "attention", "!") }}
+            {% elif _capacity_full %}{{ ui.status_badge("Lane status", "AT CAPACITY", "attention", "!") }}
             {% elif _working %}{{ ui.status_badge("Lane status", "ACTIVE", "accent", "●") }}
             {% else %}{{ ui.status_badge("Lane status", "READY", "success", "✓") }}{% endif %}
         </dd></div>
@@ -42,10 +44,12 @@
     <div class="flex items-center justify-end gap-2 text-xs font-medium text-blue-700 dark:text-blue-400 sm:col-span-2">Open details <span aria-hidden="true">→</span></div>
     {% if _capacity_over %}
     <p role="alert" class="rounded-md bg-red-50 px-3 py-2 text-xs text-red-800 dark:bg-red-950 dark:text-red-300 sm:col-span-12">In-flight {{ _in_flight }} exceeds scheduler cap {{ lane.cap }}. New work can compound resource pressure; stop admission and inspect this lane.</p>
+    {% elif _capacity_full and lane.available %}
+    <p role="status" class="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300 sm:col-span-12">At scheduler cap {{ lane.cap }}. New work remains queued until a slot opens; wait for completion or safely raise configured capacity.</p>
     {% endif %}
     <details id="lane-diagnostics-{{ lane.id }}" data-poll-preserve-disclosure class="sm:col-span-12"
              onclick="event.stopPropagation()" onkeydown="event.stopPropagation()" onkeyup="event.stopPropagation()">
-        <summary class="cursor-pointer text-xs text-gray-500 underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Lane diagnostics</summary>
+        <summary id="lane-diagnostics-summary-{{ lane.id }}" class="cursor-pointer text-xs text-gray-500 underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Lane diagnostics</summary>
         <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 rounded-md bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-phaze-bg dark:text-gray-300">
             <span>RANK {{ lane.rank }} · cap {{ lane.cap }}</span>
             {% if not lane.available %}<span>Availability: offline</span>{% endif %}

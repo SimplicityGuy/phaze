@@ -121,4 +121,8 @@
    total_queued_analyze / unrouted_queued_analyze ride this poll context (degrade-safe -> None, never
    a fabricated 0, never 500). #}
 {% with oob = True %}{% include "pipeline/partials/_analyze_queue_total.html" %}{% endwith %}
+{# Active is the sum of each lane's non-overlapping `working` population, not dag.analyzeActive's
+   broader scheduling-ledger in-flight population. Re-push it from the same lane snapshot so the
+   scoped metric remains live without adding a poll or endpoint. #}
+{% with oob = True %}{% include "pipeline/partials/_analyze_active_total.html" %}{% endwith %}
 {% endif %}

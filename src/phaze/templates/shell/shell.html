@@ -357,6 +357,10 @@
         }
         function transferPollState(current, incoming) {
             if (!current || !incoming) return;
+            const focused = document.activeElement;
+            if (focused && focused.id && (focused === current || current.contains(focused))) {
+                incoming.dataset.pollRestoreFocus = focused.id;
+            }
             current.querySelectorAll('[data-poll-preserve-disclosure][id]').forEach(function (disclosure) {
                 if (!disclosure.open) return;
                 const replacement = Array.from(incoming.querySelectorAll('[data-poll-preserve-disclosure][id]'))
@@ -405,6 +409,14 @@
             if (nextHash && curHash && nextHash === curHash) {
                 event.detail.shouldSwap = false;
             }
+        });
+        document.body.addEventListener('htmx:oobAfterSwap', function (event) {
+            const swapped = (event.detail && event.detail.target) || event.target;
+            const focusId = swapped && swapped.dataset ? swapped.dataset.pollRestoreFocus : null;
+            if (!focusId) return;
+            delete swapped.dataset.pollRestoreFocus;
+            const replacement = document.getElementById(focusId);
+            if (replacement) replacement.focus({ preventScroll: true });
         });
         document.body.addEventListener('htmx:afterSwap', function (event) {
             // htmx:afterSwap exposes the request target as event.detail.target (htmx 2.0.10);

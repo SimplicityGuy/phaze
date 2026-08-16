@@ -58,6 +58,7 @@ async def test_lane_card_trigger_markup(client: AsyncClient, session: AsyncSessi
     assert 'onkeydown="event.stopPropagation()"' in body
     assert 'onkeyup="event.stopPropagation()"' in body
     assert "data-poll-preserve-disclosure" in body
+    assert f'id="lane-diagnostics-summary-{lane_id}"' in body
 
 
 @pytest.mark.asyncio
