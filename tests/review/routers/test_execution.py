@@ -17,6 +17,7 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS
+from phaze.services.execution_queries import AuditLogPage
 from phaze.services.pagination import MIN_PAGE_SIZE
 
 
@@ -330,6 +331,37 @@ async def test_audit_log_empty_state_tab_counts_stay_truthful(client: AsyncClien
     assert "Completed (1)" in response.text
     assert "Failed (0)" in response.text
     assert "In Progress (0)" in response.text
+    assert "Pending (0)" in response.text
+
+
+@pytest.mark.asyncio
+async def test_audit_pending_filter_is_complete_and_invalid_status_normalizes_to_all(client: AsyncClient, session: AsyncSession) -> None:
+    await create_test_execution_log(session, status=ExecutionStatus.PENDING, source_path="/music/pending.mp3")
+
+    pending = await client.get("/audit/?status=pending", headers={"HX-Request": "true"})
+    assert "Pending (1)" in pending.text
+    assert 'aria-pressed="true"' in pending.text[pending.text.index("Pending (1)") - 500 : pending.text.index("Pending (1)") + 100]
+
+    invalid = await client.get("/audit/?status=not-a-status", headers={"HX-Request": "true"})
+    assert invalid.status_code == 200
+    assert "Pending (1)" in invalid.text
+    assert "No entries match this filter" not in invalid.text
+
+
+@pytest.mark.asyncio
+async def test_audit_degraded_read_renders_error_not_empty(client: AsyncClient) -> None:
+    degraded_page = AuditLogPage(rows=[], page=1, page_size=50, has_next=False, degraded=True)
+    healthy_stats = {"total": 0, "pending": 0, "completed": 0, "failed": 0, "in_progress": 0, "degraded": False}
+    with (
+        patch("phaze.routers.execution.get_execution_logs_page", new=AsyncMock(return_value=degraded_page)),
+        patch("phaze.routers.execution.get_execution_stats", new=AsyncMock(return_value=healthy_stats)),
+    ):
+        response = await client.get("/audit/", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    assert "Audit history unavailable" in response.text
+    assert 'role="alert"' in response.text
+    assert "No renames have been executed yet" not in response.text
 
 
 @pytest.mark.asyncio

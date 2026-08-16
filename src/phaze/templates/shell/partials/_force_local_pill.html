@@ -42,6 +42,7 @@
 </button>
 {% if update_header_warning | default(false) %}
 {% with oob = true %}{% include "shell/partials/_routing_override_warning.html" %}{% endwith %}
+{% with oob = true %}{% include "shell/partials/_routing_operations_warning.html" %}{% endwith %}
 {% endif %}
 {% if toast_message is defined and toast_message %}
 <div hx-swap-oob="beforeend:#toast-container">

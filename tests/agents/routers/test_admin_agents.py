@@ -189,6 +189,7 @@ async def test_shell_pane_renders_full_shell_with_agents_table(smoke: AsyncClien
     assert 'hx-swap="outerHTML"' in body
     assert "5 agents" in body
     assert "0 compute lanes" in body
+    assert 'x-text="&#34;5 agents \\u00b7 0 compute lanes&#34;"' in body
 
 
 @pytest.mark.asyncio
@@ -1568,9 +1569,31 @@ async def test_lane_row_has_a_details_control_matching_the_agent_row_pattern(
     assert 'id="compute-lane-trigger-vox"' in body
     assert 'id="compute-lane-trigger-vox-details"' in body
     assert 'role="button"' not in body
-    assert """hx-vals='{"clane": "vox"}'""" in body
+    assert """hx-vals='{"agent": "", "clane": "vox"}'""" in body
     assert 'hx-target="#agents-table-section"' in body
     assert 'hx-push-url="/s/agents?clane=vox' in body
+
+
+@pytest.mark.asyncio
+async def test_conflicting_agent_and_lane_selection_resolves_one_dom_detail_and_canonicalizes_history(
+    session: AsyncSession,
+    make_file,  # type: ignore[no-untyped-def]
+    backends_toml_env,  # type: ignore[no-untyped-def]
+) -> None:
+    """A stale URL carrying both selectors resolves agent-first and removes the lane selector."""
+    backends_toml_env(_TWO_CLUSTER_REGISTRY)
+    await _seed_cloud_job(session, make_file, backend_id="vox")
+    session.add(Agent(id="conflict-agent", name="Conflict Agent", scan_roots=[], kind="fileserver", last_seen_at=datetime.now(UTC)))
+    await session.commit()
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        body = (await ac.get("/admin/agents/_table", params={"agent": "conflict-agent", "clane": "vox"})).text
+
+    assert 'id="agent-detail-row-conflict-agent"' in body
+    assert 'id="compute-lane-detail-row-vox"' not in body
+    assert "params.delete('clane')" in body
+    assert 'hx-vals=\'{"agent": "conflict-agent", "clane": ""}\'' in body
 
 
 @pytest.mark.asyncio

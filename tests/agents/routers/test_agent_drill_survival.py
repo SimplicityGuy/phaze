@@ -78,7 +78,7 @@ async def test_agent_row_has_an_explicit_details_control(smoke: AsyncClient) -> 
     # -- not the old shared #detail-pane -- because the expanded row's slot does not exist until this
     # agent is the one selected_agent resolves to.
     assert 'hx-get="/admin/agents/_table?sort=last_seen&amp;order=desc"' in body
-    assert f'hx-vals=\'{{"agent": "{AGENT_ID}"}}\'' in body
+    assert f'hx-vals=\'{{"agent": "{AGENT_ID}", "clane": ""}}\'' in body
     assert 'hx-target="#agents-table-section"' in body
     assert 'hx-swap="outerHTML"' in body
     assert f"/s/agents?agent={AGENT_ID}" in body  # canonical hx-push-url carries the ?agent= selection

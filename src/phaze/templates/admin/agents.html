@@ -33,10 +33,10 @@
    poll has landing targets here too, exactly like every other UTILITY_PANES/STAGE_PARTIALS host. #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% set worker_counts %}{{ agent_count }} agent{{ '' if agent_count == 1 else 's' }} · {{ compute_lane_count }} compute lane{{ '' if compute_lane_count == 1 else 's' }}{% endset %}
-{% call ws.workspace(title="AGENTS & COMPUTE LANES", subcount=worker_counts) %}
+{% call ws.workspace(title="AGENTS & COMPUTE LANES", subcount=worker_counts|tojson|forceescape) %}
     <div class="px-4 pt-4 sm:px-6">
         <p class="text-sm text-gray-500 dark:text-gray-400">
-            Heartbeating agents and configured compute lanes remain distinct worker types in one operational view. Refreshes every 5 seconds.
+            Registered agents and configured compute lanes remain distinct worker types in one operational view. Refreshes every 5 seconds.
         </p>
     </div>
     <div class="p-4 sm:p-6">

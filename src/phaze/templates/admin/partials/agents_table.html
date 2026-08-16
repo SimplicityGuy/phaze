@@ -53,6 +53,7 @@
    appearing in BOTH poll_url() and hx-vals would be sent twice and the handler would read whichever
    duplicate won. sort/order live in the URL; agent/clane live in hx-vals; neither repeats the other. #}
 <section id="agents-table-section"
+         x-init="const params = new URLSearchParams(location.search); if (params.has('agent') && params.has('clane')) { {% if selection_kind == 'agent' %}params.delete('clane');{% elif selection_kind == 'clane' %}params.delete('agent');{% else %}params.delete('agent'); params.delete('clane');{% endif %} history.replaceState({}, '', location.pathname + (params.size ? '?' + params.toString() : '')); }"
          hx-get="{{ sort.poll_url() }}"
          hx-trigger="every 5s"
          {# phaze-w92dg: `|| ""` — URLSearchParams.get() returns null for an absent param, and a null
@@ -201,7 +202,7 @@
                                 aria-expanded="{{ 'true' if row.selected else 'false' }}"
                                 aria-controls="{{ row.detail_row_id }}"
                                 hx-get="{{ sort.poll_url() }}"
-                                hx-vals='{"{{ row.selection_param }}": "{{ row.id }}"}'
+                                {% if row.status_kind == 'agent' %}hx-vals='{"agent": "{{ row.id }}", "clane": ""}'{% else %}hx-vals='{"agent": "", "clane": "{{ row.id }}"}'{% endif %}
                                 hx-target="#agents-table-section"
                                 hx-swap="outerHTML"
                                 hx-push-url="{{ row.push_url }}{{ sort.query_state() }}"
