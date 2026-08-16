@@ -33,6 +33,7 @@ import re
 from typing import TYPE_CHECKING
 import uuid
 
+from bs4 import BeautifulSoup
 import pytest
 
 from phaze.models.execution import ExecutionLog, ExecutionStatus
@@ -96,6 +97,36 @@ async def _seed_executed_proposal(session: AsyncSession, file_id: uuid.UUID, *, 
     )
     await session.commit()
     return proposal_id
+
+
+@pytest.mark.asyncio
+async def test_pending_approval_exposes_the_complete_proposal(client: AsyncClient, session: AsyncSession) -> None:
+    """The record drawer shows every value authorized by its whole-proposal APPROVE action."""
+    file_id = await _seed_file(session)
+    proposal = RenameProposal(
+        file_id=file_id,
+        proposed_filename="Artist - Event - Full proposed filename with detail.mp3",
+        proposed_path="/organized/archive/Artist/Event/Full proposed destination with detail.mp3",
+        status=ProposalStatus.PENDING,
+    )
+    session.add(proposal)
+    await session.commit()
+
+    response = await client.get(f"/record/{file_id}")
+    row = BeautifulSoup(response.text, "html.parser").select_one(f"#record-row-{proposal.id}")
+
+    assert response.status_code == 200
+    assert row is not None
+    text = row.get_text(" ", strip=True)
+    markup = str(row)
+    assert "Filename" in text
+    assert "Destination" in text
+    assert f"{file_id}.mp3" in text
+    # BeautifulSoup excludes <template> contents from get_text(); Alpine exposes this value at runtime.
+    assert proposal.proposed_filename in markup
+    assert f"/test/music/{file_id}.mp3" in text
+    assert proposal.proposed_path in text
+    assert row.select_one(f'button[hx-patch="/proposals/{proposal.id}/approve"]') is not None
 
 
 @pytest.mark.asyncio
