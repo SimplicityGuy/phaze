@@ -3263,11 +3263,9 @@ async def test_stats_poll_repushes_admission_card_oob(client: AsyncClient, sessi
 
 
 # ---------------------------------------------------------------------------
-# phaze-v3o: the count grid holds exactly 4 always-on cards (Admission / Cloud Routing /
-# Staged / Analyzing); the two conditionally-empty operator alerts (inadmissible/localqueue)
-# render full-width ABOVE the grid, not inside it, so a healthy carrier never occupies a grid
-# cell and misaligns Admission with Cloud Routing (D-06). Structural regression guards on id
-# presence/ordering, not pixels/CSS.
+# Analyze redesign: stable OOB carriers remain unique while cloud implementation detail lives
+# behind progressive disclosure. Structural regression guards use ids and disclosure boundaries,
+# not pixel-specific classes.
 # ---------------------------------------------------------------------------
 
 _ALL_SIX_CARD_IDS = (
@@ -3303,20 +3301,8 @@ async def test_stats_poll_all_six_cloud_card_ids_present_oob(client: AsyncClient
 
 
 @pytest.mark.asyncio
-async def test_dashboard_count_grid_holds_four_cards_outside_alert_carriers(client: AsyncClient, session: AsyncSession) -> None:
-    """The 2 alert carriers render BEFORE the grid; the 4 count cards render, in order, INSIDE it.
-
-    Regression guard for phaze-v3o: inadmissible_card/localqueue_card previously occupied grid cells
-    2 and 3 (CSS grid row-major 2-col fill), pushing Cloud Routing (awaiting_cloud_card) down a row
-    while Admission (admission_state_card) sat flush at the top beside an empty cell. Asserts on id
-    ORDER relative to the grid's opening tag (structure), not pixels: both alert ids must precede the
-    grid, and the four count-card ids must follow it in the same order they render (Admission, Cloud
-    Routing, Staged, Analyzing).
-
-    Seeds one file so the workspace renders its real per-stage body (the count grid) rather than the
-    GLOBAL "Point Phaze at your music" onboarding empty-state, which swaps in an unrelated hidden
-    aria-hidden placeholder region carrying the same six ids as inert OOB targets.
-    """
+async def test_dashboard_cloud_diagnostics_are_disclosed_without_duplicate_oob_hosts(client: AsyncClient, session: AsyncSession) -> None:
+    """Cloud internals are collapsed by default and every live OOB carrier remains unique."""
     session.add(_make_file())
     await session.commit()
 
@@ -3324,19 +3310,14 @@ async def test_dashboard_count_grid_holds_four_cards_outside_alert_carriers(clie
     assert response.status_code == 200
     text = response.text
 
-    # The four count cards now render inside the single bordered "Cloud" pane; the 2-col grid moved
-    # inside it (padding lives on the pane's px-6 wrapper), so the grid class string is chrome-free.
-    grid_open = text.index("grid grid-cols-1 gap-4 sm:grid-cols-2")
-    inadmissible_pos = text.index('id="inadmissible-card"')
-    localqueue_pos = text.index('id="localqueue-card"')
-    admission_pos = text.index('id="admission-state-card"')
-    awaiting_pos = text.index('id="awaiting-cloud-card"')
-    staged_pos = text.index('id="staged-pushing-card"')
-    analyzing_pos = text.index('id="analyzing-cloud-card"')
-
-    assert inadmissible_pos < grid_open
-    assert localqueue_pos < grid_open
-    assert grid_open < admission_pos < awaiting_pos < staged_pos < analyzing_pos
+    diagnostics_open = text.index('id="analysis-diagnostics"')
+    assert "Technical diagnostics" in text[diagnostics_open:]
+    assert "Admission, reconcile, staged transfer, quota, rank, lifetime totals, health, and recovery" in text
+    for card_id in _ALL_SIX_CARD_IDS:
+        assert text.count(f'id="{card_id}"') == 1
+    assert text.index('id="awaiting-cloud-card"') < diagnostics_open
+    assert diagnostics_open < text.index('id="admission-state-card"')
+    assert diagnostics_open < text.index('id="staged-pushing-card"') < text.index('id="analyzing-cloud-card"')
 
 
 # ---------------------------------------------------------------------------

@@ -1,31 +1,4 @@
-{# phaze-5c6i2 (acceptance rule 2): the global "TOTAL QUEUED (analyze)" figure.
-
-   total_queued_analyze = the Stage.ANALYZE not_started bucket ("unrouted" -- files not yet routed to
-   ANY lane) PLUS every lane's own `queued` figure (routed to a lane but not yet executing) --
-   services.backends.get_analyze_queue_totals. So total_queued_analyze >= sum(lane.queued for lane in
-   lanes) HOLDS BY CONSTRUCTION, and the unrouted remainder (unrouted_queued_analyze) is rendered
-   explicitly below rather than being silently folded into the total and lost.
-
-   None on either value means degraded/unknown (an em-dash, NEVER a fabricated 0 -- acceptance rule 8):
-   `total_queued_analyze` degrades to None whenever ANY lane's own queued figure is itself unknown (a
-   partial sum would understate the total the same way a 0-degrade would); `unrouted_queued_analyze`
-   keeps `_safe_bucket_counts`'s own pre-existing 0-degrade (not a new read this bead adds).
-
-   Rendered inline in analyze_workspace.html on first load (#analyze-queue-total-card lives OUTSIDE the
-   #pipeline-stats poll target, ABOVE the #analyze-lanes grid), then re-pushed by stats_bar.html as an
-   hx-swap-oob fragment on every 5s poll (oob=True) so the count stays live. Same id on both renders is
-   the OOB contract (mirrors staged_pushing_card.html). #}
-<section id="analyze-queue-total-card"
-         aria-labelledby="analyze-queue-total-heading"
-         {% if oob %}hx-swap-oob="true"{% endif %}
-         class="mx-6 mt-4 rounded-lg border border-gray-200 p-4 dark:border-phaze-border">
-    <h2 id="analyze-queue-total-heading" class="text-xs font-jura font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-        Total queued (analyze)
-    </h2>
-    <p class="mt-1 font-mono text-2xl font-bold text-gray-800 dark:text-gray-100">
-        {{ total_queued_analyze if total_queued_analyze is not none else "—" }}
-    </p>
-    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-        includes {{ unrouted_queued_analyze if unrouted_queued_analyze is not none else "—" }} not yet routed to a lane
-    </p>
+{% import "ui/primitives.html" as ui %}
+<section id="analyze-queue-total-card" {% if oob %}hx-swap-oob="true"{% endif %}>
+    {{ ui.metric("Queued", total_queued_analyze if total_queued_analyze is not none else "—", (unrouted_queued_analyze if unrouted_queued_analyze is not none else "—") ~ " awaiting lane assignment", "neutral") }}
 </section>

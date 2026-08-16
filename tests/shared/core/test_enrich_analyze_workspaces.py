@@ -570,10 +570,10 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
     assert "RANK 10 · cap 4" in body
     assert "RANK 20 · cap 3" in body
     assert "RANK 99 · cap 8" in body
-    # phaze-5c6i2: the old {in_flight}/{cap} numeral is GONE.
-    assert "2/4" not in body
-    assert "1/3" not in body
-    assert "5/8" not in body
+    # Capacity is now explicit and comparable in every row: active work / configured cap.
+    assert "2/4" in body
+    assert "1/3" in body
+    assert "5/8" in body
     # queued/working/processed render per lane, 24h primary + lifetime caption (acceptance rule 1).
     assert "processed 12 (24h) / 340 all time" in body  # a1
     assert "processed 5 (24h) / 42 all time" in body  # k8s
@@ -604,6 +604,73 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
     # WORK-05 / R-2: no second poll loop in the workspace fragment.
     assert 'hx-trigger="every' not in body
     assert "setInterval" not in body
+
+
+@pytest.mark.asyncio
+async def test_analyze_workspace_leads_with_flow_then_alerts_and_lanes(client: AsyncClient, session: AsyncSession) -> None:
+    """The default hierarchy is scoped flow, actionable health, lane comparison, then diagnostics."""
+    await _seed_file(session)
+
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    body = response.text
+
+    metrics = body.index('aria-label="Analyze flow metrics"')
+    health = body.index('id="analysis-health-card"')
+    lanes = body.index('id="analyze-lanes"')
+    diagnostics = body.index('id="analysis-diagnostics"')
+    files = body.index('id="analyze-files-view"')
+    assert metrics < health < lanes < diagnostics < files
+    for label in ("Queued", "Active", "Awaiting route", "Completed"):
+        assert label in body[metrics:health]
+    assert 'x-text="$store.pipeline.analyzeActive"' in body[metrics:health]
+    assert 'x-text="$store.pipeline.analyzeDone"' in body[metrics:health]
+    assert "Queued" in body and "lane capacity" in body and "Completed" in body
+    assert "Technical diagnostics" in body
+    assert 'hx-get="/pipeline/analyze-files"' in body
+    assert 'hx-post="/pipeline/stages/analyze/pause"' in body
+    assert 'hx-post="/pipeline/stages/analyze/resume"' in body
+
+
+@pytest.mark.asyncio
+async def test_analyze_over_limit_is_unsafe_and_explains_remedy(
+    client: AsyncClient,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real active-over-capacity is red, explicit about impact, and never presented as congestion."""
+    import phaze.routers.pipeline as pipeline_mod
+
+    lane = {
+        "id": "local",
+        "kind": "local",
+        "rank": 10,
+        "cap": 2,
+        "in_flight": 3,
+        "available": True,
+        "quota_wait": 0,
+        "inadmissible": 0,
+        "queued": 4,
+        "working": 3,
+        "processed_24h": 8,
+        "processed_lifetime": 80,
+    }
+
+    async def _snapshot(_session: AsyncSession, _app_state: object = None) -> list[dict[str, object]]:
+        return [lane]
+
+    monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
+    await _seed_file(session)
+
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    body = response.text
+    health = body[body.index('id="analysis-health-card"') : body.index("</section>", body.index('id="analysis-health-card"'))]
+    assert "UNSAFE" in health
+    assert "3 active jobs exceed cap 2" in health
+    assert "Stop new admission and inspect the lane" in health
+    assert "OVER LIMIT" in body
+    assert "New work can compound resource pressure" in body
 
 
 @pytest.mark.asyncio
