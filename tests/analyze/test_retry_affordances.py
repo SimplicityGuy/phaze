@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 import uuid
 
+from bs4 import BeautifulSoup
 import pytest
 from sqlalchemy import select
 
@@ -329,6 +330,22 @@ def test_render_per_row_retry_is_isolated_by_inert_table_row() -> None:
     assert "hx-trigger" not in row_tag
     assert "@keydown" not in row_tag
     assert "@click" not in row_tag
+
+
+def test_render_per_row_retry_ack_target_survives_stage_oob_swap() -> None:
+    """The primary HTMX ack target must not be removed by the response's stage-pill OOB swap."""
+    soup = BeautifulSoup(_render_files_table(bucket="failed", active_stage="analyze", active_bucket="failed"), "html.parser")
+
+    for surface_prefix in ("files", "files-mobile"):
+        pill_prefix = f"{surface_prefix}-stage-pill-analyze-"
+        pill = soup.select_one(f'[id^="{pill_prefix}"]')
+
+        assert pill is not None
+        file_id = str(pill["id"]).removeprefix(pill_prefix)
+        result = soup.find(id=f"retry-result-{surface_prefix}-{file_id}-analyze")
+        assert result is not None
+        assert pill not in result.parents
+        assert pill.parent is result.parent
 
 
 def test_render_bulk_retry_all_button_on_failed_filter_view() -> None:

@@ -1,5 +1,6 @@
 {% set retry_endpoints = {'metadata': 'metadata-failed', 'analyze': 'analysis-failed'} %}
 {% set surface_prefix = 'files-mobile' if surface == 'mobile' else 'files' %}
+{% if not oob %}<span class="inline-flex flex-nowrap items-center gap-2">{% endif %}
 <span id="{{ surface_prefix }}-stage-pill-{{ key }}-{{ file_id }}"
       class="inline-flex flex-nowrap items-center gap-2"{% if oob %} hx-swap-oob="true"{% endif %}>
     {% with stage_label=stage_label, bucket=bucket %}{% include "pipeline/partials/_stage_pill.html" %}{% endwith %}
@@ -13,7 +14,10 @@
         <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
         Retry
     </button>
-    <span id="retry-ind-{{ surface_prefix }}-{{ file_id }}-{{ key }}" class="htmx-indicator shrink-0 text-xs text-gray-500 dark:text-gray-400">Enqueuing…</span>
-    <span id="retry-result-{{ surface_prefix }}-{{ file_id }}-{{ key }}" class="shrink-0" aria-live="polite"></span>
     {% endif %}
 </span>
+{% if not oob and bucket == 'failed' and key in retry_endpoints %}
+    <span id="retry-ind-{{ surface_prefix }}-{{ file_id }}-{{ key }}" class="htmx-indicator shrink-0 text-xs text-gray-500 dark:text-gray-400">Enqueuing…</span>
+    <span id="retry-result-{{ surface_prefix }}-{{ file_id }}-{{ key }}" class="shrink-0" aria-live="polite"></span>
+{% endif %}
+{% if not oob %}</span>{% endif %}
