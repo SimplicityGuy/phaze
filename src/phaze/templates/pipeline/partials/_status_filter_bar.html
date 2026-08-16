@@ -17,14 +17,13 @@
    Pure filter control: no self-poll (no hx-trigger="every ..."). The only hx-trigger is `change`,
    a user-initiated navigation, exactly like the rail.
 #}
-{# The six matrix stages (tracklist is never a matrix column -- the 7->6 remap, mirrored from
-   _stage_matrix.html); Appr = review, Exec = apply. #}
+{# The five matrix stages; Tracklists remain outside this cross-pipeline inventory. #}
 {% set _filter_stages = [
-    ('metadata', 'Meta'),
+    ('metadata', 'Metadata'),
     ('analyze', 'Analyze'),
-    ('propose', 'Prop'),
-    ('review', 'Appr'),
-    ('apply', 'Exec'),
+    ('propose', 'Propose'),
+    ('review', 'Review'),
+    ('apply', 'Execute'),
 ] %}
 {# phaze-cavai: 'orphaned' is the recovery-candidate lens (scheduled, running nowhere, not
    domain-complete) -- server-side it refines in_flight through orphaned_clause, so it is only

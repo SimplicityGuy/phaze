@@ -173,8 +173,8 @@
                 // (their un-truncated pill+Retry content refuses to shrink below its own width, see
                 // the colgroup comment in files_table_view.html), these are just a sane JS-side floor
                 // so a fast drag never reports a negative or zero width mid-gesture.
-                defaults: { File: 320, Type: 88, Meta: 104, FP: 104, Analyze: 132, Prop: 104, Appr: 104, Exec: 104 },
-                mins: { File: 140, Type: 64, Meta: 84, FP: 84, Analyze: 96, Prop: 84, Appr: 84, Exec: 84 },
+                defaults: { File: 320, Type: 88, Metadata: 116, Analyze: 116, Propose: 108, Review: 104, Execute: 108 },
+                mins: { File: 140, Type: 64, Metadata: 96, Analyze: 96, Propose: 88, Review: 84, Execute: 88 },
                 max: 900,
                 widths: (() => {
                     try {

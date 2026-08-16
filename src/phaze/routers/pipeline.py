@@ -1318,20 +1318,19 @@ TRACKLIST_SETS_SORT = SortContract(
 # rather than erroring. `tests/integration/test_files_sort.py` asserts the two agree, in both
 # directions, so the pair cannot drift silently.
 #
-# The 6-stage -> 5-pill remap LANDMINE applies to the KEYS too: `Appr` reads the `review` bucket and
-# `Exec` reads `apply`. The wire keys are the canonical `Stage` values rather than the header words,
-# so the URL names the model's vocabulary and no third naming scheme is invented.
+# The five displayed stage keys use canonical ``Stage`` values, so the URL names the model's
+# vocabulary while the labels remain explicit operator-facing language.
 FILES_SORT = SortContract(
     endpoint="/pipeline/files",
     target="#files-table-view",
     columns=(
         SortableColumn(key="file", label="File", expression=FileRecord.current_path),
         SortableColumn(key="type", label="Type", expression=FileRecord.file_type),
-        SortableColumn(key="metadata", label="Meta", expression=stage_status_sort_case(Stage.METADATA)),
+        SortableColumn(key="metadata", label="Metadata", expression=stage_status_sort_case(Stage.METADATA)),
         SortableColumn(key="analyze", label="Analyze", expression=stage_status_sort_case(Stage.ANALYZE)),
-        SortableColumn(key="propose", label="Prop", expression=stage_status_sort_case(Stage.PROPOSE)),
-        SortableColumn(key="review", label="Appr", expression=stage_status_sort_case(Stage.REVIEW)),
-        SortableColumn(key="apply", label="Exec", expression=stage_status_sort_case(Stage.APPLY)),
+        SortableColumn(key="propose", label="Propose", expression=stage_status_sort_case(Stage.PROPOSE)),
+        SortableColumn(key="review", label="Review", expression=stage_status_sort_case(Stage.REVIEW)),
+        SortableColumn(key="apply", label="Execute", expression=stage_status_sort_case(Stage.APPLY)),
     ),
     default_key="file",
 )
@@ -2300,7 +2299,7 @@ async def force_skip_stage(
 # The record pane enrich stage labels (the stage loop in record_body.html) — informational text inside the
 # pill's aria-label only. Enrich-only, mirroring STAGE_TO_FUNCTION, because non-enrich stages are
 # rejected 422 before this is ever reached (D-10).
-_ENRICH_STAGE_LABELS = {"metadata": "Meta", "analyze": "Analyze"}
+_ENRICH_STAGE_LABELS = {"metadata": "Metadata", "analyze": "Analyze"}
 
 
 def _stage_pill_oob(file_id: uuid.UUID, stage: str, bucket: str, *, id_prefix: str = "stage-pill") -> str:
@@ -2371,14 +2370,13 @@ def _force_skip_no_op_toast(stage: str) -> HTMLResponse:
 # unmet blocker keeping a stage out of the pending set.
 # --------------------------------------------------------------------------------------------------
 
-# Display label per stage for the five-pill matrix + trace verdict (the 6->5 remap: tracklist is
-# omitted; review renders as Appr, apply as Exec). Mirrors the _stage_matrix partial pill order.
+# Display label per stage for the five-pill matrix + trace verdict. Tracklists are omitted here.
 _STAGE_TRACE_LABELS: dict[Stage, str] = {
-    Stage.METADATA: "Meta",
+    Stage.METADATA: "Metadata",
     Stage.ANALYZE: "Analyze",
-    Stage.PROPOSE: "Prop",
-    Stage.REVIEW: "Appr",
-    Stage.APPLY: "Exec",
+    Stage.PROPOSE: "Propose",
+    Stage.REVIEW: "Review",
+    Stage.APPLY: "Execute",
 }
 
 
