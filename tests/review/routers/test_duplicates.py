@@ -130,7 +130,7 @@ async def test_list_duplicates_redirects_even_with_hx_request_header(session: As
 
 @pytest.mark.asyncio
 async def test_compare_endpoint(session: AsyncSession, client: AsyncClient) -> None:
-    """GET /duplicates/{hash}/compare returns comparison table with Resolve Group button."""
+    """GET /duplicates/{hash}/compare returns a comparison table with the staged review action."""
     f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A, file_size=2000)
     f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A, file_size=1000)
     session.add_all([f1, f2])
@@ -144,7 +144,7 @@ async def test_compare_endpoint(session: AsyncSession, client: AsyncClient) -> N
     response = await client.get(f"/duplicates/{HASH_A}/compare")
 
     assert response.status_code == 200
-    assert "Resolve Group" in response.text
+    assert "Review decision" in response.text
     assert "Artist A" in response.text
     assert "Artist B" in response.text
 
@@ -920,8 +920,8 @@ async def test_compare_finds_group_beyond_the_old_1000_group_scan(session: Async
 
     assert response.status_code == 200
     assert "Group not found" not in response.text, "a real, unresolved group past the old 1000-group cap was unreachable"
-    assert "Resolve Group" in response.text
-    assert f"/duplicates/{target_hash}/resolve" in response.text
+    assert "Review decision" in response.text
+    assert f"/duplicates/{target_hash}/review" in response.text
 
 
 @pytest.mark.asyncio
