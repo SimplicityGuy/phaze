@@ -11,7 +11,7 @@
    the same Prev/Next affordance, the same empty and loading states.
 
    Context contract:
-     * pending_page  -- phaze.services.pagination.Page[FileRecord] (rows/page/page_size/has_next).
+     * pending_page  -- PendingFilesPage (rows/page/page_size/has_next/available).
      * stage         -- the enrich stage key (validated against the router allowlist; carried
                         ONLY as an autoescaped query value, never spliced into a template path).
                         "metadata" is the only stage today; the branch below is the per-stage seam.
@@ -31,6 +31,12 @@
     {% set row_id_prefix = "pending-row" %}
 {% endif %}
 <div>
+    {% if not pending_page.available %}
+        {% set _retry_qs = '?stage=' ~ stage ~ '&page=' ~ pending_page.page ~ '&page_size=' ~ pending_page.page_size ~ (sort.query_state() if sort else '') %}
+        {% call ui.state('error', 'Eligible files unavailable', 'The pending-file read failed. The current selection is unknown, not empty.') %}
+            <button type="button" hx-get="/pipeline/pending-files{{ _retry_qs }}" hx-target="#{{ host_id }}" hx-swap="innerHTML" class="rounded-md border border-gray-300 px-3 py-1.5 text-sm font-semibold text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border dark:text-gray-300 dark:hover:bg-white/5">Retry</button>
+        {% endcall %}
+    {% else %}
     {% set ns = namespace(rows=[]) %}
     {% for f in pending_page.rows %}
         {% if _is_metadata %}
@@ -80,5 +86,6 @@
             {% endif %}
         </div>
     </nav>
+    {% endif %}
     {% endif %}
 </div>

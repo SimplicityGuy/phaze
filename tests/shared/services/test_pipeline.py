@@ -537,7 +537,7 @@ async def test_get_metadata_activity_summary_reports_recent_successes(session: A
 
     summary = await get_metadata_activity_summary(session)
 
-    assert summary.successful_writes_24h == 1
+    assert summary.unique_files_24h == 1
     assert summary.latest_successful_at == completed_at
     assert summary.available is True
 
@@ -564,27 +564,16 @@ async def test_get_stage_busy_counts_degrades_on_db_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_safe_bucket_counts_degrades_when_rollback_also_fails() -> None:
-    """``_safe_bucket_counts`` (five-way stage bucket, no ``begin_nested``) degrades to all-zero even
-    when its own explicit guarded ``session.rollback()`` ALSO raises.
-
-    Unlike the ``begin_nested``-based readers, this one manages its own rollback inline (INFLIGHT-02
-    discipline): the primary read failing hits the outer ``except``, and the recovery attempt
-    (``session.rollback()``) failing too must still be swallowed -- logged separately -- rather than
-    propagating into the 5s poll.
-    """
+async def test_safe_bucket_counts_degrades_when_savepoint_fails() -> None:
+    """``_safe_bucket_counts`` degrades to all-zero when its SAVEPOINT cannot be opened."""
     from phaze.enums.stage import Stage
 
-    class _DoublyExplodingSession:
-        async def execute(self, *_args: object, **_kwargs: object) -> object:
-            msg = "current transaction is aborted"
-            raise RuntimeError(msg)
-
-        async def rollback(self) -> None:
+    class _SavepointExplodingSession:
+        def begin_nested(self) -> object:
             msg = "connection already closed"
             raise RuntimeError(msg)
 
-    out = await pipeline_mod._safe_bucket_counts(_DoublyExplodingSession(), Stage.ANALYZE)  # type: ignore[arg-type]
+    out = await pipeline_mod._safe_bucket_counts(_SavepointExplodingSession(), Stage.ANALYZE)  # type: ignore[arg-type]
 
     assert out, "the zero-filled bucket dict must not be empty"
     assert all(v == 0 for v in out.values())

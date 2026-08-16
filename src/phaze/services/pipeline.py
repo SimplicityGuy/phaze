@@ -383,6 +383,19 @@ def _empty_buckets() -> dict[str, int]:
     return out
 
 
+@dataclass(frozen=True)
+class StageBucketSnapshot:
+    """Canonical stage buckets plus whether their aggregation succeeded."""
+
+    counts: dict[str, int]
+    available: bool
+
+
+def _stage_bucket_stmt(stage: Stage) -> Select[Any]:
+    status_subq = select(stage_status_case(stage).label("status")).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES)).subquery()
+    return select(status_subq.c.status, func.count()).group_by(status_subq.c.status)
+
+
 async def _safe_orphan_split(session: AsyncSession, stage: Stage, buckets: dict[str, int], *, agent_id: str | None = None) -> None:
     """Move ``stage``'s ORPHANED files out of the ``in_flight`` bucket, in place. Degrade-safe (D-01a).
 
@@ -440,13 +453,17 @@ async def _safe_bucket_counts(session: AsyncSession, stage: Stage) -> dict[str, 
     verbatim -- NEVER a fresh ``CASE`` (D-04) -- so the buckets can never drift from the DERIV-04
     equivalence lock (and, transitively, the Python resolver).
 
-    Mirrors the :func:`_safe_count` degrade discipline (INFLIGHT-02): the dict zero-fills first, and on
-    ANY exception this logs a warning, guarded-rolls-back the aborted transaction (so a Postgres
-    "current transaction is aborted" state cannot poison the later stage COUNTs), and returns the
-    all-zero dict -- it NEVER raises into the hot 5s /pipeline/stats poll. On that fail-safe-to-zero
+    Mirrors the :func:`_safe_count` degrade discipline (INFLIGHT-02): the dict zero-fills first, and the
+    read runs in a SAVEPOINT so ANY exception can be logged without rolling back the caller's outer
+    transaction. It returns the all-zero dict -- it NEVER raises into the hot 5s /pipeline/stats poll. On that fail-safe-to-zero
     degrade the five buckets intentionally do NOT sum to ``music_video_total``; the sum-to-total
     invariant is a healthy-query property only, NEVER a runtime assertion in the poll path (Pitfall 3).
     """
+    return (await _safe_bucket_snapshot(session, stage)).counts
+
+
+async def _safe_bucket_snapshot(session: AsyncSession, stage: Stage) -> StageBucketSnapshot:
+    """Availability-bearing form of :func:`_safe_bucket_counts` for truthful metric consumers."""
     out: dict[str, int] = _empty_buckets()
     # Materialize the per-row status label in an inner subquery FIRST, then GROUP BY the label in the
     # outer query. Grouping directly by ``stage_status_case(stage)`` fails on Postgres -- the CASE ladder
@@ -454,23 +471,19 @@ async def _safe_bucket_counts(session: AsyncSession, stage: Stage) -> dict[str, 
     # expression re-projects the ungrouped ``files.id`` ("subquery uses ungrouped column" GroupingError).
     # The derived-table form evaluates the per-file status once per row (where ``files.id`` is in scope),
     # so the outer aggregation groups a plain scalar label.
-    status_subq = select(stage_status_case(stage).label("status")).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES)).subquery()
-    stmt = select(status_subq.c.status, func.count()).group_by(status_subq.c.status)
+    stmt = _metadata_status_stmt() if stage is Stage.METADATA else _stage_bucket_stmt(stage)
     try:
-        for status_label, n in (await session.execute(stmt)).all():
-            if status_label in out:
-                out[status_label] = int(n)
+        async with session.begin_nested():
+            for status_label, n in (await session.execute(stmt)).all():
+                if status_label in out:
+                    out[status_label] = int(n)
     except Exception:
         logger.warning("stage_bucket_degraded", stage=stage.value, exc_info=True)
-        try:
-            await session.rollback()
-        except Exception:
-            logger.warning("stage_bucket_rollback_failed", stage=stage.value, exc_info=True)
-        return out
+        return StageBucketSnapshot(counts=out, available=False)
     # phaze-2u8v.2 / D-01a: carve ORPHANED out of in_flight (own SAVEPOINT, own zero degrade). Skipped on
     # the degrade path above -- all-zero buckets have nothing to split, and the session may be recovering.
     await _safe_orphan_split(session, stage, out)
-    return out
+    return StageBucketSnapshot(counts=out, available=True)
 
 
 @dataclass(frozen=True)
@@ -485,23 +498,18 @@ class MetadataStatusSnapshot:
 
 def _metadata_status_stmt() -> Select[Any]:
     """Build the canonical metadata status aggregation used by the workspace metrics."""
-    status_subq = select(stage_status_case(Stage.METADATA).label("status")).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES)).subquery()
-    return select(status_subq.c.status, func.count()).group_by(status_subq.c.status)
+    return _stage_bucket_stmt(Stage.METADATA)
 
 
 async def get_metadata_status_snapshot(session: AsyncSession) -> MetadataStatusSnapshot:
     """Read metadata done/failed without presenting a failed status read as zero."""
-    try:
-        async with session.begin_nested():
-            rows = (await session.execute(_metadata_status_stmt())).all()
-    except Exception:
-        logger.warning("metadata_status_snapshot_degraded", exc_info=True)
+    snapshot = await _safe_bucket_snapshot(session, Stage.METADATA)
+    if not snapshot.available:
         return MetadataStatusSnapshot()
-    counts = {status: int(count) for status, count in rows}
     return MetadataStatusSnapshot(
-        done=counts.get(Status.DONE.value, 0),
-        failed=counts.get(Status.FAILED.value, 0),
-        total=sum(counts.values()),
+        done=snapshot.counts[Status.DONE.value],
+        failed=snapshot.counts[Status.FAILED.value],
+        total=sum(snapshot.counts.values()),
         available=True,
     )
 
@@ -820,6 +828,7 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
     # The all-zero enrich-bucket default returned when a bucket read's session acquisition times out
     # (never mutated -- only spread via {**bucket, "total": ...}).
     bucket_default: dict[str, int] = _empty_buckets()
+    metadata_bucket_default = StageBucketSnapshot(counts=_empty_buckets(), available=False)
 
     # ONE semaphore shared across every read in THIS poll -- and, since phaze-28wi, across every
     # OTHER concurrently in-flight poll on the SAME running loop too, so the cap bounds them all
@@ -847,13 +856,13 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
         # NOTE: typing.cast is aliased type_cast -- the bare `cast` name is sqlalchemy's SQL cast (used
         # elsewhere in this module).
     ) = type_cast(
-        "tuple[int, int, int, int, dict[str, int], dict[str, int], int, int, int, int, int]",
+        "tuple[int, int, int, int, StageBucketSnapshot, dict[str, int], int, int, int, int, int]",
         await asyncio.gather(
             _read_in_own_session(fanout, lambda s: _safe_count(s, mv_total_stmt, node="music_video_total"), 0),
             _read_in_own_session(fanout, lambda s: _safe_count(s, tracklist_total_stmt, node="tracklist_total"), 0),
             _read_in_own_session(fanout, lambda s: _safe_count(s, discovery_stmt, node="discovery"), 0),
             _read_in_own_session(fanout, lambda s: _safe_count(s, convergence_stmt, node="proposals_total"), 0),
-            _read_in_own_session(fanout, lambda s: _safe_bucket_counts(s, Stage.METADATA), bucket_default),
+            _read_in_own_session(fanout, lambda s: _safe_bucket_snapshot(s, Stage.METADATA), metadata_bucket_default),
             _read_in_own_session(fanout, lambda s: _safe_bucket_counts(s, Stage.ANALYZE), bucket_default),
             _read_in_own_session(fanout, lambda s: _safe_count(s, tracklist_stmt, node="tracklist"), 0),
             _read_in_own_session(fanout, lambda s: _safe_count(s, match_done_stmt, node="match"), 0),
@@ -870,7 +879,7 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
         # each -- so the DAG surfaces a VISIBLE failed count per enrich stage and the five buckets sum
         # to music_video_total on a healthy query. `total` stays music_video_total; `done` (still read
         # by _build_dag_context) is now the derived done-bucket. Degrade-safe (all-zero on any error).
-        "metadata": {**metadata_b, "total": music_video_total},
+        "metadata": {**metadata_b.counts, "total": music_video_total, "available": int(metadata_b.available)},
         "analyze": {**analyze_b, "total": music_video_total},
         "tracklist": {
             "done": tracklist_done,
@@ -1008,7 +1017,7 @@ async def get_stage_activity_counts(session: AsyncSession) -> dict[str, dict[str
 class MetadataActivitySummary:
     """Successful metadata-write context for the Metadata workspace."""
 
-    successful_writes_24h: int | None = None
+    unique_files_24h: int | None = None
     latest_successful_at: datetime | None = None
     available: bool = False
 
@@ -1019,17 +1028,17 @@ async def get_metadata_activity_summary(session: AsyncSession) -> MetadataActivi
     stmt = _metadata_activity_stmt(cutoff)
     try:
         async with session.begin_nested():
-            successful_writes_24h, latest_successful_at = (await session.execute(stmt)).one()
+            unique_files_24h, latest_successful_at = (await session.execute(stmt)).one()
     except Exception:
         logger.warning("metadata_activity_summary_degraded", exc_info=True)
         return MetadataActivitySummary()
-    return MetadataActivitySummary(successful_writes_24h=int(successful_writes_24h or 0), latest_successful_at=latest_successful_at, available=True)
+    return MetadataActivitySummary(unique_files_24h=int(unique_files_24h or 0), latest_successful_at=latest_successful_at, available=True)
 
 
 def _metadata_activity_stmt(cutoff: datetime) -> Select[Any]:
     """Build the successful-write measurement query for the supplied rolling cutoff."""
     return select(
-        func.count(FileMetadata.id).filter(FileMetadata.failed_at.is_(None), FileMetadata.updated_at >= cutoff),
+        func.count(distinct(FileMetadata.file_id)).filter(FileMetadata.failed_at.is_(None), FileMetadata.updated_at >= cutoff),
         func.max(FileMetadata.updated_at).filter(FileMetadata.failed_at.is_(None)),
     )
 
@@ -2360,9 +2369,16 @@ def _pending_page_stmt(stage: Stage, *, page: int, page_size: int, sort: SortSta
     )
 
 
+@dataclass
+class PendingFilesPage(Page[FileRecord]):
+    """A bounded pending page that distinguishes an empty selection from a failed read."""
+
+    available: bool = True
+
+
 async def get_pending_files_page(
     session: AsyncSession, stage: Stage, *, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE, sort: SortState | None = None
-) -> Page[FileRecord]:
+) -> PendingFilesPage:
     """Return ONE bounded page of ``stage``'s pending set -- the RENDER read for the enrich workspaces.
 
     phaze-5462: the metadata workspace used to render :func:`get_metadata_pending_files` in full,
@@ -2376,7 +2392,8 @@ async def get_pending_files_page(
     first page would silently under-enqueue the backlog -- a far worse bug than a long table. Do NOT
     "unify" the two readers.
 
-    SAVEPOINT degrade-safe: returns an EMPTY page on any error rather than 500ing the workspace.
+    SAVEPOINT degrade-safe: returns an unavailable empty page on error rather than 500ing or claiming
+    the selection is empty.
     """
     page = clamp_page(page)
     page_size = clamp_page_size(page_size)
@@ -2385,9 +2402,9 @@ async def get_pending_files_page(
             raw = (await session.execute(_pending_page_stmt(stage, page=page, page_size=page_size, sort=sort))).scalars().all()
     except Exception:
         logger.warning("pending_files_page_degraded", stage=stage.value, page=page, page_size=page_size, exc_info=True)
-        return Page(rows=[], page=page, page_size=page_size, has_next=False)
+        return PendingFilesPage(rows=[], page=page, page_size=page_size, has_next=False, available=False)
     rows, has_next = split_sentinel(raw, page_size)
-    return Page(rows=rows, page=page, page_size=page_size, has_next=has_next)
+    return PendingFilesPage(rows=rows, page=page, page_size=page_size, has_next=has_next, available=True)
 
 
 async def get_metadata_failed_files(session: AsyncSession) -> list[FileRecord]:

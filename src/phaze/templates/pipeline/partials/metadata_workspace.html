@@ -23,7 +23,7 @@
         {% set active_value %}<span id="metadata-active-value" x-text="$store.pipeline.metadataQueueKnown ? $store.pipeline.metadataActive : '—'">{{ metadata_queue.counts.metadata.active if metadata_queue.available else '—' }}</span>{% endset %}
         {% set completed_value %}<span id="metadata-completed-value" x-text="$store.pipeline.metadataStatusKnown ? $store.pipeline.metadataStatusDone : '—'">{{ metadata_status.done if metadata_status.available else '—' }}</span>{% endset %}
         {% set failed_value %}<span id="metadata-failed-value" x-text="$store.pipeline.metadataStatusKnown ? $store.pipeline.metadataStatusFailed : '—'">{{ metadata_status.failed if metadata_status.available else '—' }}</span>{% endset %}
-        {% set recent_value %}<span id="metadata-24h-value">{{ metadata_activity.successful_writes_24h if metadata_activity.available else '—' }}</span>{% endset %}
+        {% set recent_value %}<span id="metadata-24h-value">{{ metadata_activity.unique_files_24h if metadata_activity.available else '—' }}</span>{% endset %}
         {% set latest_value %}<span>{{ humanize_relative_time(metadata_activity.latest_successful_at) if metadata_activity.available else 'unavailable' }}</span>{% endset %}
         {% call ui.metric_strip('Metadata extraction summary') %}
             {{ ui.metric('Eligible', eligible_value, 'Exact current Extract All selection', 'neutral') }}
@@ -31,7 +31,7 @@
             {{ ui.metric('Active', active_value, 'SAQ active; may be claimed or executing', 'accent') }}
             {{ ui.metric('Completed', completed_value, 'Successful metadata outcomes', 'success') }}
             {{ ui.metric('Failed', failed_value, 'Terminal outcomes; selectable retries appear under Eligible', 'danger') }}
-            {{ ui.metric('Successful writes · 24h', recent_value, 'All files and agents; retries count', 'accent') }}
+            {{ ui.metric('Files updated · 24h', recent_value, 'Unique files with a successful metadata write', 'accent') }}
             {{ ui.metric('Latest successful write', latest_value, 'Controller receipt time, not a batch run', 'neutral') }}
         {% endcall %}
 

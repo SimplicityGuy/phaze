@@ -83,7 +83,6 @@ from phaze.services.pipeline import (
     get_metadata_failed_files,
     get_metadata_pending_files,
     get_metadata_selection_summary,
-    get_metadata_status_snapshot,
     get_pending_files_page,
     get_proposal_busy_count,
     get_proposal_pending_batches,
@@ -272,15 +271,16 @@ async def _build_dag_context(
     def total(node: str) -> int:
         return int(stage[node]["total"] or 0)
 
-    metadata_status = await get_metadata_status_snapshot(session)
+    metadata_buckets = stage["metadata"]
+    metadata_status_total = sum(int(value or 0) for key, value in metadata_buckets.items() if key not in {"total", "available"})
     dag: dict[str, int] = {
         "metadataDone": done("metadata"),
         "metadataTotal": total("metadata"),
         "metadataFailed": int(stage["metadata"].get("failed") or 0),
-        "metadataStatusDone": metadata_status.done,
-        "metadataStatusFailed": metadata_status.failed,
-        "metadataStatusTotal": metadata_status.total,
-        "metadataStatusKnown": int(metadata_status.available),
+        "metadataStatusDone": int(metadata_buckets.get(Status.DONE.value) or 0),
+        "metadataStatusFailed": int(metadata_buckets.get(Status.FAILED.value) or 0),
+        "metadataStatusTotal": metadata_status_total,
+        "metadataStatusKnown": int(metadata_buckets.get("available") or 0),
         "analyzeDone": done("analyze"),
         "analyzeTotal": total("analyze"),
         # Phase 93 (CONSOLE-02): the DERIVED in-flight count — the same stage_status_case bucket the
