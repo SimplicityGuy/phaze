@@ -473,6 +473,39 @@ async def _safe_bucket_counts(session: AsyncSession, stage: Stage) -> dict[str, 
     return out
 
 
+@dataclass(frozen=True)
+class MetadataStatusSnapshot:
+    """Metadata done/failed counts plus whether their canonical bucket read succeeded."""
+
+    done: int = 0
+    failed: int = 0
+    total: int = 0
+    available: bool = False
+
+
+def _metadata_status_stmt() -> Select[Any]:
+    """Build the canonical metadata status aggregation used by the workspace metrics."""
+    status_subq = select(stage_status_case(Stage.METADATA).label("status")).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES)).subquery()
+    return select(status_subq.c.status, func.count()).group_by(status_subq.c.status)
+
+
+async def get_metadata_status_snapshot(session: AsyncSession) -> MetadataStatusSnapshot:
+    """Read metadata done/failed without presenting a failed status read as zero."""
+    try:
+        async with session.begin_nested():
+            rows = (await session.execute(_metadata_status_stmt())).all()
+    except Exception:
+        logger.warning("metadata_status_snapshot_degraded", exc_info=True)
+        return MetadataStatusSnapshot()
+    counts = {status: int(count) for status, count in rows}
+    return MetadataStatusSnapshot(
+        done=counts.get(Status.DONE.value, 0),
+        failed=counts.get(Status.FAILED.value, 0),
+        total=sum(counts.values()),
+        available=True,
+    )
+
+
 async def _agent_stage_buckets(session: AsyncSession, agent_id: str, stage: Stage) -> dict[str, int]:
     """Per-agent five-way ``{not_started, in_flight, done, skipped, failed}`` count for ``stage``, degrade-safe.
 

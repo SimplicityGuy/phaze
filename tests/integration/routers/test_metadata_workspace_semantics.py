@@ -18,10 +18,12 @@ from phaze.services import pipeline as pipeline_service
 from phaze.services.pipeline import (
     MetadataActivitySummary,
     MetadataSelectionSummary,
+    MetadataStatusSnapshot,
     StageActivitySnapshot,
     get_metadata_activity_summary,
     get_metadata_pending_files,
     get_metadata_selection_summary,
+    get_metadata_status_snapshot,
     get_stage_activity_snapshot,
 )
 
@@ -107,6 +109,69 @@ async def test_empty_recent_activity_is_known_zero_not_unavailable(session: Asyn
 
 
 @pytest.mark.asyncio
+async def test_status_read_failure_recovers_on_isolated_retry(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    done = _file("status-retry.mp3")
+    session.add(done)
+    await session.flush()
+    session.add(FileMetadata(file_id=done.id, failed_at=None))
+    await session.flush()
+
+    with monkeypatch.context() as failure:
+        failure.setattr(
+            pipeline_service,
+            "_metadata_status_stmt",
+            lambda: select(text("1"), text("1")).select_from(text("metadata_status_retry_missing")),
+        )
+        degraded = await get_metadata_status_snapshot(session)
+    retried = await get_metadata_status_snapshot(session)
+
+    assert degraded == MetadataStatusSnapshot()
+    assert retried.available is True
+    assert retried.done == 1
+    assert retried.total == 1
+
+
+@pytest.mark.asyncio
+async def test_selection_read_failure_recovers_on_isolated_retry(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    session.add(_file("selection-retry.mp3"))
+    await session.flush()
+
+    with monkeypatch.context() as failure:
+        failure.setattr(
+            pipeline_service,
+            "_metadata_pending_stmt",
+            lambda: select(FileRecord).where(text("EXISTS (SELECT 1 FROM metadata_selection_retry_missing)")),
+        )
+        degraded = await get_metadata_selection_summary(session)
+    retried = await get_metadata_selection_summary(session)
+
+    assert degraded == MetadataSelectionSummary()
+    assert retried == MetadataSelectionSummary(eligible_count=1, available=True)
+
+
+@pytest.mark.asyncio
+async def test_recent_write_failure_recovers_on_isolated_retry(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    recent = _file("activity-retry.mp3")
+    session.add(recent)
+    await session.flush()
+    session.add(FileMetadata(file_id=recent.id, failed_at=None, updated_at=datetime.now(UTC)))
+    await session.flush()
+
+    with monkeypatch.context() as failure:
+        failure.setattr(
+            pipeline_service,
+            "_metadata_activity_stmt",
+            lambda _cutoff: select(text("1"), text("NULL")).select_from(text("metadata_activity_retry_missing")),
+        )
+        degraded = await get_metadata_activity_summary(session)
+    retried = await get_metadata_activity_summary(session)
+
+    assert degraded == MetadataActivitySummary()
+    assert retried.available is True
+    assert retried.successful_writes_24h == 1
+
+
+@pytest.mark.asyncio
 async def test_stage_activity_preserves_saq_queued_and_active_states(session: AsyncSession) -> None:
     await session.execute(text("CREATE TEMP TABLE saq_jobs (key TEXT PRIMARY KEY, status TEXT NOT NULL) ON COMMIT DROP"))
     await session.execute(
@@ -125,6 +190,21 @@ async def test_stage_activity_preserves_saq_queued_and_active_states(session: As
 
 
 @pytest.mark.asyncio
+async def test_queue_read_failure_recovers_on_isolated_retry(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    await session.execute(text("CREATE TEMP TABLE saq_jobs (key TEXT PRIMARY KEY, status TEXT NOT NULL) ON COMMIT DROP"))
+    await session.execute(text("INSERT INTO saq_jobs (key, status) VALUES ('extract_file_metadata:retry', 'queued')"))
+
+    with monkeypatch.context() as failure:
+        failure.setattr(pipeline_service, "_STAGE_ACTIVITY_SQL", text("SELECT * FROM metadata_queue_retry_missing"))
+        degraded = await get_stage_activity_snapshot(session)
+    retried = await get_stage_activity_snapshot(session)
+
+    assert degraded.available is False
+    assert retried.available is True
+    assert retried.counts["metadata"] == {"queued": 1, "active": 0}
+
+
+@pytest.mark.asyncio
 async def test_measurement_read_failures_are_explicitly_unavailable(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
@@ -137,16 +217,23 @@ async def test_measurement_read_failures_are_explicitly_unavailable(
     )
     monkeypatch.setattr(
         pipeline_service,
+        "_metadata_status_stmt",
+        lambda: select(text("1"), text("1")).select_from(text("metadata_status_measurement_missing")),
+    )
+    monkeypatch.setattr(
+        pipeline_service,
         "_metadata_activity_stmt",
         lambda _cutoff: select(text("1"), text("NULL")).select_from(text("metadata_activity_measurement_missing")),
     )
 
     queue = await get_stage_activity_snapshot(session)
     selection = await get_metadata_selection_summary(session)
+    status = await get_metadata_status_snapshot(session)
     recent = await get_metadata_activity_summary(session)
 
     assert queue.available is False
     assert selection == MetadataSelectionSummary(eligible_count=None, available=False)
+    assert status == MetadataStatusSnapshot()
     assert recent == MetadataActivitySummary(successful_writes_24h=None, latest_successful_at=None, available=False)
     assert (await session.execute(select(1))).scalar_one() == 1
 
@@ -165,6 +252,10 @@ async def test_workspace_renders_selection_and_saq_states_without_execution_clai
         "phaze.routers.shell.get_metadata_selection_summary",
         AsyncMock(return_value=MetadataSelectionSummary(eligible_count=3, available=True)),
     )
+    monkeypatch.setattr(
+        "phaze.routers.shell.get_metadata_status_snapshot",
+        AsyncMock(return_value=MetadataStatusSnapshot(done=5, failed=1, total=9, available=True)),
+    )
     monkeypatch.setattr("phaze.routers.shell.get_stage_activity_snapshot", AsyncMock(return_value=queue))
     monkeypatch.setattr("phaze.routers.shell.get_metadata_activity_summary", AsyncMock(return_value=recent))
 
@@ -178,6 +269,8 @@ async def test_workspace_renders_selection_and_saq_states_without_execution_clai
     assert 'id="metadata-eligible-value"' in response.text and ">3</span>" in response.text
     assert 'id="metadata-queued-value"' in response.text and ">4</span>" in response.text
     assert 'id="metadata-active-value"' in response.text and ">2</span>" in response.text
+    assert 'id="metadata-completed-value"' in response.text and ">5</span>" in response.text
+    assert 'id="metadata-failed-value"' in response.text and ">1</span>" in response.text
     assert "SAQ active; may be claimed or executing" in response.text
     assert "active means claimed by queue processing and does not prove user code is currently executing" in response.text
     assert "Metadata: running" not in response.text
@@ -193,6 +286,7 @@ async def test_workspace_renders_unknown_for_degraded_measurements(
         available=False,
     )
     monkeypatch.setattr("phaze.routers.shell.get_metadata_selection_summary", AsyncMock(return_value=MetadataSelectionSummary()))
+    monkeypatch.setattr("phaze.routers.shell.get_metadata_status_snapshot", AsyncMock(return_value=MetadataStatusSnapshot()))
     monkeypatch.setattr("phaze.routers.shell.get_stage_activity_snapshot", AsyncMock(return_value=unknown_queue))
     monkeypatch.setattr("phaze.routers.shell.get_metadata_activity_summary", AsyncMock(return_value=MetadataActivitySummary()))
 
@@ -203,6 +297,34 @@ async def test_workspace_renders_unknown_for_degraded_measurements(
     assert "Recent activity unavailable" in response.text
     assert "Unknown values display as an em dash; they are not zero" in response.text
     assert 'id="metadata-eligible-value"' in response.text and ">—</span>" in response.text
+    assert 'id="metadata-completed-value"' in response.text and ">—</span>" in response.text
+    assert 'id="metadata-failed-value"' in response.text and ">—</span>" in response.text
     assert "SAQ active; may be claimed or executing" in response.text
     assert "does not prove user code is currently executing" in response.text
     assert "Most recent successful run" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_shell_rail_marks_metadata_status_unavailable(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue = StageActivitySnapshot(
+        counts={"metadata": {"queued": 0, "active": 0}, "analyze": {"queued": 0, "active": 0}},
+        available=True,
+    )
+    monkeypatch.setattr("phaze.routers.shell.get_metadata_selection_summary", AsyncMock(return_value=MetadataSelectionSummary(0, True)))
+    monkeypatch.setattr("phaze.routers.shell.get_metadata_status_snapshot", AsyncMock(return_value=MetadataStatusSnapshot()))
+    monkeypatch.setattr("phaze.routers.shell.get_stage_activity_snapshot", AsyncMock(return_value=queue))
+    monkeypatch.setattr(
+        "phaze.routers.shell.get_metadata_activity_summary",
+        AsyncMock(return_value=MetadataActivitySummary(0, None, True)),
+    )
+
+    response = await client.get("/s/metadata")
+
+    assert response.status_code == 200
+    assert "$store.pipeline.metadataStatusKnown ?" in response.text
+    assert "$store.pipeline.metadataStatusDone" in response.text
+    assert "Metadata status unavailable" in response.text
+    assert ">— / —</span>" in response.text

@@ -1,7 +1,7 @@
 {# Metadata uses the shared operational hierarchy without changing extraction or queue controls. #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% import "ui/primitives.html" as ui %}
-{% set subcount = "`${$store.pipeline.metadataDone} completed · ${$store.pipeline.metadataEligibleKnown ? $store.pipeline.metadataEligible : 'unknown'} eligible · automated extraction`" %}
+{% set subcount = "`${$store.pipeline.metadataStatusKnown ? $store.pipeline.metadataStatusDone : 'unknown'} completed · ${$store.pipeline.metadataEligibleKnown ? $store.pipeline.metadataEligible : 'unknown'} eligible · automated extraction`" %}
 {% set _btn = 'inline-flex h-9 items-center justify-center rounded-lg border border-gray-300 bg-white px-3 font-jura text-xs font-medium uppercase tracking-wider text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-300 dark:hover:bg-white/5' %}
 {% set _primary = 'inline-flex h-9 items-center justify-center rounded-lg bg-blue-600 px-3 font-jura text-xs font-medium uppercase tracking-wider text-white hover:bg-blue-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus-visible:ring-offset-phaze-bg' %}
 {% set actions %}
@@ -17,12 +17,12 @@
 
 {% call ws.workspace(title="METADATA", subcount=subcount, actions=actions) %}
     <div class="space-y-5 p-4 sm:p-6">
-        <span class="hidden" x-init="$store.pipeline.metadataEligible = {{ metadata_selection.eligible_count or 0 }}; $store.pipeline.metadataEligibleKnown = {{ 1 if metadata_selection.available else 0 }}; $store.pipeline.metadataQueued = {{ metadata_queue.counts.metadata.queued }}; $store.pipeline.metadataActive = {{ metadata_queue.counts.metadata.active }}; $store.pipeline.metadataQueueKnown = {{ 1 if metadata_queue.available else 0 }}; $store.pipeline.metadataBusy = $store.pipeline.metadataQueued + $store.pipeline.metadataActive"></span>
+        <span class="hidden" x-init="$store.pipeline.metadataStatusDone = {{ metadata_status.done }}; $store.pipeline.metadataStatusFailed = {{ metadata_status.failed }}; $store.pipeline.metadataStatusTotal = {{ metadata_status.total }}; $store.pipeline.metadataStatusKnown = {{ 1 if metadata_status.available else 0 }}; $store.pipeline.metadataEligible = {{ metadata_selection.eligible_count or 0 }}; $store.pipeline.metadataEligibleKnown = {{ 1 if metadata_selection.available else 0 }}; $store.pipeline.metadataQueued = {{ metadata_queue.counts.metadata.queued }}; $store.pipeline.metadataActive = {{ metadata_queue.counts.metadata.active }}; $store.pipeline.metadataQueueKnown = {{ 1 if metadata_queue.available else 0 }}; $store.pipeline.metadataBusy = $store.pipeline.metadataQueued + $store.pipeline.metadataActive"></span>
         {% set eligible_value %}<span id="metadata-eligible-value" x-text="$store.pipeline.metadataEligibleKnown ? $store.pipeline.metadataEligible : '—'">{{ metadata_selection.eligible_count if metadata_selection.available else '—' }}</span>{% endset %}
         {% set queued_value %}<span id="metadata-queued-value" x-text="$store.pipeline.metadataQueueKnown ? $store.pipeline.metadataQueued : '—'">{{ metadata_queue.counts.metadata.queued if metadata_queue.available else '—' }}</span>{% endset %}
         {% set active_value %}<span id="metadata-active-value" x-text="$store.pipeline.metadataQueueKnown ? $store.pipeline.metadataActive : '—'">{{ metadata_queue.counts.metadata.active if metadata_queue.available else '—' }}</span>{% endset %}
-        {% set completed_value %}<span x-text="$store.pipeline.metadataDone">0</span>{% endset %}
-        {% set failed_value %}<span x-text="$store.pipeline.metadataFailed">0</span>{% endset %}
+        {% set completed_value %}<span id="metadata-completed-value" x-text="$store.pipeline.metadataStatusKnown ? $store.pipeline.metadataStatusDone : '—'">{{ metadata_status.done if metadata_status.available else '—' }}</span>{% endset %}
+        {% set failed_value %}<span id="metadata-failed-value" x-text="$store.pipeline.metadataStatusKnown ? $store.pipeline.metadataStatusFailed : '—'">{{ metadata_status.failed if metadata_status.available else '—' }}</span>{% endset %}
         {% set recent_value %}<span id="metadata-24h-value">{{ metadata_activity.successful_writes_24h if metadata_activity.available else '—' }}</span>{% endset %}
         {% set latest_value %}<span>{{ humanize_relative_time(metadata_activity.latest_successful_at) if metadata_activity.available else 'unavailable' }}</span>{% endset %}
         {% call ui.metric_strip('Metadata extraction summary') %}
@@ -35,8 +35,8 @@
             {{ ui.metric('Latest successful write', latest_value, 'Controller receipt time, not a batch run', 'neutral') }}
         {% endcall %}
 
-        <div x-show="!$store.pipeline.metadataEligibleKnown || !$store.pipeline.metadataQueueKnown" x-cloak>
-            {{ ui.actionable_alert('Metadata measurements degraded', 'One or more metadata selection or SAQ measurements are unavailable. Unknown values display as an em dash; they are not zero.', 'info') }}
+        <div x-show="!$store.pipeline.metadataStatusKnown || !$store.pipeline.metadataEligibleKnown || !$store.pipeline.metadataQueueKnown" x-cloak>
+            {{ ui.actionable_alert('Metadata measurements degraded', 'One or more metadata status, selection, or SAQ measurements are unavailable. Unknown values display as an em dash; they are not zero.', 'info') }}
         </div>
         {% if not metadata_activity.available %}
             {{ ui.actionable_alert('Recent activity unavailable', 'The controller could not measure successful metadata writes. Recent activity is unknown, not zero.', 'info') }}
@@ -54,9 +54,9 @@
                 <span x-show="$store.pipeline.metadataEligibleKnown && $store.pipeline.metadataEligible > 0">{{ ui.status_badge('Metadata', 'eligible', 'neutral', '—') }}</span>
                 <span x-show="$store.pipeline.metadataQueueKnown && $store.pipeline.metadataQueued > 0">{{ ui.status_badge('Metadata', 'queued', 'attention', '●') }}</span>
                 <span x-show="$store.pipeline.metadataQueueKnown && $store.pipeline.metadataActive > 0">{{ ui.status_badge('Metadata', 'active', 'accent', '●', true) }}</span>
-                <span x-show="$store.pipeline.metadataFailed > 0">{{ ui.status_badge('Metadata', 'failed', 'danger', '✗') }}</span>
+                <span x-show="$store.pipeline.metadataStatusKnown && $store.pipeline.metadataStatusFailed > 0">{{ ui.status_badge('Metadata', 'failed', 'danger', '✗') }}</span>
                 <span x-show="$store.pipeline.metadataEligibleKnown && $store.pipeline.metadataQueueKnown && $store.pipeline.metadataEligible === 0 && $store.pipeline.metadataBusy === 0">{{ ui.status_badge('Metadata', 'idle', 'success', '✓') }}</span>
-                <span x-show="!$store.pipeline.metadataEligibleKnown || !$store.pipeline.metadataQueueKnown">{{ ui.status_badge('Metadata', 'unknown', 'attention', '?') }}</span>
+                <span x-show="!$store.pipeline.metadataStatusKnown || !$store.pipeline.metadataEligibleKnown || !$store.pipeline.metadataQueueKnown">{{ ui.status_badge('Metadata', 'unknown', 'attention', '?') }}</span>
             </div>
             <p x-show="$store.pipeline.metadataEligibleKnown && $store.pipeline.metadataQueueKnown && $store.pipeline.metadataEligible === 0 && $store.pipeline.metadataBusy === 0" class="mt-3 text-sm text-gray-500 dark:text-gray-400">Extract All currently selects no files and SAQ reports no queued or active metadata jobs. Recent successful-write context remains visible above while the queue is idle.</p>
         </section>
