@@ -108,8 +108,8 @@ def test_no_control_is_nested_inside_its_own_swap_target() -> None:
 # The same cutover left `#stats-header` orphaned in the dedupe responses (phaze-nt8f) and
 # `#duplicates-list` referenced by a partial nobody mounted.
 #
-# The reachable set is deliberately the SHELL closure -- shell.html plus every STAGE_PARTIALS value
-# plus their include/import/extends transitive closure -- not "every template on disk". That
+# The reachable set is deliberately the SHELL closure -- shell.html plus every STAGE_PARTIALS and
+# UTILITY_PANES value plus their include/import/extends transitive closure -- not "every template on disk". That
 # distinction IS the guard: `#stats-bar` was declared, by the very OOB wrapper that targeted it and
 # by the partial inside it, so any check that accepted providers from anywhere on disk would have
 # called the dead chain healthy. Only "an id the mounted document contains" is a meaningful target.
@@ -177,14 +177,14 @@ def _normalise(candidate: str) -> str:
 
 
 def _shell_closure() -> set[str]:
-    """Templates that can appear in a document the shell serves: shell.html + every stage partial."""
+    """Templates that can appear in a document the shell serves: shell plus stage and utility panes."""
     from jinja2 import Environment, meta
 
-    from phaze.routers.shell import STAGE_PARTIALS
+    from phaze.routers.shell import STAGE_PARTIALS, UTILITY_PANES
 
     env = Environment(autoescape=True)
     reachable: set[str] = set()
-    frontier = {_SHELL_ROOT, *STAGE_PARTIALS.values()}
+    frontier = {_SHELL_ROOT, *STAGE_PARTIALS.values(), *UTILITY_PANES.values()}
     while frontier:
         current = frontier.pop()
         if current in reachable:
@@ -243,7 +243,9 @@ def _provider_ids(templates: set[str]) -> set[str]:
         if not path.is_file():
             continue
         for el in BeautifulSoup(path.read_text(), "html.parser").find_all(attrs={"id": True}):
-            if not isinstance(el, Tag) or el.has_attr("hx-swap-oob"):
+            # Jinja's conditional marker survives this raw parse as a ``{%`` attribute: those
+            # elements are normal providers in shell renders and OOB wrappers only in responses.
+            if not isinstance(el, Tag) or (el.has_attr("hx-swap-oob") and not el.has_attr("{%")):
                 continue
             raw = el.get("id")
             if not isinstance(raw, str):

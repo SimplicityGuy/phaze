@@ -21,6 +21,7 @@ Proves REVIEW-05 over the EXISTING apply endpoints (no new audit/undo logic, D-0
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING
 import uuid
 
@@ -161,7 +162,12 @@ async def test_dedupe_resolve_one_resolution_and_undo_round_trips(client: AsyncC
     canonical = await _executed_file(session, filename="keep.mp3", sha256=shared, file_size=1000)
     other = await _executed_file(session, filename="dupe.mp3", sha256=shared, file_size=2000)
 
-    resolve = await client.post(f"/duplicates/{shared}/resolve", data={"canonical_id": str(canonical.id)})
+    review = await client.post(f"/duplicates/{shared}/review", data={"canonical_id": str(canonical.id)})
+    assert review.status_code == 200
+    plan_match = re.search(r'name="plan_id" value="([^"]+)"', review.text)
+    assert plan_match is not None
+
+    resolve = await client.post(f"/duplicates/{shared}/resolve", data={"plan_id": plan_match.group(1)})
     assert resolve.status_code == 200
 
     resolved_stmt = select(func.count()).select_from(DedupResolution).where(DedupResolution.file_id == other.id)
