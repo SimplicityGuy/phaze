@@ -570,7 +570,7 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
     assert "RANK 10 · cap 4" in body
     assert "RANK 20 · cap 3" in body
     assert "RANK 99 · cap 8" in body
-    # Capacity is now explicit and comparable in every row: active work / configured cap.
+    # Scheduler capacity is explicit and comparable in every row: in-flight / configured cap.
     assert "2/4" in body
     assert "1/3" in body
     assert "5/8" in body
@@ -584,10 +584,8 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
     # local lane available=False -> explicit "offline" word (never hidden). "not configured" is retired.
     assert "offline" in body
     assert "not configured" not in body
-    # phaze-5c6i2 (acceptance rule 5): nox's working (5) exceeds its cap (8)? No -- pick a lane where it
-    # DOES, so the fault renders. nox: working=5, cap=8 -> NOT over cap; assert the fault does NOT fire
-    # for a lane within cap, and see test_lane_card_working_over_cap_is_a_visible_fault for the positive case.
-    assert "exceeds cap" not in body
+    # Capacity is scheduler in-flight, not active execution. All three lanes remain within cap.
+    assert "exceeds scheduler cap" not in body
 
     # D-07 / WORK-03 load-bearing distinction: the Inadmissible FAULT carries role="alert"; the HEALTHY
     # admission-state card does NOT (the fault can never be collapsed into healthy progression).
@@ -638,7 +636,7 @@ async def test_analyze_over_limit_is_unsafe_and_explains_remedy(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Real active-over-capacity is red, explicit about impact, and never presented as congestion."""
+    """Real scheduler in-flight over-capacity is red even when active execution remains below cap."""
     import phaze.routers.pipeline as pipeline_mod
 
     lane = {
@@ -651,7 +649,7 @@ async def test_analyze_over_limit_is_unsafe_and_explains_remedy(
         "quota_wait": 0,
         "inadmissible": 0,
         "queued": 4,
-        "working": 3,
+        "working": 1,
         "processed_24h": 8,
         "processed_lifetime": 80,
     }
@@ -667,9 +665,11 @@ async def test_analyze_over_limit_is_unsafe_and_explains_remedy(
     body = response.text
     health = body[body.index('id="analysis-health-card"') : body.index("</section>", body.index('id="analysis-health-card"'))]
     assert "UNSAFE" in health
-    assert "3 active jobs exceed cap 2" in health
+    assert "3 in-flight jobs exceed scheduler cap 2" in health
     assert "Stop new admission and inspect the lane" in health
     assert "OVER LIMIT" in body
+    assert re.search(r">Active</dt><dd[^>]*>1</dd>", body)
+    assert re.search(r">Capacity</dt><dd[^>]*>3/2</dd>", body)
     assert "New work can compound resource pressure" in body
 
 
@@ -1016,6 +1016,11 @@ async def test_shell_carries_analyze_lanes_idempotent_skip_hook(client: AsyncCli
     assert "htmx:oobBeforeSwap" in body
     assert "analyze-lanes" in body
     assert "shouldSwap = false" in body
+    assert "transferPollState(current, incoming)" in body
+    assert "data-poll-preserve-disclosure" in body
+    assert "data-poll-preserve-response" in body
+    assert "current.querySelector('.htmx-request')" in body
+    assert "replacement.innerHTML = response.innerHTML" in body
     # WORK-05 / R-2: still exactly one poll, no second loop.
     assert body.count('hx-get="/pipeline/stats"') == 1
     assert "setInterval" not in body

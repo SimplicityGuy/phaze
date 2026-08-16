@@ -1,4 +1,2 @@
 {% import "ui/primitives.html" as ui %}
-<section id="awaiting-cloud-card" aria-label="Awaiting route" {% if oob %}hx-swap-oob="true"{% endif %}>
-    {{ ui.metric("Awaiting route", awaiting_cloud_count, "Awaiting cloud · " ~ awaiting_hold_reason, "attention" if awaiting_cloud_count else "neutral") }}
-</section>
+{{ ui.metric("Awaiting route", awaiting_cloud_count, "Awaiting cloud · " ~ awaiting_hold_reason, "attention" if awaiting_cloud_count else "neutral", "awaiting-cloud-card", oob | default(false)) }}

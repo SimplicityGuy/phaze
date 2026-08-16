@@ -1,7 +1,7 @@
 {% import "ui/primitives.html" as ui %}
 {% set lane_state = namespace(over_cap=none) %}
 {% for candidate in lanes | default([]) %}
-    {% if lane_state.over_cap is none and candidate.working is defined and candidate.working is not none and candidate.cap and candidate.working > candidate.cap %}
+    {% if lane_state.over_cap is none and candidate.in_flight is defined and candidate.in_flight is not none and candidate.cap and candidate.in_flight > candidate.cap %}
         {% set lane_state.over_cap = candidate %}
     {% endif %}
 {% endfor %}
@@ -13,7 +13,7 @@
                 <p class="mt-1 text-sm text-red-700 dark:text-red-300">Terminal analysis failures will not progress. Retry them, or backfill long failures to a cloud lane.</p>
             {% elif lane_state.over_cap %}
                 <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Lane capacity", "UNSAFE", "danger", "✕") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-red-800 dark:text-red-300">{{ lane_state.over_cap.kind|upper }} · {{ lane_state.over_cap.id }} exceeds capacity</h2></div>
-                <p class="mt-1 text-sm text-red-700 dark:text-red-300">{{ lane_state.over_cap.working }} active jobs exceed cap {{ lane_state.over_cap.cap }}. Stop new admission and inspect the lane before increasing capacity.</p>
+                <p class="mt-1 text-sm text-red-700 dark:text-red-300">{{ lane_state.over_cap.in_flight }} in-flight jobs exceed scheduler cap {{ lane_state.over_cap.cap }}. Stop new admission and inspect the lane before increasing capacity.</p>
             {% elif inadmissible_count %}
                 <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Cloud admission", "BLOCKED", "attention", "!") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-amber-800 dark:text-amber-300">K8s jobs are not admitting</h2></div>
                 <p class="mt-1 text-sm text-amber-700 dark:text-amber-300">{{ inadmissible_count }} job(s) cannot enter the cluster. Verify the LocalQueue and ClusterQueue configuration.</p>
@@ -30,7 +30,7 @@
         </div>
         <a href="#analysis-diagnostics" onclick="document.getElementById('analysis-diagnostics').open = true" class="shrink-0 rounded-md border border-current px-3 py-1.5 font-jura text-[11px] font-medium uppercase tracking-wider focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">View diagnostics</a>
     </div>
-    <details class="border-t border-current/10">
+    <details id="analysis-health-details" data-poll-preserve-disclosure class="border-t border-current/10">
         <summary class="cursor-pointer px-4 py-2 text-xs font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Analysis Health and recovery details</summary>
         <div class="grid gap-3 border-t border-current/10 p-4 sm:grid-cols-2">
             <div class="rounded-md border border-amber-300/60 p-3 dark:border-amber-700/60" title="Killed by the heartbeat watchdog after no analysis progress for the configured stall window.">
@@ -51,8 +51,8 @@
                             hx-confirm="Backfill the timed-out long failed files to the cloud?"
                             class="rounded-md bg-blue-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Backfill to cloud</button>
                 </div>
-                <span id="retry-failed-result" class="mt-2 block"></span>
-                <span id="backfill-response" class="mt-2 block"></span>
+                <span id="retry-failed-result" data-poll-preserve-response class="mt-2 block"></span>
+                <span id="backfill-response" data-poll-preserve-response class="mt-2 block"></span>
                 {% endif %}
             </div>
         </div>

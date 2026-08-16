@@ -11,9 +11,10 @@
 {% endif %}
 {% set _queued = lane.queued if lane.queued is defined and lane.queued is not none else none %}
 {% set _working = lane.working if lane.working is defined and lane.working is not none else none %}
+{% set _in_flight = lane.in_flight if lane.in_flight is defined and lane.in_flight is not none else none %}
 {% set _processed_24h = lane.processed_24h if lane.processed_24h is defined and lane.processed_24h is not none else none %}
 {% set _processed_lifetime = lane.processed_lifetime if lane.processed_lifetime is defined and lane.processed_lifetime is not none else none %}
-{% set _working_over_cap = _working is not none and lane.cap and _working > lane.cap %}
+{% set _capacity_over = _in_flight is not none and lane.cap and _in_flight > lane.cap %}
 {% set selected_lane = selected_lane | default(none) %}
 <div id="lane-trigger-{{ lane.id }}" role="button" tabindex="0"
      aria-label="Open lane {{ lane.kind }} {{ lane.id }} detail" {% if selected_lane == lane.id %}aria-current="true"{% endif %}
@@ -25,11 +26,12 @@
         <p class="truncate text-sm font-semibold {{ lane_color }}">{{ lane_glyph }} {{ lane.kind|upper }} · {{ lane.id }}</p>
         <p class="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">Configured capacity {{ lane.cap }}</p>
     </div>
-    <dl class="grid grid-cols-4 gap-3 sm:col-span-7">
+    <dl class="grid grid-cols-2 gap-3 sm:col-span-7 sm:grid-cols-5">
         <div><dt class="font-jura text-[10px] uppercase tracking-wider text-gray-500">Queue</dt><dd class="font-mono text-sm tabular-nums">{{ _queued if _queued is not none else "—" }}</dd></div>
-        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-gray-500">Active</dt><dd class="font-mono text-sm tabular-nums {% if _working_over_cap %}text-red-700 dark:text-red-400{% endif %}">{{ _working if _working is not none else "—" }}/{{ lane.cap }}</dd></div>
+        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-gray-500">Active</dt><dd class="font-mono text-sm tabular-nums">{{ _working if _working is not none else "—" }}</dd></div>
+        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-gray-500">Capacity</dt><dd class="font-mono text-sm tabular-nums {% if _capacity_over %}text-red-700 dark:text-red-400{% endif %}">{{ _in_flight if _in_flight is not none else "—" }}/{{ lane.cap }}</dd></div>
         <div><dt class="font-jura text-[10px] uppercase tracking-wider text-gray-500">Status</dt><dd class="mt-0.5">
-            {% if _working_over_cap %}{{ ui.status_badge("Lane status", "OVER LIMIT", "danger", "✕") }}
+            {% if _capacity_over %}{{ ui.status_badge("Lane status", "OVER LIMIT", "danger", "✕") }}
             {% elif not lane.available %}{{ ui.status_badge("Lane status", "OFFLINE", "attention", "!") }}
             {% elif _kind == "kueue" and lane.inadmissible %}{{ ui.status_badge("Lane status", "BLOCKED", "attention", "!") }}
             {% elif _working %}{{ ui.status_badge("Lane status", "ACTIVE", "accent", "●") }}
@@ -38,10 +40,11 @@
         <div><dt class="font-jura text-[10px] uppercase tracking-wider text-gray-500">24h</dt><dd class="font-mono text-sm tabular-nums">{{ _processed_24h if _processed_24h is not none else "—" }}</dd></div>
     </dl>
     <div class="flex items-center justify-end gap-2 text-xs font-medium text-blue-700 dark:text-blue-400 sm:col-span-2">Open details <span aria-hidden="true">→</span></div>
-    {% if _working_over_cap %}
-    <p role="alert" class="rounded-md bg-red-50 px-3 py-2 text-xs text-red-800 dark:bg-red-950 dark:text-red-300 sm:col-span-12">Working {{ _working }} exceeds cap {{ lane.cap }}. New work can compound resource pressure; stop admission and inspect this lane.</p>
+    {% if _capacity_over %}
+    <p role="alert" class="rounded-md bg-red-50 px-3 py-2 text-xs text-red-800 dark:bg-red-950 dark:text-red-300 sm:col-span-12">In-flight {{ _in_flight }} exceeds scheduler cap {{ lane.cap }}. New work can compound resource pressure; stop admission and inspect this lane.</p>
     {% endif %}
-    <details class="sm:col-span-12" onclick="event.stopPropagation()" onkeydown="event.stopPropagation()">
+    <details id="lane-diagnostics-{{ lane.id }}" data-poll-preserve-disclosure class="sm:col-span-12"
+             onclick="event.stopPropagation()" onkeydown="event.stopPropagation()" onkeyup="event.stopPropagation()">
         <summary class="cursor-pointer text-xs text-gray-500 underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Lane diagnostics</summary>
         <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 rounded-md bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-phaze-bg dark:text-gray-300">
             <span>RANK {{ lane.rank }} · cap {{ lane.cap }}</span>

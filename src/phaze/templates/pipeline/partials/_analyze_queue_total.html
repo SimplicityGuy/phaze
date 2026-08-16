@@ -1,4 +1,2 @@
 {% import "ui/primitives.html" as ui %}
-<section id="analyze-queue-total-card" {% if oob %}hx-swap-oob="true"{% endif %}>
-    {{ ui.metric("Queued", total_queued_analyze if total_queued_analyze is not none else "—", (unrouted_queued_analyze if unrouted_queued_analyze is not none else "—") ~ " awaiting lane assignment", "neutral") }}
-</section>
+{{ ui.metric("Queued", total_queued_analyze if total_queued_analyze is not none else "—", (unrouted_queued_analyze if unrouted_queued_analyze is not none else "—") ~ " awaiting lane assignment", "neutral", "analyze-queue-total-card", oob | default(false)) }}

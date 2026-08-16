@@ -2612,7 +2612,7 @@ async def test_dashboard_renders_awaiting_cloud_card(client: AsyncClient, sessio
     assert ">3<" in text
     # Inline (full-page) render is NOT an OOB swap.
     card_start = text.index('id="awaiting-cloud-card"')
-    card_open = text.rfind("<section", 0, card_start)
+    card_open = text.rfind("<div", 0, card_start)
     assert 'hx-swap-oob="true"' not in text[card_open:card_start]
 
 
@@ -2633,7 +2633,7 @@ async def test_stats_partial_emits_awaiting_cloud_card_oob(client: AsyncClient, 
     assert 'id="awaiting-cloud-card"' in text
     # On the poll the card is an OOB fragment so htmx swaps it in place.
     card_start = text.index('id="awaiting-cloud-card"')
-    card_open = text.rfind("<section", 0, card_start)
+    card_open = text.rfind("<div", 0, card_start)
     assert 'hx-swap-oob="true"' in text[card_open : card_start + 200]
     assert ">2<" in text
 
@@ -3296,8 +3296,7 @@ async def test_stats_poll_all_six_cloud_card_ids_present_oob(client: AsyncClient
     text = response.text
     for card_id in _ALL_SIX_CARD_IDS:
         card_start = text.index(f'id="{card_id}"')
-        card_open = text.rfind("<section", 0, card_start)
-        assert 'hx-swap-oob="true"' in text[card_open : card_start + 200]
+        assert 'hx-swap-oob="true"' in text[card_start : card_start + 200]
 
 
 @pytest.mark.asyncio
