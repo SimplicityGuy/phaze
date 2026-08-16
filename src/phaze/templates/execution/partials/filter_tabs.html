@@ -24,7 +24,7 @@
                     text-gray-500 dark:text-gray-400 dark:text-gray-500 border-transparent hover:text-gray-700 dark:hover:text-gray-300 dark:text-gray-300
                 {% endif %}
             ">
-            {{ label }} ({{ count }})
+            {{ label }}{% if not stats.degraded %} ({{ count }}){% endif %}
         </button>
         {% endfor %}
     </nav>

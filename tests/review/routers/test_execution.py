@@ -365,6 +365,23 @@ async def test_audit_degraded_read_renders_error_not_empty(client: AsyncClient) 
 
 
 @pytest.mark.asyncio
+async def test_audit_degraded_stats_do_not_render_fabricated_zero_tab_totals(client: AsyncClient) -> None:
+    healthy_page = AuditLogPage(rows=[], page=1, page_size=50, has_next=False)
+    degraded_stats = {"total": 0, "pending": 0, "completed": 0, "failed": 0, "in_progress": 0, "degraded": True}
+    with (
+        patch("phaze.routers.execution.get_execution_logs_page", new=AsyncMock(return_value=healthy_page)),
+        patch("phaze.routers.execution.get_execution_stats", new=AsyncMock(return_value=degraded_stats)),
+    ):
+        response = await client.get("/audit/", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    assert "Audit history unavailable" in response.text
+    for label in ("All", "Pending", "Completed", "Failed", "In Progress"):
+        assert label in response.text
+        assert f"{label} (0)" not in response.text
+
+
+@pytest.mark.asyncio
 async def test_execute_approved(client: AsyncClient) -> None:
     """POST /execution/start with no approved proposals returns the empty-state card.
 
