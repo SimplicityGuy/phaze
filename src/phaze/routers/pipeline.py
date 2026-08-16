@@ -82,13 +82,14 @@ from phaze.services.pipeline import (
     get_match_pending_tracklists,
     get_metadata_failed_files,
     get_metadata_pending_files,
+    get_metadata_selection_summary,
     get_pending_files_page,
     get_proposal_busy_count,
     get_proposal_pending_batches,
     get_pushed_count,
     get_pushing_count,
     get_queue_activity,
-    get_stage_busy_counts,
+    get_stage_activity_snapshot,
     get_stage_controls,
     get_stage_progress,
     get_tracklist_sets_page,
@@ -270,9 +271,16 @@ async def _build_dag_context(
     def total(node: str) -> int:
         return int(stage[node]["total"] or 0)
 
+    metadata_buckets = stage["metadata"]
+    metadata_status_total = sum(int(value or 0) for key, value in metadata_buckets.items() if key not in {"total", "available"})
     dag: dict[str, int] = {
         "metadataDone": done("metadata"),
         "metadataTotal": total("metadata"),
+        "metadataFailed": int(stage["metadata"].get("failed") or 0),
+        "metadataStatusDone": int(metadata_buckets.get(Status.DONE.value) or 0),
+        "metadataStatusFailed": int(metadata_buckets.get(Status.FAILED.value) or 0),
+        "metadataStatusTotal": metadata_status_total,
+        "metadataStatusKnown": int(metadata_buckets.get("available") or 0),
         "analyzeDone": done("analyze"),
         "analyzeTotal": total("analyze"),
         # Phase 93 (CONSOLE-02): the DERIVED in-flight count — the same stage_status_case bucket the
@@ -317,11 +325,18 @@ async def _build_dag_context(
 
     # t7k FIX2 (REQ-260613-t7k-FIX2): per-stage in-flight busy counts REPLACE the single global
     # agentBusy gate so the agent enqueue buttons gate independently (run in parallel).
-    # get_stage_busy_counts owns the never-500 degrade (all-zeros on any DB error), so NO try/except
-    # is added here; these ints ride the same dag.items() seed + OOB loop with no stats_bar.html edit.
-    busy = await get_stage_busy_counts(session)
-    dag["metadataBusy"] = int(busy["metadata"])
-    dag["analyzeBusy"] = int(busy["analyze"])
+    # get_stage_activity_snapshot owns the never-500 degrade, and separates queued from active while
+    # preserving metadataBusy/analyzeBusy as their sums for the existing enqueue gates.
+    selection = await get_metadata_selection_summary(session)
+    dag["metadataEligible"] = int(selection.eligible_count or 0)
+    dag["metadataEligibleKnown"] = int(selection.available)
+
+    stage_activity = await get_stage_activity_snapshot(session)
+    dag["metadataQueued"] = int(stage_activity.counts["metadata"]["queued"])
+    dag["metadataActive"] = int(stage_activity.counts["metadata"]["active"])
+    dag["metadataQueueKnown"] = int(stage_activity.available)
+    dag["metadataBusy"] = dag["metadataQueued"] + dag["metadataActive"]
+    dag["analyzeBusy"] = int(stage_activity.counts["analyze"]["queued"] + stage_activity.counts["analyze"]["active"])
 
     # Phase 40 (REQ-40-3): the per-agent DAG nodes gate on an online-agent signal ("Needs agent").
     # count_active_agents owns its own never-500 SAVEPOINT degrade (returns 0 on any DB error), so NO

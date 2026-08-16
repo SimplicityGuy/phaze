@@ -54,6 +54,10 @@ from phaze.services.pipeline import (
     count_proposal_pending_files,
     get_files_page,
     get_match_pending_tracklists,
+    get_metadata_activity_summary,
+    get_metadata_selection_summary,
+    get_metadata_status_snapshot,
+    get_stage_activity_snapshot,
     get_stage_progress,
 )
 from phaze.services.proposal_queries import get_proposal_stats
@@ -534,6 +538,11 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # exclude kind="compute" (media-less burst backends) from the picker.
         agents_stmt = select(Agent).where(Agent.revoked_at.is_(None), Agent.kind == "fileserver").order_by(Agent.name)
         context["agents"] = (await session.execute(agents_stmt)).scalars().all()
+    elif stage == "metadata":
+        context["metadata_activity"] = await get_metadata_activity_summary(session)
+        context["metadata_selection"] = await get_metadata_selection_summary(session)
+        context["metadata_status"] = await get_metadata_status_snapshot(session)
+        context["metadata_queue"] = await get_stage_activity_snapshot(session)
     # phaze-5462: the metadata stage deliberately gets NO file-list context here any more. It used
     # to seed `metadata_files` from get_metadata_pending_files, which is UNBOUNDED (no LIMIT, no
     # ORDER BY) -- the same latent cliff that made the Analyze tab ship 12.7 MB. That tab measured a

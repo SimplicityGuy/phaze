@@ -1,63 +1,93 @@
-{# Phase 58 (58-03, WORK-02): the Metadata stage workspace.
-
-   Content-only fragment swapped into #stage-workspace -- a SIBLING of discover_workspace.html
-   (same shape, different endpoint). Composes the shared scaffold (_workspace_scaffold.html):
-   one <h1 tabindex="-1"> focus target + a live sub-count bound to $store.pipeline (refreshed by
-   the SINGLE chrome poll -- no second loop, WORK-05/R-2) + a secondary-style action row + body.
-   The OOB seed-target host rides in via the scaffold.
-
-   Trigger (D-01, reused VERBATIM): ONE EXTRACT ALL button posting to the EXISTING
-   POST /pipeline/extract-metadata (routers/pipeline.py:959 trigger_extraction_ui), which enqueues
-   the metadata-pending set (services/pipeline.py get_metadata_pending_files -- every music/video
-   file) and returns pipeline/partials/trigger_response.html into #metadata-trigger-response. R-4
-   bulk-enqueue guard: hx-confirm + a :disabled busy-gate on $store.pipeline.metadataBusy so a
-   second bulk enqueue can't fire while the agent churns. D-02: NO EXTRACT SELECTED button, NO
-   per-row checkbox/selection state -- a subset enqueue would need a new backend endpoint.
-
-   Body = the metadata-pending queue, BOUNDED and PAGED (phaze-5462) -- lazy-loaded from
-   GET /pipeline/pending-files?stage=metadata into an empty host div, rendered by the shared
-   _pending_files.html. Pending files have not been enriched yet, so "Existing tags" shows a neutral
-   placeholder -- the rich per-file record is Phase 61.
-#}
+{# Metadata uses the shared operational hierarchy without changing extraction or queue controls. #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
-{% set subcount = '`${$store.pipeline.metadataDone} extracted · ${Math.max($store.pipeline.metadataTotal - $store.pipeline.metadataDone, 0)} pending · manual stage`' %}
-{% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
+{% import "ui/primitives.html" as ui %}
+{% set subcount = "`${$store.pipeline.metadataStatusKnown ? $store.pipeline.metadataStatusDone : 'unknown'} completed · ${$store.pipeline.metadataEligibleKnown ? $store.pipeline.metadataEligible : 'unknown'} eligible · automated extraction`" %}
+{% set _btn = 'inline-flex h-9 items-center justify-center rounded-lg border border-gray-300 bg-white px-3 font-jura text-xs font-medium uppercase tracking-wider text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-300 dark:hover:bg-white/5' %}
+{% set _primary = 'inline-flex h-9 items-center justify-center rounded-lg bg-blue-600 px-3 font-jura text-xs font-medium uppercase tracking-wider text-white hover:bg-blue-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus-visible:ring-offset-phaze-bg' %}
 {% set actions %}
-    {# R-4 bulk-enqueue guard: hx-confirm + :disabled busy-gate (don't double-enqueue while the agent churns). #}
     <button type="button"
             hx-post="/pipeline/extract-metadata" hx-target="#metadata-trigger-response" hx-swap="innerHTML"
             hx-confirm="Enqueue metadata extraction for all pending files?"
             hx-indicator="#metadata-trigger-spinner"
             :disabled="$store.pipeline.metadataBusy > 0"
             aria-label="Extract metadata for all pending files"
-            class="{{ _btn }}">EXTRACT ALL</button>
+            class="{{ _primary }}">EXTRACT ALL</button>
     <span id="metadata-trigger-spinner" class="htmx-indicator text-xs text-gray-500 dark:text-gray-400">Enqueuing…</span>
 {% endset %}
+
 {% call ws.workspace(title="METADATA", subcount=subcount, actions=actions) %}
-    <div class="px-6 pt-4 flex flex-wrap items-center gap-1" role="group" aria-label="Metadata priority and pause controls">
-        <span class="mr-1 text-[11px] text-gray-500 dark:text-gray-400"
-              x-text="'Priority: ' + ($store.pipeline.metadataPriority < 50 ? 'High' : ($store.pipeline.metadataPriority > 50 ? 'Low' : 'Normal')) + ' (' + $store.pipeline.metadataPriority + ')'">Priority: Normal (50)</span>
-        <button type="button" hx-post="/pipeline/stages/metadata/priority" hx-vals='{"delta": -10}' hx-swap="none"
-                aria-label="Raise metadata priority" title="Higher priority runs sooner (lowers the queue number)." class="{{ _btn }} px-2">▲</button>
-        <button type="button" hx-post="/pipeline/stages/metadata/priority" hx-vals='{"delta": 10}' hx-swap="none"
-                aria-label="Lower metadata priority" title="Lower priority runs later (raises the queue number)." class="{{ _btn }} px-2">▼</button>
-        <button type="button" x-show="!$store.pipeline.metadataPaused" hx-post="/pipeline/stages/metadata/pause" hx-swap="none"
-                :disabled="$store.pipeline.metadataBusy === 0" aria-label="Pause metadata" class="{{ _btn }}">PAUSE</button>
-        <button type="button" x-show="$store.pipeline.metadataPaused" x-cloak hx-post="/pipeline/stages/metadata/resume" hx-swap="none"
-                aria-label="Resume metadata" class="{{ _btn }}">RESUME</button>
-    </div>
-    {# Trigger response lands here (trigger_response.html branches: no_active_agent / count>0 / none ready). #}
-    <div id="metadata-trigger-response" class="px-6 pt-4 empty:hidden"></div>
-    <div class="p-6">
-        {# phaze-5462: ZERO rows are server-rendered here. This div ships EMPTY and hx-gets the shared
-           bounded/paged fragment on load -- the SAME contract as #analyze-files-view. It used to render
-           the ENTIRE unbounded metadata pending set inline; that measured harmlessly only because the
-           backlog is empty today. Do NOT reintroduce an inline row loop on this path. #}
-        <div id="metadata-files-view"
-             hx-get="/pipeline/pending-files?stage=metadata"
-             hx-trigger="load"
-             hx-swap="innerHTML">
-            <p class="px-6 py-12 text-center text-sm text-gray-500 dark:text-gray-400">Loading files…</p>
+    <div class="space-y-5 p-4 sm:p-6">
+        <span class="hidden" x-init="$store.pipeline.metadataStatusDone = {{ metadata_status.done }}; $store.pipeline.metadataStatusFailed = {{ metadata_status.failed }}; $store.pipeline.metadataStatusTotal = {{ metadata_status.total }}; $store.pipeline.metadataStatusKnown = {{ 1 if metadata_status.available else 0 }}; $store.pipeline.metadataEligible = {{ metadata_selection.eligible_count or 0 }}; $store.pipeline.metadataEligibleKnown = {{ 1 if metadata_selection.available else 0 }}; $store.pipeline.metadataQueued = {{ metadata_queue.counts.metadata.queued }}; $store.pipeline.metadataActive = {{ metadata_queue.counts.metadata.active }}; $store.pipeline.metadataQueueKnown = {{ 1 if metadata_queue.available else 0 }}; $store.pipeline.metadataBusy = $store.pipeline.metadataQueued + $store.pipeline.metadataActive"></span>
+        {% set eligible_value %}<span id="metadata-eligible-value" x-text="$store.pipeline.metadataEligibleKnown ? $store.pipeline.metadataEligible : '—'">{{ metadata_selection.eligible_count if metadata_selection.available else '—' }}</span>{% endset %}
+        {% set queued_value %}<span id="metadata-queued-value" x-text="$store.pipeline.metadataQueueKnown ? $store.pipeline.metadataQueued : '—'">{{ metadata_queue.counts.metadata.queued if metadata_queue.available else '—' }}</span>{% endset %}
+        {% set active_value %}<span id="metadata-active-value" x-text="$store.pipeline.metadataQueueKnown ? $store.pipeline.metadataActive : '—'">{{ metadata_queue.counts.metadata.active if metadata_queue.available else '—' }}</span>{% endset %}
+        {% set completed_value %}<span id="metadata-completed-value" x-text="$store.pipeline.metadataStatusKnown ? $store.pipeline.metadataStatusDone : '—'">{{ metadata_status.done if metadata_status.available else '—' }}</span>{% endset %}
+        {% set failed_value %}<span id="metadata-failed-value" x-text="$store.pipeline.metadataStatusKnown ? $store.pipeline.metadataStatusFailed : '—'">{{ metadata_status.failed if metadata_status.available else '—' }}</span>{% endset %}
+        {% set recent_value %}<span id="metadata-24h-value">{{ metadata_activity.unique_files_24h if metadata_activity.available else '—' }}</span>{% endset %}
+        {% set latest_value %}<span>{{ humanize_relative_time(metadata_activity.latest_successful_at) if metadata_activity.available else 'unavailable' }}</span>{% endset %}
+        {% call ui.metric_strip('Metadata extraction summary') %}
+            {{ ui.metric('Eligible', eligible_value, 'Exact current Extract All selection', 'neutral') }}
+            {{ ui.metric('Queued', queued_value, 'Waiting in SAQ, including paused jobs', 'attention') }}
+            {{ ui.metric('Active', active_value, 'SAQ active; may be claimed or executing', 'accent') }}
+            {{ ui.metric('Completed', completed_value, 'Successful metadata outcomes', 'success') }}
+            {{ ui.metric('Failed', failed_value, 'Terminal outcomes; selectable retries appear under Eligible', 'danger') }}
+            {{ ui.metric('Files updated · 24h', recent_value, 'Unique files with a successful metadata write', 'accent') }}
+            {{ ui.metric('Latest successful write', latest_value, 'Controller receipt time, not a batch run', 'neutral') }}
+        {% endcall %}
+
+        <div x-show="!$store.pipeline.metadataStatusKnown || !$store.pipeline.metadataEligibleKnown || !$store.pipeline.metadataQueueKnown" x-cloak>
+            {{ ui.actionable_alert('Metadata measurements degraded', 'One or more metadata status, selection, or SAQ measurements are unavailable. Unknown values display as an em dash; they are not zero.', 'info') }}
         </div>
+        {% if not metadata_activity.available %}
+            {{ ui.actionable_alert('Recent activity unavailable', 'The controller could not measure successful metadata writes. Recent activity is unknown, not zero.', 'info') }}
+        {% endif %}
+
+        <section aria-labelledby="metadata-state-heading" class="rounded-lg border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                    <h2 id="metadata-state-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-900 dark:text-gray-100">Extraction state</h2>
+                    <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Eligible is the exact set Extract All would select now. Queued and active are SAQ states; active means claimed by queue processing and does not prove user code is currently executing.</p>
+                </div>
+                {{ ui.refresh_status('Live queue state', 'Refreshing queue state…') }}
+            </div>
+            <div class="mt-3 flex flex-wrap gap-2" aria-live="polite">
+                <span x-show="$store.pipeline.metadataEligibleKnown && $store.pipeline.metadataEligible > 0">{{ ui.status_badge('Metadata', 'eligible', 'neutral', '—') }}</span>
+                <span x-show="$store.pipeline.metadataQueueKnown && $store.pipeline.metadataQueued > 0">{{ ui.status_badge('Metadata', 'queued', 'attention', '●') }}</span>
+                <span x-show="$store.pipeline.metadataQueueKnown && $store.pipeline.metadataActive > 0">{{ ui.status_badge('Metadata', 'active', 'accent', '●', true) }}</span>
+                <span x-show="$store.pipeline.metadataStatusKnown && $store.pipeline.metadataStatusFailed > 0">{{ ui.status_badge('Metadata', 'failed', 'danger', '✗') }}</span>
+                <span x-show="$store.pipeline.metadataEligibleKnown && $store.pipeline.metadataQueueKnown && $store.pipeline.metadataEligible === 0 && $store.pipeline.metadataBusy === 0">{{ ui.status_badge('Metadata', 'idle', 'success', '✓') }}</span>
+                <span x-show="!$store.pipeline.metadataStatusKnown || !$store.pipeline.metadataEligibleKnown || !$store.pipeline.metadataQueueKnown">{{ ui.status_badge('Metadata', 'unknown', 'attention', '?') }}</span>
+            </div>
+            <p x-show="$store.pipeline.metadataEligibleKnown && $store.pipeline.metadataQueueKnown && $store.pipeline.metadataEligible === 0 && $store.pipeline.metadataBusy === 0" class="mt-3 text-sm text-gray-500 dark:text-gray-400">Extract All currently selects no files and SAQ reports no queued or active metadata jobs. Recent successful-write context remains visible above while the queue is idle.</p>
+        </section>
+
+        <section aria-labelledby="metadata-controls-heading" class="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel">
+            <h2 id="metadata-controls-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-900 dark:text-gray-100">Queue controls</h2>
+            <div class="mt-3 flex flex-wrap items-center gap-2" role="group" aria-label="Metadata priority and pause controls">
+                <span class="mr-1 text-xs text-gray-500 dark:text-gray-400"
+                      x-text="'Priority: ' + ($store.pipeline.metadataPriority < 50 ? 'High' : ($store.pipeline.metadataPriority > 50 ? 'Low' : 'Normal')) + ' (' + $store.pipeline.metadataPriority + ')'">Priority: Normal (50)</span>
+                <button type="button" hx-post="/pipeline/stages/metadata/priority" hx-vals='{"delta": -10}' hx-swap="none"
+                        aria-label="Raise metadata priority" title="Higher priority runs sooner (lowers the queue number)." class="{{ _btn }} px-2">▲</button>
+                <button type="button" hx-post="/pipeline/stages/metadata/priority" hx-vals='{"delta": 10}' hx-swap="none"
+                        aria-label="Lower metadata priority" title="Lower priority runs later (raises the queue number)." class="{{ _btn }} px-2">▼</button>
+                <button type="button" x-show="!$store.pipeline.metadataPaused" hx-post="/pipeline/stages/metadata/pause" hx-swap="none"
+                        :disabled="$store.pipeline.metadataBusy === 0" aria-label="Pause metadata" class="{{ _btn }}">PAUSE</button>
+                <button type="button" x-show="$store.pipeline.metadataPaused" x-cloak hx-post="/pipeline/stages/metadata/resume" hx-swap="none"
+                        aria-label="Resume metadata" class="{{ _btn }}">RESUME</button>
+            </div>
+        </section>
+
+        <div id="metadata-trigger-response" class="empty:hidden" aria-live="polite"></div>
+        <section aria-labelledby="metadata-files-heading">
+            <h2 id="metadata-files-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-900 dark:text-gray-100">Eligible files</h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">A bounded, paged view of the same selection used by Extract All.</p>
+            <div id="metadata-files-view"
+                 hx-get="/pipeline/pending-files?stage=metadata"
+                 hx-trigger="load"
+                 hx-swap="innerHTML"
+                 class="mt-3 rounded-lg border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel">
+                {{ ui.state('loading', 'Loading eligible files', 'Checking the metadata queue…') }}
+            </div>
+        </section>
     </div>
 {% endcall %}

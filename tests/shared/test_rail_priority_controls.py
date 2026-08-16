@@ -51,13 +51,16 @@ def test_orphan_badge_remains_read_only_rail_status(stage: str) -> None:
     assert 'role="status"' in html
 
 
-@pytest.mark.parametrize("stage", _ENRICH_STAGES)
-def test_enrich_numeral_renders_done_over_total_with_matching_labels(stage: str) -> None:
+@pytest.mark.parametrize(
+    ("stage", "done_key", "total_key"),
+    [("metadata", "metadataStatusDone", "metadataStatusTotal"), ("analyze", "analyzeDone", "analyzeTotal")],
+)
+def test_enrich_numeral_renders_done_over_total_with_matching_labels(stage: str, done_key: str, total_key: str) -> None:
     html = _RAIL.read_text()
-    assert f"$store.pipeline.{stage}Done" in html
-    assert f"$store.pipeline.{stage}Total" in html
-    title = re.search(rf':title="([^\"]*{stage}Done[^\"]*)"', html)
-    aria = re.search(rf':aria-label="([^\"]*{stage}Done[^\"]*)"', html)
+    assert f"$store.pipeline.{done_key}" in html
+    assert f"$store.pipeline.{total_key}" in html
+    title = re.search(rf':title="([^\"]*{done_key}[^\"]*)"', html)
+    aria = re.search(rf':aria-label="([^\"]*{done_key}[^\"]*)"', html)
     assert title and aria
     assert title.group(1) == aria.group(1)
 

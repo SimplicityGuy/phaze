@@ -2,10 +2,11 @@
    geometry; surface-variant hues per UI-SPEC Component 5. py-0.5 is the documented
    spacing exception (project-wide pill pattern). aria-label is the redundant text
    cue for screen readers that strip casing. #}
+{% import "ui/primitives.html" as ui %}
 {% if batch.status == 'running' %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400" aria-label="Status: running">RUNNING</span>
+{{ ui.status_badge('Status', 'running', 'accent', '●', true) }}
 {% elif batch.status == 'completed' %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400" aria-label="Status: completed">COMPLETED</span>
+{{ ui.status_badge('Status', 'completed', 'success', '✓') }}
 {% elif batch.status == 'failed' %}
-<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-400" aria-label="Status: failed">FAILED</span>
+{{ ui.status_badge('Status', 'failed', 'danger', '✗') }}
 {% endif %}

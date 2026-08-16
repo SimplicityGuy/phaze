@@ -23,8 +23,8 @@
 #}
 {% import "ui/primitives.html" as ui %}
 {% macro workspace(title, subcount='', actions='', x_data='', cloud_cards=false) %}
-{# phaze-8pmj: x-data used to be emitted ONLY when a caller passed x_data (12 of 13 ws.workspace
-   callers don't), so most stage sections rendered with no Alpine root at all. Alpine only
+{# phaze-8pmj: x-data used to be emitted ONLY when a caller passed x_data, so most stage sections
+   rendered with no Alpine root at all. Alpine only
    initializes x-data-ROOTED subtrees (the same rule the rail's Phase-93 CONSOLE-02 fix and
    _file_table.html's CR-01 fix both lock down), so on any direct navigation/reload/bookmark of
    /s/<stage> -- shell.py serves the FULL shell then, with no ancestor x-data between <body> and
