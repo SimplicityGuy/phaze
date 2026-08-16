@@ -106,6 +106,9 @@ async def test_per_file_retry_reenqueues_one_file_on_meta_lane(client: AsyncClie
     # `failed_at` in place, so the re-derived bucket is still "failed" -- pushing it anyway keeps
     # the pill's id fresh in the DOM rather than silently doing nothing on this surface.
     assert f'id="files-stage-pill-metadata-{file.id}"' in response.text
+    assert f'id="files-mobile-stage-pill-metadata-{file.id}"' in response.text
+    assert f'id="files-current-status-{file.id}"' in response.text
+    assert f'id="files-mobile-current-status-{file.id}"' in response.text
     assert 'hx-swap-oob="true"' in response.text
 
     queue = task_router.queues["test-fileserver-meta"]

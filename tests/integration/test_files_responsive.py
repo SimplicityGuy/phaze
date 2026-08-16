@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 import uuid
 
 import pytest
 
 from phaze.models.file import FileRecord
+from phaze.models.metadata import FileMetadata
 
 
 if TYPE_CHECKING:
@@ -97,3 +99,49 @@ async def test_compact_sort_controls_preserve_filters_and_push_history(client: A
     assert 'name="bucket" value="not_started"' in form
     assert '<option value="review" selected>Review</option>' in form
     assert '<option value="desc" selected>Descending</option>' in form
+
+
+@pytest.mark.asyncio
+async def test_canonical_files_route_serves_live_fragment_and_restorable_filtered_shell(client: AsyncClient, session: AsyncSession) -> None:
+    failed = _make_file("/music/failed.mp3")
+    healthy = _make_file("/music/healthy.mp3")
+    session.add_all([failed, healthy])
+    await session.commit()
+    session.add(FileMetadata(file_id=failed.id, failed_at=datetime.now(UTC), error_message="boom"))
+    await session.commit()
+    url = "/s/files?stage=metadata&bucket=failed&sort=file&order=desc&page_size=10"
+
+    fragment = await client.get(url, headers={"HX-Request": "true", "HX-Target": "files-table-view"})
+    assert fragment.status_code == 200
+    assert "<html" not in fragment.text.lower()
+    assert "/music/failed.mp3" in fragment.text
+    assert "/music/healthy.mp3" not in fragment.text
+    assert 'hx-get="/s/files' in fragment.text
+
+    restored = await client.get(url, headers={"HX-Request": "true", "HX-History-Restore-Request": "true"})
+    assert restored.status_code == 200
+    assert "<html" in restored.text.lower()
+    assert 'aria-label="Pipeline navigation"' in restored.text
+    assert "/music/failed.mp3" in restored.text
+    assert "/music/healthy.mp3" not in restored.text
+    assert '<option value="metadata" selected>' in restored.text
+    assert '<option value="failed" selected>' in restored.text
+
+
+@pytest.mark.asyncio
+async def test_canonical_files_route_restores_sorted_page(client: AsyncClient, session: AsyncSession) -> None:
+    for index in range(12):
+        session.add(_make_file(f"/music/file-{index:02d}.mp3"))
+    await session.commit()
+    url = "/s/files?page=2&page_size=10&sort=file&order=asc"
+
+    fragment = await client.get(url, headers={"HX-Request": "true", "HX-Target": "files-table-view"})
+    restored = await client.get(url, headers={"HX-Request": "true", "HX-History-Restore-Request": "true"})
+
+    for body in (fragment.text, restored.text):
+        assert "/music/file-10.mp3" in body
+        assert "/music/file-11.mp3" in body
+        assert "/music/file-00.mp3" not in body
+        assert "Page 2" in body
+    assert "<html" not in fragment.text.lower()
+    assert "<html" in restored.text.lower()

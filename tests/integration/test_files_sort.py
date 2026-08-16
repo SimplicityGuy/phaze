@@ -93,7 +93,8 @@ async def test_files_headers_are_sortable_and_announce_state(client: AsyncClient
     head = body[body.index("<thead") : body.index("<tbody")]
 
     # Every whitelisted header is a real server-side sort control aimed at this table's own endpoint.
-    assert 'hx-get="/pipeline/files?' in head
+    assert 'hx-get="/s/files?' in head
+    assert 'hx-push-url="true"' in head
     for key in ("file", "type", "metadata", "analyze", "propose", "review", "apply"):
         assert f"sort={key}" in head, f"header for sort={key} is not a sort control"
     # Rule 5: the ACTIVE column (default_key="file") announces its direction; the caret is decorative.

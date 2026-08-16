@@ -1321,7 +1321,7 @@ TRACKLIST_SETS_SORT = SortContract(
 # The five displayed stage keys use canonical ``Stage`` values, so the URL names the model's
 # vocabulary while the labels remain explicit operator-facing language.
 FILES_SORT = SortContract(
-    endpoint="/pipeline/files",
+    endpoint="/s/files",
     target="#files-table-view",
     columns=(
         SortableColumn(key="file", label="File", expression=FileRecord.current_path),
@@ -2120,8 +2120,7 @@ async def retry_analysis_failed_file(
     # the same shape force_skip_stage uses for the record pane (see `_stage_pill_oob`).
     buckets = await get_file_stage_buckets(session, file_id)
     ack = templates.get_template("pipeline/partials/retry_failed_response.html").render(count=1, no_active_agent=False)
-    pill_oob = _stage_pill_oob(file_id, "analyze", buckets.get("analyze", "not_started"), id_prefix="files-stage-pill")
-    return HTMLResponse(ack + pill_oob)
+    return HTMLResponse(ack + _files_retry_oob(file_id, "analyze", buckets))
 
 
 @router.post("/pipeline/files/{file_id}/metadata-failed/retry", response_class=HTMLResponse)
@@ -2186,8 +2185,7 @@ async def retry_metadata_failed_file(
     # happened yet (it will land on the next per-file retry / force-skip / poll-driven action).
     buckets = await get_file_stage_buckets(session, file_id)
     ack = templates.get_template("pipeline/partials/metadata_retry_response.html").render(count=1, no_active_agent=False)
-    pill_oob = _stage_pill_oob(file_id, "metadata", buckets.get("metadata", "failed"), id_prefix="files-stage-pill")
-    return HTMLResponse(ack + pill_oob)
+    return HTMLResponse(ack + _files_retry_oob(file_id, "metadata", buckets))
 
 
 # --------------------------------------------------------------------------------------------------
@@ -2300,6 +2298,25 @@ async def force_skip_stage(
 # pill's aria-label only. Enrich-only, mirroring STAGE_TO_FUNCTION, because non-enrich stages are
 # rejected 422 before this is ever reached (D-10).
 _ENRICH_STAGE_LABELS = {"metadata": "Metadata", "analyze": "Analyze"}
+
+
+def _files_retry_oob(file_id: uuid.UUID, stage: str, buckets: dict[str, str]) -> str:
+    """Refresh retry controls and current-state summaries on both responsive Files surfaces."""
+    stage_label = _ENRICH_STAGE_LABELS[stage]
+    controls = "".join(
+        templates.get_template("pipeline/partials/_files_stage_control.html").render(
+            file_id=file_id,
+            key=stage,
+            stage_label=stage_label,
+            bucket=buckets.get(stage, "not_started"),
+            surface=surface,
+            oob=True,
+        )
+        for surface in ("table", "mobile")
+    )
+    current = templates.get_template("pipeline/partials/_files_current_status.html").render(buckets=buckets)
+    summaries = "".join(f'<span id="{prefix}-current-status-{file_id}" hx-swap-oob="true">{current}</span>' for prefix in ("files", "files-mobile"))
+    return controls + summaries
 
 
 def _stage_pill_oob(file_id: uuid.UUID, stage: str, bucket: str, *, id_prefix: str = "stage-pill") -> str:

@@ -4,7 +4,7 @@
    files list -- NOT a third page to maintain. The bar expresses "Show files where {stage} = {bucket}"
    as two selects (stage x bucket), including the `failed` bucket (UI-02 failure visibility as a filter).
 
-   URL-carried state (D-03): the form hx-gets /pipeline/files with `stage`+`bucket` in the query and
+   URL-carried state (D-03): the form hx-gets /s/files with `stage`+`bucket` in the query and
    `hx-push-url="true"`, so the filter survives the record slide-in AND browser back/forward (the same
    push-url idiom the rail nav uses). An empty option (value="") clears that axis -- the route validates
    both params against the Stage / Status allowlists (Plan 04), so an empty/unknown value degrades to an
@@ -38,7 +38,9 @@
 ] %}
 {% set _select = 'text-sm rounded-md border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-bg text-gray-900 dark:text-gray-100 px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500' %}
 {% import "ui/primitives.html" as ui %}
-{% call ui.filter_toolbar('status-filter-bar', '/pipeline/files', '#files-table-view', true, 'change', 'File status filters') %}
+{% call ui.filter_toolbar('status-filter-bar', '/s/files', '#files-table-view', true, 'change', 'File status filters') %}
+    <input type="hidden" name="page_size" value="{{ files_page.page_size }}">
+    {% if sort %}<input type="hidden" name="sort" value="{{ sort.key }}"><input type="hidden" name="order" value="{{ sort.order }}">{% endif %}
     <span class="font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:text-gray-500">Show files where</span>
     <label class="sr-only" for="filter-stage">Stage</label>
     <select id="filter-stage" name="stage" aria-label="Filter by stage" class="{{ _select }}">
@@ -56,9 +58,9 @@
         {% endfor %}
     </select>
     {% if active_stage or active_bucket %}
-    {# Clear both axes -- a bare hx-get with no query, same target + push-url (URL returns to /pipeline/files). #}
-    <a href="/pipeline/files"
-       hx-get="/pipeline/files" hx-target="#files-table-view" hx-swap="innerHTML" hx-push-url="true"
+    {# Clear both axes while retaining page size and sort state on the canonical Files route. #}
+    <a href="/s/files?page_size={{ files_page.page_size }}{% if sort %}&amp;sort={{ sort.key }}&amp;order={{ sort.order }}{% endif %}"
+       hx-get="/s/files?page_size={{ files_page.page_size }}{% if sort %}&amp;sort={{ sort.key }}&amp;order={{ sort.order }}{% endif %}" hx-target="#files-table-view" hx-swap="innerHTML" hx-push-url="true"
        class="text-sm px-2 py-1 rounded text-blue-600 dark:text-blue-400 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500">Clear filter</a>
     {% endif %}
 {% endcall %}

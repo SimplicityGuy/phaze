@@ -175,6 +175,7 @@
                 // so a fast drag never reports a negative or zero width mid-gesture.
                 defaults: { File: 320, Type: 88, Metadata: 116, Analyze: 116, Propose: 108, Review: 104, Execute: 108 },
                 mins: { File: 140, Type: 64, Metadata: 96, Analyze: 96, Propose: 88, Review: 84, Execute: 88 },
+                legacyKeys: { Metadata: 'Meta', Propose: 'Prop', Review: 'Appr', Execute: 'Exec' },
                 max: 900,
                 widths: (() => {
                     try {
@@ -184,7 +185,8 @@
                     }
                 })(),
                 width(col) {
-                    return this.widths[col] ?? this.defaults[col] ?? 120;
+                    const legacy = this.legacyKeys[col];
+                    return this.widths[col] ?? (legacy ? this.widths[legacy] : undefined) ?? this.defaults[col] ?? 120;
                 },
                 setWidth(col, px) {
                     const min = this.mins[col] ?? 64;
