@@ -36,6 +36,7 @@ from sqlalchemy import func, select
 
 from phaze.config import settings
 from phaze.database import get_session
+from phaze.enums.stage import Stage, Status
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
 from phaze.models.proposal import APPROVE_REJECT_FROM
@@ -48,6 +49,7 @@ from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_frag
 from phaze.routers.view_state import PAGE_SIZE_CHOICES, ListViewState
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, clamp_page, clamp_page_size
 from phaze.services.pipeline import (
+    ORPHANED_BUCKET,
     analyze_lanes_content_hash,
     count_proposal_pending_files,
     get_files_page,
@@ -467,10 +469,40 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # phaze-a6hm.3: this is the UNSORTED default landing, so resolve against no wire sort/order --
         # reuses the SAME FILES_SORT contract instance pipeline.pipeline_files() resolves against
         # (contract rule 6: one contract object per table), never a second one built here.
-        files_sort_state = FILES_SORT.resolve(sort=None, order=None, view_state={"page_size": 25, "stage": None, "bucket": None})
-        context["files_page"] = await get_files_page(session, page=1, page_size=25, stage=None, bucket=None, sort=files_sort_state)
-        context["active_stage"] = None
-        context["active_bucket"] = None
+        def query_int(name: str, default: int) -> int:
+            try:
+                return int(request.query_params.get(name, default))
+            except (TypeError, ValueError):
+                return default
+
+        page = clamp_page(query_int("page", 1))
+        page_size = clamp_page_size(query_int("page_size", DEFAULT_PAGE_SIZE))
+        try:
+            active_stage = Stage(request.query_params["stage"]) if request.query_params.get("stage") else None
+        except ValueError:
+            active_stage = None
+        requested_bucket = request.query_params.get("bucket")
+        valid_buckets = {status.value for status in Status} | {ORPHANED_BUCKET}
+        active_bucket = requested_bucket if requested_bucket in valid_buckets else None
+        files_sort_state = FILES_SORT.resolve(
+            sort=request.query_params.get("sort"),
+            order=request.query_params.get("order"),
+            view_state={
+                "page_size": page_size,
+                "stage": active_stage.value if active_stage is not None else None,
+                "bucket": active_bucket,
+            },
+        )
+        context["files_page"] = await get_files_page(
+            session,
+            page=page,
+            page_size=page_size,
+            stage=active_stage,
+            bucket=active_bucket,
+            sort=files_sort_state,
+        )
+        context["active_stage"] = active_stage.value if active_stage is not None else None
+        context["active_bucket"] = active_bucket
         context["sort"] = files_sort_state
         # phaze-t0b8: files_workspace.html now composes _workspace_scaffold.html like every other
         # STAGE_PARTIALS host, which both supplies the <h1 tabindex="-1"> focus target this stage was
@@ -649,6 +681,13 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # refines WHICH fragment. The raw header this contract bans is HX-Request, and it is not read
         # here or anywhere else in this module.
         target = request.headers.get("HX-Target", "")
+        if stage == "files" and target == "files-table-view":
+            return templates.TemplateResponse(
+                request=request,
+                name="pipeline/partials/files_table_view.html",
+                context=context,
+                headers=DUAL_SHAPE_RESPONSE_HEADERS,
+            )
         if stage == "propose" and target == PROPOSE_LIST_CONTAINER_ID:
             return templates.TemplateResponse(
                 request=request, name="pipeline/partials/_propose_list.html", context=context, headers=DUAL_SHAPE_RESPONSE_HEADERS

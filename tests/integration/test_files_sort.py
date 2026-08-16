@@ -93,7 +93,8 @@ async def test_files_headers_are_sortable_and_announce_state(client: AsyncClient
     head = body[body.index("<thead") : body.index("<tbody")]
 
     # Every whitelisted header is a real server-side sort control aimed at this table's own endpoint.
-    assert 'hx-get="/pipeline/files?' in head
+    assert 'hx-get="/s/files?' in head
+    assert 'hx-push-url="true"' in head
     for key in ("file", "type", "metadata", "analyze", "propose", "review", "apply"):
         assert f"sort={key}" in head, f"header for sort={key} is not a sort control"
     # Rule 5: the ACTIVE column (default_key="file") announces its direction; the caret is decorative.
@@ -121,7 +122,9 @@ async def test_every_rendered_header_label_is_whitelisted_and_vice_versa(client:
     body = (await client.get("/pipeline/files", headers={"HX-Request": "true"})).text
     head = body[body.index("<thead") : body.index("<tbody")]
 
-    assert _header_labels(head) == {column.label for column in FILES_SORT.columns}
+    labels = _header_labels(head)
+    assert {column.label for column in FILES_SORT.columns}.issubset(labels)
+    assert labels - {column.label for column in FILES_SORT.columns} == {"Current state", "File details"}
 
 
 @pytest.mark.asyncio
@@ -141,7 +144,7 @@ async def test_stage_header_labels_match_the_stage_matrix_cells(client: AsyncCli
 
     stage_columns = [column for column in FILES_SORT.columns if column.key not in {"file", "type"}]
     assert [column.key for column in stage_columns] == [stage.value for stage in _FILES_PAGE_STAGES]
-    assert [column.label for column in stage_columns] == ["Meta", "Analyze", "Prop", "Appr", "Exec"]
+    assert [column.label for column in stage_columns] == ["Metadata", "Analyze", "Propose", "Review", "Execute"]
     # And the header row actually rendered them in that order (each label immediately precedes its
     # own decorative caret span, which is how a label is anchored rather than matched loosely).
     positions = [head.index(f"{column.label}<span") for column in stage_columns]

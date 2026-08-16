@@ -1318,20 +1318,19 @@ TRACKLIST_SETS_SORT = SortContract(
 # rather than erroring. `tests/integration/test_files_sort.py` asserts the two agree, in both
 # directions, so the pair cannot drift silently.
 #
-# The 6-stage -> 5-pill remap LANDMINE applies to the KEYS too: `Appr` reads the `review` bucket and
-# `Exec` reads `apply`. The wire keys are the canonical `Stage` values rather than the header words,
-# so the URL names the model's vocabulary and no third naming scheme is invented.
+# The five displayed stage keys use canonical ``Stage`` values, so the URL names the model's
+# vocabulary while the labels remain explicit operator-facing language.
 FILES_SORT = SortContract(
-    endpoint="/pipeline/files",
+    endpoint="/s/files",
     target="#files-table-view",
     columns=(
         SortableColumn(key="file", label="File", expression=FileRecord.current_path),
         SortableColumn(key="type", label="Type", expression=FileRecord.file_type),
-        SortableColumn(key="metadata", label="Meta", expression=stage_status_sort_case(Stage.METADATA)),
+        SortableColumn(key="metadata", label="Metadata", expression=stage_status_sort_case(Stage.METADATA)),
         SortableColumn(key="analyze", label="Analyze", expression=stage_status_sort_case(Stage.ANALYZE)),
-        SortableColumn(key="propose", label="Prop", expression=stage_status_sort_case(Stage.PROPOSE)),
-        SortableColumn(key="review", label="Appr", expression=stage_status_sort_case(Stage.REVIEW)),
-        SortableColumn(key="apply", label="Exec", expression=stage_status_sort_case(Stage.APPLY)),
+        SortableColumn(key="propose", label="Propose", expression=stage_status_sort_case(Stage.PROPOSE)),
+        SortableColumn(key="review", label="Review", expression=stage_status_sort_case(Stage.REVIEW)),
+        SortableColumn(key="apply", label="Execute", expression=stage_status_sort_case(Stage.APPLY)),
     ),
     default_key="file",
 )
@@ -2121,8 +2120,7 @@ async def retry_analysis_failed_file(
     # the same shape force_skip_stage uses for the record pane (see `_stage_pill_oob`).
     buckets = await get_file_stage_buckets(session, file_id)
     ack = templates.get_template("pipeline/partials/retry_failed_response.html").render(count=1, no_active_agent=False)
-    pill_oob = _stage_pill_oob(file_id, "analyze", buckets.get("analyze", "not_started"), id_prefix="files-stage-pill")
-    return HTMLResponse(ack + pill_oob)
+    return HTMLResponse(ack + _files_retry_oob(file_id, "analyze", buckets))
 
 
 @router.post("/pipeline/files/{file_id}/metadata-failed/retry", response_class=HTMLResponse)
@@ -2187,8 +2185,7 @@ async def retry_metadata_failed_file(
     # happened yet (it will land on the next per-file retry / force-skip / poll-driven action).
     buckets = await get_file_stage_buckets(session, file_id)
     ack = templates.get_template("pipeline/partials/metadata_retry_response.html").render(count=1, no_active_agent=False)
-    pill_oob = _stage_pill_oob(file_id, "metadata", buckets.get("metadata", "failed"), id_prefix="files-stage-pill")
-    return HTMLResponse(ack + pill_oob)
+    return HTMLResponse(ack + _files_retry_oob(file_id, "metadata", buckets))
 
 
 # --------------------------------------------------------------------------------------------------
@@ -2300,7 +2297,26 @@ async def force_skip_stage(
 # The record pane enrich stage labels (the stage loop in record_body.html) — informational text inside the
 # pill's aria-label only. Enrich-only, mirroring STAGE_TO_FUNCTION, because non-enrich stages are
 # rejected 422 before this is ever reached (D-10).
-_ENRICH_STAGE_LABELS = {"metadata": "Meta", "analyze": "Analyze"}
+_ENRICH_STAGE_LABELS = {"metadata": "Metadata", "analyze": "Analyze"}
+
+
+def _files_retry_oob(file_id: uuid.UUID, stage: str, buckets: dict[str, str]) -> str:
+    """Refresh retry controls and current-state summaries on both responsive Files surfaces."""
+    stage_label = _ENRICH_STAGE_LABELS[stage]
+    controls = "".join(
+        templates.get_template("pipeline/partials/_files_stage_control.html").render(
+            file_id=file_id,
+            key=stage,
+            stage_label=stage_label,
+            bucket=buckets.get(stage, "not_started"),
+            surface=surface,
+            oob=True,
+        )
+        for surface in ("table", "mobile")
+    )
+    current = templates.get_template("pipeline/partials/_files_current_status.html").render(buckets=buckets)
+    summaries = "".join(f'<span id="{prefix}-current-status-{file_id}" hx-swap-oob="true">{current}</span>' for prefix in ("files", "files-mobile"))
+    return controls + summaries
 
 
 def _stage_pill_oob(file_id: uuid.UUID, stage: str, bucket: str, *, id_prefix: str = "stage-pill") -> str:
@@ -2371,14 +2387,13 @@ def _force_skip_no_op_toast(stage: str) -> HTMLResponse:
 # unmet blocker keeping a stage out of the pending set.
 # --------------------------------------------------------------------------------------------------
 
-# Display label per stage for the five-pill matrix + trace verdict (the 6->5 remap: tracklist is
-# omitted; review renders as Appr, apply as Exec). Mirrors the _stage_matrix partial pill order.
+# Display label per stage for the five-pill matrix + trace verdict. Tracklists are omitted here.
 _STAGE_TRACE_LABELS: dict[Stage, str] = {
-    Stage.METADATA: "Meta",
+    Stage.METADATA: "Metadata",
     Stage.ANALYZE: "Analyze",
-    Stage.PROPOSE: "Prop",
-    Stage.REVIEW: "Appr",
-    Stage.APPLY: "Exec",
+    Stage.PROPOSE: "Propose",
+    Stage.REVIEW: "Review",
+    Stage.APPLY: "Execute",
 }
 
 
