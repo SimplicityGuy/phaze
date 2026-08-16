@@ -25,6 +25,7 @@ content bridges) land with their workspaces in Phases 58-61.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -47,12 +48,11 @@ from phaze.routers.pipeline_scans import RECENT_SCANS_SORT, build_recent_scans
 from phaze.routers.proposal_sort import PROPOSE_SORT
 from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_fragment
 from phaze.routers.view_state import PAGE_SIZE_CHOICES, ListViewState
-from phaze.services.backends import get_backend_lane_snapshot
+from phaze.services.backends import derive_cloud_hold_reason, get_analysis_working_count
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, clamp_page, clamp_page_size
 from phaze.services.pipeline import (
     ORPHANED_BUCKET,
     analyze_lanes_content_hash,
-    count_active_agents,
     count_proposal_pending_files,
     get_analysis_stalled_count,
     get_awaiting_cloud_count,
@@ -65,6 +65,7 @@ from phaze.services.pipeline import (
     get_metadata_selection_summary,
     get_metadata_status_snapshot,
     get_stage_activity_snapshot,
+    get_stage_controls,
     get_stage_progress,
 )
 from phaze.services.proposal_queries import get_proposal_stats
@@ -76,6 +77,7 @@ from phaze.services.review import (
     get_tagwrite_review_page,
 )
 from phaze.services.route_control import get_route_control
+from phaze.services.stage_status import done_clause
 from phaze.utils.humanize import relative_time
 from phaze.web.static import static_asset_url
 
@@ -330,14 +332,18 @@ def _derive_summary_overview(
     *,
     proposal_pending: int,
     proposal_approved: int,
-    active_fileservers: int,
+    active_fileservers: int | None,
     orphan_counts: dict[str, int],
     stalled_analyses: int,
     inadmissible_count: int,
     awaiting_cloud_count: int,
+    awaiting_hold_reason: str | None,
     queued_behind_quota_count: int,
-    analysis_working: int,
+    stage_paused: dict[str, bool],
+    enriched_count: int | None,
+    analysis_working: int | None,
     analyses_today: int | None,
+    analyses_lifetime: int | None,
 ) -> dict[str, Any]:
     """Derive display-only overview state without introducing new pipeline semantics."""
     discovery = stage_progress["discovery"]
@@ -424,12 +430,30 @@ def _derive_summary_overview(
             30, "Cloud jobs blocked by configuration", f"{inadmissible_count} active cloud job(s) are Inadmissible.", "/s/agents", "Inspect Compute"
         )
     if awaiting_cloud_count:
+        hold_reason = awaiting_hold_reason or "reason unavailable"
+        if hold_reason in {"cloud routing disabled", "held — cloud routing paused (force-local)"}:
+            awaiting_href, awaiting_action = "/s/operations", "Open Routing"
+        elif hold_reason in {
+            "held — no cloud backend reachable",
+            "held — no fileserver agent online",
+        } or hold_reason.startswith("held — all lanes at capacity"):
+            awaiting_href, awaiting_action = "/s/agents", "Inspect Compute"
+        else:
+            awaiting_href, awaiting_action = "/s/analyze", "Open Analyze"
         add_attention(
-            40, "Files awaiting cloud capacity", f"{awaiting_cloud_count} file(s) are held before cloud analysis.", "/s/analyze", "Open Analyze"
+            40,
+            "Files awaiting cloud routing",
+            f"{awaiting_cloud_count} file(s): {hold_reason}.",
+            awaiting_href,
+            awaiting_action,
         )
     if queued_behind_quota_count:
         add_attention(
-            41, "Cloud quota wait", f"{queued_behind_quota_count} admitted job(s) are waiting behind cluster quota.", "/s/agents", "Inspect Compute"
+            41,
+            "Cloud quota wait",
+            f"{queued_behind_quota_count} submitted cloud job(s) are waiting for cluster quota.",
+            "/s/agents",
+            "Inspect Compute",
         )
     if active_fileservers == 0:
         add_attention(
@@ -452,7 +476,7 @@ def _derive_summary_overview(
             "action": "Open Discover",
             "tone": "accent",
         }
-    elif int(metadata.get("not_started") or 0):
+    elif int(metadata.get("not_started") or 0) and not stage_paused["metadata"] and not int(metadata.get("in_flight") or 0):
         recommended = {
             "title": "Start metadata enrichment",
             "detail": "Metadata and analysis are independent and can run in parallel.",
@@ -460,12 +484,37 @@ def _derive_summary_overview(
             "action": "Open Metadata",
             "tone": "accent",
         }
-    elif int(analyze.get("not_started") or 0):
+    elif int(analyze.get("not_started") or 0) and not stage_paused["analyze"] and not int(analyze.get("in_flight") or 0):
         recommended = {
             "title": "Start audio analysis",
             "detail": "Analysis can run independently of metadata enrichment.",
             "href": "/s/analyze",
             "action": "Open Analyze",
+            "tone": "accent",
+        }
+    elif stage_paused["metadata"] and (int(metadata.get("not_started") or 0) or int(metadata.get("in_flight") or 0)):
+        recommended = {
+            "title": "Metadata enrichment is paused",
+            "detail": "Review the pause before resuming metadata work.",
+            "href": "/s/metadata",
+            "action": "Open Metadata",
+            "tone": "attention",
+        }
+    elif stage_paused["analyze"] and (int(analyze.get("not_started") or 0) or int(analyze.get("in_flight") or 0)):
+        recommended = {
+            "title": "Audio analysis is paused",
+            "detail": "Review the pause before resuming analysis work.",
+            "href": "/s/analyze",
+            "action": "Open Analyze",
+            "tone": "attention",
+        }
+    elif int(metadata.get("in_flight") or 0) or int(analyze.get("in_flight") or 0):
+        active_stage = "metadata" if int(metadata.get("in_flight") or 0) else "analyze"
+        recommended = {
+            "title": "Enrichment is in progress",
+            "detail": "Current work is already running; monitor it before starting the next dependent stage.",
+            "href": f"/s/{active_stage}",
+            "action": f"Open {active_stage.title()}",
             "tone": "accent",
         }
     elif int(proposals["done"] or 0) < int(proposals["total"] or 0):
@@ -503,10 +552,7 @@ def _derive_summary_overview(
 
     return {
         "total_files": total_files,
-        "resolved_enrichment": min(
-            int(metadata["done"] or 0) + int(metadata.get("skipped") or 0),
-            int(analyze["done"] or 0) + int(analyze.get("skipped") or 0),
-        ),
+        "resolved_enrichment": enriched_count,
         "proposal_pending": proposal_pending,
         "proposal_approved": proposal_approved,
         "flow": flow,
@@ -515,7 +561,7 @@ def _derive_summary_overview(
         "recent": {
             "live": analysis_working,
             "today": analyses_today,
-            "lifetime": int(analyze["done"] or 0),
+            "lifetime": analyses_lifetime,
         },
         "is_empty": total_files == 0,
         "is_partially_configured": active_fileservers == 0,
@@ -523,41 +569,64 @@ def _derive_summary_overview(
     }
 
 
+async def _get_summary_aggregates(session: AsyncSession, *, now: datetime | None = None) -> dict[str, int | None]:
+    """Read intersection, activity history, and configuration in one UTC-scoped statement."""
+    utc_now = now or datetime.now(UTC)
+    if utc_now.tzinfo is None:
+        raise ValueError("summary aggregate clock must be timezone-aware")
+    utc_midnight = utc_now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    enriched = select(func.count(FileRecord.id)).where(done_clause(Stage.METADATA), done_clause(Stage.ANALYZE)).scalar_subquery()
+    analyses_lifetime = select(func.count(AnalysisResult.id)).where(AnalysisResult.analysis_completed_at.is_not(None)).scalar_subquery()
+    analyses_today = (
+        select(func.count(AnalysisResult.id))
+        .where(AnalysisResult.analysis_completed_at.is_not(None), AnalysisResult.analysis_completed_at >= utc_midnight)
+        .scalar_subquery()
+    )
+    active_fileservers = (
+        select(func.count(Agent.id)).where(Agent.kind == "fileserver", Agent.revoked_at.is_(None), Agent.last_seen_at.is_not(None)).scalar_subquery()
+    )
+    try:
+        async with session.begin_nested():
+            row = (await session.execute(select(enriched, analyses_today, analyses_lifetime, active_fileservers))).one()
+    except Exception:
+        return {"enriched": None, "analyses_today": None, "analyses_lifetime": None, "active_fileservers": None}
+    return {
+        "enriched": int(row[0] or 0),
+        "analyses_today": int(row[1] or 0),
+        "analyses_lifetime": int(row[2] or 0),
+        "active_fileservers": int(row[3] or 0),
+    }
+
+
 async def _build_summary_context(app_state: Any, session: AsyncSession) -> dict[str, Any]:
     """Read existing authoritative state and derive the Summary presentation model."""
     stage_progress = await get_stage_progress(session)
     proposal_stats = await get_proposal_stats(session)
-    active_fileservers = await count_active_agents(session, kind="fileserver")
     stalled_analyses = await get_analysis_stalled_count(session)
     inadmissible_count = await get_inadmissible_count(session)
     awaiting_cloud_count = await get_awaiting_cloud_count(session)
     cloud_phases = await get_cloud_phase_counts(session)
-    lanes = await get_backend_lane_snapshot(session, app_state)
-    analyses_today: int | None
-    try:
-        async with session.begin_nested():
-            result = await session.execute(
-                select(func.count(AnalysisResult.id)).where(
-                    AnalysisResult.analysis_completed_at.is_not(None),
-                    AnalysisResult.analysis_completed_at >= func.date_trunc("day", func.now()),
-                )
-            )
-        analyses_today = int(result.scalar() or 0)
-    except Exception:
-        analyses_today = None
+    stage_controls = await get_stage_controls(session)
+    aggregates = await _get_summary_aggregates(session)
+    analysis_working = await get_analysis_working_count(session, app_state)
+    awaiting_hold_reason = await derive_cloud_hold_reason(session) if awaiting_cloud_count else None
     return {
         "summary": _derive_summary_overview(
             stage_progress,
             proposal_pending=proposal_stats.pending,
             proposal_approved=proposal_stats.approved,
-            active_fileservers=active_fileservers,
+            active_fileservers=aggregates["active_fileservers"],
             orphan_counts=get_cached_stage_orphan_counts(),
             stalled_analyses=stalled_analyses,
             inadmissible_count=inadmissible_count,
             awaiting_cloud_count=awaiting_cloud_count,
+            awaiting_hold_reason=awaiting_hold_reason,
             queued_behind_quota_count=cloud_phases["queued_behind_quota"],
-            analysis_working=sum(int(lane.get("working") or 0) for lane in lanes),
-            analyses_today=analyses_today,
+            stage_paused={stage: bool(stage_controls[stage]["paused"]) for stage in ("metadata", "analyze")},
+            enriched_count=aggregates["enriched"],
+            analysis_working=analysis_working,
+            analyses_today=aggregates["analyses_today"],
+            analyses_lifetime=aggregates["analyses_lifetime"],
         )
     }
 

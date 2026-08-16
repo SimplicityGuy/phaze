@@ -42,6 +42,15 @@ from phaze.services.backends import (
     get_analyze_queue_totals,
     get_backend_lane_snapshot,
 )
+from phaze.services.backends import (
+    _cloud_job_succeeded_for_backend,  # noqa: F401 -- imported for symbol-existence coverage below
+    _cloud_lane_queued_working,
+    _lane_processed_counts,
+    _local_lane_queued_working,
+    get_analysis_working_count,
+    get_analyze_queue_totals,
+    get_backend_lane_snapshot,
+)
 from tests._queue_fakes import FakeTaskRouter, seed_active_agent
 
 
@@ -121,6 +130,46 @@ async def test_local_lane_queued_working_degrades_to_none_on_broker_error(sessio
     app_state = SimpleNamespace(task_router=router)
 
     assert await _local_lane_queued_working(session, app_state) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_analysis_working_count_uses_focused_sources_not_the_full_lane_snapshot(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def local_working(_session: AsyncSession, _app_state: object) -> tuple[int, int]:
+        return 4, 2
+
+    async def cloud_working(_session: AsyncSession, _stmt: object, *, node: str) -> int:
+        assert node == "analysis_working_total"
+        return 3
+
+    async def forbidden_snapshot(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+        raise AssertionError("Summary working count must not build the full lane snapshot")
+
+    monkeypatch.setattr(backends_mod, "_local_lane_queued_working", local_working)
+    monkeypatch.setattr(backends_mod, "_safe_count_or_none", cloud_working)
+    monkeypatch.setattr(backends_mod, "resolve_backends", lambda _settings: [SimpleNamespace(id="cloud-a", kind="kueue")])
+    monkeypatch.setattr(backends_mod, "_kind_of", lambda backend: backend.kind)
+    monkeypatch.setattr(backends_mod, "_cloud_window_clauses", lambda: (object(), True))
+    monkeypatch.setattr(backends_mod, "get_backend_lane_snapshot", forbidden_snapshot)
+
+    assert await get_analysis_working_count(session, SimpleNamespace()) == 5
+
+
+@pytest.mark.asyncio
+async def test_analysis_working_count_propagates_an_unknown_source(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def unknown_local(_session: AsyncSession, _app_state: object) -> tuple[None, None]:
+        return None, None
+
+    async def known_cloud(_session: AsyncSession, _stmt: object, *, node: str) -> int:
+        assert node == "analysis_working_total"
+        return 3
+
+    monkeypatch.setattr(backends_mod, "_local_lane_queued_working", unknown_local)
+    monkeypatch.setattr(backends_mod, "_safe_count_or_none", known_cloud)
+    monkeypatch.setattr(backends_mod, "resolve_backends", lambda _settings: [SimpleNamespace(id="cloud-a", kind="kueue")])
+    monkeypatch.setattr(backends_mod, "_kind_of", lambda backend: backend.kind)
+    monkeypatch.setattr(backends_mod, "_cloud_window_clauses", lambda: (object(), True))
+
+    assert await get_analysis_working_count(session, SimpleNamespace()) is None
 
 
 # --------------------------------------------------------------------------- AC4: cloud lane queued/working

@@ -1,11 +1,23 @@
 """State derivation and template contracts for the actionable Summary overview."""
 
+from __future__ import annotations
+
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from bs4 import BeautifulSoup, Tag
 from jinja2 import Environment, FileSystemLoader
+import pytest
+from sqlalchemy import text
 
-from phaze.routers.shell import _derive_summary_overview
+from phaze.models.analysis import AnalysisResult
+from phaze.models.metadata import FileMetadata
+from phaze.routers.shell import _derive_summary_overview, _get_summary_aggregates
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 _TEMPLATES = Path(__file__).resolve().parents[3] / "src" / "phaze" / "templates"
@@ -33,9 +45,13 @@ def _derive(progress: dict[str, dict[str, int | None]], **overrides: object) -> 
         "stalled_analyses": 0,
         "inadmissible_count": 0,
         "awaiting_cloud_count": 0,
+        "awaiting_hold_reason": None,
         "queued_behind_quota_count": 0,
+        "stage_paused": {"metadata": False, "analyze": False},
+        "enriched_count": 0,
         "analysis_working": 0,
         "analyses_today": 0,
+        "analyses_lifetime": 0,
     }
     args.update(overrides)
     return _derive_summary_overview(progress, **args)  # type: ignore[arg-type]
@@ -57,7 +73,7 @@ def test_complete_state_has_no_attention_and_reports_parallel_enrichment() -> No
     progress = _progress(metadata=complete_bucket, analyze=complete_bucket)
     progress["proposals"] = {"done": 4, "total": 4}
     progress["execute"] = {"done": 4, "total": 0}
-    summary = _derive(progress, analyses_today=2)
+    summary = _derive(progress, enriched_count=4, analyses_today=2, analyses_lifetime=4)
 
     assert summary["attention"] == []
     assert summary["recommended"]["title"] == "Pipeline caught up"  # type: ignore[index]
@@ -76,6 +92,7 @@ def test_degraded_state_prioritizes_failures_then_orphans_and_capacity() -> None
         stalled_analyses=1,
         inadmissible_count=3,
         awaiting_cloud_count=5,
+        awaiting_hold_reason="held — all lanes at capacity (4/4 slots busy)",
         queued_behind_quota_count=7,
     )
 
@@ -86,10 +103,111 @@ def test_degraded_state_prioritizes_failures_then_orphans_and_capacity() -> None
         "Analysis failures",
         "Orphaned work",
         "Cloud jobs blocked by configuration",
-        "Files awaiting cloud capacity",
+        "Files awaiting cloud routing",
         "Cloud quota wait",
     ]
     assert summary["recommended"]["href"] == "/s/metadata"  # type: ignore[index]
+
+
+def test_in_flight_enrichment_recommends_runnable_parallel_work_then_monitoring() -> None:
+    metadata_running = _progress(metadata={"not_started": 2, "in_flight": 2})
+    start_analyze = _derive(metadata_running)
+    assert start_analyze["recommended"]["title"] == "Start audio analysis"  # type: ignore[index]
+
+    both_running = _progress(
+        metadata={"not_started": 0, "in_flight": 2},
+        analyze={"not_started": 0, "in_flight": 2},
+    )
+    monitor = _derive(both_running)
+    assert monitor["recommended"]["title"] == "Enrichment is in progress"  # type: ignore[index]
+    assert monitor["recommended"]["href"] == "/s/metadata"  # type: ignore[index]
+
+
+def test_paused_stage_is_not_recommended_as_new_work() -> None:
+    metadata_paused = _derive(
+        _progress(metadata={"not_started": 4}, analyze={"not_started": 0, "done": 4}),
+        stage_paused={"metadata": True, "analyze": False},
+    )
+    assert metadata_paused["recommended"]["title"] == "Metadata enrichment is paused"  # type: ignore[index]
+
+    analyze_still_runnable = _derive(
+        _progress(),
+        stage_paused={"metadata": True, "analyze": False},
+    )
+    assert analyze_still_runnable["recommended"]["title"] == "Start audio analysis"  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    ("reason", "href", "action"),
+    [
+        ("cloud routing disabled", "/s/operations", "Open Routing"),
+        ("held — cloud routing paused (force-local)", "/s/operations", "Open Routing"),
+        ("held — no cloud backend reachable", "/s/agents", "Inspect Compute"),
+        ("held — all lanes at capacity (2/2 slots busy)", "/s/agents", "Inspect Compute"),
+        ("held — no fileserver agent online", "/s/agents", "Inspect Compute"),
+        ("queued — 2 free slots, dispatching on next drain tick (~5 min)", "/s/analyze", "Open Analyze"),
+        ("held", "/s/analyze", "Open Analyze"),
+    ],
+)
+def test_awaiting_cloud_reuses_exact_reason_and_routes_to_the_relevant_workspace(reason: str, href: str, action: str) -> None:
+    summary = _derive(_progress(), awaiting_cloud_count=3, awaiting_hold_reason=reason)
+    item = next(item for item in summary["attention"] if item["title"] == "Files awaiting cloud routing")  # type: ignore[union-attr]
+    assert reason in item["detail"]
+    assert item["href"] == href
+    assert item["action"] == action
+
+
+def test_unknown_metrics_remain_unknown_and_do_not_claim_partial_configuration() -> None:
+    summary = _derive(
+        _progress(),
+        active_fileservers=None,
+        enriched_count=None,
+        analysis_working=None,
+        analyses_today=None,
+        analyses_lifetime=None,
+    )
+    assert summary["is_partially_configured"] is False
+    assert summary["resolved_enrichment"] is None
+    assert summary["recent"] == {"live": None, "today": None, "lifetime": None}
+
+
+@pytest.mark.asyncio
+async def test_enriched_count_is_the_same_file_intersection(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    metadata_only = await make_file(original_filename="metadata-only.mp3")
+    analysis_only = await make_file(original_filename="analysis-only.mp3")
+    session.add(FileMetadata(file_id=metadata_only.id))
+    session.add(AnalysisResult(file_id=analysis_only.id, analysis_completed_at=datetime.now(UTC)))
+    await session.commit()
+
+    aggregates = await _get_summary_aggregates(session)
+
+    assert aggregates["enriched"] == 0
+    assert aggregates["analyses_lifetime"] == 1
+
+
+@pytest.mark.asyncio
+async def test_today_is_bounded_by_utc_midnight_regardless_of_session_timezone(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    before_utc_midnight = await make_file(original_filename="before-midnight.mp3")
+    after_utc_midnight = await make_file(original_filename="after-midnight.mp3")
+    session.add_all(
+        [
+            AnalysisResult(file_id=before_utc_midnight.id, analysis_completed_at=datetime(2026, 8, 15, 23, 59, tzinfo=UTC)),
+            AnalysisResult(file_id=after_utc_midnight.id, analysis_completed_at=datetime(2026, 8, 16, 0, 1, tzinfo=UTC)),
+        ]
+    )
+    await session.commit()
+    await session.execute(text("SET LOCAL TIME ZONE 'America/Los_Angeles'"))
+
+    aggregates = await _get_summary_aggregates(session, now=datetime(2026, 8, 16, 0, 30, tzinfo=UTC))
+
+    assert aggregates["analyses_today"] == 1
+    assert aggregates["analyses_lifetime"] == 2
+
+
+@pytest.mark.asyncio
+async def test_summary_aggregate_clock_rejects_naive_time(session: AsyncSession) -> None:
+    with pytest.raises(ValueError, match="timezone-aware"):
+        await _get_summary_aggregates(session, now=datetime(2026, 8, 16, 0, 30))
 
 
 def test_review_and_apply_recommendations_follow_current_proposal_state() -> None:
@@ -124,3 +242,18 @@ def test_template_uses_shared_primitives_native_htmx_links_and_responsive_grids(
     assert links
     assert all(isinstance(link, Tag) and link.get("href") == link.get("hx-get") for link in links)
     assert all(link.get("hx-target") == "#stage-workspace" for link in links)
+
+
+def test_template_renders_unknown_activity_and_intersection_as_em_dashes() -> None:
+    summary = _derive(
+        _progress(),
+        enriched_count=None,
+        analysis_working=None,
+        analyses_today=None,
+        analyses_lifetime=None,
+    )
+    env = Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    soup = BeautifulSoup(env.get_template("shell/partials/summary_overview.html").render(summary=summary), "html.parser")
+    text_content = soup.get_text(" ", strip=True)
+    assert "Fully enriched —" in text_content
+    assert text_content.count("—") >= 4

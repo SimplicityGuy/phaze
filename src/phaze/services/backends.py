@@ -1534,6 +1534,34 @@ async def _cloud_lane_active(session: AsyncSession, backend_id: str, kind: str) 
     )
 
 
+async def get_analysis_working_count(session: AsyncSession, app_state: Any) -> int | None:
+    """Return the current local + configured-cloud ``working`` total without building lane cards.
+
+    This reuses the exact local SAQ ``active`` and cloud-window ``analyzing`` definitions used by
+    :func:`get_backend_lane_snapshot`, but avoids availability probes, capacity reads, and the serial
+    per-lane processed-history queries that a Summary numeral does not consume. If either source is
+    unreadable, the aggregate is unknown rather than a partial total presented as zero.
+    """
+    _, local_working = await _local_lane_queued_working(session, app_state)
+    try:
+        _, cloud_working_clause = _cloud_window_clauses()
+        cloud_ids = [backend.id for backend in resolve_backends(cast("ControlSettings", get_settings())) if _kind_of(backend) != "local"]
+    except Exception:
+        logger.warning("analysis_working_count_degraded", exc_info=True)
+        return None
+    if cloud_ids:
+        cloud_working = await _safe_count_or_none(
+            session,
+            select(func.count(CloudJob.id)).where(cloud_working_clause, CloudJob.backend_id.in_(cloud_ids)),
+            node="analysis_working_total",
+        )
+    else:
+        cloud_working = 0
+    if local_working is None or cloud_working is None:
+        return None
+    return local_working + cloud_working
+
+
 def _cloud_job_succeeded_for_backend(backend_id: str) -> ColumnElement[bool]:
     """Return ``EXISTS(a SUCCEEDED cloud_job for this file attributed to backend_id)`` (phaze-5c6i2)."""
     return exists(
@@ -1723,18 +1751,47 @@ def derive_localqueue_unreachable(lanes: list[dict[str, Any]]) -> bool:
 _HOLD_REASON_DEGRADED = "held"
 
 
+async def _get_backend_routing_snapshot(session: AsyncSession, cfg: ControlSettings) -> list[dict[str, Any]] | None:
+    """Return only the availability/capacity state the cloud hold gate consumes.
+
+    Unlike :func:`get_backend_lane_snapshot`, this does not read admission buckets, queue depths, or
+    processed history. ``None`` means degraded; an empty list is an observed empty registry.
+    """
+    try:
+        backends = resolve_backends(cfg)
+        availability = await _probe_availability(session, backends)
+        await session.rollback()
+        return [
+            {
+                "id": backend.id,
+                "kind": _kind_of(backend),
+                "cap": backend.cap,
+                "in_flight": await backend.in_flight_count(session),
+                "available": availability.get(backend.id, False),
+            }
+            for backend in backends
+        ]
+    except Exception:
+        logger.warning("backend_routing_snapshot_degraded", exc_info=True)
+        try:
+            await session.rollback()
+        except Exception:
+            logger.warning("backend_routing_snapshot_rollback_failed", exc_info=True)
+        return None
+
+
 async def derive_cloud_hold_reason(session: AsyncSession) -> str:
     """Return the Cloud Routing card's truthful sub-caption, mirroring the drain's own gate order.
 
-    Lives next to :func:`get_backend_lane_snapshot` so the two can never drift apart -- this walks
-    the SAME per-lane ``{available, cap, in_flight}`` shape that function already composes, and
-    checks the SAME gates ``release_awaiting_cloud.stage_cloud_window`` checks, in the SAME order:
+    The routing-only snapshot uses the SAME backend implementations and ``{available, cap,
+    in_flight}`` inputs as :func:`get_backend_lane_snapshot`, without paying for unrelated lane-card
+    metrics. This checks the SAME gates ``release_awaiting_cloud.stage_cloud_window`` checks, in order:
     cloud disabled -> :func:`get_route_control` force-local -> no lane reachable -> every reachable
     lane full -> no fileserver agent online -> else genuinely queued with free capacity. A prior
     incarnation of this card hardcoded "no compute agent online" regardless of the real blocker
     (T-83-hold-reason-bug); this derivation can only ever name a gate it has actually observed.
 
-    Every read here is individually degrade-safe (``get_route_control`` / ``get_backend_lane_snapshot``
+    Every read here is individually degrade-safe (``get_route_control`` / the routing snapshot
     never raise), but the surrounding ``try/except`` is the belt: ANY unexpected exception -- including
     one from ``get_settings()`` or the fileserver probe -- collapses to the neutral
     :data:`_HOLD_REASON_DEGRADED` copy with NO causal claim, so the hot 5s poll can never 500 on a
@@ -1747,16 +1804,8 @@ async def derive_cloud_hold_reason(session: AsyncSession) -> str:
         if await get_route_control(session):
             return "held — cloud routing paused (force-local)"
 
-        lanes = await get_backend_lane_snapshot(session)
-        # phaze-2nomn: get_backend_lane_snapshot swallows ANY top-level error (e.g. a transient DB
-        # error inside one backend's in_flight_count read) and returns [] -- indistinguishable, by
-        # value alone, from an OBSERVED registry of zero non-local lanes. resolve_backends is pure
-        # (no I/O, reads only cfg.backends) and the snapshot's normal path always emits exactly one
-        # lane dict per resolved backend (unavailable backends still get an entry, just
-        # available=False) -- so an EMPTY lanes list against a NON-empty resolved registry can only
-        # mean the snapshot's try/except fired, not that every lane was actually probed and found
-        # unreachable. Fall through to the degrade belt instead of asserting a gate never observed.
-        if not lanes and resolve_backends(cfg):
+        lanes = await _get_backend_routing_snapshot(session, cfg)
+        if lanes is None:
             return _HOLD_REASON_DEGRADED
         # phaze-g4fh: restrict reachability/capacity math to CLOUD lanes. A local lane is always
         # `available=True` with `in_flight=0` (LocalBackend.is_available/in_flight_count), so
