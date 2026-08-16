@@ -39,14 +39,6 @@ from phaze.services.backends import (
     _cloud_lane_queued_working,
     _lane_processed_counts,
     _local_lane_queued_working,
-    get_analyze_queue_totals,
-    get_backend_lane_snapshot,
-)
-from phaze.services.backends import (
-    _cloud_job_succeeded_for_backend,  # noqa: F401 -- imported for symbol-existence coverage below
-    _cloud_lane_queued_working,
-    _lane_processed_counts,
-    _local_lane_queued_working,
     get_analysis_live_count,
     get_analyze_queue_totals,
     get_backend_lane_snapshot,
