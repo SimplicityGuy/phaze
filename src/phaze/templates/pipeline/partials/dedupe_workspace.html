@@ -1,8 +1,8 @@
 {# The Dedupe workspace stages keeper choices before any resolution write. Each _dupe_group form
-   holds a local canonical_id radio choice and POSTs the existing resolve endpoint only from its
-   explicit confirmation button. The bulk header submits exactly the hashes rendered below to the
-   read-only /duplicates/review-all summary; only that summary offers the existing /resolve-all commit.
-   The resolve responses continue to carry server-produced prior state for Undo and Undo All.
+   posts its local canonical_id to a non-mutating review endpoint, which returns an opaque durable
+   plan bound to the complete visible membership. Only the second confirmation submits that plan to
+   resolve. Bulk review follows the same plan boundary. Resolve responses continue to carry
+   server-produced prior state for Undo and Undo All.
 
    NO second poll (R-2 -- the live sub-count would ride the single chrome poll's OOB seeds); NO | safe.
    KEEP/archive are text tags, never hue-only (WCAG 1.4.1).

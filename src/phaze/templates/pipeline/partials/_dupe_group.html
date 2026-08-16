@@ -1,9 +1,8 @@
 {% import "ui/primitives.html" as ui %}
 <form id="dupe-group-{{ group.sha256_hash }}"
-      hx-post="/duplicates/{{ group.sha256_hash }}/resolve"
+      hx-post="/duplicates/{{ group.sha256_hash }}/review"
       hx-target="#dupe-group-{{ group.sha256_hash }}"
       hx-swap="outerHTML"
-      hx-confirm="Confirm this keeper and archive the other copies? This decision remains reversible from the audit toast."
       x-data="{ selected: '{{ group.files | selectattr('keeper') | map(attribute='id') | first }}' }"
       class="rounded-xl border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel">
     <fieldset>
@@ -45,7 +44,7 @@
         <p class="text-xs text-gray-500 dark:text-gray-400">Review the pending keeper above. Confirming creates the audited resolution and enables Undo.</p>
         <button type="submit" hx-disabled-elt="this"
                 class="inline-flex h-9 shrink-0 items-center justify-center rounded-lg bg-amber-700 px-3 font-jura text-xs font-medium uppercase tracking-wider text-white hover:bg-amber-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50">
-            Confirm decision
+            Review decision
         </button>
     </div>
 </form>

@@ -796,18 +796,21 @@ async def test_dedupe_keeper_resolve_wiring(
     body = frag.text
 
     assert f'<form id="dupe-group-{sha}"' in body
-    assert f'hx-post="/duplicates/{sha}/resolve"' in body, "only the enclosing confirmation form posts the resolve route"
+    assert f'hx-post="/duplicates/{sha}/review"' in body, "the choice posts only to the non-mutating review route"
     assert 'type="radio" name="canonical_id"' in body
     radio = re.search(r'<input type="radio"[^>]+>', body)
     assert radio is not None and "hx-post" not in radio.group(), "selection alone must not invoke the resolve endpoint"
     assert "group_id" not in body and "keeper_id" not in body, "the UI-SPEC sketch's group_id/keeper_id must NOT appear"
     assert "pending keeper" in body and "will archive" in body
-    assert "Confirm decision" in body and "Selecting a copy only stages this decision" in body
+    assert "Review decision" in body and "Selecting a copy only stages this decision" in body
     assert "bitrate first" in body and "tag completeness" in body and "shortest path" in body
     assert body.count("checked") == 1, "exactly one keeper radio is pre-selected per group"
 
     # Resolving round-trips file_states on UNDO over the existing resolve_response.html toast (REVIEW-05).
-    resolved = await client.post(f"/duplicates/{sha}/resolve", data={"canonical_id": str(files[0].id)})
+    review = await client.post(f"/duplicates/{sha}/review", data={"canonical_id": str(files[0].id)})
+    plan_id = re.search(r'name="plan_id" value="([^"]+)"', review.text)
+    assert plan_id is not None
+    resolved = await client.post(f"/duplicates/{sha}/resolve", data={"plan_id": plan_id.group(1)})
     assert resolved.status_code == 200
     assert f'hx-post="/duplicates/{sha}/undo"' in resolved.text, "the resolved state's UNDO posts the undo route"
     assert 'name="file_states"' in resolved.text, "UNDO carries the file_states blob for a stateful reversal"
@@ -842,7 +845,8 @@ async def test_dedupe_auto_keep_submits_rendered_group_hashes(
     assert review.status_code == 200
     assert "No files have been archived yet" in review.text
     assert 'hx-post="/duplicates/resolve-all"' in review.text
-    assert f'<input type="hidden" name="group_hashes" value="{sha}">' in review.text
+    assert 'name="plan_ids"' in review.text
+    assert f'value="{sha}"' not in review.text, "the commit carries opaque plans, not caller-controlled hashes"
     assert "Confirm 1 resolutions" in review.text
 
 
@@ -874,6 +878,22 @@ async def test_cue_gate_and_preview(
     assert "Generate cue sheet" in body and "Open source record" in body and "Tracklist workspace" in body
     assert "Preview and generation are unavailable" in body and "! required" in body
     assert body.count("Generate cue sheet") == 1, "only the eligible card carries a generation control"
+
+
+@pytest.mark.asyncio
+async def test_cue_preview_failure_is_not_reported_as_missing_timestamps(
+    client: AsyncClient,
+    seed_cue_set: Callable[..., Awaitable[object]],
+) -> None:
+    """A renderer failure is a red preview error, not an amber prerequisite diagnosis."""
+    await seed_cue_set(eligible=True)
+    with patch("phaze.services.review.generate_cue_content", side_effect=ValueError("synthetic preview failure")):
+        response = await client.get("/s/cue", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    assert "preview failed" in response.text
+    assert "timestamps were not classified as missing" in response.text
+    assert "Preview and generation are unavailable until" not in response.text
 
 
 @pytest.mark.asyncio

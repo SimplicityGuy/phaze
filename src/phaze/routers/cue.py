@@ -309,6 +309,7 @@ async def generate_cue(
             "file_id": file_record.id,
             "set_name": audio_path.stem,
             "eligible": True,
+            "build_error": False,
             "cue_text": content,
             # phaze-ce65s: pin the NEXT preview's approve to the version this content was
             # actually built from, so a subsequent stale click is caught the same way.
@@ -378,6 +379,7 @@ async def _build_generate_error_card(
         "file_id": file_record.id if file_record is not None else None,
         "set_name": Path(file_record.current_path).stem if file_record is not None else str(tracklist.id),
         "eligible": eligible,
+        "build_error": False,
         "cue_text": cue_text,
         # phaze-ce65s: pin a retried APPROVE to the version THIS card was rebuilt from.
         "version_id": tracklist.latest_version_id if eligible else None,
@@ -472,6 +474,7 @@ async def _build_cue_preview_card(
         "file_id": file_record.id,
         "set_name": audio_path.stem,
         "eligible": True,
+        "build_error": False,
         "cue_text": content,
         "version_id": version_id,
     }

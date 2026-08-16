@@ -5,18 +5,22 @@
             <p class="break-words font-mono text-sm font-medium text-gray-800 dark:text-gray-200">{{ card.set_name }}.cue</p>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Generated artifact · written beside source audio</p>
         </div>
-        {% if card.eligible %}{{ ui.status_badge("Cue artifact", "ready to generate", "success", "✓") }}{% else %}{{ ui.status_badge("Cue artifact", "blocked", "attention", "!") }}{% endif %}
+        {% if card.eligible %}{{ ui.status_badge("Cue artifact", "ready to generate", "success", "✓") }}{% elif card.build_error %}{{ ui.status_badge("Cue artifact", "preview failed", "danger", "✕") }}{% else %}{{ ui.status_badge("Cue artifact", "blocked", "attention", "!") }}{% endif %}
     </div>
     <dl class="mt-3 grid grid-cols-1 gap-1 text-xs sm:grid-cols-3">
         <div><dt class="inline text-gray-500">Applied file:</dt> <dd class="inline text-emerald-700 dark:text-emerald-300">✓ ready</dd></div>
         <div><dt class="inline text-gray-500">Tracklist:</dt> <dd class="inline text-emerald-700 dark:text-emerald-300">✓ approved</dd></div>
-        <div><dt class="inline text-gray-500">Timestamps:</dt> <dd class="inline {% if card.eligible %}text-emerald-700 dark:text-emerald-300{% else %}text-amber-700 dark:text-amber-300{% endif %}">{% if card.eligible %}✓ available{% else %}! required{% endif %}</dd></div>
+        <div><dt class="inline text-gray-500">Timestamps:</dt> <dd class="inline {% if card.eligible %}text-emerald-700 dark:text-emerald-300{% elif card.build_error %}text-gray-600 dark:text-gray-300{% else %}text-amber-700 dark:text-amber-300{% endif %}">{% if card.eligible %}✓ available{% elif card.build_error %}status unknown{% else %}! required{% endif %}</dd></div>
     </dl>
     {% if card.eligible %}
     <details open class="mt-3">
         <summary class="cursor-pointer font-jura text-[11px] uppercase tracking-wider text-gray-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-gray-300">Artifact preview</summary>
         <pre class="mt-2 max-h-80 overflow-auto whitespace-pre rounded-lg bg-gray-50 p-3 font-mono text-[11px] leading-relaxed text-gray-600 dark:bg-phaze-bg dark:text-gray-300">{{ card.cue_text }}</pre>
     </details>
+    {% elif card.build_error %}
+    <div class="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+        The cue preview could not be built. The timestamps were not classified as missing; inspect the source record and retry after correcting the preview error.
+    </div>
     {% else %}
     <div class="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
         Preview and generation are unavailable until the approved tracklist has per-track timestamps.

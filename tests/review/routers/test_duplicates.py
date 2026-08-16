@@ -21,6 +21,32 @@ HASH_B = "b" * 64
 # The value is Jinja-autoescaped JSON (``&#34;`` for the quotes), so it never contains a raw ``"`` --
 # the regex stops at the closing attribute quote, and ``html.unescape`` recovers the real JSON string.
 _FILE_STATES_RE = re.compile(r'name="file_states"\s+value="([^"]*)"')
+_PLAN_ID_RE = re.compile(r'name="plan_id"\s+value="([^"]*)"')
+_PLAN_IDS_RE = re.compile(r'name="plan_ids"\s+value="([^"]*)"')
+
+
+@pytest.fixture(autouse=True)
+def _route_legacy_test_posts_through_review(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep legacy resolve/undo coverage while exercising the required review handshake."""
+    original_post = client.post
+
+    async def reviewed_post(url: str, *args, **kwargs):
+        data = kwargs.get("data") or {}
+        if url.startswith("/duplicates/") and url.endswith("/resolve") and "canonical_id" in data:
+            review = await original_post(url.removesuffix("/resolve") + "/review", data={"canonical_id": data["canonical_id"]})
+            match = _PLAN_ID_RE.search(review.text)
+            if match is None:
+                return review
+            return await original_post(url, data={"plan_id": match.group(1)})
+        if url == "/duplicates/resolve-all" and "group_hashes" in data:
+            review = await original_post("/duplicates/review-all", data={"group_hashes": data["group_hashes"]})
+            plan_ids = _PLAN_IDS_RE.findall(review.text)
+            if not plan_ids:
+                return review
+            return await original_post(url, data={"plan_ids": plan_ids})
+        return await original_post(url, *args, **kwargs)
+
+    monkeypatch.setattr(client, "post", reviewed_post)
 
 
 def _extract_server_file_states(response_text: str) -> str:
@@ -273,6 +299,108 @@ async def test_bulk_review_summarizes_without_resolving(session: AsyncSession, c
 
 
 @pytest.mark.asyncio
+async def test_direct_single_and_bulk_bypasses_are_rejected(session: AsyncSession, client: AsyncClient) -> None:
+    """Canonical IDs and hashes cannot invoke destructive endpoints without an opaque plan."""
+    from sqlalchemy import select
+
+    from phaze.models.dedup_resolution import DedupResolution
+
+    f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/dup.mp3", "mp3", HASH_A)
+    session.add_all([f1, f2])
+    await session.flush()
+
+    single = await client.request("POST", f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(f1.id)})
+    bulk = await client.request("POST", "/duplicates/resolve-all", data={"group_hashes": [HASH_A]})
+
+    assert single.status_code == 422
+    assert bulk.status_code == 422
+    assert list((await session.execute(select(DedupResolution))).scalars()) == []
+
+
+@pytest.mark.asyncio
+async def test_single_plan_binds_canonical_and_full_membership(session: AsyncSession, client: AsyncClient) -> None:
+    """A changed group rejects atomically; extra canonical form data cannot alter a valid plan."""
+    from sqlalchemy import select
+
+    from phaze.models.dedup_resolution import DedupResolution
+    from phaze.models.dedup_review_plan import DedupReviewPlan
+
+    keeper = _make_file("/dir/keep.mp3", "mp3", HASH_A)
+    duplicate = _make_file("/dir/dup.mp3", "mp3", HASH_A)
+    session.add_all([keeper, duplicate])
+    await session.flush()
+    review = await client.request("POST", f"/duplicates/{HASH_A}/review", data={"canonical_id": str(keeper.id)})
+    plan_match = _PLAN_ID_RE.search(review.text)
+    assert plan_match is not None
+
+    newcomer = _make_file("/dir/new.mp3", "mp3", HASH_A)
+    session.add(newcomer)
+    await session.commit()
+    stale = await client.request(
+        "POST",
+        f"/duplicates/{HASH_A}/resolve",
+        data={"plan_id": plan_match.group(1), "canonical_id": str(duplicate.id)},
+    )
+
+    assert stale.status_code == 200 and "nothing to resolve" in stale.text.lower()
+    assert list((await session.execute(select(DedupResolution))).scalars()) == []
+    plan = await session.get(DedupReviewPlan, uuid.UUID(plan_match.group(1)))
+    assert plan is not None and plan.committed_at is None
+
+
+@pytest.mark.asyncio
+async def test_committed_plan_audits_bound_canonical_and_keeps_undo(session: AsyncSession, client: AsyncClient) -> None:
+    """Commit ignores injected canonical data, stamps the plan, and preserves server-produced undo."""
+    from sqlalchemy import select
+
+    from phaze.models.dedup_resolution import DedupResolution
+    from phaze.models.dedup_review_plan import DedupReviewPlan
+
+    keeper = _make_file("/dir/keep.mp3", "mp3", HASH_A)
+    duplicate = _make_file("/dir/dup.mp3", "mp3", HASH_A)
+    session.add_all([keeper, duplicate])
+    await session.flush()
+    review = await client.request("POST", f"/duplicates/{HASH_A}/review", data={"canonical_id": str(keeper.id)})
+    plan_match = _PLAN_ID_RE.search(review.text)
+    assert plan_match is not None
+
+    resolved = await client.request(
+        "POST",
+        f"/duplicates/{HASH_A}/resolve",
+        data={"plan_id": plan_match.group(1), "canonical_id": str(duplicate.id)},
+    )
+    assert resolved.status_code == 200
+    markers = list((await session.execute(select(DedupResolution))).scalars())
+    assert len(markers) == 1 and markers[0].file_id == duplicate.id and markers[0].canonical_file_id == keeper.id
+    plan = await session.get(DedupReviewPlan, uuid.UUID(plan_match.group(1)))
+    assert plan is not None and plan.committed_at is not None
+
+    undone = await client.request(
+        "POST",
+        f"/duplicates/{HASH_A}/undo",
+        data={"file_states": _extract_server_file_states(resolved.text)},
+    )
+    assert undone.status_code == 200
+    assert list((await session.execute(select(DedupResolution))).scalars()) == []
+
+
+@pytest.mark.asyncio
+async def test_review_rejects_truncated_group_without_plan(session: AsyncSession, client: AsyncClient) -> None:
+    """A 501-member group cannot archive its unseen member through single or bulk review."""
+    files = [_make_file(f"/dir/copy-{index:03}.mp3", "mp3", HASH_A) for index in range(501)]
+    session.add_all(files)
+    await session.commit()
+
+    single = await client.request("POST", f"/duplicates/{HASH_A}/review", data={"canonical_id": str(files[0].id)})
+    bulk = await client.request("POST", "/duplicates/review-all", data={"group_hashes": [HASH_A]})
+
+    assert 'name="plan_id"' not in single.text
+    assert 'name="plan_ids"' not in bulk.text
+    assert "No unseen copy can be archived" in bulk.text
+
+
+@pytest.mark.asyncio
 async def test_bulk_resolve_only_touches_submitted_hashes(session: AsyncSession, client: AsyncClient) -> None:
     """POST /duplicates/resolve-all leaves a duplicate group untouched if its hash was NOT submitted.
 
@@ -361,14 +489,14 @@ async def test_bulk_resolve_oob_removes_card_for_a_hash_that_resolved_to_nothing
     assert response.status_code == 200
     assert "Resolved 1 groups" in response.text, "only the real group should count towards resolved_groups"
     assert f'<div id="dupe-group-{HASH_A}" hx-swap-oob="delete"></div>' in response.text
-    assert f'<div id="dupe-group-{unknown_hash}" hx-swap-oob="delete"></div>' in response.text, (
-        "a submitted hash with nothing left to resolve must still have its stale card removed"
+    assert f'<div id="dupe-group-{unknown_hash}" hx-swap-oob="delete"></div>' not in response.text, (
+        "an unreviewable caller-supplied hash must not enter the committed plan or its DOM effects"
     )
 
 
 @pytest.mark.asyncio
 async def test_bulk_resolve_no_group_hashes_resolves_nothing(session: AsyncSession, client: AsyncClient) -> None:
-    """POST /duplicates/resolve-all with no group_hashes resolves nothing (no implicit re-derivation)."""
+    """POST /duplicates/resolve-all without opaque reviewed plans is rejected."""
     f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A)
     f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A)
     session.add_all([f1, f2])
@@ -376,8 +504,7 @@ async def test_bulk_resolve_no_group_hashes_resolves_nothing(session: AsyncSessi
 
     response = await client.post("/duplicates/resolve-all", data={})
 
-    assert response.status_code == 200
-    assert "Resolved 0 groups" in response.text
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -640,7 +767,7 @@ async def test_undo_endpoint_returns_shell_shaped_dupe_group_card(session: Async
     undo = await client.post(f"/duplicates/{HASH_A}/undo", data={"file_states": file_states})
     assert undo.status_code == 200
     assert f'id="dupe-group-{HASH_A}"' in undo.text, "undo did not restore the shell-shaped _dupe_group.html card"
-    assert f'hx-post="/duplicates/{HASH_A}/resolve"' in undo.text, "restored card lost its keeper-select resolve wiring"
+    assert f'hx-post="/duplicates/{HASH_A}/review"' in undo.text, "restored card lost its staged review wiring"
     assert 'name="canonical_id"' in undo.text
     assert "Compare" not in undo.text, "undo rendered the legacy accordion row shape (group_card.html), not the shell shape"
 
@@ -658,7 +785,7 @@ async def test_bulk_undo_toast_targets_a_dom_id_that_exists_in_the_dedupe_shell(
     session.add_all([f1, f2])
     await session.flush()
 
-    resolve_all = await client.post("/duplicates/resolve-all", data={"page": "1", "page_size": "20"})
+    resolve_all = await client.post("/duplicates/resolve-all", data={"group_hashes": [HASH_A]})
     assert resolve_all.status_code == 200
 
     toast_target_match = re.search(
@@ -1065,7 +1192,7 @@ async def test_bulk_undo_restores_the_group_cards_bulk_resolve_deleted(session: 
     assert 'hx-swap-oob="beforeend:#dedupe-group-list"' in undo_all.text, "undo-all restored no cards into the workspace card list"
     for group_hash in (HASH_A, HASH_B):
         assert f'id="dupe-group-{group_hash}"' in undo_all.text, f"group {group_hash}'s card was not restored"
-        assert f'hx-post="/duplicates/{group_hash}/resolve"' in undo_all.text, f"restored card for {group_hash} lost its keeper-select wiring"
+        assert f'hx-post="/duplicates/{group_hash}/review"' in undo_all.text, f"restored card for {group_hash} lost its staged review wiring"
 
     # The restore lands somewhere real: the workspace declares the container the OOB append targets.
     workspace = await client.get("/s/dedupe")
@@ -1274,7 +1401,7 @@ async def test_resolve_reachable_without_concurrency_single_member_group_is_hone
     bulk = await client.post("/duplicates/resolve-all", data={"group_hashes": [HASH_A]})
 
     assert bulk.status_code == 200
-    assert "Resolved 0 groups" in bulk.text
+    assert "None of the shown groups are still available" in bulk.text
 
 
 # ---------------------------------------------------------------------------

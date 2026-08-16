@@ -23,10 +23,10 @@ from phaze.routers.request_guards import parse_json_array_payload
 from phaze.services.dedup import (
     find_duplicate_group_by_hash,
     find_duplicate_groups_by_hashes,
-    resolve_group,
     score_group,
     undo_resolve,
 )
+from phaze.services.dedup_review import InvalidDedupReviewPlanError, commit_review_plans, create_review_plan
 from phaze.services.pg_text import contains_pg_invalid_chars
 from phaze.services.review import build_dupe_group_card
 
@@ -158,41 +158,51 @@ async def _render_resolve_noop(request: Request, session: AsyncSession, group_ha
     )
 
 
-@router.post("/{group_hash}/resolve", response_class=HTMLResponse)
-async def resolve_group_endpoint(
+@router.post("/{group_hash}/review", response_class=HTMLResponse)
+async def review_group_endpoint(
     request: Request,
     group_hash: str,
     canonical_id: uuid.UUID = Form(...),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Resolve a duplicate group by marking non-canonical files.
-
-    phaze-i0jqu: group_hash is rejected BEFORE it ever reaches ``resolve_group`` -- which binds it
-    into ``pg_advisory_xact_lock(hashtext(group_hash))`` as its very first statement -- if it carries
-    a NUL/lone surrogate PostgreSQL cannot bind (asyncpg ``CharacterNotInRepertoireError``, transaction
-    abort). No group could ever be keyed on such a hash, so it is treated as the SAME 0-resolved no-op
-    the branch below already renders honestly.
-
-    phaze-ptzse: a 0-resolved outcome -- an invalid hash above, a stale resubmit of an
-    already-resolved card (the hidden ``group_hashes``/canonical inputs survive a card's outerHTML
-    swap and can be replayed), a concurrent resolve that already claimed this group's canonical, or
-    (phaze-a3if1) a group member deleted mid-flight by a concurrent scan-batch delete -- must never
-    be reported as "Group resolved": the card is re-rendered live (never removed) with an honest
-    "nothing changed" toast instead of a confident lie.
-    """
-    resolved_file_states: list[dict[str, Any]]
-    if contains_pg_invalid_chars(group_hash):
-        resolved_count, resolved_file_states = 0, []
-    else:
-        resolved_count, resolved_file_states = await resolve_group(session, group_hash, canonical_id)
-        # `services/` builds and flushes but never commits (caller-owned transaction). `get_session`
-        # yields the session WITHOUT committing, so the router must — otherwise the marker and the
-        # dual-written state are rolled back on session close and the HTMX partial reports a resolve
-        # that never happened. Matches routers/tags.py:369, routers/tracklists.py.
-        await session.commit()
-
-    if resolved_count == 0:
+    """Create an opaque plan for one fully visible group without resolving it."""
+    group = None if contains_pg_invalid_chars(group_hash) else await find_duplicate_group_by_hash(session, group_hash)
+    if group is None:
         return await _render_resolve_noop(request, session, group_hash)
+    score_group(group)
+    try:
+        plan = create_review_plan(session, group, canonical_id)
+    except InvalidDedupReviewPlanError:
+        return await _render_resolve_noop(request, session, group_hash)
+    await session.commit()
+    card = build_dupe_group_card(group)
+    keeper = next(file for file in card["files"] if str(file["id"]) == str(canonical_id))
+    return templates.TemplateResponse(
+        request=request,
+        name="duplicates/partials/review_response.html",
+        context={"request": request, "group": card, "keeper": keeper, "plan_id": plan.id},
+    )
+
+
+@router.post("/{group_hash}/resolve", response_class=HTMLResponse)
+async def resolve_group_endpoint(
+    request: Request,
+    group_hash: str,
+    plan_id: uuid.UUID = Form(...),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Commit exactly one durable reviewed plan; reject stale, replayed, or forged plans."""
+    if contains_pg_invalid_chars(group_hash):
+        return await _render_resolve_noop(request, session, group_hash)
+    try:
+        resolved_groups, resolved_file_states, _hashes = await commit_review_plans(session, [plan_id], expected_group_hash=group_hash)
+    except InvalidDedupReviewPlanError:
+        await session.rollback()
+        return await _render_resolve_noop(request, session, group_hash)
+    await session.commit()
+    if resolved_groups != 1:
+        return await _render_resolve_noop(request, session, group_hash)
+    resolved_count = len(resolved_file_states)
 
     return templates.TemplateResponse(
         request=request,
@@ -202,7 +212,6 @@ async def resolve_group_endpoint(
             "group_hash": group_hash,
             "resolved_count": resolved_count,
             "resolved_file_states": json.dumps(resolved_file_states),
-            "canonical_id": str(canonical_id),
         },
     )
 
@@ -217,11 +226,21 @@ async def review_bulk_resolve(
     safe_hashes = [group_hash for group_hash in group_hashes if not contains_pg_invalid_chars(group_hash)]
     groups = await find_duplicate_groups_by_hashes(session, safe_hashes)
     cards: list[dict[str, Any]] = []
+    truncated_count = 0
     for group in groups:
         if group["count"] <= 1:
             continue
         score_group(group)
-        cards.append(build_dupe_group_card(group))
+        try:
+            plan = create_review_plan(session, group, uuid.UUID(group["canonical_id"]))
+        except InvalidDedupReviewPlanError:
+            truncated_count += 1
+            continue
+        await session.flush()
+        card = build_dupe_group_card(group)
+        card["plan_id"] = plan.id
+        cards.append(card)
+    await session.commit()
 
     return templates.TemplateResponse(
         request=request,
@@ -229,7 +248,8 @@ async def review_bulk_resolve(
         context={
             "request": request,
             "dedupe_groups": cards,
-            "stale_count": len(group_hashes) - len(cards),
+            "stale_count": len(group_hashes) - len(groups),
+            "truncated_count": truncated_count,
         },
     )
 
@@ -283,46 +303,20 @@ async def undo_resolve_endpoint(
 @router.post("/resolve-all", response_class=HTMLResponse)
 async def bulk_resolve(
     request: Request,
-    group_hashes: list[str] = Form(default_factory=list),
+    plan_ids: list[uuid.UUID] = Form(...),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Bulk-resolve exactly the duplicate groups the operator was shown.
-
-    Resolves the operator-submitted ``group_hashes`` (the sha256 hashes rendered on the page/workspace
-    at the time of the click) rather than re-deriving "the current page" via a fresh LIMIT/OFFSET query.
-    That re-derivation is what let a never-reviewed group get auto-resolved: an unordered paginated query
-    can select a different set of hashes than what was displayed, and even with stable ordering the set
-    can still drift if another resolve committed between the page render and this POST (phaze-81bu).
-
-    phaze-i0jqu: a NUL/lone-surrogate hash in ``group_hashes`` is dropped before the lookup below --
-    PostgreSQL cannot bind either in a UTF8 text parameter, so it would otherwise 500 the WHOLE batch
-    on asyncpg's ``CharacterNotInRepertoireError`` rather than the one hash that could never have
-    named a real group. The original (possibly-invalid) ``group_hashes`` still rides the response
-    below unchanged, so its card is OOB-removed the same as any other submitted hash.
-    """
-    safe_hashes = [h for h in group_hashes if not contains_pg_invalid_chars(h)]
-    groups = await find_duplicate_groups_by_hashes(session, safe_hashes)
-
-    all_file_states: list[dict[str, Any]] = []
-    resolved_groups = 0
-    for group in groups:
-        if not group["files"]:
-            # Already fully resolved (e.g. by a concurrent request) between display and this POST.
-            continue
-        score_group(group)
-        canonical_id = uuid.UUID(group["canonical_id"])
-        count, file_states = await resolve_group(session, group["sha256_hash"], canonical_id)
-        # phaze-ptzse: resolve_group can return 0 on a NON-empty group -- a concurrent resolve that
-        # already claimed this canonical (the phaze-v0iy post-lock recheck), or (phaze-a3if1) a
-        # group member deleted mid-flight by a concurrent scan-batch delete. Either way nothing was
-        # written for this hash by THIS request; counting it anyway is exactly the "confident lie
-        # about an irreplaceable archive" _bulk_toast's own docstring (proposals.py) warns against.
-        if count == 0:
-            continue
-        all_file_states.extend(file_states)
-        resolved_groups += 1
-
-    await session.commit()  # `get_session` does not commit; without this every resolve is rolled back.
+    """Atomically commit only opaque, complete, still-current reviewed plans."""
+    try:
+        resolved_groups, all_file_states, group_hashes = await commit_review_plans(session, plan_ids)
+    except InvalidDedupReviewPlanError:
+        await session.rollback()
+        return templates.TemplateResponse(
+            request=request,
+            name="duplicates/partials/bulk_review_stale.html",
+            context={"request": request},
+        )
+    await session.commit()
 
     return templates.TemplateResponse(
         request=request,
@@ -331,10 +325,6 @@ async def bulk_resolve(
             "request": request,
             "resolved_groups": resolved_groups,
             "all_file_states": json.dumps(all_file_states),
-            # phaze-wgse: the SUBMITTED hashes (not just the ones actually resolved this pass), so the
-            # response can OOB-remove every #dupe-group-{hash} card the operator was shown -- including
-            # one a concurrent request already resolved between render and this POST (the `continue`
-            # branch above), which is stale and must disappear too, not just the ones this call wrote.
             "group_hashes": group_hashes,
         },
     )

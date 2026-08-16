@@ -4,7 +4,7 @@ from collections.abc import Iterable, Sequence
 from typing import Any
 import uuid as uuid_mod
 
-from sqlalchemy import ColumnElement, Subquery, delete, func, select, tuple_
+from sqlalchemy import ColumnElement, Subquery, delete, func, select, text, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -377,14 +377,24 @@ async def get_duplicate_stats(session: AsyncSession) -> dict[str, Any]:
     }
 
 
-async def resolve_group(session: AsyncSession, group_hash: str, canonical_id: uuid_mod.UUID) -> tuple[int, list[dict[str, Any]]]:
+class StaleDuplicateReviewError(Exception):
+    """The unresolved group no longer exactly matches its reviewed snapshot."""
+
+
+async def resolve_group(
+    session: AsyncSession,
+    group_hash: str,
+    canonical_id: uuid_mod.UUID,
+    *,
+    reviewed_member_ids: set[uuid_mod.UUID] | None = None,
+) -> tuple[int, list[dict[str, Any]]]:
     """Mark non-canonical files in a duplicate group as resolved via the durable DedupResolution marker.
 
     Returns (count_resolved, [{id}]) for undo tracking. Phase 90 (D-09): the DUPLICATE_RESOLVED
     files.state dual-write was removed -- the DedupResolution marker (dedup_resolved_clause) is the sole
     derived authority, so the returned payload no longer carries a previous_state.
 
-    phaze-xasy: ``canonical_id`` is caller-supplied (a browser Form field) and is NOT trusted to
+    phaze-xasy: ``canonical_id`` may be caller-supplied by internal callers and is NOT trusted to
     actually be a member of ``group_hash`` -- the only DB backstop on ``canonical_file_id`` is a
     plain FK to ``files.id``, which is satisfied by ANY live file, group member or not. Without this
     membership check, a stale/mismatched ``canonical_id`` (e.g. a replayed form after the original
@@ -431,6 +441,18 @@ async def resolve_group(session: AsyncSession, group_hash: str, canonical_id: uu
     # released at COMMIT/ROLLBACK, so it must not be taken with autocommit / outside the caller's txn.
     await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(group_hash))))
 
+    if reviewed_member_ids is not None:
+        # Duplicate review is rare and destructive. Freeze membership through COMMIT so a scan cannot
+        # insert an unseen member after the exact-set check or delete a reviewed member before marker
+        # insertion. SHARE permits readers but blocks files-table INSERT/UPDATE/DELETE writers.
+        await session.execute(text("LOCK TABLE files IN SHARE MODE"))
+        current_result = await session.execute(
+            select(FileRecord.id).where(FileRecord.sha256_hash == group_hash, ~dedup_resolved_clause()).order_by(FileRecord.id)
+        )
+        current_member_ids = set(current_result.scalars().all())
+        if canonical_id not in reviewed_member_ids or current_member_ids != reviewed_member_ids:
+            raise StaleDuplicateReviewError
+
     canonical_membership_stmt = select(FileRecord.id).where(
         FileRecord.sha256_hash == group_hash,
         FileRecord.id == canonical_id,
@@ -446,6 +468,10 @@ async def resolve_group(session: AsyncSession, group_hash: str, canonical_id: uu
         FileRecord.id != canonical_id,
         ~dedup_resolved_clause(),
     )
+    if reviewed_member_ids is not None:
+        # Never archive a member that was not in the reviewed snapshot, even if one appears after
+        # the exact-set check above through a concurrent scan.
+        stmt = stmt.where(FileRecord.id.in_(reviewed_member_ids))
     result = await session.execute(stmt)
     files = result.scalars().all()
 
