@@ -23,6 +23,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 import uuid
 
 import pytest
@@ -34,6 +35,7 @@ from phaze.services import agent_liveness as liveness_mod, backends as backends_
 from phaze.services.agent_liveness import derive_compute_lane_identities
 from phaze.services.backends import (
     _cloud_job_succeeded_for_backend,  # noqa: F401 -- imported for symbol-existence coverage below
+    _cloud_lane_active,
     _cloud_lane_queued_working,
     _lane_processed_counts,
     _local_lane_queued_working,
@@ -162,6 +164,38 @@ async def test_cloud_lane_queued_working_degrades_to_none_on_error(session: Asyn
     monkeypatch.setattr(backends_mod, "_cloud_window_clauses", _raise)
 
     assert await _cloud_lane_queued_working(session, "a1") == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_cloud_lane_active_tracks_only_kueue_running_lifecycle(session: AsyncSession) -> None:
+    """Kueue active is pod RUNNING; submitted quota waits and terminal rows are not executing."""
+    file = _file()
+    session.add(file)
+    await session.flush()
+    job = _cloud_job(file.id, backend_id="k8s", status=CloudJobStatus.SUBMITTED.value)
+    session.add(job)
+    await session.commit()
+
+    assert await _cloud_lane_active(session, "k8s", "kueue") == 0
+    job.status = CloudJobStatus.RUNNING.value
+    await session.commit()
+    assert await _cloud_lane_active(session, "k8s", "kueue") == 1
+    job.status = CloudJobStatus.SUCCEEDED.value
+    await session.commit()
+    assert await _cloud_lane_active(session, "k8s", "kueue") == 0
+
+
+@pytest.mark.asyncio
+async def test_cloud_lane_active_is_unknown_for_compute_and_degrades_for_kueue(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Compute has no execution lifecycle fact; a failed Kueue read is unknown, never zero."""
+    assert await _cloud_lane_active(session, "a1", "compute") is None
+    safe_count = AsyncMock(return_value=None)
+    monkeypatch.setattr(backends_mod, "_safe_count_or_none", safe_count)
+    assert await _cloud_lane_active(session, "k8s", "kueue") is None
+    safe_count.assert_awaited_once()
 
 
 # --------------------------------------------------------------------------- AC6/AC7: processed attribution + window

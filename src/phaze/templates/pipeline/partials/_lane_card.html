@@ -11,6 +11,7 @@
 {% endif %}
 {% set _queued = lane.queued if lane.queued is defined and lane.queued is not none else none %}
 {% set _working = lane.working if lane.working is defined and lane.working is not none else none %}
+{% set _active = lane.active if lane.active is defined and lane.active is not none else none %}
 {% set _in_flight = lane.in_flight if lane.in_flight is defined and lane.in_flight is not none else none %}
 {% set _processed_24h = lane.processed_24h if lane.processed_24h is defined and lane.processed_24h is not none else none %}
 {% set _processed_lifetime = lane.processed_lifetime if lane.processed_lifetime is defined and lane.processed_lifetime is not none else none %}
@@ -29,14 +30,14 @@
     </div>
     <dl class="grid grid-cols-2 gap-3 sm:col-span-7 sm:grid-cols-5">
         <div><dt class="font-jura text-[10px] uppercase tracking-wider text-gray-500">Queue</dt><dd class="font-mono text-sm tabular-nums">{{ _queued if _queued is not none else "—" }}</dd></div>
-        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-gray-500">Active</dt><dd class="font-mono text-sm tabular-nums">{{ _working if _working is not none else "—" }}</dd></div>
+        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-gray-500">Active</dt><dd class="font-mono text-sm tabular-nums">{{ _active if _active is not none else "—" }}</dd></div>
         <div><dt class="font-jura text-[10px] uppercase tracking-wider text-gray-500">Capacity</dt><dd class="font-mono text-sm tabular-nums {% if _capacity_over %}text-red-700 dark:text-red-400{% endif %}">{{ _in_flight if _in_flight is not none else "—" }}/{{ lane.cap }}</dd></div>
         <div><dt class="font-jura text-[10px] uppercase tracking-wider text-gray-500">Status</dt><dd class="mt-0.5">
             {% if _capacity_over %}{{ ui.status_badge("Lane status", "OVER LIMIT", "danger", "✕") }}
             {% elif not lane.available %}{{ ui.status_badge("Lane status", "OFFLINE", "attention", "!") }}
             {% elif _kind == "kueue" and lane.inadmissible %}{{ ui.status_badge("Lane status", "BLOCKED", "attention", "!") }}
             {% elif _capacity_full %}{{ ui.status_badge("Lane status", "AT CAPACITY", "attention", "!") }}
-            {% elif _working %}{{ ui.status_badge("Lane status", "ACTIVE", "accent", "●") }}
+            {% elif _active %}{{ ui.status_badge("Lane status", "ACTIVE", "accent", "●") }}
             {% else %}{{ ui.status_badge("Lane status", "READY", "success", "✓") }}{% endif %}
         </dd></div>
         <div><dt class="font-jura text-[10px] uppercase tracking-wider text-gray-500">24h</dt><dd class="font-mono text-sm tabular-nums">{{ _processed_24h if _processed_24h is not none else "—" }}</dd></div>
@@ -54,6 +55,8 @@
             <span>RANK {{ lane.rank }} · cap {{ lane.cap }}</span>
             {% if not lane.available %}<span>Availability: offline</span>{% endif %}
             <span>processed {{ _processed_24h if _processed_24h is not none else "—" }} (24h) / {{ _processed_lifetime if _processed_lifetime is not none else "—" }} all time</span>
+            {% if _kind == "compute" %}<span>Execution activity unavailable · staged window {{ _queued if _queued is not none else "—" }}</span>{% endif %}
+            {% if _kind == "kueue" %}<span>Post-submit window {{ _working if _working is not none else "—" }} · pod running {{ _active if _active is not none else "—" }}</span>{% endif %}
             {% if _kind == "kueue" %}<span>Quota: {{ lane.quota_wait }} waiting · {{ lane.inadmissible }} inadmissible</span>{% endif %}
         </div>
     </details>

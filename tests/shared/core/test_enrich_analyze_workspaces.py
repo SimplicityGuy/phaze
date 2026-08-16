@@ -506,6 +506,7 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
             "inadmissible": 0,
             "queued": 1,
             "working": 2,
+            "active": None,
             "processed_24h": 12,
             "processed_lifetime": 340,
         },
@@ -520,6 +521,7 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
             "inadmissible": 1,
             "queued": 2,
             "working": 1,
+            "active": 0,
             "processed_24h": 5,
             "processed_lifetime": 42,
         },
@@ -534,6 +536,7 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
             "inadmissible": 0,
             "queued": 3,
             "working": 5,
+            "active": 5,
             "processed_24h": 20,
             "processed_lifetime": 500,
         },
@@ -588,8 +591,8 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
     assert "processed 5 (24h) / 42 all time" in body  # k8s
     assert "processed 20 (24h) / 500 all time" in body  # nox
     active_metric = body[body.index('id="analyze-active-total-card"') :]
-    assert re.search(r">\s*8\s*</dd>", active_metric), "Active must sum lane working (2 + 1 + 5), not scheduler in-flight"
-    assert "lane-attributed active work" in active_metric
+    assert re.search(r">\s*—\s*</dd>", active_metric), "compute execution is unavailable, so the mixed-lane Active roll-up must be unknown"
+    assert "execution activity unavailable" in active_metric
     # D-03 per-lane Kueue admission caption: quota-wait vs Inadmissible, word-labelled.
     assert "2 waiting" in body
     assert "1 inadmissible" in body
@@ -635,7 +638,7 @@ async def test_analyze_workspace_leads_with_flow_then_alerts_and_lanes(client: A
         assert label in body[metrics:health]
     assert 'id="analyze-active-total-card"' in body[metrics:health]
     assert 'x-text="$store.pipeline.analyzeActive"' not in body[metrics:health]
-    assert "lane-attributed active work" in body[metrics:health]
+    assert "execution activity unavailable" in body[metrics:health]
     assert "executing now" not in body[metrics:health]
     assert 'x-text="$store.pipeline.analyzeDone"' in body[metrics:health]
     assert "Queued" in body and "lane capacity" in body and "Completed" in body
@@ -650,13 +653,15 @@ async def test_poll_repushes_lane_attributed_active_metric(
     client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The 5s poll keeps Active scoped to lane working and propagates unknowns."""
+    """The 5s poll sums comparable execution facts and propagates unavailable/empty snapshots."""
     import phaze.routers.pipeline as pipeline_mod
 
-    state: dict[str, int | None] = {"local": 2, "cloud": 3}
+    state: dict[str, object] = {"local": 2, "kueue": 3, "compute": False, "empty": False}
 
     async def _snapshot(_session: AsyncSession, _app_state: object = None) -> list[dict[str, object]]:
-        return [
+        if state["empty"]:
+            return []
+        lanes = [
             {
                 "id": "local",
                 "kind": "local",
@@ -668,12 +673,13 @@ async def test_poll_repushes_lane_attributed_active_metric(
                 "inadmissible": 0,
                 "queued": 1,
                 "working": state["local"],
+                "active": state["local"],
                 "processed_24h": 1,
                 "processed_lifetime": 1,
             },
             {
-                "id": "cloud",
-                "kind": "compute",
+                "id": "kueue",
+                "kind": "kueue",
                 "rank": 20,
                 "cap": 4,
                 "in_flight": 4,
@@ -681,11 +687,31 @@ async def test_poll_repushes_lane_attributed_active_metric(
                 "quota_wait": 0,
                 "inadmissible": 0,
                 "queued": 1,
-                "working": state["cloud"],
+                "working": 4,
+                "active": state["kueue"],
                 "processed_24h": 1,
                 "processed_lifetime": 1,
             },
         ]
+        if state["compute"]:
+            lanes.append(
+                {
+                    "id": "compute",
+                    "kind": "compute",
+                    "rank": 30,
+                    "cap": 4,
+                    "in_flight": 1,
+                    "available": True,
+                    "quota_wait": 0,
+                    "inadmissible": 0,
+                    "queued": 1,
+                    "working": 0,
+                    "active": None,
+                    "processed_24h": 1,
+                    "processed_lifetime": 1,
+                }
+            )
+        return lanes
 
     monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
     poll = await client.get("/pipeline/stats")
@@ -693,10 +719,16 @@ async def test_poll_repushes_lane_attributed_active_metric(
     assert 'hx-swap-oob="true"' in card[:200]
     assert re.search(r">\s*5\s*</dd>", card)
 
-    state["cloud"] = None
+    state["compute"] = True
     degraded = await client.get("/pipeline/stats")
     card = degraded.text[degraded.text.index('id="analyze-active-total-card"') :]
-    assert re.search(r">\s*—\s*</dd>", card), "a partial lane sum must not understate Active"
+    assert re.search(r">\s*—\s*</dd>", card), "unobservable compute execution must make Active unknown"
+
+    state["compute"] = False
+    state["empty"] = True
+    empty = await client.get("/pipeline/stats")
+    card = empty.text[empty.text.index('id="analyze-active-total-card"') :]
+    assert re.search(r">\s*—\s*</dd>", card), "an empty/degraded snapshot is unknown, not zero"
 
 
 @pytest.mark.asyncio
@@ -719,6 +751,7 @@ async def test_analyze_over_limit_is_unsafe_and_explains_remedy(
         "inadmissible": 0,
         "queued": 4,
         "working": 1,
+        "active": 1,
         "processed_24h": 8,
         "processed_lifetime": 80,
     }
@@ -762,6 +795,7 @@ async def test_analyze_exact_capacity_is_amber_congestion(
         "inadmissible": 0,
         "queued": 4,
         "working": 1,
+        "active": 1,
         "processed_24h": 8,
         "processed_lifetime": 80,
     }

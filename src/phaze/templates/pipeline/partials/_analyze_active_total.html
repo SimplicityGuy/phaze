@@ -1,10 +1,11 @@
 {% import "ui/primitives.html" as ui %}
-{% set active = namespace(total=0, unknown=false) %}
+{% set active = namespace(total=0, unknown=false, seen=false) %}
 {% for lane in lanes | default([]) %}
-    {% if lane.working is not defined or lane.working is none %}
+    {% set active.seen = true %}
+    {% if lane.active is not defined or lane.active is none %}
         {% set active.unknown = true %}
     {% else %}
-        {% set active.total = active.total + lane.working %}
+        {% set active.total = active.total + lane.active %}
     {% endif %}
 {% endfor %}
-{{ ui.metric("Active", "—" if active.unknown else active.total, "lane-attributed active work", "accent", "analyze-active-total-card", oob | default(false)) }}
+{{ ui.metric("Active", "—" if active.unknown or not active.seen else active.total, "executing now where observable" if active.seen and not active.unknown else "execution activity unavailable", "accent", "analyze-active-total-card", oob | default(false)) }}

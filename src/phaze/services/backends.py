@@ -1517,6 +1517,23 @@ async def _cloud_lane_queued_working(session: AsyncSession, backend_id: str) -> 
     return queued, working
 
 
+async def _cloud_lane_active(session: AsyncSession, backend_id: str, kind: str) -> int | None:
+    """Return comparable execution activity only where the backend exposes it.
+
+    Kueue ``RUNNING`` is a reconciled pod-running fact. Compute has no equivalent lifecycle signal:
+    its cloud row is ``SUBMITTED`` while pushing and can become ``SUCCEEDED`` before remote analysis
+    finishes, so reporting either state as executing would be invented telemetry. Unknown kinds are
+    likewise unobservable. The caller uses local SAQ ``working`` directly for the local lane.
+    """
+    if kind != "kueue":
+        return None
+    return await _safe_count_or_none(
+        session,
+        select(func.count(CloudJob.id)).where(CloudJob.backend_id == backend_id, CloudJob.status == CloudJobStatus.RUNNING.value),
+        node="lane_active",
+    )
+
+
 def _cloud_job_succeeded_for_backend(backend_id: str) -> ColumnElement[bool]:
     """Return ``EXISTS(a SUCCEEDED cloud_job for this file attributed to backend_id)`` (phaze-5c6i2)."""
     return exists(
@@ -1617,7 +1634,7 @@ async def get_backend_lane_snapshot(session: AsyncSession, app_state: Any = None
     (explicit unknown) rather than requiring every caller to thread a router it does not otherwise need.
 
     Every lane carries ``{id, kind, rank, cap, in_flight, available, quota_wait, inadmissible, queued,
-    working, processed_24h, processed_lifetime}`` -- no ``config``, no ``SecretStr``, no kube/S3 token
+    working, active, processed_24h, processed_lifetime}`` -- no ``config``, no ``SecretStr``, no kube/S3 token
     (T-71-01). ``in_flight`` is UNCHANGED (still the D-02 cloud_job substrate; several other callers key
     off it, e.g. :func:`derive_localqueue_unreachable` / :func:`derive_cloud_hold_reason` /
     ``_lane_detail.html``'s header numeral). ``queued``/``working``/``processed_24h``/
@@ -1645,9 +1662,11 @@ async def get_backend_lane_snapshot(session: AsyncSession, app_state: Any = None
             kind = _kind_of(backend)
             if kind == "local":
                 queued, working = await _local_lane_queued_working(session, app_state)
+                active = working
                 processed_24h, processed_lifetime = await _lane_processed_counts(session, backend_id=None)
             else:
                 queued, working = await _cloud_lane_queued_working(session, backend.id)
+                active = await _cloud_lane_active(session, backend.id, kind)
                 processed_24h, processed_lifetime = await _lane_processed_counts(session, backend_id=backend.id)
             lanes.append(
                 {
@@ -1659,6 +1678,7 @@ async def get_backend_lane_snapshot(session: AsyncSession, app_state: Any = None
                     "available": availability.get(backend.id, False),
                     "queued": queued,
                     "working": working,
+                    "active": active,
                     "processed_24h": processed_24h,
                     "processed_lifetime": processed_lifetime,
                     **admission.get(backend.id, _ZERO_ADMISSION),
