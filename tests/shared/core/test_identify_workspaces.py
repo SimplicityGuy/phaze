@@ -245,6 +245,10 @@ async def test_tracklist_workspace_is_the_drain_plus_match(client: AsyncClient) 
     assert body.index("1 · Lookup") < body.index("2 · Match") < body.index("Matched-set coverage")
     assert 'aria-label="Tracklist preparation workflow"' in body
     assert body.count("Prerequisite") == 2 and body.count("Next action") == 2 and body.count("Current state") == 2
+    assert "classified as a live set from duration first, then repaired filename and track-number evidence" in body
+    assert "embedded tags, a .cue companion, or a pending/approved lookup" in body
+    assert "lookup queries derived from the repaired filename" in body
+    assert "artist and event metadata" not in body
     # MATCH survives as the one remaining bulk trigger, still R-4 guarded.
     assert 'hx-post="/pipeline/match-tracklists"' in body
     assert ':disabled="$store.pipeline.matchBusy > 0"' in body

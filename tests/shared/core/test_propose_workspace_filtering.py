@@ -22,8 +22,10 @@ already shipped once:
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from html import unescape
 from typing import TYPE_CHECKING
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 import uuid
 
 import pytest
@@ -109,6 +111,38 @@ async def test_propose_success_and_empty_states_offer_direct_next_actions(
     assert "No matches" in empty_search
     assert "Clear search" in empty_search
     assert 'hx-target="#propose-workspace-list"' in empty_search
+
+
+@pytest.mark.asyncio
+async def test_clear_search_reconciles_input_and_preserves_the_active_view(
+    client: AsyncClient,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """The clear action resets q/page only and its real request restores results under the same ordering."""
+    await seed_pending_proposal(0.9, original_filename="restored.mp3", proposed_filename="Restored.mp3")
+    query = "status=pending&q=missing&page=7&page_size=50&sort=proposed_path&order=desc"
+    empty = (await client.get(f"/s/propose?{query}", headers=_LIST_TARGET)).text
+    clear = empty.rsplit("<a ", 1)[1].split(">Clear search</a>", 1)[0]
+    clear_url = unescape(clear.split('hx-get="', 1)[1].split('"', 1)[0])
+    params = parse_qs(urlparse(clear_url).query, keep_blank_values=True)
+
+    assert params == {
+        "status": ["pending"],
+        "q": [""],
+        "page": ["1"],
+        "page_size": ["50"],
+        "sort": ["proposed_path"],
+        "order": ["desc"],
+    }
+    assert "hx-on:click=" in clear
+    assert "document.getElementById('propose-search').value = ''" in clear
+
+    restored = await client.get(clear_url, headers=_LIST_TARGET)
+    assert restored.status_code == 200
+    assert "Restored.mp3" in restored.text
+    assert '<input type="hidden" name="page_size" value="50">' in restored.text
+    assert '<input type="hidden" name="sort" value="proposed_path">' in restored.text
+    assert '<input type="hidden" name="order" value="desc">' in restored.text
 
 
 @pytest.mark.asyncio

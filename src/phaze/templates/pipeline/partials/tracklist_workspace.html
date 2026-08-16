@@ -65,7 +65,7 @@
             <dl class="mt-4 grid gap-3 text-sm sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
                 <div>
                     <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Prerequisite</dt>
-                    <dd class="mt-1 text-gray-700 dark:text-gray-300">Analyzed files with enough artist and event metadata to derive a unique set.</dd>
+                    <dd class="mt-1 text-gray-700 dark:text-gray-300">Audio or video classified as a live set from duration first, then repaired filename and track-number evidence. Files already answered by embedded tags, a .cue companion, or a pending/approved lookup are excluded.</dd>
                 </div>
                 <div>
                     <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Current state</dt>
@@ -73,7 +73,7 @@
                 </div>
                 <div>
                     <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Next action</dt>
-                    <dd class="mt-1 text-gray-700 dark:text-gray-300">Run one bounded lookup batch, or arm the drain for continuous host-budgeted slices.</dd>
+                    <dd class="mt-1 text-gray-700 dark:text-gray-300">Run one bounded batch using lookup queries derived from the repaired filename, or arm continuous host-budgeted slices.</dd>
                 </div>
             </dl>
             <div id="tracklist-drain-status-view"

@@ -49,6 +49,7 @@
                     pid=p.id,
                     file=p.filename,
                     original_path=p.original_path,
+                    diff_label="Destination",
                     before=p.original_path,
                     after=(p.proposed_path or ""),
                     approve_url="/proposals/" ~ p.id ~ "/approve",

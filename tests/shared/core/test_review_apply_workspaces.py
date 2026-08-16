@@ -145,10 +145,14 @@ async def test_bulk_approve_high_confidence_server_predicate(
     assert p_mid.status == ProposalStatus.PENDING.value, "the client id-list must not approve the 0.50 row"
     assert p_null.status == ProposalStatus.PENDING.value, "NULL confidence is excluded by the SQL predicate"
 
-    # The Rename workspace header wires this id-less server predicate -- no client id-list markup (D-02).
-    frag = await client.get("/s/rename", headers={"HX-Request": "true"})
-    assert 'hx-patch="/proposals/bulk-approve-high-confidence"' in frag.text
-    assert "proposal_ids" not in frag.text, "the bulk button carries no client-built id-list"
+    # The compatibility endpoint remains live, but canonical Review cannot expose a corpus-wide
+    # action that authorizes proposed paths outside its rendered window. Move retains the historical
+    # caller until the consolidated Review bead replaces that sibling surface.
+    rename = await client.get("/s/rename", headers={"HX-Request": "true"})
+    move = await client.get("/s/move", headers={"HX-Request": "true"})
+    assert 'hx-patch="/proposals/bulk-approve-high-confidence"' not in rename.text
+    assert 'hx-patch="/proposals/bulk-approve-high-confidence"' in move.text
+    assert "proposal_ids" not in move.text, "the compatibility bulk button carries no client-built id-list"
 
 
 @pytest.mark.asyncio
@@ -167,13 +171,38 @@ async def test_rename_move_headers_and_confirm_quote_real_counts_not_render_leng
     await seed_pending_proposal(0.5, original_filename="low2.mp3")
     await seed_pending_proposal(0.5, original_filename="low3.mp3")
 
-    for stage, header_target in (("rename", "rename-trigger-response"), ("move", "move-trigger-response")):
-        frag = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
-        assert frag.status_code == 200
-        assert "5 awaiting approval" in frag.text, f"{stage} header must report the true pending total (5), not a page length"
-        assert f'hx-target="#{header_target}"' in frag.text
-        assert "2 match now" in frag.text, f"{stage} confirm text must quote the real >=90%-confidence count (2)"
-        assert "5 match now" not in frag.text, f"{stage} confirm text must not fall back to the rendered row count"
+    rename = await client.get("/s/rename", headers={"HX-Request": "true"})
+    move = await client.get("/s/move", headers={"HX-Request": "true"})
+    assert "5 awaiting approval" in rename.text
+    assert "5 awaiting approval" in move.text
+    assert "rename-trigger-response" not in rename.text
+    assert 'hx-target="#move-trigger-response"' in move.text
+    assert "2 match now" in move.text
+    assert "5 match now" not in move.text
+
+
+@pytest.mark.asyncio
+async def test_canonical_review_discloses_destination_before_whole_proposal_approval(
+    client: AsyncClient,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """A Propose-to-Review transition cannot offer approval without rendering its path facet."""
+    proposal = await seed_pending_proposal(
+        0.85,
+        original_filename="unreviewed.mp3",
+        proposed_filename="Reviewed Name.mp3",
+        proposed_path="Artist/Event/Reviewed Name.mp3",
+    )
+
+    propose = (await client.get("/s/propose")).text
+    assert 'href="/s/rename"' in propose and 'hx-get="/s/rename"' in propose
+
+    review = (await client.get("/s/rename", headers={"HX-Request": "true"})).text
+    row = review.split(f'id="rename-row-{proposal.id}"', 1)[1].split('id="rename-row-', 1)[0]
+    assert "Filename" in row and "Reviewed Name.mp3" in row
+    assert "Destination" in row and "Artist/Event/Reviewed Name.mp3" in row
+    assert f'hx-patch="/proposals/{proposal.id}/approve"' in row
+    assert "/proposals/bulk-approve-high-confidence" not in review
 
 
 @pytest.mark.asyncio
@@ -189,7 +218,12 @@ async def test_edit_patch_targets_own_row(
     Rejected inputs -- a ``..`` traversal segment, a leading ``/``, or a NUL byte -- 400 and leave
     the row unchanged (T-60-02).
     """
-    proposal = await seed_pending_proposal(0.8, proposed_filename="Original.mp3", original_filename="orig.mp3")
+    proposal = await seed_pending_proposal(
+        0.8,
+        proposed_filename="Original.mp3",
+        proposed_path="Artist/Event/Original.mp3",
+        original_filename="orig.mp3",
+    )
 
     resp = await client.patch(
         f"/proposals/{proposal.id}/edit",
@@ -203,6 +237,7 @@ async def test_edit_patch_targets_own_row(
     # mutation route now has exactly one response shape.
     assert f'id="rename-row-{proposal.id}"' in resp.text, "returns the targeted row"
     assert "<html" not in resp.text, "returns only the row, not a full page"
+    assert "Destination" in resp.text and "Artist/Event/Original.mp3" in resp.text, "row swaps must retain the path being authorized"
     await session.refresh(proposal)
     assert proposal.proposed_filename == "Edited Name.mp3"
     assert proposal.status == ProposalStatus.PENDING.value, "edit is pre-approve -- row stays PENDING"

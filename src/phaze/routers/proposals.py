@@ -203,10 +203,17 @@ def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, 
         before = file_record.current_path
         after = proposal.proposed_path or ""
         edit_facet = "path"
+        extra_context: dict[str, object] = {"diff_label": "Destination"}
     else:
         before = file_record.original_filename
         after = proposal.proposed_filename
         edit_facet = "filename"
+        extra_context = {
+            "diff_label": "Filename",
+            "secondary_label": "Destination",
+            "secondary_before": file_record.current_path,
+            "secondary_after": proposal.proposed_path or "",
+        }
     pid = proposal.id
     return {
         "row_id_prefix": row_id_prefix,
@@ -227,6 +234,7 @@ def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, 
         # the next render of this same partial carries the row's NEW value, so a stale button never
         # lingers on screen past its own re-render.
         "updated_at": proposal.updated_at,
+        **extra_context,
     }
 
 

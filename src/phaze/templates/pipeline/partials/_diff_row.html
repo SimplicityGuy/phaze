@@ -10,6 +10,10 @@
      * pid            -- the proposal (or file) id.
      * file           -- display name (truncating first line); original_path = its title tooltip.
      * before / after -- the current (struck rose) and proposed (emerald) values.
+     * diff_label     -- optional visible label for the primary before/after facet.
+     * secondary_label / secondary_before / secondary_after -- optional read-only second facet.
+                         Used by canonical Rename/Path Review because approving either field
+                         authorizes the whole proposal, including its destination.
      * approve_url / skip_url / undo_url / edit_url -- the VERIFIED routes (rename/move = PATCH).
      * approve_method -- the APPROVE verb, templated so a later facet (Tag, Plan 60-03) can pass
                          "post" WITHOUT editing this literal; rename/move leave it defaulted to patch.
@@ -104,7 +108,8 @@
         {% endif %}
         {% endif %}
     </div>
-    <div class="mt-2 grid grid-cols-[1fr_auto_1fr] gap-3 items-center text-xs">
+    {% if diff_label is defined and diff_label %}<p class="mt-2 font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">{{ diff_label }}</p>{% endif %}
+    <div class="{% if not diff_label %}mt-2 {% endif %}grid grid-cols-[1fr_auto_1fr] gap-3 items-center text-xs">
         {# BEFORE -- current value, struck rose (removed/old = rose status tint + line-through, WCAG 1.4.1). #}
         <code class="block truncate rounded px-2 py-1 font-mono bg-rose-50 text-rose-600 line-through dark:bg-rose-500/10 dark:text-rose-300">{{ before }}</code>
         <span class="text-gray-400 dark:text-gray-600">&rarr;</span>
@@ -117,6 +122,16 @@
         </template>
         {% endif %}
     </div>
+    {% if secondary_label is defined and secondary_label %}
+    <div class="mt-2 border-t border-gray-200 pt-2 dark:border-phaze-border">
+        <p class="font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">{{ secondary_label }}</p>
+        <div class="grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-xs">
+            <code class="block truncate rounded bg-rose-50 px-2 py-1 font-mono text-rose-600 line-through dark:bg-rose-500/10 dark:text-rose-300">{{ secondary_before }}</code>
+            <span class="text-gray-400 dark:text-gray-600">&rarr;</span>
+            <code class="block truncate rounded bg-emerald-50 px-2 py-1 font-mono text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-300">{{ secondary_after }}</code>
+        </div>
+    </div>
+    {% endif %}
     {% if show_edit|default(true) %}
     {# Hidden facet field -- SAVE EDIT posts it so the endpoint edits proposed_filename vs proposed_path. #}
     <input type="hidden" name="facet" value="{{ edit_facet }}">

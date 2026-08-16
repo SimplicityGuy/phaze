@@ -146,7 +146,11 @@
     {% include "pipeline/partials/_file_table.html" %}
 {% elif propose_view.q %}
     {% call ui.state("empty", empty_heading, empty_body) %}
-        <a href="/s/propose?status={{ propose_view.status }}" hx-get="/s/propose?status={{ propose_view.status }}" hx-target="#{{ propose_list_id }}" hx-swap="innerHTML" hx-push-url="true" class="rounded-md border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border dark:text-gray-300 dark:hover:bg-white/5">Clear search</a>
+        <a href="/s/propose?{{ propose_view.query(q='', page=1) }}"
+           hx-get="/s/propose?{{ propose_view.query(q='', page=1) }}"
+           hx-target="#{{ propose_list_id }}" hx-swap="innerHTML" hx-push-url="true"
+           hx-on:click="document.getElementById('propose-search').value = ''"
+           class="rounded-md border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border dark:text-gray-300 dark:hover:bg-white/5">Clear search</a>
     {% endcall %}
 {% elif propose_view.status in ("approved", "rejected") %}
     {% call ui.state("empty", empty_heading, empty_body) %}
