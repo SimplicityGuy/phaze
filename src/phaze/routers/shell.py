@@ -15,10 +15,9 @@ partial name always comes from one of these two static dicts, closing the
 template-path-injection surface (T-57-01 / ASVS V5). An unknown stage (in neither map) 404s
 (D-02).
 
-``GET /`` renders the Summary landing placeholder (quick 260707-sq3) -- a static, DB-free
-stage reserving the landing slot for a future at-a-glance overview. Analyze is one rail click
-away at ``/s/analyze``, where it still embeds the existing pipeline-dashboard content; its
-context is built by the shared ``build_dashboard_context`` factored out of
+``GET /`` renders the actionable Summary overview. Analyze is one rail click away at
+``/s/analyze``, where it still embeds the existing pipeline-dashboard content; its context is
+built by the shared ``build_dashboard_context`` factored out of
 ``pipeline.dashboard()`` so the two paths cannot drift (D-01 / RESEARCH Open-Q2). The
 remaining nodes render a minimal placeholder in Phase 57 -- their rich workspaces (and live
 content bridges) land with their workspaces in Phases 58-61.
@@ -26,8 +25,9 @@ content bridges) land with their workspaces in Phases 58-61.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -46,20 +46,29 @@ from phaze.routers.pipeline_scans import RECENT_SCANS_SORT, build_recent_scans
 from phaze.routers.proposal_sort import PROPOSE_SORT
 from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_fragment
 from phaze.routers.view_state import PAGE_SIZE_CHOICES, ListViewState
+from phaze.services.backends import derive_cloud_hold_reason, get_analysis_activity_counts, get_analysis_live_count
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, clamp_page, clamp_page_size
 from phaze.services.pipeline import (
     ORPHANED_BUCKET,
+    _read_in_own_session,
+    _stats_fanout,
     analyze_lanes_content_hash,
     count_proposal_pending_files,
+    get_analysis_stalled_count,
+    get_awaiting_cloud_count,
+    get_cached_stage_orphan_counts,
+    get_cloud_phase_counts,
     get_files_page,
+    get_inadmissible_count,
     get_match_pending_tracklists,
     get_metadata_activity_summary,
     get_metadata_selection_summary,
     get_metadata_status_snapshot,
     get_stage_activity_snapshot,
+    get_stage_controls,
     get_stage_progress,
 )
-from phaze.services.proposal_queries import get_proposal_stats
+from phaze.services.proposal_queries import ProposalStats, get_proposal_stats
 from phaze.services.review import (
     get_cue_review_cards,
     get_dedupe_groups,
@@ -68,6 +77,7 @@ from phaze.services.review import (
     get_tagwrite_review_page,
 )
 from phaze.services.route_control import get_route_control
+from phaze.services.stage_status import done_clause
 from phaze.utils.humanize import relative_time
 from phaze.web.static import static_asset_url
 
@@ -99,11 +109,9 @@ router = APIRouter(tags=["shell"])
 # (T-57-01 -- template-path-injection mitigation). The literals also act as the
 # dead-template guard's entry roots, so each stays reachable.
 STAGE_PARTIALS: dict[str, str] = {
-    # Quick 260707-sq3 (SQ3-01): the `/` landing placeholder. FIRST key so the dict order matches
-    # the rail order. A STATIC string literal (T-57-01: `stage` is never spliced into a template
-    # path) that also acts as the dead-template guard's entry root. The stage has NO DB-backed
-    # context -- `_render_stage` deliberately gives it no branch (zero reads, zero extra keys).
-    "summary": "shell/partials/summary_placeholder.html",
+    # The actionable collection/pipeline overview. FIRST key so the dict order matches the rail.
+    # The static literal preserves the T-57-01 template-path-injection boundary.
+    "summary": "shell/partials/summary_overview.html",
     # Phase 87 (87-09, UI-01/UI-02): the derived per-file stage-matrix files page -- the scannable
     # "where's this file at?" overview -- surfaced as a first-class, reachable rail workspace. Its
     # backing route GET /pipeline/files (pipeline.py) rendered this same partial but was UNREACHABLE
@@ -301,6 +309,364 @@ async def _analyze_file_count(session: AsyncSession) -> int:
     return int(result.scalar() or 0)
 
 
+def _summary_stage_status(stage: dict[str, int | None]) -> dict[str, str | bool]:
+    """Map an authoritative stage-progress bucket to the shared status vocabulary."""
+    total = int(stage.get("total") or 0)
+    done = int(stage.get("done") or 0)
+    skipped = int(stage.get("skipped") or 0)
+    failed = int(stage.get("failed") or 0)
+    in_flight = int(stage.get("in_flight") or 0)
+    if failed:
+        return {"label": "failed", "tone": "danger", "icon": "✕", "pulse": False}
+    if in_flight:
+        return {"label": "in flight", "tone": "accent", "icon": "●", "pulse": True}
+    if total and done + skipped >= total:
+        return {"label": "complete", "tone": "success", "icon": "✓", "pulse": False}
+    if total:
+        return {"label": "not started", "tone": "neutral", "icon": "—", "pulse": False}
+    return {"label": "empty", "tone": "neutral", "icon": "—", "pulse": False}
+
+
+def _derive_summary_overview(
+    stage_progress: dict[str, dict[str, int | None]],
+    *,
+    proposal_pending: int,
+    proposal_approved: int,
+    active_fileservers: int | None,
+    orphan_counts: dict[str, int],
+    stalled_analyses: int,
+    inadmissible_count: int,
+    awaiting_cloud_count: int,
+    awaiting_hold_reason: str | None,
+    queued_behind_quota_count: int,
+    stage_paused: dict[str, bool],
+    enriched_count: int | None,
+    analysis_live: int | None,
+    analyses_today: int | None,
+    analyses_lifetime: int | None,
+) -> dict[str, Any]:
+    """Derive display-only overview state without introducing new pipeline semantics."""
+    discovery = stage_progress["discovery"]
+    metadata = stage_progress["metadata"]
+    analyze = stage_progress["analyze"]
+    proposals = stage_progress["proposals"]
+    execute = stage_progress["execute"]
+    total_files = int(discovery["done"] or 0)
+
+    flow = [
+        {"name": "Discover", "href": "/s/discover", "done": total_files, "total": total_files, "status": _summary_stage_status(discovery)},
+        {
+            "name": "Metadata",
+            "href": "/s/metadata",
+            "done": int(metadata["done"] or 0),
+            "total": int(metadata["total"] or 0),
+            "status": _summary_stage_status(metadata),
+        },
+        {
+            "name": "Analyze",
+            "href": "/s/analyze",
+            "done": int(analyze["done"] or 0),
+            "total": int(analyze["total"] or 0),
+            "status": _summary_stage_status(analyze),
+        },
+        {
+            "name": "Propose",
+            "href": "/s/propose",
+            "done": int(proposals["done"] or 0),
+            "total": int(proposals["total"] or 0),
+            "status": _summary_stage_status(proposals),
+        },
+        {
+            "name": "Review",
+            "href": "/s/rename",
+            "done": None,
+            "total": proposal_pending,
+            "detail": f"{proposal_pending} awaiting decision",
+            "status": (
+                {"label": "attention", "tone": "attention", "icon": "!", "pulse": False}
+                if proposal_pending
+                else {"label": "caught up", "tone": "success", "icon": "✓", "pulse": False}
+            ),
+        },
+        {
+            "name": "Apply",
+            "href": "/s/apply",
+            "done": int(execute["done"] or 0),
+            "total": proposal_approved,
+            "detail": f"{proposal_approved} approved now",
+            "status": (
+                {"label": "ready", "tone": "attention", "icon": "!", "pulse": False}
+                if proposal_approved
+                else {"label": "caught up", "tone": "success", "icon": "✓", "pulse": False}
+            ),
+        },
+    ]
+
+    attention: list[dict[str, str | int]] = []
+
+    def add_attention(priority: int, title: str, detail: str, href: str, action: str, tone: str = "attention") -> None:
+        attention.append({"priority": priority, "title": title, "detail": detail, "href": href, "action": action, "tone": tone})
+
+    metadata_failed = int(metadata.get("failed") or 0)
+    analyze_failed = int(analyze.get("failed") or 0)
+    if metadata_failed:
+        add_attention(10, "Metadata failures", f"{metadata_failed} file(s) need inspection or retry.", "/s/metadata", "Open Metadata", "danger")
+    if analyze_failed:
+        stalled_detail = f"; {stalled_analyses} stopped by the progress watchdog" if stalled_analyses else ""
+        add_attention(
+            11, "Analysis failures", f"{analyze_failed} file(s) reached terminal failure{stalled_detail}.", "/s/analyze", "Open Analyze", "danger"
+        )
+    orphan_total = int(orphan_counts.get("metadata", 0)) + int(orphan_counts.get("analyze", 0))
+    if orphan_total:
+        add_attention(
+            20,
+            "Orphaned work",
+            f"{orphan_total} scheduled file(s) have no live job or domain result.",
+            "/s/discover",
+            "Open Recovery",
+        )
+    if inadmissible_count:
+        add_attention(
+            30, "Cloud jobs blocked by configuration", f"{inadmissible_count} active cloud job(s) are Inadmissible.", "/s/agents", "Inspect Compute"
+        )
+    if awaiting_cloud_count:
+        hold_reason = awaiting_hold_reason or "reason unavailable"
+        if hold_reason in {"cloud routing disabled", "held — cloud routing paused (force-local)"}:
+            awaiting_href, awaiting_action = "/s/operations", "Open Routing"
+        elif hold_reason in {
+            "held — no cloud backend reachable",
+            "held — no fileserver agent online",
+        } or hold_reason.startswith("held — all lanes at capacity"):
+            awaiting_href, awaiting_action = "/s/agents", "Inspect Compute"
+        else:
+            awaiting_href, awaiting_action = "/s/analyze", "Open Analyze"
+        add_attention(
+            40,
+            "Files awaiting cloud routing",
+            f"{awaiting_cloud_count} file(s): {hold_reason}.",
+            awaiting_href,
+            awaiting_action,
+        )
+    if queued_behind_quota_count:
+        add_attention(
+            41,
+            "Cloud quota wait",
+            f"{queued_behind_quota_count} submitted cloud job(s) are waiting for cluster quota.",
+            "/s/agents",
+            "Inspect Compute",
+        )
+    for priority, stage_name, stage_label, stage_bucket in (
+        (45, "metadata", "Metadata enrichment", metadata),
+        (46, "analyze", "Audio analysis", analyze),
+    ):
+        if stage_paused[stage_name] and (int(stage_bucket.get("not_started") or 0) or int(stage_bucket.get("in_flight") or 0)):
+            add_attention(
+                priority,
+                f"{stage_label} is paused",
+                f"{int(stage_bucket.get('not_started') or 0)} not started; {int(stage_bucket.get('in_flight') or 0)} still marked in flight.",
+                f"/s/{stage_name}",
+                f"Open {stage_label}",
+            )
+    if active_fileservers == 0:
+        add_attention(
+            50,
+            "No file-server agent available",
+            "Discovery and file-owned work cannot be dispatched until an agent checks in.",
+            "/s/agents",
+            "Configure Agents",
+        )
+    attention.sort(key=lambda item: int(item["priority"]))
+
+    if attention:
+        first = attention[0]
+        recommended = {"title": first["title"], "detail": first["detail"], "href": first["href"], "action": first["action"], "tone": first["tone"]}
+    elif total_files == 0:
+        recommended = {
+            "title": "Discover the collection",
+            "detail": "Run a scan from a configured file-server agent to populate the collection.",
+            "href": "/s/discover",
+            "action": "Open Discover",
+            "tone": "accent",
+        }
+    elif int(metadata.get("not_started") or 0) and not stage_paused["metadata"] and not int(metadata.get("in_flight") or 0):
+        recommended = {
+            "title": "Start metadata enrichment",
+            "detail": "Metadata and analysis are independent and can run in parallel.",
+            "href": "/s/metadata",
+            "action": "Open Metadata",
+            "tone": "accent",
+        }
+    elif int(analyze.get("not_started") or 0) and not stage_paused["analyze"] and not int(analyze.get("in_flight") or 0):
+        recommended = {
+            "title": "Start audio analysis",
+            "detail": "Analysis can run independently of metadata enrichment.",
+            "href": "/s/analyze",
+            "action": "Open Analyze",
+            "tone": "accent",
+        }
+    elif stage_paused["metadata"] and (int(metadata.get("not_started") or 0) or int(metadata.get("in_flight") or 0)):
+        recommended = {
+            "title": "Metadata enrichment is paused",
+            "detail": "Review the pause before resuming metadata work.",
+            "href": "/s/metadata",
+            "action": "Open Metadata",
+            "tone": "attention",
+        }
+    elif stage_paused["analyze"] and (int(analyze.get("not_started") or 0) or int(analyze.get("in_flight") or 0)):
+        recommended = {
+            "title": "Audio analysis is paused",
+            "detail": "Review the pause before resuming analysis work.",
+            "href": "/s/analyze",
+            "action": "Open Analyze",
+            "tone": "attention",
+        }
+    elif int(metadata.get("in_flight") or 0) or int(analyze.get("in_flight") or 0):
+        active_stage = "metadata" if int(metadata.get("in_flight") or 0) else "analyze"
+        recommended = {
+            "title": "Enrichment is in progress",
+            "detail": "Current work is already running; monitor it before starting the next dependent stage.",
+            "href": f"/s/{active_stage}",
+            "action": f"Open {active_stage.title()}",
+            "tone": "accent",
+        }
+    elif int(proposals["done"] or 0) < int(proposals["total"] or 0):
+        recommended = {
+            "title": "Generate proposals",
+            "detail": "Files with completed metadata and analysis are ready for proposal generation.",
+            "href": "/s/propose",
+            "action": "Open Propose",
+            "tone": "accent",
+        }
+    elif proposal_pending:
+        recommended = {
+            "title": "Review proposed changes",
+            "detail": f"{proposal_pending} proposal(s) await an operator decision.",
+            "href": "/s/rename",
+            "action": "Open Review",
+            "tone": "attention",
+        }
+    elif proposal_approved:
+        recommended = {
+            "title": "Execute approved changes",
+            "detail": f"{proposal_approved} approved proposal(s) are ready to apply.",
+            "href": "/s/apply",
+            "action": "Open Apply",
+            "tone": "attention",
+        }
+    else:
+        recommended = {
+            "title": "Pipeline caught up",
+            "detail": "No failures, recovery candidates, pending reviews, or approved changes need action.",
+            "href": "/s/files",
+            "action": "Browse Files",
+            "tone": "success",
+        }
+
+    return {
+        "total_files": total_files,
+        "resolved_enrichment": enriched_count,
+        "proposal_pending": proposal_pending,
+        "proposal_approved": proposal_approved,
+        "flow": flow,
+        "attention": attention,
+        "recommended": recommended,
+        "recent": {
+            "live": analysis_live,
+            "today": analyses_today,
+            "lifetime": analyses_lifetime,
+        },
+        "is_empty": total_files == 0,
+        "is_partially_configured": active_fileservers == 0,
+        "is_degraded": bool(metadata_failed or analyze_failed or orphan_total or inadmissible_count or awaiting_cloud_count),
+    }
+
+
+async def _get_summary_aggregates(session: AsyncSession) -> dict[str, int | None]:
+    """Read the enriched-file intersection and active file-server count in one statement."""
+    enriched = select(func.count(FileRecord.id)).where(done_clause(Stage.METADATA), done_clause(Stage.ANALYZE)).scalar_subquery()
+    active_fileservers = (
+        select(func.count(Agent.id)).where(Agent.kind == "fileserver", Agent.revoked_at.is_(None), Agent.last_seen_at.is_not(None)).scalar_subquery()
+    )
+    try:
+        async with session.begin_nested():
+            row = (await session.execute(select(enriched, active_fileservers))).one()
+    except Exception:
+        return {"enriched": None, "active_fileservers": None}
+    return {
+        "enriched": int(row[0] or 0),
+        "active_fileservers": int(row[1] or 0),
+    }
+
+
+async def _build_summary_context(app_state: Any, session: AsyncSession) -> dict[str, Any]:
+    """Read independent Summary sources in own sessions under the shared stats fan-out cap."""
+    fanout = _stats_fanout()
+    (
+        stage_progress,
+        proposal_stats,
+        stalled_analyses,
+        inadmissible_count,
+        awaiting_cloud_count,
+        cloud_phases,
+        stage_controls,
+        aggregates,
+        analysis_live,
+        analysis_activity,
+    ) = cast(
+        "tuple[dict[str, dict[str, int | None]], ProposalStats, int, int, int, dict[str, int], dict[str, dict[str, int | bool]], dict[str, int | None], int | None, dict[str, int | None]]",
+        await asyncio.gather(
+            # get_stage_progress already owns its bounded per-node sessions; wrapping it would hold
+            # a semaphore slot while its children wait for that same semaphore.
+            get_stage_progress(session),
+            _read_in_own_session(fanout, get_proposal_stats, ProposalStats(total=0, pending=0, approved=0, rejected=0, avg_confidence=None)),
+            _read_in_own_session(fanout, get_analysis_stalled_count, 0),
+            _read_in_own_session(fanout, get_inadmissible_count, 0),
+            _read_in_own_session(fanout, get_awaiting_cloud_count, 0),
+            _read_in_own_session(
+                fanout,
+                get_cloud_phase_counts,
+                {"queued_behind_quota": 0, "admitted": 0, "running": 0, "finished": 0},
+            ),
+            _read_in_own_session(
+                fanout,
+                get_stage_controls,
+                {"metadata": {"paused": False, "priority": 50}, "analyze": {"paused": False, "priority": 50}},
+            ),
+            _read_in_own_session(
+                fanout,
+                _get_summary_aggregates,
+                cast("dict[str, int | None]", {"enriched": None, "active_fileservers": None}),
+            ),
+            _read_in_own_session(fanout, lambda own_session: get_analysis_live_count(own_session, app_state), None),
+            _read_in_own_session(
+                fanout,
+                get_analysis_activity_counts,
+                cast("dict[str, int | None]", {"today": None, "lifetime": None}),
+            ),
+        ),
+    )
+    awaiting_hold_reason = await _read_in_own_session(fanout, derive_cloud_hold_reason, "held") if awaiting_cloud_count else None
+    return {
+        "summary": _derive_summary_overview(
+            stage_progress,
+            proposal_pending=proposal_stats.pending,
+            proposal_approved=proposal_stats.approved,
+            active_fileservers=aggregates["active_fileservers"],
+            orphan_counts=get_cached_stage_orphan_counts(),
+            stalled_analyses=stalled_analyses,
+            inadmissible_count=inadmissible_count,
+            awaiting_cloud_count=awaiting_cloud_count,
+            awaiting_hold_reason=awaiting_hold_reason,
+            queued_behind_quota_count=cloud_phases["queued_behind_quota"],
+            stage_paused={stage: bool(stage_controls[stage]["paused"]) for stage in ("metadata", "analyze")},
+            enriched_count=aggregates["enriched"],
+            analysis_live=analysis_live,
+            analyses_today=analysis_activity["today"],
+            analyses_lifetime=analysis_activity["lifetime"],
+        )
+    }
+
+
 async def build_propose_list_context(request: Request, session: AsyncSession) -> dict[str, Any]:
     """Build every context key ``_propose_list.html`` needs, from ``request.query_params`` alone.
 
@@ -422,7 +788,9 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # build_dashboard_context -- so the global incident control shows correct state everywhere.
         "force_local": await get_route_control(session),
     }
-    if stage == "analyze":
+    if stage == "summary":
+        context.update(await _build_summary_context(request.app.state, session))
+    elif stage == "analyze":
         context.update(await build_dashboard_context(request.app.state, session))
         context["stage"] = stage
         context["stage_partial"] = _stage_partial(stage)
@@ -707,12 +1075,7 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
 
 @router.get("/", response_class=HTMLResponse)
 async def shell_home(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
-    """GET / -- the shell root renders the Summary landing placeholder (SHELL-01, D-02 bare root).
-
-    Quick 260707-sq3 (SQ3-02) repointed the default landing stage from Analyze to the static,
-    DB-free Summary placeholder. Analyze is unchanged and stays one rail click away at
-    ``/s/analyze``.
-    """
+    """GET / -- render the actionable Summary overview as the shell default."""
     return await _render_stage(request, "summary", session)
 
 

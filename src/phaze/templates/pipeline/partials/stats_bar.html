@@ -70,6 +70,10 @@
 {% for key, value in dag.items() %}
 <p id="dag-seed-{{ key }}" hx-swap-oob="true" x-init="$store.pipeline.{{ key }} = {{ value }}" class="hidden"></p>
 {% endfor %}
+{# Summary Recent Activity rides this same poll. null preserves degraded reads as unknown. #}
+<p id="dag-seed-summaryRecentLive" hx-swap-oob="true" x-init="$store.pipeline.summaryRecentLive = {{ summary_recent_live if summary_recent_live is not none else 'null' }}" class="hidden"></p>
+<p id="dag-seed-summaryRecentToday" hx-swap-oob="true" x-init="$store.pipeline.summaryRecentToday = {{ summary_recent_today if summary_recent_today is not none else 'null' }}" class="hidden"></p>
+<p id="dag-seed-summaryRecentLifetime" hx-swap-oob="true" x-init="$store.pipeline.summaryRecentLifetime = {{ summary_recent_lifetime if summary_recent_lifetime is not none else 'null' }}" class="hidden"></p>
 {# Phase 44 (44-04): re-render the Analysis Health card (ANALYSIS_FAILED + STALLED)
    OUT-OF-BAND on the same 5s tick (it lives outside #pipeline-stats, so the innerHTML swap
    never reaches it). Same id (#analysis-health-card) is the OOB contract; oob=True flips the

@@ -39,6 +39,7 @@ from phaze.services.backends import (
     _cloud_lane_queued_working,
     _lane_processed_counts,
     _local_lane_queued_working,
+    get_analysis_live_count,
     get_analyze_queue_totals,
     get_backend_lane_snapshot,
 )
@@ -121,6 +122,101 @@ async def test_local_lane_queued_working_degrades_to_none_on_broker_error(sessio
     app_state = SimpleNamespace(task_router=router)
 
     assert await _local_lane_queued_working(session, app_state) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_analysis_live_count_uses_focused_sources_not_the_full_lane_snapshot(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def local_working(_session: AsyncSession, _app_state: object) -> tuple[int, int]:
+        return 4, 2
+
+    async def cloud_active(_session: AsyncSession, _stmt: object, *, node: str) -> int:
+        assert node == "analysis_live_total"
+        return 3
+
+    async def forbidden_snapshot(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+        raise AssertionError("Summary working count must not build the full lane snapshot")
+
+    monkeypatch.setattr(backends_mod, "_local_lane_queued_working", local_working)
+    monkeypatch.setattr(backends_mod, "_safe_count_or_none", cloud_active)
+    monkeypatch.setattr(backends_mod, "resolve_backends", lambda _settings: [SimpleNamespace(id="cloud-a", kind="kueue")])
+    monkeypatch.setattr(backends_mod, "_kind_of", lambda backend: backend.kind)
+    monkeypatch.setattr(backends_mod, "get_backend_lane_snapshot", forbidden_snapshot)
+
+    assert await get_analysis_live_count(session, SimpleNamespace()) == 5
+
+
+@pytest.mark.asyncio
+async def test_analysis_live_count_propagates_an_unknown_source(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def unknown_local(_session: AsyncSession, _app_state: object) -> tuple[None, None]:
+        return None, None
+
+    async def known_cloud(_session: AsyncSession, _stmt: object, *, node: str) -> int:
+        assert node == "analysis_live_total"
+        return 3
+
+    monkeypatch.setattr(backends_mod, "_local_lane_queued_working", unknown_local)
+    monkeypatch.setattr(backends_mod, "_safe_count_or_none", known_cloud)
+    monkeypatch.setattr(backends_mod, "resolve_backends", lambda _settings: [SimpleNamespace(id="cloud-a", kind="kueue")])
+    monkeypatch.setattr(backends_mod, "_kind_of", lambda backend: backend.kind)
+
+    assert await get_analysis_live_count(session, SimpleNamespace()) is None
+
+
+@pytest.mark.asyncio
+async def test_analysis_live_count_excludes_submitted_quota_waits(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def no_local_work(_session: AsyncSession, _app_state: object) -> tuple[int, int]:
+        return 0, 0
+
+    submitted = _file()
+    running = _file()
+    session.add_all([submitted, running])
+    await session.flush()
+    session.add_all(
+        [
+            _cloud_job(submitted.id, backend_id="cloud-a", status=CloudJobStatus.SUBMITTED.value),
+            _cloud_job(running.id, backend_id="cloud-a", status=CloudJobStatus.RUNNING.value),
+        ]
+    )
+    await session.commit()
+    monkeypatch.setattr(backends_mod, "_local_lane_queued_working", no_local_work)
+    monkeypatch.setattr(backends_mod, "resolve_backends", lambda _settings: [SimpleNamespace(id="cloud-a", kind="kueue")])
+    monkeypatch.setattr(backends_mod, "_kind_of", lambda backend: backend.kind)
+
+    assert await get_analysis_live_count(session, SimpleNamespace()) == 1
+
+
+@pytest.mark.asyncio
+async def test_analysis_live_count_is_unknown_for_compute_only(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def local_active(_session: AsyncSession, _app_state: object) -> tuple[int, int]:
+        return 0, 0
+
+    safe_count = AsyncMock(return_value=0)
+    monkeypatch.setattr(backends_mod, "_local_lane_queued_working", local_active)
+    monkeypatch.setattr(backends_mod, "_safe_count_or_none", safe_count)
+    monkeypatch.setattr(backends_mod, "resolve_backends", lambda _settings: [SimpleNamespace(id="compute-a", kind="compute")])
+    monkeypatch.setattr(backends_mod, "_kind_of", lambda backend: backend.kind)
+
+    assert await get_analysis_live_count(session, SimpleNamespace()) is None
+    safe_count.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_analysis_live_count_is_unknown_for_mixed_kueue_and_compute(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def local_active(_session: AsyncSession, _app_state: object) -> tuple[int, int]:
+        return 0, 2
+
+    safe_count = AsyncMock(return_value=3)
+    monkeypatch.setattr(backends_mod, "_local_lane_queued_working", local_active)
+    monkeypatch.setattr(backends_mod, "_safe_count_or_none", safe_count)
+    monkeypatch.setattr(
+        backends_mod,
+        "resolve_backends",
+        lambda _settings: [SimpleNamespace(id="kueue-a", kind="kueue"), SimpleNamespace(id="compute-a", kind="compute")],
+    )
+    monkeypatch.setattr(backends_mod, "_kind_of", lambda backend: backend.kind)
+
+    assert await get_analysis_live_count(session, SimpleNamespace()) is None
+    safe_count.assert_not_awaited()
 
 
 # --------------------------------------------------------------------------- AC4: cloud lane queued/working

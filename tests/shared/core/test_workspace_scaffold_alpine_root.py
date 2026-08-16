@@ -56,7 +56,6 @@ _STANDALONE_CALLERS = [
     "pipeline/partials/cue_workspace.html",
     "pipeline/partials/rename_workspace.html",
     "pipeline/partials/move_workspace.html",
-    "shell/partials/summary_placeholder.html",
 ]
 
 # tracklist_workspace.html, propose_workspace.html, metadata_workspace.html and (phaze-t0b8)
@@ -71,6 +70,7 @@ _CONTEXT_HEAVY_CALLERS = [
     "pipeline/partials/propose_workspace.html",
     "pipeline/partials/metadata_workspace.html",
     "pipeline/partials/files_workspace.html",
+    "shell/partials/summary_overview.html",
 ]
 
 

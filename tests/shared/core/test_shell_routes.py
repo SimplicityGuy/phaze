@@ -8,8 +8,9 @@ Plan 57-02 (Task 3) fills the SHELL-01/SHELL-02-fragment/SHELL-04 behaviors belo
 ``test_tabbar_removed_header_present``) once the rail + header partials land. The two
 Plan-03 functions stay body-less here -- they are REPLACED (not redeclared) by Plan 03.
 
-Quick 260707-sq3 repointed ``GET /`` from the Analyze dashboard to the static Summary
-landing placeholder (SQ3-01..03); Analyze stays reachable at ``/s/analyze``.
+Quick 260707-sq3 repointed ``GET /`` from the Analyze dashboard to Summary; Analyze stays
+reachable at ``/s/analyze``. phaze-tzy6s.9 replaced the reserved landing content with the
+actionable overview while preserving the route and response-shape contract.
 
 Function -> requirement map (see 57-VALIDATION.md "Per-Task Verification Map"):
     test_root_renders_shell_summary_default  -> SHELL-01 / SQ3-02 (Plan 02, quick 260707-sq3)
@@ -73,12 +74,7 @@ _UTILITY_PANE_STAGES = [
 
 @pytest.mark.asyncio
 async def test_root_renders_shell_summary_default(client: AsyncClient) -> None:
-    """SHELL-01 / SQ3-02 -- GET / renders the shell with the Summary placeholder as the default stage.
-
-    Quick 260707-sq3 repointed the landing slot from Analyze to the static Summary placeholder.
-    No file seed is needed: the first-run empty-state swap is confined to the analyze branch of
-    ``_render_stage``, and Summary performs zero DB reads.
-    """
+    """SHELL-01 / SQ3-02 -- GET / renders the shell with actionable Summary as the default stage."""
     response = await client.get("/")
     # A plain GET / is the shell root itself -- it must render, NOT redirect anywhere.
     assert response.status_code == 200
@@ -86,9 +82,9 @@ async def test_root_renders_shell_summary_default(client: AsyncClient) -> None:
     # The single stable swap target every rail node innerHTML-swaps.
     assert 'id="stage-workspace"' in body
     # Summary is the selected/active default: the swap target carries the stage marker AND the
-    # placeholder body renders inside it.
+    # overview body renders inside it.
     assert 'data-stage="summary"' in body
-    assert "data-summary-placeholder" in body
+    assert "data-summary-overview" in body
     # The Analyze dashboard is NOT what rendered. Careful: the shared scaffold's hidden seed host
     # emits an EMPTY <div id="analyze-lanes"></div> on every non-analyze workspace, so a bare
     # 'id="analyze-lanes"' substring check would be a false positive. The stage marker is the
@@ -124,12 +120,12 @@ async def test_summary_stage_route_and_fragment(client: AsyncClient) -> None:
     full = await client.get("/s/summary")
     assert full.status_code == 200
     assert 'id="stage-workspace"' in full.text
-    assert "data-summary-placeholder" in full.text
+    assert "data-summary-overview" in full.text
 
     hx = await client.get("/s/summary", headers={"HX-Request": "true"})
     assert hx.status_code == 200
     fragment = hx.text
-    assert "data-summary-placeholder" in fragment
+    assert "data-summary-overview" in fragment
     # Content-only: a swapped fragment NEVER carries the document wrapper or head.
     assert "<html" not in fragment
     assert "<head" not in fragment
