@@ -929,8 +929,8 @@ async def get_stage_busy_counts(session: AsyncSession) -> dict[str, int]:
     lazy load) and WITHOUT poisoning later queries. The function then logs a warning and returns
     all-zeros -- it NEVER raises into the hot 5s /pipeline/stats poll.
     """
-    activity = await get_stage_activity_counts(session)
-    return {stage: counts["queued"] + counts["active"] for stage, counts in activity.items()}
+    activity = await get_stage_activity_snapshot(session)
+    return {stage: counts["queued"] + counts["active"] for stage, counts in activity.counts.items()}
 
 
 _STAGE_ACTIVITY_SQL = text(
@@ -938,47 +938,67 @@ _STAGE_ACTIVITY_SQL = text(
 )
 
 
-async def get_stage_activity_counts(session: AsyncSession) -> dict[str, dict[str, int]]:
-    """Return queued and active job counts for each agent stage, degrade-safe."""
-    out = {
-        "metadata": {"queued": 0, "active": 0},
-        "analyze": {"queued": 0, "active": 0},
-    }
+@dataclass(frozen=True)
+class StageActivitySnapshot:
+    """SAQ queued/active counts plus whether the broker-table read succeeded."""
+
+    counts: dict[str, dict[str, int]]
+    available: bool
+
+
+def _empty_stage_activity() -> dict[str, dict[str, int]]:
+    return {"metadata": {"queued": 0, "active": 0}, "analyze": {"queued": 0, "active": 0}}
+
+
+async def get_stage_activity_snapshot(session: AsyncSession) -> StageActivitySnapshot:
+    """Return queued and active SAQ counts without disguising read failure as measured zero."""
+    out = _empty_stage_activity()
     try:
         async with session.begin_nested():
             rows = (await session.execute(_STAGE_ACTIVITY_SQL)).all()
     except Exception:
         logger.warning("stage_activity_degraded", exc_info=True)
-        return out
+        return StageActivitySnapshot(counts=out, available=False)
     for function_name, status, count in rows:
         stage = _BUSY_FUNCTION_TO_STAGE.get(function_name)
         if stage is not None:
             out[stage][status] = int(count)
-    return out
+    return StageActivitySnapshot(counts=out, available=True)
+
+
+async def get_stage_activity_counts(session: AsyncSession) -> dict[str, dict[str, int]]:
+    """Compatibility projection of queued and active counts; use the snapshot when availability matters."""
+    return (await get_stage_activity_snapshot(session)).counts
 
 
 @dataclass(frozen=True)
 class MetadataActivitySummary:
-    """Bounded completion context for the Metadata workspace."""
+    """Successful metadata-write context for the Metadata workspace."""
 
-    completed_24h: int = 0
-    latest_completed_at: datetime | None = None
+    successful_writes_24h: int | None = None
+    latest_successful_at: datetime | None = None
+    available: bool = False
 
 
 async def get_metadata_activity_summary(session: AsyncSession) -> MetadataActivitySummary:
-    """Return recent successful metadata throughput, degrading to an empty summary."""
+    """Return recent successful metadata writes across all stored files and agents."""
     cutoff = datetime.now(UTC) - timedelta(hours=24)
-    stmt = select(
-        func.count(FileMetadata.id).filter(FileMetadata.failed_at.is_(None), FileMetadata.updated_at >= cutoff),
-        func.max(FileMetadata.updated_at).filter(FileMetadata.failed_at.is_(None)),
-    )
+    stmt = _metadata_activity_stmt(cutoff)
     try:
         async with session.begin_nested():
-            completed_24h, latest_completed_at = (await session.execute(stmt)).one()
+            successful_writes_24h, latest_successful_at = (await session.execute(stmt)).one()
     except Exception:
         logger.warning("metadata_activity_summary_degraded", exc_info=True)
         return MetadataActivitySummary()
-    return MetadataActivitySummary(completed_24h=int(completed_24h or 0), latest_completed_at=latest_completed_at)
+    return MetadataActivitySummary(successful_writes_24h=int(successful_writes_24h or 0), latest_successful_at=latest_successful_at, available=True)
+
+
+def _metadata_activity_stmt(cutoff: datetime) -> Select[Any]:
+    """Build the successful-write measurement query for the supplied rolling cutoff."""
+    return select(
+        func.count(FileMetadata.id).filter(FileMetadata.failed_at.is_(None), FileMetadata.updated_at >= cutoff),
+        func.max(FileMetadata.updated_at).filter(FileMetadata.failed_at.is_(None)),
+    )
 
 
 # Live-broker key set (Phase 45). ``saq_jobs`` is SAQ-owned -- this is a READ-ONLY probe of the
@@ -2234,6 +2254,35 @@ async def get_backfill_candidates(session: AsyncSession, threshold_sec: int) -> 
 # All queries are pure ORM / bound params -- NO f-string SQL (T-42-03).
 
 
+def _metadata_pending_stmt() -> Select[Any]:
+    """Build the canonical metadata bulk-extraction selection."""
+    return select(FileRecord).where(
+        FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
+        eligible_clause(Stage.METADATA),
+        ~dedup_resolved_clause(),
+    )
+
+
+@dataclass(frozen=True)
+class MetadataSelectionSummary:
+    """Current canonical bulk-extraction selection size, or unknown on read failure."""
+
+    eligible_count: int | None = None
+    available: bool = False
+
+
+async def get_metadata_selection_summary(session: AsyncSession) -> MetadataSelectionSummary:
+    """Count exactly what Extract All would select without presenting a failed read as zero."""
+    stmt = select(func.count()).select_from(_metadata_pending_stmt().subquery())
+    try:
+        async with session.begin_nested():
+            count = (await session.execute(stmt)).scalar_one()
+    except Exception:
+        logger.warning("metadata_selection_summary_degraded", exc_info=True)
+        return MetadataSelectionSummary()
+    return MetadataSelectionSummary(eligible_count=int(count), available=True)
+
+
 async def get_metadata_pending_files(session: AsyncSession) -> list[FileRecord]:
     """Return the DERIVED metadata-extraction pending set -- music/video files eligible for metadata (READ-01).
 
@@ -2249,12 +2298,7 @@ async def get_metadata_pending_files(session: AsyncSession) -> list[FileRecord]:
     NEVER be paged or LIMITed; doing so would silently under-enqueue the backlog. The WORKSPACE
     renders the bounded :func:`get_pending_files_page` instead. Keep the two readers separate.
     """
-    stmt = select(FileRecord).where(
-        FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
-        eligible_clause(Stage.METADATA),
-        ~dedup_resolved_clause(),
-    )
-    result = await session.execute(stmt)
+    result = await session.execute(_metadata_pending_stmt())
     return list(result.scalars().all())
 
 
@@ -2267,8 +2311,13 @@ def _pending_page_stmt(stage: Stage, *, page: int, page_size: int, sort: SortSta
     ``FileRecord.id`` tiebreaker (``created_at`` ties -- Postgres timestamp defaults are
     transaction-time constant), OFFSET paging, and a ``page_size + 1`` sentinel instead of a COUNT.
     """
+    selection = (
+        _metadata_pending_stmt()
+        if stage is Stage.METADATA
+        else select(FileRecord).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES), eligible_clause(stage), ~dedup_resolved_clause())
+    )
     return paged_stmt(
-        select(FileRecord).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES), eligible_clause(stage), ~dedup_resolved_clause()),
+        selection,
         page=page,
         page_size=page_size,
         # phaze-a6hm.1: the operator's whitelisted column when they picked one, else the newest-first

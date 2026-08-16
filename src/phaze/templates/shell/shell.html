@@ -117,7 +117,7 @@
                 // t7k FIX2: per-stage in-flight busy counts replace the single global agentBusy
                 // gate so each agent enqueue button gates on its OWN stage (run in parallel).
                 // agentBusy is kept — the queue_progress card path still reads agent_busy server-side.
-                metadataBusy: 0, metadataQueued: 0, metadataRunning: 0, analyzeBusy: 0,
+                metadataBusy: 0, metadataQueued: 0, metadataActive: 0, metadataQueueKnown: 0, analyzeBusy: 0,
                 // Phase 40 (REQ-40-3): online-agent count ("Needs agent" when 0) gates the per-agent
                 // DAG nodes — same seed/OOB poll.
                 agentOnline: 0,
@@ -125,7 +125,7 @@
                 // trigger node ("Matching…") — same seed/OOB poll. phaze-2akf dropped the searchBusy /
                 // scrapeBusy siblings with the two legacy tasks they counted.
                 matchBusy: 0,
-                metadataDone: 0, metadataTotal: 0, metadataEligible: 0, metadataFailed: 0,
+                metadataDone: 0, metadataTotal: 0, metadataEligible: 0, metadataEligibleKnown: 0, metadataFailed: 0,
                 analyzeDone: 0, analyzeTotal: 0, analyzeActive: 0,
                 tracklistDone: 0,
                 matchDone: 0, matchTotal: 0,

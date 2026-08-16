@@ -51,7 +51,7 @@
     {% endfor %}
     {% set rows = ns.rows %}
     {% if _is_metadata and not rows %}
-        {{ ui.state('empty', empty_heading, 'The metadata queue is idle. Recent completion and throughput context remain available above.') }}
+        {{ ui.state('empty', empty_heading, 'Extract All currently selects no files. Recent successful-write context remains available above.') }}
     {% else %}
         {% include "pipeline/partials/_file_table.html" %}
     {% endif %}

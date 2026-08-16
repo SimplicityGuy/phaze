@@ -537,8 +537,9 @@ async def test_get_metadata_activity_summary_reports_recent_successes(session: A
 
     summary = await get_metadata_activity_summary(session)
 
-    assert summary.completed_24h == 1
-    assert summary.latest_completed_at == completed_at
+    assert summary.successful_writes_24h == 1
+    assert summary.latest_successful_at == completed_at
+    assert summary.available is True
 
 
 @pytest.mark.asyncio

@@ -441,11 +441,12 @@ async def test_metadata_trigger_all_wired(client: AsyncClient) -> None:
     assert "setInterval" not in md_body
     assert "automated extraction" in md_body
     assert "manual stage" not in md_body
-    for state in ("Eligible", "Queued / running", "Completed", "Failed", "idle"):
+    for state in ("Eligible", "Queued", "Active", "Completed", "Failed", "idle"):
         assert state in md_body
-    assert "Past 24 hours" in md_body
-    assert "Last completion" in md_body
-    assert "recent completion and 24-hour throughput" in md_body
+    assert "Successful writes · 24h" in md_body
+    assert "Latest successful write" in md_body
+    assert "exact set Extract All would select" in md_body
+    assert "does not prove user code is currently executing" in md_body
 
 
 @pytest.mark.asyncio
@@ -458,9 +459,9 @@ async def test_metadata_idle_context_keeps_recent_throughput_visible(client: Asy
     response = await client.get("/s/metadata", headers={"HX-Request": "true"})
 
     assert response.status_code == 200
-    assert "Successful extraction throughput" in response.text
-    assert "Most recent successful run" in response.text
-    assert ">1</dd>" in response.text
+    assert "All files and agents; retries count" in response.text
+    assert "Controller receipt time, not a batch run" in response.text
+    assert 'id="metadata-24h-value">1</span>' in response.text
 
 
 @pytest.mark.asyncio
