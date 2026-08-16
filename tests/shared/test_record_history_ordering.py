@@ -130,6 +130,34 @@ async def test_pending_approval_exposes_the_complete_proposal(client: AsyncClien
 
 
 @pytest.mark.asyncio
+async def test_pending_approval_renders_a_null_proposed_path_as_an_empty_destination(client: AsyncClient, session: AsyncSession) -> None:
+    """A rename-in-place proposal must never expose Python's ``None`` sentinel to the operator."""
+    file_id = await _seed_file(session)
+    proposal = RenameProposal(
+        file_id=file_id,
+        proposed_filename="Artist - Track.mp3",
+        proposed_path=None,
+        status=ProposalStatus.PENDING,
+    )
+    session.add(proposal)
+    await session.commit()
+
+    response = await client.get(f"/record/{file_id}")
+    row = BeautifulSoup(response.text, "html.parser").select_one(f"#record-row-{proposal.id}")
+
+    assert response.status_code == 200
+    assert row is not None
+    destination = row.find(string="Destination")
+    assert destination is not None
+    destination_diff = destination.parent.find_next_sibling("div")
+    assert destination_diff is not None
+    destination_values = destination_diff.select("code")
+    assert len(destination_values) == 2
+    assert destination_values[1].get_text(strip=True) == ""
+    assert "None" not in str(row)
+
+
+@pytest.mark.asyncio
 async def test_execution_history_tiebreaker_orders_tied_executed_at_by_id_desc(session: AsyncSession, client: AsyncClient) -> None:
     """Rows with an IDENTICAL ``executed_at`` come back ordered by ``ExecutionLog.id`` DESC, not heap order.
 

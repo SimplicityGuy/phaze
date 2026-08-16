@@ -116,7 +116,7 @@ async def file_record(
             "filename": p.file.original_filename,
             "original_path": p.file.current_path,
             "proposed_filename": p.proposed_filename,
-            "proposed_path": p.proposed_path,
+            "proposed_path": p.proposed_path or "",
             # phaze-exivg: the optimistic-concurrency token the record page's APPROVE button
             # round-trips back to /proposals/{id}/approve.
             "updated_at": p.updated_at,
