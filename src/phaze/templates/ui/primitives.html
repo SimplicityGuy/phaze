@@ -68,9 +68,9 @@
 </form>
 {% endmacro %}
 
-{% macro data_table(label, describedby='') %}
+{% macro data_table(label, describedby='', id='') %}
 <div class="overflow-x-auto">
-    <table aria-label="{{ label }}"{% if describedby %} aria-describedby="{{ describedby }}"{% endif %} class="w-full text-left text-sm">{{ caller() }}</table>
+    <table{% if id %} id="{{ id }}"{% endif %} aria-label="{{ label }}"{% if describedby %} aria-describedby="{{ describedby }}"{% endif %} class="w-full text-left text-sm">{{ caller() }}</table>
 </div>
 {% endmacro %}
 

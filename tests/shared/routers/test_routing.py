@@ -221,6 +221,8 @@ async def test_force_local_toggle_roundtrip(client: AsyncClient, session: AsyncS
     assert "forced to LOCAL" in engaged.text  # OOB engage toast copy
     assert 'id="routing-override-warning"' in engaged.text
     assert 'hx-swap-oob="true"' in engaged.text
+    assert 'id="routing-operations-warning" hx-swap-oob="true"' in engaged.text
+    assert "Override active: all analysis is routed locally" in engaged.text
     assert 'aria-label="Routing override active: forced local"' in engaged.text
     assert await get_route_control(session) is True
 
@@ -232,6 +234,8 @@ async def test_force_local_toggle_roundtrip(client: AsyncClient, session: AsyncS
     assert "Cloud routing restored" in reverted.text  # OOB revert toast copy
     assert 'id="routing-override-warning"' in reverted.text
     assert 'hx-swap-oob="true"' in reverted.text
+    assert 'id="routing-operations-warning" hx-swap-oob="true"' in reverted.text
+    assert "Override active: all analysis is routed locally" not in reverted.text
     assert 'aria-label="Routing override active: forced local"' not in reverted.text
     assert await get_route_control(session) is False
 
@@ -256,6 +260,8 @@ async def test_force_local_control_lives_in_operations_and_header_only_warns(cli
     assert operations.status_code == 200
     assert 'id="force-local-pill"' in operations.text
     assert 'aria-checked="true"' in operations.text
+    assert "Override active: all analysis is routed locally" in operations.text
+    assert "hx-confirm=" not in operations.text
 
     # Revert, then reload: normal routing is quiet in the header and remains controllable in Operations.
     await client.post("/pipeline/routing/force-local", data={"engage": "false"})
@@ -264,3 +270,5 @@ async def test_force_local_control_lives_in_operations_and_header_only_warns(cli
     operations2 = await client.get("/s/operations")
     assert 'aria-checked="false"' in operations2.text
     assert "CLOUD" in operations2.text
+    assert 'hx-confirm="Force all analysis routing to local?' in operations2.text
+    assert "Restoring normal routing is immediate" in operations2.text

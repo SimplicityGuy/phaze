@@ -8,6 +8,10 @@
                 <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
                     Normal routing selects configured compute lanes by rank. Force local is an incident control that bypasses cloud and Kueue backends until reverted.
                 </p>
+                <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                    Engaging the override requires confirmation. Restoring normal routing is immediate so incident recovery is never delayed.
+                </p>
+                {% include "shell/partials/_routing_operations_warning.html" %}
             </div>
             {% include "shell/partials/_force_local_pill.html" %}
         </div>

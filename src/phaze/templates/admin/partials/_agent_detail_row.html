@@ -50,8 +50,8 @@
             // discarded them, so a reload after dismissing silently reset the table to the default
             // order — the same reset the poll fix already closes, arriving by a different route; the
             // `sort` object is always resolved server-side by this render, so it is never empty here
-            // even when the operator never clicked a header), then return focus to the trigger row by
-            // STABLE id ({{ row.trigger_id }} survives every poll's outerHTML swap) and remove THIS
+            // even when the operator never clicked a header), then return focus to the Details button
+            // by STABLE id ({{ row.trigger_id }}-details survives every poll's outerHTML swap) and remove THIS
             // row from the DOM outright (phaze-fg8vq: x-show-hiding it left a dead node with this
             // same id in place, so a re-click on the same agent inside the ≤5s poll window lost to it
             // under hx-preserve's id match — htmx keeps the OLD node over a fresh incoming one
@@ -62,7 +62,7 @@
             const el = document.getElementById('agent-activity-{{ row.id }}');
             if (el) el.innerHTML = '';
             try { history.replaceState({}, '', '/s/agents?{{ sort.query_params() }}'); } catch (e) { /* history unavailable: degrade */ }
-            document.getElementById('{{ row.trigger_id }}')?.focus();
+            document.getElementById('{{ row.trigger_id }}-details')?.focus();
             this.$el.remove();
         }
     }"

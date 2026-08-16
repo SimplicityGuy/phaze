@@ -160,7 +160,7 @@ async def test_only_one_agent_expands_at_a_time(smoke: AsyncClient) -> None:
 async def test_no_selection_renders_no_expanded_row(smoke: AsyncClient) -> None:
     """With no ?agent= at all, neither agent's expanded row renders."""
     body = (await smoke.get("/admin/agents/_table")).text
-    assert "agent-detail-row-" not in body
+    assert '<tr id="agent-detail-row-' not in body
 
 
 @pytest.mark.asyncio
@@ -257,15 +257,15 @@ async def test_dismiss_removes_the_row_node_instead_of_only_hiding_it(smoke: Asy
 
 
 @pytest.mark.asyncio
-async def test_dismiss_focuses_the_trigger_before_removing_the_row(smoke: AsyncClient) -> None:
-    """Focus must move to the trigger row BEFORE the node is removed -- removing first drops focus to <body>."""
+async def test_dismiss_focuses_the_details_trigger_before_removing_the_row(smoke: AsyncClient) -> None:
+    """Focus must move to the Details button before the detail row is removed."""
     body = (await smoke.get("/admin/agents/_table", params={"agent": AGENT_ID})).text
     start = body.find(f'id="agent-detail-row-{AGENT_ID}"')
     assert start != -1
     row = body[start : body.find("</tr>", start) + len("</tr>")]
-    focus_at = row.find(f"getElementById('agent-trigger-{AGENT_ID}')?.focus()")
+    focus_at = row.find(f"getElementById('agent-trigger-{AGENT_ID}-details')?.focus()")
     remove_at = row.find("this.$el.remove()")
-    assert focus_at != -1, "hide() must still return focus to the trigger row by stable id"
+    assert focus_at != -1, "hide() must return focus to the native Details trigger"
     assert remove_at != -1
     assert focus_at < remove_at, "focus must be moved before the row removes itself"
 
@@ -292,6 +292,7 @@ async def test_compute_lane_dismiss_url_rewrite_keeps_sort_and_order(
     assert "history.replaceState({}, '', '/s/agents?sort=name&amp;order=asc')" in row
     assert "history.replaceState({}, '', '/s/agents')" not in row
     assert "this.$el.remove()" in row, "hide() must remove the row node, not only set open = false"
+    assert "getElementById('compute-lane-trigger-vox-details')?.focus()" in row
 
 
 @pytest.mark.asyncio
