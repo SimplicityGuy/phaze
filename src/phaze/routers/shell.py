@@ -38,7 +38,6 @@ from phaze.config import settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
-from phaze.models.proposal import APPROVE_REJECT_FROM
 from phaze.routers.admin_agents import build_agents_pane_context
 from phaze.routers.execution import build_audit_log_context
 from phaze.routers.pipeline import FILES_SORT
@@ -347,14 +346,6 @@ async def build_propose_list_context(request: Request, session: AsyncSession) ->
         page_size=view.page_size,
         sort=sort_state,
     )
-    # phaze-a6hm.11 selection metadata. `row_select_locked` is computed HERE, from the same
-    # APPROVE_REJECT_FROM the router enforces on the write, so the greyed-out checkbox and the
-    # server's guard cannot drift into disagreeing about which rows may transition. It is an
-    # affordance only: the server re-checks every id it is sent regardless (request_guards rule 2 --
-    # the browser's id-set is always assumed stale), which is why a row that goes terminal between
-    # this render and the submit is still correctly SKIPPED rather than rewritten.
-    select_ids = [str(row["id"]) for row in page.rows]
-    select_locked = [row["status"] not in APPROVE_REJECT_FROM for row in page.rows]
     # phaze-1aybg: the GENERATE ALL confirm must quote the population the trigger actually
     # enqueues -- POST /pipeline/proposals batches ``get_proposal_pending_batches``'s convergence
     # set (files with metadata + completed analysis and NO proposal row yet), which is DISJOINT
@@ -367,9 +358,6 @@ async def build_propose_list_context(request: Request, session: AsyncSession) ->
         "propose_view": view,
         "sort": sort_state,
         "propose_proposals": page.rows,
-        "row_select_ids": select_ids,
-        "row_select_locked": select_locked,
-        "select_name": "proposal_ids",
         "propose_pagination": page.pagination,
         "propose_stats": page.stats,
         "propose_generation_pending": generation_pending,

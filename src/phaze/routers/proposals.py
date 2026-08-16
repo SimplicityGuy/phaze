@@ -625,7 +625,7 @@ async def bulk_action(
     proposal_ids: list[str] = Form(...),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Bulk approve or reject multiple proposals, for the v7.0 propose workspace's bulk bar.
+    """Bulk approve or reject multiple proposals for compatibility callers.
 
     phaze-3st0: ``proposal_ids`` is a browser-held id-set that may be arbitrarily stale (request_
     guards.py contract rule 2, ELEMENT case) -- a malformed/empty entry is SKIPPED rather than
@@ -636,10 +636,9 @@ async def bulk_action(
     status/q/page/page_size/sort/order hidden form inputs. That surface had no live caller left
     post-v7-cutover and was deleted outright (along with ``proposal_list.html``/
     ``proposal_table.html``/``pagination.html``/``bulk_actions.html``/``bulk_response.html``), so
-    this endpoint now unconditionally serves its one remaining caller,
-    ``pipeline/partials/_propose_bulk_bar.html`` -- whose view state rides in the query string
-    (``propose_view.query()``), read via ``build_propose_list_context``'s
-    ``ListViewState.from_request``, not through these now-removed Form fields.
+    this endpoint continues to return the Propose list response shape for compatibility callers.
+    Propose itself is now preparation-only and routes decisions to Review, but retaining this
+    guarded endpoint and its query-string view-state parsing avoids changing the wire contract.
     """
     if action not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail="Action must be 'approve' or 'reject'")

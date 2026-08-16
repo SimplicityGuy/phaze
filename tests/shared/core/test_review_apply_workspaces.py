@@ -772,6 +772,11 @@ async def test_propose_workspace_generate_and_model(
     # The generation view lists the proposal + is not a per-row diff-approve surface.
     assert "messy.mp3" in body and "Renamed.mp3" in body
     assert f"/proposals/{p.id}/approve" not in body, "Propose is a generation view -- no per-row approve here"
+    assert 'href="/s/rename"' in body and 'hx-get="/s/rename"' in body, "candidate decisions route to canonical Review"
+    assert 'hx-target="#stage-workspace"' in body and 'hx-push-url="true"' in body
+    assert "Approval and rejection happen only in Review" in body
+    assert 'name="proposal_ids"' not in body, "Propose must not expose decision selection controls"
+    assert 'hx-patch="/proposals/bulk' not in body, "the shared bulk endpoint remains backend-compatible but is not a Propose affordance"
 
 
 @pytest.mark.asyncio

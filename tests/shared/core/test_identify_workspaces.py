@@ -242,6 +242,9 @@ async def test_tracklist_workspace_is_the_drain_plus_match(client: AsyncClient) 
     body = resp.text
     # The LOOKUP stage IS the drain fragment -- one status surface, not a third one.
     assert 'hx-get="/pipeline/tracklist-drain-status"' in body
+    assert body.index("1 · Lookup") < body.index("2 · Match") < body.index("Matched-set coverage")
+    assert 'aria-label="Tracklist preparation workflow"' in body
+    assert body.count("Prerequisite") == 2 and body.count("Next action") == 2 and body.count("Current state") == 2
     # MATCH survives as the one remaining bulk trigger, still R-4 guarded.
     assert 'hx-post="/pipeline/match-tracklists"' in body
     assert ':disabled="$store.pipeline.matchBusy > 0"' in body
@@ -257,6 +260,21 @@ async def test_tracklist_workspace_is_the_drain_plus_match(client: AsyncClient) 
     # D-05: NO single run-chain orchestrator button (no backend endpoint runs all three).
     assert "run-chain" not in body
     assert "RUN CHAIN" not in body
+
+
+@pytest.mark.asyncio
+async def test_tracklist_queue_diagnostics_are_defined_and_progressively_disclosed(client: AsyncClient) -> None:
+    """Preparation leads with Lookup/Match while provider queue mechanics stay available on demand."""
+    response = await client.get("/pipeline/tracklist-drain-status")
+    assert response.status_code == 200
+    body = response.text
+
+    assert "<details" in body and "Operator queue diagnostics" in body
+    for term in ("Drain:", "Parked:", "Collapse ratio:", "Crawl delay and throughput ceiling:"):
+        assert term in body
+    assert 'hx-post="/pipeline/run-tracklist-drain"' in body
+    assert 'hx-post="/pipeline/arm-tracklist-drain"' in body
+    assert "1001Tracklists" in body
 
 
 @pytest.mark.asyncio

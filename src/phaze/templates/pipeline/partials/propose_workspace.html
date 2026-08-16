@@ -26,6 +26,7 @@
    raw / never `| safe`). NO second poll (R-2); the live sub-count would ride the single chrome poll.
 #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% import "ui/primitives.html" as ui %}
 {# phaze-a6hm.9: the header count is the FILTERED TOTAL (pagination.total), not
    `propose_proposals | length`. Once the list is paginated that length is the size of the current
    PAGE, so the old expression would have reported "25 proposals ready" for any backlog of 25 or
@@ -34,7 +35,7 @@
 {% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
 {% set actions %}
     {# R-4 bulk-enqueue guard: hx-confirm + hx-disabled-elt + :disabled busy-gate (don't double-enqueue litellm jobs). #}
-    <button type="button"
+    <button type="button" id="propose-generate"
             hx-post="/pipeline/proposals" hx-target="#propose-trigger-response" hx-swap="innerHTML"
             {# The confirm quotes propose_generation_pending -- the GENERATION pending set
                (count_proposal_pending_files, sharing `_proposal_pending_clauses` with
@@ -53,8 +54,18 @@
             aria-label="Generate AI proposals for all pending files"
             class="{{ _btn }}">GENERATE ALL</button>
     <span id="propose-trigger-spinner" class="htmx-indicator text-xs text-gray-500 dark:text-gray-400">Enqueuing…</span>
+    <a href="/s/rename" hx-get="/s/rename" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="inline-flex h-9 items-center justify-center rounded-lg bg-amber-700 px-3 font-jura text-xs font-medium uppercase tracking-wider text-white hover:bg-amber-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg">Open Review</a>
 {% endset %}
 {% call ws.workspace(title="Propose", subcount=subcount, actions=actions) %}
+    <div class="px-4 pt-4 sm:px-6">
+        <div class="flex flex-col gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 sm:flex-row sm:items-center sm:justify-between dark:border-blue-900 dark:bg-blue-950/30">
+            <div>
+                <p class="font-jura text-[11px] font-medium uppercase tracking-[0.18em] text-blue-700 dark:text-blue-300">Preparation stage</p>
+                <p class="mt-1 text-sm text-gray-700 dark:text-gray-300">Generate and inspect candidate filenames and paths here. Approval and rejection happen only in Review.</p>
+            </div>
+            {{ ui.status_badge("Proposal provider", "litellm · " ~ llm_model, "accent", "●") }}
+        </div>
+    </div>
     {# Trigger response lands here (trigger_response.html branches: count>0 / none ready). #}
     <div id="propose-trigger-response" class="px-6 pt-4 empty:hidden"></div>
     {# phaze-a6hm.2: the search box the v7 cutover dropped, restored by ADOPTING the legacy
@@ -82,7 +93,7 @@
        INSIDE #propose-workspace-list (search_box.html's hx-include reads it on every request).
        Deriving it from propose_list_id, the same way search_target does, keeps the two ids
        impossible to drift apart if a second caller of search_box.html is ever added. #}
-    <div class="px-6 pt-4">
+    <div class="px-4 pt-4 sm:px-6">
         {% with view = propose_view, search_url = "/s/propose", search_target = "#" ~ propose_list_id, search_id = "propose-search", search_state_id = propose_list_id ~ "-search-state" %}
             {% include "proposals/partials/search_box.html" %}
         {% endwith %}

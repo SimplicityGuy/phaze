@@ -94,6 +94,40 @@ async def test_workspace_renders_filter_tabs_and_search(
 
 
 @pytest.mark.asyncio
+async def test_propose_success_and_empty_states_offer_direct_next_actions(
+    client: AsyncClient,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """Ready candidates lead to Review; an empty search offers a state-preserving clear action."""
+    await seed_pending_proposal(0.95, original_filename="candidate.mp3", proposed_filename="Candidate.mp3")
+
+    ready = (await client.get("/s/propose")).text
+    assert "candidate proposal ready for review" in ready
+    assert 'href="/s/rename"' in ready and 'hx-get="/s/rename"' in ready
+
+    empty_search = (await client.get("/s/propose?status=pending&q=missing", headers=_LIST_TARGET)).text
+    assert "No matches" in empty_search
+    assert "Clear search" in empty_search
+    assert 'hx-target="#propose-workspace-list"' in empty_search
+
+
+@pytest.mark.asyncio
+async def test_prepare_workspaces_keep_narrow_layout_actions_accessible(
+    client: AsyncClient,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """Responsive contracts stack workflow/actions before expanding at established breakpoints."""
+    await seed_pending_proposal(0.95, original_filename="responsive.mp3", proposed_filename="Responsive.mp3")
+    tracklist = (await client.get("/s/tracklist", headers={"HX-Request": "true"})).text
+    propose = (await client.get("/s/propose", headers={"HX-Request": "true"})).text
+
+    assert "grid gap-4 px-4 py-4 lg:grid-cols-2 sm:px-6" in tracklist
+    assert "flex flex-col items-start gap-2 sm:flex-row sm:items-center" in tracklist
+    assert "flex flex-col gap-3 rounded-lg" in propose and "sm:flex-row" in propose
+    assert 'class="overflow-x-auto"' in propose, "dense proposal rows retain horizontal access instead of clipping"
+
+
+@pytest.mark.asyncio
 async def test_status_filter_selects_the_matching_proposals(
     client: AsyncClient,
     session: AsyncSession,
