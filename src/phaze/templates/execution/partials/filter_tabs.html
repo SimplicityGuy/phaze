@@ -1,5 +1,5 @@
-<div class="border-b border-gray-200 dark:border-phaze-border mb-6">
-    <nav class="flex gap-4 -mb-px" aria-label="Audit log filters">
+<div class="mb-6 border-b border-gray-200 px-4 pt-3 sm:px-6 dark:border-phaze-border">
+    <nav class="-mb-px flex gap-4 overflow-x-auto" aria-label="Audit log status filter">
         {% set tabs = [
             ("all", "All", stats.total),
             ("completed", "Completed", stats.completed),
@@ -11,10 +11,11 @@
            click must not silently drop the operator's chosen sort. sort.query_state() re-emits
            `&sort=<key>&order=<order>` (empty when unsorted), so switching tabs stays inside the
            active order instead of snapping back to the default mid-scan. #}
-        <button
+        <button type="button"
             hx-get="/audit/?status={{ value }}{{ sort.query_state() if sort else '' }}"
             hx-target="#audit-content"
             hx-push-url="true"
+            aria-pressed="{{ 'true' if current_status == value else 'false' }}"
             class="px-3 py-2 text-sm font-semibold border-b-2 transition-colors
                 {% if current_status == value %}
                     text-blue-600 dark:text-blue-400 border-blue-600

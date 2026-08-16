@@ -256,6 +256,8 @@ async def test_force_local_control_lives_in_operations_and_header_only_warns(cli
     assert operations.status_code == 200
     assert 'id="force-local-pill"' in operations.text
     assert 'aria-checked="true"' in operations.text
+    assert "Override active: all analysis is routed locally" in operations.text
+    assert "hx-confirm=" not in operations.text
 
     # Revert, then reload: normal routing is quiet in the header and remains controllable in Operations.
     await client.post("/pipeline/routing/force-local", data={"engage": "false"})
@@ -264,3 +266,5 @@ async def test_force_local_control_lives_in_operations_and_header_only_warns(cli
     operations2 = await client.get("/s/operations")
     assert 'aria-checked="false"' in operations2.text
     assert "CLOUD" in operations2.text
+    assert 'hx-confirm="Force all analysis routing to local?' in operations2.text
+    assert "Restoring normal routing is immediate" in operations2.text

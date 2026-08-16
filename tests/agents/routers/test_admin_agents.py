@@ -187,6 +187,8 @@ async def test_shell_pane_renders_full_shell_with_agents_table(smoke: AsyncClien
     assert _poll_url(body).startswith("/admin/agents/_table")
     assert 'hx-trigger="every 5s"' in body
     assert 'hx-swap="outerHTML"' in body
+    assert "5 agents" in body
+    assert "0 compute lanes" in body
 
 
 @pytest.mark.asyncio
@@ -216,6 +218,13 @@ async def test_dedicated_table_route_returns_partial(smoke: AsyncClient) -> None
     # query string rather than standing alone. Asserted as a prefix -- the invariant is that the poll
     # re-requests THIS endpoint, not that it does so without parameters.
     assert _poll_url(body).startswith("/admin/agents/_table")
+    assert "5 agents" in body
+    assert "0 lanes" in body
+    assert 'aria-live="polite"' in body
+    assert body.count('aria-live="polite"') == 1
+    assert '<section id="agents-table-section"' in body
+    section_tag = body[body.index('<section id="agents-table-section"') : body.index(">", body.index('<section id="agents-table-section"'))]
+    assert "aria-live" not in section_tag
 
 
 @pytest.mark.asyncio
@@ -987,7 +996,7 @@ def _row_order(body: str) -> list[str]:
     Reads the rendered row anchors rather than any header state, so these tests observe the order
     the operator actually SEES rather than the order the handler claims to have asked for.
     """
-    return re.findall(r'id="agent-trigger-([^"]+)"', body)
+    return re.findall(r'<tr id="agent-trigger-([^"]+)"', body)
 
 
 def _poll_url(body: str) -> str:
@@ -1373,6 +1382,7 @@ async def test_drill_in_push_url_keeps_the_sort(smoke: AsyncClient) -> None:
     """
     body = (await smoke.get("/admin/agents/_table", params={"sort": "kind", "order": "desc"})).text
     assert 'hx-push-url="/s/agents?agent=alive-agent&amp;sort=kind&amp;order=desc"' in body
+    assert 'hx-push-url="/admin/agents' not in body
 
 
 @pytest.mark.asyncio
@@ -1466,7 +1476,7 @@ async def test_sort_click_preserves_the_open_detail_pane(smoke: AsyncClient) -> 
     # ...and is NOT frozen into the armed poll URL, where it would go stale.
     assert "agent" not in _poll_vals(body), "a stale ?agent= was baked into the poll and will erase the selection"
     # The selection genuinely survived this render.
-    assert 'aria-current="true"' in body
+    assert 'aria-expanded="true"' in body
 
 
 # ---------------------------------------------------------------------------
@@ -1535,12 +1545,12 @@ async def test_lane_status_pill_carries_word_and_aria_label_not_hue_only(
 
 
 @pytest.mark.asyncio
-async def test_lane_row_is_a_drill_in_trigger_matching_the_agent_row_pattern(
+async def test_lane_row_has_a_details_control_matching_the_agent_row_pattern(
     session: AsyncSession,
     make_file,  # type: ignore[no-untyped-def]
     backends_toml_env,  # type: ignore[no-untyped-def]
 ) -> None:
-    """Each real lane row carries the SAME keyboard-accessible drill-in wiring shape an agent row does.
+    """Each real lane row carries the same native Details-button wiring as an agent row.
 
     phaze-rdxfu: a lane row's click re-fetches the WHOLE merged table (hx-target=#agents-table-section)
     naming its OWN selection via hx-vals, exactly like an agent row -- no more direct
@@ -1556,7 +1566,8 @@ async def test_lane_row_is_a_drill_in_trigger_matching_the_agent_row_pattern(
     body = response.text
 
     assert 'id="compute-lane-trigger-vox"' in body
-    assert 'role="button"' in body
+    assert 'id="compute-lane-trigger-vox-details"' in body
+    assert 'role="button"' not in body
     assert """hx-vals='{"clane": "vox"}'""" in body
     assert 'hx-target="#agents-table-section"' in body
     assert 'hx-push-url="/s/agents?clane=vox' in body
@@ -1629,7 +1640,7 @@ async def test_selected_compute_lane_opens_its_expanded_row(
     assert response.status_code == 200, response.text
     body = response.text
     assert 'id="compute-lane-trigger-vox"' in body
-    assert 'aria-current="true"' in body
+    assert 'aria-expanded="true"' in body
     assert 'id="compute-lane-detail-row-vox"' in body
     # The expanded row's body slot self-fetches on insertion, exactly like an agent's.
     assert 'hx-get="/admin/agents/compute-lanes/vox"' in body
@@ -1688,8 +1699,8 @@ async def test_resolved_agent_selection_renders_real_detail_row_without_carrier(
 async def test_empty_selection_params_emit_no_carrier(smoke: AsyncClient) -> None:
     """The idle poll's `agent=&clane=` (hx-vals null-coercion to "") must not emit phantom carriers."""
     body = (await smoke.get("/admin/agents/_table", params={"agent": "", "clane": ""})).text
-    assert "agent-detail-row-" not in body
-    assert "compute-lane-detail-row-" not in body
+    assert '<tr id="agent-detail-row-' not in body
+    assert '<tr id="compute-lane-detail-row-' not in body
 
 
 @pytest.mark.asyncio

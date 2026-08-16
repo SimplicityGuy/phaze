@@ -27,6 +27,7 @@
         hx-vals='{"engage": {{ 'false' if force_local else 'true' }}}'
         hx-target="this"
         hx-swap="outerHTML"
+        {% if not force_local %}hx-confirm="Force all analysis routing to local? Cloud and Kueue backends will be bypassed until an operator restores normal routing."{% endif %}
         class="font-jura tracking-wider px-3 h-8 flex items-center gap-1.5 rounded-lg border focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 {% if force_local %}bg-amber-500/15 border-amber-500/40 text-amber-700 dark:text-amber-300{% else %}bg-white dark:bg-phaze-panel border-gray-200 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5{% endif %}">
     {% if force_local %}
     {# Warning triangle glyph — the loud incident affordance (decorative; the word label carries state). #}

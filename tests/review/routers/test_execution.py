@@ -413,6 +413,19 @@ async def test_audit_log_stats_in_filter_tabs(client: AsyncClient, session: Asyn
     assert "All (3)" in response.text
     assert "Completed (2)" in response.text
     assert "Failed (1)" in response.text
+    assert 'aria-pressed="true"' in response.text
+
+
+@pytest.mark.asyncio
+async def test_audit_workspace_explains_its_mutation_boundary_and_uses_shared_table_semantics(client: AsyncClient, session: AsyncSession) -> None:
+    """The shell-hosted audit identifies what it records and links that scope to its data table."""
+    await create_test_execution_log(session, status=ExecutionStatus.COMPLETED, source_path="/scope.mp3")
+    response = await client.get("/s/audit")
+    assert response.status_code == 200
+    assert "Records approved file rename and move execution" in response.text
+    assert "Tag writes and tag-write undo actions use their separate tag audit history" in response.text
+    assert 'aria-label="File rename and move audit history"' in response.text
+    assert 'aria-describedby="audit-scope-description"' in response.text
 
 
 @pytest.mark.asyncio

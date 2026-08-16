@@ -256,7 +256,7 @@ class TableRow:
 
     @property
     def trigger_id(self) -> str:
-        """The DOM id of this row's ``<tr>`` trigger — unchanged for an agent row (phaze-2u8v.6 ids)."""
+        """The stable DOM id of this row's ``<tr>`` — unchanged for an agent row (phaze-2u8v.6 ids)."""
         prefix = "agent-trigger-" if self.status_kind == "agent" else "compute-lane-trigger-"
         return f"{prefix}{self.id}"
 
@@ -518,6 +518,8 @@ async def build_agents_pane_context(request: Request, session: AsyncSession) -> 
     rows = _build_table_rows(agents, compute_lanes, sort_state, selected_agent=selected_agent, selected_compute_lane=selected_compute_lane)
     return {
         "rows": rows,
+        "agent_count": len(agents),
+        "compute_lane_count": len(compute_lanes),
         "now": now,
         "refreshed_at_iso": now.isoformat(),
         "sort": sort_state,
@@ -608,6 +610,8 @@ async def table_partial(
         context={
             "request": request,
             "rows": rows,
+            "agent_count": len(agents),
+            "compute_lane_count": len(compute_lanes),
             "now": now,
             "refreshed_at_iso": now.isoformat(),
             "sort": sort_state,
