@@ -1534,32 +1534,31 @@ async def _cloud_lane_active(session: AsyncSession, backend_id: str, kind: str) 
     )
 
 
-async def get_analysis_working_count(session: AsyncSession, app_state: Any) -> int | None:
-    """Return the current local + configured-cloud ``working`` total without building lane cards.
+async def get_analysis_live_count(session: AsyncSession, app_state: Any) -> int | None:
+    """Return analyses executing now across local and configured cloud backends.
 
-    This reuses the exact local SAQ ``active`` and cloud-window ``analyzing`` definitions used by
-    :func:`get_backend_lane_snapshot`, but avoids availability probes, capacity reads, and the serial
-    per-lane processed-history queries that a Summary numeral does not consume. If either source is
-    unreadable, the aggregate is unknown rather than a partial total presented as zero.
+    Local execution is SAQ ``active``. Cloud execution is ``cloud_job.status == RUNNING``; SUBMITTED
+    work is deliberately excluded because it can still be waiting for Kueue quota or admission. This
+    avoids availability probes, capacity reads, and serial per-lane history queries. If either source
+    is unreadable, the aggregate is unknown rather than a partial total presented as zero.
     """
-    _, local_working = await _local_lane_queued_working(session, app_state)
+    _, local_active = await _local_lane_queued_working(session, app_state)
     try:
-        _, cloud_working_clause = _cloud_window_clauses()
         cloud_ids = [backend.id for backend in resolve_backends(cast("ControlSettings", get_settings())) if _kind_of(backend) != "local"]
     except Exception:
-        logger.warning("analysis_working_count_degraded", exc_info=True)
+        logger.warning("analysis_live_count_degraded", exc_info=True)
         return None
     if cloud_ids:
-        cloud_working = await _safe_count_or_none(
+        cloud_active = await _safe_count_or_none(
             session,
-            select(func.count(CloudJob.id)).where(cloud_working_clause, CloudJob.backend_id.in_(cloud_ids)),
-            node="analysis_working_total",
+            select(func.count(CloudJob.id)).where(CloudJob.status == CloudJobStatus.RUNNING.value, CloudJob.backend_id.in_(cloud_ids)),
+            node="analysis_live_total",
         )
     else:
-        cloud_working = 0
-    if local_working is None or cloud_working is None:
+        cloud_active = 0
+    if local_active is None or cloud_active is None:
         return None
-    return local_working + cloud_working
+    return local_active + cloud_active
 
 
 def _cloud_job_succeeded_for_backend(backend_id: str) -> ColumnElement[bool]:

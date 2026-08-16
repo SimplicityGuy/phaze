@@ -25,9 +25,10 @@ content bridges) land with their workspaces in Phases 58-61.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -48,10 +49,12 @@ from phaze.routers.pipeline_scans import RECENT_SCANS_SORT, build_recent_scans
 from phaze.routers.proposal_sort import PROPOSE_SORT
 from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_fragment
 from phaze.routers.view_state import PAGE_SIZE_CHOICES, ListViewState
-from phaze.services.backends import derive_cloud_hold_reason, get_analysis_working_count
+from phaze.services.backends import derive_cloud_hold_reason, get_analysis_live_count
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, clamp_page, clamp_page_size
 from phaze.services.pipeline import (
     ORPHANED_BUCKET,
+    _read_in_own_session,
+    _stats_fanout,
     analyze_lanes_content_hash,
     count_proposal_pending_files,
     get_analysis_stalled_count,
@@ -68,7 +71,7 @@ from phaze.services.pipeline import (
     get_stage_controls,
     get_stage_progress,
 )
-from phaze.services.proposal_queries import get_proposal_stats
+from phaze.services.proposal_queries import ProposalStats, get_proposal_stats
 from phaze.services.review import (
     get_cue_review_cards,
     get_dedupe_groups,
@@ -341,7 +344,7 @@ def _derive_summary_overview(
     queued_behind_quota_count: int,
     stage_paused: dict[str, bool],
     enriched_count: int | None,
-    analysis_working: int | None,
+    analysis_live: int | None,
     analyses_today: int | None,
     analyses_lifetime: int | None,
 ) -> dict[str, Any]:
@@ -455,6 +458,18 @@ def _derive_summary_overview(
             "/s/agents",
             "Inspect Compute",
         )
+    for priority, stage_name, stage_label, stage_bucket in (
+        (45, "metadata", "Metadata enrichment", metadata),
+        (46, "analyze", "Audio analysis", analyze),
+    ):
+        if stage_paused[stage_name] and (int(stage_bucket.get("not_started") or 0) or int(stage_bucket.get("in_flight") or 0)):
+            add_attention(
+                priority,
+                f"{stage_label} is paused",
+                f"{int(stage_bucket.get('not_started') or 0)} not started; {int(stage_bucket.get('in_flight') or 0)} still marked in flight.",
+                f"/s/{stage_name}",
+                f"Open {stage_label}",
+            )
     if active_fileservers == 0:
         add_attention(
             50,
@@ -559,7 +574,7 @@ def _derive_summary_overview(
         "attention": attention,
         "recommended": recommended,
         "recent": {
-            "live": analysis_working,
+            "live": analysis_live,
             "today": analyses_today,
             "lifetime": analyses_lifetime,
         },
@@ -599,17 +614,50 @@ async def _get_summary_aggregates(session: AsyncSession, *, now: datetime | None
 
 
 async def _build_summary_context(app_state: Any, session: AsyncSession) -> dict[str, Any]:
-    """Read existing authoritative state and derive the Summary presentation model."""
-    stage_progress = await get_stage_progress(session)
-    proposal_stats = await get_proposal_stats(session)
-    stalled_analyses = await get_analysis_stalled_count(session)
-    inadmissible_count = await get_inadmissible_count(session)
-    awaiting_cloud_count = await get_awaiting_cloud_count(session)
-    cloud_phases = await get_cloud_phase_counts(session)
-    stage_controls = await get_stage_controls(session)
-    aggregates = await _get_summary_aggregates(session)
-    analysis_working = await get_analysis_working_count(session, app_state)
-    awaiting_hold_reason = await derive_cloud_hold_reason(session) if awaiting_cloud_count else None
+    """Read independent Summary sources in own sessions under the shared stats fan-out cap."""
+    fanout = _stats_fanout()
+    (
+        stage_progress,
+        proposal_stats,
+        stalled_analyses,
+        inadmissible_count,
+        awaiting_cloud_count,
+        cloud_phases,
+        stage_controls,
+        aggregates,
+        analysis_live,
+    ) = cast(
+        "tuple[dict[str, dict[str, int | None]], ProposalStats, int, int, int, dict[str, int], dict[str, dict[str, int | bool]], dict[str, int | None], int | None]",
+        await asyncio.gather(
+            # get_stage_progress already owns its bounded per-node sessions; wrapping it would hold
+            # a semaphore slot while its children wait for that same semaphore.
+            get_stage_progress(session),
+            _read_in_own_session(fanout, get_proposal_stats, ProposalStats(total=0, pending=0, approved=0, rejected=0, avg_confidence=None)),
+            _read_in_own_session(fanout, get_analysis_stalled_count, 0),
+            _read_in_own_session(fanout, get_inadmissible_count, 0),
+            _read_in_own_session(fanout, get_awaiting_cloud_count, 0),
+            _read_in_own_session(
+                fanout,
+                get_cloud_phase_counts,
+                {"queued_behind_quota": 0, "admitted": 0, "running": 0, "finished": 0},
+            ),
+            _read_in_own_session(
+                fanout,
+                get_stage_controls,
+                {"metadata": {"paused": False, "priority": 50}, "analyze": {"paused": False, "priority": 50}},
+            ),
+            _read_in_own_session(
+                fanout,
+                _get_summary_aggregates,
+                cast(
+                    "dict[str, int | None]",
+                    {"enriched": None, "analyses_today": None, "analyses_lifetime": None, "active_fileservers": None},
+                ),
+            ),
+            _read_in_own_session(fanout, lambda own_session: get_analysis_live_count(own_session, app_state), None),
+        ),
+    )
+    awaiting_hold_reason = await _read_in_own_session(fanout, derive_cloud_hold_reason, "held") if awaiting_cloud_count else None
     return {
         "summary": _derive_summary_overview(
             stage_progress,
@@ -624,7 +672,7 @@ async def _build_summary_context(app_state: Any, session: AsyncSession) -> dict[
             queued_behind_quota_count=cloud_phases["queued_behind_quota"],
             stage_paused={stage: bool(stage_controls[stage]["paused"]) for stage in ("metadata", "analyze")},
             enriched_count=aggregates["enriched"],
-            analysis_working=analysis_working,
+            analysis_live=analysis_live,
             analyses_today=aggregates["analyses_today"],
             analyses_lifetime=aggregates["analyses_lifetime"],
         )
