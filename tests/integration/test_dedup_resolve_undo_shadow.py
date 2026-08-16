@@ -32,8 +32,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from phaze.models.agent import Agent
 from phaze.models.base import Base
 from phaze.models.dedup_resolution import DedupResolution
+from phaze.models.dedup_review_plan import DedupReviewPlan
 from phaze.models.file import FileRecord
 from phaze.services.dedup import resolve_group, undo_resolve
+from phaze.services.dedup_review import InvalidDedupReviewPlanError, commit_review_plans
 from tests.db_guard import integration_dsns, require_test_database
 
 
@@ -488,6 +490,65 @@ async def test_concurrent_resolve_with_disjoint_canonicals_leaves_exactly_one_ke
                 await cleanup_session.execute(delete(DedupResolution).where(DedupResolution.file_id.in_([file_x.id, file_y.id])))
                 await cleanup_session.execute(delete(FileRecord).where(FileRecord.id.in_([file_x.id, file_y.id])))
                 await cleanup_session.commit()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_commit_of_one_review_plan_succeeds_once() -> None:
+    """The plan-row lock serializes concurrent confirmation; replay cannot create a second audit/write."""
+    engine = create_async_engine(SA_DSN)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    plan_id = uuid.uuid4()
+    file_ids: list[uuid.UUID] = []
+    try:
+        async with session_factory() as seed:
+            if await seed.get(Agent, _LEGACY_AGENT_ID) is None:
+                seed.add(Agent(id=_LEGACY_AGENT_ID, name="legacy"))
+                await seed.flush()
+            keeper = await _file(seed)
+            duplicate = await _file(seed)
+            file_ids = [keeper.id, duplicate.id]
+            seed.add(
+                DedupReviewPlan(
+                    id=plan_id,
+                    group_hash=HASH_A,
+                    canonical_file_id=keeper.id,
+                    member_ids=sorted([str(keeper.id), str(duplicate.id)]),
+                )
+            )
+            await seed.commit()
+
+        outcomes: list[str] = []
+
+        async def commit_first() -> None:
+            async with session_factory() as current:
+                await commit_review_plans(current, [plan_id])
+                await asyncio.sleep(0.2)
+                await current.commit()
+                outcomes.append("committed")
+
+        async def commit_second() -> None:
+            await asyncio.sleep(0.05)
+            async with session_factory() as current:
+                with pytest.raises(InvalidDedupReviewPlanError):
+                    await commit_review_plans(current, [plan_id])
+                await current.rollback()
+                outcomes.append("rejected")
+
+        await asyncio.gather(commit_first(), commit_second())
+        assert sorted(outcomes) == ["committed", "rejected"]
+        async with session_factory() as verify_session:
+            plan = await verify_session.get(DedupReviewPlan, plan_id)
+            assert plan is not None and plan.committed_at is not None
+            assert len((await verify_session.execute(select(DedupResolution))).scalars().all()) == 1
+    finally:
+        async with session_factory() as cleanup:
+            await cleanup.execute(delete(DedupResolution).where(DedupResolution.file_id.in_(file_ids)))
+            await cleanup.execute(delete(DedupReviewPlan).where(DedupReviewPlan.id == plan_id))
+            await cleanup.execute(delete(FileRecord).where(FileRecord.id.in_(file_ids)))
+            await cleanup.commit()
         await engine.dispose()
 
 

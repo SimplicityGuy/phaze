@@ -1,35 +1,23 @@
-{# Phase 60 (60-04, REVIEW-04/D-08): the Cue preview workspace.
-
-   Content-only fragment swapped into #stage-workspace -- composes the shared scaffold
-   (_workspace_scaffold.html): one <h1 tabindex="-1"> focus target + a live sub-count + a two-column
-   grid of preview cards. Body = the eligible + gated cue cards (shell._render_stage -> cue_cards, via
-   services/review.get_cue_review_cards). Each card renders through _cue_preview.html: an eligible card
-   shows the IN-MEMORY `.cue` preview + APPROVE (POST /cue/{id}/generate -- generate IS approve/write,
-   NO /approve route); a gated card is opacity-60 with "awaiting tracklist match…" and no approve control.
-
-   NO bulk header (REVIEW-04 requires none -- the prototype's EXPORT APPROVED maps to no existing
-   endpoint, omitted). NO second poll (R-2 -- the live sub-count would ride the single chrome poll's OOB
-   seeds); NO | safe (the DB+filesystem-derived cue text autoescapes through the <pre>, T-60-XSS). The
-   `.cue` preview is a read-time reuse of the generation helpers -- the render NEVER writes disk (T-60-CUE). #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
-{% set subcount = "'" ~ (cue_cards | selectattr('eligible') | list | length) ~ " generated from matched tracklists'" %}
-{% call ws.workspace(title="Review & Apply · Cue sheets", subcount=subcount) %}
-    {# NO #toast-container here (phaze-gzrd): shell.html already declares the ONE container, and this
-       fragment mounts inside that same document. A second element with the same id makes htmx --
-       which resolves hx-swap-oob selectors via querySelectorAll, not getElementById -- append an
-       independent clone into EACH match, so the generate response's OOB toast (cue_row.html) renders
-       twice with separate Alpine state and timers. Same hazard the scaffold calls out at
-       _workspace_scaffold.html ("don't create duplicate ids that would steal the live OOB swap"). #}
+{% import "ui/primitives.html" as ui %}
+{% set eligible_count = cue_cards | selectattr('eligible') | list | length %}
+{% set subcount = "'" ~ eligible_count ~ " artifacts ready to generate'" %}
+{% call ws.workspace(title="Artifacts · Cue sheets", subcount=subcount) %}
+    <div class="border-b border-gray-200 px-4 py-4 sm:px-6 dark:border-phaze-border">
+        <p class="max-w-3xl text-sm text-gray-600 dark:text-gray-300">Cue sheets are generated outputs written beside their source audio. Preview the exact content here, then explicitly queue generation.</p>
+        <div class="mt-3 flex flex-wrap gap-2" aria-label="Cue sheet prerequisites">
+            {{ ui.status_badge("Prerequisite", "file applied", "success", "✓") }}
+            {{ ui.status_badge("Prerequisite", "tracklist approved", "success", "✓") }}
+            {{ ui.status_badge("Prerequisite", "timestamps required", "attention", "!") }}
+        </div>
+    </div>
     {% if cue_cards %}
-    <div class="grid grid-cols-2 gap-4 p-6">
-        {% for card in cue_cards %}
-            {% include "pipeline/partials/_cue_preview.html" %}
-        {% endfor %}
+    <div class="grid grid-cols-1 gap-4 p-4 xl:grid-cols-2 sm:p-6">
+        {% for card in cue_cards %}{% include "pipeline/partials/_cue_preview.html" %}{% endfor %}
     </div>
     {% else %}
-    <div class="px-6 py-12 text-center">
-        <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">No cue sheets yet</p>
-        <p class="text-sm text-gray-500 dark:text-gray-400">Cue sheets generate once a set has a matched, approved tracklist with timestamped tracks.</p>
-    </div>
+        {% call ui.state("empty", "No cue artifacts yet", "Apply a file, approve its tracklist, and provide per-track timestamps before a cue sheet can be previewed.") %}
+            <a href="/s/tracklist" class="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border dark:text-gray-300">Open Tracklists</a>
+        {% endcall %}
     {% endif %}
 {% endcall %}
