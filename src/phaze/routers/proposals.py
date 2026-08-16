@@ -203,7 +203,12 @@ def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, 
         before = file_record.current_path
         after = proposal.proposed_path or ""
         edit_facet = "path"
-        extra_context: dict[str, object] = {"diff_label": "Destination"}
+        extra_context: dict[str, object] = {
+            "diff_label": "Destination",
+            "secondary_label": "Filename",
+            "secondary_before": file_record.original_filename,
+            "secondary_after": proposal.proposed_filename,
+        }
     else:
         before = file_record.original_filename
         after = proposal.proposed_filename

@@ -249,6 +249,9 @@ async def test_tracklist_workspace_is_the_drain_plus_match(client: AsyncClient) 
     assert "embedded tags, a .cue companion, or a pending/approved lookup" in body
     assert "lookup queries derived from the repaired filename" in body
     assert "artist and event metadata" not in body
+    assert "Any stored tracklist with no Discogs link is queued" in body
+    assert "tracks on its latest version that have both artist and title" in body
+    assert "skipped or unmatched tracks leave the tracklist pending" in body
     # MATCH survives as the one remaining bulk trigger, still R-4 guarded.
     assert 'hx-post="/pipeline/match-tracklists"' in body
     assert ':disabled="$store.pipeline.matchBusy > 0"' in body

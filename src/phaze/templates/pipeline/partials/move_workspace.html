@@ -2,14 +2,15 @@
 
    Content-only fragment swapped into #stage-workspace -- the SIBLING of rename_workspace.html over the
    SAME RenameProposal source (D-06 LOCKED: two separate rail-node workspaces, NOT a name/path toggle).
-   The only differences are the facet (proposed_path: before=current path, after=proposed path,
-   edit_facet="path") and the copy. Composes the shared scaffold + the ONE shared _diff_row.html
-   partial, driven by shell._render_stage -> move_proposals (services/review.get_pending_proposal_rows).
+   Its editable facet is proposed_path (before=current path, after=proposed path, edit_facet="path"),
+   but approval transitions the WHOLE proposal. Every row therefore also exposes the filename
+   dimension before approval. Composes the shared scaffold + the ONE shared _diff_row.html partial,
+   driven by shell._render_stage -> move_proposals (services/review.get_pending_proposal_rows).
 
-   Bulk header (REVIEW-02 / D-02): APPROVE ALL >=90% CONFIDENCE rides the SAME id-less/threshold-less
-   PATCH /proposals/bulk-approve-high-confidence (Move rides RenameProposal.confidence too). R-4 guard:
-   hx-confirm + hx-disabled-elt + controllerBusy :disabled busy-gate. NO second poll (R-2); rows inert
-   (R-1); every path value autoescapes through _diff_row.html (T-60-XSS -- never raw).
+   The former corpus-wide high-confidence action is absent for the same reason it is absent from
+   Rename/Path: it could authorize values outside the rendered 200-row window. The compatibility
+   endpoint remains live. NO second poll (R-2); rows are inert (R-1); values autoescape through
+   _diff_row.html (T-60-XSS -- never raw).
 #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {# phaze-rw14: the header quotes the REAL corpus-wide pending total (move_pending_total), not
@@ -17,23 +18,7 @@
    reported "200 awaiting approval" for any backlog at or past that size, with no pager and no
    "showing first 200" caption to say so. #}
 {% set subcount = "'" ~ move_pending_total ~ " awaiting approval · physical file moves on the file server'" %}
-{% set _bulk_btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-amber-500/40 text-amber-700 dark:text-amber-200 hover:bg-amber-500/10 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
-{% set actions %}
-    <button type="button"
-            hx-patch="/proposals/bulk-approve-high-confidence" hx-target="#move-trigger-response" hx-swap="innerHTML"
-            {# phaze-rw14: quotes move_high_confidence_pending -- the real >=90%-confidence PENDING
-               count the server is about to approve -- not the rendered row count. The old text was
-               wrong on two axes: it was the 200-row render cap, and rows render confidence-ASC, so
-               the visible page can hold zero >=90% rows while the server approves thousands. #}
-            hx-confirm="Approve all pending proposals at ≥90% confidence? The server re-checks confidence at submit — {{ move_high_confidence_pending }} match now. Every apply is audited and reversible."
-            hx-disabled-elt="this"
-            :disabled="$store.pipeline.controllerBusy > 0"
-            aria-label="Approve all pending proposals at or above 90 percent confidence"
-            class="{{ _bulk_btn }}">APPROVE ALL ≥90% CONFIDENCE</button>
-{% endset %}
-{% call ws.workspace(title="Review & Apply · Move files", subcount=subcount, actions=actions) %}
-    {# Bulk-approve response (approve_response.html toast) lands here; empty:hidden until it fires. #}
-    <div id="move-trigger-response" class="px-6 pt-4 empty:hidden"></div>
+{% call ws.workspace(title="Review & Apply · Move files", subcount=subcount) %}
     {% if move_proposals %}
     {# phaze-rw14: name the truncation instead of silently rendering only the first page. Rows ARE
        ordered confidence-ASC (get_proposals_page's default) -- lowest-confidence first, draining
@@ -52,6 +37,9 @@
                     diff_label="Destination",
                     before=p.original_path,
                     after=(p.proposed_path or ""),
+                    secondary_label="Filename",
+                    secondary_before=p.filename,
+                    secondary_after=p.proposed_filename,
                     approve_url="/proposals/" ~ p.id ~ "/approve",
                     skip_url="/proposals/" ~ p.id ~ "/reject",
                     undo_url="/proposals/" ~ p.id ~ "/undo",

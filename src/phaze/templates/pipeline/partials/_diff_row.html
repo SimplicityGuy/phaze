@@ -109,12 +109,12 @@
         {% endif %}
     </div>
     {% if diff_label is defined and diff_label %}<p class="mt-2 font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">{{ diff_label }}</p>{% endif %}
-    <div class="{% if not diff_label %}mt-2 {% endif %}grid grid-cols-[1fr_auto_1fr] gap-3 items-center text-xs">
+    <div class="{% if not diff_label %}mt-2 {% endif %}grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] gap-3 items-center text-xs">
         {# BEFORE -- current value, struck rose (removed/old = rose status tint + line-through, WCAG 1.4.1). #}
-        <code class="block truncate rounded px-2 py-1 font-mono bg-rose-50 text-rose-600 line-through dark:bg-rose-500/10 dark:text-rose-300">{{ before }}</code>
+        <code class="block whitespace-pre-wrap break-all rounded px-2 py-1 font-mono bg-rose-50 text-rose-600 line-through dark:bg-rose-500/10 dark:text-rose-300">{{ before }}</code>
         <span class="text-gray-400 dark:text-gray-600">&rarr;</span>
         {# AFTER -- proposed value (emerald); swapped for the inline edit input while editing. #}
-        <template x-if="!editing"><code class="block truncate rounded px-2 py-1 font-mono bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-300">{{ after }}</code></template>
+        <template x-if="!editing"><code class="block whitespace-pre-wrap break-all rounded px-2 py-1 font-mono bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-300">{{ after }}</code></template>
         {% if show_edit|default(true) %}
         <template x-if="editing">
             <input x-ref="edit" x-model="val" name="proposed"
@@ -125,10 +125,10 @@
     {% if secondary_label is defined and secondary_label %}
     <div class="mt-2 border-t border-gray-200 pt-2 dark:border-phaze-border">
         <p class="font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">{{ secondary_label }}</p>
-        <div class="grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-xs">
-            <code class="block truncate rounded bg-rose-50 px-2 py-1 font-mono text-rose-600 line-through dark:bg-rose-500/10 dark:text-rose-300">{{ secondary_before }}</code>
+        <div class="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 text-xs">
+            <code class="block whitespace-pre-wrap break-all rounded bg-rose-50 px-2 py-1 font-mono text-rose-600 line-through dark:bg-rose-500/10 dark:text-rose-300">{{ secondary_before }}</code>
             <span class="text-gray-400 dark:text-gray-600">&rarr;</span>
-            <code class="block truncate rounded bg-emerald-50 px-2 py-1 font-mono text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-300">{{ secondary_after }}</code>
+            <code class="block whitespace-pre-wrap break-all rounded bg-emerald-50 px-2 py-1 font-mono text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-300">{{ secondary_after }}</code>
         </div>
     </div>
     {% endif %}

@@ -145,25 +145,23 @@ async def test_bulk_approve_high_confidence_server_predicate(
     assert p_mid.status == ProposalStatus.PENDING.value, "the client id-list must not approve the 0.50 row"
     assert p_null.status == ProposalStatus.PENDING.value, "NULL confidence is excluded by the SQL predicate"
 
-    # The compatibility endpoint remains live, but canonical Review cannot expose a corpus-wide
-    # action that authorizes proposed paths outside its rendered window. Move retains the historical
-    # caller until the consolidated Review bead replaces that sibling surface.
+    # The compatibility endpoint remains live, but neither Review dimension can expose a corpus-wide
+    # action that authorizes values outside its rendered window.
     rename = await client.get("/s/rename", headers={"HX-Request": "true"})
     move = await client.get("/s/move", headers={"HX-Request": "true"})
     assert 'hx-patch="/proposals/bulk-approve-high-confidence"' not in rename.text
-    assert 'hx-patch="/proposals/bulk-approve-high-confidence"' in move.text
-    assert "proposal_ids" not in move.text, "the compatibility bulk button carries no client-built id-list"
+    assert 'hx-patch="/proposals/bulk-approve-high-confidence"' not in move.text
 
 
 @pytest.mark.asyncio
-async def test_rename_move_headers_and_confirm_quote_real_counts_not_render_length(
+async def test_rename_move_headers_report_real_counts_without_unseen_bulk_actions(
     client: AsyncClient,
     seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
 ) -> None:
-    """phaze-rw14: the Rename/Move header sub-count and bulk-approve confirm text quote the REAL
-    corpus-wide pending total / >=90%-confidence match count -- not ``rename_proposals | length``
-    (the 200-row render cap) -- so a rendered page of low-confidence rows can't understate either
-    number to the operator.
+    """Rename/Move report the real pending total without offering actions beyond rendered rows.
+
+    The sub-count remains corpus-wide rather than ``rename_proposals | length`` (the 200-row render
+    cap), while the removed trigger hosts ensure neither surface can approve the hidden remainder.
     """
     await seed_pending_proposal(0.95, original_filename="high1.mp3")
     await seed_pending_proposal(0.95, original_filename="high2.mp3")
@@ -176,9 +174,8 @@ async def test_rename_move_headers_and_confirm_quote_real_counts_not_render_leng
     assert "5 awaiting approval" in rename.text
     assert "5 awaiting approval" in move.text
     assert "rename-trigger-response" not in rename.text
-    assert 'hx-target="#move-trigger-response"' in move.text
-    assert "2 match now" in move.text
-    assert "5 match now" not in move.text
+    assert "move-trigger-response" not in move.text
+    assert "match now" not in rename.text and "match now" not in move.text
 
 
 @pytest.mark.asyncio
@@ -203,6 +200,14 @@ async def test_canonical_review_discloses_destination_before_whole_proposal_appr
     assert "Destination" in row and "Artist/Event/Reviewed Name.mp3" in row
     assert f'hx-patch="/proposals/{proposal.id}/approve"' in row
     assert "/proposals/bulk-approve-high-confidence" not in review
+
+    move_review = (await client.get("/s/move", headers={"HX-Request": "true"})).text
+    move_row = move_review.split(f'id="move-row-{proposal.id}"', 1)[1].split('id="move-row-', 1)[0]
+    assert "Destination" in move_row and "Artist/Event/Reviewed Name.mp3" in move_row
+    assert "Filename" in move_row and "Reviewed Name.mp3" in move_row
+    assert f'hx-patch="/proposals/{proposal.id}/approve"' in move_row
+    assert "/proposals/bulk-approve-high-confidence" not in move_review
+    assert move_row.count("whitespace-pre-wrap break-all") == 4, "all before/after values must be fully inspectable without ellipsis"
 
 
 @pytest.mark.asyncio
@@ -666,7 +671,7 @@ async def test_diff_row_before_after(
     assert rn.status_code == 200
     body = rn.text
     assert "line-through" in body and "rose" in body and "emerald" in body
-    assert "grid-cols-[1fr_auto_1fr]" in body
+    assert "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]" in body
     assert "messy.mp3" in body and "Renamed.mp3" in body
     assert f'hx-patch="/proposals/{p.id}/approve"' in body
     assert "hx-post" not in body
@@ -743,7 +748,7 @@ async def test_tagwrite_workspace_apply_and_bulk_wiring(
     assert "SAVE EDIT" not in body, "tag rows render no SAVE-EDIT (tag inline-edit out of cut)"
     assert "/proposals/" not in body, "tag apply never routes through a proposals PATCH"
     # The computed tag diff surfaces (before/after summaries autoescaped through the shared partial).
-    assert "New Artist" in body and "grid-cols-[1fr_auto_1fr]" in body
+    assert "New Artist" in body and "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]" in body
 
 
 @pytest.mark.asyncio

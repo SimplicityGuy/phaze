@@ -162,6 +162,24 @@ async def test_prepare_workspaces_keep_narrow_layout_actions_accessible(
 
 
 @pytest.mark.asyncio
+async def test_propose_exposes_complete_candidate_values(
+    client: AsyncClient,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """Long candidate names and paths are available in full rather than as uninspectable ellipses."""
+    filename = "Artist - Event - A Candidate Filename Long Enough To Require Inspection.mp3"
+    path = "Artist/Event/Recording/Edition/Artist - Event - A Candidate Filename Long Enough To Require Inspection.mp3"
+    await seed_pending_proposal(0.9, proposed_filename=filename, proposed_path=path, original_filename="source.mp3")
+
+    body = (await client.get("/s/propose", headers={"HX-Request": "true"})).text
+    assert filename in body
+    assert f'title="{path}"' in body
+    path_cell = body.split(f'title="{path}"', 1)[0].rsplit("<td", 1)[1]
+    assert "whitespace-normal break-all font-mono" in path_cell
+    assert "truncate" not in path_cell
+
+
+@pytest.mark.asyncio
 async def test_status_filter_selects_the_matching_proposals(
     client: AsyncClient,
     session: AsyncSession,
