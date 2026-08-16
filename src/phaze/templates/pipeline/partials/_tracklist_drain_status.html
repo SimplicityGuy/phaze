@@ -24,15 +24,21 @@
    WHOLE fragment (hx-swap="outerHTML" on this div's own id), so the badge, the reason, and the
    funnel numbers below always agree with each other and with whatever the cron just did.
 #}
-<div id="tracklist-drain-status" class="rounded-xl border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel">
-    <div class="flex items-center justify-between gap-2">
-        <p class="font-jura text-[11px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">1001Tracklists drain</p>
-        <div class="flex items-center gap-2">
+{% import "ui/primitives.html" as ui %}
+<div id="tracklist-drain-status">
+    <div class="flex flex-col gap-3 border-t border-blue-200 pt-4 sm:flex-row sm:items-center sm:justify-between dark:border-blue-900">
+        <div>
+            <p class="font-jura text-[10px] font-medium uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Lookup state</p>
+            <div class="mt-1 flex flex-wrap items-center gap-2">
             {% if arm.armed %}
-                <span class="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 font-jura text-[11px] font-medium uppercase tracking-wider text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">Armed</span>
+                {{ ui.status_badge("1001Tracklists drain", "armed", "success", "✓") }}
             {% else %}
-                <span class="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 font-jura text-[11px] font-medium uppercase tracking-wider text-gray-600 dark:bg-white/5 dark:text-gray-400">Disarmed</span>
+                {{ ui.status_badge("1001Tracklists drain", "manual", "neutral", "—") }}
             {% endif %}
+                <span class="font-mono text-sm text-gray-700 dark:text-gray-300">{{ '{:,}'.format(status.queued) }} queued</span>
+            </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
             <button type="button"
                     hx-post="/pipeline/run-tracklist-drain" hx-target="#drain-run-response" hx-swap="innerHTML"
                     hx-confirm="Queue a batch of tracklist lookups (up to 100) against the live 1001Tracklists host?"
@@ -58,7 +64,7 @@
             {% endif %}
         </div>
     </div>
-    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+    <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
         {% if arm.armed %}
             Armed since {{ arm.armed_at.strftime('%Y-%m-%d %H:%M') if arm.armed_at else '—' }} -- each completed slice re-enqueues the
             next one automatically (a {{ '{:,}'.format(tracklist_drain_cooldown_sec) }}s cooldown between slices, operator-tunable).
@@ -72,7 +78,12 @@
     </p>
     <div id="drain-run-response" class="mt-2 text-xs empty:hidden"></div>
 
-    <dl class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+    <details class="group mt-4 rounded-lg border border-gray-200 bg-white/70 dark:border-phaze-border dark:bg-phaze-bg/30">
+        <summary class="cursor-pointer list-none rounded-lg px-3 py-2 font-jura text-[11px] font-medium uppercase tracking-[0.16em] text-gray-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-gray-300">
+            <span class="inline-flex items-center gap-2"><span aria-hidden="true" class="transition-transform group-open:rotate-90">›</span> Operator queue diagnostics</span>
+        </summary>
+        <div class="border-t border-gray-200 p-3 dark:border-phaze-border">
+    <dl class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <div>
             <dt class="text-xs text-gray-500 dark:text-gray-400">Queued</dt>
             <dd class="font-mono text-lg text-gray-900 dark:text-gray-100">{{ '{:,}'.format(status.queued) }}</dd>
@@ -89,13 +100,13 @@
             </dd>
         </div>
         <div>
-            <dt class="text-xs text-gray-500 dark:text-gray-400">Answered by cache</dt>
+            <dt class="text-xs text-gray-500 dark:text-gray-400">Answered by cache / parked</dt>
             <dd class="font-mono text-lg text-gray-900 dark:text-gray-100">{{ '{:,}'.format(status.cached) }}</dd>
             <dd class="text-xs text-gray-500 dark:text-gray-400">
                 {{ '{:,}'.format(status.cached_positive) }} found ·
                 {{ '{:,}'.format(status.cached_negative) }} confirmed absent ·
                 {{ '{:,}'.format(status.cached_backoff) }} retrying ·
-                {{ '{:,}'.format(status.cached_exhausted) }} parked
+                {{ '{:,}'.format(status.cached_exhausted) }} parked after retry exhaustion
             </dd>
         </div>
         <div>
@@ -105,10 +116,12 @@
         </div>
     </dl>
 
-    <div class="mt-4 border-t border-gray-200 pt-3 text-xs text-gray-600 dark:border-phaze-border dark:text-gray-300 dark:text-gray-400">
+    <div class="mt-4 border-t border-gray-200 pt-3 text-xs text-gray-600 dark:border-phaze-border dark:text-gray-400">
+        <p><strong class="text-gray-900 dark:text-gray-100">Drain:</strong> the resumable queue that derives, searches, scores, renders, parses, and stores one unique set per lookup.</p>
+        <p class="mt-1"><strong class="text-gray-900 dark:text-gray-100">Parked:</strong> cached sets whose retries are exhausted; they remain visible but do not consume the active lookup queue.</p>
+        <p class="mt-1"><strong class="text-gray-900 dark:text-gray-100">Collapse ratio:</strong> files represented by each unique-set lookup. {{ '%.2f' | format(status.collapse_ratio) }} means about {{ '%.2f' | format(status.collapse_ratio) }} files per request, not {{ '%.0f' | format((1 - (1 / status.collapse_ratio if status.collapse_ratio else 1)) * 100) }}% completion.</p>
         <p>
-            Ceiling: ~{{ '{:,}'.format(daily_ceiling) }} lookups/day (the whole 1001Tracklists host's published
-            crawl-delay budget -- adding workers cannot raise this).
+            <strong class="text-gray-900 dark:text-gray-100">Crawl delay and throughput ceiling:</strong> the provider's whole-host request spacing limits Phaze to ~{{ '{:,}'.format(daily_ceiling) }} lookups/day. Adding workers cannot raise this ceiling.
         </p>
         <p class="mt-1">
             Projected drain at the current queue depth: <strong class="text-gray-900 dark:text-gray-100">~{{ '%.1f' | format(status.projected_days) }} days</strong>.
@@ -125,4 +138,6 @@
         </p>
         {% endif %}
     </div>
+        </div>
+    </details>
 </div>

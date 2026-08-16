@@ -31,9 +31,13 @@
    (_tracklist_sets.html, over get_tracklist_sets_page) -- nothing is server-rendered inline.
 #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% import "ui/primitives.html" as ui %}
 {% set subcount = '`${$store.pipeline.tracklistDone} sets matched · 1001Tracklists`' %}
 {% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
 {% call ws.workspace(title="TRACKLIST", subcount=subcount) %}
+    <div class="px-4 pt-4 sm:px-6">
+        <p class="max-w-3xl text-sm text-gray-600 dark:text-gray-300">Find a source tracklist first, then match its tracks to analyzed files. Complete the steps in order; queue administration remains available under Lookup details.</p>
+    </div>
     {# (a) 1 · LOOKUP -- the drain. An EMPTY host div hx-gets the fragment on load, mirroring the
        per-set table's own load-on-mount pattern below. "The fragment carries its own trigger"
        refers to the Run-a-slice BUTTON inside it (_tracklist_drain_status.html), not a self-poll
@@ -49,33 +53,67 @@
        `drain-refresh` event, fired via the `HX-Trigger` response header on POST
        /pipeline/run-tracklist-drain (see that endpoint), bubbles to `<body>` and this listener
        re-GETs the panel exactly once per "Run a drain slice" click -- no interval, no second loop. #}
-    <div class="px-6 pt-6">
-        <div class="mb-2 flex items-baseline gap-2">
-            <span class="text-sm text-gray-700 dark:text-gray-200">1 · 🛰 LOOKUP</span>
-            <span class="font-mono text-sm font-medium text-gray-700 dark:text-gray-300">{{ tracklist_steps.tracklist.done }} / —</span>
-            <span class="text-xs text-gray-500 dark:text-gray-500">files with a tracklist (no denominator exists -- no table defines "should have one")</span>
-        </div>
-        <div id="tracklist-drain-status-view"
-             hx-get="/pipeline/tracklist-drain-status"
-             hx-trigger="load, drain-refresh from:body"
-             hx-swap="innerHTML">
-            <p class="px-6 py-8 text-center text-sm text-gray-500 dark:text-gray-400">Loading drain status…</p>
-        </div>
-    </div>
+    <ol aria-label="Tracklist preparation workflow" class="grid gap-4 px-4 py-4 lg:grid-cols-2 sm:px-6">
+        <li id="tracklist-lookup" class="min-w-0 rounded-xl border border-blue-200 bg-blue-50/40 p-4 dark:border-blue-900 dark:bg-blue-950/20">
+            <div class="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                    <p class="font-jura text-xs font-medium uppercase tracking-[0.18em] text-blue-700 dark:text-blue-300">1 · Lookup</p>
+                    <h2 class="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">Find source tracklists</h2>
+                </div>
+                {{ ui.status_badge("Lookup", tracklist_steps.tracklist.done ~ " found", "accent", "●") }}
+            </div>
+            <dl class="mt-4 grid gap-3 text-sm sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
+                <div>
+                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Prerequisite</dt>
+                    <dd class="mt-1 text-gray-700 dark:text-gray-300">Audio or video classified as a live set from duration first, then repaired filename and track-number evidence. Files already answered by embedded tags, a .cue companion, or a pending/approved lookup are excluded.</dd>
+                </div>
+                <div>
+                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Current state</dt>
+                    <dd class="mt-1 text-gray-700 dark:text-gray-300">{{ tracklist_steps.tracklist.done }} files have a tracklist. Eligibility is derived, so no stored denominator exists.</dd>
+                </div>
+                <div>
+                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Next action</dt>
+                    <dd class="mt-1 text-gray-700 dark:text-gray-300">Run one bounded batch using lookup queries derived from the repaired filename, or arm continuous host-budgeted slices.</dd>
+                </div>
+            </dl>
+            <div id="tracklist-drain-status-view"
+                 class="mt-4"
+                 hx-get="/pipeline/tracklist-drain-status"
+                 hx-trigger="load, drain-refresh from:body"
+                 hx-swap="innerHTML">
+                <p class="py-6 text-center text-sm text-gray-500 dark:text-gray-400">Loading lookup state…</p>
+            </div>
+        </li>
 
-    {# (b) 2 · MATCH -- POST /pipeline/match-tracklists (returns trigger_tracklist_response.html:
-       match_tracklist_to_discogs is a CONTROLLER task, so there is no no-active-agent branch). #}
-    <div class="p-6">
-        <div class="rounded-xl border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel">
-            <div class="flex items-center justify-between gap-2">
-                <span class="text-sm text-gray-700 dark:text-gray-200">2 · 🔗 MATCH</span>
-                <span class="font-mono text-sm font-medium text-gray-700 dark:text-gray-300">{{ tracklist_steps.match.done }} / {{ tracklist_steps.match.total }}</span>
+        {# (b) 2 · MATCH -- POST /pipeline/match-tracklists (returns trigger_tracklist_response.html:
+           match_tracklist_to_discogs is a CONTROLLER task, so there is no no-active-agent branch). #}
+        <li id="tracklist-match" class="min-w-0 rounded-xl border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel">
+            <div class="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                    <p class="font-jura text-xs font-medium uppercase tracking-[0.18em] text-gray-600 dark:text-gray-300">2 · Match</p>
+                    <h2 class="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">Align tracks to files</h2>
+                </div>
+                {% if tracklist_match_pending > 0 %}
+                    {{ ui.status_badge("Match", tracklist_match_pending ~ " pending", "attention", "●") }}
+                {% else %}
+                    {{ ui.status_badge("Match", "no pending", "success", "✓") }}
+                {% endif %}
             </div>
-            <div class="mt-2 text-xs text-gray-500 dark:text-gray-500">
-                {{ tracklist_match_pending }} pending
-                <span x-show="$store.pipeline.matchBusy > 0" class="text-blue-600 dark:text-blue-300">· running…</span>
-            </div>
-            <div class="mt-3">
+            <dl class="mt-4 grid gap-3 text-sm sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
+                <div>
+                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Prerequisite</dt>
+                    <dd class="mt-1 text-gray-700 dark:text-gray-300">A stored tracklist is pending only while no Discogs link exists for any track on any version; one link of any status removes it from pending. Matching checks only latest-version tracks with both artist and title, so ineligible tracks and searches returning no links cannot remove it from pending.</dd>
+                </div>
+                <div>
+                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Current state</dt>
+                    <dd class="mt-1 font-mono text-gray-700 dark:text-gray-300">{{ tracklist_steps.match.done }} / {{ tracklist_steps.match.total }} matched</dd>
+                </div>
+                <div>
+                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Next action</dt>
+                    <dd class="mt-1 text-gray-700 dark:text-gray-300">Match pending tracklists, inspect coverage below, then continue to Propose.</dd>
+                </div>
+            </dl>
+            <div class="mt-4 flex flex-col items-start gap-2 sm:flex-row sm:items-center">
                 <button type="button"
                         hx-post="/pipeline/match-tracklists" hx-target="#match-trigger-response" hx-swap="innerHTML"
                         hx-confirm="Enqueue matching for all pending tracklists?"
@@ -83,14 +121,22 @@
                         aria-label="Match all pending tracklists"
                         class="{{ _btn }}">MATCH ALL</button>
             </div>
+            <div x-show="$store.pipeline.matchBusy > 0" class="mt-2 text-xs text-blue-600 dark:text-blue-300" role="status">Matching is running…</div>
             <div id="match-trigger-response" class="mt-3 text-xs empty:hidden"></div>
-        </div>
-    </div>
+        </li>
+    </ol>
 
     {# (c) the per-set table (D-07/D-08) -- N/M track coverage below the aggregates. phaze-1wvb:
        ZERO rows are server-rendered here; the MATCH ALL trigger above still enqueues the UNBOUNDED
        pending set (paging contract rule 7 -- a bounded render is never the enqueue set). #}
-    <div class="border-t border-gray-200 p-6 dark:border-phaze-border">
+    <div class="border-t border-gray-200 p-4 sm:p-6 dark:border-phaze-border">
+        <div class="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+                <h2 class="font-jura text-xs font-medium uppercase tracking-[0.18em] text-gray-700 dark:text-gray-300">Matched-set coverage</h2>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Inspect lookup and match results before generating candidate changes.</p>
+            </div>
+            <a href="/s/propose" hx-get="/s/propose" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="text-sm font-semibold text-blue-700 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-blue-400">Continue to Propose →</a>
+        </div>
         <div id="tracklist-sets-view"
              hx-get="/pipeline/tracklist-sets"
              hx-trigger="load"

@@ -146,21 +146,23 @@ async def test_bulk_approve_high_confidence_server_predicate(
     assert p_mid.status == ProposalStatus.PENDING.value, "the client id-list must not approve the 0.50 row"
     assert p_null.status == ProposalStatus.PENDING.value, "NULL confidence is excluded by the SQL predicate"
 
-    # The Rename workspace header wires this id-less server predicate -- no client id-list markup (D-02).
-    frag = await client.get("/s/rename", headers={"HX-Request": "true"})
-    assert 'hx-patch="/proposals/bulk-approve-high-confidence"' in frag.text
-    assert "proposal_ids" not in frag.text, "the bulk button carries no client-built id-list"
+    # The compatibility endpoint remains live, but neither Review dimension can expose a corpus-wide
+    # action that authorizes values outside its rendered window.
+    rename = await client.get("/s/rename", headers={"HX-Request": "true"})
+    move = await client.get("/s/move", headers={"HX-Request": "true"})
+    assert 'hx-patch="/proposals/bulk-approve-high-confidence"' not in rename.text
+    assert 'hx-patch="/proposals/bulk-approve-high-confidence"' not in move.text
 
 
 @pytest.mark.asyncio
-async def test_rename_move_headers_and_confirm_quote_real_counts_not_render_length(
+async def test_rename_move_headers_report_real_counts_without_unseen_bulk_actions(
     client: AsyncClient,
     seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
 ) -> None:
-    """phaze-rw14: the Rename/Move header sub-count and bulk-approve confirm text quote the REAL
-    corpus-wide pending total / >=90%-confidence match count -- not ``rename_proposals | length``
-    (the 200-row render cap) -- so a rendered page of low-confidence rows can't understate either
-    number to the operator.
+    """Rename/Move report the real pending total without offering actions beyond rendered rows.
+
+    The sub-count remains corpus-wide rather than ``rename_proposals | length`` (the 200-row render
+    cap), while the removed trigger hosts ensure neither surface can approve the hidden remainder.
     """
     await seed_pending_proposal(0.95, original_filename="high1.mp3")
     await seed_pending_proposal(0.95, original_filename="high2.mp3")
@@ -168,13 +170,45 @@ async def test_rename_move_headers_and_confirm_quote_real_counts_not_render_leng
     await seed_pending_proposal(0.5, original_filename="low2.mp3")
     await seed_pending_proposal(0.5, original_filename="low3.mp3")
 
-    for stage, header_target in (("rename", "rename-trigger-response"), ("move", "move-trigger-response")):
-        frag = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
-        assert frag.status_code == 200
-        assert "5 awaiting approval" in frag.text, f"{stage} header must report the true pending total (5), not a page length"
-        assert f'hx-target="#{header_target}"' in frag.text
-        assert "2 match now" in frag.text, f"{stage} confirm text must quote the real >=90%-confidence count (2)"
-        assert "5 match now" not in frag.text, f"{stage} confirm text must not fall back to the rendered row count"
+    rename = await client.get("/s/rename", headers={"HX-Request": "true"})
+    move = await client.get("/s/move", headers={"HX-Request": "true"})
+    assert "5 awaiting approval" in rename.text
+    assert "5 awaiting approval" in move.text
+    assert "rename-trigger-response" not in rename.text
+    assert "move-trigger-response" not in move.text
+    assert "match now" not in rename.text and "match now" not in move.text
+
+
+@pytest.mark.asyncio
+async def test_canonical_review_discloses_destination_before_whole_proposal_approval(
+    client: AsyncClient,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """A Propose-to-Review transition cannot offer approval without rendering its path facet."""
+    proposal = await seed_pending_proposal(
+        0.85,
+        original_filename="unreviewed.mp3",
+        proposed_filename="Reviewed Name.mp3",
+        proposed_path="Artist/Event/Reviewed Name.mp3",
+    )
+
+    propose = (await client.get("/s/propose")).text
+    assert 'href="/s/rename"' in propose and 'hx-get="/s/rename"' in propose
+
+    review = (await client.get("/s/rename", headers={"HX-Request": "true"})).text
+    row = review.split(f'id="rename-row-{proposal.id}"', 1)[1].split('id="rename-row-', 1)[0]
+    assert "Filename" in row and "Reviewed Name.mp3" in row
+    assert "Destination" in row and "Artist/Event/Reviewed Name.mp3" in row
+    assert f'hx-patch="/proposals/{proposal.id}/approve"' in row
+    assert "/proposals/bulk-approve-high-confidence" not in review
+
+    move_review = (await client.get("/s/move", headers={"HX-Request": "true"})).text
+    move_row = move_review.split(f'id="move-row-{proposal.id}"', 1)[1].split('id="move-row-', 1)[0]
+    assert "Destination" in move_row and "Artist/Event/Reviewed Name.mp3" in move_row
+    assert "Filename" in move_row and "Reviewed Name.mp3" in move_row
+    assert f'hx-patch="/proposals/{proposal.id}/approve"' in move_row
+    assert "/proposals/bulk-approve-high-confidence" not in move_review
+    assert move_row.count("whitespace-pre-wrap break-all") == 4, "all before/after values must be fully inspectable without ellipsis"
 
 
 @pytest.mark.asyncio
@@ -190,7 +224,12 @@ async def test_edit_patch_targets_own_row(
     Rejected inputs -- a ``..`` traversal segment, a leading ``/``, or a NUL byte -- 400 and leave
     the row unchanged (T-60-02).
     """
-    proposal = await seed_pending_proposal(0.8, proposed_filename="Original.mp3", original_filename="orig.mp3")
+    proposal = await seed_pending_proposal(
+        0.8,
+        proposed_filename="Original.mp3",
+        proposed_path="Artist/Event/Original.mp3",
+        original_filename="orig.mp3",
+    )
 
     resp = await client.patch(
         f"/proposals/{proposal.id}/edit",
@@ -204,6 +243,7 @@ async def test_edit_patch_targets_own_row(
     # mutation route now has exactly one response shape.
     assert f'id="rename-row-{proposal.id}"' in resp.text, "returns the targeted row"
     assert "<html" not in resp.text, "returns only the row, not a full page"
+    assert "Destination" in resp.text and "Artist/Event/Original.mp3" in resp.text, "row swaps must retain the path being authorized"
     await session.refresh(proposal)
     assert proposal.proposed_filename == "Edited Name.mp3"
     assert proposal.status == ProposalStatus.PENDING.value, "edit is pre-approve -- row stays PENDING"
@@ -632,7 +672,7 @@ async def test_diff_row_before_after(
     assert rn.status_code == 200
     body = rn.text
     assert "line-through" in body and "rose" in body and "emerald" in body
-    assert "grid-cols-[1fr_auto_1fr]" in body
+    assert "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]" in body
     assert "messy.mp3" in body and "Renamed.mp3" in body
     assert f'hx-patch="/proposals/{p.id}/approve"' in body
     assert "hx-post" not in body
@@ -709,7 +749,7 @@ async def test_tagwrite_workspace_apply_and_bulk_wiring(
     assert "SAVE EDIT" not in body, "tag rows render no SAVE-EDIT (tag inline-edit out of cut)"
     assert "/proposals/" not in body, "tag apply never routes through a proposals PATCH"
     # The computed tag diff surfaces (before/after summaries autoescaped through the shared partial).
-    assert "New Artist" in body and "grid-cols-[1fr_auto_1fr]" in body
+    assert "New Artist" in body and "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]" in body
 
 
 @pytest.mark.asyncio
@@ -773,6 +813,11 @@ async def test_propose_workspace_generate_and_model(
     # The generation view lists the proposal + is not a per-row diff-approve surface.
     assert "messy.mp3" in body and "Renamed.mp3" in body
     assert f"/proposals/{p.id}/approve" not in body, "Propose is a generation view -- no per-row approve here"
+    assert 'href="/s/rename"' in body and 'hx-get="/s/rename"' in body, "candidate decisions route to canonical Review"
+    assert 'hx-target="#stage-workspace"' in body and 'hx-push-url="true"' in body
+    assert "Approval and rejection happen only in Review" in body
+    assert 'name="proposal_ids"' not in body, "Propose must not expose decision selection controls"
+    assert 'hx-patch="/proposals/bulk' not in body, "the shared bulk endpoint remains backend-compatible but is not a Propose affordance"
 
 
 @pytest.mark.asyncio
