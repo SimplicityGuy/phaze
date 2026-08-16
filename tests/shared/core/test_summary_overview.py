@@ -17,6 +17,7 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.metadata import FileMetadata
 from phaze.routers import shell as shell_mod
 from phaze.routers.shell import _derive_summary_overview, _get_summary_aggregates
+from phaze.services.backends import get_analysis_activity_counts
 from phaze.services.proposal_queries import ProposalStats
 
 
@@ -189,7 +190,7 @@ async def test_enriched_count_is_the_same_file_intersection(session: AsyncSessio
     aggregates = await _get_summary_aggregates(session)
 
     assert aggregates["enriched"] == 0
-    assert aggregates["analyses_lifetime"] == 1
+    assert (await get_analysis_activity_counts(session))["lifetime"] == 1
 
 
 @pytest.mark.asyncio
@@ -205,16 +206,16 @@ async def test_today_is_bounded_by_utc_midnight_regardless_of_session_timezone(s
     await session.commit()
     await session.execute(text("SET LOCAL TIME ZONE 'America/Los_Angeles'"))
 
-    aggregates = await _get_summary_aggregates(session, now=datetime(2026, 8, 16, 0, 30, tzinfo=UTC))
+    activity = await get_analysis_activity_counts(session, now=datetime(2026, 8, 16, 0, 30, tzinfo=UTC))
 
-    assert aggregates["analyses_today"] == 1
-    assert aggregates["analyses_lifetime"] == 2
+    assert activity["today"] == 1
+    assert activity["lifetime"] == 2
 
 
 @pytest.mark.asyncio
 async def test_summary_aggregate_clock_rejects_naive_time(session: AsyncSession) -> None:
     with pytest.raises(ValueError, match="timezone-aware"):
-        await _get_summary_aggregates(session, now=datetime(2026, 8, 16, 0, 30))
+        await get_analysis_activity_counts(session, now=datetime(2026, 8, 16, 0, 30))
 
 
 @pytest.mark.asyncio
@@ -251,10 +252,13 @@ async def test_summary_independent_reads_run_in_parallel_under_the_shared_bound(
         return {"metadata": {"paused": False, "priority": 50}, "analyze": {"paused": False, "priority": 50}}
 
     async def aggregates(_session: object) -> dict[str, int | None]:
-        return {"enriched": 0, "analyses_today": 0, "analyses_lifetime": 0, "active_fileservers": 1}
+        return {"enriched": 0, "active_fileservers": 1}
 
     async def live(_session: object, _app_state: object) -> int:
         return 0
+
+    async def activity(_session: object) -> dict[str, int | None]:
+        return {"today": 0, "lifetime": 0}
 
     monkeypatch.setattr(shell_mod, "_stats_fanout", lambda: fanout)
     monkeypatch.setattr(shell_mod, "_read_in_own_session", bounded_read)
@@ -267,6 +271,7 @@ async def test_summary_independent_reads_run_in_parallel_under_the_shared_bound(
     monkeypatch.setattr(shell_mod, "get_stage_controls", controls)
     monkeypatch.setattr(shell_mod, "_get_summary_aggregates", aggregates)
     monkeypatch.setattr(shell_mod, "get_analysis_live_count", live)
+    monkeypatch.setattr(shell_mod, "get_analysis_activity_counts", activity)
 
     context = await shell_mod._build_summary_context(SimpleNamespace(), object())  # type: ignore[arg-type]
 
@@ -298,6 +303,9 @@ def test_template_uses_shared_primitives_native_htmx_links_and_responsive_grids(
     assert "Live now" in soup.get_text(" ", strip=True)
     assert "Today (UTC)" in soup.get_text(" ", strip=True)
     assert "Lifetime" in soup.get_text(" ", strip=True)
+    assert "$store.pipeline.summaryRecentLive" in rendered
+    assert "$store.pipeline.summaryRecentToday" in rendered
+    assert "$store.pipeline.summaryRecentLifetime" in rendered
     assert "md:grid-cols-2" in rendered
     assert "md:grid-cols-3" in rendered
     assert "xl:grid-cols-3" in rendered

@@ -159,7 +159,9 @@
                 // first /pipeline/stats poll tick; the dag.items() OOB loop in stats_bar.html
                 // pushes the real values each 5s poll via dag-seed-metadataOrphan /
                 // dag-seed-analyzeOrphan (tests/shared/core/test_workspace_poll_seeds.py).
-                metadataOrphan: 0, analyzeOrphan: 0
+                metadataOrphan: 0, analyzeOrphan: 0,
+                // Summary Recent Activity uses null as an explicit degraded/unknown value.
+                summaryRecentLive: null, summaryRecentToday: null, summaryRecentLifetime: null
             });
             // phaze-cvn6.3: pipeline files-table column widths. A page-level singleton (mirrors the
             // theme store's localStorage shape above) is what lets a dragged width survive every

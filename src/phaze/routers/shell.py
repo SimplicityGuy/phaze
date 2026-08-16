@@ -26,7 +26,6 @@ content bridges) land with their workspaces in Phases 58-61.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -39,7 +38,6 @@ from phaze.config import settings
 from phaze.database import get_session
 from phaze.enums.stage import Stage, Status
 from phaze.models.agent import Agent
-from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
 from phaze.models.proposal import APPROVE_REJECT_FROM
 from phaze.routers.admin_agents import build_agents_pane_context
@@ -49,7 +47,7 @@ from phaze.routers.pipeline_scans import RECENT_SCANS_SORT, build_recent_scans
 from phaze.routers.proposal_sort import PROPOSE_SORT
 from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_fragment
 from phaze.routers.view_state import PAGE_SIZE_CHOICES, ListViewState
-from phaze.services.backends import derive_cloud_hold_reason, get_analysis_live_count
+from phaze.services.backends import derive_cloud_hold_reason, get_analysis_activity_counts, get_analysis_live_count
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, clamp_page, clamp_page_size
 from phaze.services.pipeline import (
     ORPHANED_BUCKET,
@@ -584,32 +582,20 @@ def _derive_summary_overview(
     }
 
 
-async def _get_summary_aggregates(session: AsyncSession, *, now: datetime | None = None) -> dict[str, int | None]:
-    """Read intersection, activity history, and configuration in one UTC-scoped statement."""
-    utc_now = now or datetime.now(UTC)
-    if utc_now.tzinfo is None:
-        raise ValueError("summary aggregate clock must be timezone-aware")
-    utc_midnight = utc_now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+async def _get_summary_aggregates(session: AsyncSession) -> dict[str, int | None]:
+    """Read the enriched-file intersection and active file-server count in one statement."""
     enriched = select(func.count(FileRecord.id)).where(done_clause(Stage.METADATA), done_clause(Stage.ANALYZE)).scalar_subquery()
-    analyses_lifetime = select(func.count(AnalysisResult.id)).where(AnalysisResult.analysis_completed_at.is_not(None)).scalar_subquery()
-    analyses_today = (
-        select(func.count(AnalysisResult.id))
-        .where(AnalysisResult.analysis_completed_at.is_not(None), AnalysisResult.analysis_completed_at >= utc_midnight)
-        .scalar_subquery()
-    )
     active_fileservers = (
         select(func.count(Agent.id)).where(Agent.kind == "fileserver", Agent.revoked_at.is_(None), Agent.last_seen_at.is_not(None)).scalar_subquery()
     )
     try:
         async with session.begin_nested():
-            row = (await session.execute(select(enriched, analyses_today, analyses_lifetime, active_fileservers))).one()
+            row = (await session.execute(select(enriched, active_fileservers))).one()
     except Exception:
-        return {"enriched": None, "analyses_today": None, "analyses_lifetime": None, "active_fileservers": None}
+        return {"enriched": None, "active_fileservers": None}
     return {
         "enriched": int(row[0] or 0),
-        "analyses_today": int(row[1] or 0),
-        "analyses_lifetime": int(row[2] or 0),
-        "active_fileservers": int(row[3] or 0),
+        "active_fileservers": int(row[1] or 0),
     }
 
 
@@ -626,8 +612,9 @@ async def _build_summary_context(app_state: Any, session: AsyncSession) -> dict[
         stage_controls,
         aggregates,
         analysis_live,
+        analysis_activity,
     ) = cast(
-        "tuple[dict[str, dict[str, int | None]], ProposalStats, int, int, int, dict[str, int], dict[str, dict[str, int | bool]], dict[str, int | None], int | None]",
+        "tuple[dict[str, dict[str, int | None]], ProposalStats, int, int, int, dict[str, int], dict[str, dict[str, int | bool]], dict[str, int | None], int | None, dict[str, int | None]]",
         await asyncio.gather(
             # get_stage_progress already owns its bounded per-node sessions; wrapping it would hold
             # a semaphore slot while its children wait for that same semaphore.
@@ -649,12 +636,14 @@ async def _build_summary_context(app_state: Any, session: AsyncSession) -> dict[
             _read_in_own_session(
                 fanout,
                 _get_summary_aggregates,
-                cast(
-                    "dict[str, int | None]",
-                    {"enriched": None, "analyses_today": None, "analyses_lifetime": None, "active_fileservers": None},
-                ),
+                cast("dict[str, int | None]", {"enriched": None, "active_fileservers": None}),
             ),
             _read_in_own_session(fanout, lambda own_session: get_analysis_live_count(own_session, app_state), None),
+            _read_in_own_session(
+                fanout,
+                get_analysis_activity_counts,
+                cast("dict[str, int | None]", {"today": None, "lifetime": None}),
+            ),
         ),
     )
     awaiting_hold_reason = await _read_in_own_session(fanout, derive_cloud_hold_reason, "held") if awaiting_cloud_count else None
@@ -673,8 +662,8 @@ async def _build_summary_context(app_state: Any, session: AsyncSession) -> dict[
             stage_paused={stage: bool(stage_controls[stage]["paused"]) for stage in ("metadata", "analyze")},
             enriched_count=aggregates["enriched"],
             analysis_live=analysis_live,
-            analyses_today=aggregates["analyses_today"],
-            analyses_lifetime=aggregates["analyses_lifetime"],
+            analyses_today=analysis_activity["today"],
+            analyses_lifetime=analysis_activity["lifetime"],
         )
     }
 

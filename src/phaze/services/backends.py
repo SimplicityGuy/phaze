@@ -1561,6 +1561,27 @@ async def get_analysis_live_count(session: AsyncSession, app_state: Any) -> int 
     return local_active + cloud_active
 
 
+async def get_analysis_activity_counts(session: AsyncSession, *, now: datetime | None = None) -> dict[str, int | None]:
+    """Return UTC-today and lifetime analysis completions in one degrade-safe statement."""
+    utc_now = now or datetime.now(UTC)
+    if utc_now.tzinfo is None:
+        raise ValueError("analysis activity clock must be timezone-aware")
+    utc_midnight = utc_now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    lifetime = select(func.count(AnalysisResult.id)).where(AnalysisResult.analysis_completed_at.is_not(None)).scalar_subquery()
+    today = (
+        select(func.count(AnalysisResult.id))
+        .where(AnalysisResult.analysis_completed_at.is_not(None), AnalysisResult.analysis_completed_at >= utc_midnight)
+        .scalar_subquery()
+    )
+    try:
+        async with session.begin_nested():
+            row = (await session.execute(select(today, lifetime))).one()
+    except Exception:
+        logger.warning("analysis_activity_counts_degraded", exc_info=True)
+        return {"today": None, "lifetime": None}
+    return {"today": int(row[0] or 0), "lifetime": int(row[1] or 0)}
+
+
 def _cloud_job_succeeded_for_backend(backend_id: str) -> ColumnElement[bool]:
     """Return ``EXISTS(a SUCCEEDED cloud_job for this file attributed to backend_id)`` (phaze-5c6i2)."""
     return exists(

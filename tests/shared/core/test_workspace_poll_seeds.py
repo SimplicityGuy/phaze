@@ -77,6 +77,11 @@ def test_compute_lanes_active_seed_target_present() -> None:
     assert "computeLanesActive" in _seed_target_keys(), "dag-seed-computeLanesActive placeholder missing from _workspace_poll_seeds.html"
 
 
+def test_summary_recent_activity_seed_targets_present() -> None:
+    targets = _seed_target_keys()
+    assert {"summaryRecentLive", "summaryRecentToday", "summaryRecentLifetime"} <= targets
+
+
 @pytest.mark.asyncio
 async def test_files_workspace_hosts_poll_seeds_but_filter_fragment_does_not(client: AsyncClient) -> None:
     """/s/files (workspace mount) hosts the seed placeholders; /pipeline/files (filter fragment) does not.

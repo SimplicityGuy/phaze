@@ -47,6 +47,8 @@ from phaze.services.backends import (
     LANE_RECENT_N,
     derive_cloud_hold_reason,
     derive_localqueue_unreachable,
+    get_analysis_activity_counts,
+    get_analysis_live_count,
     get_analyze_queue_totals,
     get_backend_lane_snapshot,
     get_lane_queue_depths,
@@ -1086,11 +1088,13 @@ async def pipeline_stats_partial(
         cloud_phase_counts,
         lanes,
         awaiting_hold_reason,
+        analysis_live,
+        analysis_activity,
         # asyncio.gather with >6 awaitables of mixed return types collapses to list[object] under
         # mypy (mirrors the identical cast in services/pipeline.py:get_stage_progress) -- pin the
         # exact per-read tuple shape with a single cast.
     ) = cast(
-        "tuple[dict[str, int], int, int, int, int, int, int, dict[str, int], list[dict[str, Any]], str]",
+        "tuple[dict[str, int], int, int, int, int, int, int, dict[str, int], list[dict[str, Any]], str, int | None, dict[str, int | None]]",
         await asyncio.gather(
             # Phase 34: surface live queue depth through the EXISTING 5s poll (no new loop).
             # get_queue_activity degrades to zeros on a Redis hiccup / missing app.state, so the
@@ -1138,6 +1142,12 @@ async def pipeline_stats_partial(
             # the lanes wiring immediately above. "held" mirrors services.backends._HOLD_REASON_DEGRADED, the
             # SAME neutral no-causal-claim copy that function's own try/except already degrades to.
             _read_in_own_session(fanout, lambda s: derive_cloud_hold_reason(s), "held"),
+            _read_in_own_session(fanout, lambda s: get_analysis_live_count(s, request.app.state), None),
+            _read_in_own_session(
+                fanout,
+                get_analysis_activity_counts,
+                cast("dict[str, int | None]", {"today": None, "lifetime": None}),
+            ),
         ),
     )
     # phaze-6r39: the same live-lane derivation build_dashboard_context seeds on first load, re-pushed
@@ -1194,6 +1204,9 @@ async def pipeline_stats_partial(
             "lanes_hash": lanes_hash,
             "total_queued_analyze": analyze_queue_totals["total_queued"],
             "unrouted_queued_analyze": analyze_queue_totals["unrouted_queued"],
+            "summary_recent_live": analysis_live,
+            "summary_recent_today": analysis_activity["today"],
+            "summary_recent_lifetime": analysis_activity["lifetime"],
             **activity,
             **dag_ctx,
             "queue_progress_percent": queue_progress,
