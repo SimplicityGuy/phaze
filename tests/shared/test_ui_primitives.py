@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from types import SimpleNamespace
 
 from fastapi.templating import Jinja2Templates
@@ -44,6 +45,16 @@ def test_metric_strip_uses_semantic_markup_and_palette_tones() -> None:
     assert "<dl" in html and html.count("<dt") == 2 and html.count("<dd") == 4
     assert "text-blue-700" in html and "text-red-700" in html
     assert "overflow-x-auto" in html
+
+
+def test_metric_can_be_a_direct_oob_metric_strip_child() -> None:
+    html = _render(
+        """{% import "ui/primitives.html" as ui %}{% call ui.metric_strip("Live metrics") %}{{ ui.metric("Queued", 3, "ready", id="queued-metric", oob=true) }}{% endcall %}"""
+    )
+
+    assert re.search(r'<dl[^>]*>\s*<div id="queued-metric" hx-swap-oob="true"', html)
+    assert html.count("<div") == 1
+    assert html.count("<dt") == 1 and html.count("<dd") == 2
 
 
 def test_status_badge_has_text_icon_and_reduced_motion_safe_activity() -> None:

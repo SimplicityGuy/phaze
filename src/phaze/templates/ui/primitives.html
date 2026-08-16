@@ -17,7 +17,7 @@
 </section>
 {% endmacro %}
 
-{% macro metric(label, value, detail='', tone='neutral') %}
+{% macro metric(label, value, detail='', tone='neutral', id='', oob=false) %}
 {% set tones = {
     'accent': 'text-blue-700 dark:text-blue-400',
     'attention': 'text-amber-700 dark:text-amber-400',
@@ -25,7 +25,7 @@
     'danger': 'text-red-700 dark:text-red-400',
     'neutral': 'text-gray-900 dark:text-gray-100'
 } %}
-<div class="min-w-32 px-4 py-3">
+<div{% if id %} id="{{ id }}"{% endif %}{% if oob %} hx-swap-oob="true"{% endif %} class="min-w-32 px-4 py-3">
     <dt class="font-jura text-[10px] uppercase tracking-[0.2em] text-gray-500 dark:text-gray-400">{{ label }}</dt>
     <dd class="mt-1 font-mono text-xl font-semibold tabular-nums {{ tones.get(tone, tones.neutral) }}">{{ value }}</dd>
     {% if detail %}<dd class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{{ detail }}</dd>{% endif %}

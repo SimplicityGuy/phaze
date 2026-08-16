@@ -16,7 +16,7 @@
    falsy the grid renders a single full-width muted panel (same rounded-xl border shell) with the empty
    heading -- NEVER a page error, NEVER a 500, and it MUST NOT collapse the layout. Self-heals next poll. #}
 <div id="analyze-lanes"
-     class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 p-6"
+     class="mx-4 mb-4 overflow-hidden rounded-lg border border-gray-200 dark:border-phaze-border sm:mx-6"
      {# Phase 95 (phaze-zqvh.3): the content hash of this grid's render inputs (lanes + selected
         highlight). The shell's htmx:oobBeforeSwap hook (shell.html) SKIPS the 5s OOB grid swap when
         the incoming data-lanes-hash equals what is already mounted -- so a long-lived idle tab does
@@ -29,7 +29,7 @@
         {% include "pipeline/partials/_lane_card.html" %}
         {% endfor %}
     {% else %}
-        <div class="col-span-full rounded-xl border border-gray-200 p-4 dark:border-phaze-border">
+        <div class="p-4">
             <p class="text-sm font-medium text-gray-700 dark:text-gray-200">Lane status unavailable</p>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Backend lane status could not be read this cycle. It refreshes on the next update.</p>
         </div>

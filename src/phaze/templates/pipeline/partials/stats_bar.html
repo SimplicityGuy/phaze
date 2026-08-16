@@ -121,4 +121,8 @@
    total_queued_analyze / unrouted_queued_analyze ride this poll context (degrade-safe -> None, never
    a fabricated 0, never 500). #}
 {% with oob = True %}{% include "pipeline/partials/_analyze_queue_total.html" %}{% endwith %}
+{# Active sums only comparable execution observations (local SAQ active + Kueue pod RUNNING).
+   Compute and degraded lanes are unknown, which propagates to the roll-up rather than inventing
+   activity from cloud-window lifecycle states. Re-push from the same snapshot without a new poll. #}
+{% with oob = True %}{% include "pipeline/partials/_analyze_active_total.html" %}{% endwith %}
 {% endif %}

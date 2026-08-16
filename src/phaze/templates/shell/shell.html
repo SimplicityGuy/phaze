@@ -354,6 +354,29 @@
                 d.isError = false;
             }
         });
+        function incomingOobRoot(event, current) {
+            const frag = event.detail && event.detail.fragment;
+            if (!frag || !frag.querySelector || !current || !current.id) return null;
+            return frag.querySelector('#' + current.id);
+        }
+        function transferPollState(current, incoming) {
+            if (!current || !incoming) return;
+            const focused = document.activeElement;
+            if (focused && focused.id && (focused === current || current.contains(focused))) {
+                incoming.dataset.pollRestoreFocus = focused.id;
+            }
+            current.querySelectorAll('[data-poll-preserve-disclosure][id]').forEach(function (disclosure) {
+                if (!disclosure.open) return;
+                const replacement = Array.from(incoming.querySelectorAll('[data-poll-preserve-disclosure][id]'))
+                    .find(function (candidate) { return candidate.id === disclosure.id; });
+                if (replacement) replacement.open = true;
+            });
+            current.querySelectorAll('[data-poll-preserve-response][id]').forEach(function (response) {
+                const replacement = Array.from(incoming.querySelectorAll('[data-poll-preserve-response][id]'))
+                    .find(function (candidate) { return candidate.id === response.id; });
+                if (replacement) replacement.innerHTML = response.innerHTML;
+            });
+        }
         // Phase 95 (phaze-zqvh.3): bound the 5s poll's per-tick DOM churn on the #analyze-lanes grid.
         // Every /pipeline/stats tick re-emits the whole N-lane grid out-of-band (stats_bar.html). When the
         // lane state is UNCHANGED (a long-lived, mostly-idle tab -- the soak scenario), destroy-and-
@@ -366,16 +389,38 @@
         // ($store.pipeline keys still update every tick), and all cloud-card OOB swaps are unaffected.
         document.body.addEventListener('htmx:oobBeforeSwap', function (event) {
             const current = event.target;
-            if (!current || current.id !== 'analyze-lanes') return;
-            const frag = event.detail && event.detail.fragment;
-            const incoming = frag && frag.querySelector ? frag.querySelector('#analyze-lanes') : null;
+            if (!current) return;
+            const incoming = incomingOobRoot(event, current);
             if (!incoming) return;
+            // Recovery requests target descendants of this OOB card. Replacing their source/target
+            // mid-flight detaches the response sink and loses the acknowledgement, so defer this
+            // observational refresh for one tick. The next poll catches up after the request settles.
+            if (current.id === 'analysis-health-card' &&
+                (current.matches('.htmx-request') || current.querySelector('.htmx-request'))) {
+                event.detail.shouldSwap = false;
+                return;
+            }
+            // OOB replacement must not collapse operator-open detail or erase a recovery response.
+            // State is copied into the incoming fragment before htmx installs it, avoiding another
+            // poll loop or an after-swap race.
+            if (current.id === 'analysis-health-card' || current.id === 'analyze-lanes') {
+                transferPollState(current, incoming);
+            }
+            if (current.id !== 'analyze-lanes') return;
             const nextHash = incoming.getAttribute('data-lanes-hash');
             const curHash = current.getAttribute('data-lanes-hash');
             // Both non-empty AND equal => the grid is byte-identical to what's mounted: skip the swap.
             if (nextHash && curHash && nextHash === curHash) {
                 event.detail.shouldSwap = false;
             }
+        });
+        document.body.addEventListener('htmx:oobAfterSwap', function (event) {
+            const swapped = (event.detail && event.detail.target) || event.target;
+            const focusId = swapped && swapped.dataset ? swapped.dataset.pollRestoreFocus : null;
+            if (!focusId) return;
+            delete swapped.dataset.pollRestoreFocus;
+            const replacement = document.getElementById(focusId);
+            if (replacement) replacement.focus({ preventScroll: true });
         });
         document.body.addEventListener('htmx:afterSwap', function (event) {
             // htmx:afterSwap exposes the request target as event.detail.target (htmx 2.0.10);

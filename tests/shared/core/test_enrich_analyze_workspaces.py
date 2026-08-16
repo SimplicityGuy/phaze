@@ -266,6 +266,15 @@ async def test_workspaces_sink_analyze_lanes_oob_grid(client: AsyncClient) -> No
 
 
 @pytest.mark.asyncio
+async def test_workspaces_sink_scoped_analyze_active_oob_metric(client: AsyncClient) -> None:
+    """Every workspace has one target for the live lane-working Active metric."""
+    for stage in ("discover", "metadata", "analyze"):
+        fragment = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
+        assert fragment.status_code == 200
+        assert fragment.text.count('id="analyze-active-total-card"') == 1
+
+
+@pytest.mark.asyncio
 async def test_analyze_workspace_hosts_the_real_analysis_health_card(client: AsyncClient, session: AsyncSession) -> None:
     """Regression (phaze-tyt3): the Analyze workspace mounts a VISIBLE #analysis-health-card host.
 
@@ -527,6 +536,7 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
             "inadmissible": 0,
             "queued": 1,
             "working": 2,
+            "active": None,
             "processed_24h": 12,
             "processed_lifetime": 340,
         },
@@ -541,6 +551,7 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
             "inadmissible": 1,
             "queued": 2,
             "working": 1,
+            "active": 0,
             "processed_24h": 5,
             "processed_lifetime": 42,
         },
@@ -555,6 +566,7 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
             "inadmissible": 0,
             "queued": 3,
             "working": 5,
+            "active": 5,
             "processed_24h": 20,
             "processed_lifetime": 500,
         },
@@ -600,24 +612,25 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
     assert "RANK 10 · cap 4" in body
     assert "RANK 20 · cap 3" in body
     assert "RANK 99 · cap 8" in body
-    # phaze-5c6i2: the old {in_flight}/{cap} numeral is GONE.
-    assert "2/4" not in body
-    assert "1/3" not in body
-    assert "5/8" not in body
+    # Scheduler capacity is explicit and comparable in every row: in-flight / configured cap.
+    assert "2/4" in body
+    assert "1/3" in body
+    assert "5/8" in body
     # queued/working/processed render per lane, 24h primary + lifetime caption (acceptance rule 1).
     assert "processed 12 (24h) / 340 all time" in body  # a1
     assert "processed 5 (24h) / 42 all time" in body  # k8s
     assert "processed 20 (24h) / 500 all time" in body  # nox
+    active_metric = body[body.index('id="analyze-active-total-card"') :]
+    assert re.search(r">\s*—\s*</dd>", active_metric), "compute execution is unavailable, so the mixed-lane Active roll-up must be unknown"
+    assert "execution activity unavailable" in active_metric
     # D-03 per-lane Kueue admission caption: quota-wait vs Inadmissible, word-labelled.
     assert "2 waiting" in body
     assert "1 inadmissible" in body
     # local lane available=False -> explicit "offline" word (never hidden). "not configured" is retired.
     assert "offline" in body
     assert "not configured" not in body
-    # phaze-5c6i2 (acceptance rule 5): nox's working (5) exceeds its cap (8)? No -- pick a lane where it
-    # DOES, so the fault renders. nox: working=5, cap=8 -> NOT over cap; assert the fault does NOT fire
-    # for a lane within cap, and see test_lane_card_working_over_cap_is_a_visible_fault for the positive case.
-    assert "exceeds cap" not in body
+    # Capacity is scheduler in-flight, not active execution. All three lanes remain within cap.
+    assert "exceeds scheduler cap" not in body
 
     # D-07 / WORK-03 load-bearing distinction: the Inadmissible FAULT carries role="alert"; the HEALTHY
     # admission-state card does NOT (the fault can never be collapsed into healthy progression).
@@ -634,6 +647,204 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
     # WORK-05 / R-2: no second poll loop in the workspace fragment.
     assert 'hx-trigger="every' not in body
     assert "setInterval" not in body
+
+
+@pytest.mark.asyncio
+async def test_analyze_workspace_leads_with_flow_then_alerts_and_lanes(client: AsyncClient, session: AsyncSession) -> None:
+    """The default hierarchy is scoped flow, actionable health, lane comparison, then diagnostics."""
+    await _seed_file(session)
+
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    body = response.text
+
+    metrics = body.index('aria-label="Analyze flow metrics"')
+    health = body.index('id="analysis-health-card"')
+    lanes = body.index('id="analyze-lanes"')
+    diagnostics = body.index('id="analysis-diagnostics"')
+    files = body.index('id="analyze-files-view"')
+    assert metrics < health < lanes < diagnostics < files
+    for label in ("Queued", "Active", "Awaiting route", "Completed"):
+        assert label in body[metrics:health]
+    assert 'id="analyze-active-total-card"' in body[metrics:health]
+    assert 'x-text="$store.pipeline.analyzeActive"' not in body[metrics:health]
+    assert "execution activity unavailable" in body[metrics:health]
+    assert "executing now" not in body[metrics:health]
+    assert 'x-text="$store.pipeline.analyzeDone"' in body[metrics:health]
+    assert "Queued" in body and "lane capacity" in body and "Completed" in body
+    assert "Technical diagnostics" in body
+    assert 'hx-get="/pipeline/analyze-files"' in body
+    assert 'hx-post="/pipeline/stages/analyze/pause"' in body
+    assert 'hx-post="/pipeline/stages/analyze/resume"' in body
+
+
+@pytest.mark.asyncio
+async def test_poll_repushes_lane_attributed_active_metric(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 5s poll sums comparable execution facts and propagates unavailable/empty snapshots."""
+    import phaze.routers.pipeline as pipeline_mod
+
+    state: dict[str, object] = {"local": 2, "kueue": 3, "compute": False, "empty": False}
+
+    async def _snapshot(_session: AsyncSession, _app_state: object = None) -> list[dict[str, object]]:
+        if state["empty"]:
+            return []
+        lanes = [
+            {
+                "id": "local",
+                "kind": "local",
+                "rank": 10,
+                "cap": 4,
+                "in_flight": 4,
+                "available": True,
+                "quota_wait": 0,
+                "inadmissible": 0,
+                "queued": 1,
+                "working": state["local"],
+                "active": state["local"],
+                "processed_24h": 1,
+                "processed_lifetime": 1,
+            },
+            {
+                "id": "kueue",
+                "kind": "kueue",
+                "rank": 20,
+                "cap": 4,
+                "in_flight": 4,
+                "available": True,
+                "quota_wait": 0,
+                "inadmissible": 0,
+                "queued": 1,
+                "working": 4,
+                "active": state["kueue"],
+                "processed_24h": 1,
+                "processed_lifetime": 1,
+            },
+        ]
+        if state["compute"]:
+            lanes.append(
+                {
+                    "id": "compute",
+                    "kind": "compute",
+                    "rank": 30,
+                    "cap": 4,
+                    "in_flight": 1,
+                    "available": True,
+                    "quota_wait": 0,
+                    "inadmissible": 0,
+                    "queued": 1,
+                    "working": 0,
+                    "active": None,
+                    "processed_24h": 1,
+                    "processed_lifetime": 1,
+                }
+            )
+        return lanes
+
+    monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
+    poll = await client.get("/pipeline/stats")
+    card = poll.text[poll.text.index('id="analyze-active-total-card"') :]
+    assert 'hx-swap-oob="true"' in card[:200]
+    assert re.search(r">\s*5\s*</dd>", card)
+
+    state["compute"] = True
+    degraded = await client.get("/pipeline/stats")
+    card = degraded.text[degraded.text.index('id="analyze-active-total-card"') :]
+    assert re.search(r">\s*—\s*</dd>", card), "unobservable compute execution must make Active unknown"
+
+    state["compute"] = False
+    state["empty"] = True
+    empty = await client.get("/pipeline/stats")
+    card = empty.text[empty.text.index('id="analyze-active-total-card"') :]
+    assert re.search(r">\s*—\s*</dd>", card), "an empty/degraded snapshot is unknown, not zero"
+
+
+@pytest.mark.asyncio
+async def test_analyze_over_limit_is_unsafe_and_explains_remedy(
+    client: AsyncClient,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real scheduler in-flight over-capacity is red even when active execution remains below cap."""
+    import phaze.routers.pipeline as pipeline_mod
+
+    lane = {
+        "id": "local",
+        "kind": "local",
+        "rank": 10,
+        "cap": 2,
+        "in_flight": 3,
+        "available": True,
+        "quota_wait": 0,
+        "inadmissible": 0,
+        "queued": 4,
+        "working": 1,
+        "active": 1,
+        "processed_24h": 8,
+        "processed_lifetime": 80,
+    }
+
+    async def _snapshot(_session: AsyncSession, _app_state: object = None) -> list[dict[str, object]]:
+        return [lane]
+
+    monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
+    await _seed_file(session)
+
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    body = response.text
+    health = body[body.index('id="analysis-health-card"') : body.index("</section>", body.index('id="analysis-health-card"'))]
+    assert "UNSAFE" in health
+    assert "3 in-flight jobs exceed scheduler cap 2" in health
+    assert "Stop new admission and inspect the lane" in health
+    assert "OVER LIMIT" in body
+    assert re.search(r">Active</dt><dd[^>]*>1</dd>", body)
+    assert re.search(r">Capacity</dt><dd[^>]*>3/2</dd>", body)
+    assert "New work can compound resource pressure" in body
+
+
+@pytest.mark.asyncio
+async def test_analyze_exact_capacity_is_amber_congestion(
+    client: AsyncClient,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exactly full capacity queues new work but is not the unsafe red over-limit condition."""
+    import phaze.routers.pipeline as pipeline_mod
+
+    lane = {
+        "id": "local",
+        "kind": "local",
+        "rank": 10,
+        "cap": 2,
+        "in_flight": 2,
+        "available": True,
+        "quota_wait": 0,
+        "inadmissible": 0,
+        "queued": 4,
+        "working": 1,
+        "active": 1,
+        "processed_24h": 8,
+        "processed_lifetime": 80,
+    }
+
+    async def _snapshot(_session: AsyncSession, _app_state: object = None) -> list[dict[str, object]]:
+        return [lane]
+
+    monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
+    await _seed_file(session)
+
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    body = response.text
+    health = body[body.index('id="analysis-health-card"') : body.index("</section>", body.index('id="analysis-health-card"'))]
+    assert "CONGESTED" in health and "2 in-flight jobs fill scheduler cap 2" in health
+    assert "AT CAPACITY" in body
+    assert "New work remains queued until a slot opens" in body
+    assert "OVER LIMIT" not in body and "UNSAFE" not in health
+    assert "bg-amber-50" in body and "bg-red-50" not in health
 
 
 @pytest.mark.asyncio
@@ -979,6 +1190,14 @@ async def test_shell_carries_analyze_lanes_idempotent_skip_hook(client: AsyncCli
     assert "htmx:oobBeforeSwap" in body
     assert "analyze-lanes" in body
     assert "shouldSwap = false" in body
+    assert "transferPollState(current, incoming)" in body
+    assert "data-poll-preserve-disclosure" in body
+    assert "data-poll-preserve-response" in body
+    assert "current.querySelector('.htmx-request')" in body
+    assert "replacement.innerHTML = response.innerHTML" in body
+    assert "htmx:oobAfterSwap" in body
+    assert "pollRestoreFocus" in body
+    assert "replacement.focus({ preventScroll: true })" in body
     # WORK-05 / R-2: still exactly one poll, no second loop.
     assert body.count('hx-get="/pipeline/stats"') == 1
     assert "setInterval" not in body

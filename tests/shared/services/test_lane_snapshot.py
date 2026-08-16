@@ -397,6 +397,7 @@ async def test_snapshot_shape_and_rank_order(session: AsyncSession, monkeypatch:
         "inadmissible",
         "queued",
         "working",
+        "active",
         "processed_24h",
         "processed_lifetime",
     }
@@ -417,6 +418,7 @@ async def test_snapshot_shape_and_rank_order(session: AsyncSession, monkeypatch:
         "inadmissible": 0,
         "queued": 1,
         "working": 0,
+        "active": None,
         "processed_24h": 0,
         "processed_lifetime": 0,
     }
@@ -432,6 +434,7 @@ async def test_snapshot_shape_and_rank_order(session: AsyncSession, monkeypatch:
         "inadmissible": 0,
         "queued": 0,
         "working": 1,
+        "active": 0,
         "processed_24h": 0,
         "processed_lifetime": 0,
     }
@@ -446,6 +449,7 @@ async def test_snapshot_shape_and_rank_order(session: AsyncSession, monkeypatch:
         "inadmissible": 0,
         "queued": None,
         "working": None,
+        "active": None,
         "processed_24h": 0,
         "processed_lifetime": 0,
     }
