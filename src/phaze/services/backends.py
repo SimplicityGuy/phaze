@@ -1537,17 +1537,23 @@ async def _cloud_lane_active(session: AsyncSession, backend_id: str, kind: str) 
 async def get_analysis_live_count(session: AsyncSession, app_state: Any) -> int | None:
     """Return analyses executing now across local and configured cloud backends.
 
-    Local execution is SAQ ``active``. Cloud execution is ``cloud_job.status == RUNNING``; SUBMITTED
-    work is deliberately excluded because it can still be waiting for Kueue quota or admission. This
-    avoids availability probes, capacity reads, and serial per-lane history queries. If either source
-    is unreadable, the aggregate is unknown rather than a partial total presented as zero.
+    Local execution is SAQ ``active``. Kueue execution is ``cloud_job.status == RUNNING``; SUBMITTED
+    work is deliberately excluded because it can still be waiting for quota or admission. Compute has
+    no equivalent execution signal, so any configured compute lane makes the aggregate unknown rather
+    than silently contributing zero. This avoids availability probes, capacity reads, and serial
+    per-lane history queries. If any source is unreadable or unobservable, the aggregate is unknown.
     """
     _, local_active = await _local_lane_queued_working(session, app_state)
     try:
-        cloud_ids = [backend.id for backend in resolve_backends(cast("ControlSettings", get_settings())) if _kind_of(backend) != "local"]
+        cloud_backends = [
+            (backend, kind) for backend in resolve_backends(cast("ControlSettings", get_settings())) if (kind := _kind_of(backend)) != "local"
+        ]
     except Exception:
         logger.warning("analysis_live_count_degraded", exc_info=True)
         return None
+    if any(kind != "kueue" for _, kind in cloud_backends):
+        return None
+    cloud_ids = [backend.id for backend, _ in cloud_backends]
     if cloud_ids:
         cloud_active = await _safe_count_or_none(
             session,
