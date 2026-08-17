@@ -283,11 +283,11 @@ _EMPTY_STATE_PARTIAL = "pipeline/partials/empty_state.html"
 #    _render_stage returns _propose_list.html (the container's INNER content), never the host div, and
 #    the two files are kept separate for exactly that reason. The full-workspace branch is the only
 #    producer of the wrapper. phaze-a6hm.11 added a THIRD producer -- the bulk approve/reject
-#    response -- and it obeys the same split: _propose_bulk_response.html includes _propose_list.html
-#    (inner content) and never the wrapper, so a bulk action cannot nest a second container either.
-#    The bulk controls introduce NO new id of their own: they live inside this container, and they
-#    address the checkboxes through a descendant selector rooted at THIS id rather than a private id
-#    of their own, so there is nothing new here that could collide with anything.
+#    response (_propose_bulk_response.html) -- and it obeyed the same split, including
+#    _propose_list.html (inner content) and never the wrapper. phaze-7tiqp retired that producer
+#    with the rest of the Propose bulk chain: ADR-0008 made Changes Review the only surface that
+#    authorizes anything, so Propose has no bulk controls and PATCH /proposals/bulk no longer has a
+#    branch that renders into this container. Two producers again, both listed above.
 # 5. No OOB fragment targets it: this container is only ever an hx-target, and oob_counts stays False
 #    on every stage render (Pitfall 5), so the chrome poll's OOB seeds cannot land here.
 PROPOSE_LIST_CONTAINER_ID = "propose-workspace-list"

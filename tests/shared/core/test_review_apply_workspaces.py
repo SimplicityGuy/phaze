@@ -127,18 +127,22 @@ async def test_review_single_poll_discipline(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bulk_approve_high_confidence_server_predicate(
+async def test_no_corpus_wide_bulk_approve_survives_anywhere(
     client: AsyncClient,
     session: AsyncSession,
     seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
 ) -> None:
-    """REVIEW-02 / D-02 -- bulk approve re-queries confidence>=0.9 and ignores any client id-list.
+    """REVIEW-02 / D-02's corpus-wide bulk approve is retired -- no surface and no route (phaze-7tiqp).
 
-    Seeds a 0.95 + a 0.50 + a NULL-confidence pending proposal, then submits a client
-    ``proposal_ids`` form field naming the 0.50 row (the REVIEW-02 anti-pattern). The server
-    re-query MUST drive the result: exactly the 0.95 row is approved; the 0.50 row is untouched
-    (the client id-list has NO effect); the NULL-confidence row is excluded by the SQL predicate
-    (Pitfall 2), never approved.
+    This test used to exercise ``PATCH /proposals/bulk-approve-high-confidence`` and assert its
+    server-side predicate drove the result (>=0.9 PENDING approved, a forged client id-list ignored,
+    NULL confidence excluded). ADR-0008 then made Changes Review the only surface that authorizes
+    anything, and its bulk action is selection-driven: an operator approves rows they have SEEN.
+    That deleted the route's two callers, and phaze-7tiqp deleted the route.
+
+    So the property is now the stronger one -- there is no way, from any surface or by hand, to
+    authorize a corpus-wide set nobody rendered. Neither the seeded 0.95 row nor anything else may
+    transition, and the two Review dimensions must not link at the retired endpoint.
     """
     p_high = await seed_pending_proposal(0.95, original_filename="high.mp3")
     p_mid = await seed_pending_proposal(0.50, original_filename="mid.mp3")
@@ -146,23 +150,18 @@ async def test_bulk_approve_high_confidence_server_predicate(
 
     resp = await client.patch(
         "/proposals/bulk-approve-high-confidence",
-        data={"proposal_ids": str(p_mid.id)},  # forged selection -- must be ignored
+        data={"proposal_ids": str(p_mid.id)},
     )
-    assert resp.status_code == 200
+    assert not resp.is_success, f"the retired route answered {resp.status_code}"
 
-    await session.refresh(p_high)
-    await session.refresh(p_mid)
-    await session.refresh(p_null)
-    assert p_high.status == ProposalStatus.APPROVED.value, "only the >=0.9 pending row is approved"
-    assert p_mid.status == ProposalStatus.PENDING.value, "the client id-list must not approve the 0.50 row"
-    assert p_null.status == ProposalStatus.PENDING.value, "NULL confidence is excluded by the SQL predicate"
+    for proposal in (p_high, p_mid, p_null):
+        await session.refresh(proposal)
+        assert proposal.status == ProposalStatus.PENDING.value, "nothing may be approved without being rendered and selected"
 
-    # The compatibility endpoint remains live, but neither Review dimension can expose a corpus-wide
-    # action that authorizes values outside its rendered window.
     rename = await client.get("/s/rename", headers={"HX-Request": "true"})
     move = await client.get("/s/move", headers={"HX-Request": "true"})
-    assert 'hx-patch="/proposals/bulk-approve-high-confidence"' not in rename.text
-    assert 'hx-patch="/proposals/bulk-approve-high-confidence"' not in move.text
+    assert "/proposals/bulk-approve-high-confidence" not in rename.text
+    assert "/proposals/bulk-approve-high-confidence" not in move.text
 
 
 @pytest.mark.asyncio

@@ -164,8 +164,12 @@ def proposal_review_digest(proposal: RenameProposal) -> str:
 
 
 async def count_pending_above_confidence(session: AsyncSession, threshold: float = 0.9) -> int:
-    """Count PENDING proposals with confidence >= threshold -- read-only, mirrors the EXACT
-    predicate :func:`approve_pending_above_confidence` bulk-approves (phaze-rw14).
+    """Count PENDING proposals with confidence >= threshold -- read-only (phaze-rw14).
+
+    phaze-7tiqp: this used to mirror the predicate of ``approve_pending_above_confidence``, the
+    server-evaluated bulk approve behind ``PATCH /proposals/bulk-approve-high-confidence``. That
+    route lost its last UI caller at ADR-0008 and was retired with its service function, so the
+    predicate below is now stated in its own right rather than as a mirror of a sibling's.
 
     The Rename/Move workspaces' bulk-approve confirm dialog used to quote the RENDERED row count
     (``rename_proposals | length``, capped at 200 and unfiltered by confidence) as the number of
@@ -458,53 +462,6 @@ async def bulk_update_status(
     cursor_result: Any = await session.execute(stmt)
     await session.commit()
     return int(cursor_result.rowcount)
-
-
-async def approve_pending_above_confidence(session: AsyncSession, threshold: float = 0.9) -> list[uuid_mod.UUID]:
-    """Approve every PENDING proposal whose confidence >= threshold in ONE atomic UPDATE.
-
-    REVIEW-02 / D-02: the caller passes NO id-list; the server re-evaluates the fixed confidence
-    predicate at submit. Rows whose ``confidence`` IS NULL are excluded by the SQL comparison
-    (Pitfall 2 -- the conservative-correct behavior for an irreplaceable archive; do NOT COALESCE),
-    leaving them for per-file review. Returns the ids actually transitioned to APPROVED.
-
-    phaze-0ew3 / phaze-p35v: this used to SELECT the matching ids, then hand them to
-    :func:`bulk_update_status` as an expanding ``id IN (...)`` -- one bind parameter per id. Two
-    defects followed from that snapshot-then-write shape, and both are closed by folding the WHOLE
-    predicate (status AND confidence) into a SINGLE ``UPDATE ... WHERE ... RETURNING id``:
-
-    * (phaze-0ew3) asyncpg caps a statement at 32,767 bind parameters. D-04 keeps one PENDING
-      proposal per file and the product is designed for a ~200K-file archive, so the pending set
-      with confidence >= 0.9 can organically exceed that cap -- the id-list UPDATE then 500s
-      deterministically, every retry, at exactly the scale the feature exists for. A predicate-only
-      UPDATE binds ``threshold`` once regardless of how many rows match.
-    * (phaze-p35v) the id SELECT and the UPDATE were two statements: the from-state guard
-      (``allowed_from=[PENDING]``) landed inside the UPDATE's WHERE (phaze-bg4w), but the
-      CONFIDENCE half of the predicate did not, so a proposal a concurrent ``store_proposals``
-      upsert overwrote between the SELECT and the UPDATE -- keeping the same id and PENDING status
-      but replacing ``proposed_filename`` / ``proposed_path`` / ``confidence`` -- could be approved
-      with content nobody ever saw at >= threshold. Evaluating BOTH predicates inside the one
-      UPDATE means the write only ever approves a row whose confidence is >= threshold AT THE
-      MOMENT it commits, closing this TOCTOU the same way phaze-bg4w closed the status half.
-
-    ``RETURNING id`` also lets ``routers.proposals.bulk_approve_high_confidence`` build its v7 OOB
-    row fragments from the rows THIS call actually approved, instead of a separate pre-update
-    id-snapshot select (the second unbounded ``id IN (...)`` the phaze-0ew3 review found at
-    ``routers/proposals.py``).
-    """
-    stmt = (
-        update(RenameProposal)
-        .where(
-            RenameProposal.status == ProposalStatus.PENDING.value,
-            RenameProposal.confidence >= threshold,
-        )
-        .values(status=ProposalStatus.APPROVED.value)
-        .returning(RenameProposal.id)
-    )
-    cursor_result: Any = await session.execute(stmt)
-    ids = list(cursor_result.scalars().all())
-    await session.commit()
-    return ids
 
 
 async def update_proposal_fields(

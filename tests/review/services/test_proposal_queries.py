@@ -18,7 +18,6 @@ from phaze.services.proposal_queries import (
     ProposalStaleWriteError,
     ProposalStats,
     ProposalTransitionError,
-    approve_pending_above_confidence,
     bulk_update_status,
     count_pending_above_confidence,
     get_proposal_stats,
@@ -518,14 +517,19 @@ async def test_bulk_update_status_empty_list(session: AsyncSession) -> None:
 
 
 # ---------------------------------------------------------------------------
-# approve_pending_above_confidence allowed_from guard (phaze-bg4w)
+# bulk_update_status allowed_from guard (phaze-bg4w)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_bulk_update_status_allowed_from_skips_rejected(session: AsyncSession) -> None:
-    """The guard approve_pending_above_confidence now passes: a stale id whose row was REJECTED
-    between the SELECT and the UPDATE is NOT flipped to APPROVED (the phaze-bg4w TOCTOU shape).
+    """A stale id whose row was REJECTED between the SELECT and the UPDATE is NOT flipped to
+    APPROVED (the phaze-bg4w TOCTOU shape).
+
+    phaze-7tiqp: the guard was introduced for ``approve_pending_above_confidence``, retired with the
+    routeless bulk-approve-high-confidence chain. It still holds the same line for the live
+    selection-driven caller, ``bulk_action``'s reject branch, so the case is kept and re-attributed
+    rather than deleted alongside it.
     """
     proposal = await _create_proposal(session, original_filename="bg4w.mp3", confidence=0.95)
     # Simulate the concurrent reject that landed after the id was snapshotted.
@@ -538,53 +542,6 @@ async def test_bulk_update_status_allowed_from_skips_rejected(session: AsyncSess
     assert refetched.status == ProposalStatus.REJECTED
 
 
-@pytest.mark.asyncio
-async def test_approve_pending_above_confidence_leaves_non_pending_untouched(session: AsyncSession) -> None:
-    """Only PENDING high-confidence rows are approved; a REJECTED high-confidence row stays rejected."""
-    pending = await _create_proposal(session, original_filename="hc_pending.mp3", confidence=0.95)
-    rejected = await _create_proposal(session, original_filename="hc_rejected.mp3", confidence=0.95, status=ProposalStatus.REJECTED)
-
-    approved_ids = await approve_pending_above_confidence(session, threshold=0.9)
-    assert approved_ids == [pending.id]
-
-    approved_row = await session.get(RenameProposal, pending.id)
-    assert approved_row is not None
-    assert approved_row.status == ProposalStatus.APPROVED
-
-    rejected_row = await session.get(RenameProposal, rejected.id)
-    assert rejected_row is not None
-    assert rejected_row.status == ProposalStatus.REJECTED
-
-
-@pytest.mark.asyncio
-async def test_approve_pending_above_confidence_no_matches_returns_empty_list(session: AsyncSession) -> None:
-    """No PENDING row meets the threshold: an empty list, not a stray query error."""
-    await _create_proposal(session, original_filename="low_conf.mp3", confidence=0.3)
-
-    approved_ids = await approve_pending_above_confidence(session, threshold=0.9)
-    assert approved_ids == []
-
-
-@pytest.mark.asyncio
-async def test_approve_pending_above_confidence_reads_latest_confidence(session: AsyncSession) -> None:
-    """phaze-p35v: the confidence predicate is evaluated INSIDE the same UPDATE that flips
-    ``status``, so a PENDING row whose confidence was lowered (mirroring a concurrent re-propose
-    upsert that keeps the id and PENDING status but replaces ``confidence``) is judged against its
-    CURRENT value, never a value read by an earlier, separate SELECT.
-    """
-    proposal = await _create_proposal(session, original_filename="reproposed.mp3", confidence=0.95)
-    # Mirrors store_proposals' upsert lowering confidence on a re-propose while the row stays PENDING.
-    proposal.confidence = 0.3
-    await session.commit()
-
-    approved_ids = await approve_pending_above_confidence(session, threshold=0.9)
-    assert approved_ids == []
-
-    refetched = await session.get(RenameProposal, proposal.id)
-    assert refetched is not None
-    assert refetched.status == ProposalStatus.PENDING
-
-
 # ---------------------------------------------------------------------------
 # count_pending_above_confidence (phaze-rw14)
 # ---------------------------------------------------------------------------
@@ -592,8 +549,12 @@ async def test_approve_pending_above_confidence_reads_latest_confidence(session:
 
 @pytest.mark.asyncio
 async def test_count_pending_above_confidence_matches_approve_predicate(session: AsyncSession) -> None:
-    """The count mirrors EXACTLY what approve_pending_above_confidence would approve right now --
-    PENDING only, confidence >= threshold, NULL confidence excluded.
+    """PENDING only, confidence >= threshold, NULL confidence excluded.
+
+    phaze-7tiqp: this used to cross-check the count against what
+    ``approve_pending_above_confidence`` actually approved for the same threshold. That function was
+    retired with the routeless bulk-approve-high-confidence chain, so the predicate is now asserted
+    directly instead of by agreement with a sibling.
     """
     await _create_proposal(session, original_filename="hc1.mp3", confidence=0.95)
     await _create_proposal(session, original_filename="hc2.mp3", confidence=0.91)
@@ -603,10 +564,6 @@ async def test_count_pending_above_confidence_matches_approve_predicate(session:
 
     count = await count_pending_above_confidence(session, threshold=0.9)
     assert count == 2
-
-    # And it agrees with what actually gets approved for the same threshold.
-    approved_ids = await approve_pending_above_confidence(session, threshold=0.9)
-    assert len(approved_ids) == 2
 
 
 @pytest.mark.asyncio

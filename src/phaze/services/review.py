@@ -286,9 +286,10 @@ async def get_pending_proposal_rows(session: AsyncSession, *, confidence_thresho
     on every call -- that total used to be fetched and immediately discarded (bound to ``_pagination``
     and dropped). Returning it here is free: no new query, just no longer throwing away the one this
     function already ran. ``high_confidence_pending`` is one additional lightweight COUNT
-    (:func:`count_pending_above_confidence`) using the SAME predicate
-    :func:`approve_pending_above_confidence` bulk-approves, so the confirm dialog can name what the
-    action actually does instead of the rendered page's row count.
+    (:func:`count_pending_above_confidence`) over the >= threshold PENDING set, so a confirm dialog
+    can name what a bulk action actually covers instead of the rendered page's row count. It used
+    to be described as mirroring ``approve_pending_above_confidence``; phaze-7tiqp retired that
+    function along with the routeless bulk-approve-high-confidence chain.
     """
     try:
         async with session.begin_nested():

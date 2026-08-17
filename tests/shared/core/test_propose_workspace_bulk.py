@@ -1,19 +1,17 @@
-"""Bulk endpoint compatibility after decisions moved out of the Propose workspace.
+"""Propose is preparation-only, and the bulk endpoint's guarantees hold for every caller.
 
-The human-in-the-loop approval gate remains backend-compatible, but the preparation-only Propose
-workspace no longer advertises it. Review owns decisions; these tests retain the endpoint's state,
-count, idempotency, response-shape, and view-state guarantees for existing callers.
+Propose once carried its own bulk bar, and ``PATCH /proposals/bulk`` answered it with a dedicated
+response shape (``_propose_bulk_response.html``) chosen by ``HX-Target``. phaze-tzy6s.7 deleted the
+bar; ADR-0008 made Changes Review the only surface that authorizes anything; phaze-7tiqp deleted the
+branch, which by then was reachable only by a hand-built request. This file is what survived that:
+the half of it asserting the deleted response's SHAPE went with the response, and the half asserting
+the ENDPOINT's behaviour stayed, because that behaviour is unchanged and still worth pinning.
 
-What is deliberately NOT re-litigated here: the from-state guard itself and the legacy surface's
-view-state round trip. Those are ``tests/review/routers/test_proposals.py``'s
-``test_bulk_action_skips_terminal_rows`` and the two phaze-gc5d tests, which must stay green
-unchanged -- this bead SHARES their endpoint rather than forking it, so weakening them would
-weaken this surface too. What IS tested here is that the propose workspace genuinely inherits
-those guarantees, which is a different claim from "the legacy view has them".
+What remains, and why each one is here:
 
-Four things get more than the usual scrutiny:
-
-* **Selection fidelity.** The request must carry exactly the ticked rows. Asserting on the rendered
+* **Propose advertises no decision controls.** The premise the rest of the file rests on -- if
+  Propose ever regrows a bulk bar, these fail first.
+* **Selection fidelity.** The request must act on exactly the ticked rows. Asserting on the rendered
   result alone is not enough: a bulk that acted on the whole page would look identical in a
   one-row-selected test if the page had one row. So the unselected row is asserted UNCHANGED in the
   database, not merely absent from the response.
@@ -21,8 +19,12 @@ Four things get more than the usual scrutiny:
 * **Idempotency under replay.** The endpoint mutates many rows at once, and this repo has a recorded
   double-dispatch bug (phaze-fa2p) and a bulk TOCTOU double-write (phaze-u28m). The second identical
   submission must be a no-op that says so.
-* **Duplicate ids** (four on record: gzrd, op6f, 7j50, and the one 5p43 avoided). The bulk response
-  is a THIRD producer of the container's contents and must not re-emit the container itself.
+* **One response shape.** The route no longer forks on ``HX-Target`` at all -- the property that
+  replaced the two shape-and-container tests deleted here.
+
+What is deliberately NOT re-litigated: the from-state guard itself. That is
+``tests/review/routers/test_proposals.py``'s ``test_bulk_approve_skips_terminal_rows``, which shares
+this endpoint rather than forking it.
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ import pytest
 from sqlalchemy import update
 
 from phaze.models.proposal import ProposalStatus, RenameProposal
-from phaze.routers.shell import PROPOSE_LIST_CONTAINER_ID
+from phaze.routers.shell import CHANGES_LIST_CONTAINER_ID, PROPOSE_LIST_CONTAINER_ID
 from phaze.services.proposal_queries import proposal_review_digest
 
 
@@ -44,8 +46,11 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-_CONTAINER = PROPOSE_LIST_CONTAINER_ID
-_BULK_TARGET = {"HX-Request": "true", "HX-Target": _CONTAINER}
+# The Propose container id, still sent as HX-Target by the tests below ON PURPOSE (phaze-7tiqp).
+# It is now an id no live control targets at this endpoint, which is exactly what makes it a useful
+# probe: the route must ignore it and answer with the Changes Review body regardless, rather than
+# growing a third surface-specific branch the way it twice did before.
+_BULK_TARGET = {"HX-Request": "true", "HX-Target": PROPOSE_LIST_CONTAINER_ID}
 
 
 def _review_token(proposal: RenameProposal) -> str:
@@ -122,164 +127,6 @@ async def test_bulk_reject_acts_on_exactly_the_selection(
 
 # ---------------------------------------------------------------------------
 # Acceptance 2 -- the response re-renders the list, on the SAME view it came from
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_bulk_response_is_the_propose_list_not_an_empty_or_legacy_body(
-    client: AsyncClient,
-    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
-) -> None:
-    """The body is #propose-workspace-list's OWN inner content -- rows + bulk bar + pager.
-
-    Two distinct failures are excluded. The phaze-gc5d shape: a response whose body is gated on a
-    single ``proposal`` and is therefore EMPTY for a bulk, which swaps emptiness into the container
-    and wipes the list. And the wrong-container shape: answering with the LEGACY
-    ``proposal_list.html`` body, whose contract is a different set of children -- putting either
-    container's contents inside the other is precisely the phaze-7j50 defect the two distinct ids
-    exist to prevent.
-    """
-    await seed_pending_proposal(0.9, original_filename="stays.mp3", proposed_filename="Stays.mp3")
-    other = await seed_pending_proposal(0.9, original_filename="acted.mp3", proposed_filename="Acted.mp3")
-
-    body = (
-        await client.patch("/proposals/bulk", data={"action": "approve_eligible", "review_tokens": [_review_token(other)]}, headers=_BULK_TARGET)
-    ).text
-
-    assert "Stays.mp3" in body, "the surviving row must be re-rendered, not swapped away"
-    assert "Proposed name" in body, "the propose table header must be present (this is the propose container's shape)"
-    assert "Showing" in body, "the pager lives inside this container and must come back with it"
-    assert 'id="proposals-table"' not in body, "the LEGACY table must never be rendered into the propose container"
-
-
-@pytest.mark.asyncio
-async def test_bulk_response_does_not_re_emit_its_own_container(
-    client: AsyncClient,
-    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
-) -> None:
-    """The third producer obeys the same split as the other two: inner content, never the wrapper.
-
-    This is the recurring shape of all four duplicate-id bugs on record -- a fragment that re-emits
-    its own wrapper and nests a copy of itself inside itself, after which later swaps resolve to the
-    outer element while a stale inner copy persists.
-    """
-    proposal = await seed_pending_proposal(0.9, original_filename="dupe.mp3", proposed_filename="Dupe.mp3")
-
-    body = (
-        await client.patch("/proposals/bulk", data={"action": "approve_eligible", "review_tokens": [_review_token(proposal)]}, headers=_BULK_TARGET)
-    ).text
-
-    assert f'id="{_CONTAINER}"' not in body, "the bulk response must not nest a second list container"
-    assert "<html" not in body.lower(), "a fragment must never carry document chrome"
-    # The ONE OOB target is the shared toast container, appended to and never redeclared (phaze-gzrd).
-    assert 'hx-swap-oob="beforeend:#toast-container"' in body
-    assert 'id="toast-container"' not in body
-
-
-@pytest.mark.asyncio
-async def test_bulk_response_refreshes_the_tab_badge_counts(
-    client: AsyncClient,
-    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
-) -> None:
-    """Bonus of phaze-xxp2: the tabs now live inside the container the bulk response re-renders, so
-    their corpus-wide count badges refresh with it -- for free, since ``build_propose_list_context``
-    (the bulk endpoint's own context builder) recomputes ``propose_stats`` AFTER the UPDATE.
-    """
-    proposal = await seed_pending_proposal(0.9, original_filename="badge.mp3", proposed_filename="Badge.mp3")
-
-    body = (
-        await client.patch("/proposals/bulk", data={"action": "approve_eligible", "review_tokens": [_review_token(proposal)]}, headers=_BULK_TARGET)
-    ).text
-
-    tabs_markup = body.split("</nav>")[0]
-    badges = [chunk.split("<")[0].strip() for chunk in tabs_markup.split('rounded-full px-2 py-0.5 ml-1">')[1:]]
-    assert badges == ["1", "0", "1", "0"], f"badges must reflect the post-approve counts (total/pending/approved/rejected), got {badges}"
-
-
-@pytest.mark.asyncio
-async def test_bulk_returns_on_the_same_filter_search_and_page_it_was_issued_from(
-    client: AsyncClient,
-    session: AsyncSession,
-    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
-) -> None:
-    """The phaze-gc5d guarantee, inherited by this surface: no silent reset to page 1 / pending.
-
-    The propose controls carry the view in the URL via ``ListViewState.query()`` rather than as six
-    hidden inputs, and the endpoint re-parses it with the same ``from_request`` the GET uses -- so
-    this asserts the round trip end to end, on a non-default page AND a non-default filter AND a
-    search, which is the combination a per-parameter implementation drops one of.
-    """
-    # DISTINCT confidences, because the view is sorted by confidence: twelve rows at 0.9 make the
-    # ordering a tie and "page 2" a different pair of rows on each query, which would make this test
-    # flap for a reason that has nothing to do with what it asserts.
-    approved = []
-    for i in range(30):
-        proposal = await seed_pending_proposal(0.50 + i / 1000, original_filename=f"a6hmbulk-{i:02d}.mp3", proposed_filename=f"A6HM Bulk {i:02d}.mp3")
-        approved.append(proposal)
-    for proposal in approved:
-        await session.execute(update(RenameProposal).where(RenameProposal.id == proposal.id).values(status=ProposalStatus.APPROVED.value))
-    await session.commit()
-
-    # Page 2 of the APPROVED tab, searched, 25 per page, ascending confidence -> rows 26-30, i.e.
-    # the five highest-confidence seeds. `page_size` must be a member of PAGE_SIZE_CHOICES: an
-    # out-of-set value silently falls back to the default (view_state.py), which would make this
-    # test assert against a page the URL never actually requested.
-    query = "status=approved&q=a6hmbulk&page=2&page_size=25&sort=confidence&order=asc"
-    before = (await client.get(f"/s/propose?{query}", headers=_BULK_TARGET)).text
-    assert "A6HM Bulk 27.mp3" in before, "the fixture must put row 27 on page 2, or this asserts nothing"
-
-    # Act on a row, from that view. Nothing transitions (approved is not a legal from-state), which
-    # is exactly what isolates the VIEW-STATE round trip from the mutation.
-    body = (
-        await client.patch(
-            f"/proposals/bulk?{query}",
-            data={"action": "approve_eligible", "review_tokens": ["stale-reviewed-token"]},
-            headers=_BULK_TARGET,
-        )
-    ).text
-
-    assert "A6HM Bulk 27.mp3" in body, "the response must come back on page 2 of the approved tab, not page 1 of pending"
-    assert "A6HM Bulk 00.mp3" not in body, "a reset to page 1 would surface the first page's rows"
-    # The controls in the returned list must keep re-emitting the same state, or the NEXT click resets it.
-    assert "status=approved" in body and "q=a6hmbulk" in body
-
-
-# ---------------------------------------------------------------------------
-# Acceptance 3 -- the pager reflects POST-action totals (the phaze-7j50 guarantee)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_pager_reports_post_action_totals(
-    client: AsyncClient,
-    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
-) -> None:
-    """After approving 3 of 6 pending rows, the pending pager says 3 -- not the pre-action 6.
-
-    The pager is re-rendered by the same swap as the rows because it lives INSIDE the container.
-    A pager outside it would still read "6" here, which is the stale-count defect 7j50 fixed on the
-    legacy view and which this container must not reintroduce.
-    """
-    proposals = [await seed_pending_proposal(0.9, original_filename=f"pagecount-{i}.mp3", proposed_filename=f"Page Count {i}.mp3") for i in range(6)]
-
-    query = "status=pending&q=pagecount&page=1&page_size=25"
-    before = (await client.get(f"/s/propose?{query}", headers=_BULK_TARGET)).text
-    assert "of 6" in before
-
-    body = (
-        await client.patch(
-            f"/proposals/bulk?{query}",
-            data={"action": "approve_eligible", "review_tokens": [_review_token(p) for p in proposals[:3]]},
-            headers=_BULK_TARGET,
-        )
-    ).text
-
-    assert "of 3" in body, "the pager must report the total AFTER the action"
-    assert "of 6" not in body, "a pre-action total here is the phaze-7j50 stale-pager defect"
-
-
-# ---------------------------------------------------------------------------
-# Acceptance 4 -- legal from-states only; the COUNT is real transitions (phaze-uu17)
 # ---------------------------------------------------------------------------
 
 
@@ -366,36 +213,52 @@ async def test_replaying_the_same_bulk_submission_is_an_honest_no_op(
 
 
 # ---------------------------------------------------------------------------
-# The legacy surface is unaffected by sharing the endpoint
+# One route, one response shape -- whatever HX-Target arrives
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_bulk_action_ignores_hx_target_and_always_returns_the_propose_body(
+@pytest.mark.parametrize(
+    "headers",
+    [
+        pytest.param({}, id="no-target"),
+        pytest.param({"HX-Request": "true", "HX-Target": "proposal-list-container"}, id="legacy-target-phaze-y4s6"),
+        pytest.param({"HX-Request": "true", "HX-Target": PROPOSE_LIST_CONTAINER_ID}, id="propose-target-phaze-7tiqp"),
+        pytest.param({"HX-Request": "true", "HX-Target": "invented-container"}, id="invented-target"),
+    ],
+)
+async def test_bulk_action_answers_with_the_changes_review_body_whatever_hx_target_arrives(
     client: AsyncClient,
     seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+    headers: dict[str, str],
 ) -> None:
-    """phaze-y4s6: the legacy ``#proposal-list-container`` fork is gone; every caller gets the propose body.
+    """``bulk_action`` has no ``HX-Target`` fork left, and this is the test that keeps it that way.
 
-    ``bulk_action`` used to fork the response shape on ``HX-Target`` -- the legacy
-    ``#proposal-list-container`` surface (``proposal_table.html``/``pagination.html``/
-    ``bulk_actions.html``/``proposal_list.html``/``bulk_response.html``) got one shape, the v7
-    propose workspace another. That legacy surface had no live caller left post-v7-cutover and was
-    deleted outright, so the endpoint now serves the v7 propose body UNCONDITIONALLY -- even for a
-    request that still carries the old legacy ``HX-Target`` (e.g. a stale client) or none at all.
+    It grew one twice, and both times the branch outlived its surface. phaze-y4s6 removed the legacy
+    ``#proposal-list-container`` fork (``proposal_table.html`` / ``pagination.html`` /
+    ``bulk_actions.html`` / ``proposal_list.html`` / ``bulk_response.html``), dead since the v7
+    cutover. phaze-7tiqp removed the Propose fallthrough (``_propose_bulk_response.html``), dead
+    since phaze-tzy6s.7 deleted the Propose bulk bar and ADR-0008 made Changes Review the only
+    surface that authorizes anything.
+
+    So every caller now gets the Changes Review list -- the surface that owns this action -- whether
+    it names a retired container, an invented one, or nothing at all. The mutation itself is
+    unconditional either way; what the parametrization pins is that the RESPONSE does not vary,
+    because a shape only one hand-built request can reach is how both dead branches survived.
     """
     await seed_pending_proposal(0.9, original_filename="stays.mp3", proposed_filename="Stays.mp3")
-    acted = await seed_pending_proposal(0.9, original_filename="legacy.mp3", proposed_filename="Legacy.mp3")
+    acted = await seed_pending_proposal(0.9, original_filename="acted.mp3", proposed_filename="Acted.mp3")
 
     body = (
         await client.patch(
             "/proposals/bulk",
             data={"action": "approve_eligible", "review_tokens": [_review_token(acted)]},
-            headers={"HX-Request": "true", "HX-Target": "proposal-list-container"},
+            headers=headers,
         )
     ).text
 
-    assert "Stays.mp3" in body, "the surviving pending row must still be re-rendered"
-    assert "Proposed name" in body, "the propose table header must be present (this is the propose container's shape)"
+    assert f'id="{CHANGES_LIST_CONTAINER_ID}"' in body, "every caller gets the Changes Review list body"
+    assert "1 proposal approved." in body, "the toast rides the Changes Review body, not a per-surface response"
+    assert f'id="{PROPOSE_LIST_CONTAINER_ID}"' not in body, "the retired Propose response shape is back"
     assert 'id="proposals-table"' not in body, "the LEGACY table no longer exists to render"
     assert 'id="stats-bar"' not in body, "the legacy OOB stats fragment no longer exists to render"
