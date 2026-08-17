@@ -24,8 +24,7 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
-from phaze.services import pipeline as pipeline_mod
-from phaze.services.pipeline import _safe_count, get_stage_progress
+from phaze.services.pipeline import _safe_count, get_stage_progress, stages as pipeline_stages_mod
 
 
 if TYPE_CHECKING:
@@ -252,7 +251,10 @@ async def test_single_source_db_error_degrades_to_zero(session: AsyncSession, mo
     session.add(AnalysisResult(id=uuid.uuid4(), file_id=f.id, bpm=120.0, analysis_completed_at=datetime.now(UTC)))
     await session.commit()
 
-    orig_buckets = pipeline_mod._safe_bucket_counts
+    # phaze-vsqpr: patch the name AS BOUND IN ``pipeline.stages`` (get_stage_progress's own
+    # module), not on the re-export facade -- the facade attribute is a separate binding the
+    # fan-out never reads.
+    orig_buckets = pipeline_stages_mod._safe_bucket_counts
 
     async def failing_buckets(read_session, stage):  # type: ignore[no-untyped-def]
         # Force ONLY the metadata enrich-bucket read to fail. The raise escapes _safe_bucket_counts
@@ -261,7 +263,7 @@ async def test_single_source_db_error_degrades_to_zero(session: AsyncSession, mo
             raise RuntimeError("forced metadata source error")
         return await orig_buckets(read_session, stage)
 
-    monkeypatch.setattr(pipeline_mod, "_safe_bucket_counts", failing_buckets)
+    monkeypatch.setattr(pipeline_stages_mod, "_safe_bucket_counts", failing_buckets)
 
     progress = await get_stage_progress(session)
 
