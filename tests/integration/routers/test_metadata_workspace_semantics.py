@@ -18,9 +18,6 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.pipeline import _build_dag_context
 from phaze.services import pipeline as pipeline_service
-import phaze.services.pipeline.buckets as pipeline_buckets
-import phaze.services.pipeline.pending as pipeline_pending
-import phaze.services.pipeline.stages as pipeline_stages
 from phaze.services.pipeline import (
     MetadataActivitySummary,
     MetadataSelectionSummary,
@@ -35,6 +32,9 @@ from phaze.services.pipeline import (
     get_stage_activity_snapshot,
     get_stage_progress,
 )
+import phaze.services.pipeline.buckets as pipeline_buckets
+import phaze.services.pipeline.pending as pipeline_pending
+import phaze.services.pipeline.stages as pipeline_stages
 
 
 pytestmark = pytest.mark.integration

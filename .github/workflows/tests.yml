@@ -223,6 +223,11 @@ jobs:
   # A brand-new browser suite has no flake record; gating merges on it before that record exists
   # would train everyone to re-run CI on red, which is exactly how a real failure gets waved
   # through. Promote it to blocking once it has a clean run of 10 (tracked on phaze-8p1uq).
+  #
+  # phaze-8p1uq: the record and the promotion procedure live in tests/browser/FLAKE_RECORD.md.
+  # Status there is 0 of 10 -- this job cannot accumulate post-merge runs until epic phaze-tzy6s
+  # merges to main, so the count starts then. Record each run in that file rather than deciding
+  # from memory; the file also lists what to suspect first when a CI-only failure appears.
   browser:
     name: Browser contract (non-blocking)
     runs-on: ubuntu-latest
