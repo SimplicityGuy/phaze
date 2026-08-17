@@ -38,6 +38,8 @@ class TagWriteLog(TimestampMixin, Base):
     file_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("files.id"), nullable=False)
     before_tags: Mapped[dict] = mapped_column(JSONB, nullable=False)
     after_tags: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    reviewed_before_tags: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    review_source_versions: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     source: Mapped[str] = mapped_column(String(30), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     discrepancies: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

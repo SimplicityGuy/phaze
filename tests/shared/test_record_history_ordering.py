@@ -113,20 +113,12 @@ async def test_pending_approval_exposes_the_complete_proposal(client: AsyncClien
     await session.commit()
 
     response = await client.get(f"/record/{file_id}")
-    row = BeautifulSoup(response.text, "html.parser").select_one(f"#record-row-{proposal.id}")
+    page = BeautifulSoup(response.text, "html.parser")
 
     assert response.status_code == 200
-    assert row is not None
-    text = row.get_text(" ", strip=True)
-    markup = str(row)
-    assert "Filename" in text
-    assert "Destination" in text
-    assert f"{file_id}.mp3" in text
-    # BeautifulSoup excludes <template> contents from get_text(); Alpine exposes this value at runtime.
-    assert proposal.proposed_filename in markup
-    assert f"/test/music/{file_id}.mp3" in text
-    assert proposal.proposed_path in text
-    assert row.select_one(f'button[hx-patch="/proposals/{proposal.id}/approve"]') is not None
+    assert page.select_one(f"#record-row-{proposal.id}") is None
+    assert page.select_one('a[hx-get="/s/rename?status=needs_review"]') is not None
+    assert f"/proposals/{proposal.id}/approve" not in response.text
 
 
 @pytest.mark.asyncio
@@ -143,18 +135,12 @@ async def test_pending_approval_renders_a_null_proposed_path_as_an_empty_destina
     await session.commit()
 
     response = await client.get(f"/record/{file_id}")
-    row = BeautifulSoup(response.text, "html.parser").select_one(f"#record-row-{proposal.id}")
+    page = BeautifulSoup(response.text, "html.parser")
 
     assert response.status_code == 200
-    assert row is not None
-    destination = row.find(string="Destination")
-    assert destination is not None
-    destination_diff = destination.parent.find_next_sibling("div")
-    assert destination_diff is not None
-    destination_values = destination_diff.select("code")
-    assert len(destination_values) == 2
-    assert destination_values[1].get_text(strip=True) == ""
-    assert "None" not in str(row)
+    assert page.select_one(f"#record-row-{proposal.id}") is None
+    assert "1 pending decision" in page.get_text(" ", strip=True)
+    assert "None" not in response.text
 
 
 @pytest.mark.asyncio

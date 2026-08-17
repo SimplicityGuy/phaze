@@ -51,8 +51,6 @@ _RAIL_STAGES = [
     "tracklist",
     "propose",
     "rename",
-    "tagwrite",
-    "move",
     "dedupe",
     "cue",
     "apply",

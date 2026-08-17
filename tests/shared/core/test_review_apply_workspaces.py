@@ -33,6 +33,7 @@ The per-shape ORM seed factories live in ``tests/conftest.py`` (``make_file``,
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import html
 import re
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
@@ -43,6 +44,16 @@ from sqlalchemy import func, select
 from phaze.models.proposal import ProposalStatus
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from tests._queue_fakes import install_fake_queues
+
+
+async def _visible_tag_review_tokens(client: AsyncClient) -> list[str]:
+    body = (await client.get("/s/tagwrite", headers={"HX-Request": "true"})).text
+    return [html.unescape(value) for value in re.findall(r'<input[^>]*name="review_tokens"[^>]*value="([^"]+)"', body)]
+
+
+async def _post_visible_tag_bulk(client: AsyncClient, tokens: list[str] | None = None):  # type: ignore[no-untyped-def]
+    reviewed = tokens if tokens is not None else await _visible_tag_review_tokens(client)
+    return await client.post("/tags/bulk-write-no-discrepancies", data={"review_tokens": reviewed})
 
 
 if TYPE_CHECKING:
@@ -203,12 +214,12 @@ async def test_canonical_review_discloses_destination_before_whole_proposal_appr
     assert "/proposals/bulk-approve-high-confidence" not in review
 
     move_review = (await client.get("/s/move", headers={"HX-Request": "true"})).text
-    move_row = move_review.split(f'id="move-row-{proposal.id}"', 1)[1].split('id="move-row-', 1)[0]
+    move_row = move_review.split(f'id="rename-row-{proposal.id}"', 1)[1].split('id="rename-row-', 1)[0]
     assert "Destination" in move_row and "Artist/Event/Reviewed Name.mp3" in move_row
     assert "Filename" in move_row and "Reviewed Name.mp3" in move_row
     assert f'hx-patch="/proposals/{proposal.id}/approve"' in move_row
     assert "/proposals/bulk-approve-high-confidence" not in move_review
-    assert move_row.count("whitespace-pre-wrap break-all") == 4, "all before/after values must be fully inspectable without ellipsis"
+    assert move_row.count("whitespace-pre-wrap break-all") == 4, "the compatibility alias renders the same complete canonical decision"
 
 
 @pytest.mark.asyncio
@@ -285,7 +296,7 @@ async def test_tag_bulk_no_discrepancy_predicate(
         original_filename="plain.mp3", artist=None, title=None, album=None, year=None, genre=None, track_number=None
     )
 
-    resp = await client.post("/tags/bulk-write-no-discrepancies")
+    resp = await _post_visible_tag_bulk(client)
     assert resp.status_code == 200
 
     async def _log_count(file_id: object, *, status: str | None = None) -> int:
@@ -300,10 +311,8 @@ async def test_tag_bulk_no_discrepancy_predicate(
     assert await _log_count(clean.id) == 1, "a clean >=1-change file is dispatched exactly once"
     assert await _log_count(clean.id, status="queued") == 1, "the dispatched write is recorded queued"
     assert await _log_count(clean.id, status="no_op") == 0, "a written file is not a NO_OP"
-    # WR-01: a zero-change file is NOT tag-written (no write attempt), but earns exactly one terminal
-    # NO_OP marker so it is evicted from the candidate window and never re-starves the queue.
-    assert await _log_count(zero.id) == 1, "a zero-change file gets exactly one log -- the NO_OP marker"
-    assert await _log_count(zero.id, status="no_op") == 1, "a zero-change file earns one terminal NO_OP marker (WR-01)"
+    # A zero-change file is not rendered and therefore cannot enter the reviewed authorization scope.
+    assert await _log_count(zero.id) == 0
 
     # Blank-guard clause: a comparison that would erase an existing tag never qualifies.
     blanking = [{"field": "artist", "label": "Artist", "current": "Existing", "proposed": None, "changed": True}]
@@ -345,7 +354,7 @@ async def test_tag_bulk_makes_forward_progress_past_zero_change_wall(
 
     # Submit repeatedly; each submit is bounded, but forward progress must reach the qualifying file.
     for _ in range(3):
-        resp = await client.post("/tags/bulk-write-no-discrepancies")
+        resp = await _post_visible_tag_bulk(client)
         assert resp.status_code == 200
         if await _queued_count(qual.id) == 1:
             break
@@ -393,8 +402,7 @@ async def test_tag_bulk_reactivates_a_file_after_a_completed_undo(
             stmt = stmt.where(TagWriteLog.source == source)
         return (await session.execute(stmt)).scalar_one()
 
-    resp = await client.post("/tags/bulk-write-no-discrepancies")
-    assert resp.status_code == 200
+    assert await _visible_tag_review_tokens(client) == []
     assert await _log_count(file_id) == 1, "the un-reverted COMPLETED write must be untouched -- the file must not be re-selected yet"
 
     session.add(
@@ -409,7 +417,7 @@ async def test_tag_bulk_reactivates_a_file_after_a_completed_undo(
     )
     await session.commit()
 
-    resp2 = await client.post("/tags/bulk-write-no-discrepancies")
+    resp2 = await _post_visible_tag_bulk(client)
     assert resp2.status_code == 200
     assert await _log_count(file_id, status="queued", source="proposal") == 1, "the reverted file must be re-dispatched, not stay evicted forever"
 
@@ -444,7 +452,7 @@ async def test_tag_bulk_per_file_commit_survives_mid_loop_abort(
     f1_id = f1.id
     f2_id = f2.id
 
-    async def _fake_enqueue(sess: AsyncSession, _router: object, fr: FileRecord, tags: dict, source: str) -> TagWriteLog:
+    async def _fake_enqueue(sess: AsyncSession, _router: object, fr: FileRecord, tags: dict, source: str, **_review: object) -> TagWriteLog:
         if fr.id == f2_id:
             # The abort shape: a concurrently un-applied file raises straight out of enqueue_tag_write.
             msg = "Only executed files can have tags written"
@@ -455,7 +463,7 @@ async def test_tag_bulk_per_file_commit_survives_mid_loop_abort(
         return entry
 
     with patch("phaze.routers.tags.enqueue_tag_write", new=AsyncMock(side_effect=_fake_enqueue)):
-        resp = await client.post("/tags/bulk-write-no-discrepancies")
+        resp = await _post_visible_tag_bulk(client)
 
     assert resp.status_code == 200, "one bad file skips -- it must not 500 the whole batch"
     # The first file's audit row was committed per-file, so the mid-loop abort on the second file
@@ -485,7 +493,7 @@ async def test_tag_bulk_rollback_does_not_expire_later_candidates(
     bad_id = bad.id
     good_id = good.id
 
-    async def _fake_enqueue(sess: AsyncSession, task_router: object, fr: FileRecord, tags: dict, source: str) -> TagWriteLog:
+    async def _fake_enqueue(sess: AsyncSession, task_router: object, fr: FileRecord, tags: dict, source: str, **_review: object) -> TagWriteLog:
         if fr.id == bad_id:
             msg = "Only executed files can have tags written"
             raise ValueError(msg)
@@ -495,7 +503,7 @@ async def test_tag_bulk_rollback_does_not_expire_later_candidates(
         return entry
 
     with patch("phaze.routers.tags.enqueue_tag_write", new=AsyncMock(side_effect=_fake_enqueue)):
-        resp = await client.post("/tags/bulk-write-no-discrepancies")
+        resp = await _post_visible_tag_bulk(client)
 
     assert resp.status_code == 200
     assert await _tagwrite_log_count(session, bad_id) == 0, "enqueue_tag_write raised before any row -- no audit row for the bad file"
@@ -520,7 +528,7 @@ async def test_tag_bulk_reports_failures_truthfully(
 
     _controller_queue, router = install_fake_queues(client)
     with patch.object(router, "enqueue_for_agent", side_effect=RuntimeError("broker unreachable")):
-        resp = await client.post("/tags/bulk-write-no-discrepancies")
+        resp = await _post_visible_tag_bulk(client)
 
     assert resp.status_code == 200
     body = resp.text
@@ -545,7 +553,7 @@ async def test_tag_bulk_concurrent_submit_is_blocked(
     f1_id = f1.id
 
     with patch("phaze.routers.tags._acquire_bulk_tagwrite_lock", new=AsyncMock(return_value=False)):
-        resp = await client.post("/tags/bulk-write-no-discrepancies")
+        resp = await _post_visible_tag_bulk(client)
 
     assert resp.status_code == 200
     assert "already in progress" in resp.text
@@ -565,8 +573,9 @@ async def test_tag_bulk_releases_lock_for_subsequent_submit(
     """
     await seed_executed_file_with_metadata(original_filename="rrr - New Title.mp3", artist=None, title=None, album="Keep Album")
 
-    r1 = await client.post("/tags/bulk-write-no-discrepancies")
-    r2 = await client.post("/tags/bulk-write-no-discrepancies")
+    tokens = await _visible_tag_review_tokens(client)
+    r1 = await _post_visible_tag_bulk(client, tokens)
+    r2 = await _post_visible_tag_bulk(client, tokens)
 
     assert r1.status_code == 200
     assert r2.status_code == 200
@@ -588,13 +597,8 @@ async def test_tag_bulk_write_oob_removes_terminal_rows_and_refreshes_subcount(
     """
     noop, _ = await seed_executed_file_with_metadata(original_filename="plain.mp3", artist=None, title=None, album=None)
 
-    resp = await client.post("/tags/bulk-write-no-discrepancies")
-
-    assert resp.status_code == 200
-    body = resp.text
-    assert f'id="tagwrite-row-{noop.id}" hx-swap-oob="delete"' in body, "a terminal NO_OP row must be OOB-removed"
-    assert 'id="stage-workspace-subcount" hx-swap-oob="true"' in body, "the subcount must be OOB-refreshed"
-    assert "0 awaiting approval" in body, "the resolved file is gone from the queue -- subcount reflects it"
+    assert noop.id
+    assert await _visible_tag_review_tokens(client) == []
 
 
 @pytest.mark.asyncio
@@ -613,7 +617,7 @@ async def test_tag_bulk_write_leaves_discrepancy_and_failed_rows_in_place(
         original_filename="Disc Artist - Disc Title.mp3", artist=None, title=None, album="Keep Album"
     )
 
-    resp = await client.post("/tags/bulk-write-no-discrepancies")
+    resp = await _post_visible_tag_bulk(client)
 
     assert resp.status_code == 200
     assert f'id="tagwrite-row-{queued_file.id}" hx-swap-oob="delete"' not in resp.text, "an in-flight QUEUED row stays in the queue by design"
@@ -622,7 +626,7 @@ async def test_tag_bulk_write_leaves_discrepancy_and_failed_rows_in_place(
     failed_file, _ = await seed_executed_file_with_metadata(original_filename="Fail Artist - Fail Title.mp3", artist=None, title=None)
     _controller_queue, router = install_fake_queues(client)
     with patch.object(router, "enqueue_for_agent", side_effect=RuntimeError("broker unreachable")):
-        resp2 = await client.post("/tags/bulk-write-no-discrepancies")
+        resp2 = await _post_visible_tag_bulk(client)
 
     assert resp2.status_code == 200
     assert f'id="tagwrite-row-{failed_file.id}" hx-swap-oob="delete"' not in resp2.text, "an undispatched write never wrote anything -- row stays"
@@ -641,8 +645,9 @@ async def test_review_audit_one_row(
     workspace level. phaze-6bkk: no mutagen patching is needed any more -- the api dispatches
     instead of writing, so the DB audit row is exercised without a file by construction.
     """
-    file, _ = await seed_executed_file_with_metadata(artist="Original Artist")
-    resp = await client.post(f"/tags/{file.id}/write", data={"artist": "New Artist"})
+    file, _ = await seed_executed_file_with_metadata(original_filename="New Artist - New Title.mp3", artist=None, title=None)
+    token = (await _visible_tag_review_tokens(client))[0]
+    resp = await client.post(f"/tags/{file.id}/write", data={"review_token": token})
     assert resp.status_code == 200
     stmt = select(func.count()).select_from(TagWriteLog).where(TagWriteLog.file_id == file.id)
     assert (await session.execute(stmt)).scalar_one() == 1, "exactly one TagWriteLog per apply"
@@ -675,7 +680,7 @@ async def test_diff_row_before_after(
     assert "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]" in body
     assert "messy.mp3" in body and "Renamed.mp3" in body
     assert f'hx-patch="/proposals/{p.id}/approve"' in body
-    assert "hx-post" not in body
+    assert f'hx-post="/proposals/{p.id}/approve"' not in body
     assert "x-data='{ editing" in body
     assert 'name="proposed"' in body
     assert f'id="rename-row-{p.id}"' in body
@@ -685,9 +690,9 @@ async def test_diff_row_before_after(
     assert mv.status_code == 200
     mbody = mv.text
     assert "Artist/Album/Renamed.mp3" in mbody, "move renders the proposed_path facet (after value)"
-    assert f'id="move-row-{p.id}"' in mbody
-    assert 'value="path"' in mbody
-    assert "hx-post" not in mbody
+    assert f'id="rename-row-{p.id}"' in mbody
+    assert 'value="filename"' in mbody
+    assert "Changes Review" in mbody
 
 
 @pytest.mark.asyncio
@@ -744,10 +749,11 @@ async def test_tagwrite_workspace_apply_and_bulk_wiring(
     assert "UNDO" not in body
     # The bulk header is the id-less D-03 server predicate.
     assert 'hx-post="/tags/bulk-write-no-discrepancies"' in body
-    assert "APPROVE ALL WITH NO DISCREPANCIES" in body
+    assert "Approve visible eligible tag writes" in body
+    assert "Approve the eligible tag changes visible on this reviewed page?" in body
     # Tag inline-edit is out of cut -- no SAVE-EDIT control, no proposals-facet edit PATCH.
     assert "SAVE EDIT" not in body, "tag rows render no SAVE-EDIT (tag inline-edit out of cut)"
-    assert "/proposals/" not in body, "tag apply never routes through a proposals PATCH"
+    assert f'hx-patch="/tags/{file.id}/write"' not in body, "tag apply never routes through a proposals PATCH"
     # The computed tag diff surfaces (before/after summaries autoescaped through the shared partial).
     assert "New Artist" in body and "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]" in body
 
@@ -774,7 +780,7 @@ async def test_tagwrite_workspace_shows_undo_only_with_prior_write_log(
     )
     await session.commit()
 
-    frag = await client.get("/s/tagwrite", headers={"HX-Request": "true"})
+    frag = await client.get("/s/tagwrite?status=blocked", headers={"HX-Request": "true"})
     assert frag.status_code == 200
     body = frag.text
 

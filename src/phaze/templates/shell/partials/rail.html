@@ -4,7 +4,7 @@
    data-rail-stage="{{ route }}"
    hx-get="/s/{{ route }}" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
    title="{{ label }}"
-   {% if stage == route %}aria-current="page"{% endif %}
+   {% if stage == route or (route == 'rename' and stage in ('move', 'tagwrite')) %}aria-current="page"{% endif %}
    class="rail-node w-full rounded-md px-2.5 py-2 flex items-center gap-2.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:justify-center max-lg:px-0 {% if tone == 'review' %}text-amber-700 dark:text-amber-300 hover:bg-amber-500/10 aria-[current=page]:bg-blue-500/10 aria-[current=page]:text-blue-700 dark:aria-[current=page]:text-blue-300 aria-[current=page]:font-semibold aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]{% elif tone == 'operations' %}text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5 aria-[current=page]:bg-gray-200 dark:aria-[current=page]:bg-white/10{% else %}text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]{% endif %}">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="{{ icon }}"/></svg>
     <span class="flex-1 text-sm max-lg:sr-only">{{ label }}</span>
@@ -47,9 +47,7 @@
 
         <section class="{{ group_class }} bg-amber-500/[0.06] border-amber-500/25" aria-labelledby="nav-review">
             <h2 id="nav-review" class="{{ heading_class }} text-amber-600 dark:text-amber-400/80">Review</h2>
-            {% call nav_link('rename', 'Rename / paths', 'M16.5 3.75 20.25 7.5 9 18.75l-4.5.75.75-4.5L16.5 3.75Z', 'review') %}{% endcall %}
-            {% call nav_link('tagwrite', 'Tag changes', 'M3.75 3.75h7.5l9 9-7.5 7.5-9-9v-7.5ZM7.5 7.5h.01', 'review') %}{% endcall %}
-            {% call nav_link('move', 'Destinations', 'M3.75 6.75h6l1.5 1.5h9v10.5H3.75v-12Zm8.25 4.5v5.25m0 0-2.25-2.25M12 16.5l2.25-2.25', 'review') %}{% endcall %}
+            {% call nav_link('rename', 'Changes Review', 'M16.5 3.75 20.25 7.5 9 18.75l-4.5.75.75-4.5L16.5 3.75Z', 'review') %}{% endcall %}
             {% call nav_link('dedupe', 'Duplicates', 'M6 6.75V4.5h13.5v13.5h-2.25M4.5 6.75h12.75V19.5H4.5V6.75Z', 'review') %}{% endcall %}
             {% call nav_link('cue', 'Cue sheets', 'M9 9l10.5-3v10.5a2.25 2.25 0 1 1-1.5-2.12V3L9 6v10.5a2.25 2.25 0 1 1-1.5-2.12', 'review') %}{% endcall %}
             {% call nav_link('apply', 'Execute approved', 'M5.25 5.65v12.7c0 .86.92 1.4 1.67.99l11.54-6.35a1.13 1.13 0 0 0 0-1.98L6.92 4.67a1.13 1.13 0 0 0-1.67.98Z', 'review') %}{% endcall %}

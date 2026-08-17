@@ -99,6 +99,9 @@ async def enqueue_tag_write(
     file_record: TagWriteTarget,
     proposed_tags: dict[str, str | int | list[str] | None],
     source: str,
+    *,
+    reviewed_before_tags: dict[str, object] | None = None,
+    review_source_versions: dict[str, object] | None = None,
 ) -> TagWriteLog:
     """Create the audit row and dispatch the write to the file's OWNING agent.
 
@@ -156,6 +159,8 @@ async def enqueue_tag_write(
         # agent's result callback. Empty until then -- never a lie about what was on disk.
         before_tags={},
         after_tags=proposed_tags,
+        reviewed_before_tags=reviewed_before_tags or {},
+        review_source_versions=review_source_versions or {},
         source=source,
         status=TagWriteStatus.QUEUED.value,
         discrepancies=None,

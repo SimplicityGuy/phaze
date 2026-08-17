@@ -28,6 +28,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlencode
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -70,9 +72,10 @@ from phaze.services.pipeline import (
 )
 from phaze.services.proposal_queries import ProposalStats, get_proposal_stats
 from phaze.services.review import (
+    ChangesReviewStats,
+    get_changes_review_page,
     get_cue_review_cards,
     get_dedupe_groups,
-    get_pending_proposal_rows,
     get_proposal_workspace_page,
     get_tagwrite_review_page,
 )
@@ -150,12 +153,14 @@ STAGE_PARTIALS: dict[str, str] = {
     # (the ONE shared _diff_row.html over pending RenameProposal rows -- filename facet vs proposed_path
     # facet, D-06) supersede the placeholders -- STATIC string literals (T-57-01: `stage` is never
     # spliced into a template path). Supersede-in-place; the legacy templates stay reachable until CUT-02.
-    "rename": "pipeline/partials/rename_workspace.html",
+    "rename": "pipeline/partials/changes_workspace.html",
     # Phase 60 (60-03, REVIEW-01/REVIEW-02): the real Tag-write review workspace (the shared _diff_row.html
     # over the computed tag comparison -- APPROVE POSTs /tags/{id}/write, bulk POSTs the D-03 server-predicate
     # /tags/bulk-write-no-discrepancies) supersedes the placeholder -- a STATIC string literal (T-57-01).
-    "tagwrite": "pipeline/partials/tagwrite_workspace.html",
-    "move": "pipeline/partials/move_workspace.html",
+    # Compatibility aliases render the canonical workspace. They are intentionally absent from the
+    # rail, so there is one approval path without breaking old bookmarks.
+    "tagwrite": "pipeline/partials/changes_workspace.html",
+    "move": "pipeline/partials/changes_workspace.html",
     # Phase 60 (60-04, REVIEW-03/REVIEW-05): the real Dedupe keeper-select workspace (duplicate-group
     # cards + a keeper radio wired to the VERIFIED /duplicates/{sha256_hash}/resolve contract + page-scoped
     # AUTO-KEEP + the file_states undo round-trip) supersedes the placeholder -- a STATIC string literal
@@ -220,9 +225,9 @@ DOCUMENT_TITLES: dict[str, str] = {
     "analyze": "Analyze",
     "tracklist": "Tracklists",
     "propose": "Propose changes",
-    "rename": "Rename and paths",
-    "tagwrite": "Tag changes",
-    "move": "Destinations",
+    "rename": "Changes Review",
+    "tagwrite": "Changes Review",
+    "move": "Changes Review",
     "dedupe": "Duplicates",
     "cue": "Cue sheets",
     "apply": "Execute approved",
@@ -283,6 +288,7 @@ _EMPTY_STATE_PARTIAL = "pipeline/partials/empty_state.html"
 # 5. No OOB fragment targets it: this container is only ever an hx-target, and oob_counts stays False
 #    on every stage render (Pitfall 5), so the chrome poll's OOB seeds cannot land here.
 PROPOSE_LIST_CONTAINER_ID = "propose-workspace-list"
+CHANGES_LIST_CONTAINER_ID = "changes-workspace-list"
 
 
 async def _analyze_file_count(session: AsyncSession) -> int:
@@ -746,6 +752,64 @@ async def build_propose_list_context(request: Request, session: AsyncSession) ->
     }
 
 
+async def build_changes_review_context(request: Request, session: AsyncSession) -> dict[str, Any]:
+    """Build the canonical review list from URL-borne filter, page, and selection state."""
+    view = ListViewState.from_request(request, status="needs_review", sort="confidence")
+    allowed_statuses = {"all", "needs_review", "approved", "blocked", "rejected"}
+    if view.status not in allowed_statuses:
+        view = view.with_(status="needs_review")
+
+    selected: list[str] = []
+    for raw in request.query_params.get("selected", "").split(","):
+        try:
+            selected.append(str(uuid.UUID(raw)))
+        except ValueError:
+            continue
+        if len(selected) >= 100:
+            break
+
+    proposals = await get_changes_review_page(
+        session,
+        status=view.status,
+        page=view.page,
+        page_size=view.page_size,
+    )
+    tag_page = await get_tagwrite_review_page(session)
+    tag_rows = (
+        [row for row in tag_page.rows if view.status == "all" or row["status"] == view.status]
+        if view.status in {"all", "needs_review", "blocked"}
+        else []
+    )
+    tag_needs_review = sum(row["status"] == "needs_review" for row in tag_page.rows)
+    tag_blocked = sum(row["status"] == "blocked" for row in tag_page.rows)
+    changes_stats = ChangesReviewStats(
+        all=proposals.stats.all + len(tag_page.rows),
+        needs_review=proposals.stats.needs_review + tag_needs_review,
+        approved=proposals.stats.approved,
+        blocked=proposals.stats.blocked + tag_blocked,
+        rejected=proposals.stats.rejected,
+    )
+
+    def url_for(*, status: str | None = None, page: int | None = None, selected_ids: list[str] | None = None) -> str:
+        params = view.params(status=status or view.status, page=page or view.page)
+        params["selected"] = ",".join(selected if selected_ids is None else selected_ids)
+        return f"/s/rename?{urlencode(params)}"
+
+    return {
+        "changes_view": view,
+        "changes_proposals": proposals.rows,
+        "changes_pagination": proposals.pagination,
+        "changes_stats": changes_stats,
+        "changes_selected": selected,
+        "changes_tag_rows": tag_rows,
+        "changes_tag_partial": tag_page.partial,
+        "changes_urls": {one: url_for(status=one, page=1) for one in ("all", "needs_review", "approved", "blocked", "rejected")},
+        "changes_prev_url": url_for(page=proposals.pagination.page - 1) if proposals.pagination.has_prev else None,
+        "changes_next_url": url_for(page=proposals.pagination.page + 1) if proposals.pagination.has_next else None,
+        "changes_list_id": CHANGES_LIST_CONTAINER_ID,
+    }
+
+
 async def _render_stage(request: Request, stage: str, session: AsyncSession) -> HTMLResponse:
     """Render ``stage`` as the full shell (direct nav) or a bare fragment (HX rail swap).
 
@@ -920,7 +984,7 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # unbounded row-per-Tracklist read rendered inline. The workspace hx-gets the bounded
         # GET /pipeline/tracklist-sets fragment on load instead. NOTE tracklist_match_pending stays
         # as it is: it feeds the MATCH ALL *enqueue* set (paging contract rule 7), never a render.
-    elif stage == "rename":
+    elif stage in {"rename", "move", "tagwrite"}:
         # Phase 60 (60-02, REVIEW-01/REVIEW-02): the Rename/Path review workspace renders the pending
         # RenameProposal rows (filename facet) through the shared _diff_row.html. get_pending_proposal_rows
         # is a read-only, SAVEPOINT-wrapped, degrade-safe assembly over the existing proposal reads (NO
@@ -931,34 +995,9 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # phaze-rw14: the row list is capped at 200 for render; the header/confirm counts below are the
         # bundled REAL totals (corpus-wide pending count, >=90%-confidence pending count), not the
         # capped list's length.
-        rename_pending = await get_pending_proposal_rows(session)
-        context["rename_proposals"] = rename_pending.rows
-        context["rename_pending_total"] = rename_pending.total_pending
-        context["rename_high_confidence_pending"] = rename_pending.high_confidence_pending
-    elif stage == "move":
-        # Phase 60 (60-02, REVIEW-01/REVIEW-02): the Move-files review workspace -- the SIBLING of rename
-        # over the SAME pending RenameProposal source (proposed_path facet, D-06). Same degrade-safe helper
-        # and phaze-rw14 real-total bundle; oob_counts stays False (Pitfall 5).
-        move_pending = await get_pending_proposal_rows(session)
-        context["move_proposals"] = move_pending.rows
-        context["move_pending_total"] = move_pending.total_pending
-        context["move_high_confidence_pending"] = move_pending.high_confidence_pending
+        context |= await build_changes_review_context(request, session)
     elif stage == "propose":
         context |= await build_propose_list_context(request, session)
-    elif stage == "tagwrite":
-        # Phase 60 (60-03, REVIEW-01/REVIEW-02): the Tag-write review workspace renders the computed tag
-        # comparison for EXECUTED files without a COMPLETED TagWriteLog (Pitfall 3 -- an empty queue while
-        # files await a move is CORRECT). get_tagwrite_review_rows is a read-only, SAVEPOINT-wrapped,
-        # degrade-safe assembly that returns [] on any DB error, so no router try/except is needed;
-        # oob_counts stays False (Pitfall 5).
-        #
-        # phaze-bto9: the scan is capped at a fixed number of candidate batches, so on a large
-        # already-correctly-tagged backlog it returns a bounded PREFIX of the queue instead of
-        # walking every applied file. ``partial`` carries that into the subcount, which would
-        # otherwise print a number that silently understates the real backlog.
-        tagwrite_page = await get_tagwrite_review_page(session)
-        context["tagwrite_files"] = tagwrite_page.rows
-        context["tagwrite_partial"] = tagwrite_page.partial
     elif stage == "dedupe":
         # Phase 60 (60-04, REVIEW-03/REVIEW-05): the Dedupe keeper-select workspace renders the scored
         # duplicate groups (each keeper == score_group's canonical_id). get_dedupe_groups is a read-only,
@@ -1056,6 +1095,13 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         if stage == "propose" and target == PROPOSE_LIST_CONTAINER_ID:
             return templates.TemplateResponse(
                 request=request, name="pipeline/partials/_propose_list.html", context=context, headers=DUAL_SHAPE_RESPONSE_HEADERS
+            )
+        if stage in {"rename", "move", "tagwrite"} and target == CHANGES_LIST_CONTAINER_ID:
+            return templates.TemplateResponse(
+                request=request,
+                name="pipeline/partials/_changes_list.html",
+                context=context,
+                headers=DUAL_SHAPE_RESPONSE_HEADERS,
             )
         return templates.TemplateResponse(request=request, name="shell/_stage_fragment.html", context=context, headers=DUAL_SHAPE_RESPONSE_HEADERS)
     # A direct navigation, a bookmark, OR A HISTORY RESTORE lands here and gets the full shell. That

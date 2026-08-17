@@ -34,6 +34,7 @@ from sqlalchemy import update
 
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.routers.shell import PROPOSE_LIST_CONTAINER_ID
+from phaze.services.proposal_queries import proposal_review_digest
 
 
 if TYPE_CHECKING:
@@ -45,6 +46,10 @@ if TYPE_CHECKING:
 
 _CONTAINER = PROPOSE_LIST_CONTAINER_ID
 _BULK_TARGET = {"HX-Request": "true", "HX-Target": _CONTAINER}
+
+
+def _review_token(proposal: RenameProposal) -> str:
+    return f"{proposal.id}|{proposal.updated_at.isoformat()}|{proposal_review_digest(proposal)}"
 
 
 async def _status_of(session: AsyncSession, proposal: RenameProposal) -> ProposalStatus:
@@ -90,7 +95,9 @@ async def test_bulk_approve_acts_on_exactly_the_selection(
     chosen = await seed_pending_proposal(0.9, original_filename="chosen.mp3", proposed_filename="Chosen.mp3")
     spared = await seed_pending_proposal(0.9, original_filename="spared.mp3", proposed_filename="Spared.mp3")
 
-    response = await client.patch("/proposals/bulk", data={"action": "approve", "proposal_ids": [str(chosen.id)]}, headers=_BULK_TARGET)
+    response = await client.patch(
+        "/proposals/bulk", data={"action": "approve_eligible", "review_tokens": [_review_token(chosen)]}, headers=_BULK_TARGET
+    )
 
     assert response.status_code == 200
     assert await _status_of(session, chosen) == ProposalStatus.APPROVED
@@ -135,7 +142,9 @@ async def test_bulk_response_is_the_propose_list_not_an_empty_or_legacy_body(
     await seed_pending_proposal(0.9, original_filename="stays.mp3", proposed_filename="Stays.mp3")
     other = await seed_pending_proposal(0.9, original_filename="acted.mp3", proposed_filename="Acted.mp3")
 
-    body = (await client.patch("/proposals/bulk", data={"action": "approve", "proposal_ids": [str(other.id)]}, headers=_BULK_TARGET)).text
+    body = (
+        await client.patch("/proposals/bulk", data={"action": "approve_eligible", "review_tokens": [_review_token(other)]}, headers=_BULK_TARGET)
+    ).text
 
     assert "Stays.mp3" in body, "the surviving row must be re-rendered, not swapped away"
     assert "Proposed name" in body, "the propose table header must be present (this is the propose container's shape)"
@@ -156,7 +165,9 @@ async def test_bulk_response_does_not_re_emit_its_own_container(
     """
     proposal = await seed_pending_proposal(0.9, original_filename="dupe.mp3", proposed_filename="Dupe.mp3")
 
-    body = (await client.patch("/proposals/bulk", data={"action": "approve", "proposal_ids": [str(proposal.id)]}, headers=_BULK_TARGET)).text
+    body = (
+        await client.patch("/proposals/bulk", data={"action": "approve_eligible", "review_tokens": [_review_token(proposal)]}, headers=_BULK_TARGET)
+    ).text
 
     assert f'id="{_CONTAINER}"' not in body, "the bulk response must not nest a second list container"
     assert "<html" not in body.lower(), "a fragment must never carry document chrome"
@@ -176,7 +187,9 @@ async def test_bulk_response_refreshes_the_tab_badge_counts(
     """
     proposal = await seed_pending_proposal(0.9, original_filename="badge.mp3", proposed_filename="Badge.mp3")
 
-    body = (await client.patch("/proposals/bulk", data={"action": "approve", "proposal_ids": [str(proposal.id)]}, headers=_BULK_TARGET)).text
+    body = (
+        await client.patch("/proposals/bulk", data={"action": "approve_eligible", "review_tokens": [_review_token(proposal)]}, headers=_BULK_TARGET)
+    ).text
 
     tabs_markup = body.split("</nav>")[0]
     badges = [chunk.split("<")[0].strip() for chunk in tabs_markup.split('rounded-full px-2 py-0.5 ml-1">')[1:]]
@@ -220,7 +233,7 @@ async def test_bulk_returns_on_the_same_filter_search_and_page_it_was_issued_fro
     body = (
         await client.patch(
             f"/proposals/bulk?{query}",
-            data={"action": "approve", "proposal_ids": [str(approved[0].id)]},
+            data={"action": "approve_eligible", "review_tokens": ["stale-reviewed-token"]},
             headers=_BULK_TARGET,
         )
     ).text
@@ -256,7 +269,7 @@ async def test_pager_reports_post_action_totals(
     body = (
         await client.patch(
             f"/proposals/bulk?{query}",
-            data={"action": "approve", "proposal_ids": [str(p.id) for p in proposals[:3]]},
+            data={"action": "approve_eligible", "review_tokens": [_review_token(p) for p in proposals[:3]]},
             headers=_BULK_TARGET,
         )
     ).text
@@ -284,6 +297,7 @@ async def test_terminal_rows_in_the_selection_are_skipped_and_the_count_is_hones
     """
     pending = await seed_pending_proposal(0.9, original_filename="live.mp3", proposed_filename="Live.mp3")
     done = [await seed_pending_proposal(0.9, original_filename=f"done-{i}.mp3", proposed_filename=f"Done {i}.mp3") for i in range(2)]
+    review_tokens = [_review_token(pending), *[_review_token(p) for p in done]]
     for proposal in done:
         await session.execute(update(RenameProposal).where(RenameProposal.id == proposal.id).values(status=ProposalStatus.EXECUTED.value))
     await session.commit()
@@ -291,7 +305,7 @@ async def test_terminal_rows_in_the_selection_are_skipped_and_the_count_is_hones
     body = (
         await client.patch(
             "/proposals/bulk?status=all",
-            data={"action": "approve", "proposal_ids": [str(pending.id), *[str(p.id) for p in done]]},
+            data={"action": "approve_eligible", "review_tokens": review_tokens},
             headers=_BULK_TARGET,
         )
     ).text
@@ -340,7 +354,7 @@ async def test_replaying_the_same_bulk_submission_is_an_honest_no_op(
     window but is explicitly not what this test depends on -- it bypasses the browser entirely.
     """
     proposals = [await seed_pending_proposal(0.9, original_filename=f"twice-{i}.mp3", proposed_filename=f"Twice {i}.mp3") for i in range(2)]
-    payload = {"action": "approve", "proposal_ids": [str(p.id) for p in proposals]}
+    payload = {"action": "approve_eligible", "review_tokens": [_review_token(p) for p in proposals]}
 
     first = (await client.patch("/proposals/bulk", data=payload, headers=_BULK_TARGET)).text
     second = (await client.patch("/proposals/bulk", data=payload, headers=_BULK_TARGET)).text
@@ -376,7 +390,7 @@ async def test_bulk_action_ignores_hx_target_and_always_returns_the_propose_body
     body = (
         await client.patch(
             "/proposals/bulk",
-            data={"action": "approve", "proposal_ids": [str(acted.id)]},
+            data={"action": "approve_eligible", "review_tokens": [_review_token(acted)]},
             headers={"HX-Request": "true", "HX-Target": "proposal-list-container"},
         )
     ).text

@@ -25,7 +25,16 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
-from phaze.routers.tags import _get_accepted_discogs_link, _get_tag_stats, _get_tracklist_for_file, _has_terminal_tagwrite
+from phaze.routers.tags import (
+    _encode_tag_review_token,
+    _get_accepted_discogs_link,
+    _get_file_with_metadata,
+    _get_tag_stats,
+    _get_tracklist_for_file,
+    _has_terminal_tagwrite,
+    _tag_review_payload,
+)
+from phaze.services.tag_proposal import compute_proposed_tags
 from tests._queue_fakes import install_fake_queues
 
 
@@ -102,6 +111,15 @@ async def _create_executed_file(
     return file_record, metadata
 
 
+async def _review_token(session: AsyncSession, file_id: uuid.UUID) -> str:
+    file_record = await _get_file_with_metadata(session, file_id)
+    assert file_record is not None
+    tracklist = await _get_tracklist_for_file(session, file_id)
+    link = await _get_accepted_discogs_link(session, file_id)
+    proposed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename, discogs_link=link)
+    return _encode_tag_review_token(_tag_review_payload(file_record, tracklist, link, proposed))
+
+
 @pytest.mark.asyncio
 async def test_list_tags_full_page(client: AsyncClient, session: AsyncSession) -> None:
     """Phase 57 (SHELL-05): a plain GET /tags/ 302-redirects into the shell.
@@ -134,25 +152,27 @@ async def test_write_tags_success(client: AsyncClient, session: AsyncSession) ->
     file_record, _ = await _create_executed_file(session, artist="Original Artist")
 
     _controller_queue, router = install_fake_queues(client)
+    token = await _review_token(session, file_record.id)
     response = await client.post(
         f"/tags/{file_record.id}/write",
-        data={"artist": "New Artist", "title": "New Title"},
+        data={"review_token": token},
     )
     assert response.status_code == 200
     # The toast claims only what the api actually did: it handed the write off.
     assert "Tag write queued for" in response.text
     assert f"agent {file_record.agent_id}" in response.text
 
-    # One job, on the owning agent's meta lane, carrying the operator's edits.
+    # One job, on the owning agent's meta lane, carrying the exact reviewed values.
     queue_name, task_name, kwargs = router.captures[0]
     assert (queue_name, task_name) == (f"phaze-agent-{file_record.agent_id}-meta", "write_file_tags")
-    assert kwargs["tags"] == {"artist": "New Artist", "title": "New Title"}
+    assert kwargs["tags"]["artist"] == "Original Artist"
+    assert kwargs["tags"]["title"] == "Old Title"
     assert kwargs["file_path"] == file_record.current_path
 
 
 @pytest.mark.asyncio
-async def test_write_tags_non_integer_year_and_track_number_kept_as_string(client: AsyncClient, session: AsyncSession) -> None:
-    """A non-integer year/track_number falls through the int() ValueError branch and is kept as the raw string."""
+async def test_write_tags_manual_payload_cannot_bypass_review_token(client: AsyncClient, session: AsyncSession) -> None:
+    """Ad hoc form fields are not an authorization substitute for the displayed payload."""
     file_record, _ = await _create_executed_file(session, artist="Original Artist")
 
     _controller_queue, router = install_fake_queues(client)
@@ -160,10 +180,23 @@ async def test_write_tags_non_integer_year_and_track_number_kept_as_string(clien
         f"/tags/{file_record.id}/write",
         data={"artist": "New Artist", "year": "not-a-year", "track_number": "A1"},
     )
-    assert response.status_code == 200
-    tags = _dispatched_tags(router)
-    assert tags["year"] == "not-a-year"
-    assert tags["track_number"] == "A1"
+    assert response.status_code == 400
+    assert not router.captures
+
+
+@pytest.mark.asyncio
+async def test_write_tags_rejects_metadata_changed_after_review(client: AsyncClient, session: AsyncSession) -> None:
+    """The displayed before/after decision and its source versions are one optimistic token."""
+    file_record, metadata = await _create_executed_file(session, artist="Reviewed Artist")
+    token = await _review_token(session, file_record.id)
+    metadata.artist = "Enriched Later"
+    await session.commit()
+    _controller_queue, router = install_fake_queues(client)
+
+    response = await client.post(f"/tags/{file_record.id}/write", data={"review_token": token})
+
+    assert response.status_code == 409
+    assert not router.captures
 
 
 @pytest.mark.asyncio
@@ -208,7 +241,7 @@ async def test_write_tags_empty_body_uses_fallback(client: AsyncClient, session:
     )
 
     _controller_queue, router = install_fake_queues(client)
-    response = await client.post(f"/tags/{file_record.id}/write")
+    response = await client.post(f"/tags/{file_record.id}/write", data={"review_token": await _review_token(session, file_record.id)})
 
     assert response.status_code == 200
     assert "Tag write queued for" in response.text
@@ -231,7 +264,7 @@ async def test_write_tags_response_has_row_id(client: AsyncClient, session: Asyn
     ):
         response = await client.post(
             f"/tags/{file_record.id}/write",
-            data={"artist": "New Artist"},
+            data={"review_token": await _review_token(session, file_record.id)},
         )
 
     assert response.status_code == 200
@@ -418,14 +451,16 @@ async def test_write_tags_persists_a_queued_audit_row(client: AsyncClient, sessi
     file_record, _ = await _create_executed_file(session, artist="Original Artist")
 
     install_fake_queues(client)
-    response = await client.post(f"/tags/{file_record.id}/write", data={"artist": "New Artist"})
+    response = await client.post(f"/tags/{file_record.id}/write", data={"review_token": await _review_token(session, file_record.id)})
     assert response.status_code == 200
 
     rows = (await session.execute(select(TagWriteLog).where(TagWriteLog.file_id == file_record.id))).scalars().all()
     assert len(rows) == 1
     assert rows[0].status == TagWriteStatus.QUEUED
     assert rows[0].before_tags == {}
-    assert rows[0].after_tags == {"artist": "New Artist"}
+    assert rows[0].after_tags["artist"] == "Original Artist"
+    assert rows[0].reviewed_before_tags["artist"] == "Original Artist"
+    assert rows[0].review_source_versions["metadata_updated_at"] is not None
 
 
 @pytest.mark.asyncio
@@ -441,7 +476,7 @@ async def test_write_tags_dispatch_failure_toast_points_at_the_agent_not_file_pe
 
     _controller_queue, router = install_fake_queues(client)
     with patch.object(router, "enqueue_for_agent", side_effect=RuntimeError("broker unreachable")):
-        response = await client.post(f"/tags/{file_record.id}/write", data={"artist": "New Artist"})
+        response = await client.post(f"/tags/{file_record.id}/write", data={"review_token": await _review_token(session, file_record.id)})
 
     assert response.status_code == 200
     body = response.text
@@ -460,7 +495,7 @@ async def test_write_tags_valueerror_branch(client: AsyncClient, session: AsyncS
     file_record, _ = await _create_executed_file(session, artist="Original Artist")
 
     with patch("phaze.routers.tags.enqueue_tag_write", new=AsyncMock(side_effect=ValueError("boom"))):
-        response = await client.post(f"/tags/{file_record.id}/write", data={"artist": "New Artist"})
+        response = await client.post(f"/tags/{file_record.id}/write", data={"review_token": await _review_token(session, file_record.id)})
 
     assert response.status_code == 200
     assert "failed" in response.text.lower()
@@ -487,7 +522,7 @@ async def test_write_tags_from_v7_workspace_returns_diff_row_with_undo(client: A
     install_fake_queues(client)
     response = await client.post(
         f"/tags/{file_record.id}/write",
-        data={"artist": "New Artist"},
+        data={"review_token": await _review_token(session, file_record.id)},
         headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
     )
 
@@ -717,7 +752,7 @@ async def test_write_tags_ignores_legacy_hx_target_and_always_returns_the_v7_row
     ):
         response = await client.post(
             f"/tags/{file_record.id}/write",
-            data={"artist": "New Artist"},
+            data={"review_token": await _review_token(session, file_record.id)},
             headers={"HX-Request": "true", "HX-Target": f"row-{file_record.id}"},
         )
 
