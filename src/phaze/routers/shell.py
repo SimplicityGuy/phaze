@@ -49,6 +49,7 @@ from phaze.routers.proposal_sort import PROPOSE_SORT
 from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_fragment
 from phaze.routers.view_state import PAGE_SIZE_CHOICES, ListViewState
 from phaze.services.backends import derive_cloud_hold_reason, get_analysis_activity_counts, get_analysis_live_count
+from phaze.services.execution_preflight import get_execution_preflight
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, clamp_page, clamp_page_size
 from phaze.services.pipeline import (
     ORPHANED_BUCKET,
@@ -1013,12 +1014,32 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # oob_counts stays False (Pitfall 5).
         context["cue_cards"] = await get_cue_review_cards(session)
     elif stage == "apply":
-        # phaze-vvmh: the Apply workspace needs ONE read -- the aggregate proposal counts, in a single
-        # query (services/proposal_queries.get_proposal_stats). They drive the EXECUTE APPROVED
-        # button's enabled/disabled branch, its confirm copy, and the counter row that re-hosts the
+        # phaze-vvmh: the aggregate proposal counts, in a single query
+        # (services/proposal_queries.get_proposal_stats). They drive the counter row that re-hosts the
         # useful half of the deleted proposals/partials/stats_bar.html. No enqueue, no write, no new
         # query path; oob_counts stays False (Pitfall 5) like every other review stage.
         context["stats"] = await get_proposal_stats(session)
+        # phaze-tzy6s.12 / D-10: the preflight manifest. It no longer suffices to know how many
+        # proposals are approved -- Execute is the one control that moves bytes, so the operator gets
+        # the full manifest (which operations, against which agents, what conflicts, what is excluded
+        # and why, what is reversible) BEFORE committing. get_execution_preflight deliberately reuses
+        # start_execution's OWN reads so the manifest cannot drift from the dispatch it describes; see
+        # that module's D-10 record before adding a read here.
+        #
+        # The three adjacent counts are work this control does NOT dispatch. They are passed in rather
+        # than re-derived inside the service so the "does not participate" rows carry live numbers
+        # instead of a confident zero -- an operation type silently absent from a manifest reads as
+        # "there is none of it". All three helpers are degrade-safe ([]/empty on any DB error), so a
+        # failure here costs an exclusion row, never the render.
+        tagwrite_page = await get_tagwrite_review_page(session)
+        context["preflight"] = await get_execution_preflight(
+            session,
+            pending=context["stats"].pending,
+            rejected=context["stats"].rejected,
+            tagwrite_pending=len(tagwrite_page.rows),
+            dedupe_pending=len(await get_dedupe_groups(session)),
+            cue_pending=len(await get_cue_review_cards(session)),
+        )
     elif stage == "audit":
         # phaze-uvmcr.3: the /s/audit utility-pane host (UTILITY_PANES, not STAGE_PARTIALS -- it
         # is not a DAG pipeline stage). ``execution.audit_log``'s non-fragment branch now redirects

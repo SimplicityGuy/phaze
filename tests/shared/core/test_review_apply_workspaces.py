@@ -1001,24 +1001,47 @@ async def test_apply_workspace_hosts_the_execute_trigger(
     assert 'hx-post="/execution/start"' in body, "the Apply workspace no longer triggers execution"
     assert 'hx-target="#apply-execute-response"' in body
     assert 'id="apply-execute-response"' in body, "the dispatch response has no sink to land in"
-    assert "hx-confirm" in body, "R-4: a mass action must confirm"
-    # The button's sink is a SIBLING, not an ancestor (phaze-thd6) -- otherwise dispatching would
-    # delete the control that dispatched.
-    sink_index = body.index('id="apply-execute-response"')
-    trigger_index = body.index('hx-post="/execution/start"')
-    assert trigger_index < sink_index, "the execute trigger must not live inside its own response sink"
+
+    # phaze-tzy6s.12: R-4 confirmation moved OFF the native browser prompt onto the shared
+    # ui.confirmation <dialog> primitive. hx-confirm renders one unstyled string, which cannot carry
+    # a manifest -- the whole point of the preflight. Assert the product's own pattern is used, and
+    # that the native one has not crept back.
+    assert "hx-confirm" not in body, "R-4 confirmation must use the shared dialog, not the native browser prompt"
+    assert 'id="apply-confirm"' in body, "the shared confirmation dialog is missing"
+    assert "<dialog" in body
+    assert "showModal()" in body, "the execute button must open the confirmation dialog"
+
+    # The dispatching element is a SIBLING of the sink, never inside it (phaze-thd6) -- otherwise
+    # dispatching would delete the control that dispatched. The pre-.12 form of this check compared
+    # string indices, which only worked while the trigger preceded the sink; the dialog now renders
+    # last, so assert the invariant directly instead: the sink is emitted EMPTY, so nothing that
+    # posts can be a descendant of it.
+    assert '<div id="apply-execute-response" class="px-6 pt-4 empty:hidden"></div>' in body, (
+        "the response sink must be emitted empty so no trigger can live inside it"
+    )
 
 
 @pytest.mark.asyncio
 async def test_apply_workspace_disables_execute_with_nothing_approved(client: AsyncClient) -> None:
-    """With zero approved proposals the trigger is inert and says why -- it does not post an empty batch."""
+    """With zero approved proposals the trigger is inert and says why -- it does not post an empty batch.
+
+    phaze-tzy6s.12 raised the bar from "says why" to "says why AND what to do next", in visible text.
+    A disabled control whose explanation lives only in a ``title=`` attribute is unreachable by
+    keyboard and by touch, so the reason and the next action are both asserted as body text here.
+    """
     fragment = await client.get("/s/apply", headers={"HX-Request": "true"})
     assert fragment.status_code == 200
     body = fragment.text
 
     assert "disabled" in body
     assert 'hx-post="/execution/start"' not in body, "an empty batch must not be dispatchable"
-    assert "Nothing approved yet" in body
+    assert 'id="apply-confirm"' not in body, "no confirmation dialog should be rendered when nothing can execute"
+
+    assert "No approved proposals are ready to execute." in body, "the disabled reason must be visible text"
+    assert "Approve filename and destination changes in Changes Review first." in body, "the disabled state must name the next action"
+    # The reason is wired to the button for assistive tech, not left as a floating paragraph.
+    assert 'id="apply-blocked-reason"' in body
+    assert 'aria-describedby="apply-blocked-reason"' in body
 
 
 @pytest.mark.asyncio

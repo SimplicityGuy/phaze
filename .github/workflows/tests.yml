@@ -217,3 +217,71 @@ jobs:
           files: ./coverage.xml
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  # phaze-tzy6s.14: the real-browser suite. Its own job on purpose, and NON-BLOCKING to start with
+  # (`continue-on-error`), per the bead's "separate job, not blocking the unit matrix initially".
+  # A brand-new browser suite has no flake record; gating merges on it before that record exists
+  # would train everyone to re-run CI on red, which is exactly how a real failure gets waved
+  # through. Promote it to blocking once it has a clean run of 10 (tracked on phaze-8p1uq).
+  browser:
+    name: Browser contract (non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: phaze
+          POSTGRES_PASSWORD: phaze
+          POSTGRES_DB: phaze_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U phaze"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # The harness derives the app's own database by appending `_browser` to this name, so it
+      # never shares a database with the unit matrix (whose conftest drops the schema at teardown).
+      TEST_DATABASE_URL: >-
+        postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_test
+      PHAZE_REDIS_URL: redis://localhost:6379/0
+    steps:
+      - name: 🔀 Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: 📦 Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 🔧 Setup Just
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3  # v4.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 📦 Install dependencies
+        run: just install
+
+      - name: 🎭 Install the Chromium build
+        run: just test-browser-install
+
+      - name: 🌐 Run the browser contract suite
+        # `just test-browser` depends on `tailwind`: without the compiled app.css the app serves an
+        # unstyled page, and every layout assertion (drawer visibility, horizontal overflow) passes
+        # vacuously. A browser suite with no CSS is worse than no browser suite.
+        run: just test-browser

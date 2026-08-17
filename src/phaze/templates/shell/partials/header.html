@@ -19,7 +19,24 @@
   store-bound :title + :aria-label naming exactly what the sum counts (agentOnline + computeLanesActive),
   agreeing with each other.
 #}
-<header class="h-14 shrink-0 flex items-center gap-4 px-4 border-b border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel">
+{# phaze-tzy6s.14: tighter gap/padding below `sm`. Adding the .13 drawer trigger pushed the row 4px
+   past a 390px viewport, so the whole PAGE scrolled sideways -- caught by the browser suite's
+   horizontal-overflow assertion, and invisible to every markup test because it is pure computed
+   layout. The header's children are all `shrink-0` except the search field, so the row cannot
+   absorb an extra control by squeezing; the space has to come from the gutters. #}
+<header class="h-14 shrink-0 flex items-center gap-2 px-2 sm:gap-4 sm:px-4 border-b border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel">
+
+    {# phaze-tzy6s.13: the drawer trigger for phone/tablet. Hidden at `lg` and up, where rail.html's
+       expanded <aside> is the navigation — so exactly ONE navigation affordance is reachable at any
+       width, never both and never neither. 44x44 minimum touch target. #}
+    <button type="button"
+            id="rail-drawer-trigger"
+            x-data
+            @click="$dispatch('rail:open')"
+            aria-label="Open navigation"
+            class="lg:hidden -ml-1 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-gray-600 hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-gray-400 dark:hover:bg-white/5">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" class="h-5 w-5" aria-hidden="true"><path d="M3.75 6.75h16.5M3.75 12h16.5M3.75 17.25h16.5"/></svg>
+    </button>
 
     {# Wave logo mark (brand-locked, links to /) — lifted verbatim from base.html. #}
     <a href="/" class="flex items-center gap-2 shrink-0" aria-label="Phaze home">

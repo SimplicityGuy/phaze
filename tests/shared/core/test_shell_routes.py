@@ -193,10 +193,17 @@ async def test_files_rail_node_is_reachable_and_accessible(client: AsyncClient) 
     assert 'title="Files"' in attrs, "Files node missing its native title tooltip"
     assert "focus-visible:" in attrs, "Files node missing a focus-visible ring (keyboard a11y)"
 
-    # The label span carries max-lg:sr-only (screen-reader-navigable when collapsed), NEVER max-lg:hidden.
+    # The label is VISIBLE text at every width (phaze-tzy6s.13).
+    #
+    # This used to require `max-lg:sr-only` -- the narrow-width rail collapsed to icons and the label
+    # survived only in the accessibility tree, with `title=` as the sighted user's fallback. .13
+    # removed that collapse entirely (the rail is now an off-canvas drawer below `lg`), so the
+    # original intent -- "the label must never leave the a11y tree" -- is now satisfied the stronger
+    # way: it never leaves the page either. Assert the collapse classes are GONE, so a future change
+    # cannot quietly reintroduce an icon-only rail and still pass this test.
     label = re.search(r'data-rail-stage="files".*?<span[^>]*>Files</span>', body, re.DOTALL)
     assert label is not None, "Files node missing its 'Files' label span"
-    assert "max-lg:sr-only" in label.group(0), "Files label must collapse via max-lg:sr-only (CUT-04 ↔ CUT-01)"
+    assert "max-lg:sr-only" not in label.group(0), "Files label must be visible at every width, not collapsed to an icon"
     assert "max-lg:hidden" not in label.group(0), "Files label must NOT use max-lg:hidden (strips it from the a11y tree)"
     # An aria-hidden inline-SVG glyph rides between the button open tag and the label.
     glyph = re.search(r'data-rail-stage="files".*?<svg[^>]*aria-hidden="true"[^>]*>', body, re.DOTALL)

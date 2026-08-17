@@ -81,8 +81,21 @@ def test_buckets_json_is_the_source_of_truth() -> None:
     #     regression tests for the top-level `services/` audfprint + panako sidecars. Those
     #     sidecars and their test tree were deleted, so the bucket has no inhabitants left. Do NOT
     #     re-add it or recreate `tests/services/` to satisfy this assertion.
+    #
+    # PLUS `browser` (phaze-tzy6s.14) -- the real-browser Playwright suite in `tests/browser/`.
+    # A bucket rather than a subdirectory of an existing one because it is a genuinely separate
+    # LANE, not a topic: it needs Playwright (never a project dependency, run via the ephemeral
+    # `uv run --with` idiom), it boots a real uvicorn against its own database, and it is excluded
+    # from the default pytest run by the `browser` marker. Filing it under, say, `shared/` would
+    # have put a suite that cannot run without an extra toolchain inside a shard that must always
+    # run.
+    #
+    # It deliberately has NO entry in `tests/ci_shards.json`: the CI matrix shards the unit suite
+    # for coverage, and this lane runs in its own non-blocking `browser` job instead. Nothing
+    # requires a shard per bucket -- the two files are related but distinct (phaze-crq9k).
+    #
     # A rename/add/remove here must be a deliberate json edit.
-    assert frozenset({"discovery", "metadata", "analyze", "identify", "review", "agents", "integration", "shared"}) == KNOWN_BUCKETS
+    assert frozenset({"discovery", "metadata", "analyze", "identify", "review", "agents", "integration", "shared", "browser"}) == KNOWN_BUCKETS
 
 
 def test_every_collected_test_lives_in_a_known_bucket() -> None:
