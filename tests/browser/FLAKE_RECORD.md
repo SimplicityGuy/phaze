@@ -1,0 +1,83 @@
+# Browser suite flake record
+
+Tracks the evidence needed to promote the `browser` CI job from `continue-on-error: true` to
+blocking. Owned by `phaze-8p1uq`; the gate itself is stated in ADR-0009 (§ "The browser contract
+suite") and in `.github/workflows/tests.yml`'s `browser:` job comment.
+
+## Why the job is non-blocking today
+
+A brand-new browser suite has no flake record, and gating merges on an unproven suite trains
+everyone to re-run CI on red — which is exactly how a real failure gets waved through. The bar is a
+**clean run of 10 consecutive post-merge CI runs**.
+
+## Status: NOT MET — 0 of 10 CI runs
+
+The suite has **zero** post-merge CI runs. It cannot have any until epic `phaze-tzy6s` merges to
+main: the `browser:` job runs on the main-branch workflow, and every run so far has been local. This
+is not an oversight in `phaze-8p1uq`, it is the sequencing constraint the bead was filed with —
+item 6 is structurally unstartable before the merge, and the bead's own comment says so.
+
+**Do not flip `continue-on-error` on the strength of the local runs below.** They are evidence that
+the suite is not flaky *on a developer machine*, which is the easy half. CI is where the timing is
+different.
+
+## Local runs
+
+Recorded 2026-08-17 on branch `refactor/code-quality-decomposition`, worktree seat `wt8p1uq`,
+macOS/arm64, against the shared `just test-db` harness (Postgres 5433, Redis 6380 DB 36).
+
+| Run | Result | Wall clock |
+|-----|--------|-----------|
+| 1 | 59 passed, 11 xfailed | 84.9 s |
+| 2 | 59 passed, 11 xfailed | 84.4 s |
+| 3 | 59 passed, 11 xfailed | 82.9 s |
+| 4 | 59 passed, 11 xfailed | 89.0 s |
+| 5 | 59 passed, 11 xfailed | 84.4 s |
+
+**5/5 green, 0 flakes, spread 82.9–89.0 s (7.3%).** The 11 `xfailed` are two recorded, strict
+known-failures — WCAG AA contrast and the palette listbox's `role="status"` child — not
+instability; see `test_accessibility.py`. Because they are `strict=True`, a run reporting `xpassed`
+is a *product fix*, not a flake, and the response is to delete the marker rather than to re-run.
+
+## What to watch when the CI runs start
+
+Ranked by how likely each is to produce a CI-only failure. None of these produced a local flake;
+they are listed because local timing is the wrong instrument for all of them.
+
+1. **The axe CDN fetch** (`tests/browser/axe.py`). One network round trip per pytest process,
+   digest-verified, cached for the session. It is the suite's only hard dependency on a host other
+   than the app itself, and therefore the first suspect for a run that fails once and passes on
+   re-run. If it flakes, vendor the bundle rather than adding a retry — a retry hides an outage
+   behind a slower green.
+2. **The SSE reconnect windows** (`test_execute_dispatch.py`). Two tests sleep 6 s to prove the
+   EventSource did *not* reconnect. That is a lower bound on Chromium's ~3 s reconnect delay with
+   generous margin, but it is wall-clock reasoning, and a heavily loaded runner is where wall-clock
+   reasoning breaks. A failure here reads as "the stream reconnected" and would be a REAL defect
+   (phaze-047gd) — do not lengthen the window without first checking the request log in the failure
+   output, which names how many connections were made.
+3. **The 5 s stats poll** (`test_live_refresh_and_states.py`). Waits up to 20 s for a poll tick, so
+   it tolerates three missed ticks. Generous, but it is the only assertion whose success depends on
+   a timer the test does not control.
+4. **App boot** (`conftest._wait_until_serving`, 180 s). Runs migrations from an empty database on
+   every session. Comfortable locally; unmeasured on a GitHub runner.
+5. **Postgres/Redis service readiness.** The CI job gives both health checks, and the browser
+   database is derived by appending `_browser`, so it never collides with the unit matrix — which
+   runs in a different job with its own services.
+
+## Promotion procedure
+
+1. Merge epic `phaze-tzy6s` to main so the `browser:` job starts running post-merge.
+2. Record each post-merge run below — **run number, SHA, result, duration**. A run that fails
+   resets the count to zero; note the cause before resetting, since "reset without a diagnosis"
+   is how a genuine recurring defect gets laundered into a flake statistic.
+3. On 10 consecutive green runs, delete `continue-on-error: true` from the `browser:` job in
+   `.github/workflows/tests.yml`, and update its comment plus ADR-0009 §"The browser contract
+   suite" to say the gate was met, with the date and the run range.
+4. Consider dropping `(non-blocking)` from the job's display name in the same change — a blocking
+   job labelled non-blocking is worse than either.
+
+### CI run log
+
+| # | SHA | Result | Duration | Notes |
+|---|-----|--------|----------|-------|
+| — | — | — | — | *No post-merge CI runs yet. See "Status" above.* |
