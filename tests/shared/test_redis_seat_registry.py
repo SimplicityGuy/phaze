@@ -77,6 +77,8 @@ _ALLOCATABLE = _CAPACITY - 1
 _REGISTRY_KEY = "phaze:test:redis-db-index"
 _SEEN_KEY = "phaze:test:redis-db-seen"
 _ORIGIN_KEY = "phaze:test:redis-db-origin"
+# The old monotonic counter's key, now the persisted all-time high-water mark (phaze-08sww).
+_HIGHWATER_KEY = "phaze:test:redis-db-counter"
 
 # A container name nothing will ever answer to, for the "L2 evidence was asked for and did not
 # arrive" state. Distinct from passing no --pg-container at all, which is the operator declining to
@@ -396,21 +398,46 @@ def test_a_freed_index_is_handed_out_again(registry: str, tmp_path: Path) -> Non
 
 
 def test_a_never_used_index_is_preferred_over_a_recycled_one(registry: str, tmp_path: Path) -> None:
-    """Recycling is the last resort, not the first.
+    """Recycling is the last resort, not the first — and releasing the TOP seat must not change that.
 
     Reclaim can only be as good as its evidence, and one hazard survives every check: a shell that
     still has a stale ``PHAZE_REDIS_URL`` exported keeps writing to its old index after the
     registry hands it back. Handing out untouched indices first means that hazard is only taken
     when the space genuinely demands it.
+
+    This test used to release index 1, comfortably BELOW the high-water mark, and so passed against
+    an allocator that derived the mark from the currently registered entries — where freeing the
+    top seat collapses it and the very next allocation recycles an index that was in use seconds
+    ago (phaze-08sww). Releasing the top index is the case that tells the two apart, and it is also
+    the realistic one: a sweep frees the seats that are done, and the newest seats are the ones a
+    stale export is most likely to still name.
     """
     for n in range(3):
         _allocate(registry, f"seat_{n}", origin=str(tmp_path))
-    _run(registry, "release", "--seat", "seat_0", "--capacity", str(_CAPACITY))
+    _run(registry, "release", "--seat", "seat_2", "--capacity", str(_CAPACITY))
 
-    assert _index_of(_allocate(registry, "seat_fresh", origin=str(tmp_path))) == 4, "should skip the freed index while untouched ones remain"
+    assert _index_of(_allocate(registry, "seat_fresh", origin=str(tmp_path))) == 4, "freeing the TOP index must not collapse the high-water mark"
 
-    _allocate(registry, "seat_filler", origin=str(tmp_path))
-    assert _index_of(_allocate(registry, "seat_recycler", origin=str(tmp_path))) == 1, "with nothing untouched left, the freed index is reused"
+    assert _index_of(_allocate(registry, "seat_filler", origin=str(tmp_path))) == 5
+    assert _index_of(_allocate(registry, "seat_recycler", origin=str(tmp_path))) == 3, "with nothing untouched left, the freed index is reused"
+
+
+def test_releasing_the_top_seat_of_a_pre_existing_registry_still_raises_the_mark(registry: str, tmp_path: Path) -> None:
+    """The mark has to be raised BEFORE the entry is freed, because freeing erases the evidence.
+
+    A registry written before this key existed carries no mark at all, and the entries themselves
+    are the only record of what has been handed out. Reading them at allocation time is not enough:
+    by then ``release`` has already deleted the one that mattered, and the allocator sees a mark of
+    2 where the truth is 3. So both freeing paths raise the mark first (phaze-08sww).
+    """
+    for seat, index in (("seat_legacy_a", "1"), ("seat_legacy_b", "2"), ("seat_legacy_c", "3")):
+        _registry_cli(registry, "HSET", _REGISTRY_KEY, seat, index)
+    assert _registry_cli(registry, "GET", _HIGHWATER_KEY) == "", "the fixture starts with no mark, as a pre-existing container would"
+
+    released = _run(registry, "release", "--seat", "seat_legacy_c", "--capacity", str(_CAPACITY))
+    assert released.returncode == 0, released.stderr
+
+    assert _index_of(_allocate(registry, "seat_next", origin=str(tmp_path))) == 4, "index 3 was handed out; the next seat must not be handed it back"
 
 
 def test_an_out_of_range_allocation_is_repaired_in_place(registry: str, tmp_path: Path) -> None:
@@ -434,14 +461,20 @@ def test_a_recycled_index_is_cleared_before_handover(registry: str, tmp_path: Pa
     Foreign keys inside a supposedly private database is phaze-fwo7 seen from the other side: the
     sweeps and keyspace-counting assertions in the redis-backed modules cannot tell them from
     their own.
+
+    The space is filled first so that recycling is genuinely forced. This test used to allocate one
+    seat, drop it, and allocate again — which only recycled because the high-water mark collapsed
+    with the entry, i.e. because of the phaze-08sww defect. With the mark persisted, an untouched
+    index is preferred and the handover under test never happened.
     """
-    index = _index_of(_allocate(registry, "seat_first", origin=str(tmp_path)))
+    held = {seat: _index_of(_allocate(registry, seat, origin=str(tmp_path))) for seat in (f"seat_{n}" for n in range(_ALLOCATABLE))}
+    index = held["seat_2"]
     _redis(registry, "-n", str(index), "SET", "exec:leftover", "stale-value")
-    _registry_cli(registry, "HDEL", _REGISTRY_KEY, "seat_first")
+    _registry_cli(registry, "HDEL", _REGISTRY_KEY, "seat_2")
 
     reused = _index_of(_allocate(registry, "seat_second", origin=str(tmp_path)))
 
-    assert reused == index
+    assert reused == index, "with nothing untouched left, the freed index is the one handed over"
     assert _redis(registry, "-n", str(index), "DBSIZE") == "0"
 
 
@@ -510,11 +543,14 @@ def test_reclaim_is_a_dry_run_until_apply(registry: str, tmp_path: Path) -> None
     index = _index_of(_allocate(registry, "seat_old", origin=str(tmp_path)))
     _expire_lease(registry, "seat_old")
 
+    mark_before = _registry_cli(registry, "GET", _HIGHWATER_KEY)
+
     preview = _reclaim(registry)
 
     assert preview.returncode == 0, preview.stderr
     assert "would reclaim" in preview.stdout
     assert _allocated_seats(registry) == {"seat_old": str(index)}, "a dry run must change nothing"
+    assert _registry_cli(registry, "GET", _HIGHWATER_KEY) == mark_before, "not even the high-water mark — a dry run means a dry run"
 
     applied = _reclaim(registry, "--apply")
     assert applied.returncode == 0, applied.stderr
@@ -594,6 +630,40 @@ def test_unstamped_legacy_entries_are_left_alone_by_default(registry: str) -> No
     opted_in = _reclaim(registry, "--apply", "--include-unstamped")
     assert opted_in.returncode == 0, opted_in.stderr
     assert _allocated_seats(registry) == {}
+
+
+def test_a_sweep_does_not_make_the_next_allocation_recycle(registry: str, tmp_path: Path) -> None:
+    """The high-water preference must survive the sweep, which is the moment it is needed most.
+
+    ``--apply`` frees the seats an operator has just decided are done, so the indices it hands back
+    are the ones a shell somewhere is most likely to still have exported. Deriving the mark from
+    the surviving entries made it collapse to zero exactly then, and the next ``test-db-for`` was
+    handed an index that had been in use seconds earlier (phaze-08sww).
+    """
+    for n in range(3):
+        _allocate(registry, f"seat_{n}", origin=str(tmp_path))
+        _expire_lease(registry, f"seat_{n}")
+
+    swept = _reclaim(registry, "--apply")
+    assert _allocated_seats(registry) == {}, swept.stdout
+
+    assert _index_of(_allocate(registry, "seat_next", origin=str(tmp_path))) == 4, "an emptied registry must not reset the all-time mark"
+
+
+def test_a_sweep_of_a_pre_existing_registry_still_raises_the_mark(registry: str, tmp_path: Path) -> None:
+    """The sweep half of the same ordering rule, on a registry that carries no mark of its own.
+
+    Entries written before this key existed are the only evidence that their indices were ever
+    handed out, and ``--apply`` deletes all of them in one pass. Raising the mark from the snapshot
+    before the first deletion is what stops the very next ``test-db-for`` from starting again at 1.
+    """
+    for seat, index in (("seat_legacy_a", "1"), ("seat_legacy_b", "2"), ("seat_legacy_c", "3")):
+        _registry_cli(registry, "HSET", _REGISTRY_KEY, seat, index)
+
+    swept = _reclaim(registry, "--apply", "--include-unstamped")
+    assert _allocated_seats(registry) == {}, swept.stdout
+
+    assert _index_of(_allocate(registry, "seat_next", origin=str(tmp_path))) == 4, "the swept indices were handed out and must not be first in line"
 
 
 def test_reclaim_refuses_without_postgres_evidence(registry: str, tmp_path: Path) -> None:

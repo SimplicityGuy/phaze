@@ -91,9 +91,21 @@
 #   phaze:test:redis-db-index   hash seat -> index   (unchanged shape; pre-existing entries load)
 #   phaze:test:redis-db-seen    hash seat -> unix seconds of last `test-db-for` (lease stamp)
 #   phaze:test:redis-db-origin  hash seat -> absolute path of the worktree that claimed it
-#   phaze:test:redis-db-counter DEPRECATED. No longer read or written; left in place rather than
-#                               deleted so an older checkout's `test-db-for` running against the
-#                               same container keeps its own behaviour instead of restarting from 1.
+#   phaze:test:redis-db-counter The ALL-TIME high-water mark: the largest index ever handed out on
+#                               this container, which is exactly what the old monotonic counter
+#                               already held. It is no longer the allocator (the scan is), but it
+#                               is what makes "prefer an index nobody has ever held" true --
+#                               deriving that mark from the CURRENTLY REGISTERED entries collapses
+#                               it the moment the top seat is freed (phaze-08sww). It only ever
+#                               RISES: `allocate` raises it when it hands out a fresh index, and
+#                               `release` and `reclaim --apply` raise it to cover everything still
+#                               registered BEFORE they free anything, because freeing is what erases
+#                               the evidence. Keeping the same key also keeps an older checkout's
+#                               `INCR`-based `test-db-for` behaving sanely against the same
+#                               container -- and a mark left at 68/73/80 by the counter era is not
+#                               clamped, because it is telling the truth: in a 64-database space
+#                               every allocatable index really has been handed out at some point, so
+#                               there is nothing fresh left to prefer and recycling is all there is.
 #
 # Seat names are the DERIVED identifiers from `scripts/derive-seat-name.sh` (phaze-fmfk); this
 # script does not normalize anything itself, so the registry key, the Postgres database pair and
@@ -120,6 +132,7 @@ set -euo pipefail
 readonly REGISTRY_KEY="phaze:test:redis-db-index"
 readonly SEEN_KEY="phaze:test:redis-db-seen"
 readonly ORIGIN_KEY="phaze:test:redis-db-origin"
+readonly HIGHWATER_KEY="phaze:test:redis-db-counter"
 
 lease_hours="${PHAZE_TEST_REDIS_SEAT_LEASE_HOURS:-72}"
 
@@ -290,7 +303,7 @@ seat_is_postgres_live() {
 # lease), else claim the LOWEST FREE index in [1, capacity), else report exhaustion. Index 0 is
 # reserved for this registry itself and is never handed out.
 readonly ALLOCATE_LUA='
-local reg, seen, origin_key = KEYS[1], KEYS[2], KEYS[3]
+local reg, seen, origin_key, highwater_key = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
 local seat, capacity, origin_path = ARGV[1], tonumber(ARGV[2]), ARGV[3]
 local now = redis.call("TIME")[1]
 
@@ -307,26 +320,41 @@ if existing_index and existing_index >= 1 and existing_index < capacity then
 end
 
 local used = {}
-local highwater = 0
 local flat = redis.call("HGETALL", reg)
 for i = 1, #flat, 2 do
   if flat[i] ~= seat then
     local value = tonumber(flat[i + 1])
-    if value then
-      used[value] = true
-      if value < capacity and value > highwater then highwater = value end
-    end
+    if value then used[value] = true end
   end
 end
 
+-- The ALL-TIME high-water mark, persisted rather than derived. Deriving it from the entries above
+-- is what phaze-08sww reported: freeing the top seat collapsed the mark, so the very next
+-- allocation recycled an index that had been in use seconds earlier -- weakest precisely after a
+-- sweep, which is the moment recycling happens at all. The registered entries are still folded in
+-- as a FLOOR, so a container whose mark predates this key (or was written by an older checkout)
+-- cannot start below what it has already handed out.
+local stored = tonumber(redis.call("GET", highwater_key)) or 0
+local highwater = stored
+for i = 1, #flat, 2 do
+  local value = tonumber(flat[i + 1])
+  if value and value < capacity and value > highwater then highwater = value end
+end
+-- Write the floor back rather than recomputing it every call. Otherwise the entries that raised it
+-- can be released before any above-mark allocation persists it, and the mark collapses after all --
+-- the same defect, just one allocation later. This makes the FIRST call against a container whose
+-- key predates this change durable, which is the only case where the floor does any work.
+if highwater > stored then redis.call("SET", highwater_key, highwater) end
+
 local function claim(index)
   redis.call("HSET", reg, seat, index)
+  if index > highwater then redis.call("SET", highwater_key, index) end
   stamp()
   if existing then return "reallocated " .. index end
   return "allocated " .. index
 end
 
--- Prefer an index no seat has ever held (above the current high-water mark) before recycling a
+-- Prefer an index no seat has ever held (above the all-time high-water mark) before recycling a
 -- freed one. Reclaim can only ever be as good as its evidence, and one hazard survives every
 -- check: a shell that still has a stale PHAZE_REDIS_URL exported keeps using its old index even
 -- after the registry hands it back. Recycling last, rather than first, means that hazard is only
@@ -348,7 +376,7 @@ cmd_allocate() {
   local cap result verdict index
   cap="$(effective_capacity)"
 
-  result="$(registry_cli EVAL "$ALLOCATE_LUA" 3 "$REGISTRY_KEY" "$SEEN_KEY" "$ORIGIN_KEY" "$seat" "$cap" "$origin")"
+  result="$(registry_cli EVAL "$ALLOCATE_LUA" 4 "$REGISTRY_KEY" "$SEEN_KEY" "$ORIGIN_KEY" "$HIGHWATER_KEY" "$seat" "$cap" "$origin")"
   verdict="${result%% *}"
   index="${result##* }"
 
@@ -451,6 +479,34 @@ redis.call("HDEL", origin_key, seat)
 return "freed"
 '
 
+# Raise the persisted all-time high-water mark to cover everything CURRENTLY registered. Both
+# freeing paths call this before they destroy anything, and the ordering is the entire point: once
+# an entry is gone the allocator can no longer infer that its index was ever handed out, and the
+# "prefer an index no seat has ever held" preference collapses exactly when it is needed most
+# (phaze-08sww). `allocate` folds the same floor in, so a container that has allocated under this
+# script already carries a correct mark -- this is what covers a registry written before the key
+# existed, whose first operation under this script is a release or a sweep rather than an allocate.
+#
+# Purely additive: the mark only ever rises, and nothing reads it except the allocator's preference.
+readonly RAISE_HIGHWATER_LUA='
+local highwater_key, reg = KEYS[1], KEYS[2]
+local capacity = tonumber(ARGV[1])
+local stored = tonumber(redis.call("GET", highwater_key)) or 0
+local highwater = stored
+local flat = redis.call("HGETALL", reg)
+for i = 1, #flat, 2 do
+  local value = tonumber(flat[i + 1])
+  if value and value < capacity and value > highwater then highwater = value end
+end
+if highwater > stored then redis.call("SET", highwater_key, highwater) end
+return tostring(highwater)
+'
+
+raise_highwater() {
+  local cap="$1"
+  registry_cli EVAL "$RAISE_HIGHWATER_LUA" 2 "$HIGHWATER_KEY" "$REGISTRY_KEY" "$cap" >/dev/null
+}
+
 # Set by free_seat when it declines, so the caller can say which guard objected.
 free_seat_refusal=""
 
@@ -519,6 +575,11 @@ cmd_release() {
     return 0
   fi
   seen_at="$(registry_cli HGET "$SEEN_KEY" "$seat")"
+
+  # Before either path frees anything: releasing the top seat must not lose the record that its
+  # index was handed out, or the next allocation recycles it instead of taking a fresh one
+  # (phaze-08sww).
+  raise_highwater "$cap"
 
   if [ "$force" -eq 1 ]; then
     free_seat_unconditionally "$seat" "$index" "$cap"
@@ -734,6 +795,12 @@ cmd_reclaim() {
     echo "No Redis logical DBs are allocated on ${redis_container}; nothing to reclaim."
     return 0
   fi
+
+  # Before the first entry is destroyed, not after: a sweep is the one moment that can erase the
+  # evidence of which indices have been handed out, and an index freed by a sweep is precisely the
+  # one a shell somewhere is most likely to still have exported (phaze-08sww). A dry run mutates
+  # nothing, including this.
+  [ "$apply" -ne 1 ] || raise_highwater "$cap"
 
   while IFS=$'\t' read -r name index raw seen verdict reason; do
     [ -n "$name" ] || continue
