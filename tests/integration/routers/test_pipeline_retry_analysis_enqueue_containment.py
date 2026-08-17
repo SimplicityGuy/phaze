@@ -97,7 +97,10 @@ async def test_one_enqueue_failure_does_not_abandon_the_rest_of_the_group(
     await make_agent_live(session)
     _, task_router = install_fake_queues(client)
 
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package. `enqueue_process_file` is bound in the
+    # `analysis` submodule's namespace, so the patch must name that module -- patching the
+    # facade would set an attribute nothing reads and silently no-op this test.
+    import phaze.routers.pipeline.analysis as pipeline_mod
 
     real_enqueue = pipeline_mod.enqueue_process_file
 
@@ -134,7 +137,10 @@ async def test_failed_enqueue_restores_the_failure_marker(
     await make_agent_live(session)
     install_fake_queues(client)
 
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package. `enqueue_process_file` is bound in the
+    # `analysis` submodule's namespace, so the patch must name that module -- patching the
+    # facade would set an attribute nothing reads and silently no-op this test.
+    import phaze.routers.pipeline.analysis as pipeline_mod
 
     real_enqueue = pipeline_mod.enqueue_process_file
 

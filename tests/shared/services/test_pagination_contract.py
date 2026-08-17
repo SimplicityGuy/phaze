@@ -251,6 +251,19 @@ def test_shell_router_does_not_read_the_unbounded_identify_sets() -> None:
     assert "get_tracklist_set_rows(" not in shell_src, "the shell render path must use the bounded get_tracklist_sets_page"
 
 
+def _pipeline_router_src() -> str:
+    """Concatenated source of the whole ``routers/pipeline`` package.
+
+    phaze-oau1o: this used to be ``Path("src/phaze/routers/pipeline.py").read_text()``. That file is
+    now a PACKAGE, and the two triggers guarded below live in different submodules
+    (``tracklists.py`` and ``extraction.py``). Reading the package as one blob keeps these
+    "the bulk trigger still reads the UNBOUNDED set" guards indifferent to which submodule owns a
+    trigger, so a later re-seam cannot quietly move an endpoint out from under its own guard.
+    """
+    root = pathlib.Path("src/phaze/routers/pipeline")
+    return "\n".join(f.read_text() for f in sorted(root.rglob("*.py")))
+
+
 def test_tracklist_bulk_triggers_still_use_the_unbounded_sets() -> None:
     """Contract rule 7 for the Identify surface: bounding the table must not bound the buttons.
 
@@ -263,7 +276,7 @@ def test_tracklist_bulk_triggers_still_use_the_unbounded_sets() -> None:
     (host requests), never in rows -- and it rebuilds its queue from the corpus every slice, so it
     cannot under-cover a backlog the way a paged enqueue reader would.
     """
-    router_src = pathlib.Path("src/phaze/routers/pipeline.py").read_text()
+    router_src = _pipeline_router_src()
     assert "get_match_pending_tracklists(session)" in router_src, "MATCH ALL must enqueue the UNBOUNDED pending set"
 
 
@@ -274,7 +287,7 @@ def test_bulk_enqueue_still_uses_the_unbounded_pending_set() -> None:
     A future "consistency" refactor that points EXTRACT ALL at the paged reader would quietly stop
     enqueuing everything past page 1, which is far worse than a long table.
     """
-    router_src = pathlib.Path("src/phaze/routers/pipeline.py").read_text()
+    router_src = _pipeline_router_src()
     assert "get_metadata_pending_files(session)" in router_src, "EXTRACT ALL must enqueue the UNBOUNDED pending set"
 
 
