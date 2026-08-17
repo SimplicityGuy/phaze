@@ -41,6 +41,20 @@
 #       idle-looking suite is still visible here. It is the same signal `just test-db-down` already
 #       trusts to refuse a teardown. Postgres evidence is MANDATORY for `reclaim`: if the Postgres
 #       container cannot be reached, the sweep refuses rather than treating unknown as free.
+#
+#       L2 therefore has THREE states, and collapsing them is the phaze-gmkua defect: the query
+#       used to end `2>/dev/null || true`, so an unreachable Postgres returned an EMPTY list --
+#       byte-identical to "no seat has a backend attached", i.e. unknown silently read as free.
+#
+#         obtained     the query answered. `pg_live` is authoritative, empty or not.
+#         unavailable  a container was named but did not answer. NOT a finding: every seat's L2
+#                      state is unknown, so classification keeps them all.
+#         waived       the operator passed `--no-postgres-check`, accepting a sweep on L1/L3/O1/O2
+#                      alone. `reclaim` always says so on stderr -- see `cmd_reclaim`, and note the
+#                      warning is gated on the EVIDENCE, never on whether `--pg-container` happened
+#                      to be passed: the justfile recipe always passes it, so the old
+#                      `-z "$pg_container"` gate silenced the warning on the only shape an operator
+#                      ever types.
 #   L3  Its lease has not expired -- `test-db-for` stamps `phaze:test:redis-db-seen` on every call,
 #       and a seat stamped within PHAZE_TEST_REDIS_SEAT_LEASE_HOURS (default 72) is left alone.
 #       This is what protects the claimed-but-idle seat that L1 and L2 cannot see.
@@ -219,11 +233,35 @@ live_redis_indices() {
 # Databases with a live client backend on the shared Postgres (liveness signal L2). Same query
 # shape `just test-db-down` uses to refuse a teardown; pytest holds its advisory-lock connection
 # for the whole session, so a suite that is merely thinking still shows up.
-live_postgres_databases() {
-  [ -n "$pg_container" ] || return 0
-  docker exec "$pg_container" psql -U phaze -d postgres -tAc \
-    "SELECT DISTINCT datname FROM pg_stat_activity
-      WHERE backend_type = 'client backend' AND pid <> pg_backend_pid() AND datname LIKE 'phaze%'" 2>/dev/null || true
+readonly PG_LIVE_SQL="SELECT DISTINCT datname FROM pg_stat_activity
+      WHERE backend_type = 'client backend' AND pid <> pg_backend_pid() AND datname LIKE 'phaze%'"
+
+# Set by collect_postgres_evidence, read by classify_seats / cmd_release / cmd_reclaim.
+# `pg_evidence` is one of obtained | unavailable | waived (see the L2 note in the header); `pg_live`
+# is meaningful ONLY when it is `obtained`, which is the whole point of keeping the two apart.
+pg_evidence="waived"
+pg_live=""
+
+collect_postgres_evidence() {
+  pg_live=""
+  if [ -z "$pg_container" ]; then
+    pg_evidence="waived"
+    return 0
+  fi
+  # Asked for even under --no-postgres-check: that flag waives the REFUSAL, not evidence that is
+  # there for the taking. A reachable Postgres still protects a running suite either way.
+  if pg_live="$(docker exec "$pg_container" psql -U phaze -d postgres -tAc "$PG_LIVE_SQL" 2>/dev/null)"; then
+    pg_evidence="obtained"
+    return 0
+  fi
+  # The query failed. An empty answer would be indistinguishable from "nobody is connected", so
+  # say so instead of returning one (phaze-gmkua defect B).
+  pg_live=""
+  if [ "$skip_postgres_check" -eq 1 ]; then
+    pg_evidence="waived"
+  else
+    pg_evidence="unavailable"
+  fi
 }
 
 seat_is_redis_live() {
@@ -389,15 +427,22 @@ cmd_release() {
   fi
 
   if [ "$force" -ne 1 ]; then
-    local redis_live pg_live
+    local redis_live
     redis_live="$(live_redis_indices)"
-    pg_live="$(live_postgres_databases)"
+    collect_postgres_evidence
     if seat_is_redis_live "$index" "$redis_live"; then
       echo "❌ Refusing to release '${seat}': a client is connected to Redis logical DB ${index} right now." >&2
       echo "   Releasing it would clear keys a running suite is using. Wait for it, or --force." >&2
       exit 4
     fi
-    if [ -n "$pg_container" ] && seat_is_postgres_live "$seat" "$pg_live"; then
+    if [ "$pg_evidence" = "unavailable" ]; then
+      # Same rule as the sweep: a named container that will not answer leaves L2 unknown, and
+      # unknown is never read as free (phaze-gmkua).
+      echo "❌ Refusing to release '${seat}': Postgres container '${pg_container}' did not answer, so a" >&2
+      echo "   suite running in this seat would be invisible. Start the harness (\`just test-db\`), or --force." >&2
+      exit 4
+    fi
+    if [ "$pg_evidence" = "obtained" ] && seat_is_postgres_live "$seat" "$pg_live"; then
       echo "❌ Refusing to release '${seat}': a client backend is connected to its Postgres database." >&2
       echo "   pytest holds that connection for the whole session, so a suite is running in this seat." >&2
       echo "   Wait for it to finish, or --force." >&2
@@ -411,12 +456,15 @@ cmd_release() {
 
 # Shared by `list` and `reclaim`: classify every registry entry against the liveness rules above.
 # Emits one TAB-separated record per seat: name, index, verdict, reason.
+#
+# Reads `pg_evidence`/`pg_live`, which the CALLER must have filled with collect_postgres_evidence.
+# Not collected here: every caller captures this function with `$(...)`, and a command substitution
+# runs in a subshell, so anything assigned inside would be discarded on the way out.
 classify_seats() {
   local cap="$1"
-  local now redis_live pg_live lease_seconds
+  local now redis_live lease_seconds
   now="$(server_now)"
   redis_live="$(live_redis_indices)"
-  pg_live="$(live_postgres_databases)"
   lease_seconds=$((lease_hours * 3600))
 
   # Each hash is fetched ONCE and looked up locally. A per-seat `HGET` would be three `docker exec`
@@ -446,8 +494,13 @@ classify_seats() {
 
     if seat_is_redis_live "$index" "$redis_live"; then
       reason="a Redis client is connected to DB ${index} (L1)"
-    elif [ -n "$pg_container" ] && seat_is_postgres_live "$name" "$pg_live"; then
+    elif [ "$pg_evidence" = "obtained" ] && seat_is_postgres_live "$name" "$pg_live"; then
       reason="a Postgres backend is connected to phaze_${name}_test (L2)"
+    elif [ "$pg_evidence" = "unavailable" ]; then
+      # A container was named and did not answer. Its silence says nothing about this seat, so it
+      # must not fall through to O1/L3 and be read as absence of life (phaze-gmkua defect B). This
+      # branch is only reachable from `list`; `reclaim` refuses outright before classifying.
+      reason="Postgres container '${pg_container}' did not answer, so L2 is unknown for this seat and unknown is never read as free"
     elif [ -n "$origin_path" ] && [ ! -d "$origin_path" ]; then
       verdict="reclaim"
       reason="origin worktree ${origin_path} no longer exists (O1)"
@@ -493,6 +546,11 @@ require_postgres_evidence() {
 cmd_list() {
   local cap records
   cap="$(effective_capacity)"
+  collect_postgres_evidence
+  if [ "$pg_evidence" = "unavailable" ]; then
+    echo "⚠️  Postgres container '${pg_container}' did not answer, so the L2 evidence is missing." >&2
+    echo "    Every seat is reported in-use below on that basis alone; unknown is not free." >&2
+  fi
   records="$(classify_seats "$cap")"
   if [ -z "$records" ]; then
     echo "No Redis logical DBs are allocated on ${redis_container} (capacity ${cap}, index 0 reserved for the registry)."
@@ -520,13 +578,33 @@ cmd_list() {
 cmd_reclaim() {
   [ -n "$capacity" ] || usage
   [ "$skip_postgres_check" -eq 1 ] || require_postgres_evidence
-  if [ "$skip_postgres_check" -eq 1 ] && [ -z "$pg_container" ]; then
-    echo "⚠️  --no-postgres-check: sweeping without the Postgres evidence (L2). A suite that is running" >&2
-    echo "    but not currently touching Redis is invisible to this sweep." >&2
-  fi
 
   local cap records freed=0 kept=0 unstamped=0
   cap="$(effective_capacity)"
+  collect_postgres_evidence
+
+  # Report on the evidence that was actually OBTAINED, not on which flags were passed. The old
+  # gate was `--no-postgres-check AND no --pg-container`, but the justfile recipe always passes
+  # `--pg-container` -- so `just test-db-reclaim --no-postgres-check`, the only shape an operator
+  # ever types, swept with L2 missing and said nothing at all (phaze-gmkua defect A).
+  if [ "$skip_postgres_check" -eq 1 ]; then
+    if [ "$pg_evidence" = "obtained" ]; then
+      echo "ℹ️  --no-postgres-check: the refusal was waived, but '${pg_container}' answered, so the Postgres" >&2
+      echo "    evidence (L2) was collected and used anyway. Seats with a live backend are still protected." >&2
+    else
+      echo "⚠️  --no-postgres-check: sweeping without the Postgres evidence (L2). A suite that is running" >&2
+      echo "    but not currently touching Redis is invisible to this sweep." >&2
+    fi
+  elif [ "$pg_evidence" != "obtained" ]; then
+    # require_postgres_evidence passed its probe, then the liveness query itself failed. Reading
+    # that as "no seat has a backend attached" is exactly what defect B did.
+    echo "❌ The Postgres liveness query against '${pg_container}' failed, so the L2 evidence this sweep" >&2
+    echo "   requires is unavailable. Refusing rather than reading unknown as free." >&2
+    echo "   Re-run once the harness is answering, or pass --no-postgres-check to sweep on the remaining" >&2
+    echo "   evidence alone -- only do that when you know no suite is running." >&2
+    exit 1
+  fi
+
   records="$(classify_seats "$cap")"
   if [ -z "$records" ]; then
     echo "No Redis logical DBs are allocated on ${redis_container}; nothing to reclaim."

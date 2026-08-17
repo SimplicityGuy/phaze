@@ -35,6 +35,11 @@ its origin worktree is gone (O1), or its index is past the cap so no client coul
 An entry with no lease stamp predates this mechanism, has genuinely unknown age, and is left alone
 unless ``--include-unstamped`` is passed — see
 :func:`test_unstamped_legacy_entries_are_left_alone_by_default`.
+
+L2 in particular has three states, not two, and collapsing them is phaze-gmkua: evidence
+*obtained* (an answer, empty or not), evidence *unavailable* (a container was named and did not
+answer — which says nothing about any seat), and evidence *waived* by ``--no-postgres-check``. Only
+the first is a finding.
 """
 
 from __future__ import annotations
@@ -66,6 +71,11 @@ _ALLOCATABLE = _CAPACITY - 1
 _REGISTRY_KEY = "phaze:test:redis-db-index"
 _SEEN_KEY = "phaze:test:redis-db-seen"
 _ORIGIN_KEY = "phaze:test:redis-db-origin"
+
+# A container name nothing will ever answer to, for the "L2 evidence was asked for and did not
+# arrive" state. Distinct from passing no --pg-container at all, which is the operator declining to
+# ask — telling those two apart is the whole of phaze-gmkua defect B.
+_ABSENT_PG_CONTAINER = "phaze-seatreg-test-no-such-postgres"
 
 
 def _docker(*args: str) -> subprocess.CompletedProcess[str]:
@@ -480,6 +490,61 @@ def test_reclaim_refuses_without_postgres_evidence(registry: str, tmp_path: Path
     assert blind.returncode == 1
     assert "--no-postgres-check" in blind.stderr
     assert _allocated_seats(registry) != {}, "a refused sweep must free nothing"
+
+
+def test_reclaim_refuses_when_the_named_postgres_does_not_answer(registry: str, tmp_path: Path) -> None:
+    """An unreachable Postgres is not evidence of an idle seat (phaze-gmkua defect B).
+
+    The liveness query used to end ``2>/dev/null || true``, so a container that never answered
+    returned an EMPTY database list — byte-identical to "no seat has a backend attached". A sweep
+    would then read every running suite as idle while reporting nothing unusual.
+    """
+    _allocate(registry, "seat_any", origin=str(tmp_path))
+
+    blind = _run(registry, "reclaim", "--capacity", str(_CAPACITY), "--pg-container", _ABSENT_PG_CONTAINER, "--apply")
+
+    assert blind.returncode == 1
+    assert _allocated_seats(registry) != {}, "a refused sweep must free nothing"
+
+
+def test_no_postgres_check_warns_even_when_pg_container_is_also_passed(registry: str, tmp_path: Path) -> None:
+    """The warning is gated on the EVIDENCE, not on which flags were typed (phaze-gmkua defect A).
+
+    The old gate was ``--no-postgres-check AND no --pg-container``. But the justfile recipe always
+    passes ``--pg-container``, so ``just test-db-reclaim --no-postgres-check`` — the only shape an
+    operator ever types — swept with L2 missing and printed nothing at all. The tests never caught
+    it because they only ever exercised the bare form.
+    """
+    _allocate(registry, "seat_old", origin=str(tmp_path))
+    _expire_lease(registry, "seat_old")
+
+    justfile_shape = _run(registry, "reclaim", "--capacity", str(_CAPACITY), "--pg-container", _ABSENT_PG_CONTAINER, "--no-postgres-check", "--apply")
+
+    assert justfile_shape.returncode == 0, justfile_shape.stderr
+    assert "⚠️" in justfile_shape.stderr, f"a sweep with L2 missing must say so: {justfile_shape.stderr}"
+    assert "--no-postgres-check" in justfile_shape.stderr
+    assert _allocated_seats(registry) == {}, "the waiver still lets the sweep proceed on L1/L3/O1/O2"
+
+
+def test_list_reports_an_unreachable_postgres_instead_of_calling_seats_stale(registry: str, tmp_path: Path) -> None:
+    """``list`` must not launder a missing L2 into a stale verdict either.
+
+    ``test-db-seats`` is what an operator reads before deciding to sweep. If a Postgres that never
+    answered made every seat look reclaimable, the recommendation it prints would be built on the
+    absence of evidence rather than on evidence of absence.
+    """
+    gone = tmp_path / "vanished"
+    gone.mkdir()
+    _allocate(registry, "seat_gone", origin=str(gone))
+    gone.rmdir()
+
+    listing = _run(registry, "list", "--capacity", str(_CAPACITY), "--pg-container", _ABSENT_PG_CONTAINER)
+
+    assert listing.returncode == 0, listing.stderr
+    assert "did not answer" in listing.stderr
+    row = next(line for line in listing.stdout.splitlines() if "seat_gone" in line)
+    assert "in-use" in row, f"O1 must not fire while L2 is unknown: {row}"
+    assert "unknown is never read as free" in row
 
 
 def test_list_reports_the_evidence_behind_every_verdict(registry: str, tmp_path: Path) -> None:
