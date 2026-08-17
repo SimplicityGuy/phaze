@@ -177,8 +177,17 @@
             <span class="{{ _eyebrow }}">Total</span>
             <p class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ stats.total }}</p>
         </div>
+        {# phaze-tzy6s.17 / ADR-0008: these are proposal statuses, so they carry the operator
+           vocabulary -- `pending` reads "Needs Review".
+           NOT fixed here, filed instead: `stats.approved` is `get_proposal_stats`'s
+           `count(case(status == APPROVED))` (proposal_queries.py:253), so it counts ONLY persisted
+           `approved` -- while ADR-0008's Approved state is `approved` OR `executed`. An executed
+           proposal is therefore absent from this card even though `total` counts it, so these four
+           numbers do not sum to Total. Correcting that means changing what the query returns (a
+           behavioural change, and this card is the Execute control's own "still to dispatch"
+           reading), so it is a follow-up bead rather than a relabel. #}
         <div>
-            <span class="{{ _eyebrow }}">Pending</span>
+            <span class="{{ _eyebrow }}">Needs Review</span>
             <p class="text-xl font-semibold text-amber-600 dark:text-amber-400">{{ stats.pending }}</p>
         </div>
         <div>

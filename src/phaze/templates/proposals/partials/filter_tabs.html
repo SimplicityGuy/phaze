@@ -27,9 +27,16 @@
    a fragment-only endpoint. #}
 <div class="border-b border-gray-200 dark:border-phaze-border mb-4">
     <nav class="flex space-x-4" aria-label="Status filter tabs">
+        {# phaze-tzy6s.17 / ADR-0008: the operator vocabulary is Needs Review / Approved / Blocked /
+           Rejected. Only the LABEL changes here -- the tab VALUE stays the persisted `pending`
+           status, because it is the query parameter the server filters on and the ADR is explicit
+           that the UI mapping "does not migrate or collapse persisted statuses". Renaming the value
+           would be a behavioural change to a bookmarkable URL; renaming the label is the
+           conformance fix. There is deliberately no "Blocked" tab here: adding one would change
+           what this filter returns, so it is filed as a follow-up rather than absorbed. #}
         {% set tabs = [
             ("all", "All", stats.total),
-            ("pending", "Pending", stats.pending),
+            ("pending", "Needs Review", stats.pending),
             ("approved", "Approved", stats.approved),
             ("rejected", "Rejected", stats.rejected),
         ] %}
