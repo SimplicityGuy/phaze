@@ -18,6 +18,9 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.pipeline import _build_dag_context
 from phaze.services import pipeline as pipeline_service
+import phaze.services.pipeline.buckets as pipeline_buckets
+import phaze.services.pipeline.pending as pipeline_pending
+import phaze.services.pipeline.stages as pipeline_stages
 from phaze.services.pipeline import (
     MetadataActivitySummary,
     MetadataSelectionSummary,
@@ -129,7 +132,7 @@ async def test_status_read_failure_recovers_on_isolated_retry(session: AsyncSess
 
     with monkeypatch.context() as failure:
         failure.setattr(
-            pipeline_service,
+            pipeline_buckets,
             "_metadata_status_stmt",
             lambda: select(text("1"), text("1")).select_from(text("metadata_status_retry_missing")),
         )
@@ -149,7 +152,7 @@ async def test_selection_read_failure_recovers_on_isolated_retry(session: AsyncS
 
     with monkeypatch.context() as failure:
         failure.setattr(
-            pipeline_service,
+            pipeline_pending,
             "_metadata_pending_stmt",
             lambda: select(FileRecord).where(text("EXISTS (SELECT 1 FROM metadata_selection_retry_missing)")),
         )
@@ -168,7 +171,7 @@ async def test_pending_page_failure_recovers_on_isolated_retry(session: AsyncSes
 
     with monkeypatch.context() as failure:
         failure.setattr(
-            pipeline_service,
+            pipeline_pending,
             "_metadata_pending_stmt",
             lambda: select(FileRecord).where(text("EXISTS (SELECT 1 FROM metadata_pending_page_retry_missing)")),
         )
@@ -191,7 +194,7 @@ async def test_recent_write_failure_recovers_on_isolated_retry(session: AsyncSes
 
     with monkeypatch.context() as failure:
         failure.setattr(
-            pipeline_service,
+            pipeline_pending,
             "_metadata_activity_stmt",
             lambda _cutoff: select(text("1"), text("NULL")).select_from(text("metadata_activity_retry_missing")),
         )
@@ -227,7 +230,7 @@ async def test_queue_read_failure_recovers_on_isolated_retry(session: AsyncSessi
     await session.execute(text("INSERT INTO saq_jobs (key, status) VALUES ('extract_file_metadata:retry', 'queued')"))
 
     with monkeypatch.context() as failure:
-        failure.setattr(pipeline_service, "_STAGE_ACTIVITY_SQL", text("SELECT * FROM metadata_queue_retry_missing"))
+        failure.setattr(pipeline_stages, "_STAGE_ACTIVITY_SQL", text("SELECT * FROM metadata_queue_retry_missing"))
         degraded = await get_stage_activity_snapshot(session)
     retried = await get_stage_activity_snapshot(session)
 
@@ -241,19 +244,19 @@ async def test_measurement_read_failures_are_explicitly_unavailable(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(pipeline_service, "_STAGE_ACTIVITY_SQL", text("SELECT * FROM metadata_queue_measurement_missing"))
+    monkeypatch.setattr(pipeline_stages, "_STAGE_ACTIVITY_SQL", text("SELECT * FROM metadata_queue_measurement_missing"))
     monkeypatch.setattr(
-        pipeline_service,
+        pipeline_pending,
         "_metadata_pending_stmt",
         lambda: select(FileRecord).where(text("EXISTS (SELECT 1 FROM metadata_selection_measurement_missing)")),
     )
     monkeypatch.setattr(
-        pipeline_service,
+        pipeline_buckets,
         "_metadata_status_stmt",
         lambda: select(text("1"), text("1")).select_from(text("metadata_status_measurement_missing")),
     )
     monkeypatch.setattr(
-        pipeline_service,
+        pipeline_pending,
         "_metadata_activity_stmt",
         lambda _cutoff: select(text("1"), text("NULL")).select_from(text("metadata_activity_measurement_missing")),
     )
@@ -283,7 +286,7 @@ async def test_stats_poll_reuses_one_availability_bearing_metadata_aggregation(
         calls += 1
         return original()
 
-    monkeypatch.setattr(pipeline_service, "_metadata_status_stmt", tracked_status_stmt)
+    monkeypatch.setattr(pipeline_buckets, "_metadata_status_stmt", tracked_status_stmt)
 
     progress = await get_stage_progress(session)
     context = await _build_dag_context(SimpleNamespace(), session, {}, progress)
@@ -370,7 +373,7 @@ async def test_pending_fragment_renders_failure_then_truthful_empty_retry(
             PendingFilesPage(rows=[], page=1, page_size=50, has_next=False, available=True),
         ]
     )
-    monkeypatch.setattr("phaze.routers.pipeline.get_pending_files_page", pages)
+    monkeypatch.setattr("phaze.routers.pipeline.files.get_pending_files_page", pages)
 
     degraded = await client.get("/pipeline/pending-files?stage=metadata", headers={"HX-Request": "true"})
     retried = await client.get("/pipeline/pending-files?stage=metadata", headers={"HX-Request": "true"})

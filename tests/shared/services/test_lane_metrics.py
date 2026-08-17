@@ -297,7 +297,7 @@ async def test_cloud_lane_active_is_unknown_for_compute_and_degrades_for_kueue(
     """Compute has no execution lifecycle fact; a failed Kueue read is unknown, never zero."""
     assert await _cloud_lane_active(session, "a1", "compute") is None
     safe_count = AsyncMock(return_value=None)
-    monkeypatch.setattr(backends_snapshot_mod, "_safe_count_or_none", safe_count)
+    monkeypatch.setattr(backends_metrics_mod, "_safe_count_or_none", safe_count)
     assert await _cloud_lane_active(session, "k8s", "kueue") is None
     safe_count.assert_awaited_once()
 

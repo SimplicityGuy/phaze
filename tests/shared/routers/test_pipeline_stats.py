@@ -31,7 +31,7 @@ import pytest
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
-from phaze.routers import pipeline as pipeline_mod
+import phaze.routers.pipeline.dashboard_stats as pipeline_mod
 from phaze.services.pipeline import get_stage_progress
 
 

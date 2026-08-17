@@ -687,7 +687,7 @@ async def test_poll_repushes_lane_attributed_active_metric(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The 5s poll sums comparable execution facts and propagates unavailable/empty snapshots."""
-    import phaze.routers.pipeline as pipeline_mod
+    import phaze.routers.pipeline.dashboard_stats as pipeline_mod
 
     state: dict[str, object] = {"local": 2, "kueue": 3, "compute": False, "empty": False}
 
@@ -771,7 +771,7 @@ async def test_analyze_over_limit_is_unsafe_and_explains_remedy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Real scheduler in-flight over-capacity is red even when active execution remains below cap."""
-    import phaze.routers.pipeline as pipeline_mod
+    import phaze.routers.pipeline.dashboard_stats as pipeline_mod
 
     lane = {
         "id": "local",
@@ -815,7 +815,7 @@ async def test_analyze_exact_capacity_is_amber_congestion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Exactly full capacity queues new work but is not the unsafe red over-limit condition."""
-    import phaze.routers.pipeline as pipeline_mod
+    import phaze.routers.pipeline.dashboard_stats as pipeline_mod
 
     lane = {
         "id": "local",
