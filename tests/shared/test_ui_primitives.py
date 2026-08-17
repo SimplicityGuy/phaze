@@ -189,7 +189,7 @@ def test_files_workspace_adopts_primitives_without_changing_htmx_contracts() -> 
 
     assert 'id="status-filter-bar"' in html
     assert 'aria-label="File status filters"' in html
-    assert 'hx-get="/pipeline/files"' in html
+    assert 'hx-get="/s/files"' in html
     assert 'hx-target="#files-table-view"' in html
     assert 'hx-swap="innerHTML"' in html
     assert 'hx-push-url="true"' in html

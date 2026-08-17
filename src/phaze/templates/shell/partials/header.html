@@ -51,7 +51,7 @@
     <div class="ml-auto flex items-center gap-2.5 text-xs text-gray-500 dark:text-gray-400" x-data>
         {# Routing is read-only in the header. Normal routing needs no extra chrome; an override is
            an explicit warning linked to the Operations control that can revert it. #}
-        {% include "shell/partials/_routing_override_warning.html" %}
+        {% with oob=false %}{% include "shell/partials/_routing_override_warning.html" %}{% endwith %}
         <span class="flex items-center" aria-hidden="true">
             <span class="w-2 h-2 rounded-full"
                   :class="($store.pipeline.agentOnline + $store.pipeline.computeLanesActive) > 0 ? 'bg-emerald-400' : 'bg-gray-400 dark:bg-gray-600'"></span>

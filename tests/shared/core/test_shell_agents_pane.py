@@ -88,11 +88,13 @@ async def test_redirect_round_trip_lands_on_a_working_full_shell(client: AsyncCl
     assert 'id="stage-workspace"' in body
     assert 'id="agents-table-section"' in body
     # Unresolvable ids highlight nothing rather than erroring (acceptance rule 7's negative half).
-    # phaze-w92dg: each unresolved selection now leaves an EMPTY hx-preserve carrier (the
-    # never-auto-collapse invariant) — no ring, no real expanded-row body slot.
+    # phaze-w92dg: the unresolved winning selection leaves an EMPTY hx-preserve carrier (the
+    # never-auto-collapse invariant). phaze-tzy6s.10 keeps the channels mutually exclusive,
+    # preferring agent and removing clane from browser history.
     assert 'aria-current="true"' not in body
     assert '<tr id="agent-detail-row-no-such-agent" hx-preserve></tr>' in body
-    assert '<tr id="compute-lane-detail-row-no-such-lane" hx-preserve></tr>' in body
+    assert '<tr id="compute-lane-detail-row-no-such-lane" hx-preserve></tr>' not in body
+    assert "params.delete('clane')" in body
     assert 'id="agent-activity-no-such-agent"' not in body
     assert 'id="compute-lane-activity-no-such-lane"' not in body
 
@@ -170,7 +172,10 @@ async def test_agent_deep_link_opens_its_row_via_the_shell(client: AsyncClient, 
     assert response.status_code == 200, response.text
     body = response.text
     assert 'id="agent-detail-row-pane-deep-link-agent"' in body
-    assert 'aria-current="true"' in body
+    trigger_start = body.index('id="agent-trigger-pane-deep-link-agent-details"')
+    trigger_tag = body[trigger_start : body.index(">", trigger_start)]
+    assert 'aria-expanded="true"' in trigger_tag
+    assert 'aria-controls="agent-detail-row-pane-deep-link-agent"' in trigger_tag
 
 
 @pytest.mark.asyncio
@@ -185,7 +190,10 @@ async def test_clane_deep_link_opens_its_row_via_the_shell(
     assert response.status_code == 200, response.text
     body = response.text
     assert 'id="compute-lane-detail-row-pane-vox"' in body
-    assert 'aria-current="true"' in body
+    trigger_start = body.index('id="compute-lane-trigger-pane-vox-details"')
+    trigger_tag = body[trigger_start : body.index(">", trigger_start)]
+    assert 'aria-expanded="true"' in trigger_tag
+    assert 'aria-controls="compute-lane-detail-row-pane-vox"' in trigger_tag
 
 
 @pytest.mark.asyncio
