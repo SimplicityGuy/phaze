@@ -1,0 +1,137 @@
+<div id="{{ changes_list_id }}" class="px-4 py-4 sm:px-6"
+     x-data='{
+        selected: {{ changes_selected | tojson }},
+        visible: [{% for p in changes_proposals %}{{ p.id | string | tojson }}{% if not loop.last %},{% endif %}{% endfor %}],
+        sync() {
+            const value = this.selected.join(",");
+            const current = new URL(window.location.href);
+            if (value) current.searchParams.set("selected", value); else current.searchParams.delete("selected");
+            history.replaceState(history.state, "", current);
+            this.$root.querySelectorAll("[data-changes-nav]").forEach((element) => {
+                const url = new URL(element.getAttribute("href") || element.getAttribute("hx-get"), window.location.origin);
+                if (value) url.searchParams.set("selected", value); else url.searchParams.delete("selected");
+                element.setAttribute("href", url.pathname + url.search);
+                element.setAttribute("hx-get", url.pathname + url.search);
+            });
+            const form = this.$root.querySelector("#changes-bulk-form");
+            if (form) {
+                const action = new URL(form.getAttribute("hx-patch"), window.location.origin);
+                if (value) action.searchParams.set("selected", value); else action.searchParams.delete("selected");
+                form.setAttribute("hx-patch", action.pathname + action.search);
+            }
+        }
+     }'
+      x-init="selected = selected.filter(id => visible.includes(id)); $nextTick(() => sync())">
+    {% if changes_toast is defined and changes_toast %}
+    <div role="status" aria-live="polite" class="mb-4 rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-sm text-blue-900 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200">{{ changes_toast }}</div>
+    {% endif %}
+    <nav class="-mx-1 mb-4 flex gap-1 overflow-x-auto border-b border-gray-200 px-1 dark:border-phaze-border" aria-label="Changes Review filters">
+        {% set tabs = [
+            ("all", "All", changes_stats.all),
+            ("needs_review", "Needs Review", changes_stats.needs_review),
+            ("approved", "Approved", changes_stats.approved),
+            ("blocked", "Blocked", changes_stats.blocked),
+            ("rejected", "Rejected", changes_stats.rejected),
+        ] %}
+        {% for value, label, count in tabs %}
+        <a href="{{ changes_urls[value] }}" data-changes-nav
+           hx-get="{{ changes_urls[value] }}" hx-target="#{{ changes_list_id }}" hx-swap="outerHTML" hx-push-url="true"
+           {% if changes_view.status == value %}aria-current="page"{% endif %}
+           class="shrink-0 px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 {% if changes_view.status == value %}border-b-2 border-blue-600 font-semibold text-blue-700 dark:text-blue-300{% else %}text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200{% endif %}">
+            {{ label }} <span class="ml-1 rounded-full bg-gray-200 px-2 py-0.5 text-xs text-gray-700 dark:bg-phaze-border dark:text-gray-300">{{ count }}</span>
+        </a>
+        {% endfor %}
+    </nav>
+
+    <form id="changes-bulk-form" hx-patch="/proposals/bulk?{{ changes_view.query() }}" hx-target="#{{ changes_list_id }}" hx-swap="outerHTML">
+        <section aria-labelledby="proposal-changes-heading" class="overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel">
+            <div class="flex flex-col gap-3 border-b border-gray-200 p-4 sm:flex-row sm:items-start sm:justify-between dark:border-phaze-border">
+                <div>
+                    <h2 id="proposal-changes-heading" class="font-jura text-xs font-medium uppercase tracking-[0.18em] text-gray-900 dark:text-gray-100">Filename + Destination</h2>
+                    <p class="mt-1 text-xs text-gray-600 dark:text-gray-400">Approve selected accepts only rows still pending and at or above 90% confidence. Low/null confidence remains available for individual approval. The server rechecks every row at submit.</p>
+                    <p class="mt-1 text-xs text-gray-600 dark:text-gray-400"><span x-text="selected.length">0</span> selected on this reviewed page.</p>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                    <button type="submit" name="action" value="approve_eligible" :disabled="selected.length === 0" hx-disabled-elt="this" class="h-9 rounded-md bg-emerald-700 px-3 font-jura text-xs uppercase tracking-wider text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50">Approve selected eligible</button>
+                    <button type="submit" name="action" value="reject" :disabled="selected.length === 0" hx-disabled-elt="this" class="h-9 rounded-md border border-gray-300 px-3 font-jura text-xs uppercase tracking-wider text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-phaze-border dark:text-gray-300">Reject selected pending</button>
+                </div>
+            </div>
+            <div id="changes-bulk-result" aria-live="polite"></div>
+            {% if changes_proposals %}
+                {% for p in changes_proposals %}
+                <div class="flex items-start gap-3 border-b border-gray-200 px-4 pt-3 dark:border-phaze-border">
+                    <input type="checkbox" value="{{ p.review_token }}" name="review_tokens"
+                           :checked="selected.includes('{{ p.id }}')" @change="$event.target.checked ? selected.push('{{ p.id }}') : selected = selected.filter(id => id !== '{{ p.id }}'); sync()"
+                           {% if p.status != "needs_review" or p.conflicts %}disabled{% endif %}
+                           class="mt-1 rounded border-gray-300 focus:ring-2 focus:ring-blue-500 disabled:opacity-40 dark:border-phaze-border"
+                           aria-label="Select {{ p.filename }}" aria-describedby="changes-eligibility-{{ p.id }}">
+                    <div class="min-w-0 flex-1 -mx-4 -mt-3">
+                    {% with row_id_prefix="rename-row", pid=p.id, file=p.filename, original_path=p.original_path,
+                            diff_label="Filename", before=p.filename, after=p.proposed_filename,
+                            secondary_label="Destination", secondary_before=p.original_path,
+                            secondary_after=((p.proposed_path ~ "/" ~ p.proposed_filename) if p.proposed_path else (p.original_path.rsplit("/", 1)[0] ~ "/" ~ p.proposed_filename)),
+                             approve_url="/proposals/" ~ p.id ~ "/approve", skip_url="/proposals/" ~ p.id ~ "/reject",
+                            undo_url="/proposals/" ~ p.id ~ "/undo", edit_url="/proposals/" ~ p.id ~ "/edit",
+                             edit_facet="filename", row_state=("executed" if p.raw_status == "executed" else ("failed" if p.raw_status == "failed" else ("pending" if p.status == "needs_review" else ("skipped" if p.status == "rejected" else p.status)))),
+                             updated_at=p.updated_at, confidence=p.confidence, warnings=p.warnings, conflicts=p.conflicts,
+                             show_approve=not p.conflicts,
+                            consequences=("Rename in place on the owning file server." if not p.proposed_path else "Rename and move on the owning file server; execution remains separately gated."),
+                            eligibility_reason=("Eligible for selected bulk approval." if p.bulk_eligible else ("Individual approval only: confidence is below 90% or unavailable." if p.status == "needs_review" else "Disabled: this decision is already resolved.")) %}
+                        {% include "pipeline/partials/_diff_row.html" %}
+                    {% endwith %}
+                    </div>
+                    <span id="changes-eligibility-{{ p.id }}" class="sr-only">{{ "Bulk eligible" if p.bulk_eligible else "Bulk excluded or disabled" }}</span>
+                </div>
+                {% endfor %}
+            {% else %}
+                <div class="p-8 text-center text-sm text-gray-500 dark:text-gray-400">No filename or destination decisions match this filter.</div>
+            {% endif %}
+            {% if changes_pagination.has_prev or changes_pagination.has_next %}
+            <div class="flex items-center justify-between p-4 text-xs text-gray-600 dark:text-gray-400">
+                <span>Showing {{ changes_pagination.start }}-{{ changes_pagination.end }} of {{ changes_pagination.total }}</span>
+                <div class="flex gap-2">
+                    {% if changes_prev_url %}<a href="{{ changes_prev_url }}" data-changes-nav hx-get="{{ changes_prev_url }}" hx-target="#{{ changes_list_id }}" hx-swap="outerHTML" hx-push-url="true" class="rounded border px-2 py-1 focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border">Previous</a>{% endif %}
+                    {% if changes_next_url %}<a href="{{ changes_next_url }}" data-changes-nav hx-get="{{ changes_next_url }}" hx-target="#{{ changes_list_id }}" hx-swap="outerHTML" hx-push-url="true" class="rounded border px-2 py-1 focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border">Next</a>{% endif %}
+                </div>
+            </div>
+            {% endif %}
+        </section>
+    </form>
+
+    {% if changes_view.status in ("all", "needs_review", "blocked") %}
+    <section aria-labelledby="tag-changes-heading" class="mt-4 overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel">
+        <div class="flex flex-col gap-3 border-b border-gray-200 p-4 sm:flex-row sm:items-start sm:justify-between dark:border-phaze-border">
+            <div>
+                <h2 id="tag-changes-heading" class="font-jura text-xs font-medium uppercase tracking-[0.18em] text-gray-900 dark:text-gray-100">Tag Changes</h2>
+                <p class="mt-1 text-xs text-gray-600 dark:text-gray-400">Available only after execution. Approval dispatches a reversible write and records before/after snapshots, verification discrepancies, and errors in the audit log.</p>
+            </div>
+            <form hx-post="/tags/bulk-write-no-discrepancies" hx-target="#changes-bulk-result" hx-swap="innerHTML" hx-confirm="Approve the eligible tag changes visible on this reviewed page?" hx-disabled-elt="find button">
+                {% for f in changes_tag_rows if f.bulk_eligible %}<input type="hidden" name="review_tokens" value="{{ f.review_token }}">{% endfor %}
+                <button type="submit" {% if not (changes_tag_rows | selectattr('bulk_eligible') | list) %}disabled{% endif %} class="h-9 rounded-md border border-amber-500/40 px-3 font-jura text-xs uppercase tracking-wider text-amber-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50 dark:text-amber-200">Approve visible eligible tag writes</button>
+            </form>
+        </div>
+        <p class="px-4 pt-3 text-xs text-gray-600 dark:text-gray-400">Bulk eligibility: at least one server-computed change, no existing tag blanked, no terminal prior write, and no queued write. Every condition is rechecked under the server lock. Exclusions remain listed for individual review.</p>
+        {% if changes_tag_rows %}
+            {% for f in changes_tag_rows %}
+                {% set tag_warnings = [] %}
+                {% if f.has_blanking %}{% set _ = tag_warnings.append("An existing tag would be blanked; excluded from bulk approval.") %}{% endif %}
+                {% if f.discrepancies %}{% set _ = tag_warnings.append("Verification discrepancy: " ~ f.discrepancies) %}{% endif %}
+                {% if f.error_message %}{% set _ = tag_warnings.append("Last error: " ~ f.error_message) %}{% endif %}
+                {% with row_id_prefix="tagwrite-row", pid=f.file_id, file=f.filename, original_path=f.filename,
+                        diff_label="Complete tags", before=f.before_summary, after=f.after_summary,
+                         approve_url="/tags/" ~ f.file_id ~ "/write", approve_method="post",
+                         review_token=f.review_token,
+                        undo_url="/tags/" ~ f.file_id ~ "/undo", undo_method="post",
+                        show_edit=false, show_skip=false, show_undo=f.has_prior_write,
+                         row_state=("queued" if f.latest_status == "queued" else ("pending" if f.status == "needs_review" else "blocked")), warnings=tag_warnings,
+                        consequences=(f.changed_count ~ " tag field" ~ ("s" if f.changed_count != 1 else "") ~ " will be written on the owning file server. The write is audited and reversible."),
+                        eligibility_reason=("Excluded from bulk: would blank an existing value." if f.has_blanking else "Eligible after the server revalidates current tags and queue state.") %}
+                    {% include "pipeline/partials/_diff_row.html" %}
+                {% endwith %}
+            {% endfor %}
+        {% else %}
+            <div class="p-8 text-center text-sm text-gray-500 dark:text-gray-400">No tag decisions match this filter. Completed tag writes remain available in Audit.</div>
+        {% endif %}
+    </section>
+    {% endif %}
+</div>

@@ -38,8 +38,6 @@ def test_every_navigation_destination_has_one_current_page_semantic() -> None:
         "tracklist",
         "propose",
         "rename",
-        "tagwrite",
-        "move",
         "dedupe",
         "cue",
         "apply",
@@ -58,7 +56,7 @@ def test_review_current_page_uses_cyan_location_inside_the_amber_domain() -> Non
     soup = BeautifulSoup(_render("shell/partials/rail.html", stage="rename"), "html.parser")
     review_heading = soup.select_one("#nav-review")
     current = soup.select_one('a[data-rail-stage="rename"][aria-current="page"]')
-    unselected = soup.select_one('a[data-rail-stage="tagwrite"]')
+    unselected = soup.select_one('a[data-rail-stage="dedupe"]')
     assert isinstance(review_heading, Tag)
     assert isinstance(current, Tag)
     assert isinstance(unselected, Tag)

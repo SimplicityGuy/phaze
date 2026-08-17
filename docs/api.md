@@ -161,8 +161,8 @@ Only **terminal** scans (`completed` / `failed`) are deletable; the delete runs 
 | GET    | `/proposals/{id}/detail`      | Expanded detail panel              |
 | GET    | `/proposals/{id}/timeline`    | Windowed multi-lane analysis timeline |
 | PATCH  | `/proposals/{id}/edit`        | Inline-edit a pending proposal's filename/path |
-| PATCH  | `/proposals/bulk-approve-high-confidence` | Server-predicate bulk approve (confidence ≥ 0.9) |
-| PATCH  | `/proposals/bulk`             | Bulk approve/reject                |
+| PATCH  | `/proposals/bulk-approve-high-confidence` | Server-predicate bulk approve (confidence ≥ 0.9). **No UI caller** since phaze-tzy6s.11 / ADR-0008 — Changes Review bulk-approves through `/proposals/bulk`. Retained pending an explicit keep-or-retire decision in phaze-tzy6s.12. |
+| PATCH  | `/proposals/bulk`             | Bulk approve/reject — the live Changes Review bulk path (`action=approve_eligible\|reject` over selected `review_tokens`) |
 
 ## Execution (`/execution`, `/audit`)
 

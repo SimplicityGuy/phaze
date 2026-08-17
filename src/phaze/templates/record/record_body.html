@@ -2,18 +2,18 @@
 
    A BARE fragment (NO extends base.html) swapped via innerHTML into #record-body inside
    record_host.html. It is a SNAPSHOT (D-02): renders ONCE, carries NO hx-trigger="every", NO
-   setInterval, and NO hx-swap-oob on the approval subtree -- so the operator's in-progress inline
-   edit inside a pending-approval row survives the single chrome poll (mirrors Phase 60 R-2).
+   setInterval, and NO hx-swap-oob.
 
    Sections top→bottom (UI-SPEC §Surface 1): (1) sticky header, (2) facts grid, (3) windowed
    multi-lane timeline (reuses proposals/partials/analysis_timeline.html VERBATIM), (4/5) metadata
-   diff + identity grid (reuses _diff_row.html + row_detail.html), (6) the amber "pending approvals
-   for this file" box (inline-approvable _diff_row.html rows wired to the Phase 60 routes), and
-   (7) history.
+   summary + identity grid (identity reuses proposals/partials/row_detail.html), (6) the amber
+   "pending approvals for this file" box -- a COUNT plus a link into Changes Review, never an
+   inline approval cluster (ADR-0008; see the section comment) -- and (7) history.
 
-   Trust boundary (T-61-01 / SP-5): every DB-sourced cell autoescapes through Jinja; the only
-   JS-attribute context (_diff_row.html's x-data) uses |tojson NOT |e -- inherited from the reused
-   partial. No new |e in any JS-attribute context here. data-file-id anchors the file_id scope.
+   Trust boundary (T-61-01 / SP-5): every DB-sourced cell autoescapes through Jinja. Since the
+   _diff_row.html cluster left (ADR-0008) neither this fragment nor any partial it includes carries
+   a JS-attribute (x-data) context, so there is no |tojson/|e decision to get wrong here. Keep it
+   that way: reintroducing one reintroduces the escaping hazard. data-file-id anchors the file_id scope.
 #}
 {% set _eyebrow = 'font-jura text-[11px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400' %}
 {% set _tile = 'rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-phaze-border dark:bg-phaze-panel' %}
@@ -147,7 +147,7 @@
             <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel">
                 <p class="{{ _eyebrow }} mb-2">Metadata</p>
                 {% if pending_rows %}
-                <p class="text-xs text-gray-500 dark:text-gray-400">Proposed changes are inline-approvable below.</p>
+                <p class="text-xs text-gray-500 dark:text-gray-400">Proposed changes are pending — review them in Changes Review (linked below).</p>
                 {% else %}
                 <p class="text-sm text-gray-500 dark:text-gray-400">No pending metadata changes — this file is up to date.</p>
                 {% endif %}
@@ -176,33 +176,17 @@
             </div>
         </div>
 
-        {# 6 — Pending approvals for THIS file: amber box, inline-approvable via the Phase 60 routes. #}
+        {# 6 — Pending approvals for THIS file: a COUNT plus a link into Changes Review.
+           Approval is intentionally centralized (ADR-0008: Changes Review is the ONLY UI workspace
+           that authorizes filename, destination, and tag changes) so a record drawer cannot bypass
+           the reviewed queue context. This box must never regrow an inline _diff_row approve/edit
+           cluster; tests/shared/core/test_record_palette_agents.py holds that boundary.
+           hx-target is the shell's #stage-workspace — the SAME container the rail swaps into. #}
         <div class="rounded-xl border border-amber-500/25 bg-amber-500/[0.06] p-4">
             <p class="font-jura text-[11px] font-medium uppercase tracking-wider text-amber-700 dark:text-amber-200">Pending approvals for this file</p>
             {% if pending_rows %}
-            <div class="mt-2 -mx-4">
-                {% for p in pending_rows %}
-                    {% with row_id_prefix="record-row",
-                            pid=p.id,
-                            file=p.filename,
-                            original_path=p.original_path,
-                            before=p.filename,
-                            after=p.proposed_filename,
-                            diff_label="Filename",
-                            secondary_label="Destination",
-                            secondary_before=p.original_path,
-                            secondary_after=p.proposed_path,
-                            approve_url="/proposals/" ~ p.id ~ "/approve",
-                            skip_url="/proposals/" ~ p.id ~ "/reject",
-                            undo_url="/proposals/" ~ p.id ~ "/undo",
-                            edit_url="/proposals/" ~ p.id ~ "/edit",
-                            edit_facet="filename",
-                            row_state="pending",
-                            updated_at=p.updated_at %}
-                        {% include "pipeline/partials/_diff_row.html" %}
-                    {% endwith %}
-                {% endfor %}
-            </div>
+            <p class="mt-2 text-sm text-gray-700 dark:text-gray-300">{{ pending_rows | length }} pending decision{{ "s" if pending_rows | length != 1 else "" }}. Review filename and destination together in the canonical queue.</p>
+            <a href="/s/rename?status=needs_review" hx-get="/s/rename?status=needs_review" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="mt-3 inline-flex rounded-md bg-amber-700 px-3 py-2 font-jura text-xs uppercase tracking-wider text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Open Changes Review</a>
             {% else %}
             <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">This file is up to date — no pending approvals.</p>
             {% endif %}

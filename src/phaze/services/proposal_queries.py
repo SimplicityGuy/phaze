@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 import math
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import case, func, or_, select, update
+from sqlalchemy import ARRAY, bindparam, case, func, or_, select, update
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
+from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.services.like_escape import LIKE_ESCAPE_CHAR, like_wildcard
 
@@ -23,7 +27,7 @@ if TYPE_CHECKING:
 
     from phaze.routers.column_sort import SortState
 
-from phaze.models.file import FileRecord
+from phaze.services.collision import get_review_collision_ids
 
 
 class ProposalTransitionError(Exception):
@@ -136,6 +140,29 @@ class ProposalStats:
     avg_confidence: float | None
 
 
+@dataclass(frozen=True, slots=True)
+class ProposalReviewToken:
+    """The exact proposal snapshot an operator selected for bulk authorization."""
+
+    proposal_id: uuid_mod.UUID
+    updated_at: datetime_mod.datetime
+    content_digest: str
+
+
+def proposal_review_digest(proposal: RenameProposal) -> str:
+    """Digest every displayed/authorized filename and destination value."""
+    payload = {
+        "id": str(proposal.id),
+        "before_filename": proposal.file.original_filename,
+        "before_destination": proposal.file.current_path,
+        "proposed_filename": proposal.proposed_filename,
+        "proposed_path": proposal.proposed_path,
+        "confidence": proposal.confidence,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 async def count_pending_above_confidence(session: AsyncSession, threshold: float = 0.9) -> int:
     """Count PENDING proposals with confidence >= threshold -- read-only, mirrors the EXACT
     predicate :func:`approve_pending_above_confidence` bulk-approves (phaze-rw14).
@@ -157,6 +184,65 @@ async def count_pending_above_confidence(session: AsyncSession, threshold: float
     )
     result = await session.execute(stmt)
     return result.scalar_one()
+
+
+async def bulk_approve_selected_above_confidence(
+    session: AsyncSession,
+    review_tokens: Iterable[ProposalReviewToken],
+    *,
+    threshold: float = 0.9,
+) -> int:
+    """Approve selected rows only when they are still pending and still meet ``threshold``.
+
+    Changes Review keeps selection in browser/history state, so every submitted id is stale by
+    definition. The status and confidence predicates therefore live in the UPDATE itself. A replay,
+    concurrent action, confidence rewrite, malformed selection, or forged low-confidence id simply
+    does not match and is reported through the returned transition count.
+    """
+    tokens = list(review_tokens)
+    if not tokens:
+        return 0
+    token_by_id = {token.proposal_id: token for token in tokens}
+    ids = list(token_by_id)
+    proposals = (
+        (
+            await session.execute(
+                select(RenameProposal)
+                .options(selectinload(RenameProposal.file))
+                .where(RenameProposal.id == func.any(bindparam("reviewed_proposal_ids", value=ids, type_=ARRAY(PGUUID(as_uuid=True)))))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    collision_ids = await get_review_collision_ids(session)
+    reviewed = [
+        proposal
+        for proposal in proposals
+        if str(proposal.id) not in collision_ids
+        and proposal.status == ProposalStatus.PENDING.value
+        and proposal.confidence is not None
+        and proposal.confidence >= threshold
+        and proposal.updated_at == token_by_id[proposal.id].updated_at
+        and proposal_review_digest(proposal) == token_by_id[proposal.id].content_digest
+    ]
+    applied = 0
+    for proposal in reviewed:
+        token = token_by_id[proposal.id]
+        result = await session.execute(
+            update(RenameProposal)
+            .where(
+                RenameProposal.id == proposal.id,
+                RenameProposal.status == ProposalStatus.PENDING.value,
+                RenameProposal.confidence >= threshold,
+                RenameProposal.updated_at == token.updated_at,
+            )
+            .values(status=ProposalStatus.APPROVED.value)
+            .returning(RenameProposal.id)
+        )
+        applied += len(result.scalars().all())
+    await session.commit()
+    return applied
 
 
 async def get_proposal_stats(session: AsyncSession) -> ProposalStats:
