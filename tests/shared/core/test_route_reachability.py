@@ -176,10 +176,10 @@ ALLOWLIST: dict[str, str] = {**_NON_UI_ROUTES, **_LEGACY_BOOKMARK_ROUTES}
 # the line. So the ledger cannot rot into a permanent allowlist.
 # --------------------------------------------------------------------------------------
 KNOWN_ORPHANS: dict[str, str] = {
-    # Being deleted outright on this same branch (dev-7tiqp) as a dead chain. This entry is
-    # a merge-window placeholder, NOT a grandfather clause: the moment the route is gone the
-    # ledger test fails and this line must be deleted with it.
-    "PATCH /proposals/bulk-approve-high-confidence": "dead chain, deletion in flight on this branch (dev-7tiqp)",
+    # (phaze-7tiqp's `PATCH /proposals/bulk-approve-high-confidence` entry lived here as a
+    # merge-window placeholder. That route is now deleted, so the ledger's own staleness test
+    # failed and the line was removed with it -- which is the self-cleaning property working,
+    # not a maintenance chore.)
     # Severed by main's re-homing of the files workspace: `FILES_SORT.endpoint` (and the
     # filter/pager/sort controls that render from it) now point at `/s/files`, so every live
     # caller of the files table addresses the shell route and nothing addresses this one.
