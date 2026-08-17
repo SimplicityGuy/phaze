@@ -17,7 +17,8 @@ independent fleet reports (hq-6hb, hq-8zr, hq-el5, hq-ew2, hq-ij4) hit that wall
 a different workaround; one of them dropped Redis isolation altogether, i.e. straight back into
 phaze-fwo7.
 
-**Why these tests use a real Redis.** The properties that regressed are properties of the
+**Why these tests use a real Redis — and, for L2, a real Postgres.** The properties that regressed
+are properties of the
 *allocator's arithmetic and its evidence*, not of anything mockable: which index a seat is handed,
 whether a released one comes back, and whether a seat still in use is protected. A fake would
 re-implement exactly the logic under test. So each test drives ``scripts/redis-seat-registry.sh``
@@ -25,7 +26,10 @@ re-implement exactly the logic under test. So each test drives ``scripts/redis-s
 starts and removes itself. It has a random name, publishes **no port at all** (everything goes
 through ``docker exec``), and is configured with a deliberately tiny 6-database space so
 exhaustion is reachable in four allocations. It is never the shared ``phaze-test-redis`` on 6380;
-touching that is what this bead exists to make unnecessary.
+touching that is what this bead exists to make unnecessary. The L2 tests start a throwaway
+**Postgres** under the same discipline, for the same reason: L2 is the guard that stands between a
+sweep and a running suite, and demonstrating it needs a real backend on a real database — which is
+the one thing that must not happen on the shared ``phaze-test-db``.
 
 The liveness rules the sweep applies are documented in the script's header. Restated here because
 these tests are the executable form of them: a seat is IN USE while a Redis client is connected to
@@ -79,6 +83,10 @@ _ORIGIN_KEY = "phaze:test:redis-db-origin"
 # ask — telling those two apart is the whole of phaze-gmkua defect B.
 _ABSENT_PG_CONTAINER = "phaze-seatreg-test-no-such-postgres"
 
+# Matches docker-compose/CI (CLAUDE.md pins the harness to postgres:18-alpine), so the catalogue
+# view these tests read is the one the script meets in production.
+_PG_IMAGE = "postgres:18-alpine"
+
 
 def _docker(*args: str) -> subprocess.CompletedProcess[str]:
     """Every docker invocation in this module, in one place.
@@ -121,6 +129,72 @@ def throwaway_redis() -> Iterator[str]:
         yield container
     finally:
         _docker("rm", "-f", container)
+
+
+@pytest.fixture(scope="module")
+def throwaway_postgres() -> Iterator[str]:
+    """A private Postgres for the L2 tests, held to the same discipline as the Redis one.
+
+    L2 is the STRONGEST liveness signal the registry has and the only one that protects a running
+    pytest: a suite holds a session-level advisory-lock connection for its whole run and frequently
+    holds no Redis connection at all, so L1 and L3 can both look idle while a suite is mid-test.
+    Exercising it needs a real backend on a real database — but never on the shared
+    ``phaze-test-db``, where attaching sleeping backends and dropping ``phaze%`` databases is the
+    2026-07-29 incident in miniature.
+    """
+    container = f"phaze-seatreg-pg-{uuid4().hex[:10]}"
+    started = _docker(
+        "run", "-d", "--name", container, "-e", "POSTGRES_USER=phaze", "-e", "POSTGRES_PASSWORD=phaze", "-e", "POSTGRES_DB=postgres", _PG_IMAGE
+    )
+    if started.returncode != 0:
+        pytest.skip(f"could not start a throwaway Postgres: {started.stderr.strip()}")
+    try:
+        for _ in range(160):
+            ready = _docker("exec", container, "pg_isready", "-U", "phaze", "-d", "postgres")
+            if ready.returncode == 0 and _docker("exec", container, "psql", "-U", "phaze", "-d", "postgres", "-tAc", "select 1").returncode == 0:
+                break
+            time.sleep(0.25)
+        else:
+            pytest.skip("throwaway Postgres never became ready")
+        yield container
+    finally:
+        _docker("rm", "-f", container)
+
+
+@pytest.fixture
+def postgres(throwaway_postgres: str) -> Iterator[str]:
+    """Hand each test an empty Postgres: no ``phaze%`` databases and no backends left attached."""
+    yield throwaway_postgres
+    _psql(throwaway_postgres, "select pg_terminate_backend(pid) from pg_stat_activity where datname like 'phaze%'")
+    for database in _psql(throwaway_postgres, "select datname from pg_database where datname like 'phaze%'").splitlines():
+        if database.strip():
+            _psql(throwaway_postgres, f'drop database if exists "{database.strip()}"')
+
+
+def _psql(container: str, sql: str, *, database: str = "postgres") -> str:
+    result = _docker("exec", container, "psql", "-U", "phaze", "-d", database, "-tAc", sql)
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+def _seat_database(container: str, database: str) -> None:
+    _psql(container, f'create database "{database}"')
+
+
+def _attach_backend(container: str, database: str) -> None:
+    """Hold a client backend open on ``database`` — the L2 signal, as a real connection.
+
+    ``pg_sleep`` stands in for what pytest actually does: hold one connection open, doing nothing
+    visible, for the whole session. That is the case no connection-to-Redis check can see.
+    """
+    attached = _docker("exec", "-d", container, "psql", "-U", "phaze", "-d", database, "-c", "select pg_sleep(600)")
+    assert attached.returncode == 0, attached.stderr
+    counted = f"select count(*) from pg_stat_activity where backend_type = 'client backend' and datname = '{database}'"  # noqa: S608 - test-literal database name, throwaway container
+    for _ in range(80):
+        if int(_psql(container, counted)) >= 1:
+            return
+        time.sleep(0.25)
+    pytest.skip(f"could not attach a Postgres backend to {database}")
 
 
 @pytest.fixture
@@ -645,6 +719,120 @@ def test_a_seat_that_connects_mid_sweep_survives_the_sweep(registry: str, tmp_pa
     assert swept.returncode == 0, swept.stderr
     assert _allocated_seats(registry) == {"seat_waker": str(index)}, swept.stdout
     assert "connected to DB" in swept.stdout
+
+
+# ---------------------------------------------------------------------------------------------
+# L2 — the strongest signal, against a real Postgres (phaze-esmn3)
+#
+# Every reclaim test above passes --no-postgres-check, so until this section existed the branch
+# that protects a RUNNING SUITE was the one branch nothing exercised. That gap is also what let
+# phaze-gmkua hide: the justfile's real argument shape was never covered either.
+# ---------------------------------------------------------------------------------------------
+
+
+def _reclaim_with_postgres(container: str, pg: str, *extra: str) -> subprocess.CompletedProcess[str]:
+    """The justfile's real argument shape: --pg-container present, no --no-postgres-check."""
+    return _run(container, "reclaim", "--capacity", str(_CAPACITY), "--pg-container", pg, *extra)
+
+
+def _stale_seat(container: str, seat: str, tmp_path: Path) -> int:
+    """A seat that L1, L3 and O1 all agree is reclaimable, so only L2 can save it."""
+    gone = tmp_path / f"worktree-{seat}"
+    gone.mkdir()
+    index = _index_of(_allocate(container, seat, origin=str(gone)))
+    gone.rmdir()
+    _expire_lease(container, seat)
+    return index
+
+
+def test_reclaim_refuses_to_free_a_seat_with_a_live_postgres_backend(registry: str, postgres: str, tmp_path: Path) -> None:
+    """The guard that stands between a sweep and a running suite, exercised for real.
+
+    pytest holds one Postgres connection for its entire session and often none to Redis, so a suite
+    that is merely thinking looks idle to L1 and — after 72 hours, or the moment its worktree is
+    removed — to L3 and O1 as well. L2 is the only thing left, and it was never under test.
+    """
+    index = _stale_seat(registry, "seat_pytest", tmp_path)
+    _seat_database(postgres, "phaze_seat_pytest_test")
+    _attach_backend(postgres, "phaze_seat_pytest_test")
+    _redis(registry, "-n", str(index), "SET", "exec:mid-run", "x")
+
+    swept = _reclaim_with_postgres(registry, postgres, "--apply")
+
+    assert swept.returncode == 0, swept.stderr
+    assert _allocated_seats(registry) == {"seat_pytest": str(index)}, swept.stdout
+    assert _redis(registry, "-n", str(index), "DBSIZE") == "1", "a running suite's keys must survive the sweep"
+    assert "left 1 in-use seat(s) alone" in swept.stdout
+
+
+def test_the_migrations_database_counts_as_evidence_too(registry: str, postgres: str, tmp_path: Path) -> None:
+    """``test-db-for`` hands out a PAIR of databases, so both must be watched.
+
+    A migrations run holds its connection on the second one only. Matching just ``phaze_<seat>_test``
+    would read that seat as idle.
+    """
+    index = _stale_seat(registry, "seat_migrating", tmp_path)
+    _seat_database(postgres, "phaze_seat_migrating_migrations_test")
+    _attach_backend(postgres, "phaze_seat_migrating_migrations_test")
+
+    swept = _reclaim_with_postgres(registry, postgres, "--apply")
+
+    assert _allocated_seats(registry) == {"seat_migrating": str(index)}, swept.stdout
+
+
+def test_l2_protects_only_the_seat_it_names(registry: str, postgres: str, tmp_path: Path) -> None:
+    """The matcher must be exact, or L2 becomes a blanket refusal that frees nothing.
+
+    ``seat_bus`` is a strict prefix of ``seat_busy`` and ``seat_busy_extra`` extends it, so a
+    substring match would let one live suite pin two idle seats. A guard that never releases
+    anything is how the registry filled up in the first place.
+    """
+    busy = _stale_seat(registry, "seat_busy", tmp_path)
+    _stale_seat(registry, "seat_bus", tmp_path)
+    _stale_seat(registry, "seat_busy_extra", tmp_path)
+    for seat in ("seat_busy", "seat_bus", "seat_busy_extra"):
+        _seat_database(postgres, f"phaze_{seat}_test")
+    _attach_backend(postgres, "phaze_seat_busy_test")
+
+    swept = _reclaim_with_postgres(registry, postgres, "--apply")
+
+    assert _allocated_seats(registry) == {"seat_busy": str(busy)}, swept.stdout
+
+
+def test_the_justfile_shape_still_consults_postgres_under_no_postgres_check(registry: str, postgres: str, tmp_path: Path) -> None:
+    """``--no-postgres-check`` waives the REFUSAL, not evidence that is there for the taking.
+
+    ``just test-db-reclaim --no-postgres-check`` always passes ``--pg-container`` too, because the
+    recipe does. A reachable Postgres therefore still protects a running suite on that path — and
+    the sweep says which of the two it did, because the operator asked for one and got the other.
+    """
+    index = _stale_seat(registry, "seat_waived", tmp_path)
+    _seat_database(postgres, "phaze_seat_waived_test")
+    _attach_backend(postgres, "phaze_seat_waived_test")
+
+    swept = _run(registry, "reclaim", "--capacity", str(_CAPACITY), "--pg-container", postgres, "--no-postgres-check", "--apply")
+
+    assert swept.returncode == 0, swept.stderr
+    assert _allocated_seats(registry) == {"seat_waived": str(index)}, swept.stdout
+    assert "--no-postgres-check" in swept.stderr, "the waiver must be reported whether or not it changed the outcome"
+    assert "⚠️" not in swept.stderr, f"nothing was missing, so nothing should be warned about: {swept.stderr}"
+
+
+def test_release_refuses_while_a_postgres_backend_is_attached(registry: str, postgres: str, tmp_path: Path) -> None:
+    """``release`` names one seat, but L2 still outranks the operator's assertion — until --force."""
+    index = _index_of(_allocate(registry, "seat_running", origin=str(tmp_path)))
+    _seat_database(postgres, "phaze_seat_running_test")
+    _attach_backend(postgres, "phaze_seat_running_test")
+
+    refused = _run(registry, "release", "--seat", "seat_running", "--capacity", str(_CAPACITY), "--pg-container", postgres)
+
+    assert refused.returncode == 4
+    assert "Postgres" in refused.stderr
+    assert _allocated_seats(registry) == {"seat_running": str(index)}
+
+    forced = _run(registry, "release", "--seat", "seat_running", "--capacity", str(_CAPACITY), "--pg-container", postgres, "--force")
+    assert forced.returncode == 0, forced.stderr
+    assert _allocated_seats(registry) == {}
 
 
 def test_list_reports_the_evidence_behind_every_verdict(registry: str, tmp_path: Path) -> None:
