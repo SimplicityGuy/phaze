@@ -92,7 +92,7 @@ def test_single_derivation_symbol_is_shared_by_all_consumers() -> None:
     import phaze.routers.admin_agents as admin_agents_router
     import phaze.routers.pipeline as pipeline_router
     import phaze.services.agent_liveness as agent_liveness
-    import phaze.services.pipeline as pipeline_service
+    from phaze.services.pipeline import analyze as pipeline_service
 
     # ONE lane-identity source, referenced identically by both HTTP surfaces.
     assert pipeline_router.derive_compute_lane_identities is agent_liveness.derive_compute_lane_identities

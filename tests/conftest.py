@@ -343,7 +343,7 @@ async def _route_stats_fanout(_db_connection: AsyncConnection, monkeypatch: pyte
     """
     fanout_factory = async_sessionmaker(bind=_db_connection, class_=AsyncSession, join_transaction_mode="create_savepoint", expire_on_commit=False)
     monkeypatch.setattr("phaze.database.async_session", fanout_factory)
-    monkeypatch.setattr("phaze.services.pipeline._STATS_FANOUT", asyncio.Semaphore(1))
+    monkeypatch.setattr("phaze.services.pipeline.stages._STATS_FANOUT", asyncio.Semaphore(1))
 
 
 @pytest_asyncio.fixture

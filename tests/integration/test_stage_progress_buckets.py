@@ -113,7 +113,7 @@ async def db_session(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncSes
         # Route get_stage_progress's fan-out back onto this session, serialized (Semaphore(1) built in
         # the test's own event loop so it never crosses loops).
         monkeypatch.setattr("phaze.database.async_session", _yield_shared_session)
-        monkeypatch.setattr("phaze.services.pipeline._STATS_FANOUT", asyncio.Semaphore(1))
+        monkeypatch.setattr("phaze.services.pipeline.stages._STATS_FANOUT", asyncio.Semaphore(1))
 
         try:
             yield session

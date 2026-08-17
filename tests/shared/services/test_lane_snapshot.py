@@ -348,7 +348,7 @@ def test_kind_of_unknown_fallback() -> None:
 @pytest.mark.asyncio
 async def test_snapshot_shape_and_rank_order(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A 3-backend registry returns 3 rank-ascending secret-free lane dicts with live counts."""
-    import phaze.services.pipeline as pipeline_mod
+    from phaze.services.pipeline import cloud as pipeline_mod
 
     local = LocalBackend(id="local", rank=99, cap=1)
     compute = ComputeAgentBackend(id="a1", rank=10, cap=2)

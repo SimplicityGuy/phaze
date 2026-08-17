@@ -664,7 +664,7 @@ async def test_analyze_file_table_lane_and_windows(client: AsyncClient, session:
     each row now opens the full-record slide-in (``hx-get="/record/{file_id}"`` + a ``record:open``
     dispatch).
     """
-    import phaze.services.pipeline as services_pipeline_mod
+    from phaze.services.pipeline import analyze as services_pipeline_mod
 
     monkeypatch.setattr(
         services_pipeline_mod,
