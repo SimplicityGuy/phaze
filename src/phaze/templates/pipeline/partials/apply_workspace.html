@@ -74,7 +74,7 @@
     {% if preflight.conflicts %}
     <div class="px-6 pt-4">
         <p class="{{ _eyebrow }} mb-2">Destination conflicts — blocking</p>
-        <div class="overflow-x-auto rounded-lg border border-red-300 dark:border-red-900">
+        <div class="relative overflow-x-auto rounded-lg border border-red-300 dark:border-red-900">
             <table class="w-full text-left text-xs">
                 <caption class="sr-only">Destinations targeted by more than one approved file</caption>
                 <thead class="bg-red-50 dark:bg-red-950/40">
@@ -134,7 +134,7 @@
            counted by a capped scan, so when it saturates this total is a FLOOR and says so. An
            exact-looking total sitting above a row openly marked "N+" is the worse of the two. #}
         <p class="{{ _eyebrow }} mb-2">Will not run — {{ preflight.excluded_total }}{{ "+" if preflight.excluded_total_at_least }} excluded</p>
-        <div class="overflow-x-auto rounded-lg border border-gray-200 dark:border-phaze-border">
+        <div class="relative overflow-x-auto rounded-lg border border-gray-200 dark:border-phaze-border">
             <table class="w-full text-left text-xs">
                 <caption class="sr-only">Work excluded from this execution batch, with the reason and next action</caption>
                 <thead class="bg-gray-50 dark:bg-white/5">
