@@ -322,14 +322,21 @@
                 }
             });
         }
+        // Returns whether focus actually LANDED on the heading, not merely whether one was found.
+        // phaze-bdeih: rail.html's closeNav('stage') calls this after the off-canvas drawer has
+        // closed and needs to fall back to the drawer trigger when it did not land -- and it can
+        // fail to land silently, which is the whole defect: .focus() on an element inside a
+        // `visibility: hidden` or otherwise inert subtree is a no-op that throws nothing. Reading
+        // document.activeElement back is the only honest answer; a `heading !== null` return would
+        // reintroduce the same false success one level up.
         function _focusStageHeading() {
             const ws = document.getElementById('stage-workspace');
-            if (!ws) return;
+            if (!ws) return false;
             const heading = ws.querySelector('h1');
-            if (heading) {
-                if (!heading.hasAttribute('tabindex')) heading.setAttribute('tabindex', '-1');
-                heading.focus();
-            }
+            if (!heading) return false;
+            if (!heading.hasAttribute('tabindex')) heading.setAttribute('tabindex', '-1');
+            heading.focus();
+            return document.activeElement === heading;
         }
         function syncDocumentTitle() {
             const ws = document.getElementById('stage-workspace');

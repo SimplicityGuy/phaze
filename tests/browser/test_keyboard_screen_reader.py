@@ -320,34 +320,21 @@ async def test_a_wide_table_scrolls_inside_its_own_container(viewport: str, page
 # --- Step 6: focus survives an htmx swap --------------------------------------------------------
 
 
-def _swap_focus_cells() -> list[Any]:
-    """The step-6 cells, with the below-``lg`` ones marked against the defect they found.
-
-    ``strict=False`` deliberately: phaze-bdeih is INTERMITTENT (8 of 12 below-lg cell-runs over three
-    consecutive runs), so a strict xfail would itself fail on the runs where focus happens to land.
-    Non-strict records the expectation without turning a race into a flaky gate, and the mark's whole
-    purpose is that it reports XPASS -- and gets deleted -- once the race is fixed.
-    """
-    cells: list[Any] = []
-    for viewport in VIEWPORTS:
-        for theme in THEMES:
-            marks = []
-            if _below_lg(viewport):
-                marks.append(pytest.mark.xfail(reason="phaze-bdeih: the drawer's close race drops focus to <body> below lg", strict=False))
-            cells.append(pytest.param(viewport, theme, id=f"{viewport}-{theme}", marks=marks))
-    return cells
-
-
-@pytest.mark.parametrize(("viewport", "theme"), _swap_focus_cells())
+@pytest.mark.parametrize(("viewport", "theme"), _cells())
 async def test_focus_is_not_dropped_to_the_body_when_navigating_by_keyboard(viewport: str, theme: str, page_at: Any) -> None:
     """ADR-0009 step 6: after a rail swap, focus is somewhere a keyboard user can continue from.
 
     Focus dropped to ``<body>`` restarts the tab order at the top of the document, so a keyboard user
     who navigates to the ninth destination has to tab past the whole rail again to do anything.
 
-    Below ``lg`` this currently FAILS (phaze-mrg1c's sibling, phaze-bdeih) -- see
-    ``_swap_focus_cells`` above. Desktop is green and is the case the pre-existing shell-contract
-    test already covered.
+    The below-``lg`` cells carried a non-strict ``xfail`` against phaze-bdeih until the drawer's
+    close race was fixed; they are unmarked now, and deliberately so. The defect was that the
+    drawer's own close moved focus AFTER whatever restored it -- focus-trap's deferred
+    ``returnFocus`` aimed at a node the same flush had just made ``visibility: hidden``. rail.html's
+    ``closeNav()`` now owns the restore and runs it on ``$nextTick``, past that flush; see the
+    comment on the ``x-data`` there for why the ordering cannot be lost rather than merely usually
+    won. If this reddens below ``lg`` again, the suspect is a close path that stopped going through
+    ``closeNav()``, not this assertion's timing.
     """
     async with page_at(viewport=viewport, theme=theme) as page:
         await _open(page)
