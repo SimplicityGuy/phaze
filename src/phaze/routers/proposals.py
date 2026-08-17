@@ -141,9 +141,17 @@ def _parse_updated_at_token(token: str | None) -> datetime | None:
 # "rename-row" is still rendered by a template -- pipeline/partials/_changes_list.html:69, the
 # Filename + Destination section of Changes Review, which kept the id stem rather than churn every
 # hx-target. "changes-row" / "record-row" / "move-row" now have NO live renderer and are therefore
-# unreachable through the product; they are left in place deliberately for bead phaze-tzy6s.12
-# (Execute preflight) to retire as an explicit decision rather than as a side effect of this bead.
+# unreachable through the product.
 # (Tag rows use "tagwrite-row" and are routed by tags.py, not this map.)
+#
+# phaze-tzy6s.17: the .11 note here said these were "left in place deliberately for bead
+# phaze-tzy6s.12 (Execute preflight) to retire". That is no longer true and must not be read as a
+# pending plan: .12 shipped (4015550c) WITHOUT touching this file at all, so no bead now owns the
+# retirement. The audit re-derived the answer against the assembled branch and it is unchanged --
+# grep of src/phaze/templates finds "rename-row" (_changes_list.html:69) and "tagwrite-row"
+# (:120) and NOTHING rendering the other three stems. Retention is now a deliberate decision with
+# a filed owner, not a deferral: removing entries changes what _row_target resolves for a direct
+# API client, which is a behavioural change outside the audit's scope. Owner: bead phaze-7tiqp.
 _V7_ROW_FACETS: dict[str, str] = {
     "changes-row": "filename",
     "rename-row": "filename",
@@ -161,8 +169,23 @@ _V7_ROW_FACETS: dict[str, str] = {
 # through PATCH /proposals/bulk (see _changes_list.html:46) and never calls
 # /proposals/bulk-approve-high-confidence at all. No template in the tree references that route, so
 # the route, this map, _BULK_APPROVE_OOB_ROW_CAP and _bulk_approve_high_confidence_response.html are
-# one dead chain reachable only from tests and docs/api.md. NOT removed here on purpose: bead
-# phaze-tzy6s.12 (Execute preflight) builds on this code and owns that call.
+# one dead chain reachable only from tests and docs/api.md.
+#
+# phaze-tzy6s.17 -- THE OPEN QUESTION IS CLOSED: "does the OOB row-fragment logic still have a live
+# caller?" No. Verified on the assembled branch, four independent ways:
+#   1. No template hx-*s at /proposals/bulk-approve-high-confidence. The only tree hit outside this
+#      file is a comment inside _bulk_approve_high_confidence_response.html, i.e. the dead chain
+#      citing itself.
+#   2. Neither key below is rendered anywhere. "#rename-trigger-response" / "#move-trigger-response"
+#      appear only in this file and in that same response template's own docstring.
+#   3. Their hosts, rename_workspace.html and move_workspace.html, are deleted from the tree.
+#   4. .12 -- named by the .11 note above as the owner that "builds on this code" -- did not touch
+#      proposals.py in any of its commits, so the deferral it recorded silently expired.
+# Retained rather than deleted: this route is a documented HTTP endpoint (docs/api.md), so removing
+# it or its OOB branch changes the API's observable behaviour for a non-UI client. That is a
+# behavioural change, which this audit files as a follow-up bead instead of absorbing. What is fixed
+# here is the comment that pointed at a bead which had already shipped without acting.
+# Keep-or-retire is bead phaze-7tiqp.
 _BULK_HIGH_CONFIDENCE_TARGETS: dict[str, tuple[str, str]] = {
     "rename-trigger-response": ("rename-row", "filename"),
     "move-trigger-response": ("move-row", "path"),
@@ -569,10 +592,14 @@ async def bulk_approve_high_confidence(
     rename / move / tagwrite workspaces were consolidated into Changes Review, and Changes Review
     does its bulk work through the selection-driven ``PATCH /proposals/bulk``
     (``pipeline/partials/_changes_list.html:46``). No template in the tree references this route; it
-    is reachable only from tests and ``docs/api.md``. It is retained rather than deleted because
-    bead phaze-tzy6s.12 (Execute preflight) builds on this code and owns that decision -- see
-    ``_BULK_HIGH_CONFIDENCE_TARGETS``. The paragraphs below describe the retired wiring and are kept
-    as the rationale record for whoever makes that call.
+    is reachable only from tests and ``docs/api.md``.
+
+    phaze-tzy6s.17 re-verified that on the assembled branch and CONFIRMED it -- the evidence is
+    listed over ``_BULK_HIGH_CONFIDENCE_TARGETS``. Note that .11's deferral to bead phaze-tzy6s.12
+    expired unexercised: .12 shipped without touching this file. Retention is now deliberate, not
+    pending, because deleting a documented HTTP endpoint is a behavioural change and is filed
+    separately as bead phaze-7tiqp. The paragraphs below describe the retired wiring and are kept as the rationale
+    record for whoever makes that call.
 
     phaze-71hi: rename_workspace.html / move_workspace.html hx-targeted this at their small
     ``#rename-trigger-response`` / ``#move-trigger-response`` status div, NOT a container that

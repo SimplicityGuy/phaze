@@ -1,7 +1,8 @@
 {# Status filter tabs -- ADAPTED (phaze-a6hm.2), not rewritten.
 
    The visual language is unchanged from the legacy proposals view: the same bottom-bordered nav,
-   the same four All/Pending/Approved/Rejected tabs in the same order, the same blue underline on
+   the same four tabs in the same order (the second now reads "Needs Review" per ADR-0008 --
+   phaze-tzy6s.17 -- over the unchanged `pending` value), the same blue underline on
    the active tab and the same pill-shaped count badge. What changed is that the markup no longer
    hardcodes WHERE it points. It used to build its own `/proposals/?status={{ value }}` URL and
    target `#proposal-content`, which is what tied it to a single page and left it orphaned when the
@@ -33,7 +34,7 @@
            that the UI mapping "does not migrate or collapse persisted statuses". Renaming the value
            would be a behavioural change to a bookmarkable URL; renaming the label is the
            conformance fix. There is deliberately no "Blocked" tab here: adding one would change
-           what this filter returns, so it is filed as a follow-up rather than absorbed. #}
+           what this filter returns, so it is filed as bead phaze-5uh4u rather than absorbed. #}
         {% set tabs = [
             ("all", "All", stats.total),
             ("pending", "Needs Review", stats.pending),

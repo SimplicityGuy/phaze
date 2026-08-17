@@ -161,7 +161,7 @@ Only **terminal** scans (`completed` / `failed`) are deletable; the delete runs 
 | GET    | `/proposals/{id}/detail`      | Expanded detail panel              |
 | GET    | `/proposals/{id}/timeline`    | Windowed multi-lane analysis timeline |
 | PATCH  | `/proposals/{id}/edit`        | Inline-edit a pending proposal's filename/path |
-| PATCH  | `/proposals/bulk-approve-high-confidence` | Server-predicate bulk approve (confidence ≥ 0.9). **No UI caller** since phaze-tzy6s.11 / ADR-0008 — Changes Review bulk-approves through `/proposals/bulk`. Retained pending an explicit keep-or-retire decision in phaze-tzy6s.12. |
+| PATCH  | `/proposals/bulk-approve-high-confidence` | Server-predicate bulk approve (confidence ≥ 0.9). **No UI caller** since phaze-tzy6s.11 / ADR-0008 — Changes Review bulk-approves through `/proposals/bulk`. phaze-tzy6s.17 re-verified this on the assembled branch and confirmed the whole chain (route, `_BULK_HIGH_CONFIDENCE_TARGETS`, the OOB row branch, `_bulk_approve_high_confidence_response.html`) is unreachable from any template. Retained deliberately — it is a documented endpoint, so removal is a behavioural change; keep-or-retire is bead `phaze-7tiqp`. The `.12` decision the previous note pointed at never happened. |
 | PATCH  | `/proposals/bulk`             | Bulk approve/reject — the live Changes Review bulk path (`action=approve_eligible\|reject` over selected `review_tokens`) |
 
 ## Execution (`/execution`, `/audit`)

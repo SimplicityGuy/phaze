@@ -9,11 +9,19 @@
 
        filter/search state + _file_table + _list_pager
 
-   Producers, all THREE of which render this file and nothing more:
+   Producers that render this file and nothing more:
      * propose_workspace.html            -- wraps it in the container div (full workspace render)
      * GET /s/propose (HX, targeting the container) -- returns it bare (filter / search / page swaps)
-     * PATCH /proposals/bulk (HX, targeting the container) -- returns it bare inside
-       _propose_bulk_response.html, plus an OOB toast (phaze-a6hm.11)
+
+   A THIRD producer existed and no longer has a caller: PATCH /proposals/bulk's fallthrough branch
+   (proposals.py, the `else` after the CHANGES_LIST_CONTAINER_ID check) returns this file bare inside
+   _propose_bulk_response.html plus an OOB toast (phaze-a6hm.11). phaze-tzy6s.11 / ADR-0008 deleted
+   _propose_bulk_bar.html, the Propose bulk bar that was its only caller, because Propose no longer
+   authorizes anything. The one live caller of PATCH /proposals/bulk is now
+   _changes_list.html:46, which always sends HX-Target: changes-workspace-list, so the branch that renders
+   THIS partial is unreachable through the product -- see phaze-tzy6s.17's note in proposals.py.
+   Kept correct here on the assumption a reader is checking "what re-renders me?": the answer is two
+   producers, not three.
 
    Propose is preparation-only. Approval and rejection live in the canonical Review workspace;
    this list remains searchable, filterable, sortable, paginated, and inspectable without decision
@@ -51,11 +59,11 @@
 
    phaze-xxp2: the status filter tabs (proposals/partials/filter_tabs.html) render HERE too, as the
    FIRST thing inside the container -- moved from propose_workspace.html, which rendered them in a
-   sibling div OUTSIDE this container. That placement meant a tab click (or a compatibility bulk mutation) swapped
-   the rows but left the tab bar's active underline and aria-current="page" pointing at whatever was
-   active before the swap: the widget affirmatively announced the wrong filter. Every producer of
-   this partial (the full workspace render, the narrow HX swap, and the bulk response) now
-   re-renders the tabs along with the rows, so the active tab always matches what is on screen --
+   sibling div OUTSIDE this container. That placement meant a tab click (or, while Propose still had
+   a bulk bar, a bulk mutation) swapped the rows but left the tab bar's active underline and
+   aria-current="page" pointing at whatever was active before the swap: the widget affirmatively
+   announced the wrong filter. Every producer of this partial re-renders the tabs along with the
+   rows, so the active tab always matches what is on screen --
    mirroring how the pager already works by living inside this same container. `propose_stats` is
    recomputed by every producer (build_propose_list_context
    is the single source for it -- see proposals.bulk_action), so the count badges refresh with it as
@@ -70,8 +78,7 @@
    used to mean its hx-get URL carried whatever status/page_size/sort/order were current at the last
    FULL workspace render, silently reverting a tab/sort/page-size change made since (phaze-a6gsw).
    This hidden carrier is the fix: it renders HERE, inside the container, so every one of this
-   partial's three producers (full workspace render, narrow HX swap, bulk response) refreshes it
-   exactly like the tabs above -- and search_box.html's hx-include reads it fresh on every
+   partial's producers refreshes it exactly like the tabs above -- and search_box.html's hx-include reads it fresh on every
    keystroke. `q` is deliberately absent (search_box.html's own hx-include="this, ..." already
    serialises the live-typed value; duplicating it here would send `q` twice and Starlette would
    read the stale first occurrence). `page` is a literal `1`, not `propose_view.page`, mirroring the

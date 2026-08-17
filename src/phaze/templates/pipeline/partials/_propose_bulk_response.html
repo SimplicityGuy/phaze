@@ -1,11 +1,19 @@
-{# phaze-a6hm.11: response for PATCH /proposals/bulk when the action came from the PROPOSE workspace.
+{# phaze-tzy6s.17: NO LIVE CALLER. This file answers PATCH /proposals/bulk's fallthrough branch, and
+   the Propose bulk bar that reached it (_propose_bulk_bar.html) was deleted by phaze-tzy6s.11 /
+   ADR-0008, which made Changes Review the only surface that authorizes anything. The one live caller
+   of that route is _changes_list.html:46, which always sends HX-Target: changes-workspace-list and so
+   always takes the OTHER branch. Retained rather than deleted because removing it changes what the
+   route returns to a non-Changes-Review client, which is a behavioural change and is filed as bead
+   phaze-7tiqp. The contract below describes the wiring as it was and is kept as the rationale record.
+
+   phaze-a6hm.11: response for PATCH /proposals/bulk when the action came from the PROPOSE workspace.
 
    The sibling of proposals/partials/bulk_response.html, and deliberately shaped the same way: the
    body is the container's FULL inner content -- rendered by the ONE partial that defines it -- plus
    OOB fragments. It is a separate file from that one for exactly one reason, and it is the reason
    the ids differ in the first place: the two containers hold different things.
    #proposal-list-container holds proposal_table + bulk_actions + pagination;
-   #propose-workspace-list holds _file_table + bulk bar + _list_pager. Rendering either body into
+   #propose-workspace-list holds _file_table + the (now-deleted) bulk bar + _list_pager. Rendering either body into
    the other's container is the phaze-7j50 defect, so the response that targets each one includes
    that container's own definition and never the other's.
 
