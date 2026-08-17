@@ -1,0 +1,566 @@
+"""Behaviour tests for the Redis logical-DB seat registry behind ``just test-db-for`` (phaze-68wky).
+
+``just test-db-for <name>`` gives each worktree ("seat") an exclusive Redis logical database,
+because two redis-backed test modules run global ``scan_iter``+``delete`` sweeps in fixture setup
+AND teardown — on a shared logical database one seat's fixture deletes another seat's live keys
+mid-test (phaze-fwo7, guarded by :mod:`tests.shared.test_redis_worktree_isolation`).
+
+**The defect these tests pin.** Allocation used to be ``INCR phaze:test:redis-db-counter``: a
+monotonic counter with no reclaim. Every seat that ever ran ``test-db-for`` burned an index
+forever, so the counter walked past the 64-database cap and then refused every new seat — indices
+68, 73, 74 and 80 were observed live, mostly held by worktrees that no longer existed. Refusing
+was right (wrapping onto an occupied index restores phaze-fwo7 silently), but the only remedies
+the error offered were ``just test-db-down`` variants, and ``test-db-down`` removes the ONE
+Postgres+Redis pair every concurrent worktree shares — the phaze-ieqg incident, where a mid-round
+teardown destroyed 89 per-worktree databases and this registry under five in-flight suites. Five
+independent fleet reports (hq-6hb, hq-8zr, hq-el5, hq-ew2, hq-ij4) hit that wall, and each invented
+a different workaround; one of them dropped Redis isolation altogether, i.e. straight back into
+phaze-fwo7.
+
+**Why these tests use a real Redis.** The properties that regressed are properties of the
+*allocator's arithmetic and its evidence*, not of anything mockable: which index a seat is handed,
+whether a released one comes back, and whether a seat still in use is protected. A fake would
+re-implement exactly the logic under test. So each test drives ``scripts/redis-seat-registry.sh``
+— the same entry point the justfile recipe calls — against a **throwaway** container this module
+starts and removes itself. It has a random name, publishes **no port at all** (everything goes
+through ``docker exec``), and is configured with a deliberately tiny 6-database space so
+exhaustion is reachable in four allocations. It is never the shared ``phaze-test-redis`` on 6380;
+touching that is what this bead exists to make unnecessary.
+
+The liveness rules the sweep applies are documented in the script's header. Restated here because
+these tests are the executable form of them: a seat is IN USE while a Redis client is connected to
+its logical DB (L1), while a Postgres backend is on its database (L2 — pytest holds one for the
+whole session), or while its lease is unexpired (L3). Two conditions override L3 but never L1/L2:
+its origin worktree is gone (O1), or its index is past the cap so no client could be using it (O2).
+An entry with no lease stamp predates this mechanism, has genuinely unknown age, and is left alone
+unless ``--include-unstamped`` is passed — see
+:func:`test_unstamped_legacy_entries_are_left_alone_by_default`.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+import shutil
+import subprocess
+import time
+from typing import TYPE_CHECKING
+from uuid import uuid4
+
+import pytest
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+# tests/shared/test_redis_seat_registry.py -> parents[2] == repo root.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SCRIPT = _REPO_ROOT / "scripts" / "redis-seat-registry.sh"
+_JUSTFILE = _REPO_ROOT / "justfile"
+
+# 6 logical databases: DB 0 is the registry, so seats get 1..5 and the exhaustion path is four
+# allocations away instead of sixty-three.
+_CAPACITY = 6
+_ALLOCATABLE = _CAPACITY - 1
+
+_REGISTRY_KEY = "phaze:test:redis-db-index"
+_SEEN_KEY = "phaze:test:redis-db-seen"
+_ORIGIN_KEY = "phaze:test:redis-db-origin"
+
+
+def _docker(*args: str) -> subprocess.CompletedProcess[str]:
+    """Every docker invocation in this module, in one place.
+
+    Single entry point so the `S603`/`S607` waiver is stated once rather than at seven call sites:
+    the executable is a literal, the arguments are test literals and a container name this module
+    generated, and nothing here is shell-interpolated.
+    """
+    return subprocess.run(["docker", *args], capture_output=True, text=True, check=False)  # noqa: S603, S607 - literal argv, test-generated container name
+
+
+def _docker_usable() -> bool:
+    return shutil.which("docker") is not None and _docker("info").returncode == 0
+
+
+pytestmark = pytest.mark.skipif(not _docker_usable(), reason="needs a working docker daemon to start a throwaway Redis")
+
+
+@pytest.fixture(scope="module")
+def throwaway_redis() -> Iterator[str]:
+    """A private Redis container for this module alone.
+
+    Deliberately NOT the shared ``phaze-test-redis``: a test that allocated, released and swept
+    entries on the harness every other worktree depends on would be the very hazard this bead is
+    about. No port is published, so it cannot collide with 6380 (or anything else) even if two
+    worktrees run this module at the same time.
+    """
+    container = f"phaze-seatreg-test-{uuid4().hex[:10]}"
+    started = _docker("run", "-d", "--name", container, "redis:7-alpine", "redis-server", "--databases", str(_CAPACITY))
+    if started.returncode != 0:
+        pytest.skip(f"could not start a throwaway Redis: {started.stderr.strip()}")
+    try:
+        for _ in range(60):
+            ping = _docker("exec", container, "redis-cli", "PING")
+            if ping.returncode == 0 and "PONG" in ping.stdout:
+                break
+            time.sleep(0.25)
+        else:
+            pytest.skip("throwaway Redis never became ready")
+        yield container
+    finally:
+        _docker("rm", "-f", container)
+
+
+@pytest.fixture
+def registry(throwaway_redis: str) -> Iterator[str]:
+    """Hand each test an empty registry AND no parked clients; the container is reused for speed.
+
+    Disconnecting matters as much as flushing: the L1 liveness signal is a connected client, so a
+    ``BLPOP`` left parked by an earlier test would keep a later test's seat looking live and the
+    sweep would correctly refuse to touch it — a false red that says nothing about the code.
+    """
+    _reset(throwaway_redis)
+    yield throwaway_redis
+    _reset(throwaway_redis)
+
+
+def _reset(container: str) -> None:
+    _redis(container, "CLIENT", "KILL", "TYPE", "normal")  # SKIPME defaults to yes, so this connection survives
+    for _ in range(40):
+        if "cmd=blpop" not in _redis(container, "CLIENT", "LIST"):
+            break
+        time.sleep(0.1)
+    _redis(container, "FLUSHALL")
+
+
+def _redis(container: str, *args: str) -> str:
+    result = _docker("exec", container, "redis-cli", *args)
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+def _registry_cli(container: str, *args: str) -> str:
+    return _redis(container, "-n", "0", *args)
+
+
+def _run(container: str, *args: str) -> subprocess.CompletedProcess[str]:
+    """Drive the real script, with the same arguments the justfile recipe passes it."""
+    assert _SCRIPT.is_file(), f"seat registry script missing: {_SCRIPT}"
+    return subprocess.run(  # noqa: S603 - fixed, in-repo executable; every argument is a test literal
+        [str(_SCRIPT), args[0], "--redis-container", container, *args[1:]],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _allocate(container: str, seat: str, *, origin: str | None = None, capacity: int = _CAPACITY) -> subprocess.CompletedProcess[str]:
+    extra = ["--origin", origin] if origin is not None else []
+    return _run(container, "allocate", "--seat", seat, "--capacity", str(capacity), *extra)
+
+
+def _index_of(result: subprocess.CompletedProcess[str]) -> int:
+    """The allocator prints the index on stdout and nothing else; humans get stderr."""
+    assert result.returncode == 0, result.stderr
+    return int(result.stdout.strip())
+
+
+def _allocated_seats(container: str) -> dict[str, str]:
+    flat = _registry_cli(container, "HGETALL", _REGISTRY_KEY).splitlines()
+    return dict(zip(flat[::2], flat[1::2], strict=True))
+
+
+def _blocking_client(container: str, index: int) -> None:
+    """Park a client on logical DB ``index`` — the L1 liveness signal, as a real connection."""
+    parked = _docker("exec", "-d", container, "sh", "-c", f"redis-cli -n {index} BLPOP phaze-seatreg-test-idle 0")
+    assert parked.returncode == 0, parked.stderr
+    for _ in range(40):
+        if f"db={index}" in _redis(container, "CLIENT", "LIST"):
+            return
+        time.sleep(0.1)
+    pytest.skip("could not park a client on the throwaway Redis")
+
+
+# ---------------------------------------------------------------------------------------------
+# Allocation
+# ---------------------------------------------------------------------------------------------
+
+
+def test_allocation_is_idempotent_for_one_seat(registry: str, tmp_path: Path) -> None:
+    """Re-running for the same seat returns the SAME index and burns no new one.
+
+    CLAUDE.md states this outright and every agent recipe relies on it — re-running ``test-db-for``
+    to recover the exports for an existing worktree must not mint a second seat, which would strand
+    the first index and orphan its keys. Under the old monotonic counter the ``HGET`` short-circuit
+    provided this; the replacement has to provide it too, and from the same registry key.
+    """
+    first = _index_of(_allocate(registry, "seat_alpha", origin=str(tmp_path)))
+    second = _index_of(_allocate(registry, "seat_alpha", origin=str(tmp_path)))
+    third = _index_of(_allocate(registry, "seat_alpha", origin=str(tmp_path)))
+
+    assert first == second == third
+    assert 1 <= first < _CAPACITY, "DB 0 holds the registry and must never be handed to a seat"
+    assert _allocated_seats(registry) == {"seat_alpha": str(first)}
+
+
+def test_distinct_seats_never_share_an_index(registry: str, tmp_path: Path) -> None:
+    """Two seats sharing one logical DB IS phaze-fwo7. Fill the space and check for duplicates."""
+    indices = [_index_of(_allocate(registry, f"seat_{n}", origin=str(tmp_path))) for n in range(_ALLOCATABLE)]
+
+    assert sorted(indices) == list(range(1, _CAPACITY)), "the allocatable space is 1..capacity-1, each handed out once"
+    assert len(set(indices)) == len(indices)
+
+
+def test_exhaustion_fails_loudly_and_never_wraps(registry: str, tmp_path: Path) -> None:
+    """Past capacity the allocator refuses. A wrap would silently restore cross-seat interference.
+
+    This is the one behaviour of the original design that was RIGHT, and the reclaim work must not
+    trade it away: the fix for a full registry is to free a seat, never to double one up.
+    """
+    for n in range(_ALLOCATABLE):
+        _index_of(_allocate(registry, f"seat_{n}", origin=str(tmp_path)))
+    before = _allocated_seats(registry)
+
+    overflow = _allocate(registry, "seat_overflow", origin=str(tmp_path))
+
+    assert overflow.returncode == 3
+    assert _allocated_seats(registry) == before, "a refused allocation must not touch the registry"
+
+
+def test_exhaustion_names_the_non_destructive_remedy_first(registry: str, tmp_path: Path) -> None:
+    """The error must lead with reclaim, and must not offer ``test-db-down`` as the fix.
+
+    This is the whole reported defect, not a cosmetic point about wording. Five agents read this
+    message, found only ``just test-db-down`` on offer, and went around it — one of them by
+    dropping Redis isolation entirely. A remedy an operator must not run is not a remedy.
+    """
+    for n in range(_ALLOCATABLE):
+        _allocate(registry, f"seat_{n}", origin=str(tmp_path))
+    message = _allocate(registry, "seat_overflow", origin=str(tmp_path)).stderr
+
+    assert "just test-db-reclaim" in message
+    assert "just test-db-release" in message
+
+    reclaim_at = message.index("just test-db-reclaim")
+    resize_at = message.index("PHAZE_TEST_REDIS_DATABASES")
+    assert reclaim_at < resize_at, "reclaiming must be offered before the remedy that recreates the container"
+
+    teardown_lines = [line for line in message.splitlines() if "test-db-down" in line]
+    assert teardown_lines, "the message should still name test-db-down — to warn AGAINST it"
+    assert all("do NOT" in line or "phaze-ieqg" in line for line in teardown_lines), f"test-db-down must not be offered as a remedy: {teardown_lines}"
+
+
+def test_a_freed_index_is_handed_out_again(registry: str, tmp_path: Path) -> None:
+    """The reclaim property itself: once every index is held, releasing one unblocks a new seat.
+
+    Under the monotonic counter this was impossible — the counter never looked at what was free,
+    only at what it had already issued.
+    """
+    held = {seat: _index_of(_allocate(registry, seat, origin=str(tmp_path))) for seat in (f"seat_{n}" for n in range(_ALLOCATABLE))}
+    assert _allocate(registry, "seat_new", origin=str(tmp_path)).returncode == 3
+
+    released = _run(registry, "release", "--seat", "seat_2", "--capacity", str(_CAPACITY))
+    assert released.returncode == 0, released.stderr
+
+    assert _index_of(_allocate(registry, "seat_new", origin=str(tmp_path))) == held["seat_2"]
+
+
+def test_a_never_used_index_is_preferred_over_a_recycled_one(registry: str, tmp_path: Path) -> None:
+    """Recycling is the last resort, not the first.
+
+    Reclaim can only be as good as its evidence, and one hazard survives every check: a shell that
+    still has a stale ``PHAZE_REDIS_URL`` exported keeps writing to its old index after the
+    registry hands it back. Handing out untouched indices first means that hazard is only taken
+    when the space genuinely demands it.
+    """
+    for n in range(3):
+        _allocate(registry, f"seat_{n}", origin=str(tmp_path))
+    _run(registry, "release", "--seat", "seat_0", "--capacity", str(_CAPACITY))
+
+    assert _index_of(_allocate(registry, "seat_fresh", origin=str(tmp_path))) == 4, "should skip the freed index while untouched ones remain"
+
+    _allocate(registry, "seat_filler", origin=str(tmp_path))
+    assert _index_of(_allocate(registry, "seat_recycler", origin=str(tmp_path))) == 1, "with nothing untouched left, the freed index is reused"
+
+
+def test_an_out_of_range_allocation_is_repaired_in_place(registry: str, tmp_path: Path) -> None:
+    """The 68/73/74/80 allocations the old counter minted are moved back into range.
+
+    Redis refuses ``SELECT`` past its database count, so such a seat is already broken rather than
+    live — repointing it cannot disturb anything, and leaving it alone would keep the worktree that
+    owns it permanently unable to run the suite.
+    """
+    _registry_cli(registry, "HSET", _REGISTRY_KEY, "seat_wild", "68")
+
+    repaired = _allocate(registry, "seat_wild", origin=str(tmp_path))
+
+    assert _index_of(repaired) < _CAPACITY
+    assert "out-of-range" in repaired.stderr
+
+
+def test_a_recycled_index_is_cleared_before_handover(registry: str, tmp_path: Path) -> None:
+    """A new seat must never inherit the previous holder's keys.
+
+    Foreign keys inside a supposedly private database is phaze-fwo7 seen from the other side: the
+    sweeps and keyspace-counting assertions in the redis-backed modules cannot tell them from
+    their own.
+    """
+    index = _index_of(_allocate(registry, "seat_first", origin=str(tmp_path)))
+    _redis(registry, "-n", str(index), "SET", "exec:leftover", "stale-value")
+    _registry_cli(registry, "HDEL", _REGISTRY_KEY, "seat_first")
+
+    reused = _index_of(_allocate(registry, "seat_second", origin=str(tmp_path)))
+
+    assert reused == index
+    assert _redis(registry, "-n", str(index), "DBSIZE") == "0"
+
+
+# ---------------------------------------------------------------------------------------------
+# Release — the non-destructive path that did not exist
+# ---------------------------------------------------------------------------------------------
+
+
+def test_release_frees_the_index_and_clears_only_that_seats_keys(registry: str, tmp_path: Path) -> None:
+    """Release touches one logical DB and the registry fields. Nothing else, and no container."""
+    mine = _index_of(_allocate(registry, "seat_mine", origin=str(tmp_path)))
+    theirs = _index_of(_allocate(registry, "seat_theirs", origin=str(tmp_path)))
+    _redis(registry, "-n", str(mine), "SET", "exec:mine", "x")
+    _redis(registry, "-n", str(theirs), "SET", "exec:theirs", "x")
+
+    released = _run(registry, "release", "--seat", "seat_mine", "--capacity", str(_CAPACITY))
+
+    assert released.returncode == 0, released.stderr
+    assert _allocated_seats(registry) == {"seat_theirs": str(theirs)}
+    assert _redis(registry, "-n", str(mine), "DBSIZE") == "0"
+    assert _redis(registry, "-n", str(theirs), "DBSIZE") == "1", "another seat's keys are none of release's business"
+    assert _registry_cli(registry, "HGET", _SEEN_KEY, "seat_mine") == ""
+    assert _registry_cli(registry, "HGET", _ORIGIN_KEY, "seat_mine") == ""
+
+
+def test_release_of_an_unknown_seat_is_a_no_op(registry: str) -> None:
+    """Releasing a seat that holds nothing succeeds quietly — the recipe is safe to re-run."""
+    result = _run(registry, "release", "--seat", "seat_absent", "--capacity", str(_CAPACITY))
+
+    assert result.returncode == 0, result.stderr
+    assert "nothing to release" in result.stdout
+
+
+def test_release_refuses_while_a_client_is_connected(registry: str, tmp_path: Path) -> None:
+    """L1: a connected client means a suite is live in that seat. Refuse, and say why."""
+    index = _index_of(_allocate(registry, "seat_busy", origin=str(tmp_path)))
+    _blocking_client(registry, index)
+
+    refused = _run(registry, "release", "--seat", "seat_busy", "--capacity", str(_CAPACITY))
+
+    assert refused.returncode == 4
+    assert "connected" in refused.stderr
+    assert _allocated_seats(registry) == {"seat_busy": str(index)}
+
+    forced = _run(registry, "release", "--seat", "seat_busy", "--capacity", str(_CAPACITY), "--force")
+    assert forced.returncode == 0, forced.stderr
+    assert _allocated_seats(registry) == {}
+
+
+# ---------------------------------------------------------------------------------------------
+# Reclaim — the sweep, and what it refuses to do
+# ---------------------------------------------------------------------------------------------
+
+
+def _reclaim(container: str, *extra: str) -> subprocess.CompletedProcess[str]:
+    return _run(container, "reclaim", "--capacity", str(_CAPACITY), "--no-postgres-check", *extra)
+
+
+def _expire_lease(container: str, seat: str) -> None:
+    """Backdate a seat's lease stamp well past the default 72h window."""
+    _registry_cli(container, "HSET", _SEEN_KEY, seat, "100")
+
+
+def test_reclaim_is_a_dry_run_until_apply(registry: str, tmp_path: Path) -> None:
+    """The sweep reports before it acts. A destructive default is how phaze-ieqg happened."""
+    index = _index_of(_allocate(registry, "seat_old", origin=str(tmp_path)))
+    _expire_lease(registry, "seat_old")
+
+    preview = _reclaim(registry)
+
+    assert preview.returncode == 0, preview.stderr
+    assert "would reclaim" in preview.stdout
+    assert _allocated_seats(registry) == {"seat_old": str(index)}, "a dry run must change nothing"
+
+    applied = _reclaim(registry, "--apply")
+    assert applied.returncode == 0, applied.stderr
+    assert _allocated_seats(registry) == {}
+
+
+def test_reclaim_frees_a_seat_whose_worktree_is_gone(registry: str, tmp_path: Path) -> None:
+    """O1: the recorded origin directory no longer exists, so the seat cannot come back.
+
+    This is the common case behind the wild indices — worktrees are removed when a bead lands, and
+    nothing ever told the registry.
+    """
+    gone = tmp_path / "removed-worktree"
+    gone.mkdir()
+    _allocate(registry, "seat_gone", origin=str(gone))
+    _allocate(registry, "seat_here", origin=str(tmp_path))
+    gone.rmdir()
+
+    applied = _reclaim(registry, "--apply")
+
+    assert list(_allocated_seats(registry)) == ["seat_here"]
+    assert "no longer exists" in applied.stdout
+
+
+def test_reclaim_leaves_a_seat_with_a_live_lease_alone(registry: str, tmp_path: Path) -> None:
+    """L3: a seat claimed recently is left alone even though nothing is connected to it.
+
+    This is the case no connection-based check can see, and getting it wrong would be worse than
+    the exhaustion it fixes: a developer between runs would have their index handed to someone else
+    while their shell still exports it.
+    """
+    index = _index_of(_allocate(registry, "seat_idle", origin=str(tmp_path)))
+
+    applied = _reclaim(registry, "--apply")
+
+    assert _allocated_seats(registry) == {"seat_idle": str(index)}
+    assert "left 1 in-use seat(s) alone" in applied.stdout
+
+
+def test_reclaim_leaves_a_seat_with_a_connected_client_alone(registry: str, tmp_path: Path) -> None:
+    """L1 beats an expired lease: evidence of use always outranks evidence of age."""
+    index = _index_of(_allocate(registry, "seat_running", origin=str(tmp_path)))
+    _expire_lease(registry, "seat_running")
+    _blocking_client(registry, index)
+
+    applied = _reclaim(registry, "--apply")
+
+    assert _allocated_seats(registry) == {"seat_running": str(index)}, applied.stdout
+
+
+def test_reclaim_leaves_a_live_seat_alone_even_when_its_worktree_is_gone(registry: str, tmp_path: Path) -> None:
+    """O1 does not override L1 either. A suite running out of a deleted directory is still running."""
+    gone = tmp_path / "deleted-mid-run"
+    gone.mkdir()
+    index = _index_of(_allocate(registry, "seat_zombie", origin=str(gone)))
+    gone.rmdir()
+    _blocking_client(registry, index)
+
+    _reclaim(registry, "--apply")
+
+    assert _allocated_seats(registry) == {"seat_zombie": str(index)}
+
+
+def test_unstamped_legacy_entries_are_left_alone_by_default(registry: str) -> None:
+    """An entry allocated before lease stamping has unknown age — and unknown is not stale.
+
+    Backfilling a plausible age would be exactly the invented liveness test this design refuses;
+    the honest move is to report them, leave them, and let each one stamp itself the next time its
+    worktree runs ``test-db-for``. ``--include-unstamped`` clears the backlog deliberately.
+    """
+    _registry_cli(registry, "HSET", _REGISTRY_KEY, "seat_legacy", "3")
+
+    default_sweep = _reclaim(registry, "--apply")
+    assert _allocated_seats(registry) == {"seat_legacy": "3"}
+    assert "predate lease stamping" in default_sweep.stdout
+
+    opted_in = _reclaim(registry, "--apply", "--include-unstamped")
+    assert opted_in.returncode == 0, opted_in.stderr
+    assert _allocated_seats(registry) == {}
+
+
+def test_reclaim_refuses_without_postgres_evidence(registry: str, tmp_path: Path) -> None:
+    """L2 is mandatory: unknown must not be read as free.
+
+    pytest holds a Postgres connection for its whole session and often none to Redis, so without
+    that evidence a running suite looks idle. The sweep would then clear its keys mid-run and
+    produce the branch-unrelated red that phaze-ieqg cost a round to disprove.
+    """
+    _allocate(registry, "seat_any", origin=str(tmp_path))
+
+    blind = _run(registry, "reclaim", "--capacity", str(_CAPACITY), "--apply")
+
+    assert blind.returncode == 1
+    assert "--no-postgres-check" in blind.stderr
+    assert _allocated_seats(registry) != {}, "a refused sweep must free nothing"
+
+
+def test_list_reports_the_evidence_behind_every_verdict(registry: str, tmp_path: Path) -> None:
+    """``just test-db-seats`` exists so a full registry reads as a list of seats, not a dead end."""
+    _allocate(registry, "seat_live", origin=str(tmp_path))
+    gone = tmp_path / "vanished"
+    gone.mkdir()
+    _allocate(registry, "seat_dead", origin=str(gone))
+    gone.rmdir()
+    _registry_cli(registry, "HSET", _REGISTRY_KEY, "seat_legacy", "5")
+    before = _allocated_seats(registry)
+
+    listing = _run(registry, "list", "--capacity", str(_CAPACITY))
+
+    assert listing.returncode == 0, listing.stderr
+    assert "seat_live" in listing.stdout
+    assert "in-use" in listing.stdout
+    assert "stale" in listing.stdout
+    assert "unknown" in listing.stdout
+    assert _allocated_seats(registry) == before, "list is read-only"
+
+
+# ---------------------------------------------------------------------------------------------
+# Wiring — the recipes an operator actually reaches for
+# ---------------------------------------------------------------------------------------------
+
+
+def _recipe_body(name: str) -> str:
+    """The text of one justfile recipe, from its signature to the next `[doc(` attribute."""
+    justfile = _JUSTFILE.read_text(encoding="utf-8")
+    _, _, after = justfile.partition(f"\n{name}")
+    assert after, f"could not locate the `{name}` recipe in the justfile"
+    return after.split("\n[doc(", 1)[0]
+
+
+def _recipe_commands(name: str) -> str:
+    """The same recipe with comment lines stripped.
+
+    These recipes discuss ``test-db-down`` and the old ``INCR`` counter at length — that is the
+    rationale a reader needs at the moment they are choosing between them. Assertions about what a
+    recipe *does* must therefore read the commands, not the prose, or every explanation becomes a
+    test failure and the pressure is to delete the explanation.
+    """
+    return "\n".join(line for line in _recipe_body(name).splitlines() if not line.strip().startswith("#"))
+
+
+def test_test_db_for_delegates_allocation_to_the_registry_script() -> None:
+    """The recipe must not carry a second, drifting copy of the allocator.
+
+    ``derive-seat-name.sh`` and ``ensure-pg-database.sh`` already established this: the recipe
+    orchestrates, the scripts decide, and the scripts are what the tests can drive.
+    """
+    body = _recipe_commands("test-db-for name:")
+
+    assert "scripts/redis-seat-registry.sh allocate" in body
+    assert "INCR" not in body, "the monotonic counter is the defect; it must not survive in the recipe"
+
+
+def test_the_non_destructive_recipes_exist_and_do_not_tear_anything_down() -> None:
+    """``test-db-release`` / ``test-db-reclaim`` / ``test-db-seats`` are the point of the bead.
+
+    Their absence is what left ``test-db-down`` as the only offered remedy, so a regression that
+    deleted them would restore the reported defect in full.
+    """
+    for recipe, subcommand in (
+        ("test-db-release name *flags:", "release"),
+        ("test-db-reclaim *flags:", "reclaim"),
+        ("test-db-seats:", "list"),
+    ):
+        body = _recipe_commands(recipe)
+        assert f"scripts/redis-seat-registry.sh {subcommand}" in body
+        assert "docker rm" not in body, f"`{recipe}` must never remove a container"
+        assert "test-db-down" not in body, f"`{recipe}` is the alternative to test-db-down, not a wrapper for it"
+
+
+def test_the_teardown_guards_point_at_reclaim_instead() -> None:
+    """Both ``docker rm`` paths on the shared harness must name the non-destructive route.
+
+    An operator who reaches ``test-db-down`` or the logical-DB resize because the registry filled
+    up is one step from the phaze-ieqg incident; that is the moment to say ``test-db-reclaim``.
+    """
+    for recipe in ("test-db-down:", "test-db:"):
+        body = _recipe_body(recipe)
+        assert "test-db-reclaim" in body, f"`{recipe}`'s guard should offer reclaim before a teardown"
