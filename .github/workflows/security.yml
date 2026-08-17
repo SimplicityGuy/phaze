@@ -70,9 +70,9 @@ jobs:
       # first). Bump this deliberately, matching the frozen-SHA policy for every other
       # scanner -- never let it float back to a bare tag.
       #
-      # Digest resolved from the semgrep/semgrep:1.172.0 manifest index (linux/amd64 +
-      # linux/arm64) via the Docker Hub registry v2 API, 2026-08-09.
-      image: semgrep/semgrep@sha256:65dcd4408adda7c183a6b4550cb1e9b19f7f627a6fbb7e0559bd466bedc44d7b  # frozen: v1.172.0
+      # Digest resolved from the semgrep/semgrep:1.173.0 manifest index (linux/amd64 +
+      # linux/arm64) via the Docker Hub registry v2 API, 2026-08-17.
+      image: semgrep/semgrep@sha256:67319956da3dcb58baf5b322899c15458e3963e7018a86aeeb5cd224e69cb77a  # frozen: v1.173.0
     if: inputs.code-changed && github.actor != 'dependabot[bot]'
     steps:
       - name: 🔀 Checkout repository

@@ -240,6 +240,18 @@ async def bulk_approve_selected_above_confidence(
             .values(status=ProposalStatus.APPROVED.value)
             .returning(RenameProposal.id)
         )
+        # The len-all-count rule has misread this. It rewrites `len(QUERY.all())` into
+        # `QUERY.count()` to keep the count server-side, which assumes a SELECT. This is an
+        # UPDATE ... RETURNING: the rows are the proposals this statement actually transitioned
+        # under the optimistic-concurrency predicate, so there is no query object to call .count()
+        # on and no second round trip to save -- RETURNING is already how the affected-row set
+        # comes back. Rewriting it to satisfy the rule would mean dropping RETURNING for
+        # `result.rowcount`, which is a behavioural change, not a cleanup.
+        #
+        # The marker below must stay on the line IMMEDIATELY above the statement: semgrep reads
+        # nosemgrep from the preceding line only, so folding it into the paragraph above silently
+        # stops suppressing.
+        # nosemgrep: python.sqlalchemy.performance.performance-improvements.len-all-count
         applied += len(result.scalars().all())
     await session.commit()
     return applied
