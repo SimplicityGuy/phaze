@@ -36,7 +36,7 @@
             <span class="bg-yellow-100 dark:bg-yellow-950 text-yellow-700 dark:text-yellow-400 text-xs font-semibold px-2 py-0.5 rounded-full">Pending</span>
         {% endif %}
     </td>
-    <td class="px-4 py-3 text-gray-500 dark:text-gray-400 dark:text-gray-500">
+    <td class="px-4 py-3 text-gray-500 dark:text-gray-400">
         {{ log.executed_at.strftime('%Y-%m-%d %H:%M:%S') }}
     </td>
     <td class="px-4 py-3 text-red-600 dark:text-red-400">
@@ -59,7 +59,7 @@
                 hx-swap="innerHTML"
                 aria-expanded="false"
                 aria-controls="audit-detail-{{ log.id }}"
-                class="text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 dark:text-gray-300 text-xs px-2 py-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 text-xs px-2 py-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                 aria-label="Show details for {{ log.source_path }}">
             Details
         </button>

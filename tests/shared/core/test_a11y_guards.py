@@ -403,3 +403,42 @@ def test_detail_pane_own_tick_does_not_resteal_focus() -> None:
         f"the focus guard {predicate!r} does not read the pane's PRE-swap open state, so it cannot "
         "tell the initial card-click open from a 5s own-tick refresh"
     )
+
+
+# phaze-4yrle: two competing `dark:` utilities of the SAME property on one element is always a
+# defect, and a silent one. Which utility wins is decided by the order Tailwind emits them into
+# the stylesheet, NOT by their order in the class attribute, so the rendered dark-mode colour is
+# not necessarily the one the author wrote last -- and one of the two is dead in every case.
+#
+# Found by the phaze-tzy6s per-slice audit in three templates (stats_bar.html, trigger_response.html,
+# trigger_tracklist_response.html), all blamed OUTSIDE that epic (PR #38 and PR #131), i.e. this
+# survived every prior review because nothing was looking for it. Hence a guard rather than three
+# one-line fixes.
+#
+# Scoped to `dark:text-<colour>` deliberately. A general "no duplicate utility" sweep would have to
+# model Tailwind's whole conflict lattice (p-2 vs px-2, text-sm vs text-gray-500 -- `text-` is both
+# size and colour) and would be a false-positive engine. This checks one property, in one variant,
+# where a duplicate is unambiguously wrong.
+_DARK_TEXT_COLOUR = re.compile(r"dark:text-(?:[a-z-]+)-\d{2,3}\b")
+
+
+def test_no_element_carries_two_dark_text_colours() -> None:
+    offenders: list[str] = []
+    for template in sorted(_TEMPLATES.rglob("*.html")):
+        for line_no, line in enumerate(template.read_text().splitlines(), start=1):
+            for attr in re.findall(r'class="([^"]*)"', line):
+                # Jinja conditionals legitimately offer alternative colours on one element
+                # ({{ 'dark:text-gray-100' if x else 'dark:text-gray-400' }}) -- only ONE is ever
+                # emitted, so they are not duplicates.
+                if "{{" in attr or "{%" in attr:
+                    continue
+                hits = _DARK_TEXT_COLOUR.findall(attr)
+                if len(hits) > 1:
+                    rel = template.relative_to(_TEMPLATES)
+                    offenders.append(f"{rel}:{line_no} carries {len(hits)} dark: text colours -> {' '.join(hits)}")
+
+    assert not offenders, (
+        "an element carries two competing `dark:` text colours; the winner is decided by Tailwind's "
+        "emit order, not by class-attribute order, so one is dead and the rendered colour may not be "
+        "the intended one:\n  " + "\n  ".join(offenders)
+    )
