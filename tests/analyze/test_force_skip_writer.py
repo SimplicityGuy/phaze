@@ -316,5 +316,5 @@ async def test_oob_pill_reports_done_not_skipped_when_precedence_says_done(clien
     body = (await client.post(f"/pipeline/files/{file_id}/skip/metadata", data={"reason": "belt and braces"})).text
 
     assert f'id="stage-pill-metadata-{file_id}"' in body
-    assert 'aria-label="Meta: done"' in body, "precedence keeps a genuinely-done stage reading done, even with a skip marker"
+    assert 'aria-label="Metadata: done"' in body, "precedence keeps a genuinely-done stage reading done, even with a skip marker"
     assert "skipped (force-completed)" not in body

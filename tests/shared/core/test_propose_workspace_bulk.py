@@ -1,9 +1,8 @@
-"""Bulk approve/reject in the v7 Propose workspace (phaze-a6hm.11).
+"""Bulk endpoint compatibility after decisions moved out of the Propose workspace.
 
-The human-in-the-loop approval gate is this application's stated core value -- "nothing moves
-without review" -- and the v7 shell cutover left it available per-row only, against an archive of
-many thousands of files. This is the bead that makes it usable at scale, and every assertion here
-is one of the five acceptance criteria or one of the defect classes this repo has already shipped.
+The human-in-the-loop approval gate remains backend-compatible, but the preparation-only Propose
+workspace no longer advertises it. Review owns decisions; these tests retain the endpoint's state,
+count, idempotency, response-shape, and view-state guarantees for existing callers.
 
 What is deliberately NOT re-litigated here: the from-state guard itself and the legacy surface's
 view-state round trip. Those are ``tests/review/routers/test_proposals.py``'s
@@ -35,6 +34,7 @@ from sqlalchemy import update
 
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.routers.shell import PROPOSE_LIST_CONTAINER_ID
+from phaze.services.proposal_queries import proposal_review_digest
 
 
 if TYPE_CHECKING:
@@ -48,6 +48,10 @@ _CONTAINER = PROPOSE_LIST_CONTAINER_ID
 _BULK_TARGET = {"HX-Request": "true", "HX-Target": _CONTAINER}
 
 
+def _review_token(proposal: RenameProposal) -> str:
+    return f"{proposal.id}|{proposal.updated_at.isoformat()}|{proposal_review_digest(proposal)}"
+
+
 async def _status_of(session: AsyncSession, proposal: RenameProposal) -> ProposalStatus:
     """Read one proposal's status straight from the database, bypassing any render."""
     fresh = await session.get(RenameProposal, proposal.id, populate_existing=True)
@@ -55,39 +59,25 @@ async def _status_of(session: AsyncSession, proposal: RenameProposal) -> Proposa
     return fresh.status
 
 
-def _checkbox_for(body: str, proposal: RenameProposal) -> str:
-    """Return the rendered checkbox tag for one row.
-
-    Split on the marker attribute rather than substring-searching the whole tag: the class list
-    contains ``disabled:opacity-40`` (a Tailwind variant, not a state), so a naive
-    ``"disabled" in tag`` reports every checkbox as disabled and the test passes against a UI that
-    offers nothing at all.
-    """
-    return body.split(f'value="{proposal.id}"')[1].split(">")[0]
-
-
-def _is_locked(checkbox: str) -> bool:
-    """True when the checkbox carries the real ``disabled`` attribute (not the Tailwind variant)."""
-    return "disabled title=" in checkbox
-
-
 # ---------------------------------------------------------------------------
-# Acceptance 1 -- rows are selectable, and the action hits EXACTLY the selection
+# Endpoint compatibility -- the preparation workspace no longer exposes decision controls
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_rows_render_a_selection_checkbox_carrying_the_proposal_id(
+async def test_propose_routes_decisions_to_review_instead_of_rendering_bulk_controls(
     client: AsyncClient,
     seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
 ) -> None:
-    """Each row carries a ``proposal_ids`` checkbox valued with its own id, plus a select-all."""
-    proposal = await seed_pending_proposal(0.9, original_filename="pick-me.mp3", proposed_filename="Pick Me.mp3")
+    """Candidates remain visible, but selection and approve/reject actions belong to Review."""
+    await seed_pending_proposal(0.9, original_filename="inspect-me.mp3", proposed_filename="Inspect Me.mp3")
     body = (await client.get("/s/propose")).text
 
-    assert 'name="proposal_ids"' in body, "rows must be selectable"
-    assert f'value="{proposal.id}"' in body, "the checkbox must carry the row's own proposal id"
-    assert 'aria-label="Select all rows on this page"' in body, "the header select-all must render"
+    assert "Inspect Me.mp3" in body
+    assert 'name="proposal_ids"' not in body
+    assert 'aria-label="Select all rows on this page"' not in body
+    assert 'hx-patch="/proposals/bulk' not in body
+    assert 'href="/s/rename"' in body and "Review changes" in body
 
 
 @pytest.mark.asyncio
@@ -105,7 +95,9 @@ async def test_bulk_approve_acts_on_exactly_the_selection(
     chosen = await seed_pending_proposal(0.9, original_filename="chosen.mp3", proposed_filename="Chosen.mp3")
     spared = await seed_pending_proposal(0.9, original_filename="spared.mp3", proposed_filename="Spared.mp3")
 
-    response = await client.patch("/proposals/bulk", data={"action": "approve", "proposal_ids": [str(chosen.id)]}, headers=_BULK_TARGET)
+    response = await client.patch(
+        "/proposals/bulk", data={"action": "approve_eligible", "review_tokens": [_review_token(chosen)]}, headers=_BULK_TARGET
+    )
 
     assert response.status_code == 200
     assert await _status_of(session, chosen) == ProposalStatus.APPROVED
@@ -150,7 +142,9 @@ async def test_bulk_response_is_the_propose_list_not_an_empty_or_legacy_body(
     await seed_pending_proposal(0.9, original_filename="stays.mp3", proposed_filename="Stays.mp3")
     other = await seed_pending_proposal(0.9, original_filename="acted.mp3", proposed_filename="Acted.mp3")
 
-    body = (await client.patch("/proposals/bulk", data={"action": "approve", "proposal_ids": [str(other.id)]}, headers=_BULK_TARGET)).text
+    body = (
+        await client.patch("/proposals/bulk", data={"action": "approve_eligible", "review_tokens": [_review_token(other)]}, headers=_BULK_TARGET)
+    ).text
 
     assert "Stays.mp3" in body, "the surviving row must be re-rendered, not swapped away"
     assert "Proposed name" in body, "the propose table header must be present (this is the propose container's shape)"
@@ -171,7 +165,9 @@ async def test_bulk_response_does_not_re_emit_its_own_container(
     """
     proposal = await seed_pending_proposal(0.9, original_filename="dupe.mp3", proposed_filename="Dupe.mp3")
 
-    body = (await client.patch("/proposals/bulk", data={"action": "approve", "proposal_ids": [str(proposal.id)]}, headers=_BULK_TARGET)).text
+    body = (
+        await client.patch("/proposals/bulk", data={"action": "approve_eligible", "review_tokens": [_review_token(proposal)]}, headers=_BULK_TARGET)
+    ).text
 
     assert f'id="{_CONTAINER}"' not in body, "the bulk response must not nest a second list container"
     assert "<html" not in body.lower(), "a fragment must never carry document chrome"
@@ -191,7 +187,9 @@ async def test_bulk_response_refreshes_the_tab_badge_counts(
     """
     proposal = await seed_pending_proposal(0.9, original_filename="badge.mp3", proposed_filename="Badge.mp3")
 
-    body = (await client.patch("/proposals/bulk", data={"action": "approve", "proposal_ids": [str(proposal.id)]}, headers=_BULK_TARGET)).text
+    body = (
+        await client.patch("/proposals/bulk", data={"action": "approve_eligible", "review_tokens": [_review_token(proposal)]}, headers=_BULK_TARGET)
+    ).text
 
     tabs_markup = body.split("</nav>")[0]
     badges = [chunk.split("<")[0].strip() for chunk in tabs_markup.split('rounded-full px-2 py-0.5 ml-1">')[1:]]
@@ -235,7 +233,7 @@ async def test_bulk_returns_on_the_same_filter_search_and_page_it_was_issued_fro
     body = (
         await client.patch(
             f"/proposals/bulk?{query}",
-            data={"action": "approve", "proposal_ids": [str(approved[0].id)]},
+            data={"action": "approve_eligible", "review_tokens": ["stale-reviewed-token"]},
             headers=_BULK_TARGET,
         )
     ).text
@@ -271,7 +269,7 @@ async def test_pager_reports_post_action_totals(
     body = (
         await client.patch(
             f"/proposals/bulk?{query}",
-            data={"action": "approve", "proposal_ids": [str(p.id) for p in proposals[:3]]},
+            data={"action": "approve_eligible", "review_tokens": [_review_token(p) for p in proposals[:3]]},
             headers=_BULK_TARGET,
         )
     ).text
@@ -299,6 +297,7 @@ async def test_terminal_rows_in_the_selection_are_skipped_and_the_count_is_hones
     """
     pending = await seed_pending_proposal(0.9, original_filename="live.mp3", proposed_filename="Live.mp3")
     done = [await seed_pending_proposal(0.9, original_filename=f"done-{i}.mp3", proposed_filename=f"Done {i}.mp3") for i in range(2)]
+    review_tokens = [_review_token(pending), *[_review_token(p) for p in done]]
     for proposal in done:
         await session.execute(update(RenameProposal).where(RenameProposal.id == proposal.id).values(status=ProposalStatus.EXECUTED.value))
     await session.commit()
@@ -306,7 +305,7 @@ async def test_terminal_rows_in_the_selection_are_skipped_and_the_count_is_hones
     body = (
         await client.patch(
             "/proposals/bulk?status=all",
-            data={"action": "approve", "proposal_ids": [str(pending.id), *[str(p.id) for p in done]]},
+            data={"action": "approve_eligible", "review_tokens": review_tokens},
             headers=_BULK_TARGET,
         )
     ).text
@@ -321,78 +320,19 @@ async def test_terminal_rows_in_the_selection_are_skipped_and_the_count_is_hones
 
 
 @pytest.mark.asyncio
-async def test_terminal_rows_render_a_disabled_checkbox(
-    client: AsyncClient,
-    session: AsyncSession,
-    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
-) -> None:
-    """The affordance agrees with the guard: a row that cannot transition cannot be ticked.
-
-    Both sides derive from the SAME ``APPROVE_REJECT_FROM``, which is why they cannot drift. This is
-    a UI courtesy on top of the server guard, never a replacement for it -- the previous test proves
-    the server still skips a terminal row that reaches it anyway.
-    """
-    executed = await seed_pending_proposal(0.9, original_filename="locked.mp3", proposed_filename="Locked.mp3")
-    await session.execute(update(RenameProposal).where(RenameProposal.id == executed.id).values(status=ProposalStatus.EXECUTED.value))
-    await session.commit()
-
-    body = (await client.get("/s/propose?status=all", headers=_BULK_TARGET)).text
-
-    assert _is_locked(_checkbox_for(body, executed)), "an already-actioned row must not offer a selectable checkbox"
-
-
-@pytest.mark.asyncio
-async def test_pending_rows_render_an_enabled_checkbox(
+async def test_generate_all_remains_distinct_from_review_decisions(
     client: AsyncClient,
     seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
 ) -> None:
-    """The converse of the above -- the guard must not disable everything and call it safe."""
-    proposal = await seed_pending_proposal(0.9, original_filename="open.mp3", proposed_filename="Open.mp3")
-
-    body = (await client.get("/s/propose", headers=_BULK_TARGET)).text
-
-    assert not _is_locked(_checkbox_for(body, proposal)), "a pending row must be selectable"
-
-
-# ---------------------------------------------------------------------------
-# Acceptance 5 -- hx-confirm, and the GENERATE-ALL / APPROVE distinction
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_bulk_controls_carry_hx_confirm_naming_the_operation(
-    client: AsyncClient,
-    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
-) -> None:
-    """Both state-changing bulk controls confirm, and each confirm says WHICH operation it is."""
-    await seed_pending_proposal(0.9, original_filename="confirm.mp3", proposed_filename="Confirm.mp3")
-    body = (await client.get("/s/propose")).text
-
-    assert 'hx-confirm="Approve the selected proposals?' in body
-    assert 'hx-confirm="Reject the selected proposals?' in body
-
-
-@pytest.mark.asyncio
-async def test_approve_and_generate_all_remain_distinguishable(
-    client: AsyncClient,
-    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
-) -> None:
-    """The two bulk triggers on this page must not be readable as each other.
-
-    GENERATE ALL creates proposals over the whole pending CORPUS and enqueues litellm jobs;
-    approve/reject decides on proposals that already exist, over exactly the selection. The v7
-    cutover blurred this distinction and beads .2/.9 already fixed GENERATE ALL's confirm to quote
-    the corpus rather than the filtered page -- so this asserts BOTH that the generate confirm still
-    names its enqueue scope and that the approve confirm does not borrow its "all" phrasing.
-    """
+    """Generate remains a corpus-wide enqueue while decisions route to Review."""
     await seed_pending_proposal(0.9, original_filename="distinct.mp3", proposed_filename="Distinct.mp3")
     body = (await client.get("/s/propose")).text
 
     assert "litellm jobs" in body, "GENERATE ALL's confirm must still name the enqueue it performs"
     assert "pending files?" in body, "GENERATE ALL's confirm must still quote the corpus-wide pending set"
-    approve_confirm = body.split('hx-confirm="Approve the selected proposals?')[1].split('"')[0]
-    assert "all" not in approve_confirm.lower(), "the approve confirm must not claim a corpus-wide scope"
-    assert "litellm" not in approve_confirm, "approving proposals enqueues nothing"
+    assert 'hx-post="/pipeline/proposals"' in body
+    assert 'hx-patch="/proposals/bulk' not in body
+    assert 'href="/s/rename"' in body
 
 
 # ---------------------------------------------------------------------------
@@ -414,7 +354,7 @@ async def test_replaying_the_same_bulk_submission_is_an_honest_no_op(
     window but is explicitly not what this test depends on -- it bypasses the browser entirely.
     """
     proposals = [await seed_pending_proposal(0.9, original_filename=f"twice-{i}.mp3", proposed_filename=f"Twice {i}.mp3") for i in range(2)]
-    payload = {"action": "approve", "proposal_ids": [str(p.id) for p in proposals]}
+    payload = {"action": "approve_eligible", "review_tokens": [_review_token(p) for p in proposals]}
 
     first = (await client.patch("/proposals/bulk", data=payload, headers=_BULK_TARGET)).text
     second = (await client.patch("/proposals/bulk", data=payload, headers=_BULK_TARGET)).text
@@ -450,7 +390,7 @@ async def test_bulk_action_ignores_hx_target_and_always_returns_the_propose_body
     body = (
         await client.patch(
             "/proposals/bulk",
-            data={"action": "approve", "proposal_ids": [str(acted.id)]},
+            data={"action": "approve_eligible", "review_tokens": [_review_token(acted)]},
             headers={"HX-Request": "true", "HX-Target": "proposal-list-container"},
         )
     ).text

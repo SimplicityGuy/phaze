@@ -1,0 +1,11 @@
+{% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% set subcount = "'" ~ changes_stats.needs_review ~ " awaiting approval · filename + destination · " ~ (changes_tag_rows | length) ~ ("+" if changes_tag_partial else "") ~ " tag decisions'" %}
+{% call ws.workspace(title="Changes Review", subcount=subcount) %}
+    <div class="px-4 pt-4 sm:px-6">
+        <div class="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+            <p class="font-semibold">Approval boundary</p>
+            <p class="mt-1">Filename and destination are one atomic proposal approval. Tags are a separate, reversible write after execution; approving a proposal never authorizes tags.</p>
+        </div>
+    </div>
+    {% include "pipeline/partials/_changes_list.html" %}
+{% endcall %}

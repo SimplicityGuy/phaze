@@ -108,8 +108,8 @@ def test_no_control_is_nested_inside_its_own_swap_target() -> None:
 # The same cutover left `#stats-header` orphaned in the dedupe responses (phaze-nt8f) and
 # `#duplicates-list` referenced by a partial nobody mounted.
 #
-# The reachable set is deliberately the SHELL closure -- shell.html plus every STAGE_PARTIALS value
-# plus their include/import/extends transitive closure -- not "every template on disk". That
+# The reachable set is deliberately the SHELL closure -- shell.html plus every STAGE_PARTIALS and
+# UTILITY_PANES value plus their include/import/extends transitive closure -- not "every template on disk". That
 # distinction IS the guard: `#stats-bar` was declared, by the very OOB wrapper that targeted it and
 # by the partial inside it, so any check that accepted providers from anywhere on disk would have
 # called the dead chain healthy. Only "an id the mounted document contains" is a meaningful target.
@@ -177,14 +177,14 @@ def _normalise(candidate: str) -> str:
 
 
 def _shell_closure() -> set[str]:
-    """Templates that can appear in a document the shell serves: shell.html + every stage partial."""
+    """Templates that can appear in a document the shell serves: shell plus stage and utility panes."""
     from jinja2 import Environment, meta
 
-    from phaze.routers.shell import STAGE_PARTIALS
+    from phaze.routers.shell import STAGE_PARTIALS, UTILITY_PANES
 
     env = Environment(autoescape=True)
     reachable: set[str] = set()
-    frontier = {_SHELL_ROOT, *STAGE_PARTIALS.values()}
+    frontier = {_SHELL_ROOT, *STAGE_PARTIALS.values(), *UTILITY_PANES.values()}
     while frontier:
         current = frontier.pop()
         if current in reachable:
@@ -201,10 +201,19 @@ def _shell_closure() -> set[str]:
 # {% with row_id_prefix="move-row", ... %}. These are how the shell parameterises the handful of
 # templates that build an id out of a variable (_diff_row.html's `{{ row_id_prefix }}-{{ pid }}`,
 # _file_table.html's `{{ table_id }}`), so they are what those ids ACTUALLY render as.
+_JINJA_TAG = re.compile(r"{%.*?%}", re.DOTALL)
 _JINJA_LITERAL = re.compile(r"""(\w+)\s*=\s*["']([A-Za-z][\w-]*)["']""")
+_PERSISTENT_OOB_INCLUDE = re.compile(r"""{%\s*with\s+[^%]*\boob\s*=\s*false[^%]*%}\s*{%\s*include\s+["']([^"']+)["']\s*%}""")
 
 
-def _shell_id_stems(templates: set[str]) -> set[str]:
+def _template_source(name: str, source_overrides: dict[str, str] | None = None) -> str:
+    """Read one template, allowing mutation tests to replace a shell host in memory."""
+    if source_overrides is not None and name in source_overrides:
+        return source_overrides[name]
+    return (_TEMPLATES / name).read_text()
+
+
+def _shell_id_stems(templates: set[str], source_overrides: dict[str, str] | None = None) -> set[str]:
     """Literal id stems the shell passes into its parameterised partials.
 
     Without these, a provider spelled entirely in Jinja normalises to a bare ``*`` and would match
@@ -216,16 +225,19 @@ def _shell_id_stems(templates: set[str]) -> set[str]:
     for name in templates:
         path = _TEMPLATES / name
         if path.is_file():
-            stems |= {value for _, value in _JINJA_LITERAL.findall(path.read_text())}
+            source = _template_source(name, source_overrides)
+            stems |= {value for tag in _JINJA_TAG.findall(source) for _, value in _JINJA_LITERAL.findall(tag)}
     # Spelled in Python, not markup: the propose workspace's container id is injected by
     # routers/shell.py so the router's HX-Target comparison and the element cannot drift.
     from phaze.routers.shell import PROPOSE_LIST_CONTAINER_ID
 
     stems.add(PROPOSE_LIST_CONTAINER_ID)
+    # Passed positionally by _workspace_scaffold.html into ui.page_header's parameterised id.
+    stems.add("stage-workspace-subcount")
     return stems
 
 
-def _provider_ids(templates: set[str]) -> set[str]:
+def _provider_ids(templates: set[str], source_overrides: dict[str, str] | None = None) -> set[str]:
     """Ids DECLARED by those templates -- excluding ids that only appear on an OOB wrapper.
 
     The exclusion is the crux. ``<div id="stats-bar" hx-swap-oob="true">`` does not CREATE
@@ -236,14 +248,19 @@ def _provider_ids(templates: set[str]) -> set[str]:
     (:func:`_shell_id_stems`) and then DROPPED if nothing literal survives -- an id shape with no
     literal characters is not evidence that any particular id exists.
     """
-    stems = _shell_id_stems(templates)
+    stems = _shell_id_stems(templates, source_overrides)
+    persistent_oob_templates = {
+        included for name in templates for included in _PERSISTENT_OOB_INCLUDE.findall(_template_source(name, source_overrides))
+    }
     ids: set[str] = set()
     for name in templates:
         path = _TEMPLATES / name
         if not path.is_file():
             continue
-        for el in BeautifulSoup(path.read_text(), "html.parser").find_all(attrs={"id": True}):
-            if not isinstance(el, Tag) or el.has_attr("hx-swap-oob"):
+        for el in BeautifulSoup(_template_source(name, source_overrides), "html.parser").find_all(attrs={"id": True}):
+            if not isinstance(el, Tag):
+                continue
+            if el.has_attr("hx-swap-oob") and (not el.has_attr("{%") or name not in persistent_oob_templates):
                 continue
             raw = el.get("id")
             if not isinstance(raw, str):
@@ -282,10 +299,20 @@ def test_every_oob_fragment_targets_an_id_the_shell_renders() -> None:
     fragment checked here is emitted by a route response, i.e. by markup that never appears in the
     document itself, which is why no render test covers it.
     """
-    providers = _provider_ids(_shell_closure())
+    violations = _oob_violations()
+    assert not violations, (
+        "OOB fragment(s) addressed at ids no shell-reachable template declares -- htmx discards these "
+        "with htmx:oobErrorNoTarget:\n  " + "\n  ".join(sorted(violations))
+    )
+
+
+def _oob_violations(source_overrides: dict[str, str] | None = None) -> list[str]:
+    """Return response OOB targets that have no independently rendered persistent provider."""
+    providers = _provider_ids(_shell_closure(), source_overrides)
     violations: list[str] = []
     for path in _templates():
-        for el in BeautifulSoup(path.read_text(), "html.parser").find_all(attrs={"hx-swap-oob": True}):
+        name = path.relative_to(_TEMPLATES).as_posix()
+        for el in BeautifulSoup(_template_source(name, source_overrides), "html.parser").find_all(attrs={"hx-swap-oob": True}):
             if not isinstance(el, Tag):
                 continue
             target = _oob_target(el)
@@ -293,11 +320,24 @@ def test_every_oob_fragment_targets_an_id_the_shell_renders() -> None:
                 continue
             normalised = _normalise(target)
             if not _resolves(normalised, providers):
-                violations.append(f'{path.relative_to(_TEMPLATES).as_posix()}: hx-swap-oob -> "#{target}"')
-    assert not violations, (
-        "OOB fragment(s) addressed at ids no shell-reachable template declares -- htmx discards these "
-        "with htmx:oobErrorNoTarget:\n  " + "\n  ".join(sorted(violations))
+                violations.append(f'{name}: hx-swap-oob -> "#{target}"')
+    return violations
+
+
+def test_response_only_conditional_oob_fragment_cannot_provide_its_own_target() -> None:
+    """Removing either persistent routing host must expose its still-emitted OOB response."""
+    cases = (
+        ("shell/partials/header.html", "shell/partials/_routing_override_warning.html", "routing-override-warning"),
+        ("shell/partials/operations.html", "shell/partials/_routing_operations_warning.html", "routing-operations-warning"),
     )
+    for host_template, fragment_template, target in cases:
+        source = _template_source(host_template)
+        host = f'{{% with oob=false %}}{{% include "{fragment_template}" %}}{{% endwith %}}'
+        assert host in source
+
+        violations = _oob_violations({host_template: source.replace(host, "")})
+
+        assert f'{fragment_template}: hx-swap-oob -> "#{target}"' in violations
 
 
 def test_every_shell_control_targets_an_id_the_shell_renders() -> None:

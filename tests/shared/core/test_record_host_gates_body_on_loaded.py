@@ -5,7 +5,7 @@ the Alpine ``record:open`` dispatch. That dispatch always wins the race against 
 ``GET /record/{id}`` fetch (``hx-target="#record-body"``), and ``hide()`` never emptied the swap
 target -- so between ``open = true`` and the fetch landing, the panel displayed whatever the
 PREVIOUS open left in ``#record-body``: the old file's heading, its per-stage force-skip
-dialogs, and its "Pending approvals for this file" box with live, clickable
+dialogs, and its "Changes needing review for this file" box with live, clickable
 ``approve_url``/``skip_url`` buttons wired to the OLD file's proposal ids.
 
 The fix gates ``#record-body`` on a ``loaded`` flag: ``show()`` resets it to ``false`` (showing a

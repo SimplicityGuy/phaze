@@ -7,18 +7,17 @@ rail swap -- the fork decided by ``response_shape.wants_fragment`` (contract rul
 the same predicate ``admin_agents.page`` (``routers/admin_agents.py``) composes.
 
 Stage resolution is a strict whitelist across TWO static maps: ``STAGE_PARTIALS`` for the DAG
-pipeline rail nodes (D-01), and its sibling ``UTILITY_PANES`` (phaze-uvmcr.1) for the two
-below-the-line utility panes -- Audit Log and Compute/Agents -- that are NOT DAG stages and so
+pipeline rail nodes (D-01), and its sibling ``UTILITY_PANES`` for Operations, Audit Log, and
+Agents & Compute Lanes -- workspaces that are NOT DAG stages and so
 are kept out of ``STAGE_PARTIALS``, whose own docstring pins its key set AND order verbatim to
 the 57-UI-SPEC "DAG Rail" table. ``stage`` is NEVER interpolated into a template path -- the
 partial name always comes from one of these two static dicts, closing the
 template-path-injection surface (T-57-01 / ASVS V5). An unknown stage (in neither map) 404s
 (D-02).
 
-``GET /`` renders the Summary landing placeholder (quick 260707-sq3) -- a static, DB-free
-stage reserving the landing slot for a future at-a-glance overview. Analyze is one rail click
-away at ``/s/analyze``, where it still embeds the existing pipeline-dashboard content; its
-context is built by the shared ``build_dashboard_context`` factored out of
+``GET /`` renders the actionable Summary overview. Analyze is one rail click away at
+``/s/analyze``, where it still embeds the existing pipeline-dashboard content; its context is
+built by the shared ``build_dashboard_context`` factored out of
 ``pipeline.dashboard()`` so the two paths cannot drift (D-01 / RESEARCH Open-Q2). The
 remaining nodes render a minimal placeholder in Phase 57 -- their rich workspaces (and live
 content bridges) land with their workspaces in Phases 58-61.
@@ -26,8 +25,11 @@ content bridges) land with their workspaces in Phases 58-61.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlencode
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -36,9 +38,9 @@ from sqlalchemy import func, select
 
 from phaze.config import settings
 from phaze.database import get_session
+from phaze.enums.stage import Stage, Status
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
-from phaze.models.proposal import APPROVE_REJECT_FROM
 from phaze.routers.admin_agents import build_agents_pane_context
 from phaze.routers.execution import build_audit_log_context
 from phaze.routers.pipeline import FILES_SORT
@@ -46,23 +48,42 @@ from phaze.routers.pipeline_scans import RECENT_SCANS_SORT, build_recent_scans
 from phaze.routers.proposal_sort import PROPOSE_SORT
 from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_fragment
 from phaze.routers.view_state import PAGE_SIZE_CHOICES, ListViewState
+from phaze.services.backends import derive_cloud_hold_reason, get_analysis_activity_counts, get_analysis_live_count
+from phaze.services.dedup import count_duplicate_groups
+from phaze.services.execution_preflight import get_execution_preflight
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, clamp_page, clamp_page_size
 from phaze.services.pipeline import (
+    ORPHANED_BUCKET,
+    _read_in_own_session,
+    _stats_fanout,
     analyze_lanes_content_hash,
     count_proposal_pending_files,
+    get_analysis_stalled_count,
+    get_awaiting_cloud_count,
+    get_cached_stage_orphan_counts,
+    get_cloud_phase_counts,
     get_files_page,
+    get_inadmissible_count,
     get_match_pending_tracklists,
+    get_metadata_activity_summary,
+    get_metadata_selection_summary,
+    get_metadata_status_snapshot,
+    get_stage_activity_snapshot,
+    get_stage_controls,
     get_stage_progress,
 )
-from phaze.services.proposal_queries import get_proposal_stats
+from phaze.services.proposal_queries import ProposalStats, get_proposal_stats
 from phaze.services.review import (
+    ChangesReviewStats,
+    count_cue_review_candidates,
+    get_changes_review_page,
     get_cue_review_cards,
     get_dedupe_groups,
-    get_pending_proposal_rows,
     get_proposal_workspace_page,
     get_tagwrite_review_page,
 )
 from phaze.services.route_control import get_route_control
+from phaze.services.stage_status import done_clause
 from phaze.utils.humanize import relative_time
 from phaze.web.static import static_asset_url
 
@@ -94,11 +115,9 @@ router = APIRouter(tags=["shell"])
 # (T-57-01 -- template-path-injection mitigation). The literals also act as the
 # dead-template guard's entry roots, so each stays reachable.
 STAGE_PARTIALS: dict[str, str] = {
-    # Quick 260707-sq3 (SQ3-01): the `/` landing placeholder. FIRST key so the dict order matches
-    # the rail order. A STATIC string literal (T-57-01: `stage` is never spliced into a template
-    # path) that also acts as the dead-template guard's entry root. The stage has NO DB-backed
-    # context -- `_render_stage` deliberately gives it no branch (zero reads, zero extra keys).
-    "summary": "shell/partials/summary_placeholder.html",
+    # The actionable collection/pipeline overview. FIRST key so the dict order matches the rail.
+    # The static literal preserves the T-57-01 template-path-injection boundary.
+    "summary": "shell/partials/summary_overview.html",
     # Phase 87 (87-09, UI-01/UI-02): the derived per-file stage-matrix files page -- the scannable
     # "where's this file at?" overview -- surfaced as a first-class, reachable rail workspace. Its
     # backing route GET /pipeline/files (pipeline.py) rendered this same partial but was UNREACHABLE
@@ -137,12 +156,14 @@ STAGE_PARTIALS: dict[str, str] = {
     # (the ONE shared _diff_row.html over pending RenameProposal rows -- filename facet vs proposed_path
     # facet, D-06) supersede the placeholders -- STATIC string literals (T-57-01: `stage` is never
     # spliced into a template path). Supersede-in-place; the legacy templates stay reachable until CUT-02.
-    "rename": "pipeline/partials/rename_workspace.html",
+    "rename": "pipeline/partials/changes_workspace.html",
     # Phase 60 (60-03, REVIEW-01/REVIEW-02): the real Tag-write review workspace (the shared _diff_row.html
     # over the computed tag comparison -- APPROVE POSTs /tags/{id}/write, bulk POSTs the D-03 server-predicate
     # /tags/bulk-write-no-discrepancies) supersedes the placeholder -- a STATIC string literal (T-57-01).
-    "tagwrite": "pipeline/partials/tagwrite_workspace.html",
-    "move": "pipeline/partials/move_workspace.html",
+    # Compatibility aliases render the canonical workspace. They are intentionally absent from the
+    # rail, so there is one approval path without breaking old bookmarks.
+    "tagwrite": "pipeline/partials/changes_workspace.html",
+    "move": "pipeline/partials/changes_workspace.html",
     # Phase 60 (60-04, REVIEW-03/REVIEW-05): the real Dedupe keeper-select workspace (duplicate-group
     # cards + a keeper radio wired to the VERIFIED /duplicates/{sha256_hash}/resolve contract + page-scoped
     # AUTO-KEEP + the file_states undo round-trip) supersedes the placeholder -- a STATIC string literal
@@ -165,8 +186,8 @@ STAGE_PARTIALS: dict[str, str] = {
 }
 
 
-# phaze-uvmcr.1: rail-node id -> bridged content partial for the two BELOW-THE-LINE utility
-# panes (Audit Log, Compute/Agents) -- the sibling of STAGE_PARTIALS above, deliberately kept
+# Rail-node id -> content partial for the Operations workspaces -- the sibling of
+# STAGE_PARTIALS above, deliberately kept
 # SEPARATE from it rather than folded in. STAGE_PARTIALS' own comment pins its key set AND
 # order VERBATIM to the 57-UI-SPEC "DAG Rail" table; Audit and Agents are not DAG pipeline
 # stages -- they sit below the rail's border-t divider, carry no pipeline count/badge and never
@@ -194,8 +215,28 @@ STAGE_PARTIALS: dict[str, str] = {
 # bead -- shared so the shell-hosted pane and the (now-redirecting) legacy route can never diverge
 # on what a render of this content needs. See the ``elif stage == "agents"`` branch below.
 UTILITY_PANES: dict[str, str] = {
+    "operations": "shell/partials/operations.html",
     "audit": "execution/audit_log.html",
     "agents": "admin/agents.html",
+}
+
+DOCUMENT_TITLES: dict[str, str] = {
+    "summary": "Summary",
+    "files": "Files",
+    "discover": "Discover",
+    "metadata": "Metadata",
+    "analyze": "Analyze",
+    "tracklist": "Tracklists",
+    "propose": "Propose changes",
+    "rename": "Changes Review",
+    "tagwrite": "Changes Review",
+    "move": "Changes Review",
+    "dedupe": "Duplicates",
+    "cue": "Cue sheets",
+    "apply": "Execute approved",
+    "operations": "Routing operations",
+    "audit": "Audit log",
+    "agents": "Agents and compute lanes",
 }
 
 
@@ -250,6 +291,7 @@ _EMPTY_STATE_PARTIAL = "pipeline/partials/empty_state.html"
 # 5. No OOB fragment targets it: this container is only ever an hx-target, and oob_counts stays False
 #    on every stage render (Pitfall 5), so the chrome poll's OOB seeds cannot land here.
 PROPOSE_LIST_CONTAINER_ID = "propose-workspace-list"
+CHANGES_LIST_CONTAINER_ID = "changes-workspace-list"
 
 
 async def _analyze_file_count(session: AsyncSession) -> int:
@@ -274,6 +316,364 @@ async def _analyze_file_count(session: AsyncSession) -> int:
     except Exception:
         return 1
     return int(result.scalar() or 0)
+
+
+def _summary_stage_status(stage: dict[str, int | None]) -> dict[str, str | bool]:
+    """Map an authoritative stage-progress bucket to the shared status vocabulary."""
+    total = int(stage.get("total") or 0)
+    done = int(stage.get("done") or 0)
+    skipped = int(stage.get("skipped") or 0)
+    failed = int(stage.get("failed") or 0)
+    in_flight = int(stage.get("in_flight") or 0)
+    if failed:
+        return {"label": "failed", "tone": "danger", "icon": "✕", "pulse": False}
+    if in_flight:
+        return {"label": "in flight", "tone": "accent", "icon": "●", "pulse": True}
+    if total and done + skipped >= total:
+        return {"label": "complete", "tone": "success", "icon": "✓", "pulse": False}
+    if total:
+        return {"label": "not started", "tone": "neutral", "icon": "—", "pulse": False}
+    return {"label": "empty", "tone": "neutral", "icon": "—", "pulse": False}
+
+
+def _derive_summary_overview(
+    stage_progress: dict[str, dict[str, int | None]],
+    *,
+    proposal_pending: int,
+    proposal_approved: int,
+    active_fileservers: int | None,
+    orphan_counts: dict[str, int],
+    stalled_analyses: int,
+    inadmissible_count: int,
+    awaiting_cloud_count: int,
+    awaiting_hold_reason: str | None,
+    queued_behind_quota_count: int,
+    stage_paused: dict[str, bool],
+    enriched_count: int | None,
+    analysis_live: int | None,
+    analyses_today: int | None,
+    analyses_lifetime: int | None,
+) -> dict[str, Any]:
+    """Derive display-only overview state without introducing new pipeline semantics."""
+    discovery = stage_progress["discovery"]
+    metadata = stage_progress["metadata"]
+    analyze = stage_progress["analyze"]
+    proposals = stage_progress["proposals"]
+    execute = stage_progress["execute"]
+    total_files = int(discovery["done"] or 0)
+
+    flow = [
+        {"name": "Discover", "href": "/s/discover", "done": total_files, "total": total_files, "status": _summary_stage_status(discovery)},
+        {
+            "name": "Metadata",
+            "href": "/s/metadata",
+            "done": int(metadata["done"] or 0),
+            "total": int(metadata["total"] or 0),
+            "status": _summary_stage_status(metadata),
+        },
+        {
+            "name": "Analyze",
+            "href": "/s/analyze",
+            "done": int(analyze["done"] or 0),
+            "total": int(analyze["total"] or 0),
+            "status": _summary_stage_status(analyze),
+        },
+        {
+            "name": "Propose",
+            "href": "/s/propose",
+            "done": int(proposals["done"] or 0),
+            "total": int(proposals["total"] or 0),
+            "status": _summary_stage_status(proposals),
+        },
+        {
+            "name": "Review",
+            "href": "/s/rename",
+            "done": None,
+            "total": proposal_pending,
+            "detail": f"{proposal_pending} awaiting decision",
+            "status": (
+                {"label": "attention", "tone": "attention", "icon": "!", "pulse": False}
+                if proposal_pending
+                else {"label": "caught up", "tone": "success", "icon": "✓", "pulse": False}
+            ),
+        },
+        {
+            "name": "Apply",
+            "href": "/s/apply",
+            "done": int(execute["done"] or 0),
+            "total": proposal_approved,
+            "detail": f"{proposal_approved} approved now",
+            "status": (
+                {"label": "ready", "tone": "attention", "icon": "!", "pulse": False}
+                if proposal_approved
+                else {"label": "caught up", "tone": "success", "icon": "✓", "pulse": False}
+            ),
+        },
+    ]
+
+    attention: list[dict[str, str | int]] = []
+
+    def add_attention(priority: int, title: str, detail: str, href: str, action: str, tone: str = "attention") -> None:
+        attention.append({"priority": priority, "title": title, "detail": detail, "href": href, "action": action, "tone": tone})
+
+    metadata_failed = int(metadata.get("failed") or 0)
+    analyze_failed = int(analyze.get("failed") or 0)
+    if metadata_failed:
+        add_attention(10, "Metadata failures", f"{metadata_failed} file(s) need inspection or retry.", "/s/metadata", "Open Metadata", "danger")
+    if analyze_failed:
+        stalled_detail = f"; {stalled_analyses} stopped by the progress watchdog" if stalled_analyses else ""
+        add_attention(
+            11, "Analysis failures", f"{analyze_failed} file(s) reached terminal failure{stalled_detail}.", "/s/analyze", "Open Analyze", "danger"
+        )
+    orphan_total = int(orphan_counts.get("metadata", 0)) + int(orphan_counts.get("analyze", 0))
+    if orphan_total:
+        add_attention(
+            20,
+            "Orphaned work",
+            f"{orphan_total} scheduled file(s) have no live job or domain result.",
+            "/s/discover",
+            "Open Recovery",
+        )
+    if inadmissible_count:
+        add_attention(
+            30, "Cloud jobs blocked by configuration", f"{inadmissible_count} active cloud job(s) are Inadmissible.", "/s/agents", "Inspect Compute"
+        )
+    if awaiting_cloud_count:
+        hold_reason = awaiting_hold_reason or "reason unavailable"
+        if hold_reason in {"cloud routing disabled", "held — cloud routing paused (force-local)"}:
+            awaiting_href, awaiting_action = "/s/operations", "Open Routing"
+        elif hold_reason in {
+            "held — no cloud backend reachable",
+            "held — no fileserver agent online",
+        } or hold_reason.startswith("held — all lanes at capacity"):
+            awaiting_href, awaiting_action = "/s/agents", "Inspect Compute"
+        else:
+            awaiting_href, awaiting_action = "/s/analyze", "Open Analyze"
+        add_attention(
+            40,
+            "Files awaiting cloud routing",
+            f"{awaiting_cloud_count} file(s): {hold_reason}.",
+            awaiting_href,
+            awaiting_action,
+        )
+    if queued_behind_quota_count:
+        add_attention(
+            41,
+            "Cloud quota wait",
+            f"{queued_behind_quota_count} submitted cloud job(s) are waiting for cluster quota.",
+            "/s/agents",
+            "Inspect Compute",
+        )
+    for priority, stage_name, stage_label, stage_bucket in (
+        (45, "metadata", "Metadata enrichment", metadata),
+        (46, "analyze", "Audio analysis", analyze),
+    ):
+        if stage_paused[stage_name] and (int(stage_bucket.get("not_started") or 0) or int(stage_bucket.get("in_flight") or 0)):
+            add_attention(
+                priority,
+                f"{stage_label} is paused",
+                f"{int(stage_bucket.get('not_started') or 0)} not started; {int(stage_bucket.get('in_flight') or 0)} still marked in flight.",
+                f"/s/{stage_name}",
+                f"Open {stage_label}",
+            )
+    if active_fileservers == 0:
+        add_attention(
+            50,
+            "No file-server agent available",
+            "Discovery and file-owned work cannot be dispatched until an agent checks in.",
+            "/s/agents",
+            "Configure Agents",
+        )
+    attention.sort(key=lambda item: int(item["priority"]))
+
+    if attention:
+        first = attention[0]
+        recommended = {"title": first["title"], "detail": first["detail"], "href": first["href"], "action": first["action"], "tone": first["tone"]}
+    elif total_files == 0:
+        recommended = {
+            "title": "Discover the collection",
+            "detail": "Run a scan from a configured file-server agent to populate the collection.",
+            "href": "/s/discover",
+            "action": "Open Discover",
+            "tone": "accent",
+        }
+    elif int(metadata.get("not_started") or 0) and not stage_paused["metadata"] and not int(metadata.get("in_flight") or 0):
+        recommended = {
+            "title": "Start metadata enrichment",
+            "detail": "Metadata and analysis are independent and can run in parallel.",
+            "href": "/s/metadata",
+            "action": "Open Metadata",
+            "tone": "accent",
+        }
+    elif int(analyze.get("not_started") or 0) and not stage_paused["analyze"] and not int(analyze.get("in_flight") or 0):
+        recommended = {
+            "title": "Start audio analysis",
+            "detail": "Analysis can run independently of metadata enrichment.",
+            "href": "/s/analyze",
+            "action": "Open Analyze",
+            "tone": "accent",
+        }
+    elif stage_paused["metadata"] and (int(metadata.get("not_started") or 0) or int(metadata.get("in_flight") or 0)):
+        recommended = {
+            "title": "Metadata enrichment is paused",
+            "detail": "Review the pause before resuming metadata work.",
+            "href": "/s/metadata",
+            "action": "Open Metadata",
+            "tone": "attention",
+        }
+    elif stage_paused["analyze"] and (int(analyze.get("not_started") or 0) or int(analyze.get("in_flight") or 0)):
+        recommended = {
+            "title": "Audio analysis is paused",
+            "detail": "Review the pause before resuming analysis work.",
+            "href": "/s/analyze",
+            "action": "Open Analyze",
+            "tone": "attention",
+        }
+    elif int(metadata.get("in_flight") or 0) or int(analyze.get("in_flight") or 0):
+        active_stage = "metadata" if int(metadata.get("in_flight") or 0) else "analyze"
+        recommended = {
+            "title": "Enrichment is in progress",
+            "detail": "Current work is already running; monitor it before starting the next dependent stage.",
+            "href": f"/s/{active_stage}",
+            "action": f"Open {active_stage.title()}",
+            "tone": "accent",
+        }
+    elif int(proposals["done"] or 0) < int(proposals["total"] or 0):
+        recommended = {
+            "title": "Generate proposals",
+            "detail": "Files with completed metadata and analysis are ready for proposal generation.",
+            "href": "/s/propose",
+            "action": "Open Propose",
+            "tone": "accent",
+        }
+    elif proposal_pending:
+        recommended = {
+            "title": "Review proposed changes",
+            "detail": f"{proposal_pending} proposal(s) await an operator decision.",
+            "href": "/s/rename",
+            "action": "Open Review",
+            "tone": "attention",
+        }
+    elif proposal_approved:
+        recommended = {
+            "title": "Execute approved changes",
+            "detail": f"{proposal_approved} approved proposal(s) are ready to apply.",
+            "href": "/s/apply",
+            "action": "Open Apply",
+            "tone": "attention",
+        }
+    else:
+        recommended = {
+            "title": "Pipeline caught up",
+            "detail": "No failures, recovery candidates, pending reviews, or approved changes need action.",
+            "href": "/s/files",
+            "action": "Browse Files",
+            "tone": "success",
+        }
+
+    return {
+        "total_files": total_files,
+        "resolved_enrichment": enriched_count,
+        "proposal_pending": proposal_pending,
+        "proposal_approved": proposal_approved,
+        "flow": flow,
+        "attention": attention,
+        "recommended": recommended,
+        "recent": {
+            "live": analysis_live,
+            "today": analyses_today,
+            "lifetime": analyses_lifetime,
+        },
+        "is_empty": total_files == 0,
+        "is_partially_configured": active_fileservers == 0,
+        "is_degraded": bool(metadata_failed or analyze_failed or orphan_total or inadmissible_count or awaiting_cloud_count),
+    }
+
+
+async def _get_summary_aggregates(session: AsyncSession) -> dict[str, int | None]:
+    """Read the enriched-file intersection and active file-server count in one statement."""
+    enriched = select(func.count(FileRecord.id)).where(done_clause(Stage.METADATA), done_clause(Stage.ANALYZE)).scalar_subquery()
+    active_fileservers = (
+        select(func.count(Agent.id)).where(Agent.kind == "fileserver", Agent.revoked_at.is_(None), Agent.last_seen_at.is_not(None)).scalar_subquery()
+    )
+    try:
+        async with session.begin_nested():
+            row = (await session.execute(select(enriched, active_fileservers))).one()
+    except Exception:
+        return {"enriched": None, "active_fileservers": None}
+    return {
+        "enriched": int(row[0] or 0),
+        "active_fileservers": int(row[1] or 0),
+    }
+
+
+async def _build_summary_context(app_state: Any, session: AsyncSession) -> dict[str, Any]:
+    """Read independent Summary sources in own sessions under the shared stats fan-out cap."""
+    fanout = _stats_fanout()
+    (
+        stage_progress,
+        proposal_stats,
+        stalled_analyses,
+        inadmissible_count,
+        awaiting_cloud_count,
+        cloud_phases,
+        stage_controls,
+        aggregates,
+        analysis_live,
+        analysis_activity,
+    ) = cast(
+        "tuple[dict[str, dict[str, int | None]], ProposalStats, int, int, int, dict[str, int], dict[str, dict[str, int | bool]], dict[str, int | None], int | None, dict[str, int | None]]",
+        await asyncio.gather(
+            # get_stage_progress already owns its bounded per-node sessions; wrapping it would hold
+            # a semaphore slot while its children wait for that same semaphore.
+            get_stage_progress(session),
+            _read_in_own_session(fanout, get_proposal_stats, ProposalStats(total=0, pending=0, approved=0, rejected=0, avg_confidence=None)),
+            _read_in_own_session(fanout, get_analysis_stalled_count, 0),
+            _read_in_own_session(fanout, get_inadmissible_count, 0),
+            _read_in_own_session(fanout, get_awaiting_cloud_count, 0),
+            _read_in_own_session(
+                fanout,
+                get_cloud_phase_counts,
+                {"queued_behind_quota": 0, "admitted": 0, "running": 0, "finished": 0},
+            ),
+            _read_in_own_session(
+                fanout,
+                get_stage_controls,
+                {"metadata": {"paused": False, "priority": 50}, "analyze": {"paused": False, "priority": 50}},
+            ),
+            _read_in_own_session(
+                fanout,
+                _get_summary_aggregates,
+                cast("dict[str, int | None]", {"enriched": None, "active_fileservers": None}),
+            ),
+            _read_in_own_session(fanout, lambda own_session: get_analysis_live_count(own_session, app_state), None),
+            _read_in_own_session(
+                fanout,
+                get_analysis_activity_counts,
+                cast("dict[str, int | None]", {"today": None, "lifetime": None}),
+            ),
+        ),
+    )
+    awaiting_hold_reason = await _read_in_own_session(fanout, derive_cloud_hold_reason, "held") if awaiting_cloud_count else None
+    return {
+        "summary": _derive_summary_overview(
+            stage_progress,
+            proposal_pending=proposal_stats.pending,
+            proposal_approved=proposal_stats.approved,
+            active_fileservers=aggregates["active_fileservers"],
+            orphan_counts=get_cached_stage_orphan_counts(),
+            stalled_analyses=stalled_analyses,
+            inadmissible_count=inadmissible_count,
+            awaiting_cloud_count=awaiting_cloud_count,
+            awaiting_hold_reason=awaiting_hold_reason,
+            queued_behind_quota_count=cloud_phases["queued_behind_quota"],
+            stage_paused={stage: bool(stage_controls[stage]["paused"]) for stage in ("metadata", "analyze")},
+            enriched_count=aggregates["enriched"],
+            analysis_live=analysis_live,
+            analyses_today=analysis_activity["today"],
+            analyses_lifetime=analysis_activity["lifetime"],
+        )
+    }
 
 
 async def build_propose_list_context(request: Request, session: AsyncSession) -> dict[str, Any]:
@@ -327,14 +727,6 @@ async def build_propose_list_context(request: Request, session: AsyncSession) ->
         page_size=view.page_size,
         sort=sort_state,
     )
-    # phaze-a6hm.11 selection metadata. `row_select_locked` is computed HERE, from the same
-    # APPROVE_REJECT_FROM the router enforces on the write, so the greyed-out checkbox and the
-    # server's guard cannot drift into disagreeing about which rows may transition. It is an
-    # affordance only: the server re-checks every id it is sent regardless (request_guards rule 2 --
-    # the browser's id-set is always assumed stale), which is why a row that goes terminal between
-    # this render and the submit is still correctly SKIPPED rather than rewritten.
-    select_ids = [str(row["id"]) for row in page.rows]
-    select_locked = [row["status"] not in APPROVE_REJECT_FROM for row in page.rows]
     # phaze-1aybg: the GENERATE ALL confirm must quote the population the trigger actually
     # enqueues -- POST /pipeline/proposals batches ``get_proposal_pending_batches``'s convergence
     # set (files with metadata + completed analysis and NO proposal row yet), which is DISJOINT
@@ -347,9 +739,6 @@ async def build_propose_list_context(request: Request, session: AsyncSession) ->
         "propose_view": view,
         "sort": sort_state,
         "propose_proposals": page.rows,
-        "row_select_ids": select_ids,
-        "row_select_locked": select_locked,
-        "select_name": "proposal_ids",
         "propose_pagination": page.pagination,
         "propose_stats": page.stats,
         "propose_generation_pending": generation_pending,
@@ -363,6 +752,64 @@ async def build_propose_list_context(request: Request, session: AsyncSession) ->
         "pager_target": f"#{PROPOSE_LIST_CONTAINER_ID}",
         "page_size_choices": PAGE_SIZE_CHOICES,
         "llm_model": settings.llm_model,
+    }
+
+
+async def build_changes_review_context(request: Request, session: AsyncSession) -> dict[str, Any]:
+    """Build the canonical review list from URL-borne filter, page, and selection state."""
+    view = ListViewState.from_request(request, status="needs_review", sort="confidence")
+    allowed_statuses = {"all", "needs_review", "approved", "blocked", "rejected"}
+    if view.status not in allowed_statuses:
+        view = view.with_(status="needs_review")
+
+    selected: list[str] = []
+    for raw in request.query_params.get("selected", "").split(","):
+        try:
+            selected.append(str(uuid.UUID(raw)))
+        except ValueError:
+            continue
+        if len(selected) >= 100:
+            break
+
+    proposals = await get_changes_review_page(
+        session,
+        status=view.status,
+        page=view.page,
+        page_size=view.page_size,
+    )
+    tag_page = await get_tagwrite_review_page(session)
+    tag_rows = (
+        [row for row in tag_page.rows if view.status == "all" or row["status"] == view.status]
+        if view.status in {"all", "needs_review", "blocked"}
+        else []
+    )
+    tag_needs_review = sum(row["status"] == "needs_review" for row in tag_page.rows)
+    tag_blocked = sum(row["status"] == "blocked" for row in tag_page.rows)
+    changes_stats = ChangesReviewStats(
+        all=proposals.stats.all + len(tag_page.rows),
+        needs_review=proposals.stats.needs_review + tag_needs_review,
+        approved=proposals.stats.approved,
+        blocked=proposals.stats.blocked + tag_blocked,
+        rejected=proposals.stats.rejected,
+    )
+
+    def url_for(*, status: str | None = None, page: int | None = None, selected_ids: list[str] | None = None) -> str:
+        params = view.params(status=status or view.status, page=page or view.page)
+        params["selected"] = ",".join(selected if selected_ids is None else selected_ids)
+        return f"/s/rename?{urlencode(params)}"
+
+    return {
+        "changes_view": view,
+        "changes_proposals": proposals.rows,
+        "changes_pagination": proposals.pagination,
+        "changes_stats": changes_stats,
+        "changes_selected": selected,
+        "changes_tag_rows": tag_rows,
+        "changes_tag_partial": tag_page.partial,
+        "changes_urls": {one: url_for(status=one, page=1) for one in ("all", "needs_review", "approved", "blocked", "rejected")},
+        "changes_prev_url": url_for(page=proposals.pagination.page - 1) if proposals.pagination.has_prev else None,
+        "changes_next_url": url_for(page=proposals.pagination.page + 1) if proposals.pagination.has_next else None,
+        "changes_list_id": CHANGES_LIST_CONTAINER_ID,
     }
 
 
@@ -400,6 +847,7 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         "request": request,
         "stage": stage,
         "stage_partial": _stage_partial(stage),
+        "document_title": DOCUMENT_TITLES[stage],
         "oob_counts": False,
         # Phase 71 (71-04, BEUI-02): seed the header force-local pill's state on EVERY page from the
         # durable route_control 'global' row (get_route_control is degrade-safe -> False on any DB
@@ -407,7 +855,9 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # build_dashboard_context -- so the global incident control shows correct state everywhere.
         "force_local": await get_route_control(session),
     }
-    if stage == "analyze":
+    if stage == "summary":
+        context.update(await _build_summary_context(request.app.state, session))
+    elif stage == "analyze":
         context.update(await build_dashboard_context(request.app.state, session))
         context["stage"] = stage
         context["stage_partial"] = _stage_partial(stage)
@@ -446,10 +896,40 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # phaze-a6hm.3: this is the UNSORTED default landing, so resolve against no wire sort/order --
         # reuses the SAME FILES_SORT contract instance pipeline.pipeline_files() resolves against
         # (contract rule 6: one contract object per table), never a second one built here.
-        files_sort_state = FILES_SORT.resolve(sort=None, order=None, view_state={"page_size": 25, "stage": None, "bucket": None})
-        context["files_page"] = await get_files_page(session, page=1, page_size=25, stage=None, bucket=None, sort=files_sort_state)
-        context["active_stage"] = None
-        context["active_bucket"] = None
+        def query_int(name: str, default: int) -> int:
+            try:
+                return int(request.query_params.get(name, default))
+            except (TypeError, ValueError):
+                return default
+
+        page = clamp_page(query_int("page", 1))
+        page_size = clamp_page_size(query_int("page_size", DEFAULT_PAGE_SIZE))
+        try:
+            active_stage = Stage(request.query_params["stage"]) if request.query_params.get("stage") else None
+        except ValueError:
+            active_stage = None
+        requested_bucket = request.query_params.get("bucket")
+        valid_buckets = {status.value for status in Status} | {ORPHANED_BUCKET}
+        active_bucket = requested_bucket if requested_bucket in valid_buckets else None
+        files_sort_state = FILES_SORT.resolve(
+            sort=request.query_params.get("sort"),
+            order=request.query_params.get("order"),
+            view_state={
+                "page_size": page_size,
+                "stage": active_stage.value if active_stage is not None else None,
+                "bucket": active_bucket,
+            },
+        )
+        context["files_page"] = await get_files_page(
+            session,
+            page=page,
+            page_size=page_size,
+            stage=active_stage,
+            bucket=active_bucket,
+            sort=files_sort_state,
+        )
+        context["active_stage"] = active_stage.value if active_stage is not None else None
+        context["active_bucket"] = active_bucket
         context["sort"] = files_sort_state
         # phaze-t0b8: files_workspace.html now composes _workspace_scaffold.html like every other
         # STAGE_PARTIALS host, which both supplies the <h1 tabindex="-1"> focus target this stage was
@@ -481,6 +961,11 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # exclude kind="compute" (media-less burst backends) from the picker.
         agents_stmt = select(Agent).where(Agent.revoked_at.is_(None), Agent.kind == "fileserver").order_by(Agent.name)
         context["agents"] = (await session.execute(agents_stmt)).scalars().all()
+    elif stage == "metadata":
+        context["metadata_activity"] = await get_metadata_activity_summary(session)
+        context["metadata_selection"] = await get_metadata_selection_summary(session)
+        context["metadata_status"] = await get_metadata_status_snapshot(session)
+        context["metadata_queue"] = await get_stage_activity_snapshot(session)
     # phaze-5462: the metadata stage deliberately gets NO file-list context here any more. It used
     # to seed `metadata_files` from get_metadata_pending_files, which is UNBOUNDED (no LIMIT, no
     # ORDER BY) -- the same latent cliff that made the Analyze tab ship 12.7 MB. That tab measured a
@@ -502,7 +987,7 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # unbounded row-per-Tracklist read rendered inline. The workspace hx-gets the bounded
         # GET /pipeline/tracklist-sets fragment on load instead. NOTE tracklist_match_pending stays
         # as it is: it feeds the MATCH ALL *enqueue* set (paging contract rule 7), never a render.
-    elif stage == "rename":
+    elif stage in {"rename", "move", "tagwrite"}:
         # Phase 60 (60-02, REVIEW-01/REVIEW-02): the Rename/Path review workspace renders the pending
         # RenameProposal rows (filename facet) through the shared _diff_row.html. get_pending_proposal_rows
         # is a read-only, SAVEPOINT-wrapped, degrade-safe assembly over the existing proposal reads (NO
@@ -513,34 +998,9 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # phaze-rw14: the row list is capped at 200 for render; the header/confirm counts below are the
         # bundled REAL totals (corpus-wide pending count, >=90%-confidence pending count), not the
         # capped list's length.
-        rename_pending = await get_pending_proposal_rows(session)
-        context["rename_proposals"] = rename_pending.rows
-        context["rename_pending_total"] = rename_pending.total_pending
-        context["rename_high_confidence_pending"] = rename_pending.high_confidence_pending
-    elif stage == "move":
-        # Phase 60 (60-02, REVIEW-01/REVIEW-02): the Move-files review workspace -- the SIBLING of rename
-        # over the SAME pending RenameProposal source (proposed_path facet, D-06). Same degrade-safe helper
-        # and phaze-rw14 real-total bundle; oob_counts stays False (Pitfall 5).
-        move_pending = await get_pending_proposal_rows(session)
-        context["move_proposals"] = move_pending.rows
-        context["move_pending_total"] = move_pending.total_pending
-        context["move_high_confidence_pending"] = move_pending.high_confidence_pending
+        context |= await build_changes_review_context(request, session)
     elif stage == "propose":
         context |= await build_propose_list_context(request, session)
-    elif stage == "tagwrite":
-        # Phase 60 (60-03, REVIEW-01/REVIEW-02): the Tag-write review workspace renders the computed tag
-        # comparison for EXECUTED files without a COMPLETED TagWriteLog (Pitfall 3 -- an empty queue while
-        # files await a move is CORRECT). get_tagwrite_review_rows is a read-only, SAVEPOINT-wrapped,
-        # degrade-safe assembly that returns [] on any DB error, so no router try/except is needed;
-        # oob_counts stays False (Pitfall 5).
-        #
-        # phaze-bto9: the scan is capped at a fixed number of candidate batches, so on a large
-        # already-correctly-tagged backlog it returns a bounded PREFIX of the queue instead of
-        # walking every applied file. ``partial`` carries that into the subcount, which would
-        # otherwise print a number that silently understates the real backlog.
-        tagwrite_page = await get_tagwrite_review_page(session)
-        context["tagwrite_files"] = tagwrite_page.rows
-        context["tagwrite_partial"] = tagwrite_page.partial
     elif stage == "dedupe":
         # Phase 60 (60-04, REVIEW-03/REVIEW-05): the Dedupe keeper-select workspace renders the scored
         # duplicate groups (each keeper == score_group's canonical_id). get_dedupe_groups is a read-only,
@@ -556,12 +1016,51 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # oob_counts stays False (Pitfall 5).
         context["cue_cards"] = await get_cue_review_cards(session)
     elif stage == "apply":
-        # phaze-vvmh: the Apply workspace needs ONE read -- the aggregate proposal counts, in a single
-        # query (services/proposal_queries.get_proposal_stats). They drive the EXECUTE APPROVED
-        # button's enabled/disabled branch, its confirm copy, and the counter row that re-hosts the
+        # phaze-vvmh: the aggregate proposal counts, in a single query
+        # (services/proposal_queries.get_proposal_stats). They drive the counter row that re-hosts the
         # useful half of the deleted proposals/partials/stats_bar.html. No enqueue, no write, no new
         # query path; oob_counts stays False (Pitfall 5) like every other review stage.
         context["stats"] = await get_proposal_stats(session)
+        # phaze-tzy6s.12 / D-10: the preflight manifest. It no longer suffices to know how many
+        # proposals are approved -- Execute is the one control that moves bytes, so the operator gets
+        # the full manifest (which operations, against which agents, what conflicts, what is excluded
+        # and why, what is reversible) BEFORE committing. get_execution_preflight deliberately reuses
+        # start_execution's OWN reads so the manifest cannot drift from the dispatch it describes; see
+        # that module's D-10 record before adding a read here.
+        #
+        # The three adjacent counts are work this control does NOT dispatch. They are passed in rather
+        # than re-derived inside the service so the "does not participate" rows carry live numbers
+        # instead of a confident zero -- an operation type silently absent from a manifest reads as
+        # "there is none of it". All three helpers are degrade-safe (0 on any DB error), so a
+        # failure here costs an exclusion row, never the render.
+        #
+        # phaze-tzy6s.17: these are COUNT queries. They used to be `len()` of the three list readers,
+        # which was wrong twice over on the one screen that must not be wrong:
+        #
+        #   * The numbers saturated silently. get_dedupe_groups pages at limit=100, so 100 groups and
+        #     100,000 groups both rendered "100"; get_cue_review_cards caps each half at
+        #     _MAX_REVIEW_ROWS. Those figures reach "Will not run — N excluded" AND the confirmation
+        #     dialog body, i.e. the last thing an operator reads before an irreversible batch.
+        #   * They did enormous discarded work to produce three integers -- full duplicate detection
+        #     with score_group/build_dupe_group_card per group, and in-memory .cue generation via
+        #     generate_cue_content for up to _MAX_REVIEW_ROWS sets -- then kept only len().
+        #
+        # Tag writes get the other treatment because they cannot get this one: eligibility is a Python
+        # predicate (compute_proposed_tags per candidate), so there is no COUNT to run. The scan stays,
+        # and `partial` -- which nothing read before -- is now plumbed through so a saturated figure
+        # renders as "N+" instead of posing as a total. A row cap hit with the candidate set not
+        # provably exhausted counts as saturated too; TagwriteReviewPage.partial already means exactly
+        # that (phaze-a2ytu), so it is the whole condition and len(rows) >= cap is not re-derived here.
+        tagwrite_page = await get_tagwrite_review_page(session)
+        context["preflight"] = await get_execution_preflight(
+            session,
+            pending=context["stats"].pending,
+            rejected=context["stats"].rejected,
+            tagwrite_pending=len(tagwrite_page.rows),
+            tagwrite_pending_at_least=tagwrite_page.partial,
+            dedupe_pending=await count_duplicate_groups(session),
+            cue_pending=await count_cue_review_candidates(session),
+        )
     elif stage == "audit":
         # phaze-uvmcr.3: the /s/audit utility-pane host (UTILITY_PANES, not STAGE_PARTIALS -- it
         # is not a DAG pipeline stage). ``execution.audit_log``'s non-fragment branch now redirects
@@ -628,9 +1127,23 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # refines WHICH fragment. The raw header this contract bans is HX-Request, and it is not read
         # here or anywhere else in this module.
         target = request.headers.get("HX-Target", "")
+        if stage == "files" and target == "files-table-view":
+            return templates.TemplateResponse(
+                request=request,
+                name="pipeline/partials/files_table_view.html",
+                context=context,
+                headers=DUAL_SHAPE_RESPONSE_HEADERS,
+            )
         if stage == "propose" and target == PROPOSE_LIST_CONTAINER_ID:
             return templates.TemplateResponse(
                 request=request, name="pipeline/partials/_propose_list.html", context=context, headers=DUAL_SHAPE_RESPONSE_HEADERS
+            )
+        if stage in {"rename", "move", "tagwrite"} and target == CHANGES_LIST_CONTAINER_ID:
+            return templates.TemplateResponse(
+                request=request,
+                name="pipeline/partials/_changes_list.html",
+                context=context,
+                headers=DUAL_SHAPE_RESPONSE_HEADERS,
             )
         return templates.TemplateResponse(request=request, name="shell/_stage_fragment.html", context=context, headers=DUAL_SHAPE_RESPONSE_HEADERS)
     # A direct navigation, a bookmark, OR A HISTORY RESTORE lands here and gets the full shell. That
@@ -650,12 +1163,7 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
 
 @router.get("/", response_class=HTMLResponse)
 async def shell_home(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
-    """GET / -- the shell root renders the Summary landing placeholder (SHELL-01, D-02 bare root).
-
-    Quick 260707-sq3 (SQ3-02) repointed the default landing stage from Analyze to the static,
-    DB-free Summary placeholder. Analyze is unchanged and stays one rail click away at
-    ``/s/analyze``.
-    """
+    """GET / -- render the actionable Summary overview as the shell default."""
     return await _render_stage(request, "summary", session)
 
 

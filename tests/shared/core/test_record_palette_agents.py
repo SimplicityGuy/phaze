@@ -82,16 +82,72 @@ async def test_record_missing_file_404_fragment(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_record_pending_approvals_wired(client: AsyncClient, seed_pending_proposal) -> None:  # type: ignore[no-untyped-def]
-    """RECORD-01: the record embeds the shared _diff_row approval cluster wired to the file's proposal."""
+async def test_record_pending_approvals_defer_to_changes_review(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_pending_proposal,
+) -> None:
+    """RECORD-01 / ADR-0008: the record COUNTS pending decisions and links out; it never approves them.
+
+    Retired contract (phaze-tzy6s.11): this test previously asserted that the record embedded the
+    shared ``_diff_row`` approval cluster wired to ``/proposals/{id}/approve|edit|reject|undo``.
+    ADR-0008 ("Changes Review Approval Boundary") makes Changes Review the ONLY UI workspace that
+    authorizes filename, destination, and tag changes, so the record drawer deliberately lost that
+    cluster. The old assertion was retired on purpose — it was not lost, and it must not come back.
+
+    The boundary asserted here is three-part:
+      1. the record reports the file's pending-decision COUNT, and only its OWN file's — a second
+         file's pending proposal must not be counted, and a file with none must render the
+         "up to date" branch with no queue link at all,
+      2. it links to the canonical queue ``/s/rename?status=needs_review`` with htmx wiring that
+         targets a container the shell actually renders (``#stage-workspace``, the same one the
+         rail swaps into),
+      3. it exposes NO inline approve/edit/reject/undo control — i.e. the drawer genuinely cannot
+         bypass the queue.
+
+    On (1): the partial unique index ``uq_proposals_file_id_pending`` (``ON (file_id) WHERE status
+    = 'pending'``) caps a file at ONE pending proposal, so the rendered count is 0 or 1 by schema
+    invariant and the template's plural branch is currently unreachable. The count is still
+    asserted as a computed value across both reachable branches rather than as a fixed string.
+    """
+    from phaze.models.proposal import ProposalStatus
+
     proposal = await seed_pending_proposal(0.95)
+    # A pending proposal on a DIFFERENT file — the count must stay file-scoped and not pick it up.
+    other = await seed_pending_proposal(0.95)
+    assert other.file_id != proposal.file_id
+
     r = await client.get(f"/record/{proposal.file_id}", headers={"HX-Request": "true"})
     assert r.status_code == 200
     body = r.text
-    # The pending-approval cluster reuses Phase 60 approve/edit/undo routes — the proposal id
-    # (and htmx wiring) must appear so the row targets the right proposal.
-    assert str(proposal.id) in body
-    assert "hx-" in body
+
+    # (1) The needs-review count is real and file-scoped: 1, not the 2 pending rows in the DB.
+    #     Wording is ADR-0008 operator vocabulary ("needs review", never "pending") -- phaze-tzy6s.17.
+    assert "1 decision needing review." in body
+
+    # (2) The canonical queue link, with htmx wiring onto a container the shell really renders.
+    assert 'hx-get="/s/rename?status=needs_review"' in body
+    assert 'href="/s/rename?status=needs_review"' in body, "degrades to a plain link without htmx"
+    assert 'hx-target="#stage-workspace"' in body, "shell.html:#stage-workspace is the stage container the rail swaps"
+
+    # (3) No inline approval path. The proposal id is the load-bearing check: _diff_row builds every
+    # one of its action URLs and its row id from it, so its absence proves no row could be wired.
+    assert str(proposal.id) not in body, "an inline approval row would have to name the proposal id"
+    for verb in ("approve", "reject", "undo", "edit"):
+        assert f"/proposals/{proposal.id}/{verb}" not in body
+    assert "SAVE EDIT" not in body
+    assert "record-row" not in body, "_diff_row's record-scoped row_id_prefix must not appear"
+
+    # The count is recomputed per render, not a fixed string: approving the only pending proposal
+    # drops the file to the zero branch, which drops the queue link with it.
+    proposal.status = ProposalStatus.APPROVED.value
+    session.add(proposal)
+    await session.commit()
+    r2 = await client.get(f"/record/{proposal.file_id}", headers={"HX-Request": "true"})
+    assert r2.status_code == 200
+    assert "needing review." not in r2.text, "no proposal needing review → no count"
+    assert "nothing needs review" in r2.text
+    assert "/s/rename?status=needs_review" not in r2.text, "nothing to review → no queue link"
 
 
 def test_history_sort_key_tolerates_mixed_tz_awareness() -> None:
@@ -170,7 +226,7 @@ async def test_record_renders_with_both_history_types(  # type: ignore[no-untype
 
 @pytest.mark.asyncio
 async def test_cmdk_grouped_results(client: AsyncClient, seed_distinct_artists) -> None:  # type: ignore[no-untyped-def]
-    """RECORD-02: the grouped palette endpoint returns Files/Tracklists/Artists/Commands as an ARIA listbox."""
+    """RECORD-02: the palette exposes the accepted Navigate/Files/Commands information architecture."""
     await seed_distinct_artists()
     r = await client.get("/search/", params={"q": "bonobo"}, headers={"HX-Request": "true"})
     assert r.status_code == 200
@@ -178,9 +234,10 @@ async def test_cmdk_grouped_results(client: AsyncClient, seed_distinct_artists) 
     # Selectable rows are role="option"; group headers are role="presentation" (skipped by roving nav).
     assert 'role="option"' in body
     assert 'role="presentation"' in body
-    # The four command-palette groups.
-    for group in ("Files", "Artists", "Commands"):
+    # Domain results share Files; route links and mutations have distinct groups.
+    for group in ("Navigate", "Files", "Commands"):
         assert group in body
+    assert ">Artists<" not in body
 
 
 @pytest.mark.asyncio
@@ -200,24 +257,18 @@ async def test_distinct_artists_query(session: AsyncSession, seed_distinct_artis
 
 
 @pytest.mark.asyncio
-async def test_cmdk_commands_and_artist_nav(client: AsyncClient, seed_distinct_artists) -> None:  # type: ignore[no-untyped-def]
-    """RECORD-02: the palette renders its navigation commands; an artist row re-searches with q=.
-
-    phaze-0jpe: the one state-changing command (Scan for new live sets -> POST
-    /pipeline/scan-live-sets) went with the fingerprint-scan task, so the commands group is now
-    navigation-only. ``test_cmdk_palette_default_option.py`` still enforces, by role and htmx verb,
-    that any command added back is confirmed and never row 0.
-    """
+async def test_cmdk_current_navigation_and_mutation_commands(client: AsyncClient, seed_distinct_artists) -> None:  # type: ignore[no-untyped-def]
+    """RECORD-02: current route links and confirmed mutation commands replace the retired command set."""
     await seed_distinct_artists()
     r = await client.get("/search/", params={"q": "bonobo"}, headers={"HX-Request": "true"})
     assert r.status_code == 200
     body = r.text
-    # The navigation commands are always present so the roving nav has selectable targets (D-03).
-    assert 'id="cmdk-cmd-stage"' in body
-    assert 'id="cmdk-cmd-agents"' in body
-    # An Artist option must re-search with q= (WR-03): search_page only runs a query when q is
-    # truthy, so an artist= only URL would return an empty palette. The artist row carries q=.
-    assert 'hx-get="/search/?q=' in body
+    for row_id in ("cmdk-nav-summary", "cmdk-nav-review", "cmdk-nav-workers", "cmdk-cmd-analyze", "cmdk-cmd-metadata"):
+        assert f'id="{row_id}"' in body
+    assert 'id="cmdk-cmd-stage"' not in body
+    assert 'id="cmdk-cmd-agents"' not in body
+    assert body.count('hx-target="#cmdk-command-result"') == 2
+    assert body.count('hx-disabled-elt="this"') == 2
 
 
 # ---------------------------------------------------------------------------

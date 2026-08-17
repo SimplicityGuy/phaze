@@ -239,8 +239,8 @@ async def test_single_source_db_error_degrades_to_zero(session: AsyncSession, mo
 
     Post-CLEAN-01, ``get_stage_progress`` no longer reads the passed ``session`` -- every independent
     read runs in its OWN ``async_session`` via ``_read_in_own_session``. So the degrade is exercised at
-    the fan-out seam: force the METADATA enrich-bucket read to RAISE (simulating a mid-read/
-    acquisition failure that escapes ``_safe_bucket_counts``) and assert ``_read_in_own_session`` catches
+    the fan-out seam: force the METADATA enrich-bucket snapshot to RAISE (simulating a mid-read/
+    acquisition failure that escapes ``_safe_bucket_snapshot``) and assert ``_read_in_own_session`` catches
     it -> metadata degrades to the all-zero bucket (``done == 0``) while the independently-sessioned
     analyze read stays correct (no cross-node poisoning; the poll never raises).
     """
@@ -252,16 +252,16 @@ async def test_single_source_db_error_degrades_to_zero(session: AsyncSession, mo
     session.add(AnalysisResult(id=uuid.uuid4(), file_id=f.id, bpm=120.0, analysis_completed_at=datetime.now(UTC)))
     await session.commit()
 
-    orig_buckets = pipeline_mod._safe_bucket_counts
+    orig_snapshot = pipeline_mod._safe_bucket_snapshot
 
-    async def failing_buckets(read_session, stage):  # type: ignore[no-untyped-def]
-        # Force ONLY the metadata enrich-bucket read to fail. The raise escapes _safe_bucket_counts
+    async def failing_snapshot(read_session, stage):  # type: ignore[no-untyped-def]
+        # Force ONLY the metadata enrich-bucket read to fail. The raise escapes _safe_bucket_snapshot
         # and must be caught by _read_in_own_session's acquisition-degrade belt (RESEARCH Pitfall 2).
         if stage is Stage.METADATA:
             raise RuntimeError("forced metadata source error")
-        return await orig_buckets(read_session, stage)
+        return await orig_snapshot(read_session, stage)
 
-    monkeypatch.setattr(pipeline_mod, "_safe_bucket_counts", failing_buckets)
+    monkeypatch.setattr(pipeline_mod, "_safe_bucket_snapshot", failing_snapshot)
 
     progress = await get_stage_progress(session)
 

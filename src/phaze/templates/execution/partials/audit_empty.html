@@ -28,17 +28,9 @@
    from the SAME clause set the trigger batches on, so the number quoted here is the number the
    button will act on. The router only computes it on the never-run branch (see routers/execution.py).
 #}
-<div class="text-center py-12">
+{% import "ui/primitives.html" as ui %}
     {% if stats and stats.total == 0 %}
-    <p class="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">No renames have been executed yet</p>
-    <p class="text-sm text-gray-500 dark:text-gray-400 max-w-2xl mx-auto mb-2">
-        This log records rename and move operations as they run. Nothing has been proposed for rename yet, so there is
-        nothing to execute and nothing to record &mdash; the log is empty, not broken.
-    </p>
-    <p class="text-sm text-gray-500 dark:text-gray-400 max-w-2xl mx-auto mb-6">
-        Proposal generation is a deliberate operator action (it calls an LLM per file) and does not advance on its own.
-        Entries appear here only after proposals are generated, approved, and executed.
-    </p>
+    {% call ui.state('empty', 'No renames have been executed yet', 'Nothing has been proposed for rename yet. Proposal generation is a deliberate operator action; this audit records approved file rename and move execution after proposals are generated, approved, and executed.') %}
     {% if proposal_ready_count %}
     <p class="text-sm font-medium text-gray-900 dark:text-gray-100 mb-4">
         {{ proposal_ready_count }} file{{ "" if proposal_ready_count == 1 else "s" }} ready for proposal generation
@@ -54,16 +46,13 @@
     <a href="/s/analyze"
        class="inline-flex items-center justify-center h-9 px-4 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500">View pipeline progress</a>
     {% endif %}
+    {% endcall %}
     {% else %}
-    <p class="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">No entries match this filter</p>
-    <p class="text-sm text-gray-500 dark:text-gray-400 max-w-2xl mx-auto mb-6">
-        {{ stats.total }} operation{{ "" if stats.total == 1 else "s" }} {{ "is" if stats.total == 1 else "are" }} recorded,
-        but none of them are in this tab.
-    </p>
+    {% call ui.state('empty', 'No entries match this filter', stats.total ~ ' operation' ~ ('' if stats.total == 1 else 's') ~ ' ' ~ ('is' if stats.total == 1 else 'are') ~ ' recorded, but none are in this filter.') %}
     <button type="button"
             hx-get="/audit/?status=all{{ sort.query_state() if sort else '' }}"
             hx-target="#audit-content"
             hx-push-url="true"
             class="inline-flex items-center justify-center h-9 px-4 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500">Show all operations</button>
+    {% endcall %}
     {% endif %}
-</div>

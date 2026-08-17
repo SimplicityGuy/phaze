@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from sqlalchemy import case, func, select
@@ -23,22 +24,36 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-async def get_execution_stats(session: AsyncSession) -> dict[str, int]:
-    """Get aggregate execution log statistics in a single query."""
+@dataclass
+class AuditLogPage(Page[ExecutionLog]):
+    """Audit page with an explicit signal when a failed read produced no rows."""
+
+    degraded: bool = False
+
+
+async def get_execution_stats(session: AsyncSession) -> dict[str, int | bool]:
+    """Get aggregate execution statistics, retaining an explicit degraded-read signal."""
     stmt = select(
         func.count().label("total"),
         func.count(case((ExecutionLog.status == ExecutionStatus.COMPLETED, 1))).label("completed"),
         func.count(case((ExecutionLog.status == ExecutionStatus.FAILED, 1))).label("failed"),
         func.count(case((ExecutionLog.status == ExecutionStatus.IN_PROGRESS, 1))).label("in_progress"),
+        func.count(case((ExecutionLog.status == ExecutionStatus.PENDING, 1))).label("pending"),
     ).select_from(ExecutionLog)
 
-    result = await session.execute(stmt)
-    row = result.one()
+    try:
+        async with session.begin_nested():
+            row = (await session.execute(stmt)).one()
+    except Exception:
+        logger.warning("audit_stats_degraded", exc_info=True)
+        return {"total": 0, "completed": 0, "failed": 0, "in_progress": 0, "pending": 0, "degraded": True}
     return {
         "total": row.total,
         "completed": row.completed,
         "failed": row.failed,
         "in_progress": row.in_progress,
+        "pending": row.pending,
+        "degraded": False,
     }
 
 
@@ -49,7 +64,7 @@ async def get_execution_logs_page(
     page: int = 1,
     page_size: int = DEFAULT_PAGE_SIZE,
     sort: SortState | None = None,
-) -> Page[ExecutionLog]:
+) -> AuditLogPage:
     """Return ONE bounded page of the audit log, ordered by ``sort`` or ``executed_at`` DESC by default.
 
     ``sort`` is a RESOLVED :class:`phaze.routers.column_sort.SortState` (phaze-a6hm.5) -- so it can only
@@ -73,8 +88,8 @@ async def get_execution_logs_page(
     is all the paging contract's tiebreaker (rule 4) requires: a deterministic total order so OFFSET
     paging can never skip or duplicate a row.
 
-    SAVEPOINT degrade-safe (contract rule 6): returns an EMPTY page on any error rather than 500ing
-    the audit view.
+    SAVEPOINT degrade-safe (contract rule 6): returns an empty ``AuditLogPage`` with
+    ``degraded=True`` on any error rather than 500ing or presenting a healthy empty state.
     """
     page = clamp_page(page)
     page_size = clamp_page_size(page_size)
@@ -96,10 +111,10 @@ async def get_execution_logs_page(
             raw = (await session.execute(stmt)).scalars().all()
     except Exception:
         logger.warning("audit_log_page_degraded", status=status, page=page, page_size=page_size, exc_info=True)
-        return Page(rows=[], page=page, page_size=page_size, has_next=False)
+        return AuditLogPage(rows=[], page=page, page_size=page_size, has_next=False, degraded=True)
 
     rows, has_next = split_sentinel(raw, page_size)
-    return Page(rows=rows, page=page, page_size=page_size, has_next=has_next)
+    return AuditLogPage(rows=rows, page=page, page_size=page_size, has_next=has_next)
 
 
 async def get_execution_log_detail(session: AsyncSession, log_id: uuid.UUID) -> ExecutionLog | None:

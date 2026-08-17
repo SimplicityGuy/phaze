@@ -38,7 +38,7 @@
             {% if is_stalled %}
             <span class="inline-block h-2 w-2 rounded-full bg-amber-500 dark:bg-amber-400" aria-hidden="true"></span>
             {% else %}
-            <span class="inline-block h-2 w-2 rounded-full bg-green-500 dark:bg-green-400 animate-pulse" aria-hidden="true"></span>
+            <span class="inline-block h-2 w-2 rounded-full bg-green-500 dark:bg-green-400 motion-safe:animate-pulse" aria-hidden="true"></span>
             {% endif %}
             <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400" aria-label="Status: running">RUNNING</span>
         </div>

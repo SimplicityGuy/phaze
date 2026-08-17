@@ -16,6 +16,7 @@ from phaze.models.analysis import AnalysisWindow
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.routers.proposals import BpmSpark, _bpm_spark
+from phaze.services.proposal_queries import proposal_review_digest
 
 
 if TYPE_CHECKING:
@@ -82,7 +83,12 @@ async def create_test_proposal(
     )
     session.add(proposal)
     await session.commit()
+    proposal.file = file_record
     return proposal
+
+
+def _review_token(proposal: RenameProposal) -> str:
+    return f"{proposal.id}|{proposal.updated_at.isoformat()}|{proposal_review_digest(proposal)}"
 
 
 _TEMPLATES_DIR = Path(phaze.__file__).parent / "templates"
@@ -115,7 +121,7 @@ async def test_approve_proposal(client: AsyncClient, session: AsyncSession) -> N
     mutation route now has ONE response shape, the shared ``_diff_row.html``.
     """
     proposal = await create_test_proposal(session)
-    response = await client.patch(f"/proposals/{proposal.id}/approve")
+    response = await client.patch(f"/proposals/{proposal.id}/approve", data={"expected_updated_at": proposal.updated_at.isoformat()})
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "stats-bar" not in response.text
@@ -155,7 +161,7 @@ async def test_undo_proposal(client: AsyncClient, session: AsyncSession) -> None
 async def test_approve_not_found(client: AsyncClient) -> None:
     """PATCH /proposals/{random_uuid}/approve returns 404."""
     random_id = uuid.uuid4()
-    response = await client.patch(f"/proposals/{random_id}/approve")
+    response = await client.patch(f"/proposals/{random_id}/approve", data={"expected_updated_at": "2026-01-01T00:00:00+00:00"})
     assert response.status_code == 404
 
 
@@ -218,17 +224,15 @@ async def test_approve_proposal_current_token_succeeds(client: AsyncClient, sess
 
 
 @pytest.mark.asyncio
-async def test_approve_proposal_no_token_preserves_legacy_behavior(client: AsyncClient, session: AsyncSession) -> None:
-    """No token (a bare API PATCH, e.g. a non-browser caller) keeps the pre-phaze-exivg
-    status-only guard -- byte-identical to test_approve_proposal above.
-    """
+async def test_approve_proposal_without_review_token_is_rejected(client: AsyncClient, session: AsyncSession) -> None:
+    """A bare API PATCH cannot bypass the version reviewed by the operator."""
     proposal = await create_test_proposal(session)
     response = await client.patch(f"/proposals/{proposal.id}/approve")
-    assert response.status_code == 200
+    assert response.status_code == 400
 
     updated = await session.get(RenameProposal, proposal.id)
     assert updated is not None
-    assert updated.status == ProposalStatus.APPROVED
+    assert updated.status == ProposalStatus.PENDING
 
 
 @pytest.mark.asyncio
@@ -383,12 +387,12 @@ async def test_row_detail_no_date_key_shows_no_metadata_row_for_date(client: Asy
 @pytest.mark.asyncio
 async def test_bulk_approve(client: AsyncClient, session: AsyncSession) -> None:
     """PATCH /proposals/bulk with action=approve updates all listed proposals."""
-    p1 = await create_test_proposal(session, original_filename="bulk1.mp3", proposed_filename="Bulk One.mp3")
-    p2 = await create_test_proposal(session, original_filename="bulk2.mp3", proposed_filename="Bulk Two.mp3")
+    p1 = await create_test_proposal(session, original_filename="bulk1.mp3", proposed_filename="Bulk One.mp3", confidence=0.95)
+    p2 = await create_test_proposal(session, original_filename="bulk2.mp3", proposed_filename="Bulk Two.mp3", confidence=0.95)
 
     response = await client.patch(
         "/proposals/bulk",
-        data={"action": "approve", "proposal_ids": [str(p1.id), str(p2.id)]},
+        data={"action": "approve_eligible", "review_tokens": [_review_token(p1), _review_token(p2)]},
     )
     assert response.status_code == 200
 
@@ -403,11 +407,11 @@ async def test_bulk_approve(client: AsyncClient, session: AsyncSession) -> None:
 @pytest.mark.asyncio
 async def test_bulk_approve_skips_malformed_id(client: AsyncClient, session: AsyncSession) -> None:
     """phaze-3st0: a malformed proposal_ids entry is SKIPPED (never a 500); valid ids still act."""
-    p1 = await create_test_proposal(session, original_filename="bulkmal1.mp3")
+    p1 = await create_test_proposal(session, original_filename="bulkmal1.mp3", confidence=0.95)
 
     response = await client.patch(
         "/proposals/bulk",
-        data={"action": "approve", "proposal_ids": [str(p1.id), "not-a-uuid"]},
+        data={"action": "approve_eligible", "review_tokens": [_review_token(p1), "not-a-token"]},
     )
     assert response.status_code == 200
     assert "1 proposal approved." in response.text
@@ -420,11 +424,11 @@ async def test_bulk_approve_skips_malformed_id(client: AsyncClient, session: Asy
 @pytest.mark.asyncio
 async def test_bulk_approve_skips_empty_id(client: AsyncClient, session: AsyncSession) -> None:
     """phaze-3st0: an empty-string proposal_ids entry is SKIPPED (never a 500)."""
-    p1 = await create_test_proposal(session, original_filename="bulkmal2.mp3")
+    p1 = await create_test_proposal(session, original_filename="bulkmal2.mp3", confidence=0.95)
 
     response = await client.patch(
         "/proposals/bulk",
-        data={"action": "approve", "proposal_ids": [str(p1.id), ""]},
+        data={"action": "approve_eligible", "review_tokens": [_review_token(p1), ""]},
     )
     assert response.status_code == 200
 
@@ -438,7 +442,7 @@ async def test_bulk_approve_all_ids_malformed(client: AsyncClient, session: Asyn
     """phaze-3st0: every id malformed -> 200 with a zero count, never a 500."""
     response = await client.patch(
         "/proposals/bulk",
-        data={"action": "approve", "proposal_ids": ["not-a-uuid", ""]},
+        data={"action": "approve_eligible", "review_tokens": ["not-a-token", ""]},
     )
     assert response.status_code == 200
     assert "0 proposals approved." in response.text
@@ -670,7 +674,7 @@ def test_bpm_spark_empty() -> None:
 async def test_approve_terminal_executed_returns_409(client: AsyncClient, session: AsyncSession) -> None:
     """An EXECUTED proposal cannot be flipped back to APPROVED via the review UI (phaze-uu17)."""
     proposal = await create_test_proposal(session, status=ProposalStatus.EXECUTED)
-    response = await client.patch(f"/proposals/{proposal.id}/approve")
+    response = await client.patch(f"/proposals/{proposal.id}/approve", data={"expected_updated_at": proposal.updated_at.isoformat()})
     assert response.status_code == 409
 
     updated = await session.get(RenameProposal, proposal.id)
@@ -705,12 +709,12 @@ async def test_undo_terminal_executed_returns_409(client: AsyncClient, session: 
 @pytest.mark.asyncio
 async def test_bulk_approve_skips_terminal_rows(client: AsyncClient, session: AsyncSession) -> None:
     """A bulk approve over a mix of PENDING + EXECUTED rows only transitions the PENDING one (phaze-uu17)."""
-    pending = await create_test_proposal(session, original_filename="p.mp3")
+    pending = await create_test_proposal(session, original_filename="p.mp3", confidence=0.95)
     executed = await create_test_proposal(session, original_filename="x.mp3", status=ProposalStatus.EXECUTED)
 
     response = await client.patch(
         "/proposals/bulk",
-        data={"action": "approve", "proposal_ids": [str(pending.id), str(executed.id)]},
+        data={"action": "approve_eligible", "review_tokens": [_review_token(pending), _review_token(executed)]},
     )
     assert response.status_code == 200
     assert "1 proposal approved · 1 skipped (already actioned)." in response.text
@@ -759,6 +763,7 @@ async def test_approve_from_v7_workspace_returns_diff_row(client: AsyncClient, s
     proposal = await create_test_proposal(session)
     response = await client.patch(
         f"/proposals/{proposal.id}/approve",
+        data={"expected_updated_at": proposal.updated_at.isoformat()},
         headers={"HX-Request": "true", "HX-Target": f"rename-row-{proposal.id}"},
     )
     assert response.status_code == 200
@@ -841,7 +846,7 @@ async def test_approve_without_hx_target_returns_the_shared_diff_row(client: Asy
     host chain reachable.
     """
     proposal = await create_test_proposal(session)
-    response = await client.patch(f"/proposals/{proposal.id}/approve")
+    response = await client.patch(f"/proposals/{proposal.id}/approve", data={"expected_updated_at": proposal.updated_at.isoformat()})
     assert response.status_code == 200
     assert "stats-bar" not in response.text
     assert f'id="rename-row-{proposal.id}"' in response.text
@@ -851,10 +856,17 @@ async def test_approve_without_hx_target_returns_the_shared_diff_row(client: Asy
 # ---------------------------------------------------------------------------
 # bulk-approve-high-confidence row sync for the v7 Rename/Move workspaces (phaze-71hi)
 #
-# rename_workspace.html / move_workspace.html hx-target this endpoint at their own tiny
-# #rename-trigger-response / #move-trigger-response status div, and the workspaces run no row poll
+# rename_workspace.html / move_workspace.html hx-targeted this endpoint at their own tiny
+# #rename-trigger-response / #move-trigger-response status div, and the workspaces ran no row poll
 # (R-2) to pick a change up on their own. Before this fix, every row the predicate approved stayed
 # rendered PENDING with live APPROVE/EDIT/SKIP controls; a subsequent click 409'd silently.
+#
+# phaze-tzy6s.11 / ADR-0008: both of those workspaces were deleted when rename, destination, and tag
+# decisions were consolidated into Changes Review, which bulk-approves through the selection-driven
+# PATCH /proposals/bulk instead. NO template calls /proposals/bulk-approve-high-confidence any more,
+# so the tests below are currently the route's only callers -- they hold the server contract, not a
+# live UI path. Bead phaze-tzy6s.12 (Execute preflight) owns the keep-or-retire decision; see
+# routers/proposals.py::_BULK_HIGH_CONFIDENCE_TARGETS.
 # ---------------------------------------------------------------------------
 
 

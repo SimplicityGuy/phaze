@@ -1,0 +1,10 @@
+<section id="dupe-group-{{ group.sha256_hash }}" class="rounded-xl border border-amber-300 bg-amber-50 p-4 dark:border-amber-700 dark:bg-amber-950/40">
+    <h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-amber-900 dark:text-amber-200">Confirm reviewed duplicate plan</h2>
+    <p class="mt-2 break-words text-sm text-gray-800 dark:text-gray-200">Keep {{ keeper.name }} · {{ keeper.quality }}</p>
+    <p class="mt-1 text-xs text-gray-600 dark:text-gray-300">Archive {{ group.count - 1 }} reviewed copies. The canonical choice and complete membership are locked to this plan; any change rejects the commit.</p>
+    <form class="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end" hx-post="/duplicates/{{ group.sha256_hash }}/resolve" hx-target="#dupe-group-{{ group.sha256_hash }}" hx-swap="outerHTML">
+        <input type="hidden" name="plan_id" value="{{ plan_id }}">
+        <button type="button" hx-get="/s/dedupe" hx-target="#stage-workspace" hx-swap="innerHTML" class="h-9 rounded-lg border border-gray-300 px-3 text-sm dark:border-phaze-border">Cancel</button>
+        <button type="submit" hx-disabled-elt="this" class="h-9 rounded-lg bg-amber-700 px-3 font-jura text-xs font-medium uppercase tracking-wider text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50">Confirm resolution</button>
+    </form>
+</section>

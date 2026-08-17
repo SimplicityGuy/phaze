@@ -32,6 +32,7 @@ def test_all_tables_defined() -> None:
         "cloud_budget",
         "route_control",  # Phase 71 (71-02, BEUI-02): force-local control row (migration 031)
         "dedup_resolution",  # Phase 77 (77-02, D-07): dedup marker sidecar (migration 032)
+        "dedup_review_plan",  # Opaque reviewed decision required before a dedup resolution commit.
         "stage_skip",  # Phase 87 (87-01, D-13): force-skip marker sidecar (migration 037)
         # phaze-fq9h.3 (migration 049): persisted positive/negative 1001TL lookup cache, so the
         # rate-capped drain never re-spends a request on a set it has already asked about.

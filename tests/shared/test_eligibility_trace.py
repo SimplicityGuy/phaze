@@ -74,7 +74,7 @@ async def test_downstream_trace_names_unfinished_upstream_blocker(client: AsyncC
 
     assert response.status_code == 200
     body = response.text
-    assert "Prop — NOT eligible" in body
+    assert "Propose — NOT eligible" in body
     assert "metadata not done" in body
     assert "← blocker" in body
 
@@ -115,7 +115,7 @@ async def test_enrich_stage_upstream_is_vacuously_met(client: AsyncClient, sessi
 
     assert response.status_code == 200
     body = response.text
-    assert "Meta — eligible (in the pending set)" in body
+    assert "Metadata — eligible (in the pending set)" in body
     assert "no upstream (enrich stage)" in body
 
 
@@ -137,7 +137,7 @@ async def test_skipped_upstream_still_gates_downstream(client: AsyncClient, sess
 
     assert response.status_code == 200
     body = response.text
-    assert "Prop — NOT eligible" in body
+    assert "Propose — NOT eligible" in body
     assert "metadata skipped — downstream stays gated" in body
     assert "← blocker" in body
 

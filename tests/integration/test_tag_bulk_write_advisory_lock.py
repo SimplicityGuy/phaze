@@ -217,6 +217,18 @@ async def _seed_bulk_qualifying_file(session: AsyncSession, *, filename: str) ->
     return file_id
 
 
+async def _review_tokens(session: AsyncSession, file_ids: list[uuid.UUID]) -> list[str]:
+    tokens: list[str] = []
+    for file_id in file_ids:
+        file_record = await tags_module._get_file_with_metadata(session, file_id)
+        assert file_record is not None
+        tracklist = await tags_module._get_tracklist_for_file(session, file_id)
+        link = await tags_module._get_accepted_discogs_link(session, file_id)
+        proposed = tags_module.compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename, discogs_link=link)
+        tokens.append(tags_module._encode_tag_review_token(tags_module._tag_review_payload(file_record, tracklist, link, proposed)))
+    return tokens
+
+
 @pytest.mark.asyncio
 async def test_bulk_write_endpoint_releases_lock_over_a_real_pool(async_engine) -> None:  # type: ignore[no-untyped-def]
     """End-to-end: the live ``/tags/bulk-write-no-discrepancies`` route over a real (small) pool
@@ -243,6 +255,7 @@ async def test_bulk_write_endpoint_releases_lock_over_a_real_pool(async_engine) 
                 # to no artist/title at all, so every candidate fell out as a zero-change NO_OP and
                 # never reached the dispatch this test exists to exercise.
                 file_ids.append(await _seed_bulk_qualifying_file(seed_session, filename=f"Bulk Artist {i} - Bulk Title.mp3"))
+            review_tokens = await _review_tokens(seed_session, file_ids)
 
         app = FastAPI(title="smoke", version="test")
         app.include_router(tags_router)
@@ -261,7 +274,7 @@ async def test_bulk_write_endpoint_releases_lock_over_a_real_pool(async_engine) 
         app.dependency_overrides[get_session] = _get_session
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.post("/tags/bulk-write-no-discrepancies")
+            resp = await client.post("/tags/bulk-write-no-discrepancies", data={"review_tokens": review_tokens})
         assert resp.status_code == 200
         assert fake_router.enqueue_for_agent.await_count == len(file_ids), "every qualifying file must reach the dispatch"
 
@@ -327,6 +340,7 @@ async def test_bulk_write_lock_connection_not_idle_in_transaction_once_the_loop_
                 seed_session.add(Agent(id="test-fileserver", name="test-fileserver", kind="fileserver", scan_roots=[]))
                 await seed_session.commit()
             file_ids.append(await _seed_bulk_qualifying_file(seed_session, filename="Idle Lock Artist - Idle Lock Title.mp3"))
+            review_tokens = await _review_tokens(seed_session, file_ids)
 
         app = FastAPI(title="smoke", version="test")
         app.include_router(tags_router)
@@ -345,7 +359,7 @@ async def test_bulk_write_lock_connection_not_idle_in_transaction_once_the_loop_
             patch.object(tags_module, "_has_terminal_tagwrite", new=_has_terminal_and_check),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.post("/tags/bulk-write-no-discrepancies")
+                resp = await client.post("/tags/bulk-write-no-discrepancies", data={"review_tokens": review_tokens})
         assert resp.status_code == 200
         assert checked["done"], "the per-file loop must have run for the idle-in-transaction assertion to have executed"
 

@@ -1183,7 +1183,8 @@ async def test_status_pill_running_uses_blue_surface(
 
     response = await ac.get("/pipeline/scans/recent", headers={"HX-Request": "true"})
     assert response.status_code == 200
-    assert "bg-blue-100 dark:bg-blue-950" in response.text
+    assert "bg-blue-100" in response.text
+    assert "dark:bg-blue-950" in response.text
     assert 'aria-label="Status: running"' in response.text
 
 
@@ -2249,6 +2250,7 @@ async def test_discover_workspace_mounts_the_recent_scans_table(
     assert f'hx-delete="/pipeline/scans/{completed_id}' in body, "the served page carries no delete control"
     assert "Delete this scan and all associated data?" in body
     assert ">Actions</th>" in body
+    assert 'aria-label="Scan history"' in body
 
 
 @pytest.mark.asyncio

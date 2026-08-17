@@ -2,22 +2,30 @@
 
    Deliberately modelled on proposals/partials/proposal_list.html, which plays the identical role
    for the legacy view's #proposal-list-container, and for the identical reason: every control that
-   swaps into this container -- the filter tabs, the search box, the pager, the page-size selector,
-   and the bulk actions phaze-a6hm.11 will add -- uses hx-swap="innerHTML". So the container's inner
+   swaps into this container -- the filter tabs, the search box, the pager, and the page-size selector
+   -- uses hx-swap="innerHTML". So the container's inner
    content must be exactly ONE thing and every producer must return exactly that. This partial IS
    that thing:
 
-       _file_table (rows, with the selection column) + _propose_bulk_bar + _list_pager
+       filter/search state + _file_table + _list_pager
 
-   Producers, all THREE of which render this file and nothing more:
+   Producers that render this file and nothing more:
      * propose_workspace.html            -- wraps it in the container div (full workspace render)
      * GET /s/propose (HX, targeting the container) -- returns it bare (filter / search / page swaps)
-     * PATCH /proposals/bulk (HX, targeting the container) -- returns it bare inside
-       _propose_bulk_response.html, plus an OOB toast (phaze-a6hm.11)
 
-   phaze-a6hm.11 added the bulk approve/reject bar INSIDE this partial, for the same reason .9 moved
-   the pager in: it must be re-rendered by the swap that re-renders the rows. A bar living outside
-   the container would keep offering to act on a selection whose rows the swap has just replaced.
+   A THIRD producer existed and no longer has a caller: PATCH /proposals/bulk's fallthrough branch
+   (proposals.py, the `else` after the CHANGES_LIST_CONTAINER_ID check) returns this file bare inside
+   _propose_bulk_response.html plus an OOB toast (phaze-a6hm.11). phaze-tzy6s.7 (bf45fe06) deleted
+   _propose_bulk_bar.html, the Propose bulk bar that was its only caller, and phaze-tzy6s.11 /
+   ADR-0008 then formalised the rule behind it: Propose no longer authorizes anything. The one live caller of PATCH /proposals/bulk is now
+   _changes_list.html:46, which always sends HX-Target: changes-workspace-list, so the branch that renders
+   THIS partial is unreachable through the product -- see phaze-tzy6s.17's note in proposals.py.
+   Kept correct here on the assumption a reader is checking "what re-renders me?": the answer is two
+   producers, not three.
+
+   Propose is preparation-only. Approval and rejection live in the canonical Review workspace;
+   this list remains searchable, filterable, sortable, paginated, and inspectable without decision
+   controls.
 
    This is a DIFFERENT container from the legacy #proposal-list-container, and the two shapes are
    deliberately not interchangeable: that one holds proposal_table + bulk_actions + pagination,
@@ -51,26 +59,26 @@
 
    phaze-xxp2: the status filter tabs (proposals/partials/filter_tabs.html) render HERE too, as the
    FIRST thing inside the container -- moved from propose_workspace.html, which rendered them in a
-   sibling div OUTSIDE this container. That placement meant a tab click (or a bulk mutation) swapped
-   the rows but left the tab bar's active underline and aria-current="page" pointing at whatever was
-   active before the swap: the widget affirmatively announced the wrong filter. Every producer of
-   this partial (the full workspace render, the narrow HX swap, and the bulk response) now
-   re-renders the tabs along with the rows, so the active tab always matches what is on screen --
-   mirroring how the pager (phaze-a6hm.9) and bulk bar (phaze-a6hm.11) already work by living inside
-   this same container. `propose_stats` is recomputed by every producer (build_propose_list_context
+   sibling div OUTSIDE this container. That placement meant a tab click (or, while Propose still had
+   a bulk bar, a bulk mutation) swapped the rows but left the tab bar's active underline and
+   aria-current="page" pointing at whatever was active before the swap: the widget affirmatively
+   announced the wrong filter. Every producer of this partial re-renders the tabs along with the
+   rows, so the active tab always matches what is on screen --
+   mirroring how the pager already works by living inside this same container. `propose_stats` is
+   recomputed by every producer (build_propose_list_context
    is the single source for it -- see proposals.bulk_action), so the count badges refresh with it as
    a consequence, not a special case. #}
 {% with view = propose_view, stats = propose_stats, tabs_url = "/s/propose", tabs_target = "#" ~ propose_list_id %}
     {% include "proposals/partials/filter_tabs.html" %}
 {% endwith %}
+{% import "ui/primitives.html" as ui %}
 {# phaze-a6gsw: the search box's state carrier. search_box.html lives OUTSIDE this container (its
    own contract, point 3 -- re-rendering a focused input mid-keystroke destroys the caret), so it is
    the one search-adjacent control that is never re-rendered by a narrow swap of this partial. That
    used to mean its hx-get URL carried whatever status/page_size/sort/order were current at the last
    FULL workspace render, silently reverting a tab/sort/page-size change made since (phaze-a6gsw).
    This hidden carrier is the fix: it renders HERE, inside the container, so every one of this
-   partial's three producers (full workspace render, narrow HX swap, bulk response) refreshes it
-   exactly like the tabs above -- and search_box.html's hx-include reads it fresh on every
+   partial's producers refreshes it exactly like the tabs above -- and search_box.html's hx-include reads it fresh on every
    keystroke. `q` is deliberately absent (search_box.html's own hx-include="this, ..." already
    serialises the live-typed value; duplicating it here would send `q` twice and Starlette would
    read the stale first occurrence). `page` is a literal `1`, not `propose_view.page`, mirroring the
@@ -103,8 +111,8 @@
     {% set _ = ns.rows.append([
         {'text': p.filename, 'mono': True, 'title': p.original_path},
         {'text': p.proposed_filename},
-        {'text': (p.proposed_path or "—"), 'mono': True},
-        {'text': llm_model, 'mono': True, 'color': 'text-gray-500 dark:text-gray-500'},
+        {'text': (p.proposed_path or "—"), 'mono': True, 'wrap': True, 'title': (p.proposed_path or "No proposed path")},
+        {'text': llm_model, 'mono': True, 'title': llm_model, 'color': 'text-gray-500 dark:text-gray-500'},
         {'text': _conf_text, 'mono': True, 'color': _conf_color},
     ]) %}
 {% endfor %}
@@ -131,24 +139,39 @@
     {% set empty_body = "Run the AI proposal generation pipeline to get started." %}
 {% endif %}
 {% set row_id_prefix = "propose-row" %}
-{# phaze-a6hm.11: the SELECTION SCOPE. `x-data` here (rather than outside the container, where the
-   legacy proposal_content.html used to put it -- phaze-a6hm.12 deleted that template) is
-   deliberate and is the correct choice for THIS container:
-   every swap into #propose-workspace-list replaces these rows wholesale, so a selection that
-   survived the swap would be a set of ids that are no longer on screen -- after a bulk approve the
-   acted rows have left the pending tab entirely, and after a page change the ticked ids are not
-   rendered at all, yet the bar would still offer to act on them. Resetting with the rows is the
-   honest behaviour: the selection means "these visible rows", and the visible rows just changed.
-
-   `picked` is recomputed from the DOM on every `selection-changed` (dispatched by the checkboxes
-   and the select-all in _file_table.html) rather than incremented, so it cannot drift out of sync
-   with the boxes that are actually ticked -- and it is the boxes, not this number, that the request
-   serialises. The count is a readout of the truth, never a second copy of it. #}
-<div x-data="{ picked: 0 }"
-     @selection-changed="picked = $el.querySelectorAll('input[name=\'proposal_ids\']:checked').length">
-{% include "pipeline/partials/_file_table.html" %}
-{% include "pipeline/partials/_propose_bulk_bar.html" %}
-</div>
+{% if propose_stats.pending > 0 %}
+<section aria-label="Proposal generation complete" class="mx-4 mb-4 flex flex-col gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-4 sm:mx-6 sm:flex-row sm:items-center sm:justify-between dark:border-emerald-900 dark:bg-emerald-950/30">
+    <div>
+        <p class="text-sm font-semibold text-emerald-800 dark:text-emerald-300">{{ propose_stats.pending }} candidate proposal{{ "s" if propose_stats.pending != 1 else "" }} ready for review</p>
+        <p class="mt-1 text-xs text-emerald-700 dark:text-emerald-400">Inspect candidates here, then approve, edit, or reject them in the canonical Review workspace.</p>
+    </div>
+    <a href="/s/rename" hx-get="/s/rename" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="inline-flex h-9 shrink-0 items-center justify-center rounded-md bg-amber-700 px-3 font-jura text-xs font-medium uppercase tracking-wider text-white hover:bg-amber-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg">Review changes →</a>
+</section>
+{% endif %}
+{% if rows %}
+    {# The router intentionally supplies no row_select_ids: Propose inspects candidates; Review decides. #}
+    {% include "pipeline/partials/_file_table.html" %}
+{% elif propose_view.q %}
+    {% call ui.state("empty", empty_heading, empty_body) %}
+        <a href="/s/propose?{{ propose_view.query(q='', page=1) }}"
+           hx-get="/s/propose?{{ propose_view.query(q='', page=1) }}"
+           hx-target="#{{ propose_list_id }}" hx-swap="innerHTML" hx-push-url="true"
+           hx-on:click="document.getElementById('propose-search').value = ''"
+           class="rounded-md border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border dark:text-gray-300 dark:hover:bg-white/5">Clear search</a>
+    {% endcall %}
+{% elif propose_view.status in ("approved", "rejected") %}
+    {% call ui.state("empty", empty_heading, empty_body) %}
+        <a href="/s/rename" hx-get="/s/rename" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="rounded-md bg-amber-700 px-3 py-2 text-sm font-semibold text-white hover:bg-amber-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Open Review</a>
+    {% endcall %}
+{% elif propose_generation_pending > 0 %}
+    {% call ui.state("empty", empty_heading, "Files are ready for candidate generation. Use Generate All to create proposals, then inspect them here.") %}
+        <a href="#propose-generate" class="rounded-md bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Go to Generate All</a>
+    {% endcall %}
+{% else %}
+    {% call ui.state("empty", empty_heading, empty_body) %}
+        <a href="/s/metadata" hx-get="/s/metadata" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="rounded-md bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Prepare files in Metadata</a>
+    {% endcall %}
+{% endif %}
 {# pager_url / pager_target / page_size_choices come from the ROUTER context, not a {% with %} here,
    because this partial has two producers: the full workspace render and the bare HX swap that the
    router returns directly. Anything the pager needs must therefore be present in the base context,
