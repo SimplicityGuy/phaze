@@ -1,63 +1,120 @@
-{# Persistent product navigation. Destinations remain native links; HTMX enhances ordinary navigation. #}
+{# Persistent product navigation. Destinations remain native links; HTMX enhances ordinary navigation.
+
+   phaze-tzy6s.13 -- the phone/tablet form changed. Below `lg` this used to stay mounted as a 64px
+   icon-only rail (`max-lg:w-16`) whose labels were `max-lg:sr-only`, leaving `title=` as the only
+   way to find out what an icon meant. That fails three ways at once: `title` never appears on touch
+   (there is no hover), it is unreliable for screen readers, and it is unreachable by keyboard -- so
+   on the devices where the rail was MOST compressed, the labels were entirely unavailable. Sixteen
+   destinations across four groups is also more than an icon strip can carry legibly.
+
+   The same <aside> now takes two forms: the static expanded rail at `lg` and up (the epic's desktop
+   constraint), and below that an off-canvas drawer opened from the header's Menu button. Labels are
+   visible text in BOTH forms -- the collapse-to-icons behaviour is gone entirely, not merely moved.
+
+   `title=` is retained on each link as a supplement for truncation at narrow desktop widths. It is
+   never the only carrier of a label: the visible <span> and the accessible name always agree. #}
 {% macro nav_link(route, label, icon, tone='pipeline') %}
 <a href="/s/{{ route }}"
    data-rail-stage="{{ route }}"
    hx-get="/s/{{ route }}" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
    title="{{ label }}"
    {% if stage == route or (route == 'rename' and stage in ('move', 'tagwrite')) %}aria-current="page"{% endif %}
-   class="rail-node w-full rounded-md px-2.5 py-2 flex items-center gap-2.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-lg:justify-center max-lg:px-0 {% if tone == 'review' %}text-amber-700 dark:text-amber-300 hover:bg-amber-500/10 aria-[current=page]:bg-blue-500/10 aria-[current=page]:text-blue-700 dark:aria-[current=page]:text-blue-300 aria-[current=page]:font-semibold aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]{% elif tone == 'operations' %}text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5 aria-[current=page]:bg-gray-200 dark:aria-[current=page]:bg-white/10{% else %}text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]{% endif %}">
+   class="rail-node w-full rounded-md px-2.5 py-2 flex items-center gap-2.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 {% if tone == 'review' %}text-amber-700 dark:text-amber-300 hover:bg-amber-500/10 aria-[current=page]:bg-blue-500/10 aria-[current=page]:text-blue-700 dark:aria-[current=page]:text-blue-300 aria-[current=page]:font-semibold aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]{% elif tone == 'operations' %}text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5 aria-[current=page]:bg-gray-200 dark:aria-[current=page]:bg-white/10{% else %}text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]{% endif %}">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="{{ icon }}"/></svg>
-    <span class="flex-1 text-sm max-lg:sr-only">{{ label }}</span>
+    <span class="flex-1 text-sm">{{ label }}</span>
     {% if caller %}{{ caller() }}{% endif %}
 </a>
 {% endmacro %}
 
-{% set count_class = "font-mono text-xs text-gray-500 max-lg:hidden shrink-0 whitespace-nowrap" %}
-{% set group_class = "mx-2 rounded-lg border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel px-2 py-1.5 max-lg:mx-0 max-lg:border-transparent max-lg:bg-transparent max-lg:px-0" %}
-{% set heading_class = "font-jura text-[10px] uppercase tracking-[0.2em] text-gray-500 px-1.5 mb-1 max-lg:sr-only" %}
+{% set count_class = "font-mono text-xs text-gray-500 shrink-0 whitespace-nowrap" %}
+{% set group_class = "mx-2 rounded-lg border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel px-2 py-1.5" %}
+{% set heading_class = "font-jura text-[10px] uppercase tracking-[0.2em] text-gray-500 px-1.5 mb-1" %}
 
-<aside x-data class="w-[280px] max-lg:w-16 shrink-0 overflow-y-auto border-r border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel py-4" aria-label="Pipeline navigation">
-    <nav aria-label="Pipeline stages" class="space-y-2">
-        <section class="{{ group_class }}" aria-labelledby="nav-overview">
-            <h2 id="nav-overview" class="{{ heading_class }} text-blue-500 dark:text-blue-400/80">Overview</h2>
-            {% call nav_link('summary', 'Summary', 'M10.5 6a7.5 7.5 0 1 0 7.5 7.5h-7.5V6Zm3 4.5H21A7.5 7.5 0 0 0 13.5 3v7.5Z') %}{% endcall %}
-            {% call nav_link('files', 'Files', 'M3.75 4.5h16.5v15H3.75v-15Zm0 4.5h16.5M8.25 9v10.5') %}{% endcall %}
-        </section>
+{# The nav body. Defined once and mounted once -- see the <aside> below for why there is no second copy. #}
+{% macro rail_nav() %}
+<nav aria-label="Pipeline stages" class="space-y-2">
+    <section class="{{ group_class }}" aria-labelledby="nav-overview">
+        <h2 id="nav-overview" class="{{ heading_class }} text-blue-500 dark:text-blue-400/80">Overview</h2>
+        {% call nav_link('summary', 'Summary', 'M10.5 6a7.5 7.5 0 1 0 7.5 7.5h-7.5V6Zm3 4.5H21A7.5 7.5 0 0 0 13.5 3v7.5Z') %}{% endcall %}
+        {% call nav_link('files', 'Files', 'M3.75 4.5h16.5v15H3.75v-15Zm0 4.5h16.5M8.25 9v10.5') %}{% endcall %}
+    </section>
 
-        <section class="{{ group_class }}" aria-labelledby="nav-pipeline">
-            <h2 id="nav-pipeline" class="{{ heading_class }}">Pipeline</h2>
-            {% call nav_link('discover', 'Discover', 'M3.75 9.75h16.5l-.9 8.1a2.25 2.25 0 0 1-2.24 2H6.89a2.25 2.25 0 0 1-2.24-2l-.9-8.1Zm2.25 0V5.25h4.5l1.5 1.5h6v3') %}
-                <span class="{{ count_class }}" x-text="$store.pipeline.discovered" :title="$store.pipeline.discovered + ' files discovered'" :aria-label="$store.pipeline.discovered + ' files discovered'">0</span>
-            {% endcall %}
-            {% call nav_link('metadata', 'Metadata', 'M6 3.75h7.5l4.5 4.5v12H6v-16.5Zm7.5 0v4.5H18M9 13.5h6M9 16.5h4.5') %}
-                <span class="{{ count_class }}" x-text="$store.pipeline.metadataStatusKnown ? `${$store.pipeline.metadataStatusDone} / ${$store.pipeline.metadataStatusTotal}` : '— / —'" :title="$store.pipeline.metadataStatusKnown ? $store.pipeline.metadataStatusDone + ' of ' + $store.pipeline.metadataStatusTotal + ' metadata files done' : 'Metadata status unavailable'" :aria-label="$store.pipeline.metadataStatusKnown ? $store.pipeline.metadataStatusDone + ' of ' + $store.pipeline.metadataStatusTotal + ' metadata files done' : 'Metadata status unavailable'">— / —</span>
-                <span x-show="$store.pipeline.metadataOrphan > 0" x-cloak role="status" :title="$store.pipeline.metadataOrphan + ' orphaned metadata file(s) awaiting recovery'" :aria-label="$store.pipeline.metadataOrphan + ' orphaned metadata file(s) awaiting recovery'" class="{{ count_class }} font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400" x-text="$store.pipeline.metadataOrphan">0</span>
-            {% endcall %}
-            {% call nav_link('analyze', 'Analyze', 'M9.75 3v6l-4.5 7.5h13.5L14.25 9V3M8.25 3h7.5') %}
-                <span class="{{ count_class }}" x-text="`${$store.pipeline.analyzeDone} / ${$store.pipeline.analyzeTotal}`" :title="$store.pipeline.analyzeDone + ' of ' + $store.pipeline.analyzeTotal + ' analyze files done'" :aria-label="$store.pipeline.analyzeDone + ' of ' + $store.pipeline.analyzeTotal + ' analyze files done'">0 / 0</span>
-                <span x-show="$store.pipeline.analyzeOrphan > 0" x-cloak role="status" :title="$store.pipeline.analyzeOrphan + ' orphaned analyze file(s) awaiting recovery'" :aria-label="$store.pipeline.analyzeOrphan + ' orphaned analyze file(s) awaiting recovery'" class="{{ count_class }} font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400" x-text="$store.pipeline.analyzeOrphan">0</span>
-            {% endcall %}
-            {% call nav_link('tracklist', 'Tracklists', 'M8.25 6.75h12M8.25 12h12M8.25 17.25h12M3.75 6.75h.01M3.75 12h.01M3.75 17.25h.01') %}
-                <span class="{{ count_class }}" x-text="$store.pipeline.tracklistDone" :title="$store.pipeline.tracklistDone + ' tracklist files done'" :aria-label="$store.pipeline.tracklistDone + ' tracklist files done'">0</span>
-            {% endcall %}
-            {% call nav_link('propose', 'Propose changes', 'M12 3v18M3 12h18M5.5 5.5l13 13M18.5 5.5l-13 13') %}
-                <span class="{{ count_class }}" x-text="`${$store.pipeline.proposalsDone} / ${$store.pipeline.proposalsTotal}`" :title="$store.pipeline.proposalsDone + ' of ' + $store.pipeline.proposalsTotal + ' proposals done'" :aria-label="$store.pipeline.proposalsDone + ' of ' + $store.pipeline.proposalsTotal + ' proposals done'">0 / 0</span>
-            {% endcall %}
-        </section>
+    <section class="{{ group_class }}" aria-labelledby="nav-pipeline">
+        <h2 id="nav-pipeline" class="{{ heading_class }}">Pipeline</h2>
+        {% call nav_link('discover', 'Discover', 'M3.75 9.75h16.5l-.9 8.1a2.25 2.25 0 0 1-2.24 2H6.89a2.25 2.25 0 0 1-2.24-2l-.9-8.1Zm2.25 0V5.25h4.5l1.5 1.5h6v3') %}
+            <span class="{{ count_class }}" x-text="$store.pipeline.discovered" :title="$store.pipeline.discovered + ' files discovered'" :aria-label="$store.pipeline.discovered + ' files discovered'">0</span>
+        {% endcall %}
+        {% call nav_link('metadata', 'Metadata', 'M6 3.75h7.5l4.5 4.5v12H6v-16.5Zm7.5 0v4.5H18M9 13.5h6M9 16.5h4.5') %}
+            <span class="{{ count_class }}" x-text="$store.pipeline.metadataStatusKnown ? `${$store.pipeline.metadataStatusDone} / ${$store.pipeline.metadataStatusTotal}` : '— / —'" :title="$store.pipeline.metadataStatusKnown ? $store.pipeline.metadataStatusDone + ' of ' + $store.pipeline.metadataStatusTotal + ' metadata files done' : 'Metadata status unavailable'" :aria-label="$store.pipeline.metadataStatusKnown ? $store.pipeline.metadataStatusDone + ' of ' + $store.pipeline.metadataStatusTotal + ' metadata files done' : 'Metadata status unavailable'">— / —</span>
+            <span x-show="$store.pipeline.metadataOrphan > 0" x-cloak role="status" :title="$store.pipeline.metadataOrphan + ' orphaned metadata file(s) awaiting recovery'" :aria-label="$store.pipeline.metadataOrphan + ' orphaned metadata file(s) awaiting recovery'" class="{{ count_class }} font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400" x-text="$store.pipeline.metadataOrphan">0</span>
+        {% endcall %}
+        {% call nav_link('analyze', 'Analyze', 'M9.75 3v6l-4.5 7.5h13.5L14.25 9V3M8.25 3h7.5') %}
+            <span class="{{ count_class }}" x-text="`${$store.pipeline.analyzeDone} / ${$store.pipeline.analyzeTotal}`" :title="$store.pipeline.analyzeDone + ' of ' + $store.pipeline.analyzeTotal + ' analyze files done'" :aria-label="$store.pipeline.analyzeDone + ' of ' + $store.pipeline.analyzeTotal + ' analyze files done'">0 / 0</span>
+            <span x-show="$store.pipeline.analyzeOrphan > 0" x-cloak role="status" :title="$store.pipeline.analyzeOrphan + ' orphaned analyze file(s) awaiting recovery'" :aria-label="$store.pipeline.analyzeOrphan + ' orphaned analyze file(s) awaiting recovery'" class="{{ count_class }} font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400" x-text="$store.pipeline.analyzeOrphan">0</span>
+        {% endcall %}
+        {% call nav_link('tracklist', 'Tracklists', 'M8.25 6.75h12M8.25 12h12M8.25 17.25h12M3.75 6.75h.01M3.75 12h.01M3.75 17.25h.01') %}
+            <span class="{{ count_class }}" x-text="$store.pipeline.tracklistDone" :title="$store.pipeline.tracklistDone + ' tracklist files done'" :aria-label="$store.pipeline.tracklistDone + ' tracklist files done'">0</span>
+        {% endcall %}
+        {% call nav_link('propose', 'Propose changes', 'M12 3v18M3 12h18M5.5 5.5l13 13M18.5 5.5l-13 13') %}
+            <span class="{{ count_class }}" x-text="`${$store.pipeline.proposalsDone} / ${$store.pipeline.proposalsTotal}`" :title="$store.pipeline.proposalsDone + ' of ' + $store.pipeline.proposalsTotal + ' proposals done'" :aria-label="$store.pipeline.proposalsDone + ' of ' + $store.pipeline.proposalsTotal + ' proposals done'">0 / 0</span>
+        {% endcall %}
+    </section>
 
-        <section class="{{ group_class }} bg-amber-500/[0.06] border-amber-500/25" aria-labelledby="nav-review">
-            <h2 id="nav-review" class="{{ heading_class }} text-amber-600 dark:text-amber-400/80">Review</h2>
-            {% call nav_link('rename', 'Changes Review', 'M16.5 3.75 20.25 7.5 9 18.75l-4.5.75.75-4.5L16.5 3.75Z', 'review') %}{% endcall %}
-            {% call nav_link('dedupe', 'Duplicates', 'M6 6.75V4.5h13.5v13.5h-2.25M4.5 6.75h12.75V19.5H4.5V6.75Z', 'review') %}{% endcall %}
-            {% call nav_link('cue', 'Cue sheets', 'M9 9l10.5-3v10.5a2.25 2.25 0 1 1-1.5-2.12V3L9 6v10.5a2.25 2.25 0 1 1-1.5-2.12', 'review') %}{% endcall %}
-            {% call nav_link('apply', 'Execute approved', 'M5.25 5.65v12.7c0 .86.92 1.4 1.67.99l11.54-6.35a1.13 1.13 0 0 0 0-1.98L6.92 4.67a1.13 1.13 0 0 0-1.67.98Z', 'review') %}{% endcall %}
-        </section>
+    <section class="{{ group_class }} bg-amber-500/[0.06] border-amber-500/25" aria-labelledby="nav-review">
+        <h2 id="nav-review" class="{{ heading_class }} text-amber-600 dark:text-amber-400/80">Review</h2>
+        {% call nav_link('rename', 'Changes Review', 'M16.5 3.75 20.25 7.5 9 18.75l-4.5.75.75-4.5L16.5 3.75Z', 'review') %}{% endcall %}
+        {% call nav_link('dedupe', 'Duplicates', 'M6 6.75V4.5h13.5v13.5h-2.25M4.5 6.75h12.75V19.5H4.5V6.75Z', 'review') %}{% endcall %}
+        {% call nav_link('cue', 'Cue sheets', 'M9 9l10.5-3v10.5a2.25 2.25 0 1 1-1.5-2.12V3L9 6v10.5a2.25 2.25 0 1 1-1.5-2.12', 'review') %}{% endcall %}
+        {% call nav_link('apply', 'Execute approved', 'M5.25 5.65v12.7c0 .86.92 1.4 1.67.99l11.54-6.35a1.13 1.13 0 0 0 0-1.98L6.92 4.67a1.13 1.13 0 0 0-1.67.98Z', 'review') %}{% endcall %}
+    </section>
 
-        <section class="{{ group_class }}" aria-labelledby="nav-operations">
-            <h2 id="nav-operations" class="{{ heading_class }}">Operations</h2>
-            {% call nav_link('operations', 'Routing', 'M4.5 6.75h10.75m0 0-3-3m3 3-3 3m7.25 7.5H8.75m0 0 3 3m-3-3 3-3', 'operations') %}{% endcall %}
-            {% call nav_link('audit', 'Audit log', 'M8.25 3.75h7.5M9 7.5h6M6 3.75h12v16.5H6V3.75Zm3 8.25h6m-6 3h6', 'operations') %}{% endcall %}
-            {% call nav_link('agents', 'Agents & compute lanes', 'M8.25 3v1.5M12 3v1.5M15.75 3v1.5M4.5 8.25H3m18 0h-1.5M6.75 4.5h10.5a2.25 2.25 0 0 1 2.25 2.25v10.5a2.25 2.25 0 0 1-2.25 2.25H6.75a2.25 2.25 0 0 1-2.25-2.25V6.75A2.25 2.25 0 0 1 6.75 4.5Z', 'operations') %}{% endcall %}
-        </section>
-    </nav>
-</aside>
+    <section class="{{ group_class }}" aria-labelledby="nav-operations">
+        <h2 id="nav-operations" class="{{ heading_class }}">Operations</h2>
+        {% call nav_link('operations', 'Routing', 'M4.5 6.75h10.75m0 0-3-3m3 3-3 3m7.25 7.5H8.75m0 0 3 3m-3-3 3-3', 'operations') %}{% endcall %}
+        {% call nav_link('audit', 'Audit log', 'M8.25 3.75h7.5M9 7.5h6M6 3.75h12v16.5H6V3.75Zm3 8.25h6m-6 3h6', 'operations') %}{% endcall %}
+        {% call nav_link('agents', 'Agents & compute lanes', 'M8.25 3v1.5M12 3v1.5M15.75 3v1.5M4.5 8.25H3m18 0h-1.5M6.75 4.5h10.5a2.25 2.25 0 0 1 2.25 2.25v10.5a2.25 2.25 0 0 1-2.25 2.25H6.75a2.25 2.25 0 0 1-2.25-2.25V6.75A2.25 2.25 0 0 1 6.75 4.5Z', 'operations') %}{% endcall %}
+    </section>
+</nav>
+{% endmacro %}
+
+{# ONE <aside>, two presentations. Below `lg` it is an off-canvas drawer; at `lg` and up it is the
+   static expanded rail the epic's desktop constraint calls for.
+
+   Deliberately NOT two rendered copies (a desktop rail plus a separate drawer). Two copies duplicate
+   every heading id, give the document two identically-named navigation landmarks, and let a
+   destination drift into existing on one surface but not the other. One copy, moved by CSS, cannot.
+
+   Closed on phone means `invisible`, not merely translated off-screen. A purely transformed element
+   is still in the tab order, so a keyboard user would tab through sixteen off-screen destinations
+   before reaching the workspace; `visibility: hidden` removes it, and `lg:visible` restores it on
+   desktop where the drawer state is irrelevant.
+
+   The drawer closes after any successful HTMX navigation started inside it (htmx events bubble to
+   this wrapper) -- otherwise it would sit over the workspace it just navigated to. #}
+<div x-data="{ navOpen: false }"
+     @rail:open.window="navOpen = true"
+     @keydown.escape.window="navOpen = false"
+     @htmx:after-request="navOpen = false"
+     class="contents">
+
+    <div x-show="navOpen" x-cloak aria-hidden="true" @click="navOpen = false" class="fixed inset-0 z-40 bg-black/50 lg:hidden"></div>
+
+    <aside x-trap.noscroll="navOpen"
+           aria-label="Pipeline navigation"
+           :class="navOpen ? 'max-lg:translate-x-0 max-lg:visible' : 'max-lg:-translate-x-full max-lg:invisible'"
+           class="w-[280px] shrink-0 overflow-y-auto border-r border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel py-4 lg:visible lg:translate-x-0 max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-50 max-lg:w-[min(20rem,85vw)] max-lg:shadow-xl motion-safe:max-lg:transition-transform">
+
+        {# Drawer chrome -- phone/tablet only; the desktop rail needs no title bar or close control.
+           The title is a <p>, NOT an <h2>: the four <h2>s in this partial are the domain groups
+           (Overview / Pipeline / Review / Operations) and that outline is the navigation's structure.
+           A fifth heading restating the landmark's own aria-label would add a level to the heading
+           outline that carries no destination -- noise for anyone navigating by heading. #}
+        <div class="mb-2 flex items-center justify-between px-4 lg:hidden">
+            <p class="font-jura text-sm font-medium uppercase tracking-[0.15em] text-gray-700 dark:text-gray-300">Navigation</p>
+            <button type="button" @click="navOpen = false" aria-label="Close navigation"
+                    class="inline-flex h-11 w-11 items-center justify-center rounded-md text-gray-500 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-gray-400 dark:hover:text-gray-100"><span aria-hidden="true">✕</span></button>
+        </div>
+
+        {{ rail_nav() }}
+    </aside>
+</div>

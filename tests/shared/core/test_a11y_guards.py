@@ -267,20 +267,33 @@ def test_detail_pane_late_swap_cannot_resurrect_dismissed_pane() -> None:
 
 
 def test_rail_root_carries_alpine_x_data() -> None:
-    """The rail <aside> must carry x-data — Alpine only walks x-data-rooted subtrees.
+    """The rail subtree must be x-data-rooted — Alpine only walks x-data-rooted subtrees.
 
     Without it every x-text numeral, x-show orphan badge, and pause/priority binding in the
     rail is silently inert: the badges forever render their server-side "0" defaults no matter
     what $store.pipeline holds (CONSOLE-02: the Analyze badge read 0 while 2,183 analyze jobs
     were in flight). Invisible to markup/httpx tests — only a live browser surfaced it.
+
+    phaze-tzy6s.13 moved the Alpine root one level out. The <aside> is now wrapped by the
+    drawer-state element (`x-data="{ navOpen: false }"`, `display:contents` so layout is
+    unaffected), and the aside itself carries x-trap rather than x-data. The invariant is
+    unchanged and is what this asserts: the OUTERMOST element of the rail partial is the Alpine
+    root, so everything below it -- aside, nav, every store-bound numeral -- is inside a walked
+    subtree. Asserting on the outermost element rather than specifically on <aside> keeps the
+    guard about the property that matters instead of about which tag happens to hold it.
     """
-    html = _strip_comments(_RAIL.read_text())
-    m = re.search(r"<aside\b[^>]*>", html)
-    assert m, "expected the rail <aside> root"
-    assert re.search(r"\bx-data\b", m.group(0)), (
-        "the rail <aside> must carry a bare x-data so Alpine binds the rail subtree — without "
-        "it every store-bound numeral/badge in the rail is inert and renders 0 forever"
+    # Macro DEFINITIONS are not rendered where they sit, so they are not the root; drop them (and
+    # the Jinja comments) to find the element the partial actually emits first.
+    html = re.sub(r"\{%-?\s*macro\b.*?\{%-?\s*endmacro\s*-?%\}", "", _strip_comments(_RAIL.read_text()), flags=re.DOTALL)
+    html = re.sub(r"\{%.*?%\}", "", html, flags=re.DOTALL).lstrip()
+    root = re.match(r"<(?P<tag>[a-z]+)\b(?P<attrs>[^>]*)>", html)
+    assert root, f"expected the rail partial to emit an element first, got: {html[:80]!r}"
+    assert re.search(r"\bx-data\b", root.group("attrs")), (
+        f"the rail's outermost element (<{root.group('tag')}>) must carry x-data so Alpine binds the "
+        "rail subtree — without it every store-bound numeral/badge in the rail is inert and renders 0 forever"
     )
+    # The nav must actually be INSIDE that root, not a sibling after it.
+    assert "<aside" in html[root.end() :], "the rail <aside> escaped the Alpine root — its bindings would be inert"
 
 
 # --- phaze-am7c: detail-pane own-tick must not steal focus every 5s ------------------
