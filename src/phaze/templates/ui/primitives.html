@@ -12,7 +12,7 @@
 {% endmacro %}
 
 {% macro metric_strip(label='Metrics') %}
-<section aria-label="{{ label }}" class="overflow-x-auto rounded-lg border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel">
+<section aria-label="{{ label }}" class="relative overflow-x-auto rounded-lg border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-panel">
     <dl class="grid min-w-max auto-cols-fr grid-flow-col divide-x divide-gray-200 dark:divide-phaze-border">{{ caller() }}</dl>
 </section>
 {% endmacro %}
@@ -68,8 +68,18 @@
 </form>
 {% endmacro %}
 
+{# phaze-mrg1c: `relative` is load-bearing, not decoration. `overflow-x-auto` only clips descendants
+   whose CONTAINING BLOCK is this div or something inside it. A `position: absolute` descendant with
+   no positioned ancestor -- every `.sr-only` span is one, because Tailwind's sr-only is
+   `position:absolute` -- resolves its containing block to the initial containing block instead, so
+   it is laid out at its static position (out at the far edge of a wide table) and escapes the
+   scroller entirely. It then lands in the DOCUMENT's scrollable overflow and the whole page scrolls
+   sideways, dragging the header and rail off screen, even though the table itself scrolled
+   correctly the whole time. `relative` makes this div the containing block, so those descendants are
+   clipped here where they belong. Enforced by
+   test_every_table_scroll_container_is_a_containing_block. #}
 {% macro data_table(label, describedby='', id='') %}
-<div class="overflow-x-auto">
+<div class="relative overflow-x-auto">
     <table{% if id %} id="{{ id }}"{% endif %} aria-label="{{ label }}"{% if describedby %} aria-describedby="{{ describedby }}"{% endif %} class="w-full text-left text-sm">{{ caller() }}</table>
 </div>
 {% endmacro %}
@@ -131,7 +141,7 @@
             <h2 id="{{ id }}-title" tabindex="-1" class="font-jura text-sm font-medium uppercase tracking-[0.15em]">{{ title }}</h2>
             <form method="dialog"><button aria-label="Close {{ title }}" class="rounded-md p-2 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100 {{ _focus }}"><span aria-hidden="true">✕</span></button></form>
         </div>
-        <div class="min-h-0 flex-1 overflow-y-auto p-4">{{ caller() }}</div>
+        <div class="relative min-h-0 flex-1 overflow-y-auto p-4">{{ caller() }}</div>
     </div>
 </dialog>
 {% endmacro %}

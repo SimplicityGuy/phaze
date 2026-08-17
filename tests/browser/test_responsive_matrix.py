@@ -86,8 +86,17 @@ def _below_lg(viewport: str) -> bool:
 
 
 # (workspace, viewport) pairs that DO scroll the document sideways once they have rows in them.
-# Found by this sweep on 2026-08-17 and filed as phaze-mrg1c rather than fixed here, per
-# phaze-fk1ww's brief.
+#
+# EMPTY, and that is the point. It held four pairs when this sweep first ran on 2026-08-17 --
+# ("files", "desktop"), ("files", "tablet"), ("audit", "tablet"), ("audit", "phone") -- filed as
+# phaze-mrg1c rather than fixed there, per phaze-fk1ww's brief. All four were one defect: the table
+# scroll containers were unpositioned, so the `position: absolute` `.sr-only` span in each table's
+# last <th> resolved against the initial containing block, escaped the scroller it was nested in,
+# and put its static position (the far edge of a table up to 1890px wide) into the DOCUMENT's
+# scrollable overflow. `relative` on the scroll container fixed every pair at once; see
+# ui/primitives.html's `data_table` macro and
+# test_cross_workspace_responsive_a11y.test_every_scroll_container_is_a_containing_block, which is
+# the markup-lane guard that keeps this map empty.
 #
 # This is not a suppression list and must not become one. Two guards keep it honest:
 #   * an overflow at any pair NOT listed here still fails the sweep, so a new regression is caught;
@@ -95,12 +104,7 @@ def _below_lg(viewport: str) -> bool:
 #     defect is fixed instead of surviving as stale text that quietly excuses a future one.
 # Widening it to a whole viewport or a bare workspace name would defeat both. Add pairs only with a
 # bead id, and delete them with the fix.
-KNOWN_OVERFLOW: dict[tuple[str, str], str] = {
-    ("files", "desktop"): "phaze-mrg1c",
-    ("files", "tablet"): "phaze-mrg1c",
-    ("audit", "tablet"): "phaze-mrg1c",
-    ("audit", "phone"): "phaze-mrg1c",
-}
+KNOWN_OVERFLOW: dict[tuple[str, str], str] = {}
 
 
 async def _open(page: Any, path: str) -> None:

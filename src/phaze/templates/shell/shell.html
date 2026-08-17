@@ -238,7 +238,17 @@
 
         <!-- Center workspace — the single stable swap target every rail node innerHTML-swaps. -->
         <main class="flex-1 min-w-0 bg-white dark:bg-phaze-bg">
-            <div id="stage-workspace" data-stage="{{ stage }}" data-document-title="{{ document_title }}" class="h-full overflow-y-auto">{% include stage_partial %}</div>
+            {# phaze-mrg1c: `relative` is the shell's backstop for ADR-0009's "the page never scrolls
+               sideways". `overflow-y-auto` already makes this a scroll container on BOTH axes (a
+               non-`visible` value on one axis computes the other to `auto`), but a scroll container
+               only clips descendants it is the containing block for. An unpositioned one lets any
+               `position: absolute` descendant -- notably every `.sr-only` span -- resolve against the
+               initial containing block instead, escape the workspace, and land in the DOCUMENT's
+               scrollable overflow, dragging the header and rail off screen. With `relative` the worst
+               a future wrapper omission can do is scroll THIS pane, which the markup sweep still
+               catches. `position: fixed` descendants (the drawer, the force-skip dialog) are
+               unaffected -- they resolve against the viewport regardless. #}
+            <div id="stage-workspace" data-stage="{{ stage }}" data-document-title="{{ document_title }}" class="relative h-full overflow-y-auto">{% include stage_partial %}</div>
         </main>
     </div>
 
