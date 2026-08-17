@@ -4,8 +4,10 @@
    icon-only rail (`max-lg:w-16`) whose labels were `max-lg:sr-only`, leaving `title=` as the only
    way to find out what an icon meant. That fails three ways at once: `title` never appears on touch
    (there is no hover), it is unreliable for screen readers, and it is unreachable by keyboard -- so
-   on the devices where the rail was MOST compressed, the labels were entirely unavailable. Sixteen
-   destinations across four groups is also more than an icon strip can carry legibly.
+   on the devices where the rail was MOST compressed, the labels were entirely unavailable. Fourteen
+   destinations across four groups is also more than an icon strip can carry legibly. (Fourteen, not
+   the sixteen .13's ADR first recorded -- phaze-tzy6s.11 had already merged three review nodes into
+   one Changes Review destination; corrected by phaze-tzy6s.17.)
 
    The same <aside> now takes two forms: the static expanded rail at `lg` and up (the epic's desktop
    constraint), and below that an off-canvas drawer opened from the header's Menu button. Labels are
@@ -91,7 +93,28 @@
 
    The drawer closes after any successful HTMX navigation started inside it (htmx events bubble to
    this wrapper) -- otherwise it would sit over the workspace it just navigated to. #}
-<div x-data="{ navOpen: false }"
+{# phaze-tzy6s.17 (CR-13-1), two additions to this wrapper:
+
+   `isNarrow` mirrors the Tailwind `lg` breakpoint into Alpine, because ONE node serving two
+   presentations must also serve two ACCESSIBILITY ROLES, and a role cannot be switched by a CSS
+   class. Below `lg` this <aside> is a focus-trapped overlay behind a backdrop -- a modal dialog --
+   while at `lg`+ it is a static navigation landmark, where role="dialog"/aria-modal would be
+   actively wrong. THE 1024px HERE IS A DUPLICATE OF TAILWIND'S `lg` and the two cannot be made to
+   share a definition from a template: if the breakpoint is ever retuned, this literal must move
+   with it or the role and the layout disagree. tests/shared/core/test_rail_narrow_width.py pins the
+   two against each other so a divergence fails the build rather than shipping.
+
+   `rail:state` publishes navOpen outward. The drawer trigger lives in header.html, outside this
+   Alpine scope, and needs the state for its `aria-expanded` -- it cannot simply track its own
+   clicks, because Escape, the backdrop, the close button and any successful HTMX navigation all
+   close the drawer without the trigger hearing about it. x-effect fires on init and on every
+   subsequent change, so the header cannot miss an edge or start out of sync. #}
+<div x-data="{
+        navOpen: false,
+        isNarrow: window.matchMedia('(max-width: 1023.98px)').matches,
+     }"
+     x-init="window.matchMedia('(max-width: 1023.98px)').addEventListener('change', (e) => { isNarrow = e.matches });"
+     x-effect="$dispatch('rail:state', { open: navOpen })"
      @rail:open.window="navOpen = true"
      @keydown.escape.window="navOpen = false"
      @htmx:after-request="navOpen = false"
@@ -99,7 +122,21 @@
 
     <div x-show="navOpen" x-cloak aria-hidden="true" @click="navOpen = false" class="fixed inset-0 z-40 bg-black/50 lg:hidden"></div>
 
+    {# phaze-tzy6s.17 (CR-13-1): role="dialog" + aria-modal below `lg` ONLY. This restores the
+       pairing the rest of the tree already treats as an invariant -- record_host.html and
+       _force_skip_dialog.html both carry x-trap WITH role="dialog"/aria-modal, and
+       _detail_pane.html documents the converse explicitly ("DROPS the modal trap -- role="region"
+       (NOT role="dialog"), NO aria-modal, NO x-trap, NO backdrop"). This <aside> had the trap and
+       the backdrop but neither attribute, so below `lg` a screen reader announced a focus-trapping
+       overlay as an ordinary navigation landmark: the user is told they can leave, and cannot.
+
+       Both are bound rather than static so they VANISH at `lg`+ (Alpine removes an attribute bound
+       to null). A permanent role="dialog" would be the mirror-image defect on desktop, where the
+       rail is not modal and traps nothing. #}
     <aside x-trap.noscroll="navOpen"
+           id="rail-drawer"
+           :role="isNarrow ? 'dialog' : null"
+           :aria-modal="isNarrow ? 'true' : null"
            aria-label="Pipeline navigation"
            :class="navOpen ? 'max-lg:translate-x-0 max-lg:visible' : 'max-lg:-translate-x-full max-lg:invisible'"
            class="w-[280px] shrink-0 overflow-y-auto border-r border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel py-4 lg:visible lg:translate-x-0 max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-50 max-lg:w-[min(20rem,85vw)] max-lg:shadow-xl motion-safe:max-lg:transition-transform">

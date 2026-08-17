@@ -134,6 +134,36 @@ async def test_phone_navigation_is_a_drawer_not_a_permanent_icon_rail(phone_page
     assert await label.is_visible(), "destination labels are not visible in the drawer"
 
 
+async def test_the_drawer_announces_its_open_state_and_modality_at_phone_width(phone_page: Any) -> None:
+    """phaze-tzy6s.17 (CR-13-1): aria-expanded tracks the drawer, and the open drawer is a dialog.
+
+    The structural guard can only prove the attributes are WRITTEN. Whether aria-expanded actually
+    flips, and whether the conditional role resolves to "dialog" at this width, are runtime facts
+    about Alpine's bindings -- exactly the class of claim .14 exists to check in a real browser
+    rather than against a template string.
+
+    The close path is asserted via Escape specifically because it is the one that does not involve
+    the trigger at all: a trigger tracking its own clicks would be left announcing "expanded" over a
+    drawer that is no longer there.
+    """
+    await _open(phone_page, "/s/summary")
+
+    trigger = phone_page.locator("#rail-drawer-trigger")
+    rail = phone_page.locator("#rail-drawer")
+
+    assert await trigger.get_attribute("aria-expanded") == "false", "closed drawer must not announce itself as expanded"
+
+    await trigger.click()
+    await rail.wait_for(state="visible")
+    assert await trigger.get_attribute("aria-expanded") == "true", "aria-expanded did not follow the drawer open"
+    assert await rail.get_attribute("role") == "dialog", "a focus-trapped overlay must resolve to role=dialog at phone width"
+    assert await rail.get_attribute("aria-modal") == "true", "the open drawer traps focus, so it must set aria-modal"
+
+    await phone_page.keyboard.press("Escape")
+    await rail.wait_for(state="hidden")
+    assert await trigger.get_attribute("aria-expanded") == "false", "Escape closed the drawer but the trigger still says expanded"
+
+
 async def test_closed_drawer_contributes_no_tab_stops(phone_page: Any) -> None:
     """The closed drawer must be untabbable — the assertion that catches a translate-only drawer.
 
