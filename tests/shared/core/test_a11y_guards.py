@@ -606,11 +606,26 @@ def test_the_duplicate_dark_utility_guard_sees_a_branch_colliding_with_the_stati
     assert _worst_case("dark:text-gray-400 {{ 'dark:text-gray-500' if muted }}") == 2
 
 
+def test_the_duplicate_dark_utility_guard_sees_two_independent_ifs_that_can_both_fire() -> None:
+    # Sequential `{% if %}`s are NOT alternatives -- nothing stops both conditions holding, so both
+    # colours land on the element together. The branch model has to keep them independent; collapsing
+    # sequential branches into one choice would silently exempt this.
+    assert _worst_case("{% if a %}dark:text-gray-400{% endif %} {% if b %}dark:text-gray-500{% endif %}") == 2
+
+
+def test_the_duplicate_dark_utility_guard_sees_through_a_nested_if() -> None:
+    # A duplicate does not become invisible by sitting one level deeper; the split recurses.
+    assert _worst_case("{% if a %}{% if b %}dark:text-gray-100 dark:text-gray-200{% endif %}{% endif %}") == 2
+
+
 def test_the_duplicate_dark_utility_guard_permits_genuine_jinja_alternatives() -> None:
     # The exemption the original guard was reaching for, kept exactly: a ternary and an if/else emit
     # ONE colour each, so they are alternatives, not duplicates. Narrowing must not break this.
     assert _worst_case("{{ 'dark:text-gray-100' if selected else 'dark:text-gray-400' }}") == 1
     assert _worst_case("{% if selected %} dark:text-gray-100 {% else %} dark:text-gray-400 {% endif %}") == 1
+    # An `{% elif %}` chain is the same thing with more arms -- the shape of _cue_preview.html and
+    # rail.html, which are the tree's real three-way alternatives and must stay exempt.
+    assert _worst_case("{% if a %}dark:text-red-400{% elif b %}dark:text-gray-300{% else %}dark:text-amber-300{% endif %}") == 1
 
 
 def test_the_duplicate_dark_utility_guard_permits_an_alpine_class_ternary() -> None:
