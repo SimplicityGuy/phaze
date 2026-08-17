@@ -22,8 +22,10 @@ already shipped once:
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from html import unescape
 from typing import TYPE_CHECKING
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 import uuid
 
 import pytest
@@ -91,6 +93,90 @@ async def test_workspace_renders_filter_tabs_and_search(
     # The count badges are corpus-wide, not page-wide: 6 total / 3 pending / 2 approved / 1 rejected.
     badges = [chunk.split("<")[0].strip() for chunk in body.split('rounded-full px-2 py-0.5 ml-1">')[1:]]
     assert badges == ["6", "3", "2", "1"], f"tab counts must be total/pending/approved/rejected, got {badges}"
+
+
+@pytest.mark.asyncio
+async def test_propose_success_and_empty_states_offer_direct_next_actions(
+    client: AsyncClient,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """Ready candidates lead to Review; an empty search offers a state-preserving clear action."""
+    await seed_pending_proposal(0.95, original_filename="candidate.mp3", proposed_filename="Candidate.mp3")
+
+    ready = (await client.get("/s/propose")).text
+    assert "candidate proposal ready for review" in ready
+    assert 'href="/s/rename"' in ready and 'hx-get="/s/rename"' in ready
+
+    empty_search = (await client.get("/s/propose?status=pending&q=missing", headers=_LIST_TARGET)).text
+    assert "No matches" in empty_search
+    assert "Clear search" in empty_search
+    assert 'hx-target="#propose-workspace-list"' in empty_search
+
+
+@pytest.mark.asyncio
+async def test_clear_search_reconciles_input_and_preserves_the_active_view(
+    client: AsyncClient,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """The clear action resets q/page only and its real request restores results under the same ordering."""
+    await seed_pending_proposal(0.9, original_filename="restored.mp3", proposed_filename="Restored.mp3")
+    query = "status=pending&q=missing&page=7&page_size=50&sort=proposed_path&order=desc"
+    empty = (await client.get(f"/s/propose?{query}", headers=_LIST_TARGET)).text
+    clear = empty.rsplit("<a ", 1)[1].split(">Clear search</a>", 1)[0]
+    clear_url = unescape(clear.split('hx-get="', 1)[1].split('"', 1)[0])
+    params = parse_qs(urlparse(clear_url).query, keep_blank_values=True)
+
+    assert params == {
+        "status": ["pending"],
+        "q": [""],
+        "page": ["1"],
+        "page_size": ["50"],
+        "sort": ["proposed_path"],
+        "order": ["desc"],
+    }
+    assert "hx-on:click=" in clear
+    assert "document.getElementById('propose-search').value = ''" in clear
+
+    restored = await client.get(clear_url, headers=_LIST_TARGET)
+    assert restored.status_code == 200
+    assert "Restored.mp3" in restored.text
+    assert '<input type="hidden" name="page_size" value="50">' in restored.text
+    assert '<input type="hidden" name="sort" value="proposed_path">' in restored.text
+    assert '<input type="hidden" name="order" value="desc">' in restored.text
+
+
+@pytest.mark.asyncio
+async def test_prepare_workspaces_keep_narrow_layout_actions_accessible(
+    client: AsyncClient,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """Responsive contracts stack workflow/actions before expanding at established breakpoints."""
+    await seed_pending_proposal(0.95, original_filename="responsive.mp3", proposed_filename="Responsive.mp3")
+    tracklist = (await client.get("/s/tracklist", headers={"HX-Request": "true"})).text
+    propose = (await client.get("/s/propose", headers={"HX-Request": "true"})).text
+
+    assert "grid gap-4 px-4 py-4 lg:grid-cols-2 sm:px-6" in tracklist
+    assert "flex flex-col items-start gap-2 sm:flex-row sm:items-center" in tracklist
+    assert "flex flex-col gap-3 rounded-lg" in propose and "sm:flex-row" in propose
+    assert 'class="overflow-x-auto"' in propose, "dense proposal rows retain horizontal access instead of clipping"
+
+
+@pytest.mark.asyncio
+async def test_propose_exposes_complete_candidate_values(
+    client: AsyncClient,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """Long candidate names and paths are available in full rather than as uninspectable ellipses."""
+    filename = "Artist - Event - A Candidate Filename Long Enough To Require Inspection.mp3"
+    path = "Artist/Event/Recording/Edition/Artist - Event - A Candidate Filename Long Enough To Require Inspection.mp3"
+    await seed_pending_proposal(0.9, proposed_filename=filename, proposed_path=path, original_filename="source.mp3")
+
+    body = (await client.get("/s/propose", headers={"HX-Request": "true"})).text
+    assert filename in body
+    assert f'title="{path}"' in body
+    path_cell = body.split(f'title="{path}"', 1)[0].rsplit("<td", 1)[1]
+    assert "whitespace-normal break-all font-mono" in path_cell
+    assert "truncate" not in path_cell
 
 
 @pytest.mark.asyncio

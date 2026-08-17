@@ -362,6 +362,21 @@ async def test_derive_cloud_hold_reason_queued_with_free_slots(session: AsyncSes
 
 
 @pytest.mark.asyncio
+async def test_derive_cloud_hold_reason_does_not_build_display_lane_metrics(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Routing diagnosis must not pay for queue/processed display metrics it never reads."""
+
+    async def forbidden_snapshot(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+        raise AssertionError("hold-reason diagnosis must use the routing-only snapshot")
+
+    monkeypatch.setattr(backends_mod, "get_settings", lambda: _cloud_hold_settings(cloud_enabled=True))
+    monkeypatch.setattr(backends_mod, "resolve_backends", lambda _settings: [ComputeAgentBackend(id="a1", rank=10, cap=2)])
+    monkeypatch.setattr(backends_mod, "_probe_availability", AsyncMock(return_value={"a1": False}))
+    monkeypatch.setattr(backends_mod, "get_backend_lane_snapshot", forbidden_snapshot)
+
+    assert await derive_cloud_hold_reason(session) == "held — no cloud backend reachable"
+
+
+@pytest.mark.asyncio
 async def test_derive_cloud_hold_reason_degrades_to_neutral_on_error(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """ANY unexpected exception collapses to the neutral "held" copy -- no causal claim, never a 500."""
 

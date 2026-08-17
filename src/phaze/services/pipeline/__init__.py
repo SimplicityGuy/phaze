@@ -73,10 +73,14 @@ from phaze.services.pipeline.analyze import (
 )
 from phaze.services.pipeline.buckets import (
     ORPHANED_BUCKET,
+    StageBucketSnapshot,
     _agent_stage_buckets,
     _empty_buckets,
+    _metadata_status_stmt,
     _safe_bucket_counts,
+    _safe_bucket_snapshot,
     _safe_orphan_split,
+    _stage_bucket_stmt,
 )
 from phaze.services.pipeline.cloud import (
     _backfill_candidates_stmt,
@@ -93,6 +97,7 @@ from phaze.services.pipeline.cloud import (
 )
 from phaze.services.pipeline.common import (
     _ACTIVE_CLOUD_STATUSES,
+    _BUSY_FUNCTION_TO_STAGE,
     MUSIC_VIDEO_TYPES,
     _safe_count,
 )
@@ -113,7 +118,6 @@ from phaze.services.pipeline.files import (
     get_files_page,
 )
 from phaze.services.pipeline.jobs import (
-    _BUSY_FUNCTION_TO_STAGE,
     _INFLIGHT_COUNT_SQL,
     _LIVE_KEYS_SQL,
     _MATCH_BUSY_FUNCTION,
@@ -133,10 +137,19 @@ from phaze.services.pipeline.orphans import (
     refresh_stage_orphan_counts,
 )
 from phaze.services.pipeline.pending import (
+    MetadataActivitySummary,
+    MetadataSelectionSummary,
+    MetadataStatusSnapshot,
+    PendingFilesPage,
+    _metadata_activity_stmt,
+    _metadata_pending_stmt,
     _pending_page_stmt,
     get_discovered_files_with_duration,
+    get_metadata_activity_summary,
     get_metadata_failed_files,
     get_metadata_pending_files,
+    get_metadata_selection_summary,
+    get_metadata_status_snapshot,
     get_pending_files_page,
 )
 from phaze.services.pipeline.proposals import (
@@ -152,9 +165,14 @@ from phaze.services.pipeline.reconciliation import (
 )
 from phaze.services.pipeline.stages import (
     _DEFAULT_CONTROLS,
+    _STAGE_ACTIVITY_SQL,
     _STATS_FANOUT_CAP,
+    StageActivitySnapshot,
+    _empty_stage_activity,
     _read_in_own_session,
     _stats_fanout,
+    get_stage_activity_counts,
+    get_stage_activity_snapshot,
     get_stage_controls,
     get_stage_progress,
 )
@@ -188,12 +206,19 @@ __all__ = [
     "_ORPHAN_DETAIL_STAGES",
     "_ORPHAN_TTL_SECONDS",
     "_PROPOSALS_BUSY_FUNCTION",
+    "_STAGE_ACTIVITY_SQL",
     "_STAGE_BUSY_SQL",
     "_STALL_ERROR_PREFIX",
     "_STATS_FANOUT_CAP",
     "AnalyzeFilesPage",
     "FilesPage",
     "FilesPageRow",
+    "MetadataActivitySummary",
+    "MetadataSelectionSummary",
+    "MetadataStatusSnapshot",
+    "PendingFilesPage",
+    "StageActivitySnapshot",
+    "StageBucketSnapshot",
     "_agent_stage_buckets",
     "_analyze_active_where",
     "_analyze_files_select",
@@ -202,15 +227,21 @@ __all__ = [
     "_cloud_window_clauses",
     "_compute_stage_orphan_counts",
     "_empty_buckets",
+    "_empty_stage_activity",
     "_files_page_stmt",
     "_kueue_backend_ids",
+    "_metadata_activity_stmt",
+    "_metadata_pending_stmt",
+    "_metadata_status_stmt",
     "_pending_page_stmt",
     "_project_analyze_rows",
     "_proposal_pending_clauses",
     "_read_in_own_session",
     "_safe_bucket_counts",
+    "_safe_bucket_snapshot",
     "_safe_count",
     "_safe_orphan_split",
+    "_stage_bucket_stmt",
     "_stats_fanout",
     "_tracklist_sets_page_stmt",
     "analyze_lanes_content_hash",
@@ -242,8 +273,11 @@ __all__ = [
     "get_live_job_keys",
     "get_match_busy_count",
     "get_match_pending_tracklists",
+    "get_metadata_activity_summary",
     "get_metadata_failed_files",
     "get_metadata_pending_files",
+    "get_metadata_selection_summary",
+    "get_metadata_status_snapshot",
     "get_pending_files_page",
     "get_proposal_busy_count",
     "get_proposal_pending_batches",
@@ -251,6 +285,8 @@ __all__ = [
     "get_pushing_count",
     "get_queue_activity",
     "get_scanned_total",
+    "get_stage_activity_counts",
+    "get_stage_activity_snapshot",
     "get_stage_busy_counts",
     "get_stage_controls",
     "get_stage_orphan_counts",

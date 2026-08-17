@@ -20,7 +20,7 @@ from sqlalchemy import exists, select
 from phaze.database import get_session
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
-from phaze.routers.pipeline._common import _NO_ACTIVE_AGENT_MESSAGE, _background_tasks, _stage_pill_oob, logger, router, templates
+from phaze.routers.pipeline._common import _NO_ACTIVE_AGENT_MESSAGE, _background_tasks, _files_retry_oob, logger, router, templates
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
 from phaze.services import enqueue_router
 from phaze.services.pipeline import get_file_stage_buckets, get_metadata_failed_files, get_metadata_pending_files
@@ -285,5 +285,4 @@ async def retry_metadata_failed_file(
     # happened yet (it will land on the next per-file retry / force-skip / poll-driven action).
     buckets = await get_file_stage_buckets(session, file_id)
     ack = templates.get_template("pipeline/partials/metadata_retry_response.html").render(count=1, no_active_agent=False)
-    pill_oob = _stage_pill_oob(file_id, "metadata", buckets.get("metadata", "failed"), id_prefix="files-stage-pill")
-    return HTMLResponse(ack + pill_oob)
+    return HTMLResponse(ack + _files_retry_oob(file_id, "metadata", buckets))

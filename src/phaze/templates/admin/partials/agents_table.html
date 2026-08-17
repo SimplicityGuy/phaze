@@ -53,6 +53,7 @@
    appearing in BOTH poll_url() and hx-vals would be sent twice and the handler would read whichever
    duplicate won. sort/order live in the URL; agent/clane live in hx-vals; neither repeats the other. #}
 <section id="agents-table-section"
+         x-init="const params = new URLSearchParams(location.search); if (params.has('agent') && params.has('clane')) { {% if selection_kind == 'agent' %}params.delete('clane');{% elif selection_kind == 'clane' %}params.delete('agent');{% else %}params.delete('agent'); params.delete('clane');{% endif %} history.replaceState({}, '', location.pathname + (params.size ? '?' + params.toString() : '')); }"
          hx-get="{{ sort.poll_url() }}"
          hx-trigger="every 5s"
          {# phaze-w92dg: `|| ""` — URLSearchParams.get() returns null for an absent param, and a null
@@ -64,10 +65,14 @@
          hx-swap="outerHTML"
          data-refreshed-at="{{ refreshed_at_iso }}"
          aria-labelledby="agents-table-heading"
-         aria-live="polite"
          class="space-y-6">
     <div class="border border-gray-200 dark:border-phaze-border rounded-lg p-4">
-    <h2 id="agents-table-heading" class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-3">Agents</h2>
+    <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+        <h2 id="agents-table-heading" class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-gray-700 dark:text-gray-300">Agents &amp; compute lanes</h2>
+        <p class="font-mono text-xs tabular-nums text-gray-500 dark:text-gray-400">
+            {{ agent_count }} agent{{ '' if agent_count == 1 else 's' }} · {{ compute_lane_count }} lane{{ '' if compute_lane_count == 1 else 's' }}
+        </p>
+    </div>
     {% if not rows %}
     <div class="text-center py-8">
         <p class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">No agents registered yet</p>
@@ -138,13 +143,13 @@
             </thead>
             <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
                 {% for row in rows %}
-                {# Phase 88 (88-01, DRILL-03 / D-09) + phaze-rdxfu: the row is the keyboard-accessible
-                   drill-in trigger, whether it names an agent or a derived compute lane —
+                {# Phase 88 (88-01, DRILL-03 / D-09) + phaze-rdxfu: each native table row has an
+                   explicit Details button, whether it names an agent or a derived compute lane —
                    row.selected is re-derived from ?agent=/?clane= by the #agents-table-section self-poll
-                   (D-02) so the ring survives every 5s outerHTML swap; an unknown/absent id highlights
+                   (D-02) so expanded state survives every 5s outerHTML swap; an unknown/absent id highlights
                    nothing. row.name/row.id stay Jinja-autoescaped (never |safe).
 
-                   The click re-fetches the WHOLE table (hx-target="#agents-table-section"
+                   The Details action re-fetches the WHOLE table (hx-target="#agents-table-section"
                    hx-swap="outerHTML") rather than innerHTML-swapping just the activity fragment into a
                    shared side pane (phaze-2u8v.6's original rationale, now shared by lane rows too) —
                    the detail is an EXPANDED ROW, and that row's swap target does not exist in the DOM
@@ -156,24 +161,7 @@
                    live-but-stale one (see admin_agents.py:AGENTS_SORT docstring on why the two channels
                    must stay disjoint). `sort.poll_url()` re-states the CURRENT sort/order (a click is a
                    re-read of the active view plus one new selection, not a re-sort). #}
-                <tr id="{{ row.trigger_id }}"
-                    role="button"
-                    tabindex="0"
-                    aria-label="Open {{ 'compute lane' if row.status_kind == 'lane' else 'agent' }} {{ row.name }} activity"
-                    aria-expanded="{{ 'true' if row.selected else 'false' }}"
-                    {% if row.selected %}aria-current="true"{% endif %}
-                    hx-get="{{ sort.poll_url() }}"
-                    hx-vals='{"{{ row.selection_param }}": "{{ row.id }}"}'
-                    hx-target="#agents-table-section"
-                    hx-swap="outerHTML"
-                    {# query_state() appends "&sort=..&order=..", the pager-side half of contract rule 4.
-                       Without it this push would rewrite the URL to a selection-only one, so a reload
-                       after drilling into a row would drop the operator back into the default order —
-                       the same reset the poll fix closes, arriving by a different route. #}
-                    hx-push-url="{{ row.push_url }}{{ sort.query_state() }}"
-                    hx-trigger="click, keyup[key=='Enter']"
-                    onkeydown="if(event.key===' '){event.preventDefault();this.dispatchEvent(new Event('click'));}"
-                    class="cursor-pointer hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:bg-phaze-panel{% if row.selected %} ring-2 ring-blue-500{% endif %}">
+                 <tr id="{{ row.trigger_id }}"{% if row.selected %} class="bg-blue-50/60 dark:bg-blue-950/20"{% endif %}>
                     <td class="px-4 py-3">
                         <span class="text-sm font-semibold text-gray-900 dark:text-gray-100 block" title="{{ row.id }}">{{ row.name }}</span>
                         {# A lane's AGENT cell is just backend_id — no secondary id line (acceptance rule 2). #}
@@ -208,7 +196,20 @@
                             {{ row.scan_roots }}
                         {% endif %}
                     </td>
-                    <td class="px-4 py-3"></td>
+                    <td class="px-4 py-3">
+                        <button type="button"
+                                id="{{ row.trigger_id }}-details"
+                                aria-expanded="{{ 'true' if row.selected else 'false' }}"
+                                aria-controls="{{ row.detail_row_id }}"
+                                hx-get="{{ sort.poll_url() }}"
+                                {% if row.status_kind == 'agent' %}hx-vals='{"agent": "{{ row.id }}", "clane": ""}'{% else %}hx-vals='{"agent": "", "clane": "{{ row.id }}"}'{% endif %}
+                                hx-target="#agents-table-section"
+                                hx-swap="outerHTML"
+                                hx-push-url="{{ row.push_url }}{{ sort.query_state() }}"
+                                class="rounded-md border border-gray-300 px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:border-phaze-border dark:text-gray-300 dark:hover:bg-white/5 dark:focus-visible:ring-offset-phaze-panel">
+                            Details
+                        </button>
+                    </td>
                 </tr>
                 {% if row.selected %}
                     {% if row.status_kind == 'lane' %}
@@ -258,7 +259,8 @@
            init() { this.ticker = setInterval(() => { this.now = new Date(); }, 1000); },
            destroy() { clearInterval(this.ticker); }
        }">
-        Last refreshed <span x-text="secondsAgo + 's ago'"></span>
+         <span class="sr-only" role="status" aria-live="polite" aria-atomic="true">Worker status refreshed.</span>
+         <span aria-hidden="true">Last refreshed <span x-text="secondsAgo + 's ago'"></span></span>
     </p>
 
     {# BLOCKER-2 (MANDATORY): UI-SPEC §Error / Failure-Tolerant Refresh — status: approved.

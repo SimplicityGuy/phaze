@@ -31,6 +31,7 @@ import pytest
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
+from phaze.routers import pipeline as pipeline_mod
 from phaze.services.pipeline import get_stage_progress
 
 
@@ -143,6 +144,47 @@ async def test_pipeline_stats_partial_emits_stable_oob_store_ids(client: AsyncCl
     assert "$store.pipeline.metadataExtracted =" in body
     assert 'id="proposals-files-ready"' in body
     assert "$store.pipeline.analyzed =" in body
+
+
+@pytest.mark.asyncio
+async def test_pipeline_stats_partial_updates_summary_recent_activity(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Recent Activity values ride the existing poll through stable OOB store seeds."""
+
+    async def live(_session: object, _app_state: object) -> int:
+        return 3
+
+    async def activity(_session: object) -> dict[str, int | None]:
+        return {"today": 7, "lifetime": 41}
+
+    monkeypatch.setattr(pipeline_mod, "get_analysis_live_count", live)
+    monkeypatch.setattr(pipeline_mod, "get_analysis_activity_counts", activity)
+
+    response = await client.get("/pipeline/stats")
+
+    assert response.status_code == 200
+    assert 'id="dag-seed-summaryRecentLive" hx-swap-oob="true"' in response.text
+    assert "$store.pipeline.summaryRecentLive = 3" in response.text
+    assert "$store.pipeline.summaryRecentToday = 7" in response.text
+    assert "$store.pipeline.summaryRecentLifetime = 41" in response.text
+
+
+@pytest.mark.asyncio
+async def test_pipeline_stats_partial_preserves_unknown_summary_activity(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def live(_session: object, _app_state: object) -> None:
+        return None
+
+    async def activity(_session: object) -> dict[str, int | None]:
+        return {"today": None, "lifetime": None}
+
+    monkeypatch.setattr(pipeline_mod, "get_analysis_live_count", live)
+    monkeypatch.setattr(pipeline_mod, "get_analysis_activity_counts", activity)
+
+    response = await client.get("/pipeline/stats")
+
+    assert response.status_code == 200
+    assert "$store.pipeline.summaryRecentLive = null" in response.text
+    assert "$store.pipeline.summaryRecentToday = null" in response.text
+    assert "$store.pipeline.summaryRecentLifetime = null" in response.text
 
 
 @pytest.mark.asyncio

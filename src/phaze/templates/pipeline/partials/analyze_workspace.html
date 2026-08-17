@@ -1,186 +1,98 @@
-{# Phase 58 (58-04, WORK-03/04): the Analyze stage workspace.
-
-   Content-only fragment swapped into #stage-workspace -- composes the shared scaffold
-   (_workspace_scaffold.html): one <h1 tabindex="-1"> focus target + a live sub-count bound to
-   $store.pipeline (refreshed by the SINGLE chrome poll -- no second loop, WORK-05/R-2) + a
-   secondary-style action row + body. The OOB seed-target host (incl. the new
-   dag-seed-computeOnline placeholder) rides in via the scaffold.
-
-   Body (a) -- the N-lane grid (BEUI-01 / D-05): _analyze_lanes.html loops _lane_card.html over the
-   seeded `lanes` list (get_backend_lane_snapshot, one card per registry backend, rank-ascending D-06).
-   Each card shows RANK {n} + {in_flight}/{cap} + the per-lane Kueue admission caption (D-03); a down
-   lane greys with the explicit word "offline" (never hidden, WCAG 1.4.1). The whole grid OOB-swaps as
-   a unit on the SINGLE 5s poll (stats_bar.html re-includes it with oob=True -- Pitfall 2: N is dynamic,
-   no per-lane $store.pipeline keys). Degrades to a muted "Lane status unavailable" panel on [].
-
-   Body (b) -- the SIX existing v6.0 cloud-state cards included VERBATIM below the lane grid
-   (do NOT restyle): admission_state_card (k8s healthy progression -- NO role=alert),
-   inadmissible_card / localqueue_card (k8s faults -- role="alert"), awaiting_cloud_card /
-   staged_pushing_card / analyzing_cloud_card (A1 sub-states). They carry their own ids so the
-   poll's OOB swaps land here, and they encode the load-bearing quota-wait-vs-Inadmissible
-   distinction (WORK-03). inadmissible_card / localqueue_card are conditionally-EMPTY alert
-   carriers (zero-height <section> when healthy); they render full-width ABOVE the 4-card count
-   grid (not inside it), so a healthy carrier can never occupy a grid cell and misalign the
-   Admission/Cloud-Routing/Staged/Analyzing tiles (see the alert region + grid below).
-
-   Body (c) -- the all-in-stage per-file lane + window table (D-03/D-04). Added by Plan-04 Task 3
-   at the insertion point below; this fragment stays valid on its own without it.
-
-   Lane state is now DERIVED SERVER-SIDE per backend by get_backend_lane_snapshot (Plan 01): the live
-   is_available() probe drives "offline" and the per-backend_id admission GROUP BY drives the Kueue
-   quota-wait-vs-Inadmissible caption. No per-lane $store.pipeline keys and no cloud_lane_kind lookup --
-   the grid is a server-rendered loop that OOB-swaps as a unit (BEUI-01 N-lane redesign).
-#}
+{# Analyze is presentation-only: execution, routing, liveness, recovery, and polling contracts stay on their existing endpoints and stable ids. #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
-{# phaze-xd8k: the header total and the lane-card numerators are DELIBERATELY different populations
-   from different tables -- $store.pipeline.analyzeActive is the scheduling-ledger-derived count of
-   EVERY in-flight process_file job regardless of route (local/compute/kueue), while each lane card
-   below counts only that backend's own cloud_job rows. The former copy ("N files in flight across M
-   lanes") claimed the header WAS the sum of the lane numerators, which is false in the routine steady
-   state (e.g. thousands local + a handful cloud) and read as "files are lost". Reword to make NO
-   "across M lanes" summation claim -- the lane grid below is a separate, complementary per-lane view,
-   not a breakdown of this total (see _lane_card.html for the per-lane numerators; BEUI-01 keeps the
-   sub-count lane-count-agnostic regardless). #}
+{% import "ui/primitives.html" as ui %}
 {% set subcount = '`${$store.pipeline.analyzeActive} files in the analyze stage`' %}
-{% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
+{% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
 {% set actions %}
-    {# phaze-pix6g: RUN ANALYSIS -- the Phase-62 cutover deleted dag_canvas.html, the ONLY host of
-       POST /pipeline/analyze (trigger_analysis_ui). Every other dag_canvas trigger was re-homed
-       (extract-metadata -> metadata_workspace EXTRACT ALL, proposals -> propose_workspace GENERATE
-       ALL, recover -> discover_workspace RECOVER, execute -> apply_workspace EXECUTE APPROVED via
-       phaze-vvmh) but analyze never was, leaving DISCOVERED files with no way to enter the pipeline
-       (no auto-advance cron -- tasks/controller.py). Re-homed here VERBATIM to the same shape:
-       R-4 bulk-enqueue guard (hx-confirm + hx-disabled-elt + the seeded analyzeBusy busy-gate,
-       _workspace_poll_seeds.html:32) posting into a sibling response sink rendering
-       trigger_response.html, matching metadata/propose/apply exactly. #}
     <button type="button"
             hx-post="/pipeline/analyze" hx-target="#analyze-trigger-response" hx-swap="innerHTML"
             hx-confirm="Route all discovered files into analysis? Long files are held awaiting cloud capacity; short files run locally."
-            hx-disabled-elt="this"
-            hx-indicator="#analyze-trigger-spinner"
+            hx-disabled-elt="this" hx-indicator="#analyze-trigger-spinner"
             :disabled="$store.pipeline.analyzeBusy > 0"
             aria-label="Run analysis on all discovered files"
             class="{{ _btn }}">RUN ANALYSIS</button>
     <span id="analyze-trigger-spinner" class="htmx-indicator text-xs text-gray-500 dark:text-gray-400">Enqueuing…</span>
-    {# phaze-toldl: ROUTE RULES removed — it was an inert prototype placeholder (no handler at all),
-       and the DAG canvas its original comment deferred the "live controls" to was deleted in the
-       Phase 62 cutover. PAUSE below is now the LIVE stage control, mirroring the rail's Pause/Resume
-       pair (same endpoints, hx-swap="none", $store.pipeline-driven visibility — reversible, so no
-       confirm, R-4). Operator rule 2026-08-10: Pause is enabled only while analyze work is actually
-       in flight (a stage with nothing running has nothing to pause). RESUME deliberately carries NO
-       busy-gate — a paused stage drains its busy count to zero, so gating Resume on busyness would
-       wedge the stage paused forever. #}
-    <button type="button"
-            x-show="!$store.pipeline.analyzePaused"
+    <button type="button" x-show="!$store.pipeline.analyzePaused"
             hx-post="/pipeline/stages/analyze/pause" hx-swap="none"
-            :disabled="$store.pipeline.analyzeBusy === 0"
-            aria-label="Pause analyze"
+            :disabled="$store.pipeline.analyzeBusy === 0" aria-label="Pause analyze"
             class="{{ _btn }}">PAUSE</button>
-    <button type="button"
-            x-show="$store.pipeline.analyzePaused" x-cloak
+    <button type="button" x-show="$store.pipeline.analyzePaused" x-cloak
             hx-post="/pipeline/stages/analyze/resume" hx-swap="none"
-            aria-label="Resume analyze"
-            class="{{ _btn }}">RESUME</button>
+            aria-label="Resume analyze" class="{{ _btn }}">RESUME</button>
 {% endset %}
 {% call ws.workspace(title="ANALYZE", subcount=subcount, actions=actions, cloud_cards=true) %}
-    {# Trigger response lands here (trigger_response.html branches: no_active_agent / split_counts / none
-       ready). A SIBLING of the RUN ANALYSIS button, never its ancestor (phaze-thd6 shape) -- see
-       metadata_workspace.html / apply_workspace.html for the same pattern. #}
-    <div id="analyze-trigger-response" class="px-6 pt-4 empty:hidden"></div>
-    {# phaze-5c6i2 (acceptance rule 2): the global TOTAL QUEUED (analyze) figure, ABOVE the per-lane
-       grid -- one global number that accounts for files not yet routed to any lane, complementing the
-       per-lane queued/working/processed breakdown below. NO `oob` here -> the initial full-page render;
-       the 5s poll re-includes the SAME partial with oob=True. #}
-    {% include "pipeline/partials/_analyze_queue_total.html" %}
-    {# (a) the N-lane grid (BEUI-01 / D-05/D-06): _analyze_lanes.html loops _lane_card.html over the seeded
-       `lanes` list, rank-ascending. NO `oob` here -> the initial full-page grid (the #analyze-lanes id host
-       is present so the poll's OOB grid-swap lands). The stats poll re-includes the SAME partial with
-       oob=True. Degrades to the muted "Lane status unavailable" panel on [].
+    <div id="analyze-trigger-response" class="px-4 pt-4 empty:hidden sm:px-6"></div>
 
-       phaze-2u8v.6: the shared #detail-pane is now a FIXED, non-reflowing overlay (see
-       _detail_pane.html) rather than a right-side grid column — opening a lane's detail used to grow
-       this row's height (the column layout below fed the pane's height into the shared grid row),
-       pushing every section beneath it down the page. The grid no longer reserves a column for it: the
-       lane grid renders at its own full width and the pane floats above the page on open, so nothing
-       here can ever resize or reposition because of it, at any viewport. #}
-    {% include "pipeline/partials/_analyze_lanes.html" %}
-    {% include "pipeline/partials/_detail_pane.html" %}
-
-    {# (b1) the two conditionally-empty operator alerts, full-width, ABOVE the count grid, as DIRECT
-       siblings -- NOT a space-y-* wrapper, which would impose a margin between them purely from sibling
-       position even while the preceding <section> is empty/zero-height. Each carrier always renders (the
-       OOB target must stay stable); any visible spacing for a firing alert lives on the INNER alert div
-       inside that partial's own {% if %} (a self-margin), so the healthy state has zero footprint here. #}
-    <div class="px-6">
-        {% include "pipeline/partials/inadmissible_card.html" %}
-        {% include "pipeline/partials/localqueue_card.html" %}
-    </div>
-
-    {# (b2) the FOUR always-on cloud-state count partials, now inside ONE bordered "Cloud" pane
-       (operator request 2026-08-10, mirrors the Analysis Health single-pane shape): their four
-       per-card "Cloud · X" headings were pure duplication of the tile labels the cards already
-       carry (Queued (quota) / Running / Finished / Awaiting cloud / Staged (pushing) / Analyzing
-       (cloud)), so the headings are gone and ONE "Cloud" heading owns the pane. Each partial keeps
-       its own <section id> + OOB contract UNTOUCHED — the poll's hx-swap-oob fragments land on the
-       same ids; only the chrome moved from the partials to this static wrapper. Cell order is the
-       structural contract (test_dashboard_count_grid_holds_four_cards_outside_alert_carriers):
-       Admission and Routing share row 1, Staged and Analyzing share row 2, as before. #}
-    <div class="px-6 pb-6">
-        <section aria-labelledby="cloud-pane-heading"
-                 class="border border-gray-200 dark:border-phaze-border rounded-lg p-4 space-y-3">
-            <h2 id="cloud-pane-heading" class="text-lg font-semibold">Cloud</h2>
-            <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                {% include "pipeline/partials/admission_state_card.html" %}
-                {% include "pipeline/partials/awaiting_cloud_card.html" %}
-                {% include "pipeline/partials/staged_pushing_card.html" %}
-                {% include "pipeline/partials/analyzing_cloud_card.html" %}
-            </div>
-        </section>
-    </div>
-
-    {# (b3) phaze-tyt3: the Phase-44 Analysis Health card (terminal analysis-failed count +
-       the heartbeat-derived stalled subset, plus the failed tile's gated bulk Retry control)
-       -- the v7.0 shell's first real host for it. It used to be OOB-emitted every 5s by
-       stats_bar.html into a hidden `_workspace_poll_seeds.html` sink on every stage (Phase 61
-       observability was deferred and never landed a surface), so the counts and the Retry
-       button were invisible everywhere. It used to carry a STRAGGLER bucket (running-age
-       guess) in place of the current STALLED bucket (precise, heartbeat-derived) --
-       phaze-g84sk swapped one for the other (see analysis_failed_card.html).
-       `analysis_failed_count` / `analysis_stalled_count` already ride the Analyze context via
-       build_dashboard_context, so no new read is added -- only a real, visible target for the
-       swap that was already firing. `oob` is unset here (this IS the initial render); the
-       poll's OOB re-push (oob=True) then lands on this same id every 5s, exactly like the
-       four cloud-state cards above. #}
-    <div class="px-6 pb-6">
+    <div class="space-y-4 px-4 pt-4 sm:px-6">
+        {% call ui.metric_strip(label="Analyze flow metrics") %}
+            {% include "pipeline/partials/_analyze_queue_total.html" %}
+            {% include "pipeline/partials/_analyze_active_total.html" %}
+            {% include "pipeline/partials/awaiting_cloud_card.html" %}
+            {{ ui.metric("Completed", '<span x-text="$store.pipeline.analyzeDone">0</span>' | safe, "all analyzed files", "success") }}
+        {% endcall %}
+        <div aria-label="Analyze queue progression" class="flex items-center gap-2 overflow-x-auto rounded-lg border border-gray-200 px-3 py-2 text-xs text-gray-500 dark:border-phaze-border dark:text-gray-400">
+            <span class="whitespace-nowrap font-medium text-gray-700 dark:text-gray-200">Queued</span>
+            <span aria-hidden="true" class="text-blue-500">→</span>
+            <span class="whitespace-nowrap">lane capacity</span>
+            <span aria-hidden="true" class="text-blue-500">→</span>
+            <span class="whitespace-nowrap font-medium text-blue-700 dark:text-blue-400">Active</span>
+            <span aria-hidden="true" class="text-blue-500">→</span>
+            <span class="whitespace-nowrap font-medium text-emerald-700 dark:text-emerald-400">Completed</span>
+            <span class="ml-auto whitespace-nowrap text-amber-700 dark:text-amber-400">Awaiting route branches until a lane is available</span>
+        </div>
         {% include "pipeline/partials/analysis_failed_card.html" %}
     </div>
 
-    {# (c) the per-file lane + window table -- BOUNDED, PAGED and LAZY-LOADED (phaze-5462).
+    <section aria-labelledby="analyze-lanes-heading" class="mt-6 border-y border-gray-200 dark:border-phaze-border">
+        <div class="flex flex-col gap-1 px-4 pb-3 sm:flex-row sm:items-end sm:justify-between sm:px-6">
+            <div>
+                <h2 id="analyze-lanes-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-700 dark:text-gray-200">Lane capacity</h2>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Compare queued work, active slots, status, and 24-hour throughput. Open a lane for live queue detail.</p>
+            </div>
+            {{ ui.refresh_status("Live · updates every 5s", "Refreshing lanes…") }}
+        </div>
+        {% include "pipeline/partials/_analyze_lanes.html" %}
+    </section>
+    {% include "pipeline/partials/_detail_pane.html" %}
 
-       This workspace used to render the table inline off get_analyze_working_set, whose active branch
-       was UNBOUNDED: 10,132 rows / 12.7 MB in prod, ~180x the metadata tab. phaze-zqvh
-       bounded only the completions window and left the other half to an assumption. The host div below
-       now ships EMPTY and pulls GET /pipeline/analyze-files on load, which serves the paged working set
-       (active-first, with the completions window on the final page) and the status-filter lenses.
+    <details id="analysis-diagnostics" class="group mx-4 my-6 rounded-lg border border-gray-200 dark:border-phaze-border sm:mx-6">
+        <summary class="flex cursor-pointer list-none items-center justify-between gap-3 rounded-lg px-4 py-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+            <span>
+                <span class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-700 dark:text-gray-200">Technical diagnostics</span>
+                <span class="mt-1 block text-xs text-gray-500 dark:text-gray-400">Admission, reconcile, staged transfer, quota, rank, lifetime totals, health, and recovery</span>
+            </span>
+            <span aria-hidden="true" class="text-gray-400 transition-transform group-open:rotate-180">⌄</span>
+        </summary>
+        <div class="space-y-4 border-t border-gray-200 p-4 dark:border-phaze-border">
+            {% include "pipeline/partials/inadmissible_card.html" %}
+            {% include "pipeline/partials/localqueue_card.html" %}
+            <section aria-labelledby="cloud-diagnostics-heading" class="space-y-3 rounded-lg border border-gray-200 p-4 dark:border-phaze-border">
+                <h3 id="cloud-diagnostics-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-700 dark:text-gray-200">Cloud progression</h3>
+                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    {% include "pipeline/partials/admission_state_card.html" %}
+                    {# awaiting-cloud-card's live OOB host is in the metric strip; do not duplicate its id here. #}
+                    {% include "pipeline/partials/staged_pushing_card.html" %}
+                    {% include "pipeline/partials/analyzing_cloud_card.html" %}
+                </div>
+            </section>
+            <details class="rounded-lg border border-gray-200 dark:border-phaze-border">
+                <summary class="cursor-pointer px-4 py-3 text-sm font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Scheduling controls</summary>
+                <div class="flex flex-wrap items-center gap-1 border-t border-gray-200 p-4 dark:border-phaze-border" role="group" aria-label="Analyze priority controls">
+                    <span class="mr-1 text-xs text-gray-500 dark:text-gray-400"
+                          x-text="'Priority: ' + ($store.pipeline.analyzePriority < 50 ? 'High' : ($store.pipeline.analyzePriority > 50 ? 'Low' : 'Normal')) + ' (' + $store.pipeline.analyzePriority + ')'">Priority: Normal (50)</span>
+                    <button type="button" hx-post="/pipeline/stages/analyze/priority" hx-vals='{"delta": -10}' hx-swap="none"
+                            aria-label="Raise analyze priority" title="Higher priority runs sooner (lowers the queue number)." class="{{ _btn }} px-2">▲</button>
+                    <button type="button" hx-post="/pipeline/stages/analyze/priority" hx-vals='{"delta": 10}' hx-swap="none"
+                            aria-label="Lower analyze priority" title="Lower priority runs later (raises the queue number)." class="{{ _btn }} px-2">▼</button>
+                </div>
+            </details>
+        </div>
+    </details>
 
-       The derived lane badge + windowed-progress "Progress" cell (window N/M · running · pending
-       (quota) · complete -- NEVER a raw FileRecord.state) live in _analyze_files.html, now rendered
-       ONLY by that endpoint. Each row opens the full-record slide-in (Phase 61 RECORD-01).
-       #analyze-files-view is a SIBLING of the poll's OOB targets and is NEVER re-emitted by the 5s
-       poll, so the operator's filter/page state survives every tick. #}
-    <div class="border-t border-gray-200 p-6 dark:border-phaze-border">
-        {# phaze-5462: ZERO rows are server-rendered here. This div ships EMPTY and hx-gets the paged
-           fragment on load, exactly like the metadata tab -- which is what makes the
-           initial /s/analyze payload ~70 KB instead of 12.7 MB. Do NOT reintroduce an inline
-           {% include %} of _analyze_files.html on this path: the include is what made the whole
-           (unbounded) working set land in the first response. #analyze-files-view remains a SIBLING
-           of the 5s poll's OOB targets and is never re-emitted by it, so the operator's filter/page
-           state survives every tick. #}
-        <div id="analyze-files-view"
-             hx-get="/pipeline/analyze-files"
-             hx-trigger="load"
-             hx-swap="innerHTML">
+    <section aria-labelledby="analyze-files-heading" class="border-t border-gray-200 p-4 dark:border-phaze-border sm:p-6">
+        <h2 id="analyze-files-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-700 dark:text-gray-200">File progress</h2>
+        <div id="analyze-files-view" hx-get="/pipeline/analyze-files" hx-trigger="load" hx-swap="innerHTML">
             <p class="px-6 py-12 text-center text-sm text-gray-500 dark:text-gray-400">Loading files…</p>
         </div>
-    </div>
+    </section>
 {% endcall %}

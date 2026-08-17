@@ -659,6 +659,7 @@ def seed_pending_proposal(session: AsyncSession, make_file):  # type: ignore[no-
         session.add(proposal)
         await session.commit()
         await session.refresh(proposal)
+        proposal.file = file
         return proposal
 
     return _make

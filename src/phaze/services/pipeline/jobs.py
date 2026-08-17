@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import text
 import structlog
 
-from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
+from phaze.services.pipeline.stages import get_stage_activity_snapshot
 
 
 if TYPE_CHECKING:
@@ -36,7 +36,6 @@ _STAGE_BUSY_SQL = text("SELECT split_part(key, ':', 1) AS fn, COUNT(*) AS n FROM
 # Registered-function-name -> stage label (the inverse of STAGE_TO_FUNCTION), built locally so the
 # bucket loop maps each saq_jobs key prefix back to its agent stage; non-stage functions
 # (generate_proposals, scan_directory, ...) are absent here and therefore ignored.
-_BUSY_FUNCTION_TO_STAGE: dict[str, str] = {fn: stage for stage, fn in STAGE_TO_FUNCTION.items()}
 
 
 async def get_stage_busy_counts(session: AsyncSession) -> dict[str, int]:
@@ -60,18 +59,8 @@ async def get_stage_busy_counts(session: AsyncSession) -> dict[str, int]:
     lazy load) and WITHOUT poisoning later queries. The function then logs a warning and returns
     all-zeros -- it NEVER raises into the hot 5s /pipeline/stats poll.
     """
-    out: dict[str, int] = {"metadata": 0, "analyze": 0}
-    try:
-        async with session.begin_nested():
-            rows = (await session.execute(_STAGE_BUSY_SQL)).all()
-    except Exception:
-        logger.warning("stage_busy_degraded", exc_info=True)
-        return out
-    for row in rows:
-        stage = _BUSY_FUNCTION_TO_STAGE.get(row[0])
-        if stage is not None:
-            out[stage] = int(row[1])
-    return out
+    activity = await get_stage_activity_snapshot(session)
+    return {stage: counts["queued"] + counts["active"] for stage, counts in activity.counts.items()}
 
 
 # Live-broker key set (Phase 45). ``saq_jobs`` is SAQ-owned -- this is a READ-ONLY probe of the

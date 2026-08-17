@@ -10,9 +10,10 @@ halves of that invariant where a reader of either cannot see the other.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 import structlog
 
 from phaze.enums.stage import ELIGIBLE_AFTER_FAILURE, Stage, Status
@@ -103,37 +104,13 @@ async def _safe_bucket_counts(session: AsyncSession, stage: Stage) -> dict[str, 
     verbatim -- NEVER a fresh ``CASE`` (D-04) -- so the buckets can never drift from the DERIV-04
     equivalence lock (and, transitively, the Python resolver).
 
-    Mirrors the :func:`_safe_count` degrade discipline (INFLIGHT-02): the dict zero-fills first, and on
-    ANY exception this logs a warning, guarded-rolls-back the aborted transaction (so a Postgres
-    "current transaction is aborted" state cannot poison the later stage COUNTs), and returns the
-    all-zero dict -- it NEVER raises into the hot 5s /pipeline/stats poll. On that fail-safe-to-zero
+    Mirrors the :func:`_safe_count` degrade discipline (INFLIGHT-02): the dict zero-fills first, and the
+    read runs in a SAVEPOINT so ANY exception can be logged without rolling back the caller's outer
+    transaction. It returns the all-zero dict -- it NEVER raises into the hot 5s /pipeline/stats poll. On that fail-safe-to-zero
     degrade the five buckets intentionally do NOT sum to ``music_video_total``; the sum-to-total
     invariant is a healthy-query property only, NEVER a runtime assertion in the poll path (Pitfall 3).
     """
-    out: dict[str, int] = _empty_buckets()
-    # Materialize the per-row status label in an inner subquery FIRST, then GROUP BY the label in the
-    # outer query. Grouping directly by ``stage_status_case(stage)`` fails on Postgres -- the CASE ladder
-    # embeds correlated ``exists(... == FileRecord.id)`` subqueries, and a top-level GROUP BY on that
-    # expression re-projects the ungrouped ``files.id`` ("subquery uses ungrouped column" GroupingError).
-    # The derived-table form evaluates the per-file status once per row (where ``files.id`` is in scope),
-    # so the outer aggregation groups a plain scalar label.
-    status_subq = select(stage_status_case(stage).label("status")).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES)).subquery()
-    stmt = select(status_subq.c.status, func.count()).group_by(status_subq.c.status)
-    try:
-        for status_label, n in (await session.execute(stmt)).all():
-            if status_label in out:
-                out[status_label] = int(n)
-    except Exception:
-        logger.warning("stage_bucket_degraded", stage=stage.value, exc_info=True)
-        try:
-            await session.rollback()
-        except Exception:
-            logger.warning("stage_bucket_rollback_failed", stage=stage.value, exc_info=True)
-        return out
-    # phaze-2u8v.2 / D-01a: carve ORPHANED out of in_flight (own SAVEPOINT, own zero degrade). Skipped on
-    # the degrade path above -- all-zero buckets have nothing to split, and the session may be recovering.
-    await _safe_orphan_split(session, stage, out)
-    return out
+    return (await _safe_bucket_snapshot(session, stage)).counts
 
 
 async def _agent_stage_buckets(session: AsyncSession, agent_id: str, stage: Stage) -> dict[str, int]:
@@ -190,3 +167,45 @@ async def _agent_stage_buckets(session: AsyncSession, agent_id: str, stage: Stag
     # single ``agent_id`` conjunct that scopes the bucket read above). Own SAVEPOINT, own zero degrade.
     await _safe_orphan_split(session, stage, out, agent_id=agent_id)
     return out
+
+
+@dataclass(frozen=True)
+class StageBucketSnapshot:
+    """Canonical stage buckets plus whether their aggregation succeeded."""
+
+    counts: dict[str, int]
+    available: bool
+
+
+def _stage_bucket_stmt(stage: Stage) -> Select[Any]:
+    status_subq = select(stage_status_case(stage).label("status")).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES)).subquery()
+    return select(status_subq.c.status, func.count()).group_by(status_subq.c.status)
+
+
+async def _safe_bucket_snapshot(session: AsyncSession, stage: Stage) -> StageBucketSnapshot:
+    """Availability-bearing form of :func:`_safe_bucket_counts` for truthful metric consumers."""
+    out: dict[str, int] = _empty_buckets()
+    # Materialize the per-row status label in an inner subquery FIRST, then GROUP BY the label in the
+    # outer query. Grouping directly by ``stage_status_case(stage)`` fails on Postgres -- the CASE ladder
+    # embeds correlated ``exists(... == FileRecord.id)`` subqueries, and a top-level GROUP BY on that
+    # expression re-projects the ungrouped ``files.id`` ("subquery uses ungrouped column" GroupingError).
+    # The derived-table form evaluates the per-file status once per row (where ``files.id`` is in scope),
+    # so the outer aggregation groups a plain scalar label.
+    stmt = _metadata_status_stmt() if stage is Stage.METADATA else _stage_bucket_stmt(stage)
+    try:
+        async with session.begin_nested():
+            for status_label, n in (await session.execute(stmt)).all():
+                if status_label in out:
+                    out[status_label] = int(n)
+    except Exception:
+        logger.warning("stage_bucket_degraded", stage=stage.value, exc_info=True)
+        return StageBucketSnapshot(counts=out, available=False)
+    # phaze-2u8v.2 / D-01a: carve ORPHANED out of in_flight (own SAVEPOINT, own zero degrade). Skipped on
+    # the degrade path above -- all-zero buckets have nothing to split, and the session may be recovering.
+    await _safe_orphan_split(session, stage, out)
+    return StageBucketSnapshot(counts=out, available=True)
+
+
+def _metadata_status_stmt() -> Select[Any]:
+    """Build the canonical metadata status aggregation used by the workspace metrics."""
+    return _stage_bucket_stmt(Stage.METADATA)

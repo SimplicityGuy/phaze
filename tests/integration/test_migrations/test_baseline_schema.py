@@ -85,6 +85,7 @@ _EXPECTED_TABLES = frozenset(
         "cloud_budget",
         "cloud_job",
         "dedup_resolution",
+        "dedup_review_plan",
         "discogs_links",
         "execution_log",
         "file_companions",
@@ -258,7 +259,12 @@ def test_baseline_is_the_only_migration() -> None:
     059 (phaze-6nrrf) creates tracklist_drain_arm_state, the durable operator ARM/DISARM flag for
     the continuous 1001Tracklists drain, seeded disarmed (DEFAULT OFF); 060 (phaze-w55w1) drops
     analysis.sampled, which could only ever describe a window-capping policy the code no longer
-    implements now that every file is analyzed exhaustively (ADR-0007 §7).
+        implements now that every file is analyzed exhaustively (ADR-0007 §7); 061 adds durable,
+        opaque duplicate review plans that bind a canonical choice to complete reviewed membership;
+    062 (phaze-tzy6s.11 / ADR-0008) adds tag_write_log.reviewed_before_tags and
+    review_source_versions, the persisted record of WHAT the operator actually reviewed when they
+    authorized a tag write -- the tag half of the Changes Review approval boundary, which needs the
+    reviewed payload durable to revalidate a submitted decision against current state.
     Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
@@ -285,6 +291,8 @@ def test_baseline_is_the_only_migration() -> None:
         "058_analysis_completed_at_btree.py",
         "059_tracklist_drain_arm_state.py",
         "060_drop_analysis_sampled.py",
+        "061_dedup_review_plans.py",
+        "062_tag_write_review_payload.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -316,10 +324,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (060: analysis.sampled dropped)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (062: reviewed tag payload)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "060"
+    assert version == "062"
 
 
 @pytest.mark.asyncio
@@ -471,7 +479,7 @@ def test_every_model_datetime_column_declares_timezone_aware() -> None:
 
 @pytest.mark.asyncio
 async def test_expected_tables_present(migrated_engine: AsyncEngine) -> None:
-    """The baseline creates the full 24-table inventory the chain produced."""
+    """Upgrade head creates the complete current table inventory."""
     async with migrated_engine.connect() as conn:
         rows = (await conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"))).scalars().all()
     tables = set(rows) - {"alembic_version"}
@@ -648,7 +656,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "060"
+        assert version == "062"
     finally:
         if engine is not None:
             await engine.dispose()

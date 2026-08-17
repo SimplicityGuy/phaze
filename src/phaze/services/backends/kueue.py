@@ -41,7 +41,6 @@ from phaze.tasks.release_awaiting_cloud import _STAGE_CLOUD_WINDOW_ADVISORY_LOCK
 
 
 if TYPE_CHECKING:
-    import uuid
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -333,84 +332,51 @@ class KueueBackend(_BaseBackend):
                     bound_sec=bound_sec,
                     attempts=attempts,
                 )
-                # phaze-jwz0: S3 cleanup runs AFTER the commit, OUTSIDE the txn/lock -- see
-                # :meth:`_cleanup_reaped_staging_object`. Still called from INSIDE this per-row ``try``,
-                # so a raise out of its bucket resolution lands in the per-row ``except`` below exactly
-                # as it did when the block was inline (phaze-dr9df extract-method).
-                await self._cleanup_reaped_staging_object(
-                    session,
-                    cfg=cfg,
-                    cloud_job_id=cloud_job_id,
-                    file_id=file_id,
-                    upload_id=upload_id,
-                    staging_bucket=staging_bucket,
-                )
+                # phaze-jwz0: S3 cleanup runs AFTER the commit, OUTSIDE the txn/lock. Both ops are idempotent
+                # (they swallow NoSuchUpload / absent-object) and the row is already 'awaiting' -> a re-drive
+                # re-stages a FRESH multipart, so the old object is irrelevant: a crash or a hung bucket here at
+                # worst leaks the OLD object until the next reap/spill re-runs the same idempotent cleanup.
+                # Failures are isolated locally so a slow bucket can neither hold the released lock nor turn a
+                # durable spill into a per-row rollback that undoes it.
+                bucket = s3_staging.resolve_bucket_config(cfg, staging_bucket)
+                if bucket is not None:
+                    try:
+                        if upload_id:
+                            await s3_staging.abort_multipart_upload(file_id, upload_id, bucket)
+                        # phaze-wa9x: re-read the row IMMEDIATELY before the delete, outside the lock we just
+                        # released. ``delete_staged_object`` is keyed only by file_id, and the bucket/key are
+                        # identical for every staging generation of this file -- once the row is 'awaiting', a
+                        # concurrent drain tick can re-dispatch it and stage a FRESH object at the SAME key
+                        # while this delete is still in flight (a stalled-but-eventually-successful S3 DELETE).
+                        # A new cycle always re-upserts status back to UPLOADING with a FRESH upload_id
+                        # (_stage_file_to_s3), so a row still 'awaiting' with the SAME upload_id we observed
+                        # proves no new cycle has claimed the key -- only then is the delete safe.
+                        current = None
+                        try:
+                            current = (
+                                await session.execute(select(CloudJob.status, CloudJob.upload_id).where(CloudJob.id == cloud_job_id))
+                            ).one_or_none()
+                        finally:
+                            # phaze-a6un6: rollback in a finally, not after the SELECT in the try body --
+                            # if the SELECT itself raises (transient DB error), the old placement skipped
+                            # this rollback entirely and the outer except below only logged, leaving the
+                            # session in an aborted/pending transaction. The NEXT row's advisory-lock
+                            # acquire then raised PendingRollbackError and THAT healthy row's reap was
+                            # skipped for the whole tick, misleadingly blamed instead of this probe.
+                            await session.rollback()  # read-only probe; release its implicit tx either way
+                        if current is not None and current.status == CloudJobStatus.AWAITING.value and current.upload_id == upload_id:
+                            await s3_staging.delete_staged_object(file_id, bucket)
+                    except Exception:
+                        logger.warning(
+                            "KueueBackend.reconcile: post-commit S3 cleanup of a reaped staging row failed "
+                            "(row already spilled to awaiting; old object may leak until the re-drive re-stages)",
+                            cloud_job_id=str(cloud_job_id),
+                            file_id=str(file_id),
+                            exc_info=True,
+                        )
             except Exception:
                 await session.rollback()
                 logger.warning("KueueBackend.reconcile: stranded staging reap failed; continuing", cloud_job_id=str(cloud_job_id), exc_info=True)
-
-    async def _cleanup_reaped_staging_object(
-        self,
-        session: AsyncSession,
-        *,
-        cfg: ControlSettings,
-        cloud_job_id: uuid.UUID,
-        file_id: uuid.UUID,
-        upload_id: str | None,
-        staging_bucket: str | None,
-    ) -> None:
-        """Abort + delete a reaped staging row's S3 substrate, AFTER its spill has already committed (phaze-jwz0).
-
-        Extracted verbatim from :meth:`_reap_stranded_staging`'s per-row tail (phaze-dr9df); it was the
-        deepest block in the pre-split ``services/backends.py`` and is the one place this decomposition
-        changes structure rather than only location. Nothing about WHEN it runs changed: the caller still
-        invokes it inside the per-row ``try``, immediately after the ``session.commit()`` that made the
-        spill durable and released the drain's ``pg_advisory_xact_lock``.
-
-        phaze-jwz0: both ops are idempotent (they swallow NoSuchUpload / absent-object) and the row is
-        already ``'awaiting'`` -> a re-drive re-stages a FRESH multipart, so the old object is irrelevant:
-        a crash or a hung bucket here at worst leaks the OLD object until the next reap/spill re-runs the
-        same idempotent cleanup. Failures are isolated locally so a slow bucket can neither hold the
-        released lock nor turn a durable spill into a per-row rollback that undoes it.
-
-        The bucket resolution deliberately sits OUTSIDE the local ``except`` (as it did inline): a raise
-        there is a registry/config fault, not an S3 fault, and belongs in the caller's per-row guard.
-        """
-        bucket = s3_staging.resolve_bucket_config(cfg, staging_bucket)
-        if bucket is None:
-            return
-        try:
-            if upload_id:
-                await s3_staging.abort_multipart_upload(file_id, upload_id, bucket)
-            # phaze-wa9x: re-read the row IMMEDIATELY before the delete, outside the lock we just
-            # released. ``delete_staged_object`` is keyed only by file_id, and the bucket/key are
-            # identical for every staging generation of this file -- once the row is 'awaiting', a
-            # concurrent drain tick can re-dispatch it and stage a FRESH object at the SAME key
-            # while this delete is still in flight (a stalled-but-eventually-successful S3 DELETE).
-            # A new cycle always re-upserts status back to UPLOADING with a FRESH upload_id
-            # (_stage_file_to_s3), so a row still 'awaiting' with the SAME upload_id we observed
-            # proves no new cycle has claimed the key -- only then is the delete safe.
-            current = None
-            try:
-                current = (await session.execute(select(CloudJob.status, CloudJob.upload_id).where(CloudJob.id == cloud_job_id))).one_or_none()
-            finally:
-                # phaze-a6un6: rollback in a finally, not after the SELECT in the try body --
-                # if the SELECT itself raises (transient DB error), the old placement skipped
-                # this rollback entirely and the outer except below only logged, leaving the
-                # session in an aborted/pending transaction. The NEXT row's advisory-lock
-                # acquire then raised PendingRollbackError and THAT healthy row's reap was
-                # skipped for the whole tick, misleadingly blamed instead of this probe.
-                await session.rollback()  # read-only probe; release its implicit tx either way
-            if current is not None and current.status == CloudJobStatus.AWAITING.value and current.upload_id == upload_id:
-                await s3_staging.delete_staged_object(file_id, bucket)
-        except Exception:
-            logger.warning(
-                "KueueBackend.reconcile: post-commit S3 cleanup of a reaped staging row failed "
-                "(row already spilled to awaiting; old object may leak until the re-drive re-stages)",
-                cloud_job_id=str(cloud_job_id),
-                file_id=str(file_id),
-                exc_info=True,
-            )
 
     async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> dict[str, int]:
         """Reconcile THIS backend's in-flight ``cloud_job`` rows against their Kueue Job/Workload (backend_id-aware).

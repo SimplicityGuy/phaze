@@ -68,6 +68,7 @@ async def force_local(
         name="shell/partials/_force_local_pill.html",
         context={
             "force_local": row.force_local,
+            "update_header_warning": True,
             "toast_message": _ENGAGE_TOAST if row.force_local else _REVERT_TOAST,
         },
     )

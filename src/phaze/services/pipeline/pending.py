@@ -10,16 +10,19 @@ the backlog.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import exists, select
+from sqlalchemy import Select, distinct, exists, func, select
 import structlog
 
-from phaze.enums.stage import Stage
+from phaze.enums.stage import Stage, Status
 from phaze.models.cloud_job import CloudJob
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, Page, clamp_page, clamp_page_size, paged_stmt, split_sentinel
+from phaze.services.pipeline.buckets import _safe_bucket_snapshot
 from phaze.services.pipeline.common import _ACTIVE_CLOUD_STATUSES, MUSIC_VIDEO_TYPES
 from phaze.services.stage_status import (
     dedup_resolved_clause,
@@ -109,12 +112,7 @@ async def get_metadata_pending_files(session: AsyncSession) -> list[FileRecord]:
     NEVER be paged or LIMITed; doing so would silently under-enqueue the backlog. The WORKSPACE
     renders the bounded :func:`get_pending_files_page` instead. Keep the two readers separate.
     """
-    stmt = select(FileRecord).where(
-        FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
-        eligible_clause(Stage.METADATA),
-        ~dedup_resolved_clause(),
-    )
-    result = await session.execute(stmt)
+    result = await session.execute(_metadata_pending_stmt())
     return list(result.scalars().all())
 
 
@@ -127,8 +125,13 @@ def _pending_page_stmt(stage: Stage, *, page: int, page_size: int, sort: SortSta
     ``FileRecord.id`` tiebreaker (``created_at`` ties -- Postgres timestamp defaults are
     transaction-time constant), OFFSET paging, and a ``page_size + 1`` sentinel instead of a COUNT.
     """
+    selection = (
+        _metadata_pending_stmt()
+        if stage is Stage.METADATA
+        else select(FileRecord).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES), eligible_clause(stage), ~dedup_resolved_clause())
+    )
     return paged_stmt(
-        select(FileRecord).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES), eligible_clause(stage), ~dedup_resolved_clause()),
+        selection,
         page=page,
         page_size=page_size,
         # phaze-a6hm.1: the operator's whitelisted column when they picked one, else the newest-first
@@ -140,7 +143,7 @@ def _pending_page_stmt(stage: Stage, *, page: int, page_size: int, sort: SortSta
 
 async def get_pending_files_page(
     session: AsyncSession, stage: Stage, *, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE, sort: SortState | None = None
-) -> Page[FileRecord]:
+) -> PendingFilesPage:
     """Return ONE bounded page of ``stage``'s pending set -- the RENDER read for the enrich workspaces.
 
     phaze-5462: the metadata workspace used to render :func:`get_metadata_pending_files` in full,
@@ -154,7 +157,8 @@ async def get_pending_files_page(
     first page would silently under-enqueue the backlog -- a far worse bug than a long table. Do NOT
     "unify" the two readers.
 
-    SAVEPOINT degrade-safe: returns an EMPTY page on any error rather than 500ing the workspace.
+    SAVEPOINT degrade-safe: returns an unavailable empty page on error rather than 500ing or claiming
+    the selection is empty.
     """
     page = clamp_page(page)
     page_size = clamp_page_size(page_size)
@@ -163,9 +167,9 @@ async def get_pending_files_page(
             raw = (await session.execute(_pending_page_stmt(stage, page=page, page_size=page_size, sort=sort))).scalars().all()
     except Exception:
         logger.warning("pending_files_page_degraded", stage=stage.value, page=page, page_size=page_size, exc_info=True)
-        return Page(rows=[], page=page, page_size=page_size, has_next=False)
+        return PendingFilesPage(rows=[], page=page, page_size=page_size, has_next=False, available=False)
     rows, has_next = split_sentinel(raw, page_size)
-    return Page(rows=rows, page=page, page_size=page_size, has_next=has_next)
+    return PendingFilesPage(rows=rows, page=page, page_size=page_size, has_next=has_next, available=True)
 
 
 async def get_metadata_failed_files(session: AsyncSession) -> list[FileRecord]:
@@ -185,3 +189,94 @@ async def get_metadata_failed_files(session: AsyncSession) -> list[FileRecord]:
     stmt = select(FileRecord).where(exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id, FileMetadata.failed_at.isnot(None))))
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+@dataclass(frozen=True)
+class MetadataActivitySummary:
+    """Successful metadata-write context for the Metadata workspace."""
+
+    unique_files_24h: int | None = None
+    latest_successful_at: datetime | None = None
+    available: bool = False
+
+
+@dataclass(frozen=True)
+class MetadataSelectionSummary:
+    """Current canonical bulk-extraction selection size, or unknown on read failure."""
+
+    eligible_count: int | None = None
+    available: bool = False
+
+
+@dataclass(frozen=True)
+class MetadataStatusSnapshot:
+    """Metadata done/failed counts plus whether their canonical bucket read succeeded."""
+
+    done: int = 0
+    failed: int = 0
+    total: int = 0
+    available: bool = False
+
+
+@dataclass
+class PendingFilesPage(Page[FileRecord]):
+    """A bounded pending page that distinguishes an empty selection from a failed read."""
+
+    available: bool = True
+
+
+def _metadata_activity_stmt(cutoff: datetime) -> Select[Any]:
+    """Build the successful-write measurement query for the supplied rolling cutoff."""
+    return select(
+        func.count(distinct(FileMetadata.file_id)).filter(FileMetadata.failed_at.is_(None), FileMetadata.updated_at >= cutoff),
+        func.max(FileMetadata.updated_at).filter(FileMetadata.failed_at.is_(None)),
+    )
+
+
+def _metadata_pending_stmt() -> Select[Any]:
+    """Build the canonical metadata bulk-extraction selection."""
+    return select(FileRecord).where(
+        FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
+        eligible_clause(Stage.METADATA),
+        ~dedup_resolved_clause(),
+    )
+
+
+
+
+async def get_metadata_activity_summary(session: AsyncSession) -> MetadataActivitySummary:
+    """Return recent successful metadata writes across all stored files and agents."""
+    cutoff = datetime.now(UTC) - timedelta(hours=24)
+    stmt = _metadata_activity_stmt(cutoff)
+    try:
+        async with session.begin_nested():
+            unique_files_24h, latest_successful_at = (await session.execute(stmt)).one()
+    except Exception:
+        logger.warning("metadata_activity_summary_degraded", exc_info=True)
+        return MetadataActivitySummary()
+    return MetadataActivitySummary(unique_files_24h=int(unique_files_24h or 0), latest_successful_at=latest_successful_at, available=True)
+
+
+async def get_metadata_selection_summary(session: AsyncSession) -> MetadataSelectionSummary:
+    """Count exactly what Extract All would select without presenting a failed read as zero."""
+    stmt = select(func.count()).select_from(_metadata_pending_stmt().subquery())
+    try:
+        async with session.begin_nested():
+            count = (await session.execute(stmt)).scalar_one()
+    except Exception:
+        logger.warning("metadata_selection_summary_degraded", exc_info=True)
+        return MetadataSelectionSummary()
+    return MetadataSelectionSummary(eligible_count=int(count), available=True)
+
+
+async def get_metadata_status_snapshot(session: AsyncSession) -> MetadataStatusSnapshot:
+    """Read metadata done/failed without presenting a failed status read as zero."""
+    snapshot = await _safe_bucket_snapshot(session, Stage.METADATA)
+    if not snapshot.available:
+        return MetadataStatusSnapshot()
+    return MetadataStatusSnapshot(
+        done=snapshot.counts[Status.DONE.value],
+        failed=snapshot.counts[Status.FAILED.value],
+        total=sum(snapshot.counts.values()),
+        available=True,
+    )

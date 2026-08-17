@@ -131,14 +131,14 @@ async def test_failed_filter_empty_renders_failed_filter_copy(client: AsyncClien
 
 @pytest.mark.asyncio
 async def test_filter_state_is_url_carried(client: AsyncClient, session: AsyncSession) -> None:
-    """The filter bar carries URL state: it hx-gets /pipeline/files with hx-push-url (survives back/forward)."""
+    """The filter bar pushes canonical /s/files state that survives back/forward and reload."""
     resp = await client.get("/pipeline/files?stage=metadata&bucket=failed", headers={"HX-Request": "true"})
     assert resp.status_code == 200
     body = resp.text
 
     # The status filter bar is present and pushes filter state into the URL (D-03).
     assert 'id="status-filter-bar"' in body
-    assert 'hx-get="/pipeline/files"' in body
+    assert 'hx-get="/s/files"' in body
     assert 'hx-push-url="true"' in body
     # The active filter axes are reflected as selected options (survives the record slide-in re-render).
     assert '<option value="metadata" selected>' in body
@@ -272,7 +272,8 @@ async def test_over_paged_empty_view_still_shows_previous_control(client: AsyncC
     # ...but the pager nav -- specifically an ENABLED Previous control back to page 1 -- must too.
     assert 'aria-label="Files pagination"' in body
     # HTML-attribute-escaped (Jinja autoescape turns `&` into `&amp;` inside the hx-get value).
-    assert 'hx-get="/pipeline/files?page=1&amp;page_size=10' in body
+    assert 'hx-get="/s/files?page=1&amp;page_size=10' in body
+    assert 'hx-push-url="true"' in body
     assert ">Previous</button>" in body, "Previous must be an enabled <button>, not the disabled <span>"
 
 

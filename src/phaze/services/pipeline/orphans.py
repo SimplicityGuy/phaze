@@ -13,7 +13,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from phaze.services.pipeline.jobs import _BUSY_FUNCTION_TO_STAGE, _LIVE_KEYS_SQL
+from phaze.services.pipeline.common import _BUSY_FUNCTION_TO_STAGE
+from phaze.services.pipeline.jobs import _LIVE_KEYS_SQL
 
 
 if TYPE_CHECKING:

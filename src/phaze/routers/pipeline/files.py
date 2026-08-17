@@ -112,16 +112,16 @@ TRACKLIST_SETS_SORT = SortContract(
 # `Exec` reads `apply`. The wire keys are the canonical `Stage` values rather than the header words,
 # so the URL names the model's vocabulary and no third naming scheme is invented.
 FILES_SORT = SortContract(
-    endpoint="/pipeline/files",
+    endpoint="/s/files",
     target="#files-table-view",
     columns=(
         SortableColumn(key="file", label="File", expression=FileRecord.current_path),
         SortableColumn(key="type", label="Type", expression=FileRecord.file_type),
-        SortableColumn(key="metadata", label="Meta", expression=stage_status_sort_case(Stage.METADATA)),
+        SortableColumn(key="metadata", label="Metadata", expression=stage_status_sort_case(Stage.METADATA)),
         SortableColumn(key="analyze", label="Analyze", expression=stage_status_sort_case(Stage.ANALYZE)),
-        SortableColumn(key="propose", label="Prop", expression=stage_status_sort_case(Stage.PROPOSE)),
-        SortableColumn(key="review", label="Appr", expression=stage_status_sort_case(Stage.REVIEW)),
-        SortableColumn(key="apply", label="Exec", expression=stage_status_sort_case(Stage.APPLY)),
+        SortableColumn(key="propose", label="Propose", expression=stage_status_sort_case(Stage.PROPOSE)),
+        SortableColumn(key="review", label="Review", expression=stage_status_sort_case(Stage.REVIEW)),
+        SortableColumn(key="apply", label="Execute", expression=stage_status_sort_case(Stage.APPLY)),
     ),
     default_key="file",
 )

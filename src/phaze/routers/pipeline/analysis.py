@@ -25,7 +25,7 @@ from phaze.enums.stage import Stage
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
-from phaze.routers.pipeline._common import _NO_ACTIVE_AGENT_MESSAGE, _background_tasks, _stage_pill_oob, logger, router, templates
+from phaze.routers.pipeline._common import _NO_ACTIVE_AGENT_MESSAGE, _background_tasks, _files_retry_oob, logger, router, templates
 from phaze.services import enqueue_router
 from phaze.services.analysis_enqueue import classify_process_file_collision, enqueue_process_file, process_file_job_key
 from phaze.services.backends import hold_awaiting_cloud
@@ -736,5 +736,4 @@ async def retry_analysis_failed_file(
     # the same shape force_skip_stage uses for the record pane (see `_stage_pill_oob`).
     buckets = await get_file_stage_buckets(session, file_id)
     ack = templates.get_template("pipeline/partials/retry_failed_response.html").render(count=1, no_active_agent=False)
-    pill_oob = _stage_pill_oob(file_id, "analyze", buckets.get("analyze", "not_started"), id_prefix="files-stage-pill")
-    return HTMLResponse(ack + pill_oob)
+    return HTMLResponse(ack + _files_retry_oob(file_id, "analyze", buckets))

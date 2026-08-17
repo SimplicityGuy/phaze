@@ -14,6 +14,7 @@ import structlog
 
 from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.models.cloud_job import CloudJobStatus
+from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
 
 if TYPE_CHECKING:
@@ -74,3 +75,8 @@ async def _safe_count(session: AsyncSession, stmt: Select[Any], *, node: str) ->
     except Exception:
         logger.warning("stage_progress_degraded", node=node, exc_info=True)
         return 0
+
+
+# Reverse of STAGE_TO_FUNCTION -- shared by jobs/orphans/stages, so it lives in the
+# package's lowest-level module rather than in any one consumer (jobs <-> stages would cycle).
+_BUSY_FUNCTION_TO_STAGE: dict[str, str] = {fn: stage for stage, fn in STAGE_TO_FUNCTION.items()}

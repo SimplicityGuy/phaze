@@ -33,6 +33,8 @@ The per-shape ORM seed factories live in ``tests/conftest.py`` (``make_file``,
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import html
+import re
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
@@ -42,6 +44,16 @@ from sqlalchemy import func, select
 from phaze.models.proposal import ProposalStatus
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from tests._queue_fakes import install_fake_queues
+
+
+async def _visible_tag_review_tokens(client: AsyncClient) -> list[str]:
+    body = (await client.get("/s/tagwrite", headers={"HX-Request": "true"})).text
+    return [html.unescape(value) for value in re.findall(r'<input[^>]*name="review_tokens"[^>]*value="([^"]+)"', body)]
+
+
+async def _post_visible_tag_bulk(client: AsyncClient, tokens: list[str] | None = None):  # type: ignore[no-untyped-def]
+    reviewed = tokens if tokens is not None else await _visible_tag_review_tokens(client)
+    return await client.post("/tags/bulk-write-no-discrepancies", data={"review_tokens": reviewed})
 
 
 if TYPE_CHECKING:
@@ -145,21 +157,23 @@ async def test_bulk_approve_high_confidence_server_predicate(
     assert p_mid.status == ProposalStatus.PENDING.value, "the client id-list must not approve the 0.50 row"
     assert p_null.status == ProposalStatus.PENDING.value, "NULL confidence is excluded by the SQL predicate"
 
-    # The Rename workspace header wires this id-less server predicate -- no client id-list markup (D-02).
-    frag = await client.get("/s/rename", headers={"HX-Request": "true"})
-    assert 'hx-patch="/proposals/bulk-approve-high-confidence"' in frag.text
-    assert "proposal_ids" not in frag.text, "the bulk button carries no client-built id-list"
+    # The compatibility endpoint remains live, but neither Review dimension can expose a corpus-wide
+    # action that authorizes values outside its rendered window.
+    rename = await client.get("/s/rename", headers={"HX-Request": "true"})
+    move = await client.get("/s/move", headers={"HX-Request": "true"})
+    assert 'hx-patch="/proposals/bulk-approve-high-confidence"' not in rename.text
+    assert 'hx-patch="/proposals/bulk-approve-high-confidence"' not in move.text
 
 
 @pytest.mark.asyncio
-async def test_rename_move_headers_and_confirm_quote_real_counts_not_render_length(
+async def test_rename_move_headers_report_real_counts_without_unseen_bulk_actions(
     client: AsyncClient,
     seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
 ) -> None:
-    """phaze-rw14: the Rename/Move header sub-count and bulk-approve confirm text quote the REAL
-    corpus-wide pending total / >=90%-confidence match count -- not ``rename_proposals | length``
-    (the 200-row render cap) -- so a rendered page of low-confidence rows can't understate either
-    number to the operator.
+    """Rename/Move report the real pending total without offering actions beyond rendered rows.
+
+    The sub-count remains corpus-wide rather than ``rename_proposals | length`` (the 200-row render
+    cap), while the removed trigger hosts ensure neither surface can approve the hidden remainder.
     """
     await seed_pending_proposal(0.95, original_filename="high1.mp3")
     await seed_pending_proposal(0.95, original_filename="high2.mp3")
@@ -167,13 +181,45 @@ async def test_rename_move_headers_and_confirm_quote_real_counts_not_render_leng
     await seed_pending_proposal(0.5, original_filename="low2.mp3")
     await seed_pending_proposal(0.5, original_filename="low3.mp3")
 
-    for stage, header_target in (("rename", "rename-trigger-response"), ("move", "move-trigger-response")):
-        frag = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
-        assert frag.status_code == 200
-        assert "5 awaiting approval" in frag.text, f"{stage} header must report the true pending total (5), not a page length"
-        assert f'hx-target="#{header_target}"' in frag.text
-        assert "2 match now" in frag.text, f"{stage} confirm text must quote the real >=90%-confidence count (2)"
-        assert "5 match now" not in frag.text, f"{stage} confirm text must not fall back to the rendered row count"
+    rename = await client.get("/s/rename", headers={"HX-Request": "true"})
+    move = await client.get("/s/move", headers={"HX-Request": "true"})
+    assert "5 awaiting approval" in rename.text
+    assert "5 awaiting approval" in move.text
+    assert "rename-trigger-response" not in rename.text
+    assert "move-trigger-response" not in move.text
+    assert "match now" not in rename.text and "match now" not in move.text
+
+
+@pytest.mark.asyncio
+async def test_canonical_review_discloses_destination_before_whole_proposal_approval(
+    client: AsyncClient,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """A Propose-to-Review transition cannot offer approval without rendering its path facet."""
+    proposal = await seed_pending_proposal(
+        0.85,
+        original_filename="unreviewed.mp3",
+        proposed_filename="Reviewed Name.mp3",
+        proposed_path="Artist/Event/Reviewed Name.mp3",
+    )
+
+    propose = (await client.get("/s/propose")).text
+    assert 'href="/s/rename"' in propose and 'hx-get="/s/rename"' in propose
+
+    review = (await client.get("/s/rename", headers={"HX-Request": "true"})).text
+    row = review.split(f'id="rename-row-{proposal.id}"', 1)[1].split('id="rename-row-', 1)[0]
+    assert "Filename" in row and "Reviewed Name.mp3" in row
+    assert "Destination" in row and "Artist/Event/Reviewed Name.mp3" in row
+    assert f'hx-patch="/proposals/{proposal.id}/approve"' in row
+    assert "/proposals/bulk-approve-high-confidence" not in review
+
+    move_review = (await client.get("/s/move", headers={"HX-Request": "true"})).text
+    move_row = move_review.split(f'id="rename-row-{proposal.id}"', 1)[1].split('id="rename-row-', 1)[0]
+    assert "Destination" in move_row and "Artist/Event/Reviewed Name.mp3" in move_row
+    assert "Filename" in move_row and "Reviewed Name.mp3" in move_row
+    assert f'hx-patch="/proposals/{proposal.id}/approve"' in move_row
+    assert "/proposals/bulk-approve-high-confidence" not in move_review
+    assert move_row.count("whitespace-pre-wrap break-all") == 4, "the compatibility alias renders the same complete canonical decision"
 
 
 @pytest.mark.asyncio
@@ -189,7 +235,12 @@ async def test_edit_patch_targets_own_row(
     Rejected inputs -- a ``..`` traversal segment, a leading ``/``, or a NUL byte -- 400 and leave
     the row unchanged (T-60-02).
     """
-    proposal = await seed_pending_proposal(0.8, proposed_filename="Original.mp3", original_filename="orig.mp3")
+    proposal = await seed_pending_proposal(
+        0.8,
+        proposed_filename="Original.mp3",
+        proposed_path="Artist/Event/Original.mp3",
+        original_filename="orig.mp3",
+    )
 
     resp = await client.patch(
         f"/proposals/{proposal.id}/edit",
@@ -203,6 +254,7 @@ async def test_edit_patch_targets_own_row(
     # mutation route now has exactly one response shape.
     assert f'id="rename-row-{proposal.id}"' in resp.text, "returns the targeted row"
     assert "<html" not in resp.text, "returns only the row, not a full page"
+    assert "Destination" in resp.text and "Artist/Event/Original.mp3" in resp.text, "row swaps must retain the path being authorized"
     await session.refresh(proposal)
     assert proposal.proposed_filename == "Edited Name.mp3"
     assert proposal.status == ProposalStatus.PENDING.value, "edit is pre-approve -- row stays PENDING"
@@ -244,7 +296,7 @@ async def test_tag_bulk_no_discrepancy_predicate(
         original_filename="plain.mp3", artist=None, title=None, album=None, year=None, genre=None, track_number=None
     )
 
-    resp = await client.post("/tags/bulk-write-no-discrepancies")
+    resp = await _post_visible_tag_bulk(client)
     assert resp.status_code == 200
 
     async def _log_count(file_id: object, *, status: str | None = None) -> int:
@@ -259,10 +311,8 @@ async def test_tag_bulk_no_discrepancy_predicate(
     assert await _log_count(clean.id) == 1, "a clean >=1-change file is dispatched exactly once"
     assert await _log_count(clean.id, status="queued") == 1, "the dispatched write is recorded queued"
     assert await _log_count(clean.id, status="no_op") == 0, "a written file is not a NO_OP"
-    # WR-01: a zero-change file is NOT tag-written (no write attempt), but earns exactly one terminal
-    # NO_OP marker so it is evicted from the candidate window and never re-starves the queue.
-    assert await _log_count(zero.id) == 1, "a zero-change file gets exactly one log -- the NO_OP marker"
-    assert await _log_count(zero.id, status="no_op") == 1, "a zero-change file earns one terminal NO_OP marker (WR-01)"
+    # A zero-change file is not rendered and therefore cannot enter the reviewed authorization scope.
+    assert await _log_count(zero.id) == 0
 
     # Blank-guard clause: a comparison that would erase an existing tag never qualifies.
     blanking = [{"field": "artist", "label": "Artist", "current": "Existing", "proposed": None, "changed": True}]
@@ -304,7 +354,7 @@ async def test_tag_bulk_makes_forward_progress_past_zero_change_wall(
 
     # Submit repeatedly; each submit is bounded, but forward progress must reach the qualifying file.
     for _ in range(3):
-        resp = await client.post("/tags/bulk-write-no-discrepancies")
+        resp = await _post_visible_tag_bulk(client)
         assert resp.status_code == 200
         if await _queued_count(qual.id) == 1:
             break
@@ -352,8 +402,7 @@ async def test_tag_bulk_reactivates_a_file_after_a_completed_undo(
             stmt = stmt.where(TagWriteLog.source == source)
         return (await session.execute(stmt)).scalar_one()
 
-    resp = await client.post("/tags/bulk-write-no-discrepancies")
-    assert resp.status_code == 200
+    assert await _visible_tag_review_tokens(client) == []
     assert await _log_count(file_id) == 1, "the un-reverted COMPLETED write must be untouched -- the file must not be re-selected yet"
 
     session.add(
@@ -368,7 +417,7 @@ async def test_tag_bulk_reactivates_a_file_after_a_completed_undo(
     )
     await session.commit()
 
-    resp2 = await client.post("/tags/bulk-write-no-discrepancies")
+    resp2 = await _post_visible_tag_bulk(client)
     assert resp2.status_code == 200
     assert await _log_count(file_id, status="queued", source="proposal") == 1, "the reverted file must be re-dispatched, not stay evicted forever"
 
@@ -403,7 +452,7 @@ async def test_tag_bulk_per_file_commit_survives_mid_loop_abort(
     f1_id = f1.id
     f2_id = f2.id
 
-    async def _fake_enqueue(sess: AsyncSession, _router: object, fr: FileRecord, tags: dict, source: str) -> TagWriteLog:
+    async def _fake_enqueue(sess: AsyncSession, _router: object, fr: FileRecord, tags: dict, source: str, **_review: object) -> TagWriteLog:
         if fr.id == f2_id:
             # The abort shape: a concurrently un-applied file raises straight out of enqueue_tag_write.
             msg = "Only executed files can have tags written"
@@ -414,7 +463,7 @@ async def test_tag_bulk_per_file_commit_survives_mid_loop_abort(
         return entry
 
     with patch("phaze.routers.tags.enqueue_tag_write", new=AsyncMock(side_effect=_fake_enqueue)):
-        resp = await client.post("/tags/bulk-write-no-discrepancies")
+        resp = await _post_visible_tag_bulk(client)
 
     assert resp.status_code == 200, "one bad file skips -- it must not 500 the whole batch"
     # The first file's audit row was committed per-file, so the mid-loop abort on the second file
@@ -444,7 +493,7 @@ async def test_tag_bulk_rollback_does_not_expire_later_candidates(
     bad_id = bad.id
     good_id = good.id
 
-    async def _fake_enqueue(sess: AsyncSession, task_router: object, fr: FileRecord, tags: dict, source: str) -> TagWriteLog:
+    async def _fake_enqueue(sess: AsyncSession, task_router: object, fr: FileRecord, tags: dict, source: str, **_review: object) -> TagWriteLog:
         if fr.id == bad_id:
             msg = "Only executed files can have tags written"
             raise ValueError(msg)
@@ -454,7 +503,7 @@ async def test_tag_bulk_rollback_does_not_expire_later_candidates(
         return entry
 
     with patch("phaze.routers.tags.enqueue_tag_write", new=AsyncMock(side_effect=_fake_enqueue)):
-        resp = await client.post("/tags/bulk-write-no-discrepancies")
+        resp = await _post_visible_tag_bulk(client)
 
     assert resp.status_code == 200
     assert await _tagwrite_log_count(session, bad_id) == 0, "enqueue_tag_write raised before any row -- no audit row for the bad file"
@@ -479,7 +528,7 @@ async def test_tag_bulk_reports_failures_truthfully(
 
     _controller_queue, router = install_fake_queues(client)
     with patch.object(router, "enqueue_for_agent", side_effect=RuntimeError("broker unreachable")):
-        resp = await client.post("/tags/bulk-write-no-discrepancies")
+        resp = await _post_visible_tag_bulk(client)
 
     assert resp.status_code == 200
     body = resp.text
@@ -504,7 +553,7 @@ async def test_tag_bulk_concurrent_submit_is_blocked(
     f1_id = f1.id
 
     with patch("phaze.routers.tags._acquire_bulk_tagwrite_lock", new=AsyncMock(return_value=False)):
-        resp = await client.post("/tags/bulk-write-no-discrepancies")
+        resp = await _post_visible_tag_bulk(client)
 
     assert resp.status_code == 200
     assert "already in progress" in resp.text
@@ -524,8 +573,9 @@ async def test_tag_bulk_releases_lock_for_subsequent_submit(
     """
     await seed_executed_file_with_metadata(original_filename="rrr - New Title.mp3", artist=None, title=None, album="Keep Album")
 
-    r1 = await client.post("/tags/bulk-write-no-discrepancies")
-    r2 = await client.post("/tags/bulk-write-no-discrepancies")
+    tokens = await _visible_tag_review_tokens(client)
+    r1 = await _post_visible_tag_bulk(client, tokens)
+    r2 = await _post_visible_tag_bulk(client, tokens)
 
     assert r1.status_code == 200
     assert r2.status_code == 200
@@ -547,13 +597,8 @@ async def test_tag_bulk_write_oob_removes_terminal_rows_and_refreshes_subcount(
     """
     noop, _ = await seed_executed_file_with_metadata(original_filename="plain.mp3", artist=None, title=None, album=None)
 
-    resp = await client.post("/tags/bulk-write-no-discrepancies")
-
-    assert resp.status_code == 200
-    body = resp.text
-    assert f'id="tagwrite-row-{noop.id}" hx-swap-oob="delete"' in body, "a terminal NO_OP row must be OOB-removed"
-    assert 'id="stage-workspace-subcount" hx-swap-oob="true"' in body, "the subcount must be OOB-refreshed"
-    assert "0 awaiting approval" in body, "the resolved file is gone from the queue -- subcount reflects it"
+    assert noop.id
+    assert await _visible_tag_review_tokens(client) == []
 
 
 @pytest.mark.asyncio
@@ -572,7 +617,7 @@ async def test_tag_bulk_write_leaves_discrepancy_and_failed_rows_in_place(
         original_filename="Disc Artist - Disc Title.mp3", artist=None, title=None, album="Keep Album"
     )
 
-    resp = await client.post("/tags/bulk-write-no-discrepancies")
+    resp = await _post_visible_tag_bulk(client)
 
     assert resp.status_code == 200
     assert f'id="tagwrite-row-{queued_file.id}" hx-swap-oob="delete"' not in resp.text, "an in-flight QUEUED row stays in the queue by design"
@@ -581,7 +626,7 @@ async def test_tag_bulk_write_leaves_discrepancy_and_failed_rows_in_place(
     failed_file, _ = await seed_executed_file_with_metadata(original_filename="Fail Artist - Fail Title.mp3", artist=None, title=None)
     _controller_queue, router = install_fake_queues(client)
     with patch.object(router, "enqueue_for_agent", side_effect=RuntimeError("broker unreachable")):
-        resp2 = await client.post("/tags/bulk-write-no-discrepancies")
+        resp2 = await _post_visible_tag_bulk(client)
 
     assert resp2.status_code == 200
     assert f'id="tagwrite-row-{failed_file.id}" hx-swap-oob="delete"' not in resp2.text, "an undispatched write never wrote anything -- row stays"
@@ -600,8 +645,9 @@ async def test_review_audit_one_row(
     workspace level. phaze-6bkk: no mutagen patching is needed any more -- the api dispatches
     instead of writing, so the DB audit row is exercised without a file by construction.
     """
-    file, _ = await seed_executed_file_with_metadata(artist="Original Artist")
-    resp = await client.post(f"/tags/{file.id}/write", data={"artist": "New Artist"})
+    file, _ = await seed_executed_file_with_metadata(original_filename="New Artist - New Title.mp3", artist=None, title=None)
+    token = (await _visible_tag_review_tokens(client))[0]
+    resp = await client.post(f"/tags/{file.id}/write", data={"review_token": token})
     assert resp.status_code == 200
     stmt = select(func.count()).select_from(TagWriteLog).where(TagWriteLog.file_id == file.id)
     assert (await session.execute(stmt)).scalar_one() == 1, "exactly one TagWriteLog per apply"
@@ -631,10 +677,10 @@ async def test_diff_row_before_after(
     assert rn.status_code == 200
     body = rn.text
     assert "line-through" in body and "rose" in body and "emerald" in body
-    assert "grid-cols-[1fr_auto_1fr]" in body
+    assert "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]" in body
     assert "messy.mp3" in body and "Renamed.mp3" in body
     assert f'hx-patch="/proposals/{p.id}/approve"' in body
-    assert "hx-post" not in body
+    assert f'hx-post="/proposals/{p.id}/approve"' not in body
     assert "x-data='{ editing" in body
     assert 'name="proposed"' in body
     assert f'id="rename-row-{p.id}"' in body
@@ -644,9 +690,9 @@ async def test_diff_row_before_after(
     assert mv.status_code == 200
     mbody = mv.text
     assert "Artist/Album/Renamed.mp3" in mbody, "move renders the proposed_path facet (after value)"
-    assert f'id="move-row-{p.id}"' in mbody
-    assert 'value="path"' in mbody
-    assert "hx-post" not in mbody
+    assert f'id="rename-row-{p.id}"' in mbody
+    assert 'value="filename"' in mbody
+    assert "Changes Review" in mbody
 
 
 @pytest.mark.asyncio
@@ -703,12 +749,13 @@ async def test_tagwrite_workspace_apply_and_bulk_wiring(
     assert "UNDO" not in body
     # The bulk header is the id-less D-03 server predicate.
     assert 'hx-post="/tags/bulk-write-no-discrepancies"' in body
-    assert "APPROVE ALL WITH NO DISCREPANCIES" in body
+    assert "Approve visible eligible tag writes" in body
+    assert "Approve the eligible tag changes visible on this reviewed page?" in body
     # Tag inline-edit is out of cut -- no SAVE-EDIT control, no proposals-facet edit PATCH.
     assert "SAVE EDIT" not in body, "tag rows render no SAVE-EDIT (tag inline-edit out of cut)"
-    assert "/proposals/" not in body, "tag apply never routes through a proposals PATCH"
+    assert f'hx-patch="/tags/{file.id}/write"' not in body, "tag apply never routes through a proposals PATCH"
     # The computed tag diff surfaces (before/after summaries autoescaped through the shared partial).
-    assert "New Artist" in body and "grid-cols-[1fr_auto_1fr]" in body
+    assert "New Artist" in body and "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]" in body
 
 
 @pytest.mark.asyncio
@@ -733,7 +780,7 @@ async def test_tagwrite_workspace_shows_undo_only_with_prior_write_log(
     )
     await session.commit()
 
-    frag = await client.get("/s/tagwrite", headers={"HX-Request": "true"})
+    frag = await client.get("/s/tagwrite?status=blocked", headers={"HX-Request": "true"})
     assert frag.status_code == 200
     body = frag.text
 
@@ -772,6 +819,11 @@ async def test_propose_workspace_generate_and_model(
     # The generation view lists the proposal + is not a per-row diff-approve surface.
     assert "messy.mp3" in body and "Renamed.mp3" in body
     assert f"/proposals/{p.id}/approve" not in body, "Propose is a generation view -- no per-row approve here"
+    assert 'href="/s/rename"' in body and 'hx-get="/s/rename"' in body, "candidate decisions route to canonical Review"
+    assert 'hx-target="#stage-workspace"' in body and 'hx-push-url="true"' in body
+    assert "Approval and rejection happen only in Review" in body
+    assert 'name="proposal_ids"' not in body, "Propose must not expose decision selection controls"
+    assert 'hx-patch="/proposals/bulk' not in body, "the shared bulk endpoint remains backend-compatible but is not a Propose affordance"
 
 
 @pytest.mark.asyncio
@@ -779,13 +831,12 @@ async def test_dedupe_keeper_resolve_wiring(
     client: AsyncClient,
     seed_duplicate_group: Callable[..., Awaitable[list[FileRecord]]],
 ) -> None:
-    """REVIEW-03/REVIEW-05 -- ``/s/dedupe`` keeper radio resolves via ``canonical_id``; resolve round-trips file_states.
+    """REVIEW-03/REVIEW-05 -- keeper selection is staged; explicit confirmation resolves and remains undoable.
 
     A seeded duplicate group (two EXECUTED files sharing one sha256) surfaces as a keeper-select card. The
-    radio POSTs the VERIFIED contract ``/duplicates/{sha256}/resolve`` with the ``canonical_id`` field (via
-    hx-vals -- NOT the UI-SPEC sketch's ``group_id``/``keeper_id``), the group key is the ``sha256_hash``, and
-    exactly one copy is the emerald KEEP (the others carry the ``archive`` text tag, never hue-only). POSTing
-    the resolve then returns the resolved state whose UNDO round-trips ``file_states`` to
+    radio is a form-local ``canonical_id`` selection with no request behavior. The enclosing form posts the
+    VERIFIED ``/duplicates/{sha256}/resolve`` contract only from an explicit confirmation control. POSTing
+    the form then returns the resolved state whose UNDO round-trips ``file_states`` to
     ``/duplicates/{sha256}/undo`` (REVIEW-05 -- undo reconstructs prior state FROM that blob).
     """
     files = await seed_duplicate_group(count=2)
@@ -795,16 +846,22 @@ async def test_dedupe_keeper_resolve_wiring(
     assert frag.status_code == 200
     body = frag.text
 
-    # Keeper radio wires the VERIFIED resolve contract (canonical_id via hx-vals), NOT the sketch's fields.
-    assert f'hx-post="/duplicates/{sha}/resolve"' in body, "keeper radio posts the sha256-keyed resolve route"
-    assert "canonical_id" in body, "the resolve carries the canonical_id field (hx-vals)"
+    assert f'<form id="dupe-group-{sha}"' in body
+    assert f'hx-post="/duplicates/{sha}/review"' in body, "the choice posts only to the non-mutating review route"
+    assert 'type="radio" name="canonical_id"' in body
+    radio = re.search(r'<input type="radio"[^>]+>', body)
+    assert radio is not None and "hx-post" not in radio.group(), "selection alone must not invoke the resolve endpoint"
     assert "group_id" not in body and "keeper_id" not in body, "the UI-SPEC sketch's group_id/keeper_id must NOT appear"
-    # KEEP/archive are text tags, never hue-only (WCAG 1.4.1); exactly one keeper per group.
-    assert ">KEEP<" in body and ">archive<" in body
+    assert "pending keeper" in body and "will archive" in body
+    assert "Review decision" in body and "Selecting a copy only stages this decision" in body
+    assert "bitrate first" in body and "tag completeness" in body and "shortest path" in body
     assert body.count("checked") == 1, "exactly one keeper radio is pre-selected per group"
 
     # Resolving round-trips file_states on UNDO over the existing resolve_response.html toast (REVIEW-05).
-    resolved = await client.post(f"/duplicates/{sha}/resolve", data={"canonical_id": str(files[0].id)})
+    review = await client.post(f"/duplicates/{sha}/review", data={"canonical_id": str(files[0].id)})
+    plan_id = re.search(r'name="plan_id" value="([^"]+)"', review.text)
+    assert plan_id is not None
+    resolved = await client.post(f"/duplicates/{sha}/resolve", data={"plan_id": plan_id.group(1)})
     assert resolved.status_code == 200
     assert f'hx-post="/duplicates/{sha}/undo"' in resolved.text, "the resolved state's UNDO posts the undo route"
     assert 'name="file_states"' in resolved.text, "UNDO carries the file_states blob for a stateful reversal"
@@ -815,7 +872,7 @@ async def test_dedupe_auto_keep_submits_rendered_group_hashes(
     client: AsyncClient,
     seed_duplicate_group: Callable[..., Awaitable[list[FileRecord]]],
 ) -> None:
-    """phaze-81bu: AUTO-KEEP submits the EXACT sha256_hash of every group rendered on ``/s/dedupe``.
+    """AUTO-SELECTION submits rendered hashes to a read-only review boundary before bulk resolution.
 
     Regression for a page/page_size-derived bulk resolve that could silently act on groups the operator
     was never shown. The button now carries NO ``page``/``page_size`` hx-vals; instead it ``hx-include``s
@@ -828,11 +885,20 @@ async def test_dedupe_auto_keep_submits_rendered_group_hashes(
     assert frag.status_code == 200
     body = frag.text
 
-    assert 'hx-post="/duplicates/resolve-all"' in body
+    assert 'hx-post="/duplicates/review-all"' in body
+    assert 'hx-post="/duplicates/resolve-all"' not in body, "the workspace action must not commit before review"
     assert '"page"' not in body, "AUTO-KEEP must not carry a page/page_size re-derivation"
     assert '"page_size"' not in body
     assert 'hx-include="#dedupe-group-hash-inputs"' in body, "AUTO-KEEP must pull the rendered group hashes via hx-include"
     assert f'<input type="hidden" name="group_hashes" value="{sha}">' in body, "the rendered group's hash must be submittable"
+
+    review = await client.post("/duplicates/review-all", data={"group_hashes": [sha]})
+    assert review.status_code == 200
+    assert "No files have been archived yet" in review.text
+    assert 'hx-post="/duplicates/resolve-all"' in review.text
+    assert 'name="plan_ids"' in review.text
+    assert f'value="{sha}"' not in review.text, "the commit carries opaque plans, not caller-controlled hashes"
+    assert "Confirm 1 resolutions" in review.text
 
 
 @pytest.mark.asyncio
@@ -840,7 +906,7 @@ async def test_cue_gate_and_preview(
     client: AsyncClient,
     seed_cue_set: Callable[..., Awaitable[object]],
 ) -> None:
-    """REVIEW-04 -- ``/s/cue`` shows an eligible preview + APPROVE->``/cue/{id}/generate``; the ineligible card is gated.
+    """REVIEW-04 -- Cue Sheets is an artifact workspace with prerequisites, preview, generation, and source actions.
 
     One eligible set (approved tracklist, EXECUTED file, a timestamped track) and one ineligible set (no
     timestamped track) are seeded. The eligible card renders the in-memory ``.cue`` preview ``<pre>`` and an
@@ -855,13 +921,30 @@ async def test_cue_gate_and_preview(
     assert frag.status_code == 200
     body = frag.text
 
-    # Eligible card: the in-memory .cue preview + APPROVE -> generate (NO /approve route anywhere).
+    assert "Artifacts · Cue sheets" in body and "Generated artifact" in body
+    assert "Applied file:" in body and "Tracklist:" in body and "Timestamps:" in body
     assert "<pre" in body, "the eligible card renders the in-memory .cue preview block"
-    assert f'hx-post="/cue/{eligible_tracklist_id}/generate"' in body, "APPROVE posts the generate route (generate IS approve)"
+    assert f'hx-post="/cue/{eligible_tracklist_id}/generate"' in body
     assert "/approve" not in body, "there is no /cue/{id}/approve route -- generate IS the write"
-    # Gated card: opacity-60 + the awaiting-match copy, and no second approve control.
-    assert "opacity-60" in body and "awaiting tracklist match" in body
-    assert body.count("APPROVE") == 1, "only the eligible card carries an APPROVE control"
+    assert "Generate cue sheet" in body and "Open source record" in body and "Tracklist workspace" in body
+    assert "Preview and generation are unavailable" in body and "! required" in body
+    assert body.count("Generate cue sheet") == 1, "only the eligible card carries a generation control"
+
+
+@pytest.mark.asyncio
+async def test_cue_preview_failure_is_not_reported_as_missing_timestamps(
+    client: AsyncClient,
+    seed_cue_set: Callable[..., Awaitable[object]],
+) -> None:
+    """A renderer failure is a red preview error, not an amber prerequisite diagnosis."""
+    await seed_cue_set(eligible=True)
+    with patch("phaze.services.review.generate_cue_content", side_effect=ValueError("synthetic preview failure")):
+        response = await client.get("/s/cue", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    assert "preview failed" in response.text
+    assert "timestamps were not classified as missing" in response.text
+    assert "Preview and generation are unavailable until" not in response.text
 
 
 @pytest.mark.asyncio
@@ -918,24 +1001,47 @@ async def test_apply_workspace_hosts_the_execute_trigger(
     assert 'hx-post="/execution/start"' in body, "the Apply workspace no longer triggers execution"
     assert 'hx-target="#apply-execute-response"' in body
     assert 'id="apply-execute-response"' in body, "the dispatch response has no sink to land in"
-    assert "hx-confirm" in body, "R-4: a mass action must confirm"
-    # The button's sink is a SIBLING, not an ancestor (phaze-thd6) -- otherwise dispatching would
-    # delete the control that dispatched.
-    sink_index = body.index('id="apply-execute-response"')
-    trigger_index = body.index('hx-post="/execution/start"')
-    assert trigger_index < sink_index, "the execute trigger must not live inside its own response sink"
+
+    # phaze-tzy6s.12: R-4 confirmation moved OFF the native browser prompt onto the shared
+    # ui.confirmation <dialog> primitive. hx-confirm renders one unstyled string, which cannot carry
+    # a manifest -- the whole point of the preflight. Assert the product's own pattern is used, and
+    # that the native one has not crept back.
+    assert "hx-confirm" not in body, "R-4 confirmation must use the shared dialog, not the native browser prompt"
+    assert 'id="apply-confirm"' in body, "the shared confirmation dialog is missing"
+    assert "<dialog" in body
+    assert "showModal()" in body, "the execute button must open the confirmation dialog"
+
+    # The dispatching element is a SIBLING of the sink, never inside it (phaze-thd6) -- otherwise
+    # dispatching would delete the control that dispatched. The pre-.12 form of this check compared
+    # string indices, which only worked while the trigger preceded the sink; the dialog now renders
+    # last, so assert the invariant directly instead: the sink is emitted EMPTY, so nothing that
+    # posts can be a descendant of it.
+    assert '<div id="apply-execute-response" class="px-6 pt-4 empty:hidden"></div>' in body, (
+        "the response sink must be emitted empty so no trigger can live inside it"
+    )
 
 
 @pytest.mark.asyncio
 async def test_apply_workspace_disables_execute_with_nothing_approved(client: AsyncClient) -> None:
-    """With zero approved proposals the trigger is inert and says why -- it does not post an empty batch."""
+    """With zero approved proposals the trigger is inert and says why -- it does not post an empty batch.
+
+    phaze-tzy6s.12 raised the bar from "says why" to "says why AND what to do next", in visible text.
+    A disabled control whose explanation lives only in a ``title=`` attribute is unreachable by
+    keyboard and by touch, so the reason and the next action are both asserted as body text here.
+    """
     fragment = await client.get("/s/apply", headers={"HX-Request": "true"})
     assert fragment.status_code == 200
     body = fragment.text
 
     assert "disabled" in body
     assert 'hx-post="/execution/start"' not in body, "an empty batch must not be dispatchable"
-    assert "Nothing approved yet" in body
+    assert 'id="apply-confirm"' not in body, "no confirmation dialog should be rendered when nothing can execute"
+
+    assert "No approved proposals are ready to execute." in body, "the disabled reason must be visible text"
+    assert "Approve filename and destination changes in Changes Review first." in body, "the disabled state must name the next action"
+    # The reason is wired to the button for assistive tech, not left as a floating paragraph.
+    assert 'id="apply-blocked-reason"' in body
+    assert 'aria-describedby="apply-blocked-reason"' in body
 
 
 @pytest.mark.asyncio

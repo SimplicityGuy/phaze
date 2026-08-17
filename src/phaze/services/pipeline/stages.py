@@ -14,10 +14,11 @@ patching the ``phaze.services.pipeline`` package attribute no longer reaches it.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast as type_cast
 import weakref
 
-from sqlalchemy import distinct, exists, func, select
+from sqlalchemy import distinct, exists, func, select, text
 import structlog
 
 from phaze.enums.stage import Stage
@@ -28,8 +29,8 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.pipeline_stage_control import PipelineStageControl
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
-from phaze.services.pipeline.buckets import _empty_buckets, _safe_bucket_counts
-from phaze.services.pipeline.common import MUSIC_VIDEO_TYPES, _safe_count
+from phaze.services.pipeline.buckets import StageBucketSnapshot, _empty_buckets, _safe_bucket_counts, _safe_bucket_snapshot
+from phaze.services.pipeline.common import _BUSY_FUNCTION_TO_STAGE, MUSIC_VIDEO_TYPES, _safe_count
 from phaze.services.stage_status import (
     done_clause,
 )
@@ -240,6 +241,7 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
     # The all-zero enrich-bucket default returned when a bucket read's session acquisition times out
     # (never mutated -- only spread via {**bucket, "total": ...}).
     bucket_default: dict[str, int] = _empty_buckets()
+    metadata_bucket_default = StageBucketSnapshot(counts=_empty_buckets(), available=False)
 
     # ONE semaphore shared across every read in THIS poll -- and, since phaze-28wi, across every
     # OTHER concurrently in-flight poll on the SAME running loop too, so the cap bounds them all
@@ -267,13 +269,13 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
         # NOTE: typing.cast is aliased type_cast -- the bare `cast` name is sqlalchemy's SQL cast (used
         # elsewhere in this module).
     ) = type_cast(
-        "tuple[int, int, int, int, dict[str, int], dict[str, int], int, int, int, int, int]",
+        "tuple[int, int, int, int, StageBucketSnapshot, dict[str, int], int, int, int, int, int]",
         await asyncio.gather(
             _read_in_own_session(fanout, lambda s: _safe_count(s, mv_total_stmt, node="music_video_total"), 0),
             _read_in_own_session(fanout, lambda s: _safe_count(s, tracklist_total_stmt, node="tracklist_total"), 0),
             _read_in_own_session(fanout, lambda s: _safe_count(s, discovery_stmt, node="discovery"), 0),
             _read_in_own_session(fanout, lambda s: _safe_count(s, convergence_stmt, node="proposals_total"), 0),
-            _read_in_own_session(fanout, lambda s: _safe_bucket_counts(s, Stage.METADATA), bucket_default),
+            _read_in_own_session(fanout, lambda s: _safe_bucket_snapshot(s, Stage.METADATA), metadata_bucket_default),
             _read_in_own_session(fanout, lambda s: _safe_bucket_counts(s, Stage.ANALYZE), bucket_default),
             _read_in_own_session(fanout, lambda s: _safe_count(s, tracklist_stmt, node="tracklist"), 0),
             _read_in_own_session(fanout, lambda s: _safe_count(s, match_done_stmt, node="match"), 0),
@@ -290,7 +292,7 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
         # each -- so the DAG surfaces a VISIBLE failed count per enrich stage and the five buckets sum
         # to music_video_total on a healthy query. `total` stays music_video_total; `done` (still read
         # by _build_dag_context) is now the derived done-bucket. Degrade-safe (all-zero on any error).
-        "metadata": {**metadata_b, "total": music_video_total},
+        "metadata": {**metadata_b.counts, "total": music_video_total, "available": int(metadata_b.available)},
         "analyze": {**analyze_b, "total": music_video_total},
         "tracklist": {
             "done": tracklist_done,
@@ -350,3 +352,41 @@ async def get_stage_controls(session: AsyncSession) -> dict[str, dict[str, int |
     except Exception:
         logger.warning("stage_controls_degraded", exc_info=True)
         return {s: dict(v) for s, v in _DEFAULT_CONTROLS.items()}
+
+
+@dataclass(frozen=True)
+class StageActivitySnapshot:
+    """SAQ queued/active counts plus whether the broker-table read succeeded."""
+
+    counts: dict[str, dict[str, int]]
+    available: bool
+
+
+_STAGE_ACTIVITY_SQL = text(
+    "SELECT split_part(key, ':', 1) AS fn, status, COUNT(*) AS n FROM saq_jobs WHERE status IN ('queued', 'active') GROUP BY fn, status"
+)
+
+
+def _empty_stage_activity() -> dict[str, dict[str, int]]:
+    return {"metadata": {"queued": 0, "active": 0}, "analyze": {"queued": 0, "active": 0}}
+
+
+async def get_stage_activity_counts(session: AsyncSession) -> dict[str, dict[str, int]]:
+    """Compatibility projection of queued and active counts; use the snapshot when availability matters."""
+    return (await get_stage_activity_snapshot(session)).counts
+
+
+async def get_stage_activity_snapshot(session: AsyncSession) -> StageActivitySnapshot:
+    """Return queued and active SAQ counts without disguising read failure as measured zero."""
+    out = _empty_stage_activity()
+    try:
+        async with session.begin_nested():
+            rows = (await session.execute(_STAGE_ACTIVITY_SQL)).all()
+    except Exception:
+        logger.warning("stage_activity_degraded", exc_info=True)
+        return StageActivitySnapshot(counts=out, available=False)
+    for function_name, status, count in rows:
+        stage = _BUSY_FUNCTION_TO_STAGE.get(function_name)
+        if stage is not None:
+            out[stage][status] = int(count)
+    return StageActivitySnapshot(counts=out, available=True)

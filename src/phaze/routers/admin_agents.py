@@ -169,6 +169,34 @@ def _resolve_selected_compute_lane(clane: str | None, compute_lanes: list[Comput
     return clane if clane is not None and any(lane.backend_id == clane for lane in compute_lanes) else None
 
 
+def _resolve_worker_selection(
+    agent: str | None,
+    clane: str | None,
+    agents: list[Agent],
+    compute_lanes: list[ComputeLane],
+) -> tuple[str | None, str | None]:
+    """Resolve at most one detail selection, preferring a valid agent on conflicting URLs."""
+    selected_agent = _resolve_selected_agent(agent, agents)
+    if selected_agent is not None:
+        return selected_agent, None
+    return None, _resolve_selected_compute_lane(clane, compute_lanes)
+
+
+def _canonical_selection_inputs(
+    agent: str | None,
+    clane: str | None,
+    *,
+    selected_agent: str | None,
+    selected_compute_lane: str | None,
+) -> tuple[str | None, str | None, str]:
+    """Keep one request/history channel, including while a selected row is temporarily unresolved."""
+    if selected_agent is not None or (selected_compute_lane is None and agent):
+        return agent, None, "agent"
+    if selected_compute_lane is not None or clane:
+        return None, clane, "clane"
+    return None, None, ""
+
+
 def _unresolved_detail_carrier_ids(
     agent: str | None,
     clane: str | None,
@@ -256,7 +284,7 @@ class TableRow:
 
     @property
     def trigger_id(self) -> str:
-        """The DOM id of this row's ``<tr>`` trigger — unchanged for an agent row (phaze-2u8v.6 ids)."""
+        """The stable DOM id of this row's ``<tr>`` — unchanged for an agent row (phaze-2u8v.6 ids)."""
         prefix = "agent-trigger-" if self.status_kind == "agent" else "compute-lane-trigger-"
         return f"{prefix}{self.id}"
 
@@ -269,7 +297,7 @@ class TableRow:
     @property
     def push_url(self) -> str:
         """The base ``hx-push-url`` this row's click pushes (before ``sort.query_state()`` is appended)."""
-        return f"/admin/agents?{self.selection_param}={self.id}"
+        return f"/s/agents?{self.selection_param}={self.id}"
 
 
 def _agent_sort_value(agent: Agent, key: str) -> Any:
@@ -512,17 +540,21 @@ async def build_agents_pane_context(request: Request, session: AsyncSession) -> 
     # CloudJob counts. Merged into the SAME row list as heartbeating agents below, so the existing 5s
     # self-poll refreshes lane rows too (no new loop, RESEARCH OQ-1).
     compute_lanes = await derive_compute_lane_identities(session)
-    selected_agent = _resolve_selected_agent(agent, agents)
-    # phaze-2u8v.5 lookup-in-known-set idiom, kept verbatim: unknown/absent id highlights nothing.
-    selected_compute_lane = _resolve_selected_compute_lane(clane, compute_lanes)
+    selected_agent, selected_compute_lane = _resolve_worker_selection(agent, clane, agents, compute_lanes)
+    canonical_agent, canonical_clane, selection_kind = _canonical_selection_inputs(
+        agent, clane, selected_agent=selected_agent, selected_compute_lane=selected_compute_lane
+    )
     rows = _build_table_rows(agents, compute_lanes, sort_state, selected_agent=selected_agent, selected_compute_lane=selected_compute_lane)
     return {
         "rows": rows,
+        "agent_count": len(agents),
+        "compute_lane_count": len(compute_lanes),
+        "selection_kind": selection_kind,
         "now": now,
         "refreshed_at_iso": now.isoformat(),
         "sort": sort_state,
         "unresolved_detail_carrier_ids": _unresolved_detail_carrier_ids(
-            agent, clane, selected_agent=selected_agent, selected_compute_lane=selected_compute_lane
+            canonical_agent, canonical_clane, selected_agent=selected_agent, selected_compute_lane=selected_compute_lane
         ),
         "enable_saq_ui": get_settings().enable_saq_ui,  # CLEAN-01: gate the discreet /saq footer link (presentation-only)
     }
@@ -599,8 +631,10 @@ async def table_partial(
     sort_state = AGENTS_SORT.resolve(sort=sort, order=order)
     agents, now = await _load_agents(session, sort_state)
     compute_lanes = await derive_compute_lane_identities(session)
-    selected_agent = _resolve_selected_agent(agent, agents)
-    selected_compute_lane = _resolve_selected_compute_lane(clane, compute_lanes)
+    selected_agent, selected_compute_lane = _resolve_worker_selection(agent, clane, agents, compute_lanes)
+    canonical_agent, canonical_clane, selection_kind = _canonical_selection_inputs(
+        agent, clane, selected_agent=selected_agent, selected_compute_lane=selected_compute_lane
+    )
     rows = _build_table_rows(agents, compute_lanes, sort_state, selected_agent=selected_agent, selected_compute_lane=selected_compute_lane)
     return templates.TemplateResponse(
         request=request,
@@ -608,11 +642,14 @@ async def table_partial(
         context={
             "request": request,
             "rows": rows,
+            "agent_count": len(agents),
+            "compute_lane_count": len(compute_lanes),
+            "selection_kind": selection_kind,
             "now": now,
             "refreshed_at_iso": now.isoformat(),
             "sort": sort_state,
             "unresolved_detail_carrier_ids": _unresolved_detail_carrier_ids(
-                agent, clane, selected_agent=selected_agent, selected_compute_lane=selected_compute_lane
+                canonical_agent, canonical_clane, selected_agent=selected_agent, selected_compute_lane=selected_compute_lane
             ),
         },
     )

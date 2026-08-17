@@ -216,3 +216,41 @@ async def get_analyze_queue_totals(session: AsyncSession, lanes: list[dict[str, 
         return {"total_queued": None, "unrouted_queued": unrouted}
     lane_sum = sum(cast("int", value) for value in queued_values)
     return {"total_queued": unrouted + lane_sum, "unrouted_queued": unrouted}
+
+
+async def _cloud_lane_active(session: AsyncSession, backend_id: str, kind: str) -> int | None:
+    """Return comparable execution activity only where the backend exposes it.
+
+    Kueue ``RUNNING`` is a reconciled pod-running fact. Compute has no equivalent lifecycle signal:
+    its cloud row is ``SUBMITTED`` while pushing and can become ``SUCCEEDED`` before remote analysis
+    finishes, so reporting either state as executing would be invented telemetry. Unknown kinds are
+    likewise unobservable. The caller uses local SAQ ``working`` directly for the local lane.
+    """
+    if kind != "kueue":
+        return None
+    return await _safe_count_or_none(
+        session,
+        select(func.count(CloudJob.id)).where(CloudJob.backend_id == backend_id, CloudJob.status == CloudJobStatus.RUNNING.value),
+        node="lane_active",
+    )
+
+
+async def get_analysis_activity_counts(session: AsyncSession, *, now: datetime | None = None) -> dict[str, int | None]:
+    """Return UTC-today and lifetime analysis completions in one degrade-safe statement."""
+    utc_now = now or datetime.now(UTC)
+    if utc_now.tzinfo is None:
+        raise ValueError("analysis activity clock must be timezone-aware")
+    utc_midnight = utc_now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    lifetime = select(func.count(AnalysisResult.id)).where(AnalysisResult.analysis_completed_at.is_not(None)).scalar_subquery()
+    today = (
+        select(func.count(AnalysisResult.id))
+        .where(AnalysisResult.analysis_completed_at.is_not(None), AnalysisResult.analysis_completed_at >= utc_midnight)
+        .scalar_subquery()
+    )
+    try:
+        async with session.begin_nested():
+            row = (await session.execute(select(today, lifetime))).one()
+    except Exception:
+        logger.warning("analysis_activity_counts_degraded", exc_info=True)
+        return {"today": None, "lifetime": None}
+    return {"today": int(row[0] or 0), "lifetime": int(row[1] or 0)}

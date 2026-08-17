@@ -104,10 +104,12 @@ from phaze.services.backends.lane_detail import (
 from phaze.services.backends.lane_metrics import (
     _PROCESSED_WINDOW,
     _cloud_job_succeeded_for_backend,
+    _cloud_lane_active,
     _cloud_lane_queued_working,
     _lane_processed_counts,
     _local_lane_queued_working,
     _safe_count_or_none,
+    get_analysis_activity_counts,
     get_analyze_queue_totals,
 )
 from phaze.services.backends.lane_snapshot import (
@@ -115,11 +117,13 @@ from phaze.services.backends.lane_snapshot import (
     _PROBE_TIMEOUT_SEC,
     _ZERO_ADMISSION,
     _admission_by_backend_id,
+    _get_backend_routing_snapshot,
     _kind_of,
     _probe_availability,
     _probe_one,
     derive_cloud_hold_reason,
     derive_localqueue_unreachable,
+    get_analysis_live_count,
     get_backend_lane_snapshot,
 )
 from phaze.services.backends.local import LocalBackend
@@ -142,10 +146,14 @@ __all__ = [
     "LaneQueueDepths",
     "LaneQueueIdentity",
     "LocalBackend",
+    "_cloud_lane_active",
+    "_get_backend_routing_snapshot",
     "derive_cloud_hold_reason",
     "derive_localqueue_unreachable",
     "drop_pending_push_file_enqueues",
     "flush_pending_push_file_enqueues",
+    "get_analysis_activity_counts",
+    "get_analysis_live_count",
     "get_analyze_queue_totals",
     "get_backend_lane_snapshot",
     "get_lane_queue_depths",

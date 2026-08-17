@@ -8,8 +8,9 @@ Plan 57-02 (Task 3) fills the SHELL-01/SHELL-02-fragment/SHELL-04 behaviors belo
 ``test_tabbar_removed_header_present``) once the rail + header partials land. The two
 Plan-03 functions stay body-less here -- they are REPLACED (not redeclared) by Plan 03.
 
-Quick 260707-sq3 repointed ``GET /`` from the Analyze dashboard to the static Summary
-landing placeholder (SQ3-01..03); Analyze stays reachable at ``/s/analyze``.
+Quick 260707-sq3 repointed ``GET /`` from the Analyze dashboard to Summary; Analyze stays
+reachable at ``/s/analyze``. phaze-tzy6s.9 replaced the reserved landing content with the
+actionable overview while preserving the route and response-shape contract.
 
 Function -> requirement map (see 57-VALIDATION.md "Per-Task Verification Map"):
     test_root_renders_shell_summary_default  -> SHELL-01 / SQ3-02 (Plan 02, quick 260707-sq3)
@@ -50,10 +51,9 @@ _RAIL_STAGES = [
     "tracklist",
     "propose",
     "rename",
-    "tagwrite",
-    "move",
     "dedupe",
     "cue",
+    "apply",
 ]
 
 # phaze-uvmcr.1: the two below-the-line UTILITY_PANES ids (Audit Log, Compute/Agents) --
@@ -64,6 +64,7 @@ _RAIL_STAGES = [
 # utility -- so registering a pane in UTILITY_PANES is what buys it this coverage, with no
 # bespoke per-pane test of its own.
 _UTILITY_PANE_STAGES = [
+    "operations",
     "audit",
     "agents",
 ]
@@ -71,12 +72,7 @@ _UTILITY_PANE_STAGES = [
 
 @pytest.mark.asyncio
 async def test_root_renders_shell_summary_default(client: AsyncClient) -> None:
-    """SHELL-01 / SQ3-02 -- GET / renders the shell with the Summary placeholder as the default stage.
-
-    Quick 260707-sq3 repointed the landing slot from Analyze to the static Summary placeholder.
-    No file seed is needed: the first-run empty-state swap is confined to the analyze branch of
-    ``_render_stage``, and Summary performs zero DB reads.
-    """
+    """SHELL-01 / SQ3-02 -- GET / renders the shell with actionable Summary as the default stage."""
     response = await client.get("/")
     # A plain GET / is the shell root itself -- it must render, NOT redirect anywhere.
     assert response.status_code == 200
@@ -84,9 +80,9 @@ async def test_root_renders_shell_summary_default(client: AsyncClient) -> None:
     # The single stable swap target every rail node innerHTML-swaps.
     assert 'id="stage-workspace"' in body
     # Summary is the selected/active default: the swap target carries the stage marker AND the
-    # placeholder body renders inside it.
+    # overview body renders inside it.
     assert 'data-stage="summary"' in body
-    assert "data-summary-placeholder" in body
+    assert "data-summary-overview" in body
     # The Analyze dashboard is NOT what rendered. Careful: the shared scaffold's hidden seed host
     # emits an EMPTY <div id="analyze-lanes"></div> on every non-analyze workspace, so a bare
     # 'id="analyze-lanes"' substring check would be a false positive. The stage marker is the
@@ -122,12 +118,12 @@ async def test_summary_stage_route_and_fragment(client: AsyncClient) -> None:
     full = await client.get("/s/summary")
     assert full.status_code == 200
     assert 'id="stage-workspace"' in full.text
-    assert "data-summary-placeholder" in full.text
+    assert "data-summary-overview" in full.text
 
     hx = await client.get("/s/summary", headers={"HX-Request": "true"})
     assert hx.status_code == 200
     fragment = hx.text
-    assert "data-summary-placeholder" in fragment
+    assert "data-summary-overview" in fragment
     # Content-only: a swapped fragment NEVER carries the document wrapper or head.
     assert "<html" not in fragment
     assert "<head" not in fragment
@@ -176,7 +172,7 @@ async def test_files_rail_node_is_reachable_and_accessible(client: AsyncClient) 
     """UI-01 (87-09) -- the shipped shell exposes a keyboard-accessible Files rail node wired to /s/files.
 
     The gap this closes: the files matrix was unreachable because NOTHING navigated to it. Assert the
-    rail carries a Files node whose hx-get points at /s/files, that it is a native <button> (keyboard-
+    rail carries a Files node whose hx-get points at /s/files, that it is a native <a> (keyboard-
     operable, focus-visible) carrying its visible+sr-only label, an aria-hidden glyph, a title tooltip,
     and the aria-current binding -- matching the sibling nav nodes' a11y exactly.
     """
@@ -187,19 +183,27 @@ async def test_files_rail_node_is_reachable_and_accessible(client: AsyncClient) 
     # The Files node is wired to the reachable route.
     assert 'hx-get="/s/files"' in body
 
-    # Locate the Files node's opening <button ...> tag and assert its a11y contract.
-    node = re.search(r'<button\b[^>]*data-rail-stage="files"[^>]*>', body, re.DOTALL)
-    assert node is not None, 'no data-rail-stage="files" nav <button> in the rail'
+    # Locate the Files node's opening <a ...> tag and assert its native + enhanced navigation contract.
+    node = re.search(r'<a\b[^>]*href="/s/files"[^>]*data-rail-stage="files"[^>]*>', body, re.DOTALL)
+    assert node is not None, 'no data-rail-stage="files" nav <a> in the rail'
     attrs = node.group(0)
     assert 'hx-get="/s/files"' in attrs, "Files node not wired to /s/files"
+    assert 'href="/s/files"' in attrs, "Files node must retain native navigation"
     assert 'hx-target="#stage-workspace"' in attrs and 'hx-push-url="true"' in attrs
     assert 'title="Files"' in attrs, "Files node missing its native title tooltip"
     assert "focus-visible:" in attrs, "Files node missing a focus-visible ring (keyboard a11y)"
 
-    # The label span carries max-lg:sr-only (screen-reader-navigable when collapsed), NEVER max-lg:hidden.
+    # The label is VISIBLE text at every width (phaze-tzy6s.13).
+    #
+    # This used to require `max-lg:sr-only` -- the narrow-width rail collapsed to icons and the label
+    # survived only in the accessibility tree, with `title=` as the sighted user's fallback. .13
+    # removed that collapse entirely (the rail is now an off-canvas drawer below `lg`), so the
+    # original intent -- "the label must never leave the a11y tree" -- is now satisfied the stronger
+    # way: it never leaves the page either. Assert the collapse classes are GONE, so a future change
+    # cannot quietly reintroduce an icon-only rail and still pass this test.
     label = re.search(r'data-rail-stage="files".*?<span[^>]*>Files</span>', body, re.DOTALL)
     assert label is not None, "Files node missing its 'Files' label span"
-    assert "max-lg:sr-only" in label.group(0), "Files label must collapse via max-lg:sr-only (CUT-04 ↔ CUT-01)"
+    assert "max-lg:sr-only" not in label.group(0), "Files label must be visible at every width, not collapsed to an icon"
     assert "max-lg:hidden" not in label.group(0), "Files label must NOT use max-lg:hidden (strips it from the a11y tree)"
     # An aria-hidden inline-SVG glyph rides between the button open tag and the label.
     glyph = re.search(r'data-rail-stage="files".*?<svg[^>]*aria-hidden="true"[^>]*>', body, re.DOTALL)
@@ -299,6 +303,20 @@ async def test_unknown_stage_404(client: AsyncClient) -> None:
     assert response.status_code == 404
 
 
+@pytest.mark.parametrize("stage", _RAIL_STAGES + _UTILITY_PANE_STAGES)
+@pytest.mark.asyncio
+async def test_every_workspace_has_route_specific_document_title(client: AsyncClient, stage: str) -> None:
+    response = await client.get(f"/s/{stage}")
+    assert response.status_code == 200
+    title = re.search(r"<title>([^<]+)</title>", response.text)
+    assert title is not None
+    assert title.group(1) != "Phaze"
+    assert title.group(1).endswith(" | Phaze")
+
+    fragment = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
+    assert f'data-document-title="{title.group(1).removesuffix(" | Phaze")}"' in fragment.text
+
+
 @pytest.mark.asyncio
 async def test_rail_nodes_wired(client: AsyncClient) -> None:
     """SHELL-02 -- every navigable rail node carries the HTMX swap wiring; summary is active.
@@ -393,7 +411,7 @@ async def test_tabbar_removed_header_present(client: AsyncClient) -> None:
     # Agent status strip: the dot/count bind to the existing $store.pipeline.agentOnline key,
     # and the Agents link points at the existing /admin/agents route.
     assert "agentOnline" in body
-    assert 'href="/admin/agents"' in body
+    assert 'href="/s/agents"' in body
 
 
 @pytest.mark.asyncio

@@ -181,11 +181,11 @@ def _force_skip_no_op_toast(stage: str) -> HTMLResponse:
 # Display label per stage for the five-pill matrix + trace verdict (the 6->5 remap: tracklist is
 # omitted; review renders as Appr, apply as Exec). Mirrors the _stage_matrix partial pill order.
 _STAGE_TRACE_LABELS: dict[Stage, str] = {
-    Stage.METADATA: "Meta",
+    Stage.METADATA: "Metadata",
     Stage.ANALYZE: "Analyze",
-    Stage.PROPOSE: "Prop",
-    Stage.REVIEW: "Appr",
-    Stage.APPLY: "Exec",
+    Stage.PROPOSE: "Propose",
+    Stage.REVIEW: "Review",
+    Stage.APPLY: "Execute",
 }
 
 

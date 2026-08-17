@@ -57,7 +57,7 @@ _background_tasks: set[asyncio.Task[Any]] = set()
 # The record pane enrich stage labels (the stage loop in record_body.html) — informational text inside the
 # pill's aria-label only. Enrich-only, mirroring STAGE_TO_FUNCTION, because non-enrich stages are
 # rejected 422 before this is ever reached (D-10).
-_ENRICH_STAGE_LABELS = {"metadata": "Meta", "analyze": "Analyze"}
+_ENRICH_STAGE_LABELS = {"metadata": "Metadata", "analyze": "Analyze"}
 
 
 def _stage_pill_oob(file_id: uuid.UUID, stage: str, bucket: str, *, id_prefix: str = "stage-pill") -> str:
@@ -92,3 +92,22 @@ def _stage_pill_oob(file_id: uuid.UUID, stage: str, bucket: str, *, id_prefix: s
         bucket=bucket,
     )
     return f'<span id="{id_prefix}-{stage}-{file_id}" class="inline-flex" hx-swap-oob="true">{pill}</span>'
+
+
+def _files_retry_oob(file_id: uuid.UUID, stage: str, buckets: dict[str, str]) -> str:
+    """Refresh retry controls and current-state summaries on both responsive Files surfaces."""
+    stage_label = _ENRICH_STAGE_LABELS[stage]
+    controls = "".join(
+        templates.get_template("pipeline/partials/_files_stage_control.html").render(
+            file_id=file_id,
+            key=stage,
+            stage_label=stage_label,
+            bucket=buckets.get(stage, "not_started"),
+            surface=surface,
+            oob=True,
+        )
+        for surface in ("table", "mobile")
+    )
+    current = templates.get_template("pipeline/partials/_files_current_status.html").render(buckets=buckets)
+    summaries = "".join(f'<span id="{prefix}-current-status-{file_id}" hx-swap-oob="true">{current}</span>' for prefix in ("files", "files-mobile"))
+    return controls + summaries

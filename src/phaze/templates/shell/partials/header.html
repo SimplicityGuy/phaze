@@ -19,7 +19,41 @@
   store-bound :title + :aria-label naming exactly what the sum counts (agentOnline + computeLanesActive),
   agreeing with each other.
 #}
-<header class="h-14 shrink-0 flex items-center gap-4 px-4 border-b border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel">
+{# phaze-tzy6s.14: tighter gap/padding below `sm`. Adding the .13 drawer trigger pushed the row 4px
+   past a 390px viewport, so the whole PAGE scrolled sideways -- caught by the browser suite's
+   horizontal-overflow assertion, and invisible to every markup test because it is pure computed
+   layout. The header's children are all `shrink-0` except the search field, so the row cannot
+   absorb an extra control by squeezing; the space has to come from the gutters. #}
+<header class="h-14 shrink-0 flex items-center gap-2 px-2 sm:gap-4 sm:px-4 border-b border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel">
+
+    {# phaze-tzy6s.13: the drawer trigger for phone/tablet. Hidden at `lg` and up, where rail.html's
+       expanded <aside> is the navigation — so exactly ONE navigation affordance is reachable at any
+       width, never both and never neither. 44x44 minimum touch target. #}
+    {# phaze-tzy6s.17 (CR-13-1): this is a DISCLOSURE control for a focus-trapped overlay, so it owes
+       the user open/closed state and a pointer at what it controls (WCAG 4.1.2). It previously
+       carried aria-label alone, which names the control but never says whether the thing it names is
+       currently showing.
+
+       `open` is fed by rail.html's `rail:state` event rather than toggled on click here. Tracking
+       its own clicks would desynchronise the moment the drawer closes by any of the four routes the
+       trigger is not involved in (Escape, backdrop click, the drawer's own close button, a
+       successful HTMX navigation), leaving aria-expanded="true" over a closed drawer -- a worse
+       state than the missing attribute, because it is confidently wrong.
+
+       aria-expanded is ALSO emitted statically as "false" so the server HTML is correct before
+       Alpine boots; the binding then owns it. #}
+    <button type="button"
+            id="rail-drawer-trigger"
+            x-data="{ open: false }"
+            @rail:state.window="open = $event.detail.open"
+            @click="$dispatch('rail:open')"
+            aria-expanded="false"
+            :aria-expanded="open"
+            aria-controls="rail-drawer"
+            aria-label="Open navigation"
+            class="lg:hidden -ml-1 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-gray-600 hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-gray-400 dark:hover:bg-white/5">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" class="h-5 w-5" aria-hidden="true"><path d="M3.75 6.75h16.5M3.75 12h16.5M3.75 17.25h16.5"/></svg>
+    </button>
 
     {# Wave logo mark (brand-locked, links to /) — lifted verbatim from base.html. #}
     <a href="/" class="flex items-center gap-2 shrink-0" aria-label="Phaze home">
@@ -31,38 +65,37 @@
         <span class="font-jura font-medium text-sm tracking-[0.25em] text-gray-800 dark:text-gray-200 hidden sm:inline">PHAZE</span>
     </a>
 
-    {# ⌘K search affordance — opens the skeleton command palette (D-04). #}
+    {# Search affordance; the displayed shortcut follows the current platform. #}
     <button type="button"
             id="cmdk-trigger"
             x-data
             @click="$dispatch('cmdk:open')"
-            class="ml-2 flex-1 max-w-md h-9 flex items-center gap-2 px-3.5 rounded-lg bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border text-gray-500 dark:text-gray-500 text-sm hover:bg-gray-50 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            class="ml-2 min-w-0 flex-1 max-w-md h-9 flex items-center gap-2 px-3.5 rounded-lg bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border text-gray-500 dark:text-gray-500 text-sm hover:bg-gray-50 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
             aria-label="Open command palette">
         <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-width="2" d="M21 21l-4.35-4.35M11 18a7 7 0 110-14 7 7 0 010 14z"/>
         </svg>
         <span class="truncate text-left hidden sm:inline">Search files, artists, tracklists — or type a command…</span>
-        <span class="ml-auto font-mono text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-phaze-border text-gray-400 dark:text-gray-400 shrink-0">⌘K</span>
+        <span class="ml-auto font-mono text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-phaze-border text-gray-400 dark:text-gray-400 shrink-0"
+              x-text="/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K'">⌘K</span>
     </button>
 
     {# D-05 status strip: agent dot + "Agents · {n}" link, bound to $store.pipeline.agentOnline,
        refreshed by the existing /pipeline/stats OOB poll — no second timer here. #}
     <div class="ml-auto flex items-center gap-2.5 text-xs text-gray-500 dark:text-gray-400" x-data>
-        {# Phase 71 (BEUI-02): the force-local master routing override pill — a global incident control,
-           so it rides the status-strip cluster immediately LEFT of the Agents pill. Its state is seeded
-           on every page from get_route_control (shell.py _render_stage base context); it hx-posts the
-           thin write endpoint and swaps itself in place from the authoritative server response. #}
-        {% include "shell/partials/_force_local_pill.html" %}
+        {# Routing is read-only in the header. Normal routing needs no extra chrome; an override is
+           an explicit warning linked to the Operations control that can revert it. #}
+        {% with oob=false %}{% include "shell/partials/_routing_override_warning.html" %}{% endwith %}
         <span class="flex items-center" aria-hidden="true">
             <span class="w-2 h-2 rounded-full"
                   :class="($store.pipeline.agentOnline + $store.pipeline.computeLanesActive) > 0 ? 'bg-emerald-400' : 'bg-gray-400 dark:bg-gray-600'"></span>
         </span>
-        <a href="/admin/agents"
-           class="font-jura tracking-wider px-3 h-8 flex items-center rounded-lg bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5 text-gray-700 dark:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
-            <span>Agents&nbsp;·&nbsp;</span><span
-                  x-text="$store.pipeline.agentOnline + $store.pipeline.computeLanesActive"
-                  :title="($store.pipeline.agentOnline + $store.pipeline.computeLanesActive) + ' heartbeating agents and active compute lanes online'"
-                  :aria-label="($store.pipeline.agentOnline + $store.pipeline.computeLanesActive) + ' heartbeating agents and active compute lanes online'">0</span>
+        <a href="/s/agents" hx-get="/s/agents" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+           :aria-label="$store.pipeline.agentOnline + ' agents online; ' + $store.pipeline.computeLanesActive + ' compute lanes active'"
+           class="font-jura tracking-wider px-3 h-8 flex items-center gap-1.5 rounded-lg bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5 text-gray-700 dark:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+             <span>Agents online&nbsp;<span class="font-mono" x-text="$store.pipeline.agentOnline">0</span></span>
+             <span aria-hidden="true" class="text-gray-300 dark:text-gray-600">·</span>
+             <span>Lanes active&nbsp;<span class="font-mono" x-text="$store.pipeline.computeLanesActive">0</span></span>
         </a>
     </div>
 

@@ -164,6 +164,29 @@ async def get_collision_ids(session: AsyncSession) -> set[str]:
     return {str(row[0]) for row in result.all()}
 
 
+async def get_review_collision_ids(session: AsyncSession) -> set[str]:
+    """Return pending/approved proposals whose execution destinations collide.
+
+    This is the review-time sibling of :func:`get_collision_ids`: it deliberately includes pending
+    rows so pending-pending and pending-approved conflicts are blocked before authorization.
+    """
+    agent_id, owning_root, dest_path = _dest_key_columns()
+    count = func.count().over(partition_by=[agent_id, owning_root, dest_path])
+    scoped = (
+        select(RenameProposal.id.label("pid"), count.label("cnt"))
+        .select_from(RenameProposal)
+        .join(FileRecord, RenameProposal.file_id == FileRecord.id)
+        .join(Agent, FileRecord.agent_id == Agent.id)
+        .where(
+            RenameProposal.status.in_((ProposalStatus.PENDING.value, ProposalStatus.APPROVED.value)),
+            Agent.revoked_at.is_(None),
+        )
+        .subquery()
+    )
+    result = await session.execute(select(scoped.c.pid).where(scoped.c.cnt > 1))
+    return {str(row[0]) for row in result.all()}
+
+
 def build_tree(proposals: list[RenameProposal]) -> TreeNode:
     """Build a directory tree from approved proposals.
 
