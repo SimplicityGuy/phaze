@@ -1,4 +1,4 @@
-<span id="routing-override-warning" {% if oob | default(false) %}hx-swap-oob="true"{% endif %}>
+<span id="routing-override-warning"{% if oob | default(false) %} hx-swap-oob="true"{% endif %}>
 {% if force_local %}
 <a href="/s/operations" hx-get="/s/operations" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
    role="status" aria-label="Routing override active: forced local"
