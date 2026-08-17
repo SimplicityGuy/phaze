@@ -187,15 +187,70 @@ def live_server() -> Iterator[str]:
             process.kill()
 
 
+# --- Parameterizable viewports and themes (phaze-fk1ww) ----------------------------------------
+#
+# The suite shipped with TWO hardcoded page fixtures, 1440x900 and 390x844. That covers the two ends
+# of the responsive contract and misses its middle: ADR-0009's breakpoint table forks at ``lg``
+# (1024px), so every width from ``md`` up to 1023px takes the SAME drawer branch as the phone while
+# having none of the phone's other properties -- a two-column workspace grid, a wide table, and
+# enough room that a layout bug there is invisible at 390px. It was never validated (phaze-fk1ww).
+#
+# Named rather than free-form so a viewport is written down once and every test that claims to have
+# checked "tablet" checked the same width. Add to the map, do not inline a size at a call site.
+VIEWPORTS: dict[str, dict[str, int]] = {
+    # >= lg: the static expanded 280px rail branch.
+    "desktop": {"width": 1440, "height": 900},
+    # md (768) and below lg (1024): the drawer branch at a width the phone fixture cannot represent.
+    # 768x1024 is the portrait tablet the `md` column rules were written for.
+    "tablet": {"width": 768, "height": 1024},
+    # Below lg, and the exact width at which the pre-.13 icon-only rail was unusable -- therefore the
+    # width the drawer contract must be proven at.
+    "phone": {"width": 390, "height": 844},
+}
+
+# Both branches of `_applyTheme` (shell.html). "auto" is deliberately NOT a member: it resolves to
+# one of these two via prefers-color-scheme, so it is a resolution mechanism to test once rather
+# than a third rendered appearance to sweep every workspace in.
+THEMES: tuple[str, ...] = ("light", "dark")
+
+
+def _viewport_context_kwargs(viewport: str) -> dict[str, Any]:
+    """Playwright context kwargs for a named viewport, touch included where the device has it."""
+    kwargs: dict[str, Any] = {"viewport": VIEWPORTS[viewport]}
+    if viewport == "phone":
+        kwargs |= {"has_touch": True, "is_mobile": True}
+    elif viewport == "tablet":
+        # Touch without ``is_mobile``: a tablet reports a real pointer-coarse input but not a mobile
+        # viewport meta override, and ``is_mobile`` would silently rescale the layout under test.
+        kwargs |= {"has_touch": True}
+    return kwargs
+
+
 @contextlib.asynccontextmanager
-async def _page(live_server: str, **context_kwargs: Any) -> AsyncGenerator[Any]:
+async def open_page(live_server: str, *, viewport: str = "desktop", theme: str | None = None, **context_kwargs: Any) -> AsyncGenerator[Any]:
+    """A page at a named viewport, optionally pinned to a theme before the first paint.
+
+    The theme is pinned by seeding ``localStorage['phaze-theme']`` from an init script rather than
+    by clicking the header toggle. shell.html applies the ``.dark`` class from an inline pre-flash
+    IIFE that reads that key BEFORE Alpine loads, so seeding it is the only way to have the very
+    first rendered frame already be in the theme under test -- clicking gets there a paint later,
+    and any assertion racing that paint is the flake this fixture exists to avoid. ``color_scheme``
+    is set alongside it so ``prefers-color-scheme`` agrees with the pinned mode and the ``auto``
+    branch cannot disagree with the explicit one.
+    """
     from playwright.async_api import async_playwright
+
+    kwargs = _viewport_context_kwargs(viewport) | context_kwargs
+    if theme is not None:
+        kwargs.setdefault("color_scheme", theme)
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
         try:
-            context = await browser.new_context(base_url=live_server, **context_kwargs)
+            context = await browser.new_context(base_url=live_server, **kwargs)
             try:
+                if theme is not None:
+                    await context.add_init_script(f"try {{ localStorage.setItem('phaze-theme', {theme!r}); }} catch (e) {{}}")
                 yield await context.new_page()
             finally:
                 await context.close()
@@ -204,9 +259,24 @@ async def _page(live_server: str, **context_kwargs: Any) -> AsyncGenerator[Any]:
 
 
 @pytest_asyncio.fixture
+def page_at(live_server: str) -> Any:
+    """Factory fixture: ``async with page_at(viewport=..., theme=...) as page``.
+
+    A factory rather than a matrix of named fixtures because the caller decides how many pages one
+    test needs. The viewport x theme sweep opens ONE browser per cell and walks fourteen workspaces
+    inside it; a fixture-per-cell shape would launch fourteen browsers to do the same work.
+    """
+
+    def _factory(*, viewport: str = "desktop", theme: str | None = None, **context_kwargs: Any) -> Any:
+        return open_page(live_server, viewport=viewport, theme=theme, **context_kwargs)
+
+    return _factory
+
+
+@pytest_asyncio.fixture
 async def page(live_server: str) -> AsyncGenerator[Any]:
     """A desktop-width page."""
-    async with _page(live_server, viewport={"width": 1440, "height": 900}) as value:
+    async with open_page(live_server, viewport="desktop") as value:
         yield value
 
 
@@ -217,8 +287,21 @@ async def phone_page(live_server: str) -> AsyncGenerator[Any]:
     390x844 is below the ``lg`` breakpoint -- the exact width at which the pre-.13 icon-only rail
     was unusable, and therefore the width the drawer contract must be proven at.
     """
-    async with _page(live_server, viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True) as value:
+    async with open_page(live_server, viewport="phone") as value:
         yield value
+
+
+@pytest_asyncio.fixture
+async def tablet_page(live_server: str) -> AsyncGenerator[Any]:
+    """A tablet-width (``md``) page -- below ``lg``, so the drawer branch, but not a phone."""
+    async with open_page(live_server, viewport="tablet") as value:
+        yield value
+
+
+@pytest.fixture
+def browser_dsn() -> str:
+    """The DSN of the database the live app is serving, for tests that seed a state into it."""
+    return _browser_dsn()
 
 
 def pytest_collection_modifyitems(items: list[Any]) -> None:
