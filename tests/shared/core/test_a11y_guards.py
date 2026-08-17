@@ -464,10 +464,13 @@ _DARK_TEXT_COLOUR = re.compile(r"dark:text-(?:[a-z-]+)-\d{2,3}\b")
 # 4.5:1 threshold that decides which one goes. `proposals/partials/filter_tabs.html` -- the same
 # component without the strays -- independently agrees on `text-gray-500 dark:text-gray-400`.
 #
-# KNOWN LIMIT: a class string assembled through a `{% set %}` variable or passed into a macro is
-# opaque to this guard, which reads one attribute at a time. Swept manually at redrive time (no
-# `{% set %}`-defined class string in the tree carries two `dark:text-*` colours, and no attribute
-# composes such a variable with a colliding literal), but a future one would not be caught.
+# KNOWN LIMIT (phaze-o8voj): a class string assembled through a `{% set %}` variable or passed into
+# a macro is opaque to this guard, which reads one attribute at a time. Swept manually at redrive
+# time and clean -- no `{% set %}`-defined class string in the tree carries two `dark:text-*`
+# colours, and no attribute composes such a variable with a colliding literal -- but a future one
+# would not be caught. Also swept at redrive time, also clean: `dark:bg-*` and `dark:border-*`,
+# which have the same duplicate-is-always-a-defect property and would be the natural widening if
+# either ever grows an offender.
 
 # `{% ... %}` / `{{ ... }}`; DOTALL because a wrapped attribute puts newlines inside both.
 _JINJA_BRANCH_TAG = re.compile(r"\{%-?\s*(if|elif|else|endif)\b.*?-?%\}", re.DOTALL)
