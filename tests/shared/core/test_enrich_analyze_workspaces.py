@@ -481,7 +481,10 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
     VERBATIM as a cross-lane roll-up below the grid (D-07) with the load-bearing WORK-03 distinction: the
     Inadmissible FAULT card carries ``role="alert"`` while the healthy admission-state card does NOT.
     """
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package. `get_backend_lane_snapshot` is bound in the
+    # `dashboard_stats` submodule's namespace, so the patch must name that module -- patching the
+    # facade would set an attribute nothing reads and silently no-op this test.
+    import phaze.routers.pipeline.dashboard_stats as pipeline_mod
 
     # phaze-xd8k precedent, phaze-5c6i2 successor: "nox" is offline yet still carries real queued/working
     # figures -- the card must render them, never a fabricated 0 that hides real work behind "offline".
@@ -618,7 +621,10 @@ async def test_lane_grid_subcount_makes_no_across_lanes_claim(client: AsyncClien
     return, regardless of how many backends are registered. Also proves a compute lane still renders
     configured off the snapshot (no ``not configured``, no ``cloud_target`` leak, no template exception).
     """
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package. `get_backend_lane_snapshot` is bound in the
+    # `dashboard_stats` submodule's namespace, so the patch must name that module -- patching the
+    # facade would set an attribute nothing reads and silently no-op this test.
+    import phaze.routers.pipeline.dashboard_stats as pipeline_mod
 
     lanes = [
         {"id": "a1", "kind": "compute", "rank": 10, "cap": 2, "in_flight": 0, "available": True, "quota_wait": 0, "inadmissible": 0},
@@ -874,7 +880,10 @@ async def test_analyze_lanes_grid_carries_content_hash(client: AsyncClient, sess
     render paths must emit a non-empty ``data-lanes-hash`` computed over the SAME inputs -- else the first
     tick can never be a no-op and the churn bound never engages.
     """
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package. `get_backend_lane_snapshot` is bound in the
+    # `dashboard_stats` submodule's namespace, so the patch must name that module -- patching the
+    # facade would set an attribute nothing reads and silently no-op this test.
+    import phaze.routers.pipeline.dashboard_stats as pipeline_mod
 
     lanes = [{"id": "a1", "kind": "compute", "rank": 10, "cap": 4, "in_flight": 2, "available": True, "quota_wait": 0, "inadmissible": 0}]
 
@@ -905,7 +914,10 @@ async def test_analyze_lanes_poll_hash_stable_when_unchanged_changes_on_state(cl
     client skips the destroy-and-recreate); a changed snapshot (an in_flight bump) yields a different
     hash (a real update still swaps). This is the server-verifiable core of the idempotent-swap churn bound.
     """
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package. `get_backend_lane_snapshot` is bound in the
+    # `dashboard_stats` submodule's namespace, so the patch must name that module -- patching the
+    # facade would set an attribute nothing reads and silently no-op this test.
+    import phaze.routers.pipeline.dashboard_stats as pipeline_mod
 
     state = {"in_flight": 2}
 
@@ -962,7 +974,10 @@ async def test_poll_still_seeds_store_and_lands_analyze_lanes_oob(client: AsyncC
     writes ($store.pipeline keys update every tick) AND the #analyze-lanes OOB grid (hx-swap-oob) so all
     targets still land. Asserts the store writes + the OOB grid are still emitted on the tick.
     """
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package. `get_backend_lane_snapshot` is bound in the
+    # `dashboard_stats` submodule's namespace, so the patch must name that module -- patching the
+    # facade would set an attribute nothing reads and silently no-op this test.
+    import phaze.routers.pipeline.dashboard_stats as pipeline_mod
 
     async def _snapshot(_session: AsyncSession, _app_state: object = None) -> list[dict[str, object]]:
         return [{"id": "a1", "kind": "compute", "rank": 10, "cap": 4, "in_flight": 1, "available": True, "quota_wait": 0, "inadmissible": 0}]

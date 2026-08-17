@@ -94,7 +94,11 @@ async def test_a_raced_completed_file_does_not_void_the_restore_for_the_rest_of_
     install_fake_queues(client)
 
     from phaze.database import async_session
-    import phaze.routers.pipeline as pipeline_mod
+
+    # phaze-oau1o: `routers/pipeline.py` is now a package. `enqueue_process_file` is bound in the
+    # `analysis` submodule's namespace, so the patch must name that module -- patching the
+    # facade would set an attribute nothing reads and silently no-op this test.
+    import phaze.routers.pipeline.analysis as pipeline_mod
 
     real_enqueue = pipeline_mod.enqueue_process_file
 
