@@ -76,6 +76,12 @@
 # `release <seat>` is the operator-driven path and deliberately ignores L3/O1/O2: naming a seat IS
 # the assertion that it is finished. It still refuses on L1/L2 (use --force to override).
 #
+# Every registry VALUE is data and is sanitized before it is used as an index -- `classify_seats`
+# always did this, `cmd_release` did not, and the gap was phaze-nbfuc: a value of `.*` reached the
+# L1 grep as a regex, matched every `CLIENT LIST` line, and left the seat reporting in use forever.
+# A value that is not an index is now reported and released: no logical database can correspond to
+# it, so there is nothing a client could be holding and nothing to clear.
+#
 # ATOMICITY AND IDEMPOTENCE
 #
 # Allocation is one server-side Lua script: read-existing / scan-used / claim happen inside a
@@ -283,16 +289,20 @@ collect_postgres_evidence() {
   fi
 }
 
+# `-F` in both, because both needles are DATA: the index comes from the registry hash and the seat
+# name from its field. Without it a registry value of `.*` is a regex that matches every CLIENT LIST
+# line, which reported the seat permanently in use and made it unreleasable (phaze-nbfuc). Callers
+# sanitize the index as well -- this is the second line of defence, not the only one.
 seat_is_redis_live() {
   local index="$1" live
   live="$2"
-  printf '%s\n' "$live" | grep -qx "$index"
+  printf '%s\n' "$live" | grep -qxF "$index"
 }
 
 seat_is_postgres_live() {
   local name="$1" live
   live="$2"
-  printf '%s\n' "$live" | grep -qx -e "phaze_${name}_test" -e "phaze_${name}_migrations_test"
+  printf '%s\n' "$live" | grep -qxF -e "phaze_${name}_test" -e "phaze_${name}_migrations_test"
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -567,14 +577,34 @@ free_seat_unconditionally() {
 
 cmd_release() {
   [ -n "$seat" ] || usage
-  local cap index seen_at
+  local cap raw index seen_at
   cap="$(effective_capacity)"
-  index="$(registry_cli HGET "$REGISTRY_KEY" "$seat")"
-  if [ -z "$index" ]; then
+  raw="$(registry_cli HGET "$REGISTRY_KEY" "$seat")"
+  if [ -z "$raw" ]; then
     echo "🟢 '${seat}' holds no Redis logical DB; nothing to release."
     return 0
   fi
+
+  # Sanitize exactly as classify_seats does, and for the same reason (phaze-nbfuc). The registry
+  # value is data, and release used to hand it straight to `seat_is_redis_live`, which greps for it
+  # -- so a value of `.*` was read as a REGEX, matched every `CLIENT LIST` line, and the seat
+  # reported permanently in use and could not be released without --force. `raw` stays byte-exact
+  # for the compare-and-delete; `index` is the sanitized number the liveness check and FLUSHDB use,
+  # and it is 0 when the value is not an index, because 0 is the registry's own connection and is
+  # never tested for liveness.
+  if [[ "$raw" =~ ^[0-9]+$ ]]; then
+    index="$raw"
+  else
+    index=0
+    echo "⚠️  '${seat}' has a corrupt registry value '${raw}', which is not an index. No Redis logical" >&2
+    echo "    DB can correspond to it, so there is nothing to clear; releasing the entry itself." >&2
+  fi
   seen_at="$(registry_cli HGET "$SEEN_KEY" "$seat")"
+
+  # What the success line calls the thing that was freed. A corrupt value has no logical DB to name,
+  # and reporting the sanitized 0 would name the registry's own database.
+  local freed_what="Redis logical DB ${index}"
+  [ "$index" -ge 1 ] || freed_what="corrupt registry entry '${raw}'"
 
   # Before either path frees anything: releasing the top seat must not lose the record that its
   # index was handed out, or the next allocation recycles it instead of taking a fresh one
@@ -583,14 +613,16 @@ cmd_release() {
 
   if [ "$force" -eq 1 ]; then
     free_seat_unconditionally "$seat" "$index" "$cap"
-    echo "✅ released Redis logical DB ${index} from '${seat}' (keys cleared, index free for the next seat)"
+    echo "✅ released ${freed_what} from '${seat}' (keys cleared, index free for the next seat)"
     return 0
   fi
 
   local redis_live
   redis_live="$(live_redis_indices)"
   collect_postgres_evidence
-  if seat_is_redis_live "$index" "$redis_live"; then
+  # `-ge 1` for the same reason free_seat has it: index 0 is the registry's own connection and is
+  # always "live", so a sanitized-to-0 corrupt value must never reach the L1 check.
+  if [ "$index" -ge 1 ] && seat_is_redis_live "$index" "$redis_live"; then
     echo "❌ Refusing to release '${seat}': a client is connected to Redis logical DB ${index} right now." >&2
     echo "   Releasing it would clear keys a running suite is using. Wait for it, or --force." >&2
     exit 4
@@ -609,13 +641,15 @@ cmd_release() {
     exit 4
   fi
 
-  # Conditional even here: the checks above are a snapshot too, just a much fresher one.
-  if ! free_seat "$seat" "$index" "$cap" "$seen_at" "$index"; then
+  # Conditional even here: the checks above are a snapshot too, just a much fresher one. The
+  # compare-and-delete gets `raw`, not `index` -- it has to match the registry byte for byte, and a
+  # corrupt value sanitized to 0 would never match itself.
+  if ! free_seat "$seat" "$index" "$cap" "$seen_at" "$raw"; then
     echo "❌ Did not release '${seat}': ${free_seat_refusal}." >&2
     echo "   Nothing was cleared. Re-run \`just test-db-seats\` to see where the seat stands now." >&2
     exit 4
   fi
-  echo "✅ released Redis logical DB ${index} from '${seat}' (keys cleared, index free for the next seat)"
+  echo "✅ released ${freed_what} from '${seat}' (keys cleared, index free for the next seat)"
 }
 
 # Shared by `list` and `reclaim`: classify every registry entry against the liveness rules above.

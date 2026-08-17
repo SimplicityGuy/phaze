@@ -508,6 +508,53 @@ def test_release_of_an_unknown_seat_is_a_no_op(registry: str) -> None:
     assert "nothing to release" in result.stdout
 
 
+def test_release_of_a_corrupt_registry_value_does_not_read_it_as_a_regex(registry: str, tmp_path: Path) -> None:
+    """A registry VALUE is data, and ``release`` used to hand it straight to a ``grep`` (phaze-nbfuc).
+
+    ``classify_seats`` has always validated the value with ``^[0-9]+$`` before using it as an index;
+    ``cmd_release`` did not. So a value of ``.*`` reached ``seat_is_redis_live``'s ``grep -qx`` as a
+    REGEX, matched every ``CLIENT LIST`` line — including the registry's own connection, which is
+    always there — and the seat reported permanently in use. It could not be released without
+    ``--force``, which is a state no operator would diagnose from the message they got.
+
+    It fails safe, so this is P3 rather than a data-loss bug: it refuses to free rather than freeing
+    something live. But an unreleasable seat is exactly the exhaustion this whole registry exists to
+    make recoverable.
+
+    ``seat_bystander`` holds a real index with a real connection: the corrupt entry must not become
+    a blanket refusal in the other direction either, and releasing it must not disturb the seat that
+    the runaway regex used to match.
+    """
+    bystander = _index_of(_allocate(registry, "seat_bystander", origin=str(tmp_path)))
+    _blocking_client(registry, bystander)
+    _registry_cli(registry, "HSET", _REGISTRY_KEY, "seat_corrupt", ".*")
+
+    released = _run(registry, "release", "--seat", "seat_corrupt", "--capacity", str(_CAPACITY))
+
+    assert released.returncode == 0, released.stderr
+    assert "corrupt registry value" in released.stderr, f"the operator has to be told what was wrong: {released.stderr}"
+    assert ".*" in released.stderr
+    assert _allocated_seats(registry) == {"seat_bystander": str(bystander)}, "the corrupt entry goes, the live seat stays"
+
+
+def test_release_of_a_corrupt_registry_value_never_touches_logical_db_zero(registry: str, tmp_path: Path) -> None:
+    """The sanitized index is 0, and 0 is the registry's own database — it must not be flushed.
+
+    ``free_seat`` has always guarded its L1 check with ``-ge 1`` for this reason; the release path
+    now sanitizes the same way, so the guard has to be there too. Flushing DB 0 would delete the
+    entire registry, which is a far worse outcome than the unreleasable seat this fixes.
+    """
+    _allocate(registry, "seat_other", origin=str(tmp_path))
+    _registry_cli(registry, "HSET", _REGISTRY_KEY, "seat_corrupt", "not-an-index")
+
+    released = _run(registry, "release", "--seat", "seat_corrupt", "--capacity", str(_CAPACITY))
+
+    assert released.returncode == 0, released.stderr
+    assert "seat_other" in _allocated_seats(registry), "the registry itself must survive; DB 0 is where it lives"
+    assert _registry_cli(registry, "HGET", _REGISTRY_KEY, "seat_corrupt") == ""
+    assert "logical DB 0" not in released.stdout, f"nothing was freed from DB 0, so nothing should say so: {released.stdout}"
+
+
 def test_release_refuses_while_a_client_is_connected(registry: str, tmp_path: Path) -> None:
     """L1: a connected client means a suite is live in that seat. Refuse, and say why."""
     index = _index_of(_allocate(registry, "seat_busy", origin=str(tmp_path)))
