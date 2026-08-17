@@ -22,7 +22,7 @@ derivation + notYetEnriched assertions fail). GREEN after Tasks 2/3.
 
 from __future__ import annotations
 
-import inspect
+from pathlib import Path
 from typing import TYPE_CHECKING
 import uuid
 
@@ -80,7 +80,12 @@ async def test_get_pipeline_stats_is_removed_no_filestate_group_by(client: Async
     # No executable ``FileRecord.state`` GROUP BY survives in the stats path. Strip comment lines so a
     # doc-comment that mentions the removed shape for context does not false-positive (the guard is
     # about live SQL, not prose) -- then assert no ``group_by(FileRecord.state)`` call remains.
-    code_lines = [ln for ln in inspect.getsource(service_mod).splitlines() if not ln.lstrip().startswith("#")]
+    #
+    # phaze-vsqpr: ``services.pipeline`` is a PACKAGE now, so ``getsource`` on it would read only the
+    # re-export facade and this guard would go vacuously green. Sweep every submodule's source instead
+    # -- the whole read-model surface, which is exactly the scope the guard always meant.
+    package_source = "\n".join(path.read_text(encoding="utf-8") for path in sorted(Path(service_mod.__path__[0]).glob("*.py")))
+    code_lines = [ln for ln in package_source.splitlines() if not ln.lstrip().startswith("#")]
     assert "group_by(FileRecord.state)" not in "\n".join(code_lines), "no FileRecord.state GROUP BY may survive in the stats path"
     # The router must not IMPORT/bind the removed function (a historical mention in a docstring is fine).
     assert not hasattr(router_mod, "get_pipeline_stats"), "the router must not import the removed get_pipeline_stats"

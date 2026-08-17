@@ -35,6 +35,7 @@ from phaze.services.agent_liveness import (
     non_local_backend_kinds,
     sort_key,
 )
+from phaze.services.pipeline import cloud as pipeline_cloud_mod
 
 
 if TYPE_CHECKING:
@@ -357,11 +358,11 @@ async def test_derive_idle_configured_cluster_still_listed(session: AsyncSession
 async def test_derive_waiting_via_submitted_inadmissible(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A SUBMITTED+inadmissible row (and no running) → WAITING; a plain SUBMITTED row does NOT count as waiting."""
     monkeypatch.setattr(liveness_mod, "get_settings", lambda: _settings(_backend("k8s-a", "kueue")))
-    # phaze-5c6i2: _cloud_window_clauses (pipeline.py) resolves kueue-ness via ITS OWN bound
+    # phaze-5c6i2: _cloud_window_clauses (pipeline/cloud.py) resolves kueue-ness via ITS OWN bound
     # ``get_settings`` -- a separate name from liveness_mod's, so both must carry the SAME registry for
     # queued/working to reflect "k8s-a is a kueue lane" (mirrors tests/shared/services/test_pipeline.py's
-    # ``monkeypatch.setattr(pipeline_mod, "get_settings", ...)`` idiom for the same helper).
-    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _settings(_backend("k8s-a", "kueue")))
+    # ``monkeypatch.setattr(pipeline_cloud_mod, "get_settings", ...)`` idiom for the same helper).
+    monkeypatch.setattr(pipeline_cloud_mod, "get_settings", lambda: _settings(_backend("k8s-a", "kueue")))
     await _seed(
         session,
         ("k8s-a", CloudJobStatus.SUBMITTED.value, True),
@@ -380,7 +381,7 @@ async def test_derive_waiting_via_submitted_inadmissible(session: AsyncSession, 
 async def test_derive_running_takes_precedence_over_waiting(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A lane with BOTH a running and a waiting row is ACTIVE (running≥1 dominates)."""
     monkeypatch.setattr(liveness_mod, "get_settings", lambda: _settings(_backend("k8s-a", "kueue")))
-    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _settings(_backend("k8s-a", "kueue")))
+    monkeypatch.setattr(pipeline_cloud_mod, "get_settings", lambda: _settings(_backend("k8s-a", "kueue")))
     await _seed(
         session,
         ("k8s-a", CloudJobStatus.RUNNING.value, False),

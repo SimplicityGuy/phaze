@@ -30,7 +30,7 @@ import pytest
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
-from phaze.services import agent_liveness as liveness_mod, pipeline as pipeline_mod
+from phaze.services import agent_liveness as liveness_mod
 from phaze.services.agent_liveness import derive_compute_lane_identities
 
 # phaze-dr9df: ``services.backends`` is a PACKAGE now, and the names this module patches live in
@@ -47,6 +47,7 @@ from phaze.services.backends import (
     lane_metrics as backends_metrics_mod,
     lane_snapshot as backends_snapshot_mod,
 )
+from phaze.services.pipeline import cloud as pipeline_cloud_mod
 from tests._queue_fakes import FakeTaskRouter, seed_active_agent
 
 
@@ -134,7 +135,7 @@ async def test_local_lane_queued_working_degrades_to_none_on_broker_error(sessio
 @pytest.mark.asyncio
 async def test_cloud_lane_queued_working_partitions_every_in_flight_status(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A fixture spanning every in-flight cloud_job status partitions correctly per backend kind (phaze-zyoag seam)."""
-    monkeypatch.setattr(pipeline_mod, "get_settings", _mixed_registry_settings)
+    monkeypatch.setattr(pipeline_cloud_mod, "get_settings", _mixed_registry_settings)
 
     files = [_file() for _ in range(5)]
     session.add_all(files)
@@ -278,7 +279,7 @@ async def test_lane_card_and_admin_agents_report_identical_queued_working_for_on
     """/s/analyze's lane card and /admin/agents' ComputeLane derive queued/working from ONE shared seam (rule 9)."""
     from phaze.services.backends import KueueBackend
 
-    monkeypatch.setattr(pipeline_mod, "get_settings", _mixed_registry_settings)
+    monkeypatch.setattr(pipeline_cloud_mod, "get_settings", _mixed_registry_settings)
     monkeypatch.setattr(liveness_mod, "get_settings", _mixed_registry_settings)
     monkeypatch.setattr(backends_snapshot_mod, "resolve_backends", lambda _settings: [KueueBackend(id="k8s", rank=10, cap=4)])
 

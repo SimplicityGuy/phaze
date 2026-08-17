@@ -30,7 +30,6 @@ from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.schemas.wire_bounds import INT64_MAX
-from phaze.services import pipeline as pipeline_mod
 from phaze.services.execution_queries import get_execution_logs_page
 from phaze.services.pagination import (
     DEFAULT_PAGE_SIZE,
@@ -43,7 +42,7 @@ from phaze.services.pagination import (
     paged_stmt,
     split_sentinel,
 )
-from phaze.services.pipeline import get_analyze_files_page, get_analyze_working_set, get_pending_files_page
+from phaze.services.pipeline import analyze as pipeline_analyze_mod, get_analyze_files_page, get_analyze_working_set, get_pending_files_page
 
 from .test_pipeline import _backend_settings, _make_pipeline_file, _seed_process_file_ledger
 
@@ -154,7 +153,7 @@ async def test_analyze_working_set_bounded_regardless_of_backlog_size(session: A
     failure/stall backlog. Before the fix this branch had NO LIMIT and returned all 40 (and 10,132 in
     prod). Now it returns at most one page, and reports ``has_next`` so the operator can reach the rest.
     """
-    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings())
+    monkeypatch.setattr(pipeline_analyze_mod, "get_settings", lambda: _backend_settings())
 
     backlog = [_make_pipeline_file() for _ in range(40)]
     session.add_all(backlog)
@@ -309,7 +308,7 @@ async def test_analyze_paging_is_stable_when_the_sort_key_ties(session: AsyncSes
     This is the test shape the sibling beads should copy: phaze-39ss (ts_rank), phaze-mft5
     (executed_at) and phaze-hdho (non-deterministic ORDER BY) all have the same degenerate-key defect.
     """
-    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings())
+    monkeypatch.setattr(pipeline_analyze_mod, "get_settings", lambda: _backend_settings())
 
     files = [_make_pipeline_file() for _ in range(25)]
     session.add_all(files)
@@ -347,7 +346,7 @@ async def test_analyze_completions_window_excludes_a_deepen_in_flight_completed_
     """
     from datetime import datetime, timedelta
 
-    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings())
+    monkeypatch.setattr(pipeline_analyze_mod, "get_settings", lambda: _backend_settings())
 
     backlog = [_make_pipeline_file() for _ in range(14)]
     session.add_all(backlog)
@@ -376,7 +375,7 @@ async def test_analyze_completions_window_excludes_a_deepen_in_flight_completed_
 @pytest.mark.asyncio
 async def test_analyze_files_page_is_stable_when_the_sort_key_ties(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """The same degenerate-sort-key walk over the filtered/paged lens (``get_analyze_files_page``)."""
-    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings())
+    monkeypatch.setattr(pipeline_analyze_mod, "get_settings", lambda: _backend_settings())
 
     files = [_make_pipeline_file() for _ in range(25)]
     session.add_all(files)
@@ -544,7 +543,7 @@ async def test_audit_log_page_degrades_on_db_error() -> None:
 @pytest.mark.asyncio
 async def test_out_of_range_page_yields_an_empty_page_not_an_error(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """Contract rule 5: a page past the end is a normal EMPTY page, never an exception or a 500."""
-    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings())
+    monkeypatch.setattr(pipeline_analyze_mod, "get_settings", lambda: _backend_settings())
 
     page = await get_analyze_working_set(session, page=9999, page_size=DEFAULT_PAGE_SIZE)
     assert page.rows == []

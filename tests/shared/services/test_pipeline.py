@@ -21,7 +21,9 @@ from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.tracklist import Tracklist
 from phaze.services import pipeline as pipeline_mod
 from phaze.services.pipeline import (
+    analyze as pipeline_analyze_mod,
     analyze_lanes_content_hash,
+    cloud as pipeline_cloud_mod,
     count_active_agents,
     count_backfill_candidates,
     count_inflight_jobs,
@@ -51,6 +53,7 @@ from phaze.services.pipeline import (
     get_stage_busy_counts,
     get_stage_progress,
     get_untracked_files,
+    stages as pipeline_stages_mod,
 )
 from tests._queue_fakes import FakeQueue, FakeTaskRouter, seed_active_agent
 
@@ -1031,7 +1034,7 @@ async def test_get_analyze_working_set_derives_flags_from_markers(session: Async
     and that the unattributed cloud_job (no backend_id) gets the truthful ``lane="cloud"`` fallback --
     never the stale ``"a1"`` heuristic label.
     """
-    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings(_backend("vox", "kueue")))
+    monkeypatch.setattr(pipeline_analyze_mod, "get_settings", lambda: _backend_settings(_backend("vox", "kueue")))
 
     done_f = _make_pipeline_file()
     failed_f = _make_pipeline_file()
@@ -1073,7 +1076,7 @@ async def test_get_analyze_working_set_lane_derives_from_backend_id(session: Asy
     that is no longer in the registry falls back to ``lane_kind="cloud"`` (deregistered cluster, still
     truthfully labeled as cloud rather than crashing or reintroducing a heuristic).
     """
-    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings(_backend("vox", "kueue")))
+    monkeypatch.setattr(pipeline_analyze_mod, "get_settings", lambda: _backend_settings(_backend("vox", "kueue")))
 
     kueue_f = _make_pipeline_file()
     stale_backend_f = _make_pipeline_file()
@@ -1112,7 +1115,7 @@ async def test_get_analyze_working_set_bounds_completions_window(session: AsyncS
     3 active rows fit one page, so the total is ``active (3) + window (2)`` and the completed set is
     still capped at ``completions_limit``.
     """
-    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings())
+    monkeypatch.setattr(pipeline_analyze_mod, "get_settings", lambda: _backend_settings())
 
     # Active working set: 1 in-flight + 1 failed + 1 awaiting-cloud (all must appear, unbounded).
     inflight_f = _make_pipeline_file()
@@ -1146,7 +1149,7 @@ async def test_get_analyze_working_set_bounds_completions_window(session: AsyncS
 @pytest.mark.asyncio
 async def test_get_analyze_working_set_is_active_first(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """phaze-zqvh.2: active work renders BEFORE the recent-completions window (active-first ordering)."""
-    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings())
+    monkeypatch.setattr(pipeline_analyze_mod, "get_settings", lambda: _backend_settings())
 
     inflight_f = _make_pipeline_file()
     completed_f = _make_pipeline_file()
@@ -1169,7 +1172,7 @@ async def test_get_analyze_files_page_paginates_without_overlap(session: AsyncSe
     ``page_size=10`` partition into 10 + 10 + 5: page1/page2 carry ``has_next`` (the +1 sentinel), page3 is
     the last. The three pages partition the corpus with NO duplicated or skipped id (the id tiebreaker).
     """
-    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings())
+    monkeypatch.setattr(pipeline_analyze_mod, "get_settings", lambda: _backend_settings())
 
     files = [_make_pipeline_file() for _ in range(25)]
     session.add_all(files)
@@ -1198,7 +1201,7 @@ async def test_get_analyze_files_page_status_filter_lens(session: AsyncSession, 
     ``failed`` / ``awaiting_cloud`` each return exactly their file; an unknown status degrades to the
     full analyze-stage membership (all three in-stage files, off-stage excluded) -- never a 422.
     """
-    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings())
+    monkeypatch.setattr(pipeline_analyze_mod, "get_settings", lambda: _backend_settings())
 
     done_f = _make_pipeline_file()
     failed_f = _make_pipeline_file()
@@ -2193,11 +2196,11 @@ async def test_stats_fanout_is_process_global_within_a_loop() -> None:
     monkeypatches ``_STATS_FANOUT`` to a test override, which would short-circuit the very cache
     this test exercises. Simulates two independent ``/pipeline/stats`` polls landing on the SAME
     running loop (the real production shape: one uvicorn worker, one loop, many concurrent
-    requests) by calling :func:`pipeline_mod._stats_fanout` twice with nothing in between.
+    requests) by calling :func:`pipeline_stages_mod._stats_fanout` twice with nothing in between.
     """
-    assert pipeline_mod._STATS_FANOUT is None  # guard: no test override is active here
-    first_poll = pipeline_mod._stats_fanout()
-    second_poll = pipeline_mod._stats_fanout()
+    assert pipeline_stages_mod._STATS_FANOUT is None  # guard: no test override is active here
+    first_poll = pipeline_stages_mod._stats_fanout()
+    second_poll = pipeline_stages_mod._stats_fanout()
     assert first_poll is second_poll
     assert isinstance(first_poll, asyncio.Semaphore)
 
@@ -2205,8 +2208,8 @@ async def test_stats_fanout_is_process_global_within_a_loop() -> None:
 @pytest.mark.asyncio
 async def test_stats_fanout_reuses_the_cached_semaphore_across_many_calls() -> None:
     """A long run of calls on one loop never allocates a new Semaphore past the first."""
-    assert pipeline_mod._STATS_FANOUT is None
-    fanouts = [pipeline_mod._stats_fanout() for _ in range(5)]
+    assert pipeline_stages_mod._STATS_FANOUT is None
+    fanouts = [pipeline_stages_mod._stats_fanout() for _ in range(5)]
     assert len({id(f) for f in fanouts}) == 1
 
 
@@ -2218,10 +2221,10 @@ def test_stats_fanout_gives_different_loops_different_semaphores() -> None:
     loops sequentially (each a stand-in for e.g. two separate pytest test-loops) and asserts the
     cache hands back a DIFFERENT object per loop.
     """
-    assert pipeline_mod._STATS_FANOUT is None
+    assert pipeline_stages_mod._STATS_FANOUT is None
 
     async def _call() -> asyncio.Semaphore:
-        return pipeline_mod._stats_fanout()
+        return pipeline_stages_mod._stats_fanout()
 
     def _get_fanout_on_a_fresh_loop() -> asyncio.Semaphore:
         loop = asyncio.new_event_loop()
@@ -2239,8 +2242,8 @@ def test_stats_fanout_gives_different_loops_different_semaphores() -> None:
 async def test_stats_fanout_test_override_wins_over_the_loop_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     """The ``_STATS_FANOUT`` patchable seam (92-03 Task 2) still takes priority, unchanged by phaze-28wi."""
     override = asyncio.Semaphore(1)
-    monkeypatch.setattr(pipeline_mod, "_STATS_FANOUT", override)
-    assert pipeline_mod._stats_fanout() is override
+    monkeypatch.setattr(pipeline_stages_mod, "_STATS_FANOUT", override)
+    assert pipeline_stages_mod._stats_fanout() is override
 
 
 def test_kueue_backend_ids_degrades_to_empty_frozenset_on_registry_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2255,9 +2258,9 @@ def test_kueue_backend_ids_degrades_to_empty_frozenset_on_registry_error(monkeyp
         msg = "registry TOML unreadable"
         raise RuntimeError(msg)
 
-    monkeypatch.setattr(pipeline_mod, "get_settings", _boom)
+    monkeypatch.setattr(pipeline_cloud_mod, "get_settings", _boom)
 
-    assert pipeline_mod._kueue_backend_ids() == frozenset()
+    assert pipeline_cloud_mod._kueue_backend_ids() == frozenset()
 
 
 @pytest.mark.asyncio
