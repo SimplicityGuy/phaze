@@ -102,6 +102,30 @@ two worktrees can never collide. The container is started with 64 logical databa
 past that fails loudly rather than wrapping onto a shared index. **Leaving `PHAZE_REDIS_URL` unset
 is still valid for single-agent and CI runs** — it defaults to DB 0.
 
+**Give the index back when a worktree is done — and never tear the harness down to free one
+(phaze-68wky).** Allocation used to be a monotonic counter with no reclaim, so every seat that ever
+ran `test-db-for` burned an index permanently; the counter walked past the cap (68, 73, 74 and 80
+were seen live) and then refused every new seat, offering only `just test-db-down` as the way out.
+Five separate agents hit that wall, and each worked around it differently — one by dropping Redis
+isolation altogether, i.e. straight back into the defect above. Three recipes replace that, none of
+which stops, clears or recreates anything:
+
+```bash
+just test-db-seats                 # who holds which logical DB, and the evidence for each verdict
+just test-db-release <name>        # hand ONE finished seat's index back (run this when a worktree is done)
+just test-db-reclaim               # dry run: which seats a sweep would free
+just test-db-reclaim --apply       # free every seat that is no longer in use
+```
+
+A seat is left alone while a client is connected to its Redis DB, while a Postgres backend is on
+its database (pytest holds one for the whole session, so an idle-looking suite is still protected),
+or while its lease is unexpired — `test-db-for` stamps the lease on every call and it runs
+`PHAZE_TEST_REDIS_SEAT_LEASE_HOURS`, default 72. Allocations made before this existed have no
+stamp, so their age is unknown; the sweep reports them and leaves them alone unless you pass
+`--include-unstamped`. `scripts/redis-seat-registry.sh` documents the full rule set. **A full
+registry is never a reason to run `test-db-down`** — reclaim first, and only consider raising
+`PHAZE_TEST_REDIS_DATABASES` if the sweep frees nothing.
+
 ### One database, one pytest process (phaze-ieqg)
 
 `TEST_DATABASE_URL` isolates a **worktree**. It never isolated a **process**, and that gap — not
@@ -152,6 +176,11 @@ mid-round destroyed 89 per-worktree databases and reset the Redis allocation reg
 suites were in flight, producing the same false-red signature from a different cause. `test-db-down`
 now refuses while any client is connected to a `phaze%test` database, listing the seats it is
 protecting; `PHAZE_TEST_DB_FORCE_DOWN=1` overrides for genuinely stale connections.
+
+If you got here because Redis logical-DB allocation ran out, this is the wrong tool entirely: use
+`just test-db-reclaim` (above), which frees the seats nobody is using and touches neither
+container. Reaching for `test-db-down` to free an index was the phaze-68wky defect, and it is how
+the 2026-07-29 incident starts.
 
 ## Code Quality
 
