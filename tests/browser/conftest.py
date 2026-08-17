@@ -79,10 +79,33 @@ def _seat_dsn() -> str:
     return os.environ.get("TEST_DATABASE_URL", "postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_test")
 
 
+# Postgres NAMEDATALEN is 64, so an identifier is capped at 63 bytes and anything longer is
+# TRUNCATED SILENTLY -- no error, no warning (phaze-tzy6s.17).
+_PG_MAX_IDENTIFIER_BYTES = 63
+
+
 def _browser_dsn() -> str:
-    """A dedicated database for the live app, derived from this seat's DSN."""
+    """A dedicated database for the live app, derived from this seat's DSN.
+
+    The length check is not defensive padding. ``just test-db-for`` builds seat names as
+    ``phaze_<derived>_test`` where ``<derived>`` carries the worktree name plus a hash, so appending
+    ``_browser`` can push a long seat past Postgres's 63-byte identifier limit -- and Postgres
+    truncates rather than failing. Two seats whose names differ only past byte 63 would then resolve
+    to ONE database, which is the precise failure ``test-db-for``'s hash exists to prevent and which
+    CLAUDE.md calls out as producing failures indistinguishable from real regressions. Better to
+    refuse loudly here than to let two browser runs quietly share a database and recreate it under
+    each other -- ``_recreate_database`` below does a DROP + CREATE, so the collision is destructive.
+    """
     base, _, name = _seat_dsn().rpartition("/")
-    return f"{base}/{name}_browser"
+    browser_name = f"{name}_browser"
+    if len(browser_name.encode()) > _PG_MAX_IDENTIFIER_BYTES:
+        raise RuntimeError(
+            f"browser database name {browser_name!r} is {len(browser_name.encode())} bytes, over Postgres's "
+            f"{_PG_MAX_IDENTIFIER_BYTES}-byte identifier limit. Postgres would truncate it silently, so two seats "
+            "could collide on one database and DROP each other's. Use a shorter worktree/seat name for "
+            "`just test-db-for`."
+        )
+    return f"{base}/{browser_name}"
 
 
 def _sync_dsn(dsn: str) -> str:

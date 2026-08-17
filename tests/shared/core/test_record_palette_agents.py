@@ -121,8 +121,9 @@ async def test_record_pending_approvals_defer_to_changes_review(  # type: ignore
     assert r.status_code == 200
     body = r.text
 
-    # (1) The pending-decision count is real and file-scoped: 1, not the 2 pending rows in the DB.
-    assert "1 pending decision." in body
+    # (1) The needs-review count is real and file-scoped: 1, not the 2 pending rows in the DB.
+    #     Wording is ADR-0008 operator vocabulary ("needs review", never "pending") -- phaze-tzy6s.17.
+    assert "1 decision needing review." in body
 
     # (2) The canonical queue link, with htmx wiring onto a container the shell really renders.
     assert 'hx-get="/s/rename?status=needs_review"' in body
@@ -144,8 +145,8 @@ async def test_record_pending_approvals_defer_to_changes_review(  # type: ignore
     await session.commit()
     r2 = await client.get(f"/record/{proposal.file_id}", headers={"HX-Request": "true"})
     assert r2.status_code == 200
-    assert "pending decision" not in r2.text, "no pending proposal → no count"
-    assert "no pending approvals" in r2.text
+    assert "needing review." not in r2.text, "no proposal needing review → no count"
+    assert "nothing needs review" in r2.text
     assert "/s/rename?status=needs_review" not in r2.text, "nothing to review → no queue link"
 
 

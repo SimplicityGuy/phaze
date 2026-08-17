@@ -4,9 +4,11 @@
 64px icon-only strip below 1024px, keeping labels only as ``max-lg:sr-only`` text with ``title=`` as
 the sighted fallback. .13 removed that collapse outright, because it fails on exactly the devices it
 targets: ``title`` never appears on touch (there is no hover), it is unreliable for screen readers,
-and it is unreachable by keyboard — so on phones the sixteen destinations were labelled only for
-assistive tech, and sixteen destinations across four groups is more than an icon strip carries
-legibly anyway.
+and it is unreachable by keyboard — so on phones the fourteen destinations were labelled only for
+assistive tech, and fourteen destinations across four groups is more than an icon strip carries
+legibly anyway. (Fourteen, not the sixteen .13's own ADR recorded: phaze-tzy6s.11 had already
+consolidated the three Rename / Path, Tag write and Move files nodes into one Changes Review
+destination before .13 landed — corrected here and in ADR-0009 by phaze-tzy6s.17.)
 
 Below ``lg`` the rail is now an **off-canvas drawer** opened from the header, with every label as
 visible text. At ``lg`` and up it is the static expanded rail the epic's desktop constraint requires.
@@ -182,3 +184,79 @@ def test_animation_respects_reduced_motion() -> None:
     """The drawer slide is gated behind ``motion-safe:`` — vestibular-safe by default."""
     source = _rail_source()
     assert "motion-safe:max-lg:transition-transform" in source, "the drawer transition ignores prefers-reduced-motion"
+
+
+# ---------------------------------------------------------------------------
+# phaze-tzy6s.17 (CR-13-1): the drawer's ARIA contract.
+#
+# .13 added a disclosure control and a focus-trapped overlay, and neither announced what it
+# was. The trigger carried an accessible NAME (aria-label) but no STATE, and the <aside>
+# carried x-trap + a backdrop without role="dialog"/aria-modal -- so below `lg` a screen
+# reader described a trap the user could not be told they were in. The guard above only
+# checked the `lg:hidden` breakpoint, which is why both slipped through.
+# ---------------------------------------------------------------------------
+
+
+def test_the_drawer_trigger_announces_its_state_and_what_it_controls() -> None:
+    """WCAG 4.1.2: a disclosure control owes open/closed state, not just a name."""
+    header = _render("shell/partials/header.html")
+    trigger = re.search(r'<button\b[^>]*id="rail-drawer-trigger"[^>]*>', header, re.DOTALL)
+    assert trigger is not None, "header is missing the drawer trigger"
+    attrs = trigger.group(0)
+
+    assert 'aria-expanded="false"' in attrs, "the server HTML must state the closed state before Alpine boots"
+    assert ':aria-expanded="open"' in attrs, "aria-expanded must track the drawer, not stay frozen at false"
+    assert 'aria-controls="rail-drawer"' in attrs, "the trigger must name the element it discloses"
+
+    rail = _rail_source()
+    assert 'id="rail-drawer"' in rail, "aria-controls points at an id the rail does not render"
+
+
+def test_the_trigger_takes_its_state_from_the_rail_not_from_its_own_clicks() -> None:
+    """Escape, the backdrop, the close button and an HTMX navigation all close the drawer.
+
+    None of them involve the trigger, so a trigger that toggled its own boolean would sit at
+    aria-expanded="true" over a closed drawer -- worse than the missing attribute, because it is
+    confidently wrong rather than absent.
+    """
+    attrs = re.search(r'<button\b[^>]*id="rail-drawer-trigger"[^>]*>', _render("shell/partials/header.html"), re.DOTALL)
+    assert attrs is not None
+    assert "@rail:state.window" in attrs.group(0), "the trigger does not listen for the drawer's published state"
+
+    rail = _rail_source()
+    assert "x-effect=" in rail and "rail:state" in rail, "the rail does not publish navOpen outward"
+
+
+def test_the_drawer_is_a_dialog_below_lg_and_a_landmark_above_it() -> None:
+    """x-trap + backdrop must be paired with role="dialog"/aria-modal -- and only where it traps.
+
+    The pairing is already an invariant elsewhere in the tree (record_host.html,
+    _force_skip_dialog.html), and _detail_pane.html documents the converse for a non-modal pane.
+    Both attributes are BOUND, not static, so they disappear at `lg`+ where the rail is an ordinary
+    navigation landmark and traps nothing -- a permanent role="dialog" would be the mirror-image bug.
+    """
+    rail = _rail_source()
+    aside = re.search(r"<aside\b[^>]*>", rail, re.DOTALL)
+    assert aside is not None, "the rail no longer renders an <aside>"
+    attrs = aside.group(0)
+
+    assert 'x-trap.noscroll="navOpen"' in attrs, "the drawer is no longer focus-trapped"
+    assert ":role=" in attrs and "'dialog'" in attrs, "a focus-trapped overlay must announce itself as a dialog"
+    assert ":aria-modal=" in attrs, "a modal dialog must set aria-modal"
+    assert 'role="dialog"' not in attrs, "role must be BOUND so it vanishes at lg+, where the rail is not modal"
+    assert 'aria-modal="true"' not in attrs, "aria-modal must be bound for the same reason"
+
+
+def test_the_drawer_role_breakpoint_matches_tailwinds_lg() -> None:
+    """The JS media query is a hand-copy of Tailwind's `lg` and must not drift from it.
+
+    A role cannot be switched by a CSS class, so the breakpoint has to exist twice: once as
+    Tailwind's `lg:`/`max-lg:` utilities and once as a literal pixel value in the matchMedia call.
+    If they disagree there is a band of widths where the rail LOOKS like a drawer and is announced
+    as a landmark, or vice versa -- a defect no screenshot and no markup test would show. Tailwind's
+    default `lg` is 1024px and this project defines no custom screens, so the complement of
+    `min-width: 1024px` is `max-width: 1023.98px`.
+    """
+    rail = _rail_source()
+    assert "(max-width: 1023.98px)" in rail, "the drawer's media query no longer complements Tailwind's lg (1024px)"
+    assert "max-lg:fixed" in rail, "the drawer's own layout is no longer keyed to max-lg"

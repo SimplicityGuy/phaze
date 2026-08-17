@@ -49,6 +49,7 @@ from phaze.routers.proposal_sort import PROPOSE_SORT
 from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_fragment
 from phaze.routers.view_state import PAGE_SIZE_CHOICES, ListViewState
 from phaze.services.backends import derive_cloud_hold_reason, get_analysis_activity_counts, get_analysis_live_count
+from phaze.services.dedup import count_duplicate_groups
 from phaze.services.execution_preflight import get_execution_preflight
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, clamp_page, clamp_page_size
 from phaze.services.pipeline import (
@@ -74,6 +75,7 @@ from phaze.services.pipeline import (
 from phaze.services.proposal_queries import ProposalStats, get_proposal_stats
 from phaze.services.review import (
     ChangesReviewStats,
+    count_cue_review_candidates,
     get_changes_review_page,
     get_cue_review_cards,
     get_dedupe_groups,
@@ -1029,16 +1031,35 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # The three adjacent counts are work this control does NOT dispatch. They are passed in rather
         # than re-derived inside the service so the "does not participate" rows carry live numbers
         # instead of a confident zero -- an operation type silently absent from a manifest reads as
-        # "there is none of it". All three helpers are degrade-safe ([]/empty on any DB error), so a
+        # "there is none of it". All three helpers are degrade-safe (0 on any DB error), so a
         # failure here costs an exclusion row, never the render.
+        #
+        # phaze-tzy6s.17: these are COUNT queries. They used to be `len()` of the three list readers,
+        # which was wrong twice over on the one screen that must not be wrong:
+        #
+        #   * The numbers saturated silently. get_dedupe_groups pages at limit=100, so 100 groups and
+        #     100,000 groups both rendered "100"; get_cue_review_cards caps each half at
+        #     _MAX_REVIEW_ROWS. Those figures reach "Will not run — N excluded" AND the confirmation
+        #     dialog body, i.e. the last thing an operator reads before an irreversible batch.
+        #   * They did enormous discarded work to produce three integers -- full duplicate detection
+        #     with score_group/build_dupe_group_card per group, and in-memory .cue generation via
+        #     generate_cue_content for up to _MAX_REVIEW_ROWS sets -- then kept only len().
+        #
+        # Tag writes get the other treatment because they cannot get this one: eligibility is a Python
+        # predicate (compute_proposed_tags per candidate), so there is no COUNT to run. The scan stays,
+        # and `partial` -- which nothing read before -- is now plumbed through so a saturated figure
+        # renders as "N+" instead of posing as a total. A row cap hit with the candidate set not
+        # provably exhausted counts as saturated too; TagwriteReviewPage.partial already means exactly
+        # that (phaze-a2ytu), so it is the whole condition and len(rows) >= cap is not re-derived here.
         tagwrite_page = await get_tagwrite_review_page(session)
         context["preflight"] = await get_execution_preflight(
             session,
             pending=context["stats"].pending,
             rejected=context["stats"].rejected,
             tagwrite_pending=len(tagwrite_page.rows),
-            dedupe_pending=len(await get_dedupe_groups(session)),
-            cue_pending=len(await get_cue_review_cards(session)),
+            tagwrite_pending_at_least=tagwrite_page.partial,
+            dedupe_pending=await count_duplicate_groups(session),
+            cue_pending=await count_cue_review_candidates(session),
         )
     elif stage == "audit":
         # phaze-uvmcr.3: the /s/audit utility-pane host (UTILITY_PANES, not STAGE_PARTIALS -- it

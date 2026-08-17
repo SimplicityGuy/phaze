@@ -176,19 +176,22 @@
             </div>
         </div>
 
-        {# 6 — Pending approvals for THIS file: a COUNT plus a link into Changes Review.
+        {# 6 — Changes needing review for THIS file: a COUNT plus a link into Changes Review.
            Approval is intentionally centralized (ADR-0008: Changes Review is the ONLY UI workspace
            that authorizes filename, destination, and tag changes) so a record drawer cannot bypass
            the reviewed queue context. This box must never regrow an inline _diff_row approve/edit
            cluster; tests/shared/core/test_record_palette_agents.py holds that boundary.
            hx-target is the shell's #stage-workspace — the SAME container the rail swaps into. #}
         <div class="rounded-xl border border-amber-500/25 bg-amber-500/[0.06] p-4">
-            <p class="font-jura text-[11px] font-medium uppercase tracking-wider text-amber-700 dark:text-amber-200">Pending approvals for this file</p>
+            {# phaze-tzy6s.17 / ADR-0008: operator vocabulary -- the drawer says "Needs Review", not
+               "Pending". The link below already carries `status=needs_review`; only the words the
+               operator reads were still on the pre-ADR term. #}
+            <p class="font-jura text-[11px] font-medium uppercase tracking-wider text-amber-700 dark:text-amber-200">Changes needing review for this file</p>
             {% if pending_rows %}
-            <p class="mt-2 text-sm text-gray-700 dark:text-gray-300">{{ pending_rows | length }} pending decision{{ "s" if pending_rows | length != 1 else "" }}. Review filename and destination together in the canonical queue.</p>
+            <p class="mt-2 text-sm text-gray-700 dark:text-gray-300">{{ pending_rows | length }} decision{{ "s" if pending_rows | length != 1 else "" }} needing review. Review filename and destination together in the canonical queue.</p>
             <a href="/s/rename?status=needs_review" hx-get="/s/rename?status=needs_review" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="mt-3 inline-flex rounded-md bg-amber-700 px-3 py-2 font-jura text-xs uppercase tracking-wider text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Open Changes Review</a>
             {% else %}
-            <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">This file is up to date — no pending approvals.</p>
+            <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">This file is up to date — nothing needs review.</p>
             {% endif %}
         </div>
 

@@ -139,7 +139,7 @@ async def test_pending_approval_renders_a_null_proposed_path_as_an_empty_destina
 
     assert response.status_code == 200
     assert page.select_one(f"#record-row-{proposal.id}") is None
-    assert "1 pending decision" in page.get_text(" ", strip=True)
+    assert "1 decision needing review" in page.get_text(" ", strip=True)
     assert "None" not in response.text
 
 

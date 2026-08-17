@@ -176,3 +176,162 @@ async def test_preflight_confirmation_carries_the_manifest_not_a_bare_count(
     assert "Originals survive until verification succeeds" in body
     assert "written to the audit log" in body
     assert "are excluded and will not be touched." in body
+
+
+# ---------------------------------------------------------------------------
+# phaze-tzy6s.17 (CR-12-1 / CR-12-2): the preflight's three adjacent counts must not be
+# saturated page lengths.
+#
+# The manifest's own module docstring sets the standard these pin: the *_pending defaults
+# exist so a caller "degrades to omitting the row rather than reporting a confident zero it
+# did not measure". Reporting a capped read's length as a total is the same error pointed the
+# other way -- and it landed on the confirmation dialog, the last thing an operator reads
+# before the product's only irreversible operation. Two of the three counts are exactly
+# knowable in SQL and are now COUNT queries; the third cannot be (tag-write eligibility is a
+# Python predicate) and is therefore labelled a floor instead of being dressed up as a total.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_duplicate_group_count_is_a_corpus_count_not_the_pager_page_length(
+    session: AsyncSession,
+    seed_duplicate_group: Callable[..., Awaitable[list[object]]],
+) -> None:
+    """``count_duplicate_groups`` counts every group; the paged reader is bounded by its ``limit``.
+
+    Asserted as a DIVERGENCE from a deliberately tiny page rather than by seeding 101 groups to
+    trip the real ``limit=100`` default. Same defect, three orders of magnitude cheaper: the bug
+    was that a page length was being read as a total, so what has to be pinned is that the two
+    disagree once the page bounds and the count does not.
+    """
+    from phaze.services.dedup import count_duplicate_groups, find_duplicate_groups_with_metadata
+
+    for _ in range(3):
+        await seed_duplicate_group(count=2)
+
+    assert await count_duplicate_groups(session) == 3
+
+    capped_page = await find_duplicate_groups_with_metadata(session, limit=2)
+    assert len(capped_page) == 2, "the paged reader is bounded, which is correct for a page"
+    assert await count_duplicate_groups(session) == 3, "...and is exactly why len(page) must not be used as the count"
+
+
+@pytest.mark.asyncio
+async def test_cue_candidate_count_covers_both_halves_without_building_any_cue_text(
+    session: AsyncSession,
+    seed_cue_set: Callable[..., Awaitable[tuple[object, object, object]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``count_cue_review_candidates`` counts eligible + gated, and calls no cue generator.
+
+    The generator assertion is the CR-12-2 half and is not incidental: producing this number used
+    to run ``generate_cue_content`` for up to ``_MAX_REVIEW_ROWS`` sets and throw every string away.
+    Patching it to explode proves the count path never reaches it, which a count-only assertion
+    would not.
+    """
+    import phaze.services.review as review_module
+    from phaze.services.review import count_cue_review_candidates
+
+    def _explode(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("counting cue candidates must not generate cue text")
+
+    await seed_cue_set(eligible=True, original_filename="set-a.mp3")
+    await seed_cue_set(eligible=True, original_filename="set-b.mp3")
+    await seed_cue_set(eligible=False, original_filename="set-c.mp3")
+
+    monkeypatch.setattr(review_module, "generate_cue_content", _explode)
+
+    assert await count_cue_review_candidates(session) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_capped_tagwrite_count_renders_as_a_floor_not_a_total(
+    session: AsyncSession,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """A saturated tag-write scan marks its exclusion ``at_least``, and the manifest total inherits it.
+
+    Tag-write eligibility cannot be counted in SQL, so honesty here means labelling the number
+    rather than fixing it. The total must inherit the flag: an exact-looking sum printed directly
+    above a row marked "12+" is a worse reading than either number alone.
+    """
+    from phaze.services.execution_preflight import get_execution_preflight
+
+    approved = await seed_pending_proposal(0.95, original_filename="ok.mp3", proposed_filename="Ok.mp3", proposed_path="Artist/Event")
+    await _approve(session, approved)
+
+    exact = await get_execution_preflight(session, pending=0, rejected=0, tagwrite_pending=12)
+    floored = await get_execution_preflight(session, pending=0, rejected=0, tagwrite_pending=12, tagwrite_pending_at_least=True)
+
+    (exact_row,) = [e for e in exact.exclusions if e.key == "tagwrite"]
+    (floored_row,) = [e for e in floored.exclusions if e.key == "tagwrite"]
+
+    assert exact_row.at_least is False
+    assert exact.excluded_total_at_least is False
+
+    assert floored_row.at_least is True, "a capped scan's length is a lower bound, and the row must say so"
+    assert floored_row.count == 12, "the flag annotates the number; it does not replace or inflate it"
+    assert "capped" in floored_row.reason, "the reason text must explain the +, not just render a symbol"
+    assert floored.excluded_total_at_least is True, "a sum with one saturated term is itself saturated"
+
+
+@pytest.mark.asyncio
+async def test_the_execute_workspace_marks_a_floored_exclusion_total_in_the_rendered_page(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """End-to-end: with nothing saturated, the rendered Execute page states its exclusions exactly.
+
+    The negative direction is the one worth pinning in the real render. A stray "+" on an exact
+    total would quietly teach the operator to distrust every number on the manifest, which is the
+    same class of harm as the saturated count itself.
+    """
+    approved = await seed_pending_proposal(0.95, original_filename="e.mp3", proposed_filename="E.mp3", proposed_path="Artist/Event")
+    await seed_pending_proposal(0.50, original_filename="p.mp3", proposed_filename="P.mp3", proposed_path="Artist/Other")
+    await _approve(session, approved)
+
+    response = await client.get("/s/apply")
+    assert response.status_code == 200
+    body = response.text
+
+    assert "Will not run — 1 excluded" in body
+    assert "Will not run — 1+ excluded" not in body, "nothing here is capped, so nothing may be marked as a floor"
+
+
+@pytest.mark.asyncio
+async def test_rendering_execute_never_calls_the_saturating_list_readers(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``GET /s/apply`` must reach neither ``get_dedupe_groups`` nor ``get_cue_review_cards``.
+
+    This is the test that would have caught CR-12-1/CR-12-2 in the first place, and it is phrased
+    against the CALL rather than the number on purpose. Asserting a count is correct requires
+    seeding past whichever cap you are worried about -- 101 duplicate groups for the ``limit=100``
+    pager, ``_MAX_REVIEW_ROWS`` cue sets for the other -- so such a test is expensive, and it silently
+    stops testing anything the day a cap is raised. The invariant that actually holds is structural:
+    the Execute manifest is built from aggregates, so a saturating list reader has no business on
+    this path at all. If one comes back, this fails immediately and at any corpus size.
+
+    Both readers stay correct and in use for their OWN workspaces (``/s/dedupe``, ``/s/cue``); it is
+    only Execute, which needs a scalar rather than the rows, that must not call them.
+    """
+    import phaze.routers.shell as shell_module
+
+    async def _explode_dedupe(*_args: object, **_kwargs: object) -> list[object]:
+        raise AssertionError("GET /s/apply must count duplicate groups, not page them")
+
+    async def _explode_cue(*_args: object, **_kwargs: object) -> list[object]:
+        raise AssertionError("GET /s/apply must count cue candidates, not build their cards")
+
+    approved = await seed_pending_proposal(0.95, original_filename="s.mp3", proposed_filename="S.mp3", proposed_path="Artist/Event")
+    await _approve(session, approved)
+
+    monkeypatch.setattr(shell_module, "get_dedupe_groups", _explode_dedupe)
+    monkeypatch.setattr(shell_module, "get_cue_review_cards", _explode_cue)
+
+    response = await client.get("/s/apply")
+    assert response.status_code == 200

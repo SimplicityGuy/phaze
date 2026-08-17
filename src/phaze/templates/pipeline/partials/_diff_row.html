@@ -1,12 +1,20 @@
 {# Phase 60 (60-02, REVIEW-01 / D-06): the ONE shared before->after diff row.
 
-   ONE partial, parameterized by facet vars the caller passes -- reused across the Rename/Path
-   (proposed_filename facet) and Move-files (proposed_path facet) diff workspaces over the SAME
-   RenameProposal source (D-06 LOCKED), and reusable by the Tag-write workspace (Plan 60-03).
+   ONE partial, parameterized by facet vars the caller passes. It was written for the separate
+   Rename/Path (proposed_filename facet) and Move-files (proposed_path facet) diff workspaces over
+   the SAME RenameProposal source (D-06 LOCKED), plus the Tag-write workspace (Plan 60-03).
+   phaze-tzy6s.11 / ADR-0008 deleted all three of those workspaces and consolidated them into
+   Changes Review, so the parameterization now serves ONE caller with two sections:
+   pipeline/partials/_changes_list.html, at :69 (Filename + Destination) and :120 (Tag Changes).
 
    Context contract (all caller-supplied):
-     * row_id_prefix  -- stable id stem ("rename-row" / "move-row" / "tag-row"). The row id is
-                         `{row_id_prefix}-{pid}`; every in-row control hx-targets THIS id only (R-6).
+     * row_id_prefix  -- stable id stem. The row id is `{row_id_prefix}-{pid}`; every in-row control
+                         hx-targets THIS id only (R-6). Two prefixes are LIVE, and they are the two
+                         _changes_list.html passes: "rename-row" (:69, routed by routers/proposals.py)
+                         and "tagwrite-row" (:120, routed by routers/tags.py). "move-row" lost its
+                         renderer with move_workspace.html and "tag-row" was never rendered by
+                         anything -- do not reintroduce either as an example; routers/proposals.py's
+                         _V7_ROW_FACETS is the map that still carries the dangling stems.
      * pid            -- the proposal (or file) id.
      * file           -- display name (truncating first line); original_path = its title tooltip.
      * before / after -- the current (struck rose) and proposed (emerald) values.
