@@ -15,9 +15,9 @@
 
    A THIRD producer existed and no longer has a caller: PATCH /proposals/bulk's fallthrough branch
    (proposals.py, the `else` after the CHANGES_LIST_CONTAINER_ID check) returns this file bare inside
-   _propose_bulk_response.html plus an OOB toast (phaze-a6hm.11). phaze-tzy6s.11 / ADR-0008 deleted
-   _propose_bulk_bar.html, the Propose bulk bar that was its only caller, because Propose no longer
-   authorizes anything. The one live caller of PATCH /proposals/bulk is now
+   _propose_bulk_response.html plus an OOB toast (phaze-a6hm.11). phaze-tzy6s.7 (bf45fe06) deleted
+   _propose_bulk_bar.html, the Propose bulk bar that was its only caller, and phaze-tzy6s.11 /
+   ADR-0008 then formalised the rule behind it: Propose no longer authorizes anything. The one live caller of PATCH /proposals/bulk is now
    _changes_list.html:46, which always sends HX-Target: changes-workspace-list, so the branch that renders
    THIS partial is unreachable through the product -- see phaze-tzy6s.17's note in proposals.py.
    Kept correct here on the assumption a reader is checking "what re-renders me?": the answer is two
