@@ -235,6 +235,15 @@ async def test_the_command_palette_opens_on_the_shortcut_and_returns_focus(viewp
 
         await page.keyboard.press("Escape")
         await dialog.wait_for(state="hidden")
+        # The dialog being HIDDEN is not the same event as focus having been RESTORED: the restore
+        # is deferred (focus-trap's returnFocus, then Alpine's own tick), so reading activeElement
+        # on the line after wait_for reads whatever held focus mid-close -- on a fast machine that
+        # is already the trigger, on a slower CI runner it is still the dialog's search input.
+        # Failed exactly that way on phone/dark in CI while passing locally (phaze-bdeih is the same
+        # race in the drawer). Poll for the restore instead of sampling once; the assertion below is
+        # unchanged and still fails if focus lands anywhere other than the trigger.
+        with contextlib.suppress(PlaywrightTimeoutError):
+            await page.wait_for_function("() => document.activeElement && document.activeElement.id === 'cmdk-trigger'", timeout=5000)
         returned = await _active(page)
         assert returned["id"] == "cmdk-trigger", f"{viewport}/{theme}: focus went to {returned} instead of back to the palette trigger"
         print(f"[palette] {viewport}/{theme}: opened with {opened_with}")
