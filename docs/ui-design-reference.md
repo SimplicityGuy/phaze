@@ -13,7 +13,8 @@ The served application remains authoritative. This contract was derived from:
 - `assets/src/app.css`: palette overrides, dark surfaces, font families, HTMX indicator transition, and Alpine cloak.
 - `src/phaze/templates/shell/shell.html`: persistent shell, auto/dark/light behavior, independent scrolling, focus handoff, and theme transition.
 - `src/phaze/templates/shell/partials/header.html`: wordmark, circular wave mark, command affordance, status strip, and theme control.
-- `src/phaze/templates/shell/partials/rail.html`: DAG navigation, responsive icon rail, outline icons, active state, and amber review grouping.
+- `src/phaze/templates/shell/partials/rail.html`: DAG navigation, the expanded rail at `lg`+ and the off-canvas drawer below it, outline icons, active state, and amber review grouping. There is no icon-only navigation state at any width — see ADR-0009, which retired the 64px icon strip this file previously described.
+- `src/phaze/templates/ui/primitives.html`: the shared page-header, metric-strip, status-badge, alert, filter-toolbar, table, empty/loading/error, confirmation, and detail-drawer primitives every workspace composes from.
 - `src/phaze/templates/pipeline/partials/_workspace_scaffold.html`: stage heading, action placement, and content spacing.
 - `src/phaze/templates/pipeline/partials/_diff_row.html`: review diff language and compact controls.
 - `src/phaze/templates/pipeline/partials/files_table_view.html` and `_stage_pill.html`: tabular density and semantic stage states.

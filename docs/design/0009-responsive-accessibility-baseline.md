@@ -21,8 +21,15 @@ There is no icon-only navigation state at any width.
 
 The rail collapsed to a 64px icon strip below `lg` until phaze-tzy6s.13. That failed precisely
 where it was applied: `title=` never appears on touch, is unreliable for screen readers, and is
-unreachable by keyboard, so on phones the sixteen destinations were labelled for assistive tech
-only. Sixteen destinations across four groups also exceeds what an icon strip carries legibly.
+unreachable by keyboard, so on phones the fourteen destinations were labelled for assistive tech
+only. Fourteen destinations across four groups also exceeds what an icon strip carries legibly.
+
+The count is fourteen, not the sixteen this ADR originally recorded: phaze-tzy6s.11 had already
+consolidated the three Rename / Path, Tag write and Move files nodes into the single Changes Review
+destination before .13 landed, so the sixteen-node rail this argument was first written against
+(phaze-tzy6s.3) no longer existed. The argument is unaffected — fourteen icon-only destinations
+across four groups fails for exactly the reasons above — but the number is corrected to the rail
+`templates/shell/partials/rail.html` actually renders.
 
 The same `<aside>` is now the expanded rail at `lg`+ and an off-canvas drawer below it. One DOM
 copy, moved by CSS — not a desktop rail plus a separate drawer, which would duplicate every heading
@@ -30,7 +37,7 @@ id, give the document two identically-named navigation landmarks, and let a dest
 surface but not the other.
 
 Closed means `visibility: hidden`, not merely translated off-screen. A transformed-but-visible
-element keeps its tab stops, so a keyboard user would tab through sixteen off-screen destinations
+element keeps its tab stops, so a keyboard user would tab through fourteen off-screen destinations
 before reaching the workspace.
 
 ### Tables
