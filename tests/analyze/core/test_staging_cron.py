@@ -33,6 +33,7 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.services import cloud_staging, kube_staging, s3_staging
 from phaze.tasks.release_awaiting_cloud import push_file_job_key, stage_cloud_window
+from tests._backends_patch import patch_backends_attr, patch_backends_get_settings
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_agent
 from tests.kube_fakes import fake_local_queue
 
@@ -125,7 +126,7 @@ def _patch_settings(monkeypatch: pytest.MonkeyPatch, *, max_in_flight: int = 2, 
     monkeypatch.setattr("phaze.tasks.release_awaiting_cloud.get_settings", lambda: stub)
     # Phase 70 (MKUE-02): KueueBackend.dispatch resolves the picked bucket via ``backends.get_settings()``;
     # pin it to the SAME stub so ``resolve_bucket_config`` finds the stub's ``buckets`` registry.
-    monkeypatch.setattr("phaze.services.backends.get_settings", lambda: stub)
+    patch_backends_get_settings(monkeypatch, lambda: stub)
 
 
 def _make_ctx(async_engine: AsyncEngine, router: DedupFakeTaskRouter, controller_queue: DedupFakeQueue) -> dict[str, Any]:
@@ -358,7 +359,6 @@ async def test_fileserver_vanishes_mid_tick_holds_cleanly(
     # Simulate the mid-tick revocation: backends.select_active_agent (called INSIDE dispatch) raises for
     # the fileserver lookup while still resolving the compute agent GATE-1 (is_available) needs. GATE-2 in
     # release_awaiting_cloud uses its OWN imported select_active_agent (unpatched), so it still passes.
-    from phaze.services import backends as backends_mod
     from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
 
     async def _raise_for_fileserver(sess: AsyncSession, *, kind: str) -> Any:
@@ -366,7 +366,10 @@ async def test_fileserver_vanishes_mid_tick_holds_cleanly(
             raise NoActiveAgentError(kind)
         return await select_active_agent(sess, kind=kind)
 
-    monkeypatch.setattr(backends_mod, "select_active_agent", _raise_for_fileserver)
+    # phaze-dr9df: the fileserver gate is bound in BOTH dispatch submodules (``local`` and
+    # ``compute_agent``), which is what the pre-split single module-level rebind covered. Patch
+    # across the package so the simulated revocation reaches whichever lane the cell dispatches to.
+    patch_backends_attr(monkeypatch, "select_active_agent", _raise_for_fileserver)
 
     router = DedupFakeTaskRouter()
     # Must NOT raise -- the cron degrades to a clean hold.

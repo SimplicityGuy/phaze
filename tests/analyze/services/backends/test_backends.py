@@ -43,6 +43,15 @@ from tests.kube_fakes import fake_local_queue
 # Wave 2 target -- skip the whole module until it exists (collects clean in Wave 0).
 backends = pytest.importorskip("phaze.services.backends")
 
+# phaze-dr9df: ``services.backends`` is a PACKAGE. ``backends`` above is its re-export FACADE, which is
+# still the right handle for reading a symbol (``backends.KueueBackend``, ``backends.resolve_backends``)
+# but is the WRONG handle for monkeypatching one: a name a submodule imported is resolved out of THAT
+# submodule's globals, so rebinding the facade attribute is a silent no-op. The two aliases below are the
+# patch targets for the reapers' ``hold_awaiting_cloud`` seam -- both are re-exported by ``__init__``, so
+# they exist for free under the ``importorskip`` above.
+backends_kueue = backends.kueue
+backends_compute_agent = backends.compute_agent
+
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -384,10 +393,10 @@ async def test_compute_is_available_false_when_online_agent_id_mismatches_ref(se
 @pytest.mark.asyncio
 async def test_compute_is_available_reads_bound_ref_not_single_active_pick(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """D-02 record-don't-rederive: is_available resolves the bound ref and does NOT call select_active_agent."""
-    import phaze.services.backends as backends_mod
-
+    # phaze-dr9df: patch the module that RESOLVES the name, not the re-export facade (see the
+    # ``backends_compute_agent`` alias at the top of this file).
     sentinel = AsyncMock(side_effect=AssertionError("is_available must not use the single-active pick"))
-    monkeypatch.setattr(backends_mod, "select_active_agent", sentinel)
+    monkeypatch.setattr(backends_compute_agent, "select_active_agent", sentinel)
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
     assert await _compute(id="compute-a1", agent_ref="cloud-1").is_available(session) is True
     sentinel.assert_not_awaited()
@@ -1818,7 +1827,7 @@ async def test_reap_loses_the_race_to_a_live_callback_and_takes_a_full_noop(
         await session.execute(sa_update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.SUBMITTED.value))
         return await real_hold(*args, **kwargs)
 
-    monkeypatch.setattr(backends, "hold_awaiting_cloud", _callback_wins_first)
+    monkeypatch.setattr(backends_kueue, "hold_awaiting_cloud", _callback_wins_first)
 
     tally = await backend.reconcile(session)
 
@@ -1836,7 +1845,7 @@ async def test_reap_per_row_guard_survives_a_bad_row(session: AsyncSession, monk
     backend = _kueue(id="kueue-x64")
     await _seed_staging_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.UPLOADING, age_sec=90_000)
 
-    monkeypatch.setattr(backends, "hold_awaiting_cloud", AsyncMock(side_effect=RuntimeError("boom")))
+    monkeypatch.setattr(backends_kueue, "hold_awaiting_cloud", AsyncMock(side_effect=RuntimeError("boom")))
 
     tally = await backend.reconcile(session)  # must NOT raise
 
@@ -2327,7 +2336,7 @@ async def test_compute_reap_loses_the_race_to_a_live_callback_and_takes_a_full_n
         await session.execute(sa_update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.SUCCEEDED.value))
         return await real_hold(*args, **kwargs)
 
-    monkeypatch.setattr(backends, "hold_awaiting_cloud", _callback_wins_first)
+    monkeypatch.setattr(backends_compute_agent, "hold_awaiting_cloud", _callback_wins_first)
 
     tally = await backend.reconcile(session)
 
@@ -2345,7 +2354,7 @@ async def test_compute_reap_per_row_guard_survives_a_bad_row(session: AsyncSessi
     backend = _compute(id="compute-a1")
     await _seed_submitted_cloud_job(session, backend_id="compute-a1", age_sec=90_000)
 
-    monkeypatch.setattr(backends, "hold_awaiting_cloud", AsyncMock(side_effect=RuntimeError("boom")))
+    monkeypatch.setattr(backends_compute_agent, "hold_awaiting_cloud", AsyncMock(side_effect=RuntimeError("boom")))
 
     tally = await backend.reconcile(session)  # must NOT raise
 

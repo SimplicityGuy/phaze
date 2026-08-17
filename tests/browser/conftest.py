@@ -47,12 +47,33 @@ It must be a separate database from the unit suite's: ``tests/conftest.py`` drop
 session teardown, and a live uvicorn holding connections to that database would both corrupt the
 unit run and be corrupted by it. This is the same one-database-one-process rule the repo already
 documents, applied across suites rather than across processes.
+
+Redis is NOT separated the same way (phaze-8p1uq)
+=================================================
+
+The app inherits this worktree's ``PHAZE_REDIS_URL`` verbatim, so the browser suite and the unit
+suite share one logical Redis database within a worktree. That was harmless while this suite only
+rendered empty states; it is not any more, because the execute-dispatch tests below write real
+``exec:*`` keys and ``tests/review/routers/test_execution_dispatch.py`` sweeps ``exec:*`` in fixture
+setup AND teardown (CLAUDE.md, "Why Redis matters"). **Do not run the browser bucket and the unit
+suite concurrently in one worktree.** Across worktrees they are already isolated, because
+``test-db-for`` allocates a distinct logical database per seat. A per-suite index is not carved here
+deliberately: the allocation registry is keyed by seat, and minting a second index per seat would
+double every worktree's consumption of the 64 available for a hazard that sequencing removes.
+
+Seeding
+=======
+
+``seed`` (see ``tests/browser/seed.py``) writes application rows to that same database over this
+process's own connection. Read that module's docstring before adding a test that needs state -- in
+particular, seed BEFORE navigating, because nothing re-reads a page that has already rendered.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 from pathlib import Path
 import socket
@@ -187,38 +208,227 @@ def live_server() -> Iterator[str]:
             process.kill()
 
 
+# --- Viewports and themes (phaze-fk1ww + phaze-8p1uq, reconciled) -------------------------------
+#
+# NAMED, not hardcoded per fixture. The suite shipped with TWO inline page fixtures, 1440x900 and
+# 390x844: the two ends of the responsive contract with its middle missing. ADR-0009's breakpoint
+# table forks at `lg` (1024px), so every width from `md` (768) up to 1023px takes the SAME drawer
+# branch as the phone while having none of the phone's other properties -- a two-column workspace
+# grid, a wide table, and enough room that a layout bug there is invisible at 390px. That band was
+# never validated, and phaze-mrg1c was found in it.
+#
+# The tablet width is 768 DELIBERATELY. Two independent passes proposed 768 and 820; 768 wins
+# because it is the width the RECORDED evidence was measured at -- ADR-0009's 2026-08-17 validation
+# entry and every row of phaze-mrg1c's overflow table cite "tablet 768". Renaming the constant to
+# 820 would silently invalidate both records. It is also the `md` boundary itself, which is where
+# breakpoint bugs concentrate.
+#
+# Flat {width, height} rather than full context kwargs: tests index VIEWPORTS[name]["width"] to
+# decide which side of a breakpoint they are on. Context-only properties (touch, is_mobile) are
+# derived by _viewport_context_kwargs below, so a width stays a width.
+VIEWPORTS: dict[str, dict[str, int]] = {
+    # >= lg: the static expanded 280px rail branch.
+    "desktop": {"width": 1440, "height": 900},
+    # md (768) through lg-1: the drawer branch at a width the phone fixture cannot represent.
+    "tablet": {"width": 768, "height": 1024},
+    # Below md, and the exact width at which the pre-.13 icon-only rail was unusable -- therefore
+    # the width the drawer contract must be proven at.
+    "phone": {"width": 390, "height": 844},
+}
+
+# Both branches of `_applyTheme` (shell.html). "auto" is deliberately NOT a member: it resolves to
+# one of these two via prefers-color-scheme, so it is a resolution mechanism to test once rather
+# than a third rendered appearance to sweep every workspace in. Asserting dark-mode contrast under
+# "auto" would assert the CI runner's preference, not the product's.
+THEMES: tuple[str, ...] = ("light", "dark")
+
+
+def _viewport_context_kwargs(viewport: str | dict[str, Any], theme: str | None = None) -> dict[str, Any]:
+    """Playwright context kwargs for a named viewport, touch included where the device has it."""
+    if isinstance(viewport, dict):
+        return dict(viewport)
+    kwargs: dict[str, Any] = {"viewport": VIEWPORTS[viewport]}
+    if viewport == "phone":
+        kwargs |= {"has_touch": True, "is_mobile": True}
+    elif viewport == "tablet":
+        # Touch without `is_mobile`: a tablet reports a real pointer-coarse input but not a mobile
+        # viewport meta override, and `is_mobile` would silently rescale the layout under test.
+        kwargs |= {"has_touch": True}
+    if theme is not None:
+        # Keep prefers-color-scheme in agreement with the pinned theme so shell.html's `auto`
+        # branch cannot disagree with the explicit one.
+        kwargs.setdefault("color_scheme", theme)
+    return kwargs
+
+
+async def _pin_theme(context: Any, theme: str | None) -> None:
+    """Seed localStorage['phaze-theme'] via an INIT script, before the first paint.
+
+    Not an evaluate() after load: shell.html applies the root class from an inline pre-flash IIFE
+    that reads that key BEFORE Alpine loads, so a theme written after navigation is one repaint too
+    late and the test would assert against the DEFAULT theme's computed styles -- the exact flake
+    this indirection exists to avoid.
+    """
+    if theme is not None:
+        await context.add_init_script(f"try {{ localStorage.setItem('phaze-theme', {json.dumps(theme)}); }} catch (e) {{}}")
+
+
 @contextlib.asynccontextmanager
-async def _page(live_server: str, **context_kwargs: Any) -> AsyncGenerator[Any]:
+async def _browser_pages(live_server: str) -> AsyncGenerator[Any]:
+    """Yield a factory that opens pages on ONE browser, closing every context on exit.
+
+    One Chromium per test, N contexts within it -- the launch is the expensive part (~1s) and the
+    context is what actually carries the isolation, so a test comparing two viewports or two themes
+    pays for one browser rather than two.
+    """
     from playwright.async_api import async_playwright
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
+        contexts: list[Any] = []
         try:
-            context = await browser.new_context(base_url=live_server, **context_kwargs)
-            try:
-                yield await context.new_page()
-            finally:
-                await context.close()
+
+            async def _open(viewport: str | dict[str, Any] = "desktop", *, theme: str | None = None, **context_kwargs: Any) -> Any:
+                kwargs = _viewport_context_kwargs(viewport, theme) | context_kwargs
+                context = await browser.new_context(base_url=live_server, **kwargs)
+                contexts.append(context)
+                await _pin_theme(context, theme)
+                return await context.new_page()
+
+            yield _open
         finally:
+            for context in contexts:
+                with contextlib.suppress(Exception):
+                    await context.close()
             await browser.close()
 
 
+@contextlib.asynccontextmanager
+async def open_page_cm(live_server: str, *, viewport: str = "desktop", theme: str | None = None, **context_kwargs: Any) -> AsyncGenerator[Any]:
+    """A single page at a named viewport, optionally pinned to a theme before the first paint."""
+    async with _browser_pages(live_server) as factory:
+        yield await factory(viewport, theme=theme, **context_kwargs)
+
+
 @pytest_asyncio.fixture
-async def page(live_server: str) -> AsyncGenerator[Any]:
+def page_at(live_server: str) -> Any:
+    """Factory fixture: ``async with page_at(viewport=..., theme=...) as page``.
+
+    A factory rather than a matrix of named fixtures because the caller decides how many pages one
+    test needs. The viewport x theme sweep opens one browser per cell and walks fourteen workspaces
+    inside it; a fixture-per-cell shape would launch fourteen browsers to do the same work.
+    """
+
+    def _factory(*, viewport: str = "desktop", theme: str | None = None, **context_kwargs: Any) -> Any:
+        return open_page_cm(live_server, viewport=viewport, theme=theme, **context_kwargs)
+
+    return _factory
+
+
+@pytest_asyncio.fixture
+async def open_page(live_server: str) -> AsyncGenerator[Any]:
+    """Factory fixture: ``await open_page("tablet", theme="dark")`` -> a Playwright page.
+
+    The general form the named fixtures below are built from. Use it directly when a test needs a
+    width or theme that has no dedicated fixture, or needs two pages at once.
+    """
+    async with _browser_pages(live_server) as factory:
+        yield factory
+
+
+@pytest_asyncio.fixture
+async def page(open_page: Any) -> Any:
     """A desktop-width page."""
-    async with _page(live_server, viewport={"width": 1440, "height": 900}) as value:
-        yield value
+    return await open_page("desktop")
 
 
 @pytest_asyncio.fixture
-async def phone_page(live_server: str) -> AsyncGenerator[Any]:
+async def tablet_page(open_page: Any) -> Any:
+    """A tablet-width page (between ``md`` and ``lg``) with touch enabled."""
+    return await open_page("tablet")
+
+
+@pytest_asyncio.fixture
+async def phone_page(open_page: Any) -> Any:
     """A phone-width page with touch enabled.
 
     390x844 is below the ``lg`` breakpoint -- the exact width at which the pre-.13 icon-only rail
     was unusable, and therefore the width the drawer contract must be proven at.
     """
-    async with _page(live_server, viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True) as value:
-        yield value
+    return await open_page("phone")
+
+
+@pytest.fixture
+def browser_dsn() -> str:
+    """The DSN of the database the live app is serving, for tests that seed a state into it."""
+    return _browser_dsn()
+
+
+# --- Seeded application state --------------------------------------------------------------------
+
+
+# The Redis key families the execute-dispatch path owns. Swept per test alongside the database --
+# see `_reset_dispatch_keys` for why this is not optional.
+_DISPATCH_KEY_PATTERNS = ("exec:*", "execdispatch:*", "exec_progress_req:*")
+
+
+async def _reset_dispatch_keys(url: str) -> None:
+    """Drop the execute-dispatch keys so a test cannot inherit a previous run's live batch.
+
+    Truncating the database is NOT sufficient isolation for this suite, and the gap is not
+    theoretical -- it was found by a test asserting "Dispatched 2 proposals" and being told 3, from
+    a batch dispatched by an earlier pytest invocation entirely.
+
+    ``execdispatch:active`` is a single-dispatch sentinel with a **24-hour** safety TTL (phaze-fa2p
+    / phaze-0t2c), and ``exec:{batch_id}`` hashes carry the same. Neither is in Postgres, so
+    ``TRUNCATE`` cannot see them. On page load ``_reattach_active_progress`` reads that sentinel and
+    re-renders the referenced batch's progress card into the very target this suite asserts on --
+    so a stale key does not merely linger, it actively injects another run's dispatch into the
+    current test's DOM. Worse, a held sentinel makes ``/execution/start`` REFUSE, which reads as
+    "the Execute button is broken" rather than as leaked state.
+
+    Scoped to explicit patterns rather than ``FLUSHDB``: this logical database is shared with the
+    worktree's unit suite (see the module docstring), and these three families are exactly the ones
+    ``tests/review/routers/test_execution_dispatch.py`` already sweeps. Flushing would additionally
+    destroy cache entries the app's lifespan owns.
+    """
+    from redis.asyncio import Redis
+
+    client = Redis.from_url(url, decode_responses=True)
+    try:
+        for pattern in _DISPATCH_KEY_PATTERNS:
+            keys = [key async for key in client.scan_iter(pattern)]
+            if keys:
+                await client.delete(*keys)
+    finally:
+        await client.aclose()
+
+
+@pytest_asyncio.fixture
+async def seed(live_server: str, redis_url: str) -> AsyncGenerator[Any]:
+    """A :class:`tests.browser.seed.Seeder` on the live app's database, on an empty corpus.
+
+    Depends on ``live_server`` so the schema exists (the app migrates on boot) and so ordering is
+    explicit rather than incidental. Resets before yielding, not after: a failed test's rows are
+    then still there for inspection, and the next test is protected regardless of how the previous
+    one exited -- an ``after`` teardown protects nobody from a killed run.
+    """
+    from tests.browser.seed import Seeder, reset, sessionmaker_for
+
+    await _reset_dispatch_keys(redis_url)
+    engine, make_session = sessionmaker_for(_browser_dsn())
+    try:
+        async with make_session() as session:
+            await reset(session)
+            yield Seeder(session)
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def redis_url() -> str:
+    """The Redis URL the live app was booted against -- see the module docstring's sharing caveat."""
+    return os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6380/0")
 
 
 def pytest_collection_modifyitems(items: list[Any]) -> None:

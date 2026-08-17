@@ -24,7 +24,11 @@ import pytest
 from phaze.config_backends import ComputeBackend as ComputeEntry
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord
-from phaze.services import backends as backends_mod
+
+# phaze-dr9df: ``services.backends`` is a PACKAGE now and every name patched below
+# (``resolve_backends`` / ``_probe_availability`` / ``_admission_by_backend_id`` /
+# ``_PROBE_TIMEOUT_SEC``) is resolved out of ``lane_snapshot``'s OWN globals by
+# ``get_backend_lane_snapshot``. Patch that module, not the re-export facade.
 from phaze.services.backends import (
     ComputeAgentBackend,
     KueueBackend,
@@ -34,6 +38,7 @@ from phaze.services.backends import (
     _probe_availability,
     _probe_one,
     get_backend_lane_snapshot,
+    lane_snapshot as backends_mod,
 )
 from tests._queue_fakes import seed_active_agent
 
@@ -348,7 +353,7 @@ def test_kind_of_unknown_fallback() -> None:
 @pytest.mark.asyncio
 async def test_snapshot_shape_and_rank_order(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A 3-backend registry returns 3 rank-ascending secret-free lane dicts with live counts."""
-    import phaze.services.pipeline as pipeline_mod
+    from phaze.services.pipeline import cloud as pipeline_mod
 
     local = LocalBackend(id="local", rank=99, cap=1)
     compute = ComputeAgentBackend(id="a1", rank=10, cap=2)

@@ -288,6 +288,86 @@ def test_rsync_argv_does_not_leak_cfg_remote_target() -> None:
     assert argv[-1].endswith(f"/{payload.file_id}.flac")
 
 
+def test_build_rsync_argv_raises_on_missing_dest_host() -> None:
+    """WR-02: a payload with dest_host unset (a producer bug -- ComputeAgentBackend.dispatch or the
+    /mismatch re-drive must always stamp both dest fields) fails fast with a ValueError naming the
+    file_id, rather than building a broken ``...@None:...`` remote spec.
+    """
+    cfg = _fake_cfg()
+    file_id = uuid.uuid4()
+    payload = PushFilePayload(
+        file_id=file_id,
+        original_path="/media/set.flac",
+        file_type="flac",
+        agent_id="fileserver-01",
+        dest_scratch_dir="/srv/scratch",
+        # dest_host left at its None default -- the destination-less shape.
+    )
+
+    with pytest.raises(ValueError, match=str(file_id)):
+        push._build_rsync_argv(cfg, payload, key_path="/k", known_hosts_path="/kh")
+
+
+def test_build_rsync_argv_raises_on_missing_dest_scratch_dir() -> None:
+    """The other half of the same WR-02 guard: dest_scratch_dir unset also fails fast, rather than
+    building a broken ``...@host:None/...`` remote spec.
+    """
+    cfg = _fake_cfg()
+    file_id = uuid.uuid4()
+    payload = PushFilePayload(
+        file_id=file_id,
+        original_path="/media/set.flac",
+        file_type="flac",
+        agent_id="fileserver-01",
+        dest_host="oci-a1.push.example",
+        # dest_scratch_dir left at its None default -- the destination-less shape.
+    )
+
+    with pytest.raises(ValueError, match=str(file_id)):
+        push._build_rsync_argv(cfg, payload, key_path="/k", known_hosts_path="/kh")
+
+
+def test_agent_settings_raises_when_role_is_not_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_agent_settings()`` is ``push_file``'s own ``PHAZE_ROLE=agent`` narrowing guard -- every
+    other test in this module bypasses it via ``monkeypatch.setattr(push, "_agent_settings", ...)``,
+    so the real function body has never run under test. ``get_settings()`` returning anything other
+    than ``AgentSettings`` (e.g. the control role's ``ControlSettings``) must fail fast with a clear
+    ``RuntimeError`` naming the wrong type, never silently narrow a Control-role config and read
+    agent-only push_* fields off it. Mirrors ``test_main.py``'s ``_NotAgentSettings`` recipe for the
+    sibling ``agent_watcher/__main__.py`` guard -- a plain stand-in class, not a real ``ControlSettings``
+    construction, keeps this independent of that class's own required-field validation.
+    """
+
+    class _NotAgentSettings:
+        pass
+
+    monkeypatch.setattr(push, "get_settings", lambda: _NotAgentSettings())
+
+    with pytest.raises(RuntimeError, match="PHAZE_ROLE=agent") as exc_info:
+        push._agent_settings()
+    assert "_NotAgentSettings" in str(exc_info.value)
+
+
+def test_agent_settings_returns_the_agent_settings_instance_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The complement: a real ``AgentSettings`` passes the narrowing check and is returned as-is."""
+    from phaze.config import AgentSettings
+
+    # AgentSettings' own D-14 validator requires PHAZE_ROLE=agent + the agent-only fields to be
+    # present at construction time (mirrors tests/agents/tasks/test_agent_worker_heartbeat.py's
+    # ``_set_agent_env`` recipe) -- unrelated to the guard under test, just what makes a REAL
+    # instance constructible here.
+    monkeypatch.setenv("PHAZE_ROLE", "agent")
+    monkeypatch.setenv("PHAZE_AGENT_API_URL", "http://test")
+    monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
+    monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/var/empty")
+    monkeypatch.setenv("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@localhost:5432/phaze")
+
+    real_cfg = AgentSettings()
+    monkeypatch.setattr(push, "get_settings", lambda: real_cfg)
+
+    assert push._agent_settings() is real_cfg
+
+
 # ----------------------------------------------------------------------
 # exit-code handling — subprocess mocked
 # ----------------------------------------------------------------------

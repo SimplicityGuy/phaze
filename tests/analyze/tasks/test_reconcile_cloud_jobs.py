@@ -41,6 +41,7 @@ from phaze.services import kube_staging
 import phaze.tasks.reconcile_cloud_jobs as reconcile_mod
 from phaze.tasks.reconcile_cloud_jobs import reconcile_cloud_jobs
 from phaze.tasks.submit_cloud_job import submit_cloud_job_key
+from tests._backends_patch import patch_backends_get_settings
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter
 from tests.kube_fakes import ADMITTED, EVICTED, INADMISSIBLE, PENDING, QUOTA_RESERVED, fake_job, fake_pod
 
@@ -185,7 +186,7 @@ def _patch_cap(monkeypatch: pytest.MonkeyPatch, cap: int = 3, node_loss_ceiling:
         buckets=[SimpleNamespace(id=_STAGING_BUCKET_ID)],
     )
     monkeypatch.setattr("phaze.tasks.reconcile_cloud_jobs.get_settings", lambda: settings)
-    monkeypatch.setattr("phaze.services.backends.get_settings", lambda: settings)
+    patch_backends_get_settings(monkeypatch, lambda: settings)
 
 
 def _patch_seam(
@@ -471,7 +472,7 @@ async def test_cap_safe_reconcile_decrement_never_overshoots_drain_snapshot(sess
             )
         ],
     )
-    monkeypatch.setattr("phaze.services.backends.get_settings", lambda: settings)
+    patch_backends_get_settings(monkeypatch, lambda: settings)
     [backend] = [b for b in resolve_backends(settings) if b.id == _KUEUE_BACKEND_ID]
 
     before = await backend.in_flight_count(session)

@@ -158,7 +158,13 @@ async def test_prepare_workspaces_keep_narrow_layout_actions_accessible(
     assert "grid gap-4 px-4 py-4 lg:grid-cols-2 sm:px-6" in tracklist
     assert "flex flex-col items-start gap-2 sm:flex-row sm:items-center" in tracklist
     assert "flex flex-col gap-3 rounded-lg" in propose and "sm:flex-row" in propose
-    assert 'class="overflow-x-auto"' in propose, "dense proposal rows retain horizontal access instead of clipping"
+    # phaze-mrg1c: matched as a class TOKEN, not as the whole attribute. The scroll container now also
+    # carries `relative`, without which its absolutely positioned descendants (every `.sr-only` span
+    # is one) resolve against the initial containing block, escape the scroller and scroll the whole
+    # document sideways. An `== "overflow-x-auto"` assertion reads as "this row scrolls horizontally"
+    # but actually pins the exact class list, so the containing-block fix broke it while the property
+    # it names held throughout.
+    assert 'class="relative overflow-x-auto"' in propose, "dense proposal rows retain horizontal access instead of clipping"
 
 
 @pytest.mark.asyncio

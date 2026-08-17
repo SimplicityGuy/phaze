@@ -240,11 +240,35 @@ def test_the_drawer_is_a_dialog_below_lg_and_a_landmark_above_it() -> None:
     assert aside is not None, "the rail no longer renders an <aside>"
     attrs = aside.group(0)
 
-    assert 'x-trap.noscroll="navOpen"' in attrs, "the drawer is no longer focus-trapped"
+    assert 'x-trap.noscroll.noreturn="navOpen"' in attrs, "the drawer is no longer focus-trapped"
     assert ":role=" in attrs and "'dialog'" in attrs, "a focus-trapped overlay must announce itself as a dialog"
     assert ":aria-modal=" in attrs, "a modal dialog must set aria-modal"
     assert 'role="dialog"' not in attrs, "role must be BOUND so it vanishes at lg+, where the rail is not modal"
     assert 'aria-modal="true"' not in attrs, "aria-modal must be bound for the same reason"
+
+
+def test_the_traps_focus_restore_is_the_drawers_own_and_not_focus_traps() -> None:
+    """phaze-bdeih: `.noreturn` and `closeNav()`'s explicit restore are ONE mechanism, not two.
+
+    focus-trap's built-in `returnFocus` fires on a `setTimeout(0)` that lands after the flush which
+    already applied `max-lg:invisible` to the drawer, so it focused a node in a `visibility: hidden`
+    subtree -- a silent no-op that left `document.activeElement === document.body`. `.noreturn`
+    deletes that restore, which makes `closeNav()`'s `$nextTick` restore the only one, and makes it
+    MANDATORY: every path that closes the drawer must go through `closeNav()` or focus is dropped
+    on the floor. Half of this pair is worse than neither, so both halves are pinned here.
+    """
+    rail = _rail_source()
+    aside = re.search(r"<aside\b[^>]*>", rail, re.DOTALL)
+    assert aside is not None, "the rail no longer renders an <aside>"
+    assert ".noreturn" in aside.group(0), "focus-trap's returnFocus is back -- it restores focus into the hidden drawer (phaze-bdeih)"
+
+    assert "$nextTick" in rail, "closeNav no longer defers its restore past the close flush -- the trap will win the race again"
+    assert 'closeNav("stage")' in rail or "closeNav('stage')" in rail, "an HTMX navigation must hand focus to the swapped-in workspace"
+
+    # Every close path routes through closeNav: a bare `navOpen = false` skips the restore entirely,
+    # and with `.noreturn` there is nothing else left to move focus anywhere.
+    strays = [line.strip() for line in rail.splitlines() if re.search(r'=\s*"navOpen\s*=\s*false"', line)]
+    assert not strays, f"close path(s) bypassing closeNav(), so focus is dropped when they fire: {strays}"
 
 
 def test_the_drawer_role_breakpoint_matches_tailwinds_lg() -> None:

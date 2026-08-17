@@ -186,3 +186,27 @@ async def test_controller_shutdown_tolerates_missing_ctx_keys() -> None:
     from phaze.tasks import controller
 
     await controller.shutdown({})
+
+
+@pytest.mark.asyncio
+async def test_controller_shutdown_closes_the_dedicated_cache_redis_and_task_router() -> None:
+    """shutdown() must also aclose ctx['redis'] (Phase 36's dedicated cache-redis handle, distinct
+    from the module-level queue's own cache_redis) and close ctx['task_router'] (Phase 32's
+    per-agent task router) when startup populated them -- mirroring the task_engine/discogs_client
+    pair asserted above. Both are guarded the same way (``is not None``), so an empty ctx (the
+    other test in this module) must keep no-op-ing.
+    """
+    from unittest.mock import AsyncMock
+
+    from phaze.tasks import controller
+
+    cache_redis = MagicMock()
+    cache_redis.aclose = AsyncMock()
+    task_router = MagicMock()
+    task_router.close = AsyncMock()
+
+    ctx: dict[str, Any] = {"redis": cache_redis, "task_router": task_router}
+    await controller.shutdown(ctx)
+
+    cache_redis.aclose.assert_awaited_once()
+    task_router.close.assert_awaited_once()

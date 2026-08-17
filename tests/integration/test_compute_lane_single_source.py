@@ -90,12 +90,16 @@ def test_single_derivation_symbol_is_shared_by_all_consumers() -> None:
     consumers that remain are pinned below.
     """
     import phaze.routers.admin_agents as admin_agents_router
-    import phaze.routers.pipeline as pipeline_router
+    import phaze.routers.pipeline.dashboard_stats as pipeline_dashboard_router
     import phaze.services.agent_liveness as agent_liveness
-    import phaze.services.pipeline as pipeline_service
+    from phaze.services.pipeline import analyze as pipeline_service
 
     # ONE lane-identity source, referenced identically by both HTTP surfaces.
-    assert pipeline_router.derive_compute_lane_identities is agent_liveness.derive_compute_lane_identities
+    # phaze-oau1o: the pipeline side is now `routers.pipeline.dashboard_stats` -- `routers/pipeline.py`
+    # became a package and `_build_dag_context`, the sole consumer here, lives in that submodule.
+    # The facade deliberately does not re-export imported names, so naming the submodule is what
+    # keeps this assertion (and the stub in the test below) pointed at the binding actually read.
+    assert pipeline_dashboard_router.derive_compute_lane_identities is agent_liveness.derive_compute_lane_identities
     assert admin_agents_router.derive_compute_lane_identities is agent_liveness.derive_compute_lane_identities
     # ONE registry projection, referenced identically by the file-badge service and the lane derivation.
     assert pipeline_service.non_local_backend_kinds is agent_liveness.non_local_backend_kinds
@@ -118,7 +122,7 @@ async def test_all_three_surfaces_reflect_one_stubbed_lane_list(
     kind mapping all agree with the one stubbed source -- proving no second derivation path exists.
     """
     backends_toml_env(_TWO_CLUSTER_REGISTRY)
-    monkeypatch.setattr("phaze.routers.pipeline.derive_compute_lane_identities", _stub_derive_compute_lane_identities)
+    monkeypatch.setattr("phaze.routers.pipeline.dashboard_stats.derive_compute_lane_identities", _stub_derive_compute_lane_identities)
     monkeypatch.setattr("phaze.routers.admin_agents.derive_compute_lane_identities", _stub_derive_compute_lane_identities)
 
     # ---- Surface (a): the header agent count seed on the 5s stats poll -------------------------------

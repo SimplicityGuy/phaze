@@ -13,8 +13,9 @@
                          _changes_list.html passes: "rename-row" (:69, routed by routers/proposals.py)
                          and "tagwrite-row" (:120, routed by routers/tags.py). "move-row" lost its
                          renderer with move_workspace.html and "tag-row" was never rendered by
-                         anything -- do not reintroduce either as an example; routers/proposals.py's
-                         _V7_ROW_FACETS is the map that still carries the dangling stems.
+                         anything -- do not reintroduce either as an example. phaze-7tiqp dropped
+                         both from routers/proposals.py's _V7_ROW_FACETS, which now carries only the
+                         one live stem.
      * pid            -- the proposal (or file) id.
      * file           -- display name (truncating first line); original_path = its title tooltip.
      * before / after -- the current (struck rose) and proposed (emerald) values.
@@ -32,11 +33,12 @@
      * row_state      -- "pending" (default) shows Approve/Edit/Skip; "approved"/"applied" show the
                          emerald lifecycle word + a neutral UNDO (Pattern 6). get_pending_proposal_rows
                          returns only PENDING rows, so the workspaces render the pending branch.
-     * oob            -- (phaze-71hi) when true, marks this row's own root `hx-swap-oob="true"` so a
-                         response whose primary swap target is elsewhere (e.g. the bulk-approve
-                         status div) can still update this row IN PLACE. Default false -- the normal
-                         single-row mutation responses (`hx-target`/`hx-swap="outerHTML"` on the row
-                         itself) must NOT also carry hx-swap-oob.
+                         (phaze-7tiqp removed the `oob` parameter this partial used to accept. Its
+                         one producer was the bulk-approve-high-confidence response, which marked
+                         each row `hx-swap-oob="true"` because its primary swap target was a status
+                         div elsewhere; that route and its two host workspaces are retired. Every
+                         remaining response swaps the row it targeted, so a row is never an
+                         out-of-band fragment -- which is also what R-2 below requires.)
      * updated_at     -- (phaze-exivg, optional) this render's RenameProposal.updated_at, round-tripped
                          by the APPROVE button as an optimistic-concurrency token (hx-vals
                          expected_updated_at) so /proposals/{id}/approve can refuse a row a concurrent
@@ -54,7 +56,6 @@
 {% set _primary = 'inline-flex items-center justify-center h-7 px-2.5 rounded-md bg-emerald-600/90 hover:bg-emerald-500 text-white font-jura text-[11px] font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-emerald-500' %}
 {% set _sec = 'inline-flex items-center justify-center h-7 px-2.5 rounded-md border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-[11px] font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500' %}
 <div id="{{ row_id_prefix }}-{{ pid }}"
-     {% if oob|default(false) %}hx-swap-oob="true"{% endif %}
      class="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5{% if row_state and row_state != 'pending' %} opacity-70{% endif %}"
      x-data='{ editing:false, val:{{ after|tojson }} }'>
     <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
