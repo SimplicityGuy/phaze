@@ -300,7 +300,7 @@ constraint-dependencies = [
 [dependency-groups]
 dev = [
     "bandit>=1.9.4",
-    "greenlet>=3.5.4",
+    "greenlet>=3.5.5",
     "httpx>=0.28.1",
     # Phase 53: S3 mock so the staging leg (presign/upload/delete) is testable without a
     # live S3 backend or cluster. The [server] extra (flask/werkzeug) provides
@@ -310,12 +310,12 @@ dev = [
     "moto[server]>=5.2.2",
     "mypy>=2.3.0",
     "pip-audit>=2.10.1",
-    "pre-commit>=4.6.1",
+    "pre-commit>=4.6.2",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
-    "ruff>=0.16.2",
+    "ruff>=0.16.3",
     "vulture>=2.16",
 ]
