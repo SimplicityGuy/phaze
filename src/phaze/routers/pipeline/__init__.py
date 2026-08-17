@@ -16,7 +16,7 @@ adding any path-parameter segment directly under ``/pipeline/``.
 **Patch targets moved (the one thing this split can break).** A name a submodule imported is bound
 in THAT submodule's namespace, so ``patch("phaze.routers.pipeline.get_backend_lane_snapshot")`` no
 longer reaches the code under test -- it must name the owning submodule, e.g.
-``phaze.routers.pipeline.dashboard.get_backend_lane_snapshot``. Third-party and service imports are
+``phaze.routers.pipeline.dashboard_stats.get_backend_lane_snapshot``. Third-party and service imports are
 deliberately NOT re-exported here so that a stale target of that form raises ``AttributeError``
 instead of silently patching a name nothing reads. The re-exports below are only names this package
 DEFINES; patching one of those on the facade is still a silent no-op, so patch the submodule.
@@ -49,7 +49,7 @@ from phaze.routers.pipeline.analysis import (
 from phaze.routers.pipeline.backfill import (
     trigger_backfill_cloud,
 )
-from phaze.routers.pipeline.dashboard import (
+from phaze.routers.pipeline.dashboard_stats import (
     _NODE_COMPLETED_FNS,
     _build_dag_context,
     _derive_stats,
