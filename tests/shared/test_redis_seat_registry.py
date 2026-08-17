@@ -44,7 +44,9 @@ the first is a finding.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import time
@@ -153,7 +155,7 @@ def _registry_cli(container: str, *args: str) -> str:
     return _redis(container, "-n", "0", *args)
 
 
-def _run(container: str, *args: str) -> subprocess.CompletedProcess[str]:
+def _run(container: str, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     """Drive the real script, with the same arguments the justfile recipe passes it."""
     assert _SCRIPT.is_file(), f"seat registry script missing: {_SCRIPT}"
     return subprocess.run(  # noqa: S603 - fixed, in-repo executable; every argument is a test literal
@@ -161,7 +163,51 @@ def _run(container: str, *args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
+        env={**os.environ, **(env or {})},
     )
+
+
+def _interleave_at_client_list(tmp_path: Path, action: str, *, occurrence: int = 2) -> dict[str, str]:
+    """Env that makes the script run ``action`` just before its ``occurrence``-th ``CLIENT LIST``.
+
+    The window phaze-r311e lives in is *inside* one ``reclaim --apply`` run: between the single
+    classification pass and the destruction that acts on its snapshot. Nothing in the script's
+    interface exposes that moment, and a sleep-and-hope test would prove nothing about it. So this
+    borrows the one thing the script demonstrably does at exactly that boundary — it reaches Redis
+    through ``docker`` — and puts a shim on ``PATH`` that forwards every call to the real binary
+    but fires ``action`` first on the Nth match.
+
+    ``CLIENT LIST`` call 1 is classification's L1 read; call 2 is the re-verification the apply
+    loop performs immediately before destroying a seat. Firing between them lands the interference
+    precisely in the gap, deterministically, with no timing at all — and against the real script
+    rather than a re-implementation of it. ``action`` runs with the ORIGINAL ``PATH``, so its own
+    ``docker`` calls reach the real binary and cannot re-enter the shim.
+    """
+    real_docker = shutil.which("docker")
+    assert real_docker is not None, "the module-level skip should have caught this"
+
+    action_script = tmp_path / "interleaved-action.sh"
+    action_script.write_text(f"#!/usr/bin/env bash\nset -euo pipefail\nexport PATH={shlex.quote(os.environ['PATH'])}\n{action}\n", encoding="utf-8")
+    action_script.chmod(0o755)
+
+    counter = tmp_path / "client-list-calls"
+    bin_dir = tmp_path / "shim-bin"
+    bin_dir.mkdir()
+    shim = bin_dir / "docker"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        'case " $* " in\n'
+        '  *" CLIENT LIST "*)\n'
+        f"    seen=$(( $(cat {shlex.quote(str(counter))} 2>/dev/null || echo 0) + 1 ))\n"
+        f'    printf %s "$seen" >{shlex.quote(str(counter))}\n'
+        f'    if [ "$seen" = "{occurrence}" ]; then {shlex.quote(str(action_script))} >&2; fi\n'
+        "    ;;\n"
+        "esac\n"
+        f'exec {shlex.quote(real_docker)} "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
 
 
 def _allocate(container: str, seat: str, *, origin: str | None = None, capacity: int = _CAPACITY) -> subprocess.CompletedProcess[str]:
@@ -376,8 +422,8 @@ def test_release_refuses_while_a_client_is_connected(registry: str, tmp_path: Pa
 # ---------------------------------------------------------------------------------------------
 
 
-def _reclaim(container: str, *extra: str) -> subprocess.CompletedProcess[str]:
-    return _run(container, "reclaim", "--capacity", str(_CAPACITY), "--no-postgres-check", *extra)
+def _reclaim(container: str, *extra: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    return _run(container, "reclaim", "--capacity", str(_CAPACITY), "--no-postgres-check", *extra, env=env)
 
 
 def _expire_lease(container: str, seat: str) -> None:
@@ -545,6 +591,60 @@ def test_list_reports_an_unreachable_postgres_instead_of_calling_seats_stale(reg
     row = next(line for line in listing.stdout.splitlines() if "seat_gone" in line)
     assert "in-use" in row, f"O1 must not fire while L2 is unknown: {row}"
     assert "unknown is never read as free" in row
+
+
+def test_a_seat_reclaimed_mid_sweep_survives_the_sweep(registry: str, tmp_path: Path) -> None:
+    """The TOCTOU that made the sweep able to destroy a live seat (phaze-r311e).
+
+    ``reclaim`` classifies every seat ONCE and then destroys them from that snapshot — 5.46s for a
+    five-seat sweep, 20s+ on a realistic registry. An agent running ``just test-db-for`` inside
+    that window is handed its existing index back and its lease refreshed, correctly and
+    atomically; the sweep then flushed the database anyway and freed the index for the next
+    allocate. Two seats on one logical DB is phaze-fwo7, reached from a snapshot that was merely
+    stale rather than wrong.
+
+    The re-claim here happens at exactly that point — after classification, before destruction —
+    and is the same command an agent would type.
+    """
+    index = _index_of(_allocate(registry, "seat_racer", origin=str(tmp_path)))
+    _expire_lease(registry, "seat_racer")
+    _redis(registry, "-n", str(index), "SET", "exec:in-flight", "x")
+    reclaim_it = (
+        f"{shlex.quote(str(_SCRIPT))} allocate --redis-container {shlex.quote(registry)} "
+        f"--seat seat_racer --capacity {_CAPACITY} --origin {shlex.quote(str(tmp_path))} >/dev/null"
+    )
+
+    swept = _reclaim(registry, "--apply", env=_interleave_at_client_list(tmp_path, reclaim_it))
+
+    assert swept.returncode == 0, swept.stderr
+    assert _allocated_seats(registry) == {"seat_racer": str(index)}, swept.stdout
+    assert _redis(registry, "-n", str(index), "DBSIZE") == "1", "the re-claimed seat's keys must survive"
+    assert "re-claimed since classification" in swept.stdout
+
+
+def test_a_seat_that_connects_mid_sweep_survives_the_sweep(registry: str, tmp_path: Path) -> None:
+    """L1 is re-read immediately before destruction, not only at classification.
+
+    The lease-stamp comparison catches a seat that re-ran ``test-db-for``. This catches the other
+    half: a suite that was merely idle when the sweep started and opened its Redis connection
+    while the sweep was still walking the registry.
+    """
+    index = _index_of(_allocate(registry, "seat_waker", origin=str(tmp_path)))
+    _expire_lease(registry, "seat_waker")
+    connect = (
+        f"docker exec -d {shlex.quote(registry)} sh -c 'redis-cli -n {index} BLPOP phaze-seatreg-test-idle 0'\n"
+        "for _ in $(seq 1 40); do\n"
+        f"  if docker exec {shlex.quote(registry)} redis-cli CLIENT LIST | grep -q ' db={index} '; then exit 0; fi\n"
+        "  sleep 0.1\n"
+        "done\n"
+        "exit 1\n"
+    )
+
+    swept = _reclaim(registry, "--apply", env=_interleave_at_client_list(tmp_path, connect))
+
+    assert swept.returncode == 0, swept.stderr
+    assert _allocated_seats(registry) == {"seat_waker": str(index)}, swept.stdout
+    assert "connected to DB" in swept.stdout
 
 
 def test_list_reports_the_evidence_behind_every_verdict(registry: str, tmp_path: Path) -> None:
