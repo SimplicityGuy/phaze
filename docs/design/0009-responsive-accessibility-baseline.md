@@ -89,9 +89,24 @@ are unaffected and remain correct for modal `max-w` guards.
 | Disabled Execute states carry visible reason + next action | `tests/review/routers/test_execute_preflight.py` |
 
 The sweep is filesystem-based and covers **all** templates, including partials that render only in
-states a smoke test rarely reaches. Real-browser checks — computed contrast, focus order after HTMX
-swaps, axe — belong to phaze-tzy6s.14 and are complementary, not redundant: this lane is exhaustive
-about markup properties, that lane is authoritative about rendered behaviour.
+states a smoke test rarely reaches. Real-browser checks are complementary, not redundant: this lane
+is exhaustive about markup properties, that lane is authoritative about rendered behaviour.
+
+**What the browser lane actually covers, corrected (phaze-tzy6s.17 / CR-14-5).** This paragraph
+previously stated that "computed contrast, focus order after HTMX swaps, axe — belong to
+phaze-tzy6s.14", written as settled fact about landed code. Only one of the three is true.
+`tests/browser/test_shell_contract.py` does assert **focus order after an HTMX swap**
+(`test_focus_is_not_dropped_to_the_body_after_a_swap`), along with drawer behaviour at phone width,
+closed-drawer tab stops, horizontal overflow, the command palette's focus trap and return, theme
+persistence, the drawer's `aria-expanded`/`role=dialog` runtime state, and a per-workspace
+console-error sweep. It ships **no computed-contrast assertion and no axe pass** — neither exists
+anywhere in `tests/browser/`.
+
+So contrast and axe are not covered by any lane today: this ADR's markup sweep cannot compute
+rendered colour, and the browser suite does not try. That is a real gap in this baseline's
+enforcement rather than a delegation, and it is tracked as such (`phaze-8p1uq`) instead of being
+described here as already done. An ADR asserting a guard exists is worse than one admitting it does
+not, because the claim is what the next reader checks against instead of the suite.
 
 ## The browser contract suite (phaze-tzy6s.14)
 

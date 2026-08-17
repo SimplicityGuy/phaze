@@ -272,22 +272,39 @@ async def test_execute_explains_its_disabled_state_in_visible_text(page: Any) ->
     assert "Approve filename and destination changes in Changes Review first." in text, "no next action offered"
 
 
-async def test_execute_never_dispatches_from_a_native_browser_prompt(page: Any) -> None:
-    """The confirmation boundary is the in-product dialog, and a native prompt would fail this test.
+async def test_execute_always_states_the_scope_it_will_not_dispatch(page: Any) -> None:
+    """The scope statement renders whatever the queue holds -- including empty.
 
-    Playwright auto-dismisses native dialogs, so if ``hx-confirm`` ever came back this test would
-    catch it as a *missing* confirmation rather than a passing one -- which is exactly the failure
-    mode worth guarding.
+    phaze-tzy6s.17 (CR-14-4) rewrote this test. It was
+    ``test_execute_never_dispatches_from_a_native_browser_prompt``, and it could not fail:
+
+    * It never clicked anything, so no dialog of any kind -- native or in-product -- could fire.
+    * It could not have clicked anyway. ``apply_workspace.html`` gates the whole confirmation
+      dialog behind ``{% if preflight.can_execute %}``, and ``can_execute = total > 0 and not
+      conflicts``; the neighbouring test asserts the Execute button ``is_disabled()``, which proves
+      ``can_execute`` is False. ``#apply-confirm`` was therefore absent from the DOM.
+    * So ``assert dialogs == []`` could not distinguish "the correct in-product dialog opened"
+      from "there is no confirmation control here at all" -- and it read as coverage of the
+      product's final safety boundary, which is the worst place to hold a vacuous assertion.
+
+    The invariant it claimed is real and IS properly guarded, one layer down and with the seeded
+    state this suite lacks: ``tests/shared/core/test_review_apply_workspaces.py``'s
+    ``test_apply_workspace_hosts_the_execute_trigger`` seeds an approved proposal so ``can_execute``
+    is True, then asserts ``hx-confirm`` is absent while ``#apply-confirm`` / ``<dialog>`` /
+    ``showModal()`` are present. Nothing was lost by deleting the browser copy.
+
+    A browser-level version -- click Execute, assert the in-product dialog opens and NO native
+    prompt fires -- needs a seeded ``can_execute`` state, i.e. browser-suite data seeding, which is
+    deliberately out of scope here and belongs to the rescoped browser-coverage bead. What remains
+    below is what this suite can actually verify in the empty state, and it is not vacuous: the
+    scope statement is asserted to render unconditionally, which is precisely the claim that an
+    "only show it when there is something to show" refactor would break.
+
+    inner_text() returns text as RENDERED, and the eyebrow headings carry ``uppercase``, so a
+    case-sensitive match would fail on styling rather than on content. Compare case-insensitively.
     """
-    dialogs: list[str] = []
-    page.on("dialog", lambda dialog: (dialogs.append(dialog.message), dialog.dismiss()))
-
     await _open(page, "/s/apply")
-    assert dialogs == [], "a native browser dialog appeared — the shared confirmation dialog is the contract"
 
-    # The scope statement is always rendered, whatever the queue holds.
-    # inner_text() returns text as RENDERED, and the eyebrow headings carry `uppercase`, so a
-    # case-sensitive match fails on styling rather than on content. Compare case-insensitively.
     body = (await page.locator("#stage-workspace").inner_text()).lower()
     assert "not dispatched by this control" in body
     assert "execute approved runs approved filename and destination changes only." in body
