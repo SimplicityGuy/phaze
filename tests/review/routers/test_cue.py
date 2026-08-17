@@ -483,7 +483,7 @@ async def test_generate_cue_success_on_cue_card_target_returns_preview_card(clie
     assert response.status_code == 200
     assert f'id="cue-card-{tracklist.id}"' in response.text, "the v7 preview card id must survive a successful approve"
     assert f'id="cue-row-{tracklist.id}"' not in response.text, "the legacy cue_row.html markup must NOT be swapped in"
-    assert "APPROVE" in response.text, "the eligible card's APPROVE control must still be present (still eligible post-write)"
+    assert "Generate cue sheet" in response.text, "the eligible card's generation control must still be present post-write"
 
 
 @pytest.mark.asyncio

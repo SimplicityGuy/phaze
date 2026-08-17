@@ -1,3 +1,4 @@
+{% import "ui/primitives.html" as ui %}
 <tr class="border-b border-gray-100 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">
     <td class="px-4 py-3">
         <span class="bg-gray-100 dark:bg-phaze-panel text-gray-700 dark:text-gray-300 text-xs font-semibold px-2 py-0.5 rounded-full">{{ log.operation|capitalize }}</span>
@@ -27,13 +28,13 @@
     </td>
     <td class="px-4 py-3">
         {% if log.status == "completed" %}
-            <span class="bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400 text-xs font-semibold px-2 py-0.5 rounded-full">Completed</span>
+            {{ ui.status_badge('Status', 'Completed', 'success', '✓') }}
         {% elif log.status == "failed" %}
-            <span class="bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-400 text-xs font-semibold px-2 py-0.5 rounded-full">Failed</span>
+            {{ ui.status_badge('Status', 'Failed', 'danger', '✗') }}
         {% elif log.status == "in_progress" %}
-            <span class="bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400 text-xs font-semibold px-2 py-0.5 rounded-full">In Progress</span>
+            {{ ui.status_badge('Status', 'In progress', 'accent', '●', true) }}
         {% else %}
-            <span class="bg-yellow-100 dark:bg-yellow-950 text-yellow-700 dark:text-yellow-400 text-xs font-semibold px-2 py-0.5 rounded-full">Pending</span>
+            {{ ui.status_badge('Status', 'Pending', 'attention', '…') }}
         {% endif %}
     </td>
     <td class="px-4 py-3 text-gray-500 dark:text-gray-400">

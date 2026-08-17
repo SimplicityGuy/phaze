@@ -9,12 +9,14 @@
    Context contract:
      * columns        — list[str] header labels.
      * rows           — list of rows; each row is a list of cell dicts:
-                          {text, mono?(bool), title?(str), color?(class str)}.
+                          {text, mono?(bool), wrap?(bool), title?(str), color?(class str)}.
                         `text` is ALWAYS autoescaped and NEVER piped through `| safe`
                         (path/tag values cross the DB→render trust boundary — XSS V5 /
                         recent_scans_table precedent). `color` is a caller-controlled class
                         string (status word colour); a status cell ALWAYS carries a word, never
                         hue-only (WCAG 1.4.1).
+                        ``wrap`` applies only to mono cells and exposes their complete value with
+                        normal wrapping instead of the default compact truncation.
      * empty_heading  — empty-state heading (e.g. "No scans yet").
      * empty_body     — empty-state body copy.
      * row_id_prefix  — optional stable per-row id stem (D-06 inert-but-present rows).
@@ -67,6 +69,12 @@
        those rows an Alpine scope so the click actually wires. The shell root has NO x-data
        (see shell.html — x-data on <html> is inert), so without this the record slide-in never
        opens on a direct GET / Analyze landing (CR-01). Non-clickable tables stay scope-free. #}
+    {# phaze-tzy6s.13: the expert files table keeps every column on every viewport (the epic's
+       "desktop retains high-information tables" constraint), so on a phone it is wider than the
+       screen. Without this wrapper that width propagates to the document and the WHOLE page scrolls
+       sideways -- header, rail and all -- which is the single most common way a dense admin UI
+       becomes unusable on touch. Scoping the scroll to the table keeps the page itself fixed. #}
+    <div class="overflow-x-auto">
     <table class="w-full text-left text-sm"{% if table_id %} id="{{ table_id }}"{% endif %}>
         <thead class="border-b border-gray-200 bg-gray-50 font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-500">
             <tr>
@@ -125,11 +133,12 @@
                 </td>
                 {% endif %}
                 {% for cell in row %}
-                <td class="px-6 py-3 {% if cell.color %}{{ cell.color }}{% elif loop.first %}text-gray-900 dark:text-gray-200{% else %}text-gray-500 dark:text-gray-400{% endif %}{% if cell.mono %} max-w-md truncate font-mono text-xs{% endif %}"{% if cell.title %} title="{{ cell.title }}"{% endif %}>{{ cell.text }}</td>
+                <td class="px-6 py-3 {% if cell.color %}{{ cell.color }}{% elif loop.first %}text-gray-900 dark:text-gray-200{% else %}text-gray-500 dark:text-gray-400{% endif %}{% if cell.mono %}{% if cell.wrap %} whitespace-normal break-all font-mono text-xs{% else %} max-w-md truncate font-mono text-xs{% endif %}{% endif %}"{% if cell.title %} title="{{ cell.title }}"{% endif %}>{{ cell.text }}</td>
                 {% endfor %}
             </tr>
             {% endfor %}
         </tbody>
     </table>
+    </div>
 </div>
 {% endif %}

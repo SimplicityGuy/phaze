@@ -21,6 +21,7 @@ Proves REVIEW-05 over the EXISTING apply endpoints (no new audit/undo logic, D-0
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING
 import uuid
 
@@ -31,6 +32,14 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
+from phaze.routers.tags import (
+    _encode_tag_review_token,
+    _get_accepted_discogs_link,
+    _get_file_with_metadata,
+    _get_tracklist_for_file,
+    _tag_review_payload,
+)
+from phaze.services.tag_proposal import compute_proposed_tags
 from tests._queue_fakes import install_fake_queues
 
 
@@ -89,14 +98,48 @@ async def _tag_log_count(session: AsyncSession, file_id: uuid.UUID) -> int:
     return (await session.execute(stmt)).scalar_one()
 
 
+async def _review_token(session: AsyncSession, file_id: uuid.UUID) -> str:
+    """Mint the reviewed-payload token ``POST /tags/{id}/write`` now requires.
+
+    phaze-tzy6s.11 / ADR-0008: these tests used to post a bare ``{"artist": ...}`` form, which the
+    route accepted as a ``manual_edit`` tag write. That path is gone -- Changes Review is the only
+    surface that authorizes a tag write, and it authorizes exactly the payload it rendered, so the
+    route takes a ``review_token`` and rejects anything else with 400. The REVIEW-05 properties
+    below (one audit row per apply; undo replays the recorded snapshot) are unchanged; only the way
+    the write is authorized moved. Mirrors ``tests/review/routers/test_tags.py::_review_token``;
+    the render-to-submit half of the chain is covered by ``tests/review/routers/test_changes_review.py``.
+    """
+    file_record = await _get_file_with_metadata(session, file_id)
+    assert file_record is not None
+    tracklist = await _get_tracklist_for_file(session, file_id)
+    link = await _get_accepted_discogs_link(session, file_id)
+    proposed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename, discogs_link=link)
+    return _encode_tag_review_token(_tag_review_payload(file_record, tracklist, link, proposed))
+
+
 @pytest.mark.asyncio
 async def test_tag_write_produces_exactly_one_audit_row(client: AsyncClient, session: AsyncSession) -> None:
     """(a) A single ``POST /tags/{id}/write`` appends exactly one ``TagWriteLog`` row."""
     file = await _executed_file(session, artist="Old Artist")
     install_fake_queues(client)
-    resp = await client.post(f"/tags/{file.id}/write", data={"artist": "New Artist"})
+    resp = await client.post(f"/tags/{file.id}/write", data={"review_token": await _review_token(session, file.id)})
     assert resp.status_code == 200
     assert await _tag_log_count(session, file.id) == 1
+
+
+@pytest.mark.asyncio
+async def test_tag_write_without_a_review_token_is_refused_and_audits_nothing(client: AsyncClient, session: AsyncSession) -> None:
+    """(a') ADR-0008: an unreviewed write is refused BEFORE it can append an audit row.
+
+    The retired ``manual_edit`` form shape is the exact request an out-of-band caller would replay,
+    so this pins that the boundary is enforced server-side and leaves the audit trail untouched --
+    a 400 that still wrote a row would be worse than the old behaviour, not better.
+    """
+    file = await _executed_file(session, artist="Old Artist")
+    install_fake_queues(client)
+    resp = await client.post(f"/tags/{file.id}/write", data={"artist": "New Artist"})
+    assert resp.status_code == 400
+    assert await _tag_log_count(session, file.id) == 0
 
 
 @pytest.mark.asyncio
@@ -111,7 +154,7 @@ async def test_tag_undo_reapplies_before_tags(client: AsyncClient, session: Asyn
     """
     file = await _executed_file(session, artist="Old Artist")
     _controller_queue, router = install_fake_queues(client)
-    write = await client.post(f"/tags/{file.id}/write", data={"artist": "New Artist"})
+    write = await client.post(f"/tags/{file.id}/write", data={"review_token": await _review_token(session, file.id)})
     assert write.status_code == 200
 
     # The agent reports back the snapshot it read off disk immediately before writing.
@@ -161,7 +204,12 @@ async def test_dedupe_resolve_one_resolution_and_undo_round_trips(client: AsyncC
     canonical = await _executed_file(session, filename="keep.mp3", sha256=shared, file_size=1000)
     other = await _executed_file(session, filename="dupe.mp3", sha256=shared, file_size=2000)
 
-    resolve = await client.post(f"/duplicates/{shared}/resolve", data={"canonical_id": str(canonical.id)})
+    review = await client.post(f"/duplicates/{shared}/review", data={"canonical_id": str(canonical.id)})
+    assert review.status_code == 200
+    plan_match = re.search(r'name="plan_id" value="([^"]+)"', review.text)
+    assert plan_match is not None
+
+    resolve = await client.post(f"/duplicates/{shared}/resolve", data={"plan_id": plan_match.group(1)})
     assert resolve.status_code == 200
 
     resolved_stmt = select(func.count()).select_from(DedupResolution).where(DedupResolution.file_id == other.id)

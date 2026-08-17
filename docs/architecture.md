@@ -721,17 +721,24 @@ changed (REQUIREMENTS "logic unchanged" rule).
 
 ### Shell layout
 
-- **Left — DAG rail (navigation spine).** Every pipeline stage is a rail node with a live
-  count and status dot, grouped Discover → Enrich · parallel (Metadata · Analyze) →
-  Identify (Tracklist) → Propose → Review & Apply (Rename / Path · Tag write · Move files ·
-  Dedupe · Cue sheets · Execute), above them the two plain nav nodes **Summary** and
-  **Files**. Below the line are two HTMX-driven rail utility nodes, `/s/audit` (Audit log)
-  and `/s/agents` (Agents/Compute) — both resolved through the shell's `UTILITY_PANES`
-  whitelist (phaze-uvmcr.1/.4) the same way a DAG stage is, so they swap into
-  `#stage-workspace` rather than navigating to the legacy `/audit/` / `/admin/agents` pages
-  (which now 301-redirect into these panes, preserving the query string). The Enrich group
-  lost its Fingerprint node and the Identify group its Track-ID node when phaze-0jpe removed
-  fingerprinting (2026-07-28); the grouping above matches
+- **Left — rail (navigation spine).** Fourteen destinations in four labelled groups, each
+  pipeline node carrying a live count bound to `$store.pipeline`:
+  **Overview** (Summary · Files) · **Pipeline** (Discover · Metadata · Analyze · Tracklists ·
+  Propose changes) · **Review** (Changes Review · Duplicates · Cue sheets · Execute approved) ·
+  **Operations** (Routing · Audit log · Agents & compute lanes). `/s/operations`, `/s/audit` and
+  `/s/agents` are resolved through the shell's `UTILITY_PANES` whitelist (phaze-uvmcr.1/.4) the
+  same way a DAG stage is, so they swap into `#stage-workspace` rather than navigating to the
+  legacy `/audit/` / `/admin/agents` pages (which now 301-redirect into these panes, preserving
+  the query string).
+
+  Two consolidations produced the grouping above, and both are easy to mis-read from an older
+  revision of this file. The Enrich group lost its Fingerprint node and the Identify group its
+  Track-ID node when phaze-0jpe removed fingerprinting (2026-07-28). Then phaze-tzy6s.11 /
+  ADR-0008 replaced the three separate Rename / Path, Tag write and Move files nodes with the
+  single **Changes Review** destination — the only surface that authorizes filename, destination
+  and tag changes — taking the rail from sixteen destinations to fourteen. `rename`, `tagwrite`
+  and `move` survive only as compatibility aliases that all resolve to Changes Review
+  (`DOCUMENT_TITLES` in `routers/shell.py`). The grouping above matches
   `templates/shell/partials/rail.html`.
 - **Center — stage workspace.** The selected rail node's file queue / lane summary / approval
   diffs.

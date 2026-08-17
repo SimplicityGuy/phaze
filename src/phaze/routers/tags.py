@@ -3,22 +3,34 @@
 phaze-y4s6: the standalone tag review list + comparison page (``GET /tags/`` fragment branch,
 ``tags/partials/tag_list.html``) and its per-row expand-into inline-edit/compare surface
 (``tag_comparison.html``/``inline_edit.html``/``inline_display.html``/``tag_row.html``) had no live
-caller left post-v7-cutover -- the live tagwrite workspace
-(``pipeline/partials/tagwrite_workspace.html``) renders its queue through the shared
-``_diff_row.html`` and explicitly ships no inline-edit or comparison surface. All of it was deleted
-outright; ``GET /tags/`` now only resolves the legacy bookmark into the shell (SHELL-05), and
+caller left post-v7-cutover -- the then-live tagwrite workspace rendered its queue through the
+shared ``_diff_row.html`` and explicitly shipped no inline-edit or comparison surface. All of it was
+deleted outright; ``GET /tags/`` now only resolves the legacy bookmark into the shell (SHELL-05), and
 ``write_file_tags``/``undo_tag_write`` always return the v7 ``_diff_row.html`` shape.
+
+phaze-tzy6s.11 / ADR-0008: the standalone tagwrite workspace
+(``pipeline/partials/tagwrite_workspace.html``) is itself gone now -- tag decisions were consolidated
+into Changes Review, whose "Tag Changes" section (``pipeline/partials/_changes_list.html``, the
+``tagwrite-row`` block) is the only live renderer of this router's rows and the only UI surface that
+authorizes a tag write. ``/s/tagwrite`` survives as a compatibility alias onto Changes Review, not as
+a separate approval surface.
 """
 
+from __future__ import annotations
+
+import base64
+import binascii
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Annotated, Any, cast
 import uuid
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import StringConstraints
 from sqlalchemy import Select, and_, exists, func, or_, select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
@@ -37,6 +49,9 @@ from phaze.services.tag_writer import TagWriteAlreadyQueuedError, enqueue_tag_wr
 
 logger = structlog.get_logger(__name__)
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(prefix="/tags", tags=["tags"])
@@ -54,6 +69,7 @@ FIELD_LABELS: dict[str, str] = {
 # large first-time-visible applied backlog suddenly enumerable; cap one submit at a batch of this size
 # (low-thousands, consistent with in-tree page bounds) so the loop cannot blow up at 200K scale.
 _MAX_BULK_TAG_WRITE = 2000
+TagReviewTokenWire = Annotated[str, StringConstraints(max_length=131_072)]
 
 # WR-01: statuses that make an applied file TERMINAL for the tag-write queue -- it has either been
 # written (COMPLETED) or determined to need no write (NO_OP). Both are excluded from the candidate
@@ -450,8 +466,68 @@ def _summarize_tags(comparison: list[dict[str, Any]], side: str) -> str:
     return " · ".join(parts)
 
 
-# phaze-nvll: the v7 tagwrite workspace (tagwrite_workspace.html) renders rows from the shared
-# pipeline/partials/_diff_row.html partial and hx-targets each row's own div. write_file_tags and
+def _tag_review_payload(
+    file_record: FileRecord,
+    tracklist: Tracklist | None,
+    discogs_link: DiscogsLink | None,
+    proposed: Mapping[str, object],
+) -> dict[str, Any]:
+    """Capture the exact rendered tag decision and every source version that produced it."""
+    metadata = file_record.file_metadata
+    return {
+        "file_id": str(file_record.id),
+        "before": {field: getattr(metadata, field, None) if metadata is not None else None for field in CORE_FIELDS},
+        "after": {field: proposed.get(field) for field in CORE_FIELDS},
+        "sources": {
+            "file_updated_at": file_record.updated_at.isoformat(),
+            "metadata_updated_at": metadata.updated_at.isoformat() if metadata is not None else None,
+            "tracklist_id": str(tracklist.id) if tracklist is not None else None,
+            "tracklist_updated_at": tracklist.updated_at.isoformat() if tracklist is not None else None,
+            "tracklist_version_id": str(tracklist.latest_version_id) if tracklist is not None and tracklist.latest_version_id is not None else None,
+            "discogs_link_id": str(discogs_link.id) if discogs_link is not None else None,
+            "discogs_link_updated_at": discogs_link.updated_at.isoformat() if discogs_link is not None else None,
+        },
+    }
+
+
+def _encode_tag_review_token(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    return base64.urlsafe_b64encode(encoded).decode()
+
+
+def _decode_tag_review_token(token: str, file_id: uuid.UUID | None = None) -> dict[str, Any]:
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(token.encode()).decode())
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError, binascii.Error) as exc:
+        raise HTTPException(status_code=400, detail="Invalid reviewed tag payload") from exc
+    if not isinstance(payload, dict) or (file_id is not None and payload.get("file_id") != str(file_id)):
+        raise HTTPException(status_code=400, detail="Reviewed tag payload does not match the file")
+    return payload
+
+
+async def _validate_tag_review_token(
+    session: AsyncSession,
+    file_record: FileRecord,
+    token: str,
+) -> tuple[dict[str, Any], dict[str, str | int | None]]:
+    reviewed = _decode_tag_review_token(token, file_record.id)
+    tracklist = await _get_tracklist_for_file(session, file_record.id)
+    discogs_link = await _get_accepted_discogs_link(session, file_record.id)
+    proposed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename, discogs_link=discogs_link)
+    current = _tag_review_payload(file_record, tracklist, discogs_link, proposed)
+    if reviewed != current:
+        raise HTTPException(status_code=409, detail="Tag metadata or enrichment changed after review; refresh before approving")
+    after = reviewed.get("after")
+    if not isinstance(after, dict):
+        raise HTTPException(status_code=400, detail="Invalid reviewed tag payload")
+    return reviewed, {field: cast("str | int | None", after.get(field)) for field in CORE_FIELDS}
+
+
+# phaze-nvll: the tag-write queue renders rows from the shared pipeline/partials/_diff_row.html
+# partial and hx-targets each row's own div. (phaze-tzy6s.11 / ADR-0008: that queue used to be the
+# standalone tagwrite_workspace.html; it is now the "Tag Changes" section of Changes Review --
+# pipeline/partials/_changes_list.html, the tagwrite-row block. The row-id contract is
+# unchanged.) write_file_tags and
 # undo_tag_write historically always returned the legacy <tr>-based tag_row.html -- which carries
 # ZERO undo controls, so the outerHTML swap after APPROVE destroyed the row (and the UNDO button
 # that would have reversed it) in the same stroke, and bare 400/404 strings on a stale row (file
@@ -478,6 +554,7 @@ async def _tagwrite_row_context(session: AsyncSession, file_record: FileRecord, 
         "original_path": file_record.original_filename,
         "before": _summarize_tags(comparison, "current"),
         "after": _summarize_tags(comparison, "proposed"),
+        "review_token": _encode_tag_review_token(_tag_review_payload(file_record, tracklist, discogs_link, proposed)),
         "approve_url": f"/tags/{file_record.id}/write",
         "approve_method": "post",
         "undo_url": f"/tags/{file_record.id}/undo",
@@ -519,11 +596,15 @@ async def list_tags() -> RedirectResponse:
     phaze-y4s6: this used to also serve an in-page HX-filtered/paginated/sorted table (rendering
     ``tags/partials/tag_list.html``, its per-row expand-into ``tag_comparison.html`` inline-edit
     comparison panel, and the ``edit_tag_field``/``save_tag_field`` inline-edit fragments it alone
-    offered). The live v7.0 tagwrite workspace (``pipeline/partials/tagwrite_workspace.html``)
-    renders its own queue via the shared ``_diff_row.html`` and explicitly ships NO inline-edit
-    ("Tag inline-edit is OUT of the initial cut") and no comparison page -- there was no live
-    caller left to preserve any of that surface for, so it and the ``TAGS_SORT`` contract that fed
-    it were deleted outright.
+    offered). The tagwrite workspace that superseded it rendered its own queue via the shared
+    ``_diff_row.html`` and explicitly shipped NO inline-edit ("Tag inline-edit is OUT of the initial
+    cut") and no comparison page -- there was no live caller left to preserve any of that surface
+    for, so it and the ``TAGS_SORT`` contract that fed it were deleted outright.
+
+    phaze-tzy6s.11 / ADR-0008: ``/s/tagwrite`` is itself now a compatibility alias rendering
+    ``pipeline/partials/changes_workspace.html`` (shell.py's ``_STAGE_PARTIALS``), so this redirect
+    lands the bookmark on Changes Review -- the one workspace that authorizes tag writes -- rather
+    than on a separate tag approval surface.
     """
     return RedirectResponse(url="/s/tagwrite", status_code=302)
 
@@ -551,6 +632,7 @@ def _tagwrite_dispatch_toast(status: str, filename: str, agent_id: str, error_me
 async def write_file_tags(
     request: Request,
     file_id: uuid.UUID,
+    review_token: TagReviewTokenWire | None = Form(default=None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Execute tag write for a file using form-submitted proposed values.
@@ -574,36 +656,21 @@ async def write_file_tags(
         row_context = await _tagwrite_row_context(session, file_record, row_state="pending")
         return _tagwrite_diff_row_response(request, row_context, "Only executed files can have tags written.")
 
-    form_data = await request.form()
-
-    # Build tags dict from form data
-    tags: dict[str, str | int | list[str] | None] = {}
-    for field in CORE_FIELDS:
-        val = form_data.get(field)
-        if val is not None and str(val).strip():
-            if field in ("year", "track_number"):
-                try:
-                    tags[field] = int(str(val))
-                except (ValueError, TypeError):
-                    tags[field] = str(val)
-            else:
-                tags[field] = str(val)
-
-    # Fallback: if no tag values submitted (e.g., collapsed row button without comparison panel),
-    # use server-computed proposed tags
-    tracklist = await _get_tracklist_for_file(session, file_id)
-    discogs_link = await _get_accepted_discogs_link(session, file_id)
-    if not tags:
-        computed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename, discogs_link=discogs_link)
-        tags = {k: v for k, v in computed.items() if v is not None}
-        source = "proposal"
-    else:
-        computed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename, discogs_link=discogs_link)
-        has_edits = any(str(tags.get(f, "")) != str(computed.get(f, "")) for f in CORE_FIELDS if f in tags or f in computed)
-        source = "manual_edit" if has_edits else "proposal"
+    if not review_token:
+        raise HTTPException(status_code=400, detail="A reviewed tag payload is required")
+    reviewed, tags = await _validate_tag_review_token(session, file_record, review_token)
+    tag_payload: dict[str, str | int | list[str] | None] = {field: value for field, value in tags.items() if value is not None}
 
     try:
-        log_entry = await enqueue_tag_write(session, request.app.state.task_router, file_record, tags, source)
+        log_entry = await enqueue_tag_write(
+            session,
+            request.app.state.task_router,
+            file_record,
+            tag_payload,
+            "proposal",
+            reviewed_before_tags=reviewed["before"],
+            review_source_versions=reviewed["sources"],
+        )
         await session.commit()
         status = log_entry.status
         toast_message = _tagwrite_dispatch_toast(status, file_record.original_filename, file_record.agent_id, log_entry.error_message)
@@ -700,6 +767,7 @@ def _bulk_write_toast(queued: int, noop: int, failed: int) -> str:
 @router.post("/bulk-write-no-discrepancies", response_class=HTMLResponse)
 async def bulk_write_no_discrepancies(
     request: Request,
+    review_tokens: list[TagReviewTokenWire] = Form(..., max_length=_MAX_BULK_TAG_WRITE),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """REVIEW-02 (D-03 / OQ-1): write tags for every qualifying applied file, server-re-queried.
@@ -727,6 +795,19 @@ async def bulk_write_no_discrepancies(
     exactly the NO_OP rows (keyed by ``tagwrite-row-{id}``, the SAME id the workspace renders) and
     refreshes the subcount.
     """
+    if len(review_tokens) > _MAX_BULK_TAG_WRITE:
+        raise HTTPException(status_code=400, detail=f"At most {_MAX_BULK_TAG_WRITE} reviewed tag decisions may be submitted")
+    reviewed_by_id: dict[uuid.UUID, tuple[str, dict[str, Any]]] = {}
+    for token in review_tokens:
+        payload = _decode_tag_review_token(token)
+        try:
+            file_id = uuid.UUID(str(payload.get("file_id")))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid reviewed tag payload") from exc
+        reviewed_by_id[file_id] = (token, payload)
+    if not reviewed_by_id:
+        raise HTTPException(status_code=400, detail="Select at least one reviewed tag decision")
+
     # phaze-yhhy: acquire/release the SESSION-scoped advisory lock on a connection pinned for the
     # whole request, independent of how many times ``session`` itself checks its pooled connection
     # in and out via the per-file commits below.
@@ -777,11 +858,14 @@ async def bulk_write_no_discrepancies(
             stmt = (
                 select(FileRecord)
                 .options(selectinload(FileRecord.file_metadata))
-                .where(applied_clause(), FileRecord.id.not_in(terminal_subq))
+                .where(applied_clause(), FileRecord.id.not_in(terminal_subq), FileRecord.id.in_(list(reviewed_by_id)))
                 .order_by(FileRecord.original_filename)
                 .limit(_MAX_BULK_TAG_WRITE)  # D-03: bound the operator-triggered loop at 200K scale
             )
             file_records = list((await session.execute(stmt)).scalars().all())
+            validated: dict[uuid.UUID, tuple[dict[str, Any], dict[str, str | int | None]]] = {}
+            for file_record in file_records:
+                validated[file_record.id] = await _validate_tag_review_token(session, file_record, reviewed_by_id[file_record.id][0])
             # phaze-o2ln: snapshot every field the loop (or enqueue_tag_write) needs OUTSIDE the ORM
             # identity map, right after the SELECT and before any per-file rollback can expire it --
             # see _BulkCandidate's docstring.
@@ -807,9 +891,7 @@ async def bulk_write_no_discrepancies(
                     if await _has_queued_tagwrite(session, file_id):
                         continue
 
-                    tracklist = await _get_tracklist_for_file(session, file_id)
-                    discogs_link = await _get_accepted_discogs_link(session, file_id)
-                    proposed = compute_proposed_tags(candidate.metadata, tracklist, candidate.original_filename, discogs_link=discogs_link)
+                    reviewed, proposed = validated[file_id]
                     comparison = _build_comparison(candidate.metadata, proposed)
                     if _count_changes(comparison) < 1:
                         # WR-01: a zero-change applied file has nothing to write. Persist a terminal
@@ -836,7 +918,15 @@ async def bulk_write_no_discrepancies(
                         # so defensive.
                         continue
                     tags: dict[str, str | int | list[str] | None] = {k: v for k, v in proposed.items() if v is not None}
-                    log_entry = await enqueue_tag_write(session, request.app.state.task_router, candidate, tags, source="proposal")
+                    log_entry = await enqueue_tag_write(
+                        session,
+                        request.app.state.task_router,
+                        candidate,
+                        tags,
+                        source="proposal",
+                        reviewed_before_tags=reviewed["before"],
+                        review_source_versions=reviewed["sources"],
+                    )
                     # phaze-k7g6: commit the audit row atomically with the dispatch it describes, so
                     # a mid-loop cancellation/crash can never leave a job enqueued with no
                     # TagWriteLog row for its agent callback to PATCH (which would strand the write

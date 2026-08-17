@@ -1,0 +1,26 @@
+{% import "ui/primitives.html" as ui %}
+{% set stages = [
+    ('Metadata', 'metadata'),
+    ('Analyze', 'analyze'),
+    ('Propose', 'propose'),
+    ('Review', 'review'),
+    ('Execute', 'apply'),
+] %}
+{% set current = namespace(label='', key='', bucket='') %}
+{% for priority in ['failed', 'in_flight', 'not_started'] %}
+    {% for stage_label, key in stages %}
+        {% if not current.key and buckets[key] == priority %}
+            {% set current.label = stage_label %}
+            {% set current.key = key %}
+            {% set current.bucket = priority %}
+        {% endif %}
+    {% endfor %}
+{% endfor %}
+{% if current.key %}
+<span class="inline-flex flex-wrap items-center gap-2">
+    <span class="font-jura text-[10px] font-medium uppercase tracking-[0.15em] text-gray-600 dark:text-gray-300">{{ current.label }}</span>
+    {% with stage_label=current.label, bucket=current.bucket %}{% include "pipeline/partials/_stage_pill.html" %}{% endwith %}
+</span>
+{% else %}
+{{ ui.status_badge('Pipeline', 'complete', 'success', '✓') }}
+{% endif %}

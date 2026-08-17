@@ -703,8 +703,9 @@ async def test_get_cue_review_cards_isolates_one_bad_card_from_the_rest(session:
     assert by_id[good.id]["eligible"] is True
     assert by_id[good.id]["cue_text"]
 
-    # The bad card degrades to the gated shape instead of aborting the whole render.
+    # The bad card is distinct from a genuine missing-timestamps gate.
     assert by_id[bad.id]["eligible"] is False
+    assert by_id[bad.id]["build_error"] is True
     assert by_id[bad.id]["cue_text"] is None
 
     assert any("cue_review_card_build_failed" in r.getMessage() for r in caplog.records)

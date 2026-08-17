@@ -3,12 +3,13 @@
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Annotated, Any, NamedTuple
 import uuid
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import StringConstraints
 from sqlalchemy import ARRAY, bindparam, func, select
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,13 +22,16 @@ from phaze.models.proposal import APPROVE_REJECT_FROM, UNDO_FROM, ProposalStatus
 # phaze-a6hm.11: the propose workspace's container id + list context, so a bulk action issued
 # from that surface re-renders it through the SAME builder its GET uses. The edge is one-way --
 # routers/shell.py does not import this module -- so there is no cycle.
-from phaze.routers.shell import build_propose_list_context
+from phaze.routers.shell import CHANGES_LIST_CONTAINER_ID, build_changes_review_context, build_propose_list_context
+from phaze.services.collision import get_review_collision_ids
 from phaze.services.proposal_queries import (
     ProposalEditRefusedError,
     ProposalPendingConflictError,
+    ProposalReviewToken,
     ProposalStaleWriteError,
     ProposalTransitionError,
     approve_pending_above_confidence,
+    bulk_approve_selected_above_confidence,
     bulk_update_status,
     get_proposal_with_file,
     update_proposal_fields,
@@ -47,6 +51,7 @@ _UNDO_FROM = UNDO_FROM
 # member. Keyed off the SAME literal pair `status_map` there already spells out, so a third action
 # can never silently fall through a shared suffix rule again.
 _PAST_TENSE = {"approve": "approved", "reject": "rejected"}
+ProposalReviewTokenWire = Annotated[str, StringConstraints(max_length=256)]
 
 
 def _proposal_ids_scope(proposal_ids: list[uuid.UUID], name: str) -> Any:
@@ -123,18 +128,64 @@ def _parse_updated_at_token(token: str | None) -> datetime | None:
         return None
 
 
-# phaze-3a2j: the v7 diff-row workspaces (Rename / Move / Record slide-in) render rows from the
-# shared pipeline/partials/_diff_row.html partial and hx-target each row's own <div>. The mutation
-# routes historically returned the LEGACY <tr>-based proposal_row.html, so a swap dropped broken
-# table-row markup into the div list and the Alpine bindings threw ReferenceErrors. When a request
-# originates from one of these workspaces (identified by its HX-Target = "{prefix}-{proposal_id}"),
-# the route must instead return _diff_row.html with the matching prefix, facet, and lifecycle state.
-_V7_ROW_FACETS: dict[str, str] = {"rename-row": "filename", "record-row": "filename", "move-row": "path"}
+# phaze-3a2j: the v7 diff-row surfaces render rows from the shared pipeline/partials/_diff_row.html
+# partial and hx-target each row's own <div>. The mutation routes historically returned the LEGACY
+# <tr>-based proposal_row.html, so a swap dropped broken table-row markup into the div list and the
+# Alpine bindings threw ReferenceErrors. When a request originates from one of these surfaces
+# (identified by its HX-Target = "{prefix}-{proposal_id}"), the route must instead return
+# _diff_row.html with the matching prefix, facet, and lifecycle state.
+#
+# phaze-tzy6s.11 / ADR-0008: the surfaces collapsed into ONE. Changes Review is now the only UI
+# workspace that authorizes filename, destination, and tag changes, so the rename / move / tagwrite
+# workspaces and the record drawer's inline cluster were all deleted. Of the prefixes below only
+# "rename-row" is still rendered by a template -- pipeline/partials/_changes_list.html:69, the
+# Filename + Destination section of Changes Review, which kept the id stem rather than churn every
+# hx-target. "changes-row" / "record-row" / "move-row" now have NO live renderer and are therefore
+# unreachable through the product.
+# (Tag rows use "tagwrite-row" and are routed by tags.py, not this map.)
+#
+# phaze-tzy6s.17: the .11 note here said these were "left in place deliberately for bead
+# phaze-tzy6s.12 (Execute preflight) to retire". That is no longer true and must not be read as a
+# pending plan: .12 shipped (4015550c) WITHOUT touching this file at all, so no bead now owns the
+# retirement. The audit re-derived the answer against the assembled branch and it is unchanged --
+# grep of src/phaze/templates finds "rename-row" (_changes_list.html:69) and "tagwrite-row"
+# (:120) and NOTHING rendering the other three stems. Retention is now a deliberate decision with
+# a filed owner, not a deferral: removing entries changes what _row_target resolves for a direct
+# API client, which is a behavioural change outside the audit's scope. Owner: bead phaze-7tiqp.
+_V7_ROW_FACETS: dict[str, str] = {
+    "changes-row": "filename",
+    "rename-row": "filename",
+    "record-row": "filename",
+    "move-row": "path",
+}
 
 # phaze-71hi: bulk_approve_high_confidence has no proposal_id in its URL, so it can't reuse
-# _row_target's "{prefix}-{proposal_id}" match. Instead its two callers (rename_workspace.html /
-# move_workspace.html) each hx-target their own small status div by a FIXED id -- map that id
-# straight to the (row_id_prefix, facet) pair _diff_row_context needs for the OOB row fragments.
+# _row_target's "{prefix}-{proposal_id}" match. Instead each caller hx-targeted its own small status
+# div by a FIXED id -- map that id straight to the (row_id_prefix, facet) pair _diff_row_context
+# needs for the OOB row fragments.
+#
+# phaze-tzy6s.11 / ADR-0008: BOTH ids below are now dangling. Their hosts were rename_workspace.html
+# and move_workspace.html, which this bead deleted; Changes Review does selection-driven bulk work
+# through PATCH /proposals/bulk (see _changes_list.html:46) and never calls
+# /proposals/bulk-approve-high-confidence at all. No template in the tree references that route, so
+# the route, this map, _BULK_APPROVE_OOB_ROW_CAP and _bulk_approve_high_confidence_response.html are
+# one dead chain reachable only from tests and docs/api.md.
+#
+# phaze-tzy6s.17 -- THE OPEN QUESTION IS CLOSED: "does the OOB row-fragment logic still have a live
+# caller?" No. Verified on the assembled branch, four independent ways:
+#   1. No template hx-*s at /proposals/bulk-approve-high-confidence. The only tree hit outside this
+#      file is a comment inside _bulk_approve_high_confidence_response.html, i.e. the dead chain
+#      citing itself.
+#   2. Neither key below is rendered anywhere. "#rename-trigger-response" / "#move-trigger-response"
+#      appear only in this file and in that same response template's own docstring.
+#   3. Their hosts, rename_workspace.html and move_workspace.html, are deleted from the tree.
+#   4. .12 -- named by the .11 note above as the owner that "builds on this code" -- did not touch
+#      proposals.py in any of its commits, so the deferral it recorded silently expired.
+# Retained rather than deleted: this route is a documented HTTP endpoint (docs/api.md), so removing
+# it or its OOB branch changes the API's observable behaviour for a non-UI client. That is a
+# behavioural change, which this audit files as a follow-up bead instead of absorbing. What is fixed
+# here is the comment that pointed at a bead which had already shipped without acting.
+# Keep-or-retire is bead phaze-7tiqp.
 _BULK_HIGH_CONFIDENCE_TARGETS: dict[str, tuple[str, str]] = {
     "rename-trigger-response": ("rename-row", "filename"),
     "move-trigger-response": ("move-row", "path"),
@@ -143,13 +194,15 @@ _BULK_HIGH_CONFIDENCE_TARGETS: dict[str, tuple[str, str]] = {
 # phaze-mlrwl: bulk_approve_high_confidence has no client id-list to intersect against (REVIEW-02 --
 # the whole point is a server-evaluated predicate with no selection to trust), so it cannot ask "which
 # of these are actually on screen?" the way a selection-driven bulk action could. What it CAN bound is
-# how many OOB row fragments it ever builds: rename_workspace.html / move_workspace.html render at
-# most 200 rows (get_pending_proposal_rows's page_size=200, phaze-rw14), so any OOB fragment beyond
-# that is guaranteed to target an id no longer (or never) on screen and htmx silently discards it
+# how many OOB row fragments it ever builds: the workspaces that called it rendered at most 200 rows
+# (get_pending_proposal_rows's page_size=200, phaze-rw14), so any OOB fragment beyond that is
+# guaranteed to target an id no longer (or never) on screen and htmx silently discards it
 # (htmx:oobErrorNoTarget). Capping the hydration SELECT + the rendered fragment list at this same 200
 # keeps the response bounded even when approved_ids runs into the tens of thousands, without changing
 # which rows the browser ends up updating: everything past 200 was already being thrown away, just
 # after a full ORM hydration and Jinja render of it first.
+# (phaze-tzy6s.11: those callers are gone -- see _BULK_HIGH_CONFIDENCE_TARGETS above for the state
+# of this whole chain and why it survives this bead.)
 _BULK_APPROVE_OOB_ROW_CAP = 200
 
 # phaze-3tj4: map a proposal's real status to the v7 diff-row lifecycle string so a mutation route
@@ -203,10 +256,27 @@ def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, 
         before = file_record.current_path
         after = proposal.proposed_path or ""
         edit_facet = "path"
+        extra_context: dict[str, object] = {
+            "diff_label": "Destination",
+            "secondary_label": "Filename",
+            "secondary_before": file_record.original_filename,
+            "secondary_after": proposal.proposed_filename,
+        }
     else:
         before = file_record.original_filename
         after = proposal.proposed_filename
         edit_facet = "filename"
+        destination = (
+            str(Path(proposal.proposed_path) / proposal.proposed_filename)
+            if proposal.proposed_path
+            else str(Path(file_record.current_path).parent / proposal.proposed_filename)
+        )
+        extra_context = {
+            "diff_label": "Filename",
+            "secondary_label": "Destination",
+            "secondary_before": file_record.current_path,
+            "secondary_after": destination,
+        }
     pid = proposal.id
     return {
         "row_id_prefix": row_id_prefix,
@@ -221,12 +291,25 @@ def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, 
         "edit_url": f"/proposals/{pid}/edit",
         "edit_facet": edit_facet,
         "row_state": row_state,
+        "confidence": proposal.confidence,
+        "warnings": ([proposal.reason] if proposal.reason else []),
+        "consequences": (
+            "Rename in place on the owning file server."
+            if proposal.proposed_path is None
+            else "Rename and move on the owning file server; execution remains separately gated."
+        ),
+        "eligibility_reason": (
+            "Eligible for selected bulk approval."
+            if ProposalStatus(proposal.status) == ProposalStatus.PENDING and proposal.confidence is not None and proposal.confidence >= 0.9
+            else "Individual approval only, or this decision is already resolved."
+        ),
         "oob": oob,
         # phaze-exivg: the optimistic-concurrency token the APPROVE button round-trips back via
         # hx-vals. Always the row's LIVE updated_at at render time -- after an undo/edit/re-propose
         # the next render of this same partial carries the row's NEW value, so a stale button never
         # lingers on screen past its own re-render.
         "updated_at": proposal.updated_at,
+        **extra_context,
     }
 
 
@@ -350,12 +433,17 @@ async def approve_proposal(
     409s instead of being approved sight-unseen. Absent/blank (no token from the browser, e.g. a
     bare API PATCH) skips the check -- the pre-existing status-only guard applies on its own.
     """
+    parsed_updated_at = _parse_updated_at_token(expected_updated_at)
+    if parsed_updated_at is None:
+        raise HTTPException(status_code=400, detail="A reviewed proposal version is required")
+    if str(proposal_id) in await get_review_collision_ids(session):
+        raise HTTPException(status_code=409, detail="Destination collides with another pending or approved proposal")
     proposal = await _guarded_status_update(
         session,
         proposal_id,
         ProposalStatus.APPROVED,
         _APPROVE_REJECT_FROM,
-        expected_updated_at=_parse_updated_at_token(expected_updated_at),
+        expected_updated_at=parsed_updated_at,
     )
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found")
@@ -498,11 +586,24 @@ async def bulk_approve_high_confidence(
     so a stale or forged selection under the counts-only poll can never mass-approve (the REVIEW-02
     correctness core). Mirrors ``tracklists.reject_low_confidence``. NULL-confidence rows are
     excluded by the SQL predicate (Pitfall 2). The threshold is fixed server-side (REVIEW-06 defers
-    configurability). Same route serves the Rename/Path AND Move queues (both ``RenameProposal``).
+    configurability). Same route served the Rename/Path AND Move queues (both ``RenameProposal``).
 
-    phaze-71hi: rename_workspace.html / move_workspace.html hx-target this at their small
+    phaze-tzy6s.11 / ADR-0008 -- NO LIVE CALLER. Both callers described below were deleted when the
+    rename / move / tagwrite workspaces were consolidated into Changes Review, and Changes Review
+    does its bulk work through the selection-driven ``PATCH /proposals/bulk``
+    (``pipeline/partials/_changes_list.html:46``). No template in the tree references this route; it
+    is reachable only from tests and ``docs/api.md``.
+
+    phaze-tzy6s.17 re-verified that on the assembled branch and CONFIRMED it -- the evidence is
+    listed over ``_BULK_HIGH_CONFIDENCE_TARGETS``. Note that .11's deferral to bead phaze-tzy6s.12
+    expired unexercised: .12 shipped without touching this file. Retention is now deliberate, not
+    pending, because deleting a documented HTTP endpoint is a behavioural change and is filed
+    separately as bead phaze-7tiqp. The paragraphs below describe the retired wiring and are kept as the rationale
+    record for whoever makes that call.
+
+    phaze-71hi: rename_workspace.html / move_workspace.html hx-targeted this at their small
     ``#rename-trigger-response`` / ``#move-trigger-response`` status div, NOT a container that
-    re-renders the row list, and the workspaces deliberately run no row poll (R-2) that could pick
+    re-renders the row list, and the workspaces deliberately ran no row poll (R-2) that could pick
     the change up on its own. The legacy ``approve_response.html`` fork below (proposal=None, an
     OOB ``#stats-bar`` that does not exist in the v7 shell) therefore left every just-approved row
     rendered PENDING with live APPROVE/EDIT/SKIP controls, so a later click 409'd silently
@@ -622,10 +723,11 @@ async def edit_proposal(
 async def bulk_action(
     request: Request,
     action: str = Form(...),
-    proposal_ids: list[str] = Form(...),
+    proposal_ids: list[str] = Form(default=[]),
+    review_tokens: list[ProposalReviewTokenWire] = Form(default=[], max_length=100),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Bulk approve or reject multiple proposals, for the v7.0 propose workspace's bulk bar.
+    """Bulk approve or reject multiple proposals for compatibility callers.
 
     phaze-3st0: ``proposal_ids`` is a browser-held id-set that may be arbitrarily stale (request_
     guards.py contract rule 2, ELEMENT case) -- a malformed/empty entry is SKIPPED rather than
@@ -636,22 +738,35 @@ async def bulk_action(
     status/q/page/page_size/sort/order hidden form inputs. That surface had no live caller left
     post-v7-cutover and was deleted outright (along with ``proposal_list.html``/
     ``proposal_table.html``/``pagination.html``/``bulk_actions.html``/``bulk_response.html``), so
-    this endpoint now unconditionally serves its one remaining caller,
-    ``pipeline/partials/_propose_bulk_bar.html`` -- whose view state rides in the query string
-    (``propose_view.query()``), read via ``build_propose_list_context``'s
-    ``ListViewState.from_request``, not through these now-removed Form fields.
+    this endpoint continues to return the Propose list response shape for compatibility callers.
+    Propose itself is now preparation-only and routes decisions to Review, but retaining this
+    guarded endpoint and its query-string view-state parsing avoids changing the wire contract.
     """
-    if action not in ("approve", "reject"):
-        raise HTTPException(status_code=400, detail="Action must be 'approve' or 'reject'")
-    status_map = {"approve": ProposalStatus.APPROVED, "reject": ProposalStatus.REJECTED}
+    if action not in ("approve_eligible", "reject"):
+        raise HTTPException(status_code=400, detail="Action must be 'approve_eligible' or 'reject'")
     # Parse submitted ids into UUIDs, skipping malformed/empty strings (never a 500); mirrors
     # tracklists.trigger_scan's identical id-list guard.
-    uuids: list[uuid.UUID] = []
+    reviewed: list[ProposalReviewToken] = []
+    for token in review_tokens:
+        try:
+            raw_id, raw_updated_at, content_digest = token.split("|", 2)
+            reviewed.append(
+                ProposalReviewToken(
+                    proposal_id=uuid.UUID(raw_id),
+                    updated_at=datetime.fromisoformat(raw_updated_at),
+                    content_digest=content_digest,
+                )
+            )
+        except (TypeError, ValueError):
+            continue
+    uuids = [token.proposal_id for token in reviewed]
     for pid in proposal_ids:
         try:
-            uuids.append(uuid.UUID(pid))
+            parsed = uuid.UUID(pid)
         except ValueError:
             continue
+        if parsed not in uuids:
+            uuids.append(parsed)
     # phaze-uu17: only PENDING rows may be bulk approved/rejected; terminal EXECUTED/FAILED
     # rows selected via the "All" tab are skipped, and count reflects only real transitions.
     #
@@ -662,7 +777,20 @@ async def bulk_action(
     # rows, because those rows are no longer PENDING. The action is therefore idempotent by
     # construction rather than by locking or by a client-side guard, and `count` on the second
     # submission is honestly 0 rather than a repeat of the first answer.
-    count = await bulk_update_status(session, uuids, status_map[action], allowed_from=_APPROVE_REJECT_FROM)
+    if action == "approve_eligible":
+        count = await bulk_approve_selected_above_confidence(session, reviewed)
+        toast_action = "approve"
+    else:
+        count = await bulk_update_status(session, uuids, ProposalStatus.REJECTED, allowed_from=_APPROVE_REJECT_FROM)
+        toast_action = action
+
+    if request.headers.get("HX-Target") == CHANGES_LIST_CONTAINER_ID:
+        changes_context = await build_changes_review_context(request, session)
+        changes_context |= {
+            "request": request,
+            "changes_toast": _bulk_toast(toast_action, requested=len(uuids), applied=count),
+        }
+        return templates.TemplateResponse(request=request, name="pipeline/partials/_changes_list.html", context=changes_context)
 
     propose_context = await build_propose_list_context(request, session)
     propose_context |= {
@@ -673,7 +801,7 @@ async def bulk_action(
         # who selects 50 rows of which 12 were still pending is told "12 approved · 38 skipped
         # (already actioned)", never "50 approved". Reporting the selection size would be a
         # confident lie about an irreplaceable archive, which is the failure this bead names.
-        "toast_message": _bulk_toast(action, requested=len(uuids), applied=count),
+        "toast_message": _bulk_toast(toast_action, requested=len(uuids), applied=count),
         "is_bulk": True,
     }
     return templates.TemplateResponse(request=request, name="pipeline/partials/_propose_bulk_response.html", context=propose_context)

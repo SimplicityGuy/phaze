@@ -34,22 +34,30 @@
 
    NO self-poll: no hx-trigger / setInterval here. Pagination clicks are user-initiated navigation.
 #}
-{# The 6-stage -> 5-pill remap LANDMINE, single-sourced here for the header + cell loop:
-   Appr reads the `review` bucket, Exec reads the `apply` bucket; tracklist is never shown.
-   The LABELS (element 0) are also the strings FILES_SORT whitelists, so the header row derives them
-   from here rather than restating them -- see the header loop below. #}
+{% import "ui/primitives.html" as ui %}
 {% set _stage_cols = [
-    ('Meta', 'metadata'),
+    ('Metadata', 'metadata'),
     ('Analyze', 'analyze'),
-    ('Prop', 'propose'),
-    ('Appr', 'review'),
-    ('Exec', 'apply'),
+    ('Propose', 'propose'),
+    ('Review', 'review'),
+    ('Execute', 'apply'),
 ] %}
+{% set _sort_keys = {'File': 'file', 'Type': 'type', 'Metadata': 'metadata', 'Analyze': 'analyze', 'Propose': 'propose', 'Review': 'review', 'Execute': 'apply'} %}
+{% macro details_button(row, full_width=false) %}
+<button type="button"
+        hx-get="/record/{{ row.file.id }}" hx-target="#record-body" hx-swap="innerHTML"
+        @click="$dispatch('record:open', { el: $el })"
+        aria-label="Open details for {{ row.file.original_filename }}"
+        class="inline-flex items-center justify-center gap-1 rounded-md border border-gray-300 px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2{% if full_width %} w-full{% endif %} dark:border-phaze-border dark:text-gray-300 dark:hover:bg-white/5 dark:focus-visible:ring-offset-phaze-bg">
+    Details
+    <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="m9 18 6-6-6-6"/></svg>
+</button>
+{% endmacro %}
 {# phaze-a6hm.3: pagers must carry the sort forward (column_sort contract rule 4, inverse direction)
    -- a Prev/Next click that dropped the operator's chosen order would silently reset it mid-scan. #}
 {% set _qs = '&page_size=' ~ files_page.page_size ~ (('&stage=' ~ active_stage) if active_stage else '') ~ (('&bucket=' ~ active_bucket) if active_bucket else '') ~ (sort.query_state() if sort else '') %}
 {# Human stage name for the filter-aware empty-state copy (the Copywriting Contract's {stage} token). #}
-{% set _stage_names = {'metadata': 'Metadata', 'analyze': 'Analyze', 'propose': 'Propose', 'review': 'Approve', 'apply': 'Execute'} %}
+{% set _stage_names = {'metadata': 'Metadata', 'analyze': 'Analyze', 'propose': 'Propose', 'review': 'Review', 'apply': 'Execute'} %}
 {% set _stage_display = _stage_names.get(active_stage, active_stage) %}
 {# Per-file retry affordance (87-07, UI-02 / D-04): the URL SEGMENT of the scoped variant of the
    already-live bulk endpoints, keyed by stage. Only the two MANUALLY-retried enrich stages are here:
@@ -78,22 +86,13 @@
     {% if not files_page.rows %}
     {% if active_bucket == 'failed' and active_stage %}
     {# Failed-filter empty state (Copywriting Contract): reassures nothing is stuck in the chosen stage. #}
-    <div class="px-6 py-12 text-center">
-        <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">No failed files in {{ _stage_display }}</p>
-        <p class="text-sm text-gray-500 dark:text-gray-400">Nothing is stuck in {{ _stage_display }} right now.</p>
-    </div>
+    {{ ui.state('empty', 'No failed files in ' ~ _stage_display, 'Nothing is stuck in ' ~ _stage_display ~ ' right now.') }}
     {% elif active_stage or active_bucket %}
     {# Any other active filter that matched nothing -- point the operator at Clear filter above. #}
-    <div class="px-6 py-12 text-center">
-        <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">No files match this filter</p>
-        <p class="text-sm text-gray-500 dark:text-gray-400">Try a different stage or status, or clear the filter above.</p>
-    </div>
+    {{ ui.state('empty', 'No files match this filter', 'Try a different stage or status, or clear the filter above.') }}
     {% else %}
     {# Unfiltered empty state (Copywriting Contract). #}
-    <div class="px-6 py-12 text-center">
-        <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">No files yet</p>
-        <p class="text-sm text-gray-500 dark:text-gray-400">Discovered files will appear here with their per-stage status.</p>
-    </div>
+    {{ ui.state('empty', 'No files yet', 'Discovered files will appear here with their per-stage status.') }}
     {% endif %}
     {% else %}
     {# Bulk "Retry all failed · {stage}" (87-07, UI-02 / D-04): one primary (accent) button on the
@@ -113,6 +112,31 @@
         <span id="bulk-retry-result" class="text-sm" aria-live="polite"></span>
     </div>
     {% endif %}
+    {# On compact layouts the expert matrix is visually reduced, so sorting remains available through
+       a labeled control rather than through headers that are not displayed at that breakpoint. #}
+    <form action="/s/files" method="get" aria-label="Sort files"
+          hx-get="/s/files" hx-target="#files-table-view" hx-swap="innerHTML" hx-push-url="true" hx-trigger="change"
+          class="flex flex-wrap items-end gap-2 border-y border-gray-200 px-4 py-3 xl:hidden dark:border-phaze-border">
+        <input type="hidden" name="page_size" value="{{ files_page.page_size }}">
+        {% if active_stage %}<input type="hidden" name="stage" value="{{ active_stage }}">{% endif %}
+        {% if active_bucket %}<input type="hidden" name="bucket" value="{{ active_bucket }}">{% endif %}
+        <label class="grid gap-1 text-xs text-gray-500 dark:text-gray-400">
+            <span class="font-jura text-[10px] uppercase tracking-[0.15em]">Sort by</span>
+            <select name="sort" class="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-100">
+                {% for col in ['File', 'Type'] + _stage_cols | map(attribute=0) | list %}
+                {% set sort_key = _sort_keys[col] %}
+                <option value="{{ sort_key }}"{% if sort and sort.key == sort_key %} selected{% endif %}>{{ col }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label class="grid gap-1 text-xs text-gray-500 dark:text-gray-400">
+            <span class="font-jura text-[10px] uppercase tracking-[0.15em]">Direction</span>
+            <select name="order" class="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-100">
+                <option value="asc"{% if not sort or sort.order == 'asc' %} selected{% endif %}>Ascending</option>
+                <option value="desc"{% if sort and sort.order == 'desc' %} selected{% endif %}>Descending</option>
+            </select>
+        </label>
+    </form>
     {# phaze-cvn6.3: user-resizable columns, dependency-free (no JS build step -- Alpine only).
        A `<colgroup>` is the single point of truth for every column's rendered width: EACH header's
        resize handle drags `$store.colResize` (registered in base.html/shell.html next to the theme
@@ -134,15 +158,20 @@
        their pill+Retry content fully visible, never clipped) -- auto-layout enforces their natural
        content width as a floor no matter how far a handle is dragged inward, so shrinking never
        breaks the no-wrap contract or forces a second line; dragging outward still widens them. #}
-    <div class="overflow-x-auto" x-data="colResizer()">
+    <div x-data="colResizer()">
         {# x-data gives the click-bound rows an Alpine scope so $dispatch('record:open') wires (CR-01);
            the shell root has no x-data (x-data on <html> is inert). colResizer() (registered globally
            in base.html/shell.html) additionally exposes startResize() for the header drag handles. #}
-        <table class="w-full text-left text-sm">
+        <div class="hidden md:block">
+        {% call ui.data_table('Files and pipeline stage status') %}
             <colgroup>
-                {% for col in ['File', 'Type'] + _stage_cols | map(attribute=0) | list %}
-                <col data-col="{{ col }}" :style="{ width: $store.colResize.width('{{ col }}') + 'px' }">
+                <col data-col="File" :style="{ width: $store.colResize.width('File') + 'px' }">
+                <col data-col="Type" :style="{ width: $store.colResize.width('Type') + 'px' }">
+                {% for col in _stage_cols | map(attribute=0) | list %}
+                <col data-col="{{ col }}" class="hidden xl:table-column" :style="{ width: $store.colResize.width('{{ col }}') + 'px' }">
                 {% endfor %}
+                <col data-col="Current state" style="width: 190px">
+                <col data-col="Details" style="width: 92px">
             </colgroup>
             <thead class="border-b border-gray-200 bg-gray-50 font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-500">
                 <tr>
@@ -176,11 +205,12 @@
                        exact adjacency. #}
                     {% for col in ['File', 'Type'] + _stage_cols | map(attribute=0) | list %}
                     {% if sort and sort.is_sortable(col) %}
-                    <th scope="col" class="relative px-6 py-2.5 font-medium" aria-sort="{{ sort.aria_sort(col) }}">
+                    <th scope="col" class="relative px-3 py-2 font-medium{% if col not in ['File', 'Type'] %} hidden xl:table-cell{% endif %}" aria-sort="{{ sort.aria_sort(col) }}">
                         <button type="button"
                                 hx-get="{{ sort.url_for(col) }}"
                                 hx-target="{{ sort.contract.target }}"
                                 hx-swap="innerHTML"
+                                hx-push-url="true"
                                 class="inline-flex items-center gap-1 uppercase tracking-[0.2em] hover:text-gray-700 dark:hover:text-gray-300">
                             {{ col }}<span aria-hidden="true">{{ sort.indicator(col) }}</span>
                         </button>
@@ -190,7 +220,7 @@
                               @pointerdown="startResize($event, '{{ col }}')"></span>
                     </th>
                     {% else %}
-                    <th scope="col" class="relative px-6 py-2.5 font-medium">
+                    <th scope="col" class="relative px-3 py-2 font-medium{% if col not in ['File', 'Type'] %} hidden xl:table-cell{% endif %}">
                         {{ col }}
                         <span class="absolute inset-y-0 right-0 z-10 w-2 shrink-0 cursor-col-resize touch-none border-r-2 border-transparent hover:border-blue-400 dark:hover:border-blue-300"
                               role="separator" aria-orientation="vertical" aria-label="Resize {{ col }} column"
@@ -199,21 +229,23 @@
                     </th>
                     {% endif %}
                     {% endfor %}
+                    <th scope="col" class="px-3 py-2 font-medium">Current state</th>
+                    <th scope="col" class="px-3 py-2 font-medium"><span class="sr-only">File details</span></th>
                 </tr>
             </thead>
             <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
                 {% for row in files_page.rows %}
-                <tr id="files-row-{{ loop.index }}" class="cursor-pointer hover:bg-gray-50 dark:hover:bg-white/5" hx-get="/record/{{ row.file.id }}" hx-target="#record-body" hx-swap="innerHTML" hx-trigger="click, keyup[key=='Enter']" tabindex="0" @click="$dispatch('record:open', { el: $el })" @keydown.enter="$dispatch('record:open', { el: $el })">
+                <tr id="files-row-{{ loop.index }}" class="hover:bg-gray-50 dark:hover:bg-white/5">
                     {# phaze-cvn6.3: `max-w-md` retired -- the FILE column's width now comes from the
                        `<colgroup>` above (the resizable one), so a fixed Tailwind cap would fight the
                        operator's drag instead of enabling it. `truncate` stays: it is what turns
                        "narrower than the path" into an ellipsis rather than a wrapped/overflowing
                        cell, and (per the colgroup comment) is also WHY auto table-layout honours the
                        dragged width here instead of growing the column to fit the full path. #}
-                    <td class="px-6 py-3 truncate font-mono text-xs text-gray-900 dark:text-gray-200" title="{{ row.file.current_path }}">{{ row.file.current_path }}</td>
-                    <td class="px-6 py-3 text-gray-500 dark:text-gray-400">{{ row.file.file_type }}</td>
+                    <td class="truncate px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-200" title="{{ row.file.current_path }}">{{ row.file.current_path }}</td>
+                    <td class="px-3 py-2 text-gray-500 dark:text-gray-400">{{ row.file.file_type }}</td>
                     {% for stage_label, key in _stage_cols %}
-                    <td class="px-6 py-3 whitespace-nowrap">
+                    <td class="hidden whitespace-nowrap px-3 py-2 xl:table-cell">
                         {# phaze-cvn6.2: pill + Retry share ONE flex row (items-center, no wrap) so a
                            failed cell renders on the same single line as a done/in-flight/not-started
                            cell -- previously the Retry affordance sat in its own block-level `div`
@@ -222,51 +254,44 @@
                            the surrounding table's `overflow-x-auto` (see the wrapping `<div>` above)
                            is what absorbs a genuinely narrow viewport -- the row scrolls horizontally
                            rather than wrapping, matching the FILE column's own no-wrap contract. #}
-                        <div class="flex flex-nowrap items-center gap-2">
-                        {# phaze-bgz26: id'd WRAPPER span (id-space namespaced "files-stage-pill-*",
-                           distinct from the record pane's "stage-pill-*" -- see `_stage_pill_oob`'s
-                           id_prefix docstring) so the per-file retry ack below can OOB-push this
-                           EXACT cell's pill after a write that changes its bucket. The pill itself
-                           (`_stage_pill.html`) stays a pure, id-free token. #}
-                        <span id="files-stage-pill-{{ key }}-{{ row.file.id }}" class="inline-flex">
-                        {% with stage_label=stage_label, bucket=row.buckets[key] %}{% include "pipeline/partials/_stage_pill.html" %}{% endwith %}
-                        </span>
-                        {# Per-row Retry (D-04): renders ONLY on a failed cell of a MANUALLY-retried enrich stage
-                           (metadata/analyze). HTMX POST to the scoped
-                           per-file variant; the ack swaps into this cell's result span AND OOB-pushes this
-                           cell's own #files-stage-pill-<key>-<file_id> wrapper above (phaze-bgz26) --
-                           the failed pill no longer waits on a poll tick this bounded/paged surface never
-                           receives (files_table_view.html has NO self-poll by design; see the header
-                           comment). @click.stop keeps the click off the row's record-slide-in hx-get.
-                           aria-label per the Copywriting Contract.
-                           phaze-hyjk: @click.stop alone only covers a MOUSE click. The <tr> also binds
-                           hx-trigger="click, keyup[key=='Enter']" (htmx) AND @keydown.enter (Alpine) for
-                           keyboard activation (line ~143 below). Keyboard-activating THIS button fires a
-                           keydown (bubbles to the row's @keydown.enter -> record:open) and a keyup (bubbles
-                           to the row's htmx keyup[key=='Enter'] trigger -> GET /record/{id}) in addition to
-                           the button's own click -- one Enter keypress firing the retry POST AND opening the
-                           record slide-in. @keydown.stop / @keyup.stop stop those two bubbling phases at the
-                           button, mirroring @click.stop for the pointer path. #}
-                        {% if row.buckets[key] == 'failed' and key in _retry_endpoints %}
-                            <button type="button" @click.stop @keydown.stop @keyup.stop
-                                    hx-post="/pipeline/files/{{ row.file.id }}/{{ _retry_endpoints[key] }}/retry"
-                                    hx-target="#retry-result-{{ row.file.id }}-{{ key }}" hx-swap="innerHTML"
-                                    hx-indicator="#retry-ind-{{ row.file.id }}-{{ key }}"
-                                    aria-label="Retry {{ _stage_names[key] }} for this file"
-                                    class="inline-flex shrink-0 items-center gap-1 rounded text-xs font-semibold text-red-700 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-red-400">
-                                <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
-                                Retry
-                            </button>
-                            <span id="retry-ind-{{ row.file.id }}-{{ key }}" class="htmx-indicator shrink-0 text-xs text-gray-500 dark:text-gray-400">Enqueuing…</span>
-                            <span id="retry-result-{{ row.file.id }}-{{ key }}" class="shrink-0" aria-live="polite"></span>
-                        {% endif %}
-                        </div>
+                        {% with file_id=row.file.id, bucket=row.buckets[key], surface='table', oob=false %}{% include "pipeline/partials/_files_stage_control.html" %}{% endwith %}
                     </td>
                     {% endfor %}
+                    <td class="px-3 py-2 whitespace-nowrap"><span id="files-current-status-{{ row.file.id }}">{% with buckets=row.buckets %}{% include "pipeline/partials/_files_current_status.html" %}{% endwith %}</span></td>
+                    <td class="px-3 py-2 text-right">{{ details_button(row) }}</td>
                 </tr>
                 {% endfor %}
             </tbody>
-        </table>
+        {% endcall %}
+        </div>
+        <div class="grid gap-3 px-4 py-3 md:hidden" role="list" aria-label="Files and pipeline stage status">
+            {% for row in files_page.rows %}
+            <article class="min-w-0 rounded-lg border border-gray-200 bg-white p-3 dark:border-phaze-border dark:bg-phaze-panel" role="listitem">
+                <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0">
+                        <h2 class="truncate font-mono text-xs font-semibold text-gray-900 dark:text-gray-100" title="{{ row.file.current_path }}">{{ row.file.current_path }}</h2>
+                        <p class="mt-1 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ row.file.file_type }}</p>
+                    </div>
+                </div>
+                <div class="mt-3 border-y border-gray-100 py-3 dark:border-phaze-border">
+                    <p class="mb-1.5 font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Current state</p>
+                    <span id="files-mobile-current-status-{{ row.file.id }}">{% with buckets=row.buckets %}{% include "pipeline/partials/_files_current_status.html" %}{% endwith %}</span>
+                </div>
+                <details class="group border-b border-gray-100 py-2 dark:border-phaze-border">
+                    <summary class="cursor-pointer rounded text-xs font-semibold text-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-blue-400">Stage details</summary>
+                    <dl class="mt-3 grid gap-2">
+                        {% for stage_label, key in _stage_cols %}
+                        <div class="flex items-center justify-between gap-3">
+                            <dt class="text-xs text-gray-600 dark:text-gray-300">{{ stage_label }}</dt>
+                            <dd>{% with file_id=row.file.id, bucket=row.buckets[key], surface='mobile', oob=false %}{% include "pipeline/partials/_files_stage_control.html" %}{% endwith %}</dd>
+                        </div>
+                        {% endfor %}
+                    </dl>
+                </details>
+                <div class="mt-3">{{ details_button(row, true) }}</div>
+            </article>
+            {% endfor %}
+        </div>
     </div>
     {% endif %}
     {# phaze-3db8: the pager lives OUTSIDE the rows-present/empty-state guard above, matching
@@ -279,19 +304,19 @@
        the end simply yields an empty page" contract. #}
     {% if files_page.page > 1 or files_page.has_next %}
     {# Cursor-style Prev/Next -- no whole-corpus COUNT (the T-87-11 DoS mitigation). #}
-    <nav aria-label="Files pagination" class="flex items-center justify-between mt-6 px-6">
+    {% call ui.data_table_controls('Files pagination') %}
         <p class="text-sm text-gray-500 dark:text-gray-400">Page {{ files_page.page }}</p>
         <div class="flex gap-1">
             {% if files_page.page > 1 %}
-            <button hx-get="/pipeline/files?page={{ files_page.page - 1 }}{{ _qs }}" hx-target="#files-table-view" hx-swap="innerHTML" class="text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">Previous</button>
+            {{ ui.data_table_button('Previous', '/s/files?page=' ~ (files_page.page - 1) ~ _qs, '#files-table-view', push_url=true) }}
             {% else %}
-            <span class="text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-gray-400 dark:text-gray-500 cursor-not-allowed">Previous</span>
+            {{ ui.data_table_button('Previous', disabled=true) }}
             {% endif %}
             {% if files_page.has_next %}
-            <button hx-get="/pipeline/files?page={{ files_page.page + 1 }}{{ _qs }}" hx-target="#files-table-view" hx-swap="innerHTML" class="text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">Next</button>
+            {{ ui.data_table_button('Next', '/s/files?page=' ~ (files_page.page + 1) ~ _qs, '#files-table-view', push_url=true) }}
             {% else %}
-            <span class="text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-gray-400 dark:text-gray-500 cursor-not-allowed">Next</span>
+            {{ ui.data_table_button('Next', disabled=true) }}
             {% endif %}
         </div>
-    </nav>
+    {% endcall %}
     {% endif %}

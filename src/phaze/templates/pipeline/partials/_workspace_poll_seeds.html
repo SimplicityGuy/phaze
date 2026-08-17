@@ -29,6 +29,9 @@
     <p id="dag-seed-agentBusy" class="hidden"></p>
     <p id="dag-seed-controllerBusy" class="hidden"></p>
     <p id="dag-seed-metadataBusy" class="hidden"></p>
+    <p id="dag-seed-metadataQueued" class="hidden"></p>
+    <p id="dag-seed-metadataActive" class="hidden"></p>
+    <p id="dag-seed-metadataQueueKnown" class="hidden"></p>
     <p id="dag-seed-analyzeBusy" class="hidden"></p>
     <p id="dag-seed-agentOnline" class="hidden"></p>
     {# Phase 58 (58-04, WORK-03, B1): pre-mounted ahead of the poll -- computeOnline joins base.html's
@@ -42,6 +45,13 @@
     <p id="dag-seed-matchBusy" class="hidden"></p>
     <p id="dag-seed-metadataDone" class="hidden"></p>
     <p id="dag-seed-metadataTotal" class="hidden"></p>
+    <p id="dag-seed-metadataStatusDone" class="hidden"></p>
+    <p id="dag-seed-metadataStatusFailed" class="hidden"></p>
+    <p id="dag-seed-metadataStatusTotal" class="hidden"></p>
+    <p id="dag-seed-metadataStatusKnown" class="hidden"></p>
+    <p id="dag-seed-metadataEligible" class="hidden"></p>
+    <p id="dag-seed-metadataEligibleKnown" class="hidden"></p>
+    <p id="dag-seed-metadataFailed" class="hidden"></p>
     <p id="dag-seed-analyzeDone" class="hidden"></p>
     <p id="dag-seed-analyzeTotal" class="hidden"></p>
     <p id="dag-seed-analyzeActive" class="hidden"></p>
@@ -63,6 +73,9 @@
        OOB-target-must-pre-exist rule (see this file's header) requires a landing placeholder here. #}
     <p id="dag-seed-metadataOrphan" class="hidden"></p>
     <p id="dag-seed-analyzeOrphan" class="hidden"></p>
+    <p id="dag-seed-summaryRecentLive" class="hidden"></p>
+    <p id="dag-seed-summaryRecentToday" class="hidden"></p>
+    <p id="dag-seed-summaryRecentLifetime" class="hidden"></p>
     {# Pre-mounted ahead of base.html — notYetEnriched joins the store + dag dict in Task 2. #}
     <p id="dag-seed-notYetEnriched" class="hidden"></p>
     {# Legacy (non-dag-seed-prefixed) ids stats_bar.html emits. #}
@@ -96,6 +109,7 @@
     <section id="awaiting-cloud-card"></section>
     <section id="analyzing-cloud-card"></section>
     <section id="staged-pushing-card"></section>
+    <div id="analyze-active-total-card"></div>
     {# Phase 71 (71-03, BEUI-01): the shared /pipeline/stats poll ALSO re-emits the #analyze-lanes
        N-lane grid OOB every tick (stats_bar.html). Its real host lives ONLY in analyze_workspace.html;
        on every other stage (and the first-run empty state) the outerHTML OOB swap would land nowhere and

@@ -21,9 +21,10 @@
        which is reserved for the rail "+ Scan").
      * Always includes _workspace_poll_seeds.html so the OOB store seeds have landing targets.
 #}
+{% import "ui/primitives.html" as ui %}
 {% macro workspace(title, subcount='', actions='', x_data='', cloud_cards=false) %}
-{# phaze-8pmj: x-data used to be emitted ONLY when a caller passed x_data (12 of 13 ws.workspace
-   callers don't), so most stage sections rendered with no Alpine root at all. Alpine only
+{# phaze-8pmj: x-data used to be emitted ONLY when a caller passed x_data, so most stage sections
+   rendered with no Alpine root at all. Alpine only
    initializes x-data-ROOTED subtrees (the same rule the rail's Phase-93 CONSOLE-02 fix and
    _file_table.html's CR-01 fix both lock down), so on any direct navigation/reload/bookmark of
    /s/<stage> -- shell.py serves the FULL shell then, with no ancestor x-data between <body> and
@@ -37,18 +38,9 @@
     {# Workspace header bar. A <div> (not the semantic <header> element) is used deliberately:
        the Phase-57 bare-fragment guard asserts the substring "<head" is absent from a stage
        fragment, and "<header" would trip it -- the layout role is unchanged. #}
-    <div class="flex items-start justify-between gap-4 px-6 py-4 border-b border-gray-200 dark:border-phaze-border">
-        <div>
-            <h1 tabindex="-1" class="font-jura text-lg font-medium uppercase tracking-[0.15em] text-gray-900 dark:text-gray-100">{{ title }}</h1>
-            {# id is a stable OOB target for a stage's own mutation response to refresh this text
-               without a full workspace re-render (phaze-gwe1: the tag facet's bulk-write toast used
-               to be the ONLY thing in its response, leaving this subcount frozen at its pre-bulk
-               value). Harmless for every other facet -- only one workspace is ever mounted into
-               #stage-workspace at a time, so the id is never duplicated. #}
-            {% if subcount %}<p id="stage-workspace-subcount" class="mt-1 text-sm text-gray-500 dark:text-gray-400" x-text="{{ subcount }}"></p>{% endif %}
-        </div>
-        {% if actions %}<div class="flex shrink-0 items-center gap-2">{{ actions }}</div>{% endif %}
-    </div>
+    {# Keep the Alpine expression as markup so the shared header remains presentation-only. #}
+    {% if subcount %}{% set subtitle %}<span x-text="{{ subcount }}"></span>{% endset %}{% else %}{% set subtitle = '' %}{% endif %}
+    {{ ui.page_header(title, subtitle, actions, 'stage-workspace-subcount') }}
     {{ caller() }}
     {# `cloud_cards`: true ONLY for the Analyze workspace, which renders the six real v6.0
        cloud-state cards. The seed host omits its hidden cloud-card sinks when true so we don't

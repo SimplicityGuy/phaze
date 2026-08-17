@@ -47,6 +47,8 @@ from phaze.services.backends import (
     LANE_RECENT_N,
     derive_cloud_hold_reason,
     derive_localqueue_unreachable,
+    get_analysis_activity_counts,
+    get_analysis_live_count,
     get_analyze_queue_totals,
     get_backend_lane_snapshot,
     get_lane_queue_depths,
@@ -82,13 +84,14 @@ from phaze.services.pipeline import (
     get_match_pending_tracklists,
     get_metadata_failed_files,
     get_metadata_pending_files,
+    get_metadata_selection_summary,
     get_pending_files_page,
     get_proposal_busy_count,
     get_proposal_pending_batches,
     get_pushed_count,
     get_pushing_count,
     get_queue_activity,
-    get_stage_busy_counts,
+    get_stage_activity_snapshot,
     get_stage_controls,
     get_stage_progress,
     get_tracklist_sets_page,
@@ -270,9 +273,16 @@ async def _build_dag_context(
     def total(node: str) -> int:
         return int(stage[node]["total"] or 0)
 
+    metadata_buckets = stage["metadata"]
+    metadata_status_total = sum(int(value or 0) for key, value in metadata_buckets.items() if key not in {"total", "available"})
     dag: dict[str, int] = {
         "metadataDone": done("metadata"),
         "metadataTotal": total("metadata"),
+        "metadataFailed": int(stage["metadata"].get("failed") or 0),
+        "metadataStatusDone": int(metadata_buckets.get(Status.DONE.value) or 0),
+        "metadataStatusFailed": int(metadata_buckets.get(Status.FAILED.value) or 0),
+        "metadataStatusTotal": metadata_status_total,
+        "metadataStatusKnown": int(metadata_buckets.get("available") or 0),
         "analyzeDone": done("analyze"),
         "analyzeTotal": total("analyze"),
         # Phase 93 (CONSOLE-02): the DERIVED in-flight count — the same stage_status_case bucket the
@@ -317,11 +327,18 @@ async def _build_dag_context(
 
     # t7k FIX2 (REQ-260613-t7k-FIX2): per-stage in-flight busy counts REPLACE the single global
     # agentBusy gate so the agent enqueue buttons gate independently (run in parallel).
-    # get_stage_busy_counts owns the never-500 degrade (all-zeros on any DB error), so NO try/except
-    # is added here; these ints ride the same dag.items() seed + OOB loop with no stats_bar.html edit.
-    busy = await get_stage_busy_counts(session)
-    dag["metadataBusy"] = int(busy["metadata"])
-    dag["analyzeBusy"] = int(busy["analyze"])
+    # get_stage_activity_snapshot owns the never-500 degrade, and separates queued from active while
+    # preserving metadataBusy/analyzeBusy as their sums for the existing enqueue gates.
+    selection = await get_metadata_selection_summary(session)
+    dag["metadataEligible"] = int(selection.eligible_count or 0)
+    dag["metadataEligibleKnown"] = int(selection.available)
+
+    stage_activity = await get_stage_activity_snapshot(session)
+    dag["metadataQueued"] = int(stage_activity.counts["metadata"]["queued"])
+    dag["metadataActive"] = int(stage_activity.counts["metadata"]["active"])
+    dag["metadataQueueKnown"] = int(stage_activity.available)
+    dag["metadataBusy"] = dag["metadataQueued"] + dag["metadataActive"]
+    dag["analyzeBusy"] = int(stage_activity.counts["analyze"]["queued"] + stage_activity.counts["analyze"]["active"])
 
     # Phase 40 (REQ-40-3): the per-agent DAG nodes gate on an online-agent signal ("Needs agent").
     # count_active_agents owns its own never-500 SAVEPOINT degrade (returns 0 on any DB error), so NO
@@ -1071,11 +1088,13 @@ async def pipeline_stats_partial(
         cloud_phase_counts,
         lanes,
         awaiting_hold_reason,
+        analysis_live,
+        analysis_activity,
         # asyncio.gather with >6 awaitables of mixed return types collapses to list[object] under
         # mypy (mirrors the identical cast in services/pipeline.py:get_stage_progress) -- pin the
         # exact per-read tuple shape with a single cast.
     ) = cast(
-        "tuple[dict[str, int], int, int, int, int, int, int, dict[str, int], list[dict[str, Any]], str]",
+        "tuple[dict[str, int], int, int, int, int, int, int, dict[str, int], list[dict[str, Any]], str, int | None, dict[str, int | None]]",
         await asyncio.gather(
             # Phase 34: surface live queue depth through the EXISTING 5s poll (no new loop).
             # get_queue_activity degrades to zeros on a Redis hiccup / missing app.state, so the
@@ -1123,6 +1142,12 @@ async def pipeline_stats_partial(
             # the lanes wiring immediately above. "held" mirrors services.backends._HOLD_REASON_DEGRADED, the
             # SAME neutral no-causal-claim copy that function's own try/except already degrades to.
             _read_in_own_session(fanout, lambda s: derive_cloud_hold_reason(s), "held"),
+            _read_in_own_session(fanout, lambda s: get_analysis_live_count(s, request.app.state), None),
+            _read_in_own_session(
+                fanout,
+                get_analysis_activity_counts,
+                cast("dict[str, int | None]", {"today": None, "lifetime": None}),
+            ),
         ),
     )
     # phaze-6r39: the same live-lane derivation build_dashboard_context seeds on first load, re-pushed
@@ -1179,6 +1204,9 @@ async def pipeline_stats_partial(
             "lanes_hash": lanes_hash,
             "total_queued_analyze": analyze_queue_totals["total_queued"],
             "unrouted_queued_analyze": analyze_queue_totals["unrouted_queued"],
+            "summary_recent_live": analysis_live,
+            "summary_recent_today": analysis_activity["today"],
+            "summary_recent_lifetime": analysis_activity["lifetime"],
             **activity,
             **dag_ctx,
             "queue_progress_percent": queue_progress,
@@ -1318,20 +1346,19 @@ TRACKLIST_SETS_SORT = SortContract(
 # rather than erroring. `tests/integration/test_files_sort.py` asserts the two agree, in both
 # directions, so the pair cannot drift silently.
 #
-# The 6-stage -> 5-pill remap LANDMINE applies to the KEYS too: `Appr` reads the `review` bucket and
-# `Exec` reads `apply`. The wire keys are the canonical `Stage` values rather than the header words,
-# so the URL names the model's vocabulary and no third naming scheme is invented.
+# The five displayed stage keys use canonical ``Stage`` values, so the URL names the model's
+# vocabulary while the labels remain explicit operator-facing language.
 FILES_SORT = SortContract(
-    endpoint="/pipeline/files",
+    endpoint="/s/files",
     target="#files-table-view",
     columns=(
         SortableColumn(key="file", label="File", expression=FileRecord.current_path),
         SortableColumn(key="type", label="Type", expression=FileRecord.file_type),
-        SortableColumn(key="metadata", label="Meta", expression=stage_status_sort_case(Stage.METADATA)),
+        SortableColumn(key="metadata", label="Metadata", expression=stage_status_sort_case(Stage.METADATA)),
         SortableColumn(key="analyze", label="Analyze", expression=stage_status_sort_case(Stage.ANALYZE)),
-        SortableColumn(key="propose", label="Prop", expression=stage_status_sort_case(Stage.PROPOSE)),
-        SortableColumn(key="review", label="Appr", expression=stage_status_sort_case(Stage.REVIEW)),
-        SortableColumn(key="apply", label="Exec", expression=stage_status_sort_case(Stage.APPLY)),
+        SortableColumn(key="propose", label="Propose", expression=stage_status_sort_case(Stage.PROPOSE)),
+        SortableColumn(key="review", label="Review", expression=stage_status_sort_case(Stage.REVIEW)),
+        SortableColumn(key="apply", label="Execute", expression=stage_status_sort_case(Stage.APPLY)),
     ),
     default_key="file",
 )
@@ -2121,8 +2148,7 @@ async def retry_analysis_failed_file(
     # the same shape force_skip_stage uses for the record pane (see `_stage_pill_oob`).
     buckets = await get_file_stage_buckets(session, file_id)
     ack = templates.get_template("pipeline/partials/retry_failed_response.html").render(count=1, no_active_agent=False)
-    pill_oob = _stage_pill_oob(file_id, "analyze", buckets.get("analyze", "not_started"), id_prefix="files-stage-pill")
-    return HTMLResponse(ack + pill_oob)
+    return HTMLResponse(ack + _files_retry_oob(file_id, "analyze", buckets))
 
 
 @router.post("/pipeline/files/{file_id}/metadata-failed/retry", response_class=HTMLResponse)
@@ -2187,8 +2213,7 @@ async def retry_metadata_failed_file(
     # happened yet (it will land on the next per-file retry / force-skip / poll-driven action).
     buckets = await get_file_stage_buckets(session, file_id)
     ack = templates.get_template("pipeline/partials/metadata_retry_response.html").render(count=1, no_active_agent=False)
-    pill_oob = _stage_pill_oob(file_id, "metadata", buckets.get("metadata", "failed"), id_prefix="files-stage-pill")
-    return HTMLResponse(ack + pill_oob)
+    return HTMLResponse(ack + _files_retry_oob(file_id, "metadata", buckets))
 
 
 # --------------------------------------------------------------------------------------------------
@@ -2300,7 +2325,26 @@ async def force_skip_stage(
 # The record pane enrich stage labels (the stage loop in record_body.html) — informational text inside the
 # pill's aria-label only. Enrich-only, mirroring STAGE_TO_FUNCTION, because non-enrich stages are
 # rejected 422 before this is ever reached (D-10).
-_ENRICH_STAGE_LABELS = {"metadata": "Meta", "analyze": "Analyze"}
+_ENRICH_STAGE_LABELS = {"metadata": "Metadata", "analyze": "Analyze"}
+
+
+def _files_retry_oob(file_id: uuid.UUID, stage: str, buckets: dict[str, str]) -> str:
+    """Refresh retry controls and current-state summaries on both responsive Files surfaces."""
+    stage_label = _ENRICH_STAGE_LABELS[stage]
+    controls = "".join(
+        templates.get_template("pipeline/partials/_files_stage_control.html").render(
+            file_id=file_id,
+            key=stage,
+            stage_label=stage_label,
+            bucket=buckets.get(stage, "not_started"),
+            surface=surface,
+            oob=True,
+        )
+        for surface in ("table", "mobile")
+    )
+    current = templates.get_template("pipeline/partials/_files_current_status.html").render(buckets=buckets)
+    summaries = "".join(f'<span id="{prefix}-current-status-{file_id}" hx-swap-oob="true">{current}</span>' for prefix in ("files", "files-mobile"))
+    return controls + summaries
 
 
 def _stage_pill_oob(file_id: uuid.UUID, stage: str, bucket: str, *, id_prefix: str = "stage-pill") -> str:
@@ -2371,14 +2415,13 @@ def _force_skip_no_op_toast(stage: str) -> HTMLResponse:
 # unmet blocker keeping a stage out of the pending set.
 # --------------------------------------------------------------------------------------------------
 
-# Display label per stage for the five-pill matrix + trace verdict (the 6->5 remap: tracklist is
-# omitted; review renders as Appr, apply as Exec). Mirrors the _stage_matrix partial pill order.
+# Display label per stage for the five-pill matrix + trace verdict. Tracklists are omitted here.
 _STAGE_TRACE_LABELS: dict[Stage, str] = {
-    Stage.METADATA: "Meta",
+    Stage.METADATA: "Metadata",
     Stage.ANALYZE: "Analyze",
-    Stage.PROPOSE: "Prop",
-    Stage.REVIEW: "Appr",
-    Stage.APPLY: "Exec",
+    Stage.PROPOSE: "Propose",
+    Stage.REVIEW: "Review",
+    Stage.APPLY: "Execute",
 }
 
 

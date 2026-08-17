@@ -31,7 +31,7 @@ from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.schemas.wire_bounds import INT64_MAX
 from phaze.services import pipeline as pipeline_mod
-from phaze.services.execution_queries import get_execution_logs_page
+from phaze.services.execution_queries import get_execution_logs_page, get_execution_stats
 from phaze.services.pagination import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE,
@@ -502,6 +502,23 @@ async def test_audit_log_page_out_of_range_yields_an_empty_page_not_an_error(ses
     page = await get_execution_logs_page(session, page=9999, page_size=DEFAULT_PAGE_SIZE)
     assert page.rows == []
     assert page.has_next is False
+    assert page.degraded is False
+
+
+@pytest.mark.asyncio
+async def test_audit_stats_degrade_with_an_explicit_signal() -> None:
+    """A failed stats read cannot masquerade as a healthy all-zero audit."""
+
+    class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("connection reset by peer")
+
+    stats = await get_execution_stats(_ExplodingSession())  # type: ignore[arg-type]
+    assert stats["degraded"] is True
+    assert stats["total"] == 0
 
 
 class _NullSavepoint:
@@ -522,11 +539,11 @@ class _NullSavepoint:
 
 @pytest.mark.asyncio
 async def test_audit_log_page_degrades_on_db_error() -> None:
-    """Contract rule 6: a DB error on the audit log read returns an EMPTY page, never a 500.
+    """Contract rule 6: a DB error returns no rows plus an explicit degraded signal, never a 500.
 
     The read runs inside a SAVEPOINT (``begin_nested``); the exception propagates out of the nested
-    scope and is caught by the degrade ``except``, which returns ``Page(rows=[], has_next=False)``
-    instead of letting the audit view 500.
+    scope and is caught by the degrade ``except``, which returns no rows with ``degraded=True``
+    instead of letting the audit view 500 or infer that the history is genuinely empty.
     """
 
     class _ExplodingSession:
@@ -539,6 +556,7 @@ async def test_audit_log_page_degrades_on_db_error() -> None:
     page = await get_execution_logs_page(_ExplodingSession(), page=1, page_size=MIN_PAGE_SIZE)  # type: ignore[arg-type]
     assert page.rows == []
     assert page.has_next is False
+    assert page.degraded is True
 
 
 @pytest.mark.asyncio

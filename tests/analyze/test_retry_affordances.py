@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 import uuid
 
+from bs4 import BeautifulSoup
 import pytest
 from sqlalchemy import select
 
@@ -141,6 +142,9 @@ async def test_per_file_retry_reenqueues_one_file_through_guarded_funnel(
     # tick this bounded/paged surface never receives. Namespaced "files-stage-pill-*", distinct
     # from the record pane's "stage-pill-*" (they can be on screen simultaneously).
     assert f'id="files-stage-pill-analyze-{file.id}"' in response.text
+    assert f'id="files-mobile-stage-pill-analyze-{file.id}"' in response.text
+    assert f'id="files-current-status-{file.id}"' in response.text
+    assert f'id="files-mobile-current-status-{file.id}"' in response.text
     assert 'hx-swap-oob="true"' in response.text
     assert "not started" in response.text.lower(), "the OOB pill must reflect the flipped bucket, not still 'failed'"
 
@@ -304,35 +308,44 @@ def test_render_per_row_retry_only_on_failed_enrich_cell() -> None:
     assert "metadata-failed/retry" in failed
     assert 'aria-label="Retry Analyze for this file"' in failed
     assert 'aria-label="Retry Metadata for this file"' in failed
+    assert failed.count('aria-label="Retry Analyze for this file"') == 2
+    assert failed.count('aria-label="Retry Metadata for this file"') == 2
 
     healthy = _render_files_table(bucket="done")
     assert "analysis-failed/retry" not in healthy
     assert "metadata-failed/retry" not in healthy
 
 
-def test_render_per_row_retry_button_stops_keyboard_bubbling() -> None:
-    """Regression (phaze-hyjk): keyboard activation of the per-row Retry must not also open the record slide-in.
-
-    The row's ``<tr>`` binds ``hx-trigger="click, keyup[key=='Enter']"`` (htmx) AND
-    ``@keydown.enter`` (Alpine ``record:open``). ``@click.stop`` alone only covers the pointer path --
-    keyboard-activating the ``<button>`` fires a keydown (bubbles to the row's ``@keydown.enter``) and
-    a keyup (bubbles to the row's htmx ``keyup[key=='Enter']`` trigger) in addition to the button's own
-    click, so a single Enter press used to fire the retry POST AND the record GET. The button must
-    carry ``@keydown.stop``/``@keyup.stop`` alongside the existing ``@click.stop``.
-    """
+def test_render_per_row_retry_is_isolated_by_inert_table_row() -> None:
+    """Retry is a native button inside a row with no competing click or keyboard activation."""
     failed = _render_files_table(bucket="failed", active_stage="analyze", active_bucket="failed")
-
-    # Isolate the PER-ROW retry <button ...> tag itself (the bulk "Retry all failed" button also
-    # matches a naive "analysis-failed/retry" search since it renders first -- anchor on the per-row
-    # button's distinctive aria-label instead, then walk back to its own <button> tag).
+    row_start = failed.index('<tr id="files-row-1"')
+    row_tag = failed[row_start : failed.index(">", row_start) + 1]
     start = failed.index('aria-label="Retry Analyze for this file"')
     tag_start = failed.rindex("<button", 0, start)
     tag_end = failed.index(">", start)
     button_tag = failed[tag_start : tag_end + 1]
 
-    assert "@click.stop" in button_tag
-    assert "@keydown.stop" in button_tag, "keyboard Enter's keydown phase must be stopped from reaching the row"
-    assert "@keyup.stop" in button_tag, "keyboard Enter's keyup phase must be stopped from reaching the row's htmx trigger"
+    assert 'type="button"' in button_tag
+    assert "hx-trigger" not in row_tag
+    assert "@keydown" not in row_tag
+    assert "@click" not in row_tag
+
+
+def test_render_per_row_retry_ack_target_survives_stage_oob_swap() -> None:
+    """The primary HTMX ack target must not be removed by the response's stage-pill OOB swap."""
+    soup = BeautifulSoup(_render_files_table(bucket="failed", active_stage="analyze", active_bucket="failed"), "html.parser")
+
+    for surface_prefix in ("files", "files-mobile"):
+        pill_prefix = f"{surface_prefix}-stage-pill-analyze-"
+        pill = soup.select_one(f'[id^="{pill_prefix}"]')
+
+        assert pill is not None
+        file_id = str(pill["id"]).removeprefix(pill_prefix)
+        result = soup.find(id=f"retry-result-{surface_prefix}-{file_id}-analyze")
+        assert result is not None
+        assert pill not in result.parents
+        assert pill.parent is result.parent
 
 
 def test_render_bulk_retry_all_button_on_failed_filter_view() -> None:
