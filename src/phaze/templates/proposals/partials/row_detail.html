@@ -1,11 +1,11 @@
 <td colspan="6" class="bg-gray-50 dark:bg-phaze-panel px-6 py-4">
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6 text-sm">
         <div>
-            <h4 class="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase mb-2">AI Reasoning</h4>
+            <h4 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase mb-2">AI Reasoning</h4>
             <p class="text-gray-700 dark:text-gray-300">{{ proposal.reason or "No reasoning provided" }}</p>
         </div>
         <div>
-            <h4 class="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase mb-2">Extracted Metadata</h4>
+            <h4 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase mb-2">Extracted Metadata</h4>
             {% if proposal.context_used %}
             <dl class="space-y-1">
                 {# phaze-5fta.6: a convention-derived date renders its provenance ("date inferred
@@ -20,7 +20,7 @@
                 {% for key in ["artist", "event_name", "venue", "date", "source_type", "stage"] %}
                     {% if proposal.context_used.get(key) %}
                     <div class="flex">
-                        <dt class="text-gray-500 dark:text-gray-400 dark:text-gray-500 w-24">{{ key|replace("_", " ")|title }}:</dt>
+                        <dt class="text-gray-500 dark:text-gray-400 w-24">{{ key|replace("_", " ")|title }}:</dt>
                         <dd class="text-gray-700 dark:text-gray-300">
                             {{ proposal.context_used[key] }}
                             {% if key == "date" and date_convention and date_convention.get("source") == "release_group_convention" %}
@@ -36,7 +36,7 @@
             {% endif %}
         </div>
         <div>
-            <h4 class="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase mb-2">Original Path</h4>
+            <h4 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase mb-2">Original Path</h4>
             <p class="text-gray-700 dark:text-gray-300 break-all font-mono text-xs">{{ proposal.file.original_path }}</p>
         </div>
     </div>
