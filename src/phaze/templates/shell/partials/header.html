@@ -19,7 +19,12 @@
   store-bound :title + :aria-label naming exactly what the sum counts (agentOnline + computeLanesActive),
   agreeing with each other.
 #}
-<header class="h-14 shrink-0 flex items-center gap-4 px-4 border-b border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel">
+{# phaze-tzy6s.14: tighter gap/padding below `sm`. Adding the .13 drawer trigger pushed the row 4px
+   past a 390px viewport, so the whole PAGE scrolled sideways -- caught by the browser suite's
+   horizontal-overflow assertion, and invisible to every markup test because it is pure computed
+   layout. The header's children are all `shrink-0` except the search field, so the row cannot
+   absorb an extra control by squeezing; the space has to come from the gutters. #}
+<header class="h-14 shrink-0 flex items-center gap-2 px-2 sm:gap-4 sm:px-4 border-b border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel">
 
     {# phaze-tzy6s.13: the drawer trigger for phone/tablet. Hidden at `lg` and up, where rail.html's
        expanded <aside> is the navigation — so exactly ONE navigation affordance is reachable at any

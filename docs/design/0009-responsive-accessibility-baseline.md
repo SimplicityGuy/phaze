@@ -86,6 +86,46 @@ states a smoke test rarely reaches. Real-browser checks — computed contrast, f
 swaps, axe — belong to phaze-tzy6s.14 and are complementary, not redundant: this lane is exhaustive
 about markup properties, that lane is authoritative about rendered behaviour.
 
+## The browser contract suite (phaze-tzy6s.14)
+
+`tests/browser/` boots the real application — uvicorn, the real lifespan, real Alembic migrations,
+real Postgres and Redis — and drives it with Playwright. Nothing is mocked.
+
+```bash
+just test-db                 # the shared Postgres (5433) + Redis (6380) harness
+just test-db-for <seat>      # required if other agents are running; copy the exports it prints
+just test-browser-install    # once per machine — downloads the Chromium build
+just test-browser            # runs the suite (depends on `tailwind`, see below)
+```
+
+CI runs it as the **`Browser contract (non-blocking)`** job in `.github/workflows/tests.yml`, with
+`continue-on-error: true`. A brand-new browser suite has no flake record, and gating merges on it
+before that record exists trains everyone to re-run CI on red — which is how a real failure gets
+waved through. Promote it to blocking after a clean run of 10 (tracked on `phaze-8p1uq`).
+
+Three properties of the harness are load-bearing and easy to break:
+
+- **`just test-browser` depends on `tailwind`.** Without the compiled `app.css` the app serves an
+  unstyled page and every layout assertion passes vacuously — an unstyled document trivially does
+  not overflow. The first run of this suite passed the horizontal-overflow test for exactly that
+  reason, while the page was in fact broken.
+- **The app gets its own database**, derived by appending `_browser` to the seat's. It must never be
+  the unit suite's: that one drops its schema at session teardown, and a live uvicorn holding
+  connections would corrupt both.
+- **Session-scoped fixtures are synchronous.** Under `asyncio_mode = "auto"` each test gets a
+  function-scoped event loop, so a session-scoped *async* fixture is created on the first test's
+  loop and awaited from a dead one thereafter. The symptom is a hang, not an error.
+
+What the suite asserts is chosen by one rule: **if an httpx test could prove it from the markup, it
+does not belong there.** What remains is behaviour that exists only once a browser has run the
+JavaScript — htmx swapping, history restoring, focus moving, storage persisting, layout overflowing.
+Fixtures are synthetic; no private archive identifiers appear in the suite.
+
+Note for anyone asserting on rendered text: `inner_text()` returns text as *rendered*, and the
+eyebrow headings carry `uppercase`, so compare case-insensitively. And a rail swap uses
+`hx-swap="innerHTML"` — the container's own `data-stage` never changes, so the fragment's
+`data-document-title` marker is the signal a swap actually landed.
+
 ## Keyboard and screen-reader smoke pass
 
 Run at each release touching the shell. Record the date and result in the PR.

@@ -178,7 +178,14 @@ warn_return_any = true
 asyncio_mode = "auto"
 markers = [
     "integration: tests that require external services (database, redis, etc.)",
+    "browser: real-browser Playwright tests (phaze-tzy6s.14). Excluded from the default run by `addopts`; run with `just test-browser`.",
 ]
+# phaze-tzy6s.14: the browser suite is deselected by DEFAULT, not merely un-run by convention.
+# Playwright is not a project dependency (only Patchright is -- see the mypy override comment
+# below), so a bare `uv run pytest` in a fresh checkout would otherwise fail at import on a
+# dependency the project deliberately does not install. `-m browser` on the command line
+# overrides this, which is what `just test-browser` passes.
+addopts = "-m 'not browser'"
 testpaths = ["tests"]
 
 [tool.ruff]
