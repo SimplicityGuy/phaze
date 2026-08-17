@@ -49,12 +49,14 @@ needs an *invented* realistic filename.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 import uuid
 
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from phaze.models.agent import Agent
@@ -96,6 +98,15 @@ def _sha256() -> str:
     return uuid.uuid4().hex + uuid.uuid4().hex
 
 
+_RESET_DEADLOCK_RETRIES = 4
+
+
+def _is_deadlock(exc: BaseException) -> bool:
+    """True for Postgres SQLSTATE 40P01 (deadlock_detected), whatever driver wrapped it."""
+    codes = {getattr(e, "sqlstate", None) or getattr(getattr(e, "orig", None), "sqlstate", None) for e in (exc, exc.__cause__)}
+    return "40P01" in codes or "deadlock detected" in str(exc).lower()
+
+
 async def reset(session: AsyncSession) -> None:
     """TRUNCATE every application table so each test starts from the empty state the app booted on.
 
@@ -118,8 +129,31 @@ async def reset(session: AsyncSession) -> None:
     # Interpolated rather than bound because identifiers cannot be parameters in SQL. Safe: every
     # name came from pg_tables on this connection a statement ago, not from any caller input.
     quoted = ", ".join(f'public."{name}"' for name in tables)
-    await session.execute(text(f"TRUNCATE {quoted} RESTART IDENTITY CASCADE"))
-    await session.commit()
+
+    # Retried on deadlock, which is EXPECTED here rather than exceptional. TRUNCATE takes an
+    # AccessExclusiveLock on every table at once, while the live app under test is concurrently
+    # holding AccessShareLock on some of them -- the shell runs a 5s stats poll and keeps SSE
+    # streams open, so it is never quiescent. Postgres resolves the resulting lock cycle by killing
+    # one side, and which side it picks is arbitrary:
+    #
+    #   DeadlockDetectedError: Process A waits for AccessExclusiveLock ... blocked by process B;
+    #   Process B waits for AccessShareLock ... blocked by process A.
+    #
+    # Observed once in 124 browser tests, on one parametrized cell -- i.e. a flake that reports as
+    # a setup ERROR on an unrelated test and reads as that test being broken. Retrying is correct
+    # rather than a paper-over: the truncate is idempotent, the loser of the deadlock has already
+    # been rolled back by the server, and the only alternative (quiescing the app first) would mean
+    # not testing it live.
+    for attempt in range(_RESET_DEADLOCK_RETRIES):
+        try:
+            await session.execute(text(f"TRUNCATE {quoted} RESTART IDENTITY CASCADE"))
+            await session.commit()
+            return
+        except DBAPIError as exc:
+            await session.rollback()
+            if not _is_deadlock(exc) or attempt == _RESET_DEADLOCK_RETRIES - 1:
+                raise
+            await asyncio.sleep(0.25 * (attempt + 1))
 
 
 @dataclass

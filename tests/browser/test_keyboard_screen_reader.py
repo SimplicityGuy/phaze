@@ -244,14 +244,27 @@ async def test_the_command_palette_opens_on_the_shortcut_and_returns_focus(viewp
 
 
 @pytest.mark.parametrize(("viewport", "theme"), _cells())
-async def test_the_disabled_execute_state_is_announced_not_tooltipped(viewport: str, theme: str, page_at: Any) -> None:
+async def test_the_disabled_execute_state_is_announced_not_tooltipped(viewport: str, theme: str, page_at: Any, seed: Any) -> None:
     """ADR-0009 step 4 and §Controls: the reason is body text wired via aria-describedby, not a title.
 
     A ``title=`` is unreachable by keyboard and absent on touch, so a disabled control explained only
     by one is explained to nobody at the two widths this bead exists to cover.
+
+    Takes ``seed`` purely for its RESET, not to write rows: the assertion needs Execute to be in its
+    BLOCKED state, which only holds on an empty corpus (``preflight.can_execute`` false ->
+    ``disabled`` + ``aria-describedby``). Without it this test inherits whatever the previous
+    seeding test left behind; approved proposals make Execute *enabled*, there is then no disabled
+    control on the page at all, and the precondition fails with "rendered no disabled control" --
+    which reads as a missing gate rather than as leaked state. Passes alone, fails in the suite.
     """
     async with page_at(viewport=viewport, theme=theme) as page:
         await _open(page, "/s/apply")
+        # `_open` waits for #stage-workspace to ATTACH and for Alpine/htmx to load, both of which
+        # happen before HTMX swaps the workspace partial in. The Execute gate lives inside that
+        # partial, so evaluating here without a further wait reads an EMPTY workspace and the
+        # precondition below fails with "rendered no disabled control" -- a race, not a missing
+        # control. Wait for the button itself.
+        await page.wait_for_selector("button[aria-label^='Review and execute']", state="attached")
         state = await page.evaluate(
             """() => {
                 const els = [...document.querySelectorAll('button, [role="button"], [aria-disabled="true"]')];
