@@ -43,8 +43,10 @@ from sqlalchemy import func, select
 
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
-from phaze.services import backends as backends_mod, enqueue_router, kube_staging, s3_staging
+from phaze.services import enqueue_router, kube_staging, s3_staging
+from phaze.services.backends import compute_agent as backends_compute_agent
 from phaze.tasks import release_awaiting_cloud
+from tests._backends_patch import patch_backends_get_settings
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_agent
 from tests.kube_fakes import fake_local_queue
 
@@ -168,7 +170,8 @@ def _spy_backends_gate1(calls: list[str]) -> Any:
     Phase 72 (MCOMP-01/D-02) moved the compute GATE-1 off the kind-ordered ``select_active_agent(
     kind="compute")`` onto the per-entry ``select_agent_by_id(agent_ref, kind="compute")`` -- each
     compute backend now resolves ITS bound agent by id, not "the freshest compute agent". The gate still
-    lives inside ``ComputeAgentBackend.is_available`` (the ``services.backends`` module reference), so we
+    lives inside ``ComputeAgentBackend.is_available`` (the ``services.backends.compute_agent`` module
+    reference -- phaze-dr9df split the package; the facade re-export is NOT the binding it resolves), so we
     spy that reference to keep the D-01a observation byte-identical across the seam move, recording every
     ``kind=="compute"`` GATE-1 probe. ``select_agent_by_id`` is ONLY called by that gate (dispatch's
     fileserver lookup still goes through ``select_active_agent``), so no internal dispatch lookup leaks
@@ -205,7 +208,9 @@ async def _run_cell(
     monkeypatch.setattr(release_awaiting_cloud, "get_settings", lambda: stub)
     # Phase 70 (MKUE-02): KueueBackend.dispatch resolves the picked bucket via ``backends.get_settings()``;
     # pin it to the SAME stub so ``resolve_bucket_config`` finds the stub's ``buckets`` registry.
-    monkeypatch.setattr(backends_mod, "get_settings", lambda: stub)
+    # phaze-dr9df: ``services.backends`` is a PACKAGE now, so one setattr on the facade no longer
+    # reaches the submodule globals every ``get_settings()`` call site actually resolves against.
+    patch_backends_get_settings(monkeypatch, lambda: stub)
 
     # D-01a spy: record the gate kinds. GATE-2 (fileserver) fires through the drain's own reference
     # (select_active_agent); GATE-1 (compute) now fires through ComputeAgentBackend.is_available via the
@@ -213,7 +218,7 @@ async def _run_cell(
     # records ONLY the compute GATE-1 probe.
     gate_kinds: list[str] = []
     monkeypatch.setattr(release_awaiting_cloud, "select_active_agent", _spy_select_active_agent(gate_kinds))
-    monkeypatch.setattr(backends_mod, "select_agent_by_id", _spy_backends_gate1(gate_kinds))
+    monkeypatch.setattr(backends_compute_agent, "select_agent_by_id", _spy_backends_gate1(gate_kinds))
 
     # Real staging bodies run (strongest golden capture): stub the S3 SDK the kueue core calls.
     monkeypatch.setattr(s3_staging, "create_multipart_upload", AsyncMock(return_value="upload-xyz"))

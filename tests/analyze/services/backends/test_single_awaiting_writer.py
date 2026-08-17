@@ -5,7 +5,7 @@ paths -- not three hand-written copies. 83-07 consolidated the two inline spill 
 ``services.backends.hold_awaiting_cloud``. This hermetic (no-DB) AST scan makes that invariant
 self-enforcing: it goes RED the moment ANY module under ``src/phaze/`` re-introduces an inline awaiting
 WRITE (a ``.values(status=CloudJobStatus.AWAITING...)`` / ``.values(status="awaiting")`` on a SQLAlchemy
-insert/update statement) outside ``services/backends.py``.
+insert/update statement) outside ``services/backends/admission.py``.
 
 Because the check keys on ``.values(...)`` -- a WRITE -- the drain / count-card / shadow-invariant / D-14
 reaper predicates that merely READ awaiting via ``.where(CloudJob.status == AWAITING...)`` (or the reaper's
@@ -24,7 +24,12 @@ from pathlib import Path
 _SRC_ROOT = Path(__file__).resolve().parents[4] / "src" / "phaze"
 
 # The SOLE module allowed to WRITE cloud_job.status='awaiting' (the single go-forward writer, D-01/D-02).
-_ALLOWED_WRITERS = {_SRC_ROOT / "services" / "backends.py"}
+# phaze-dr9df split ``services/backends.py`` into a package; ``hold_awaiting_cloud`` -- and therefore the
+# ONE permitted inline awaiting write -- lives in its ``admission`` submodule now. The guard is deliberately
+# pinned to that submodule rather than widened to the whole package: a second awaiting writer appearing in,
+# say, ``kueue.py`` is exactly the drift this test exists to catch, and a package-wide allowance would
+# silently permit it.
+_ALLOWED_WRITERS = {_SRC_ROOT / "services" / "backends" / "admission.py"}
 
 
 def _references_awaiting(node: ast.AST) -> bool:
@@ -133,7 +138,7 @@ def _file_writes_awaiting(path: Path) -> bool:
 
 
 def test_hold_awaiting_cloud_is_the_only_awaiting_writer() -> None:
-    """D-02 anti-drift: exactly ``services/backends.py`` writes ``cloud_job.status='awaiting'`` via ``.values(...)``.
+    """D-02 anti-drift: exactly ``services/backends/admission.py`` writes ``cloud_job.status='awaiting'`` via ``.values(...)``.
 
     Reverting 83-07 (re-adding an inline ``update(CloudJob).values(status=CloudJobStatus.AWAITING.value...)``
     to ``routers/agent_s3.py`` or ``routers/agent_push.py``) turns this RED: that router file would join the

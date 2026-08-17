@@ -34,6 +34,7 @@ from phaze.models.agent import Agent
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.tasks.reconcile_cloud_jobs import reconcile_cloud_jobs
+from tests._backends_patch import patch_backends_get_settings
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter
 from tests.kube_fakes import fake_job
 
@@ -127,7 +128,7 @@ def _patch_cap(monkeypatch: pytest.MonkeyPatch, cap: int = 3) -> None:
         buckets=[SimpleNamespace(id=_STAGING_BUCKET_ID)],
     )
     monkeypatch.setattr("phaze.tasks.reconcile_cloud_jobs.get_settings", lambda: settings)
-    monkeypatch.setattr("phaze.services.backends.get_settings", lambda: settings)
+    patch_backends_get_settings(monkeypatch, lambda: settings)
 
 
 def _patch_seam(

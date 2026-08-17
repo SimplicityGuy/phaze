@@ -13,7 +13,7 @@ second compute-lane derivation path or resurrect the retired ``'a1'`` heuristic:
   ``compute_lane_state`` template context key are absent from ``src/`` entirely.
 * **Backends contract present** -- a positive-existence check pins the three dispatch-contract
   symbols (``get_backend_lane_snapshot`` / ``derive_cloud_hold_reason`` / the per-backend
-  ``dispatch`` routing) as still live in ``src/phaze/services/backends.py``.
+  ``dispatch`` routing) as still live in the ``src/phaze/services/backends/`` package.
 
 Pure filesystem/regex -- no Postgres, no app, runs everywhere.
 """
@@ -27,7 +27,11 @@ import re
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SRC = _REPO_ROOT / "src" / "phaze"
 _TEMPLATES = _SRC / "templates"
-_BACKENDS = _SRC / "services" / "backends.py"
+# phaze-dr9df: ``services/backends`` is a PACKAGE now. Scan every submodule as one text so the guard
+# keeps asserting "these contract symbols are still live somewhere in the backends seam" without pinning
+# which submodule each one landed in -- pinning that would make this cross-epic guard fail on any future
+# internal re-shuffle it has no opinion about.
+_BACKENDS_PKG = _SRC / "services" / "backends"
 
 
 def _src_python_files() -> list[Path]:
@@ -92,13 +96,13 @@ def test_compute_lane_state_context_key_removed_from_src() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Guard 3: the backends.py contract is untouched by the epic.
+# Guard 3: the services/backends contract is untouched by the epic.
 # ---------------------------------------------------------------------------
 
 
 def test_backends_contract_symbols_still_present() -> None:
-    """The three dispatch-contract symbols still live in backends.py."""
-    text = _BACKENDS.read_text(encoding="utf-8")
+    """The three dispatch-contract symbols still live in the services/backends package."""
+    text = "\n".join(path.read_text(encoding="utf-8") for path in sorted(_BACKENDS_PKG.rglob("*.py")))
     assert "async def get_backend_lane_snapshot" in text
     assert "async def derive_cloud_hold_reason" in text
     assert "async def dispatch" in text  # the per-backend routing seam

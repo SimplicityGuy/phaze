@@ -30,8 +30,13 @@ import pytest
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
-from phaze.services import agent_liveness as liveness_mod, backends as backends_mod, pipeline as pipeline_mod
+from phaze.services import agent_liveness as liveness_mod, pipeline as pipeline_mod
 from phaze.services.agent_liveness import derive_compute_lane_identities
+
+# phaze-dr9df: ``services.backends`` is a PACKAGE now, and the names this module patches live in
+# TWO different submodules -- ``_cloud_window_clauses`` / ``_safe_bucket_counts`` are
+# ``lane_metrics``' own imports, while ``resolve_backends`` / ``_probe_availability`` are resolved
+# by ``get_backend_lane_snapshot`` out of ``lane_snapshot``. Patching the facade reaches neither.
 from phaze.services.backends import (
     _cloud_job_succeeded_for_backend,  # noqa: F401 -- imported for symbol-existence coverage below
     _cloud_lane_queued_working,
@@ -39,6 +44,8 @@ from phaze.services.backends import (
     _local_lane_queued_working,
     get_analyze_queue_totals,
     get_backend_lane_snapshot,
+    lane_metrics as backends_metrics_mod,
+    lane_snapshot as backends_snapshot_mod,
 )
 from tests._queue_fakes import FakeTaskRouter, seed_active_agent
 
@@ -159,7 +166,7 @@ async def test_cloud_lane_queued_working_degrades_to_none_on_error(session: Asyn
     def _raise() -> tuple[object, object]:
         raise RuntimeError("registry unavailable")
 
-    monkeypatch.setattr(backends_mod, "_cloud_window_clauses", _raise)
+    monkeypatch.setattr(backends_metrics_mod, "_cloud_window_clauses", _raise)
 
     assert await _cloud_lane_queued_working(session, "a1") == (None, None)
 
@@ -235,7 +242,7 @@ async def test_analyze_queue_totals_sums_unrouted_plus_per_lane_queued(session: 
     async def _fake_buckets(_session: AsyncSession, _stage: object) -> dict[str, int]:
         return {"not_started": 5, "in_flight": 0, "done": 0, "skipped": 0, "failed": 0}
 
-    monkeypatch.setattr(backends_mod, "_safe_bucket_counts", _fake_buckets)
+    monkeypatch.setattr(backends_metrics_mod, "_safe_bucket_counts", _fake_buckets)
     lanes = [{"queued": 2}, {"queued": 3}]
 
     totals = await get_analyze_queue_totals(session, lanes)
@@ -253,7 +260,7 @@ async def test_analyze_queue_totals_degrades_to_none_when_any_lane_queued_is_unk
     async def _fake_buckets(_session: AsyncSession, _stage: object) -> dict[str, int]:
         return {"not_started": 5, "in_flight": 0, "done": 0, "skipped": 0, "failed": 0}
 
-    monkeypatch.setattr(backends_mod, "_safe_bucket_counts", _fake_buckets)
+    monkeypatch.setattr(backends_metrics_mod, "_safe_bucket_counts", _fake_buckets)
     lanes = [{"queued": 2}, {"queued": None}]
 
     totals = await get_analyze_queue_totals(session, lanes)
@@ -273,12 +280,12 @@ async def test_lane_card_and_admin_agents_report_identical_queued_working_for_on
 
     monkeypatch.setattr(pipeline_mod, "get_settings", _mixed_registry_settings)
     monkeypatch.setattr(liveness_mod, "get_settings", _mixed_registry_settings)
-    monkeypatch.setattr(backends_mod, "resolve_backends", lambda _settings: [KueueBackend(id="k8s", rank=10, cap=4)])
+    monkeypatch.setattr(backends_snapshot_mod, "resolve_backends", lambda _settings: [KueueBackend(id="k8s", rank=10, cap=4)])
 
     async def _fake_probe(_session: object, _backends: object) -> dict[str, bool]:
         return {"k8s": True}
 
-    monkeypatch.setattr(backends_mod, "_probe_availability", _fake_probe)
+    monkeypatch.setattr(backends_snapshot_mod, "_probe_availability", _fake_probe)
 
     files = [_file() for _ in range(3)]
     session.add_all(files)
