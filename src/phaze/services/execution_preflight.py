@@ -116,6 +116,15 @@ class PreflightExclusion:
     reason: str
     next_action: str
     blocking: bool
+    # phaze-tzy6s.17: True when ``count`` is a FLOOR, not a total -- the producing read is capped and
+    # saturated, so the real number is "count or more". The template renders "N+" and says so.
+    #
+    # This exists for exactly one row today, ``tagwrite``, and cannot be designed away: tag-write
+    # eligibility is a Python predicate (``compute_proposed_tags`` over metadata + tracklist +
+    # accepted Discogs link per candidate), so unlike ``dedupe`` and ``cue`` it has no SQL COUNT to
+    # fall back on. The dishonest alternative was reporting the cap as a total, which on this screen
+    # is a wrong number on the last thing an operator reads before an irreversible batch.
+    at_least: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +145,16 @@ class ExecutionPreflight:
         """Every unit of work this batch will not touch, blocking or otherwise."""
         return sum(exclusion.count for exclusion in self.exclusions)
 
+    @property
+    def excluded_total_at_least(self) -> bool:
+        """True when :attr:`excluded_total` is a floor because some contributing row is (phaze-tzy6s.17).
+
+        A sum containing one saturated term is itself saturated, so the heading that renders
+        ``excluded_total`` has to carry the same "+" the row does. Omitting it would put an exact-looking
+        total directly above a row openly labelled approximate.
+        """
+        return any(exclusion.at_least for exclusion in self.exclusions)
+
 
 async def get_execution_preflight(
     session: AsyncSession,
@@ -143,6 +162,7 @@ async def get_execution_preflight(
     pending: int,
     rejected: int,
     tagwrite_pending: int = 0,
+    tagwrite_pending_at_least: bool = False,
     dedupe_pending: int = 0,
     cue_pending: int = 0,
 ) -> ExecutionPreflight:
@@ -155,6 +175,12 @@ async def get_execution_preflight(
     The three ``*_pending`` counts describe adjacent work that this control does NOT dispatch. They
     default to 0 so a caller that cannot cheaply obtain them degrades to omitting the row rather
     than reporting a confident zero it did not measure.
+
+    ``tagwrite_pending_at_least`` extends that same honesty rule to the other end of the range
+    (phaze-tzy6s.17). A caller whose count is a saturated cap rather than a total passes True, and the
+    row renders "N+". A caller that reported a capped read's length as a total would satisfy the letter
+    of the paragraph above -- it measured something -- while breaking its intent, which is that no
+    number on this manifest asserts more precision than the read behind it actually has.
     """
     # Ordered to match start_execution: collisions gate everything, so they are read first.
     conflicts = await detect_collisions(session)
@@ -205,6 +231,7 @@ async def get_execution_preflight(
         pending=pending,
         rejected=rejected,
         tagwrite_pending=tagwrite_pending,
+        tagwrite_pending_at_least=tagwrite_pending_at_least,
         dedupe_pending=dedupe_pending,
         cue_pending=cue_pending,
     )
@@ -245,6 +272,7 @@ def _build_exclusions(
     tagwrite_pending: int,
     dedupe_pending: int,
     cue_pending: int,
+    tagwrite_pending_at_least: bool = False,
 ) -> list[PreflightExclusion]:
     """Everything the batch will not touch, blocking first, then zero-count rows dropped.
 
@@ -288,9 +316,13 @@ def _build_exclusions(
             key="tagwrite",
             label="Tag writes",
             count=tagwrite_pending,
-            reason="Tag writes are authorized and dispatched separately (ADR-0008); this control does not run them.",
+            reason=(
+                "Tag writes are authorized and dispatched separately (ADR-0008); this control does not run them."
+                + (" At least this many — the queue scan is capped, so the real number may be higher." if tagwrite_pending_at_least else "")
+            ),
             next_action="Dispatch them from the Tag Changes section of Changes Review.",
             blocking=False,
+            at_least=tagwrite_pending_at_least,
         ),
         PreflightExclusion(
             key="dedupe",

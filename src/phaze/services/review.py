@@ -21,6 +21,7 @@ the templates never touch an ORM object and the hot render/poll path can NEVER 5
   keeper == ``score_group``'s ``canonical_id``; review mints an opaque plan before confirmation).
 * :func:`get_cue_review_cards`      -- eligible + gated cue cards with an IN-MEMORY ``.cue`` preview
   (Cue, Plan 60-04; ``generate_cue_content`` only -- NO ``write_cue_file``, the render never mutates disk).
+
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from sqlalchemy import case, func, or_, select, tuple_
+from sqlalchemy import Select, case, func, or_, select, tuple_
 from sqlalchemy.orm import selectinload
 import structlog
 
@@ -36,7 +37,7 @@ from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.models.tracklist import Tracklist, TracklistTrack
-from phaze.routers.cue import _build_cue_tracks, _get_eligible_tracklist_query
+from phaze.routers.cue import _build_cue_tracks, _eligible_tracklist_stmt, _get_eligible_tracklist_query
 from phaze.routers.tags import (
     _build_comparison,
     _count_changes,
@@ -655,6 +656,61 @@ async def get_dedupe_groups(session: AsyncSession) -> list[dict[str, Any]]:
         return []
 
 
+def _gated_tracklist_stmt() -> Select[Any]:
+    """Build the base (UNORDERED, UNBOUNDED) SELECT for GATED cue sets -- approved + applied, no timestamped track.
+
+    The sibling of ``cue._eligible_tracklist_stmt`` and, like it, deliberately carries no ``ORDER BY``
+    and no ``LIMIT`` so each caller composes exactly the ones it needs: the card reader adds a display
+    sort plus ``_MAX_REVIEW_ROWS``, the counter adds neither.
+
+    phaze-tzy6s.17 extracted this from :func:`get_cue_review_cards`, where it was inline. The
+    extraction is the point rather than tidiness: :func:`count_cue_review_candidates` has to count the
+    SAME population the cards render, and a second copy of a four-predicate join is exactly how a
+    count and its list drift apart (``latest_version_id`` scoping in particular -- see phaze-dboy on
+    ``_eligible_tracklist_stmt`` for the defect that predicate already fixed once).
+    """
+    # phaze-dboy: scoped to latest_version_id -- the version generation actually reads -- not "any
+    # version ever". Mirrors cue._eligible_tracklist_stmt's subquery exactly; the two are complements.
+    has_timestamp_subq = select(TracklistTrack.version_id).where(TracklistTrack.timestamp.is_not(None)).distinct()
+
+    return (
+        select(Tracklist, FileRecord)
+        .join(FileRecord, Tracklist.file_id == FileRecord.id)
+        .where(
+            Tracklist.status == "approved",
+            Tracklist.file_id.is_not(None),
+            applied_clause(),
+            or_(Tracklist.latest_version_id.is_(None), Tracklist.latest_version_id.not_in(has_timestamp_subq)),
+        )
+    )
+
+
+async def count_cue_review_candidates(session: AsyncSession) -> int:
+    """Count cue review candidates (eligible + gated) corpus-wide -- two aggregates, NO cue text built.
+
+    phaze-tzy6s.17: this exists because ``len(await get_cue_review_cards(session))`` is not a corpus
+    count. That reader caps each half at :data:`_MAX_REVIEW_ROWS` (WR-04), so it saturates at
+    ``2 * _MAX_REVIEW_ROWS`` and reports the ceiling as though it were the total.
+
+    It is also enormously cheaper, which is the other half of the same defect. Producing that
+    ``len()`` ran ``_build_cue_tracks`` + ``generate_cue_content`` for up to ``_MAX_REVIEW_ROWS``
+    sets -- full in-memory ``.cue`` generation for thousands of concert sets -- and then discarded
+    every string. Eligibility is entirely SQL-expressible, so none of that work is needed to answer
+    "how many are there".
+
+    Degrade-safe by the same contract as its sibling readers: on any DB error it logs and returns 0,
+    which drops the exclusion row rather than rendering a number it did not measure.
+    """
+    try:
+        async with session.begin_nested():
+            eligible = await session.execute(select(func.count()).select_from(_eligible_tracklist_stmt().subquery()))
+            gated = await session.execute(select(func.count()).select_from(_gated_tracklist_stmt().subquery()))
+            return int(eligible.scalar_one()) + int(gated.scalar_one())
+    except Exception:
+        logger.warning("cue_review_count_degraded", exc_info=True)
+        return 0
+
+
 async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
     """Return eligible + gated cue cards for the Cue preview workspace (degrade-safe, NO disk write).
 
@@ -734,16 +790,8 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
             # Gated: approved + applied() file but NO timestamped track on the LATEST version
             # (mirrors cue._get_cue_stats missing set -- phaze-dboy: scoped to latest_version_id,
             # the same version generation reads, not "any version ever").
-            has_timestamp_subq = select(TracklistTrack.version_id).where(TracklistTrack.timestamp.is_not(None)).distinct()
             gated_stmt = (
-                select(Tracklist, FileRecord)
-                .join(FileRecord, Tracklist.file_id == FileRecord.id)
-                .where(
-                    Tracklist.status == "approved",
-                    Tracklist.file_id.is_not(None),
-                    applied_clause(),
-                    or_(Tracklist.latest_version_id.is_(None), Tracklist.latest_version_id.not_in(has_timestamp_subq)),
-                )
+                _gated_tracklist_stmt()
                 .order_by(Tracklist.artist, Tracklist.event)
                 .limit(_MAX_REVIEW_ROWS)  # WR-04: the gated half's own per-set cap (total ceiling = 2 * _MAX_REVIEW_ROWS)
             )

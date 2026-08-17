@@ -130,7 +130,10 @@
 
     {% if preflight.exclusions %}
     <div class="px-6 pt-4">
-        <p class="{{ _eyebrow }} mb-2">Will not run — {{ preflight.excluded_total }} excluded</p>
+        {# phaze-tzy6s.17: the "+" is not decoration. One contributing row (tag writes) can only be
+           counted by a capped scan, so when it saturates this total is a FLOOR and says so. An
+           exact-looking total sitting above a row openly marked "N+" is the worse of the two. #}
+        <p class="{{ _eyebrow }} mb-2">Will not run — {{ preflight.excluded_total }}{{ "+" if preflight.excluded_total_at_least }} excluded</p>
         <div class="overflow-x-auto rounded-lg border border-gray-200 dark:border-phaze-border">
             <table class="w-full text-left text-xs">
                 <caption class="sr-only">Work excluded from this execution batch, with the reason and next action</caption>
@@ -148,7 +151,7 @@
                             {{ exclusion.label }}
                             {% if exclusion.blocking %}<span class="ml-1 font-jura text-[10px] uppercase tracking-wider text-red-700 dark:text-red-300">blocking</span>{% endif %}
                         </td>
-                        <td class="px-3 py-2 text-right align-top tabular-nums text-gray-700 dark:text-gray-300">{{ exclusion.count }}</td>
+                        <td class="px-3 py-2 text-right align-top tabular-nums text-gray-700 dark:text-gray-300">{{ exclusion.count }}{{ "+" if exclusion.at_least }}</td>
                         <td class="px-3 py-2 align-top text-gray-600 dark:text-gray-400">{{ exclusion.reason }} {{ exclusion.next_action }}</td>
                     </tr>
                     {% endfor %}
@@ -211,8 +214,10 @@
         title="Execute " ~ preflight.total ~ " approved operation" ~ ("" if preflight.total == 1 else "s") ~ "?",
         message="Files are copied to their proposed destination, verified, then the original is deleted. Originals survive until"
                 ~ " verification succeeds, and every operation is written to the audit log. "
-                ~ preflight.excluded_total ~ " item" ~ ("" if preflight.excluded_total == 1 else "s")
-                ~ " listed above are excluded and will not be touched.",
+                ~ preflight.excluded_total ~ ("+" if preflight.excluded_total_at_least else "")
+                ~ " item" ~ ("" if preflight.excluded_total == 1 and not preflight.excluded_total_at_least else "s")
+                ~ " listed above are excluded and will not be touched."
+                ~ (" The excluded figure is a lower bound: the tag-write queue scan is capped." if preflight.excluded_total_at_least else ""),
         action="/execution/start",
         target="#apply-execute-response",
         confirm_label="Execute " ~ preflight.total,

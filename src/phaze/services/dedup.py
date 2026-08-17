@@ -311,6 +311,20 @@ async def count_duplicate_groups(session: AsyncSession) -> int:
 
     Returns the number of distinct SHA256 hashes that have more than one file.
     Excludes files carrying a dedup_resolution marker (marker-existence is authority, not FileRecord.state).
+
+    One aggregate query; no group members are materialized. That is what makes it the right answer to
+    "how many duplicate groups are there" anywhere a corpus-wide number is wanted, and
+    phaze-tzy6s.17 rewired the Execute preflight onto it for exactly that reason:
+    ``len(await get_dedupe_groups(session))`` is NOT a corpus count and reads as one. That path goes
+    through :func:`find_duplicate_groups_with_metadata`, whose ``limit`` defaults to **100** and
+    PAGES, so a corpus with 100 duplicate groups and one with 100,000 both reported "100" -- on the
+    final confirmation dialog before an irreversible batch, the one screen whose whole job is to be
+    accurate about scale. Prefer this over a bigger page size; a page's length is never a total.
+
+    Counts the same population the paged reader selects, and deliberately carries no
+    ``ORDER BY``/``LIMIT``/``OFFSET``: :func:`_dup_hash_subquery` needs them because a PAGE must be
+    stable and bounded, whereas a COUNT over the same grouping is order-independent, and a limit here
+    would be the very defect described above.
     """
     subq = (
         select(FileRecord.sha256_hash)
