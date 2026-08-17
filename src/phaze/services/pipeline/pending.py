@@ -242,8 +242,6 @@ def _metadata_pending_stmt() -> Select[Any]:
     )
 
 
-
-
 async def get_metadata_activity_summary(session: AsyncSession) -> MetadataActivitySummary:
     """Return recent successful metadata writes across all stored files and agents."""
     cutoff = datetime.now(UTC) - timedelta(hours=24)
