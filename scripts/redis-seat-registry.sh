@@ -1,0 +1,576 @@
+#!/usr/bin/env bash
+# The Redis logical-DB seat registry behind `just test-db-for` (phaze-68wky).
+#
+# WHAT THIS OWNS
+#
+# `just test-db-for <name>` gives one worktree ("seat") an exclusive Redis logical database on the
+# SHARED `phaze-test-redis` container, because two redis-backed test modules run global
+# `scan_iter`+`delete` sweeps in fixture setup AND teardown -- on a shared logical DB one seat's
+# fixture deletes another seat's live keys mid-test (phaze-fwo7). This script is the single place
+# that decides which index a seat gets, and -- new in phaze-68wky -- when an index may be taken
+# back.
+#
+# THE DEFECT THIS REPLACES
+#
+# Allocation used to be `INCR phaze:test:redis-db-counter` with no reclaim: a monotonic counter.
+# Every seat that ever ran `test-db-for` burned an index forever, so the counter walked past the
+# 64-database cap and then refused every new seat -- with indices 68, 73, 74 and 80 observed in the
+# wild, mostly held by worktrees that no longer existed. Refusing was right (wrapping onto a shared
+# index silently restores phaze-fwo7), but the only remedies offered were `just test-db-down`
+# variants, and `test-db-down` removes the ONE Postgres+Redis pair every concurrent seat shares --
+# the phaze-ieqg incident, where a mid-round teardown destroyed 89 per-worktree databases and this
+# very registry under five in-flight suites. Five independent fleet reports (hq-6hb, hq-8zr, hq-el5,
+# hq-ew2, hq-ij4) hit that wall and each invented a different workaround, one of which was dropping
+# Redis isolation altogether -- i.e. straight back into phaze-fwo7.
+#
+# So: allocation now takes the LOWEST FREE index rather than the next one, and there are two
+# non-destructive ways to make an index free again (`release`, `reclaim`) that never touch the
+# shared containers.
+#
+# THE LIVENESS TEST (the part that must not be guessed at)
+#
+# "Is this seat still in use?" cannot be answered by "is something connected right now" alone: a
+# developer who ran `test-db-for` and is editing code for an hour has no connections at all, and
+# handing their index to a second seat is precisely the bug. So a seat is considered IN USE if ANY
+# of these hold, and only reclaimable when NONE do:
+#
+#   L1  A Redis client is connected to its logical database (`CLIENT LIST` -> `db=<index>`).
+#   L2  A Postgres client backend is connected to `phaze_<seat>_test` or
+#       `phaze_<seat>_migrations_test` on the shared harness. This is the strong one: pytest holds
+#       a session-level advisory-lock connection for the WHOLE run (tests/db_guard.py), so an
+#       idle-looking suite is still visible here. It is the same signal `just test-db-down` already
+#       trusts to refuse a teardown. Postgres evidence is MANDATORY for `reclaim`: if the Postgres
+#       container cannot be reached, the sweep refuses rather than treating unknown as free.
+#   L3  Its lease has not expired -- `test-db-for` stamps `phaze:test:redis-db-seen` on every call,
+#       and a seat stamped within PHAZE_TEST_REDIS_SEAT_LEASE_HOURS (default 72) is left alone.
+#       This is what protects the claimed-but-idle seat that L1 and L2 cannot see.
+#
+# A registry entry with NO stamp predates phaze-68wky, so its age is genuinely unknown. It is
+# reported as `unknown`, NOT as stale, and a sweep leaves it alone unless asked with
+# `--include-unstamped` -- backfilling a plausible age for it would be precisely the guessed-at
+# liveness test this design refuses. Each such seat stamps itself the next time its worktree runs
+# `test-db-for`, so the backlog drains on its own as seats are used.
+#
+# Two conditions override L3 (never L1/L2 -- nothing reclaims a seat that is demonstrably in use):
+#
+#   O1  The seat's recorded origin directory (`phaze:test:redis-db-origin`, the worktree that ran
+#       `test-db-for`) no longer exists. The worktree is gone; the seat cannot come back.
+#   O2  The seat's index is >= the container's logical-database count. No client can be using it --
+#       Redis refuses `SELECT` past `databases`, so such a seat is already broken, not live. These
+#       are exactly the 68/73/74/80 allocations that wedged the harness.
+#
+# `release <seat>` is the operator-driven path and deliberately ignores L3/O1/O2: naming a seat IS
+# the assertion that it is finished. It still refuses on L1/L2 (use --force to override).
+#
+# ATOMICITY AND IDEMPOTENCE
+#
+# Allocation is one server-side Lua script: read-existing / scan-used / claim happen inside a
+# single Redis execution, so two shells racing on two names can never be handed the same index, and
+# two shells racing on the SAME name both read back one winner. Re-running for an already-allocated
+# seat returns the same index and only refreshes the lease -- CLAUDE.md and every agent recipe
+# depend on that (a fresh index per invocation would strand the previous one and orphan its keys).
+# The scan is what makes released indices reusable; `hash(name) % N` would not do, it collides ~35%
+# of the time across 8 seats and would reintroduce phaze-fwo7 intermittently. Within the scan, an
+# index nobody has ever held is preferred over a recycled one (see the comment on the two loops).
+#
+# Keys, all on logical DB 0 (never allocated to a seat):
+#   phaze:test:redis-db-index   hash seat -> index   (unchanged shape; pre-existing entries load)
+#   phaze:test:redis-db-seen    hash seat -> unix seconds of last `test-db-for` (lease stamp)
+#   phaze:test:redis-db-origin  hash seat -> absolute path of the worktree that claimed it
+#   phaze:test:redis-db-counter DEPRECATED. No longer read or written; left in place rather than
+#                               deleted so an older checkout's `test-db-for` running against the
+#                               same container keeps its own behaviour instead of restarting from 1.
+#
+# Seat names are the DERIVED identifiers from `scripts/derive-seat-name.sh` (phaze-fmfk); this
+# script does not normalize anything itself, so the registry key, the Postgres database pair and
+# the printed exports can never disagree about what a seat is called.
+#
+# Usage:
+#   redis-seat-registry.sh allocate --redis-container C --seat S --capacity N [--origin PATH]
+#   redis-seat-registry.sh release  --redis-container C --seat S [--pg-container C] [--force]
+#   redis-seat-registry.sh list     --redis-container C [--capacity N] [--pg-container C]
+#   redis-seat-registry.sh reclaim  --redis-container C --capacity N
+#                                   (--pg-container C | --no-postgres-check)
+#                                   [--apply] [--include-unstamped]
+#
+# Exit codes: 0 ok, 1 error, 2 usage, 3 capacity exhausted (allocate), 4 refused because the seat
+# is in use (release).
+set -euo pipefail
+
+readonly REGISTRY_KEY="phaze:test:redis-db-index"
+readonly SEEN_KEY="phaze:test:redis-db-seen"
+readonly ORIGIN_KEY="phaze:test:redis-db-origin"
+
+lease_hours="${PHAZE_TEST_REDIS_SEAT_LEASE_HOURS:-72}"
+
+subcommand="${1:-}"
+shift || true
+
+redis_container=""
+pg_container=""
+seat=""
+capacity=""
+origin=""
+apply=0
+force=0
+skip_postgres_check=0
+include_unstamped=0
+
+usage() {
+  echo "usage:" >&2
+  echo "  $0 allocate --redis-container C --seat S --capacity N [--origin PATH]" >&2
+  echo "  $0 release  --redis-container C --seat S [--pg-container C] [--force]" >&2
+  echo "  $0 list     --redis-container C [--capacity N] [--pg-container C]" >&2
+  echo "  $0 reclaim  --redis-container C --capacity N (--pg-container C | --no-postgres-check) [--apply] [--include-unstamped]" >&2
+  exit 2
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --redis-container)
+      redis_container="${2:-}"
+      shift 2
+      ;;
+    --pg-container)
+      pg_container="${2:-}"
+      shift 2
+      ;;
+    --seat)
+      seat="${2:-}"
+      shift 2
+      ;;
+    --capacity)
+      capacity="${2:-}"
+      shift 2
+      ;;
+    --origin)
+      origin="${2:-}"
+      shift 2
+      ;;
+    --apply)
+      apply=1
+      shift
+      ;;
+    --force)
+      force=1
+      shift
+      ;;
+    --no-postgres-check)
+      skip_postgres_check=1
+      shift
+      ;;
+    --include-unstamped)
+      include_unstamped=1
+      shift
+      ;;
+    *)
+      echo "❌ unknown argument '$1'" >&2
+      usage
+      ;;
+  esac
+done
+
+[ -n "$redis_container" ] || usage
+
+# ---------------------------------------------------------------------------------------------
+# Redis plumbing. Everything goes through `docker exec` -- the same path the justfile recipe used
+# before this script existed -- so no redis-cli on the host is required and the tests can drive a
+# THROWAWAY container by name without publishing a port anywhere near the shared harness on 6380.
+# ---------------------------------------------------------------------------------------------
+
+registry_cli() {
+  docker exec "$redis_container" redis-cli -n 0 "$@"
+}
+
+if ! docker exec "$redis_container" redis-cli PING >/dev/null 2>&1; then
+  echo "❌ Redis container '${redis_container}' is not reachable. Start the shared harness with \`just test-db\`." >&2
+  exit 1
+fi
+
+server_now() {
+  docker exec "$redis_container" redis-cli TIME | head -n1
+}
+
+# Logical databases actually configured on the container. `--capacity` is what the caller intends;
+# this is what Redis will really accept a SELECT for, and the smaller of the two is the real cap.
+container_databases() {
+  docker exec "$redis_container" redis-cli CONFIG GET databases 2>/dev/null | tail -n1
+}
+
+effective_capacity() {
+  local configured
+  configured="$(container_databases)"
+  if [ -z "${capacity:-}" ]; then
+    echo "${configured:-16}"
+  elif [ -n "$configured" ] && [ "$configured" -lt "$capacity" ]; then
+    echo "$configured"
+  else
+    echo "$capacity"
+  fi
+}
+
+# Indices with at least one client connected right now (liveness signal L1). redis-cli's own
+# connection lands on whatever `-n` selected, so this is read on DB 0, which is never allocated.
+live_redis_indices() {
+  docker exec "$redis_container" redis-cli CLIENT LIST 2>/dev/null |
+    sed -n 's/.*[[:space:]]db=\([0-9]*\).*/\1/p' | sort -u
+}
+
+# Databases with a live client backend on the shared Postgres (liveness signal L2). Same query
+# shape `just test-db-down` uses to refuse a teardown; pytest holds its advisory-lock connection
+# for the whole session, so a suite that is merely thinking still shows up.
+live_postgres_databases() {
+  [ -n "$pg_container" ] || return 0
+  docker exec "$pg_container" psql -U phaze -d postgres -tAc \
+    "SELECT DISTINCT datname FROM pg_stat_activity
+      WHERE backend_type = 'client backend' AND pid <> pg_backend_pid() AND datname LIKE 'phaze%'" 2>/dev/null || true
+}
+
+seat_is_redis_live() {
+  local index="$1" live
+  live="$2"
+  printf '%s\n' "$live" | grep -qx "$index"
+}
+
+seat_is_postgres_live() {
+  local name="$1" live
+  live="$2"
+  printf '%s\n' "$live" | grep -qx -e "phaze_${name}_test" -e "phaze_${name}_migrations_test"
+}
+
+# ---------------------------------------------------------------------------------------------
+# allocate
+# ---------------------------------------------------------------------------------------------
+
+# One atomic server-side transaction: return the seat's existing in-range index (refreshing its
+# lease), else claim the LOWEST FREE index in [1, capacity), else report exhaustion. Index 0 is
+# reserved for this registry itself and is never handed out.
+readonly ALLOCATE_LUA='
+local reg, seen, origin_key = KEYS[1], KEYS[2], KEYS[3]
+local seat, capacity, origin_path = ARGV[1], tonumber(ARGV[2]), ARGV[3]
+local now = redis.call("TIME")[1]
+
+local function stamp()
+  redis.call("HSET", seen, seat, now)
+  if origin_path ~= "" then redis.call("HSET", origin_key, seat, origin_path) end
+end
+
+local existing = redis.call("HGET", reg, seat)
+local existing_index = existing and tonumber(existing) or nil
+if existing_index and existing_index >= 1 and existing_index < capacity then
+  stamp()
+  return "existing " .. existing_index
+end
+
+local used = {}
+local highwater = 0
+local flat = redis.call("HGETALL", reg)
+for i = 1, #flat, 2 do
+  if flat[i] ~= seat then
+    local value = tonumber(flat[i + 1])
+    if value then
+      used[value] = true
+      if value < capacity and value > highwater then highwater = value end
+    end
+  end
+end
+
+local function claim(index)
+  redis.call("HSET", reg, seat, index)
+  stamp()
+  if existing then return "reallocated " .. index end
+  return "allocated " .. index
+end
+
+-- Prefer an index no seat has ever held (above the current high-water mark) before recycling a
+-- freed one. Reclaim can only ever be as good as its evidence, and one hazard survives every
+-- check: a shell that still has a stale PHAZE_REDIS_URL exported keeps using its old index even
+-- after the registry hands it back. Recycling last, rather than first, means that hazard is only
+-- taken when the space genuinely demands it.
+for index = highwater + 1, capacity - 1 do
+  if not used[index] then return claim(index) end
+end
+for index = 1, capacity - 1 do
+  if not used[index] then return claim(index) end
+end
+
+return "exhausted 0"
+'
+
+# stdout is the allocated index and NOTHING else, so the caller can capture it with a plain
+# command substitution; every human-facing line goes to stderr and reaches the terminal unread.
+cmd_allocate() {
+  [ -n "$seat" ] && [ -n "$capacity" ] || usage
+  local cap result verdict index
+  cap="$(effective_capacity)"
+
+  result="$(registry_cli EVAL "$ALLOCATE_LUA" 3 "$REGISTRY_KEY" "$SEEN_KEY" "$ORIGIN_KEY" "$seat" "$cap" "$origin")"
+  verdict="${result%% *}"
+  index="${result##* }"
+
+  case "$verdict" in
+    existing)
+      echo "🟥 '${seat}' already holds Redis logical DB ${index}" >&2
+      ;;
+    allocated | reallocated)
+      if [ "$verdict" = "reallocated" ]; then
+        # Only reachable when the recorded index was out of range -- an allocation from the old
+        # monotonic counter that Redis would refuse to SELECT. Moving it into range is a repair,
+        # not a reassignment: nothing can have been using it.
+        echo "♻️  '${seat}' held an out-of-range index; moved it to Redis logical DB ${index}" >&2
+      else
+        echo "✅ allocated Redis logical DB ${index} to '${seat}'" >&2
+      fi
+      # A freed index keeps whatever keys its previous seat left behind unless that seat was
+      # released through this script. Handing those to a new seat is the phaze-fwo7 shape from the
+      # other direction -- foreign keys in a "private" database -- so clear it at handover. Safe by
+      # construction: only an index no live seat holds can be allocated here.
+      local leftover
+      leftover="$(docker exec "$redis_container" redis-cli -n "$index" DBSIZE 2>/dev/null || echo 0)"
+      if [ "${leftover:-0}" -gt 0 ]; then
+        echo "🧹 logical DB ${index} held ${leftover} leftover key(s) from a previous seat; cleared" >&2
+        docker exec "$redis_container" redis-cli -n "$index" FLUSHDB >/dev/null
+      fi
+      ;;
+    exhausted)
+      echo "" >&2
+      echo "❌ All $((cap - 1)) allocatable Redis logical DBs on ${redis_container} are held; no index left for '${seat}'." >&2
+      echo "   (${cap} logical DBs exist; DB 0 is the allocation registry, so seats get 1..$((cap - 1)).)" >&2
+      echo "   Refusing to wrap onto a shared index -- that would silently reintroduce the cross-worktree" >&2
+      echo "   Redis interference this registry exists to prevent (phaze-fwo7)." >&2
+      echo "" >&2
+      echo "   Reclaim first -- neither of these stops or clears the shared harness:" >&2
+      echo "     just test-db-seats                  # who holds what, and which seats look stale" >&2
+      echo "     just test-db-reclaim                # dry run: what a sweep would free" >&2
+      echo "     just test-db-reclaim --apply        # free every seat no longer in use" >&2
+      echo "     just test-db-release <other-seat>   # hand back one named seat you know is done" >&2
+      echo "" >&2
+      echo "   Only if the sweep frees nothing and every seat is genuinely live, raise the space:" >&2
+      echo "     PHAZE_TEST_REDIS_DATABASES=$((cap * 2)) just test-db" >&2
+      echo "   (that resize recreates the Redis container, so it refuses while any seat is connected;" >&2
+      echo "   do NOT reach for \`just test-db-down\` -- it removes the Postgres+Redis pair every" >&2
+      echo "   concurrent worktree shares and destroys their databases mid-run, phaze-ieqg.)" >&2
+      exit 3
+      ;;
+    *)
+      echo "❌ unexpected allocator response: ${result}" >&2
+      exit 1
+      ;;
+  esac
+
+  printf '%s\n' "$index"
+}
+
+# ---------------------------------------------------------------------------------------------
+# release / reclaim
+# ---------------------------------------------------------------------------------------------
+
+# Hand an index back: wipe the seat's keys so the next holder starts clean, then drop the three
+# registry fields. Touches nothing outside logical DB `index` and the registry hashes -- the
+# containers, every other seat's keys, and every Postgres database are untouched.
+free_seat() {
+  local name="$1" index="$2" cap="$3"
+  if [ "$index" -ge 1 ] && [ "$index" -lt "$cap" ]; then
+    docker exec "$redis_container" redis-cli -n "$index" FLUSHDB >/dev/null
+  fi
+  registry_cli HDEL "$REGISTRY_KEY" "$name" >/dev/null
+  registry_cli HDEL "$SEEN_KEY" "$name" >/dev/null
+  registry_cli HDEL "$ORIGIN_KEY" "$name" >/dev/null
+}
+
+cmd_release() {
+  [ -n "$seat" ] || usage
+  local cap index
+  cap="$(effective_capacity)"
+  index="$(registry_cli HGET "$REGISTRY_KEY" "$seat")"
+  if [ -z "$index" ]; then
+    echo "🟢 '${seat}' holds no Redis logical DB; nothing to release."
+    return 0
+  fi
+
+  if [ "$force" -ne 1 ]; then
+    local redis_live pg_live
+    redis_live="$(live_redis_indices)"
+    pg_live="$(live_postgres_databases)"
+    if seat_is_redis_live "$index" "$redis_live"; then
+      echo "❌ Refusing to release '${seat}': a client is connected to Redis logical DB ${index} right now." >&2
+      echo "   Releasing it would clear keys a running suite is using. Wait for it, or --force." >&2
+      exit 4
+    fi
+    if [ -n "$pg_container" ] && seat_is_postgres_live "$seat" "$pg_live"; then
+      echo "❌ Refusing to release '${seat}': a client backend is connected to its Postgres database." >&2
+      echo "   pytest holds that connection for the whole session, so a suite is running in this seat." >&2
+      echo "   Wait for it to finish, or --force." >&2
+      exit 4
+    fi
+  fi
+
+  free_seat "$seat" "$index" "$cap"
+  echo "✅ released Redis logical DB ${index} from '${seat}' (keys cleared, index free for the next seat)"
+}
+
+# Shared by `list` and `reclaim`: classify every registry entry against the liveness rules above.
+# Emits one TAB-separated record per seat: name, index, verdict, reason.
+classify_seats() {
+  local cap="$1"
+  local now redis_live pg_live lease_seconds
+  now="$(server_now)"
+  redis_live="$(live_redis_indices)"
+  pg_live="$(live_postgres_databases)"
+  lease_seconds=$((lease_hours * 3600))
+
+  # Each hash is fetched ONCE and looked up locally. A per-seat `HGET` would be three `docker exec`
+  # round trips per seat; on a real 38-seat registry that turned `just test-db-seats` into a
+  # multi-second wait, which is a poor property for the command whose whole job is to be the easy
+  # thing to reach for. (Local awk rather than a bash 4 associative array: /bin/bash on macOS is
+  # still 3.2, and this script has to run there.)
+  local pairs seen_pairs origin_pairs name index seen_at origin_path age verdict reason
+  pairs="$(registry_cli HGETALL "$REGISTRY_KEY" | paste - - 2>/dev/null || true)"
+  [ -n "$pairs" ] || return 0
+  seen_pairs="$(registry_cli HGETALL "$SEEN_KEY" | paste - - 2>/dev/null || true)"
+  origin_pairs="$(registry_cli HGETALL "$ORIGIN_KEY" | paste - - 2>/dev/null || true)"
+
+  while IFS=$'\t' read -r name index; do
+    [ -n "$name" ] || continue
+    seen_at="$(printf '%s\n' "$seen_pairs" | awk -F'\t' -v key="$name" '$1 == key { print $2 }')"
+    origin_path="$(printf '%s\n' "$origin_pairs" | awk -F'\t' -v key="$name" '$1 == key { print $2 }')"
+    verdict="keep"
+    reason=""
+
+    if ! [[ "$index" =~ ^[0-9]+$ ]]; then
+      verdict="reclaim"
+      reason="registry value '${index}' is not an index"
+      printf '%s\t%s\t%s\t%s\n' "$name" "0" "$verdict" "$reason"
+      continue
+    fi
+
+    if seat_is_redis_live "$index" "$redis_live"; then
+      reason="a Redis client is connected to DB ${index} (L1)"
+    elif [ -n "$pg_container" ] && seat_is_postgres_live "$name" "$pg_live"; then
+      reason="a Postgres backend is connected to phaze_${name}_test (L2)"
+    elif [ -n "$origin_path" ] && [ ! -d "$origin_path" ]; then
+      verdict="reclaim"
+      reason="origin worktree ${origin_path} no longer exists (O1)"
+    elif [ "$index" -ge "$cap" ]; then
+      verdict="reclaim"
+      reason="index ${index} is past the ${cap}-database cap, so no client can be using it (O2)"
+    elif [ -z "$seen_at" ]; then
+      # Allocated before phaze-68wky added lease stamps, so its age is genuinely unknown -- and
+      # inventing an age for it would be exactly the guessed-at liveness test this design refuses.
+      # A sweep leaves these alone unless the operator asks for them with --include-unstamped.
+      verdict="unstamped"
+      reason="predates lease stamping, so its age is unknown; re-running \`just test-db-for\` in that seat stamps it"
+    else
+      age=$((now - seen_at))
+      if [ "$age" -gt "$lease_seconds" ]; then
+        verdict="reclaim"
+        reason="lease expired: last claimed $((age / 3600))h ago, over the ${lease_hours}h lease (L3)"
+      else
+        reason="lease live: last claimed $((age / 3600))h ago, within the ${lease_hours}h lease (L3)"
+      fi
+    fi
+
+    printf '%s\t%s\t%s\t%s\n' "$name" "$index" "$verdict" "$reason"
+  done <<<"$pairs"
+}
+
+require_postgres_evidence() {
+  if [ -n "$pg_container" ]; then
+    if docker exec "$pg_container" psql -U phaze -d postgres -tAc "SELECT 1" >/dev/null 2>&1; then
+      return 0
+    fi
+    echo "❌ Postgres container '${pg_container}' is not reachable, so a running suite in a seat would be invisible." >&2
+  else
+    echo "❌ No --pg-container given, so a running suite in a seat would be invisible." >&2
+  fi
+  echo "   pytest holds a Postgres connection for its whole session and often none to Redis, so without" >&2
+  echo "   that evidence a live seat looks idle and the sweep could clear a suite's keys mid-run." >&2
+  echo "   Start the harness (\`just test-db\`), or pass --no-postgres-check to sweep on the remaining" >&2
+  echo "   evidence alone -- only do that when you know no suite is running." >&2
+  exit 1
+}
+
+cmd_list() {
+  local cap records
+  cap="$(effective_capacity)"
+  records="$(classify_seats "$cap")"
+  if [ -z "$records" ]; then
+    echo "No Redis logical DBs are allocated on ${redis_container} (capacity ${cap}, index 0 reserved for the registry)."
+    return 0
+  fi
+  echo "Redis seat allocations on ${redis_container} (capacity ${cap}, lease ${lease_hours}h):"
+  echo ""
+  printf '  %-6s  %-40s  %-9s  %s\n' "DB" "SEAT" "STATE" "EVIDENCE"
+  local state
+  while IFS=$'\t' read -r name index verdict reason; do
+    [ -n "$name" ] || continue
+    case "$verdict" in
+      keep) state="in-use" ;;
+      unstamped) state="unknown" ;;
+      *) state="stale" ;;
+    esac
+    printf '  %-6s  %-40s  %-9s  %s\n' "$index" "$name" "$state" "$reason"
+  done <<<"$records"
+  echo ""
+  echo "  in-use  left alone by \`just test-db-reclaim\`."
+  echo "  stale   what \`just test-db-reclaim --apply\` frees."
+  echo "  unknown pre-phaze-68wky allocations; left alone unless you add --include-unstamped."
+}
+
+cmd_reclaim() {
+  [ -n "$capacity" ] || usage
+  [ "$skip_postgres_check" -eq 1 ] || require_postgres_evidence
+  if [ "$skip_postgres_check" -eq 1 ] && [ -z "$pg_container" ]; then
+    echo "⚠️  --no-postgres-check: sweeping without the Postgres evidence (L2). A suite that is running" >&2
+    echo "    but not currently touching Redis is invisible to this sweep." >&2
+  fi
+
+  local cap records freed=0 kept=0 unstamped=0
+  cap="$(effective_capacity)"
+  records="$(classify_seats "$cap")"
+  if [ -z "$records" ]; then
+    echo "No Redis logical DBs are allocated on ${redis_container}; nothing to reclaim."
+    return 0
+  fi
+
+  while IFS=$'\t' read -r name index verdict reason; do
+    [ -n "$name" ] || continue
+    if [ "$verdict" = "keep" ]; then
+      kept=$((kept + 1))
+      continue
+    fi
+    if [ "$verdict" = "unstamped" ] && [ "$include_unstamped" -ne 1 ]; then
+      unstamped=$((unstamped + 1))
+      continue
+    fi
+    freed=$((freed + 1))
+    if [ "$apply" -eq 1 ]; then
+      free_seat "$name" "$index" "$cap"
+      echo "✅ reclaimed DB ${index} from '${name}' — ${reason}"
+    else
+      echo "•  would reclaim DB ${index} from '${name}' — ${reason}"
+    fi
+  done <<<"$records"
+
+  echo ""
+  if [ "$apply" -eq 1 ]; then
+    echo "🧹 reclaimed ${freed} seat(s); left ${kept} in-use seat(s) alone. The shared containers were not touched."
+  else
+    echo "Dry run: ${freed} seat(s) would be reclaimed, ${kept} left alone. Re-run with --apply to free them."
+  fi
+  if [ "$unstamped" -gt 0 ]; then
+    echo ""
+    echo "${unstamped} seat(s) predate lease stamping (phaze-68wky) and were left alone: their age is unknown,"
+    echo "and a worktree that still has PHAZE_REDIS_URL exported would keep writing to an index handed back"
+    echo "underneath it. Each one stamps itself the next time its worktree runs \`just test-db-for\`. Add"
+    echo "--include-unstamped to clear the backlog once you know those worktrees are gone."
+  fi
+}
+
+case "$subcommand" in
+  allocate) cmd_allocate ;;
+  release) cmd_release ;;
+  list) cmd_list ;;
+  reclaim) cmd_reclaim ;;
+  *) usage ;;
+esac

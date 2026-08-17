@@ -114,7 +114,14 @@ def test_test_db_for_emits_a_redis_url_export() -> None:
     assert "PHAZE_REDIS_URL" in body, "`just test-db-for` must print a PHAZE_REDIS_URL export, not just the Postgres ones"
     # Allocation must come from the atomic registry, not a hash of the name: `hash(name) % 16`
     # collides ~35% of the time across 8 seats, which would restore the bug intermittently.
-    assert "INCR" in body and "HSETNX" in body, "Redis DB allocation must use the atomic INCR/HSETNX registry, not a hash-and-hope scheme"
+    # phaze-68wky moved that registry out of this recipe and into `scripts/redis-seat-registry.sh`
+    # (the inline `INCR`/`HSETNX` pair was a monotonic counter that never reclaimed, so it walked
+    # past the logical-DB cap and then refused every new seat). The property this line has always
+    # been about — a real allocator, not a hash of the name — is unchanged, and the allocator's own
+    # behaviour is pinned by tests/shared/test_redis_seat_registry.py against a throwaway Redis.
+    assert "scripts/redis-seat-registry.sh allocate" in body, (
+        "Redis DB allocation must go through the atomic seat registry, not a hash-and-hope scheme"
+    )
 
 
 def test_meta_guard_flags_a_hardcoded_dsn() -> None:

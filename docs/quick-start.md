@@ -258,6 +258,19 @@ Exporting only the first is the common mistake: Redis stays shared and one seat'
 deletes another's live keys mid-test. Two worktrees with their own `test-db-for` databases are the
 supported way to run concurrently.
 
+**When the worktree is finished, hand its Redis index back** — the logical-DB space is finite (64
+by default) and shared by every seat on the machine:
+
+```bash
+just test-db-release <name>   # frees this seat's index; stops and clears nothing
+just test-db-seats            # who holds what, and why each seat is considered in use
+just test-db-reclaim          # dry run: which seats a sweep would free (--apply to do it)
+```
+
+If allocation ever refuses because the space is full, `just test-db-reclaim` is the answer.
+**Never `just test-db-down`** — it removes the containers every other seat is using and destroys
+their databases mid-run (phaze-ieqg, phaze-68wky).
+
 Every run prints its resolved target in the pytest header — check it before trusting a green run.
 `exclusive` means this process holds the lock; `unlocked` means it does not, and the run is
 unprotected. See [CLAUDE.md](../CLAUDE.md) for the full rules.
