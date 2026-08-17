@@ -1,0 +1,23 @@
+{# The Operations workspace's force-local banner.
+
+   phaze-tzy6s.17: this hand-rolled the `attention` tone from ui/primitives.html -- the class string
+   was byte-identical to the macro's own -- as a bare <p> with no role, no heading and no icon. Two
+   consequences, one cosmetic and one not: a palette change in primitives.html would silently miss
+   this copy, and because the <p> carried no `role="alert"` the banner OOB-swapped in without
+   assistive tech ever announcing that routing had been overridden. Converted to the primitive.
+
+   The OOB CONTRACT is why the id stays on this wrapper instead of moving onto the alert itself: when
+   `force_local` is false this fragment must still render an element with this id so the OOB swap has
+   a target to CLEAR (tests/shared/routers/test_routing.py:237 pins exactly that). An id that only
+   exists while the warning is showing can never turn the warning off again. #}
+<div id="routing-operations-warning"{% if oob | default(false) %} hx-swap-oob="true"{% endif %}>
+{% if force_local %}
+{% import "ui/primitives.html" as ui %}
+<div class="mt-3">
+    {{ ui.actionable_alert(
+        title="Routing override active",
+        message="Override active: all analysis is routed locally. Cloud and Kueue capacity is currently bypassed.",
+        tone="attention") }}
+</div>
+{% endif %}
+</div>

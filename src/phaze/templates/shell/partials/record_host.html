@@ -107,7 +107,7 @@
                panel never displays the previous file's record -- filename, stage pills,
                force-skip dialogs, pending-approval Approve/Skip buttons -- while GET
                /record/{file_id} is still in flight. #}
-            <div x-show="!loaded" x-cloak class="animate-pulse space-y-4 p-2" aria-hidden="true">
+            <div x-show="!loaded" x-cloak class="motion-safe:animate-pulse space-y-4 p-2" aria-hidden="true">
                 <div class="h-6 w-2/3 rounded bg-gray-200 dark:bg-phaze-border"></div>
                 <div class="h-4 w-1/2 rounded bg-gray-200 dark:bg-phaze-border"></div>
                 <div class="h-24 w-full rounded bg-gray-200 dark:bg-phaze-border"></div>

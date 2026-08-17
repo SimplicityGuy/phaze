@@ -50,7 +50,7 @@ phaze/
 │   │   └── tracklist_priority_flag.py # TracklistPriorityFlag (operator "answer this next" drain flag)
 │   ├── routers/                # API + UI endpoints
 │   │   ├── health.py           #   GET /health
-│   │   ├── shell.py            #   v7.0 console shell: GET / (Summary landing placeholder, SQ3-02) + GET /s/<stage> workspace swaps
+│   │   ├── shell.py            #   v7.0 console shell: GET / (actionable Summary landing) + GET /s/<stage> workspace swaps
 │   │   ├── pipeline.py         #   Stage triggers + /pipeline/stats poll (/pipeline/ 302-redirects to the shell)
 │   │   ├── pipeline_scans.py   #   Admin scan trigger + HTMX scan-batch polling
 │   │   ├── proposals.py        #   Proposal review + approval UI
@@ -196,14 +196,15 @@ phaze/
 │   └── templates/              # Jinja2 HTML templates (HTMX + Tailwind)
 │       ├── base.html           #   Base layout (SRI-pinned CDN assets)
 │       ├── shell/              #   v7.0 console shell (three-column DAG-centric layout)
-│       │   ├── shell.html      #     Three-column shell served by GET / (Summary landing placeholder, SQ3-02)
+│       │   ├── shell.html      #     Three-column shell served by GET / (actionable Summary landing)
 │       │   ├── _stage_fragment.html #  The bare /s/<stage> fragment returned to an HX-Request swap
 │       │   └── partials/       #     rail.html (DAG rail nav), header.html (⌘K + status strip),
 │       │       │               #     cmdk_modal.html (⌘K command palette), record_host.html (record slide-in),
-│       │       │               #     summary_placeholder.html (the DB-free Summary landing),
+│       │       │               #     summary_overview.html (the actionable Summary landing),
 │       │       │               #     _force_local_pill.html (force-local routing override pill)
 │       ├── record/             #   Per-file record slide-in body
-│       ├── pipeline/           #   /s/<stage> workspace partials (partials/<stage>_workspace.html) + stats_bar poll partial
+│       ├── pipeline/           #   /s/<stage> workspace partials (mostly partials/<stage>_workspace.html; rename,
+│       │                       #   tagwrite and move all share changes_workspace.html) + stats_bar poll partial
 │       ├── proposals/          #   Proposal approval UI
 │       ├── execution/          #   Execution dashboard + audit log
 │       ├── duplicates/         #   Duplicate resolution UI
@@ -284,7 +285,7 @@ workspace partial under `templates/pipeline/partials/`:
 
 | Template | Role |
 | -------- | ---- |
-| `templates/shell/shell.html` | The three-column shell served by `GET /` (the Summary landing placeholder is selected by default, SQ3-02) |
+| `templates/shell/shell.html` | The three-column shell served by `GET /` (the Summary overview is selected by default) |
 | `templates/shell/partials/rail.html` | The DAG rail — the navigation spine (stage nodes + live counts) |
 | `templates/shell/partials/header.html` | Header: wave logo, ⌘K trigger, and the compute/agent status strip |
 | `templates/shell/partials/cmdk_modal.html` | The ⌘K command palette (unified search + commands) |
@@ -296,13 +297,16 @@ stage's workspace fragment to swap into the `#stage-workspace` target:
 
 | `/s/<stage>` | Workspace partial |
 | ------------ | ----------------- |
-| `/s/summary` | `shell/partials/summary_placeholder.html` — the DB-free `/` landing (SQ3-01/SQ3-02); no context branch in `_render_stage` |
+| `/s/summary` | `shell/partials/summary_overview.html` — the actionable `/` landing (phaze-tzy6s.9 replaced the DB-free SQ3-02 placeholder); `_render_stage` branches on `stage == "summary"` to build its context |
 | `/s/files` | `pipeline/partials/files_workspace.html` — the Phase-87 per-file stage-matrix workspace (host wrapper for the `files_table_view.html` swap fragment) |
 | `/s/discover` | `pipeline/partials/discover_workspace.html` |
 | `/s/metadata` · `/s/analyze` | `pipeline/partials/{metadata,analyze}_workspace.html` |
 | `/s/tracklist` | `pipeline/partials/tracklist_workspace.html` |
 | `/s/propose` | `pipeline/partials/propose_workspace.html` |
-| `/s/rename` · `/s/tagwrite` · `/s/move` · `/s/dedupe` · `/s/cue` | `pipeline/partials/{rename,tagwrite,move,dedupe,cue}_workspace.html` |
+| `/s/rename` · `/s/tagwrite` · `/s/move` | `pipeline/partials/changes_workspace.html` — ONE Changes Review workspace. phaze-tzy6s.11 / ADR-0008 deleted `rename_workspace.html`, `tagwrite_workspace.html` and `move_workspace.html`; the three stage keys are retained as compatibility aliases that all render this partial, so old bookmarks keep working |
+| `/s/dedupe` · `/s/cue` | `pipeline/partials/{dedupe,cue}_workspace.html` |
+| `/s/apply` | `pipeline/partials/apply_workspace.html` — Execute, with the phaze-tzy6s.12 preflight manifest |
+| `/s/operations` · `/s/audit` · `/s/agents` | `UTILITY_PANES`, not `STAGE_PARTIALS`: `shell/partials/operations.html`, `execution/audit_log.html`, `admin/agents.html` |
 
 `stage` is only ever matched against the `STAGE_PARTIALS` keys — it is never interpolated
 into a template path (template-path-injection mitigation) — and an unknown stage returns

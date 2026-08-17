@@ -242,7 +242,7 @@ async def test_no_agent_param_emits_no_expanded_row(smoke: AsyncClient) -> None:
     """Without ?agent the table renders no expanded row — no fetch, no chrome."""
     response = await smoke.get("/s/agents")
     assert response.status_code == 200, response.text
-    assert "agent-detail-row-" not in response.text
+    assert '<tr id="agent-detail-row-' not in response.text
     assert "agent-activity-" not in response.text
 
 

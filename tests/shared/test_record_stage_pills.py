@@ -80,9 +80,9 @@ async def test_record_pills_show_mixed_derived_statuses(client: AsyncClient, ses
     body = (await client.get(f"/record/{file_id}")).text
 
     # The shared _stage_pill.html tokens (glyph + word + aria-label), per stage label used in the pane.
-    assert 'aria-label="Meta: done"' in body, "metadata pill must carry the derived done token"
+    assert 'aria-label="Metadata: done"' in body, "metadata pill must carry the derived done token"
     assert 'aria-label="Analyze: in flight"' in body, "analyze pill must carry the derived in-flight token"
-    assert 'aria-label="Prop: not started"' in body, "untouched propose pill must carry the not-started token"
+    assert 'aria-label="Propose: not started"' in body, "untouched propose pill must carry the not-started token"
 
 
 @pytest.mark.asyncio
@@ -92,7 +92,7 @@ async def test_record_pills_render_every_stage_status(client: AsyncClient, sessi
 
     body = (await client.get(f"/record/{file_id}")).text
 
-    for label in ("Meta", "Analyze", "Prop", "Appr", "Exec"):
+    for label in ("Metadata", "Analyze", "Propose", "Review", "Execute"):
         assert f'aria-label="{label}: not started"' in body, f"{label} pill is status-blind (no derived token)"
 
 

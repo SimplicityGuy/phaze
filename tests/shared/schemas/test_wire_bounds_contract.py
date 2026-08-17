@@ -162,6 +162,7 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # than reclassified; leaving them would fail the stale-entry check.
     ("/audit/", "status"): _WHITELIST,
     ("/duplicates/{group_hash}/compare", "group_hash"): _NOT_STORED,
+    ("/duplicates/{group_hash}/review", "group_hash"): _NOT_STORED,
     ("/duplicates/{group_hash}/resolve", "group_hash"): _NOT_STORED,
     ("/duplicates/{group_hash}/undo", "group_hash"): _NOT_STORED,
     ("/duplicates/{group_hash}/undo", "file_states"): _NOT_STORED,
@@ -244,7 +245,7 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # Bulk-action id lists: FastAPI reports the ELEMENT type for a ``list[str] = Form(...)``, so they
     # surface here as ``str``. Each element is parsed to a UUID / compared to a known hash in-route.
     ("/proposals/bulk", "proposal_ids"): "list[str] Form; each element parsed to UUID in-route",
-    ("/duplicates/resolve-all", "group_hashes"): "list[str] Form; each element matched against known group hashes",
+    ("/duplicates/review-all", "group_hashes"): "list[str] Form; each element matched against known group hashes",
     # Trigger-scan form: validated server-side against the selected agent's ``scan_roots`` (D-06 /
     # WR-05) before any use, and never stored raw.
     # phaze-oldp: ``agent_id`` no longer needs an entry here -- it now carries an explicit

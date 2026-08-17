@@ -53,6 +53,12 @@ async def test_lane_card_trigger_markup(client: AsyncClient, session: AsyncSessi
     assert f"/s/analyze?lane={lane_id}" in body  # hx-push-url carries the ?lane= selection
     # Space activation for a role=button div is not native — the inline onkeydown handler is REQUIRED.
     assert "onkeydown" in body
+    # Nested diagnostics must consume both halves of keyboard activation. Stopping only keydown lets
+    # Enter keyup bubble into the row's hx-trigger and opens the lane drawer while toggling details.
+    assert 'onkeydown="event.stopPropagation()"' in body
+    assert 'onkeyup="event.stopPropagation()"' in body
+    assert "data-poll-preserve-disclosure" in body
+    assert f'id="lane-diagnostics-summary-{lane_id}"' in body
 
 
 @pytest.mark.asyncio

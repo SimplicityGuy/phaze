@@ -44,7 +44,8 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.integration
 
-_ALL_COLUMNS = ["File", "Type", "Meta", "Analyze", "Prop", "Appr", "Exec"]
+_RESIZABLE_COLUMNS = ["File", "Type", "Metadata", "Analyze", "Propose", "Review", "Execute"]
+_ALL_COLUMNS = [*_RESIZABLE_COLUMNS, "Current state", "Details"]
 
 
 def _make_file(current_path: str) -> FileRecord:
@@ -151,4 +152,4 @@ async def test_stage_cells_keep_the_no_wrap_contract_after_resize_wiring(client:
     row = body[body.index("<tbody") :]
 
     # Five stage cells, each still carrying the no-wrap contract cvn6.2 introduced.
-    assert row.count("px-6 py-3 whitespace-nowrap") == 5
+    assert row.count("hidden whitespace-nowrap px-3 py-2 xl:table-cell") == 5

@@ -53,12 +53,17 @@
             {'text': matched_text, 'color': matched_color},
         ]) %}
     {% endfor %}
-    {% set rows = ns.rows %}
-    {% set empty_heading = "No tracklists yet" %}
-    {% set empty_body = "Run tracklist lookups to look your live sets up on 1001Tracklists." %}
-    {% set row_id_prefix = "tracklist-row" %}
-    {% set table_id = "tracklist-set-table" %}
+{% set rows = ns.rows %}
+{% set row_id_prefix = "tracklist-row" %}
+{% set table_id = "tracklist-set-table" %}
+{% if rows %}
     {% include "pipeline/partials/_file_table.html" %}
+{% else %}
+    {% import "ui/primitives.html" as ui %}
+    {% call ui.state("empty", "No tracklists yet", "Lookup is the required first step. Start a bounded provider-safe batch, then return here to inspect matches.") %}
+        <a href="/s/tracklist#tracklist-lookup" class="rounded-md bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg">Go to Lookup</a>
+    {% endcall %}
+{% endif %}
 
     {% if sets_page.show_pager %}
     {# Prev/Next only -- NO "page X of Y" (paging contract rule 2 forbids the whole-corpus COUNT). #}

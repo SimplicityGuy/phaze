@@ -267,20 +267,33 @@ def test_detail_pane_late_swap_cannot_resurrect_dismissed_pane() -> None:
 
 
 def test_rail_root_carries_alpine_x_data() -> None:
-    """The rail <aside> must carry x-data — Alpine only walks x-data-rooted subtrees.
+    """The rail subtree must be x-data-rooted — Alpine only walks x-data-rooted subtrees.
 
     Without it every x-text numeral, x-show orphan badge, and pause/priority binding in the
     rail is silently inert: the badges forever render their server-side "0" defaults no matter
     what $store.pipeline holds (CONSOLE-02: the Analyze badge read 0 while 2,183 analyze jobs
     were in flight). Invisible to markup/httpx tests — only a live browser surfaced it.
+
+    phaze-tzy6s.13 moved the Alpine root one level out. The <aside> is now wrapped by the
+    drawer-state element (`x-data="{ navOpen: false }"`, `display:contents` so layout is
+    unaffected), and the aside itself carries x-trap rather than x-data. The invariant is
+    unchanged and is what this asserts: the OUTERMOST element of the rail partial is the Alpine
+    root, so everything below it -- aside, nav, every store-bound numeral -- is inside a walked
+    subtree. Asserting on the outermost element rather than specifically on <aside> keeps the
+    guard about the property that matters instead of about which tag happens to hold it.
     """
-    html = _strip_comments(_RAIL.read_text())
-    m = re.search(r"<aside\b[^>]*>", html)
-    assert m, "expected the rail <aside> root"
-    assert re.search(r"\bx-data\b", m.group(0)), (
-        "the rail <aside> must carry a bare x-data so Alpine binds the rail subtree — without "
-        "it every store-bound numeral/badge in the rail is inert and renders 0 forever"
+    # Macro DEFINITIONS are not rendered where they sit, so they are not the root; drop them (and
+    # the Jinja comments) to find the element the partial actually emits first.
+    html = re.sub(r"\{%-?\s*macro\b.*?\{%-?\s*endmacro\s*-?%\}", "", _strip_comments(_RAIL.read_text()), flags=re.DOTALL)
+    html = re.sub(r"\{%.*?%\}", "", html, flags=re.DOTALL).lstrip()
+    root = re.match(r"<(?P<tag>[a-z]+)\b(?P<attrs>[^>]*)>", html)
+    assert root, f"expected the rail partial to emit an element first, got: {html[:80]!r}"
+    assert re.search(r"\bx-data\b", root.group("attrs")), (
+        f"the rail's outermost element (<{root.group('tag')}>) must carry x-data so Alpine binds the "
+        "rail subtree — without it every store-bound numeral/badge in the rail is inert and renders 0 forever"
     )
+    # The nav must actually be INSIDE that root, not a sibling after it.
+    assert "<aside" in html[root.end() :], "the rail <aside> escaped the Alpine root — its bindings would be inert"
 
 
 # --- phaze-am7c: detail-pane own-tick must not steal focus every 5s ------------------
@@ -402,4 +415,43 @@ def test_detail_pane_own_tick_does_not_resteal_focus() -> None:
     raise AssertionError(
         f"the focus guard {predicate!r} does not read the pane's PRE-swap open state, so it cannot "
         "tell the initial card-click open from a 5s own-tick refresh"
+    )
+
+
+# phaze-4yrle: two competing `dark:` utilities of the SAME property on one element is always a
+# defect, and a silent one. Which utility wins is decided by the order Tailwind emits them into
+# the stylesheet, NOT by their order in the class attribute, so the rendered dark-mode colour is
+# not necessarily the one the author wrote last -- and one of the two is dead in every case.
+#
+# Found by the phaze-tzy6s per-slice audit in three templates (stats_bar.html, trigger_response.html,
+# trigger_tracklist_response.html), all blamed OUTSIDE that epic (PR #38 and PR #131), i.e. this
+# survived every prior review because nothing was looking for it. Hence a guard rather than three
+# one-line fixes.
+#
+# Scoped to `dark:text-<colour>` deliberately. A general "no duplicate utility" sweep would have to
+# model Tailwind's whole conflict lattice (p-2 vs px-2, text-sm vs text-gray-500 -- `text-` is both
+# size and colour) and would be a false-positive engine. This checks one property, in one variant,
+# where a duplicate is unambiguously wrong.
+_DARK_TEXT_COLOUR = re.compile(r"dark:text-(?:[a-z-]+)-\d{2,3}\b")
+
+
+def test_no_element_carries_two_dark_text_colours() -> None:
+    offenders: list[str] = []
+    for template in sorted(_TEMPLATES.rglob("*.html")):
+        for line_no, line in enumerate(template.read_text().splitlines(), start=1):
+            for attr in re.findall(r'class="([^"]*)"', line):
+                # Jinja conditionals legitimately offer alternative colours on one element
+                # ({{ 'dark:text-gray-100' if x else 'dark:text-gray-400' }}) -- only ONE is ever
+                # emitted, so they are not duplicates.
+                if "{{" in attr or "{%" in attr:
+                    continue
+                hits = _DARK_TEXT_COLOUR.findall(attr)
+                if len(hits) > 1:
+                    rel = template.relative_to(_TEMPLATES)
+                    offenders.append(f"{rel}:{line_no} carries {len(hits)} dark: text colours -> {' '.join(hits)}")
+
+    assert not offenders, (
+        "an element carries two competing `dark:` text colours; the winner is decided by Tailwind's "
+        "emit order, not by class-attribute order, so one is dead and the rendered colour may not be "
+        "the intended one:\n  " + "\n  ".join(offenders)
     )

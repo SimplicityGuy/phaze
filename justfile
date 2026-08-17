@@ -249,6 +249,36 @@ test-ci:
 test-file FILE:
     uv run pytest {{FILE}} -x -v
 
+# phaze-tzy6s.14: the real-browser suite. Boots the actual app (uvicorn + real lifespan + real
+# Alembic migrations) against its OWN database, derived from this worktree's TEST_DATABASE_URL seat
+# by appending `_browser`, and drives it with Playwright.
+#
+# Playwright is deliberately NOT a project dependency (only Patchright is — it is needed at RUNTIME
+# by the 1001Tracklists render path; see the pyproject mypy-override comment). This suite therefore
+# uses the ephemeral `uv run --with` idiom, the same one scripts/analyze_browser_soak.py uses. The
+# browsers themselves are a one-off install:
+#
+#     just test-browser-install     # once per machine
+#     just test-db                  # the shared Postgres/Redis harness must be up
+#     just test-browser
+#
+# `-m browser` overrides the `addopts = "-m 'not browser'"` default that keeps this suite out of a
+# bare `uv run pytest`.
+[doc('Install the Chromium build the browser suite drives (run once per machine)')]
+[group('test')]
+test-browser-install:
+    uv run --with playwright playwright install --with-deps chromium
+
+# Depends on `tailwind` deliberately. Without the compiled src/phaze/static/css/app.css the app
+# serves an UNSTYLED page: every asset request 404s and every layout assertion (drawer visibility,
+# horizontal overflow, touch targets) becomes meaningless while still reporting green, because an
+# unstyled document trivially satisfies "does not overflow". The first run of this suite passed the
+# overflow test for exactly that reason. A browser suite with no CSS is worse than none.
+[doc('Run the real-browser Playwright suite (needs `just test-db` up; excluded from the default run)')]
+[group('test')]
+test-browser: tailwind
+    uv run --with playwright --with pytest-asyncio --with asyncpg pytest tests/browser -m browser -q
+
 # Non-blocking dead-code sweep (CLEAN-02). NOT a CI/pre-commit gate — framework-invoked
 # code produces false-positives that need per-candidate human reachability judgment. A
 # nonzero exit merely lists remaining candidates to hand-verify. vulture_whitelist.py is a

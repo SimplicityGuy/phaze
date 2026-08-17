@@ -122,6 +122,7 @@ AUDIT_SORT = SortContract(
     default_key="executed_at",
     default_order=DESCENDING,
 )
+_AUDIT_STATUSES = frozenset({"all", "pending", "in_progress", "completed", "failed"})
 
 # phaze-a6hm.8: the per-agent rollup table's sort whitelist, declared at import time (column_sort
 # rule 6) next to the handlers that serve it. UNLIKE every other table wired to this contract so
@@ -937,9 +938,11 @@ async def build_audit_log_context(
     # phaze-a6hm.5: resolve BEFORE the read, same as every other sortable table (column_sort.py
     # USING IT). ``status`` rides view_state so a header click keeps the operator on their active
     # filter tab (contract rule 4); ``page`` deliberately does not -- a re-sort returns to page 1.
-    sort_state = AUDIT_SORT.resolve(sort=sort, order=order, view_state={"status": status, "page_size": page_size})
-    audit_page = await get_execution_logs_page(session, status=status, page=page, page_size=page_size, sort=sort_state)
+    current_status = status if status in _AUDIT_STATUSES else "all"
+    sort_state = AUDIT_SORT.resolve(sort=sort, order=order, view_state={"status": current_status, "page_size": page_size})
+    audit_page = await get_execution_logs_page(session, status=current_status, page=page, page_size=page_size, sort=sort_state)
     stats = await get_execution_stats(session)
+    audit_degraded = audit_page.degraded or bool(stats["degraded"])
 
     # phaze-37i1.2 (scope per owner decision after the phaze-37i1.1 diagnosis): an audit log that
     # has NEVER recorded anything is not the same page as one filtered down to nothing, and the
@@ -949,13 +952,14 @@ async def build_audit_log_context(
     # reached the propose stage yet", not "the query is broken". The never-run branch says so and
     # points at the convergence-gate backlog; ``count_proposal_pending_files`` is awaited ONLY on
     # that branch so the normal, populated page pays no extra query.
-    proposal_ready_count = await count_proposal_pending_files(session) if stats["total"] == 0 else 0
+    proposal_ready_count = await count_proposal_pending_files(session) if not audit_degraded and stats["total"] == 0 else 0
 
     return {
         "logs": audit_page.rows,
         "pagination": audit_page,
         "stats": stats,
-        "current_status": status or "all",
+        "current_status": current_status,
+        "audit_degraded": audit_degraded,
         "current_page": "audit",
         "sort": sort_state,
         "proposal_ready_count": proposal_ready_count,

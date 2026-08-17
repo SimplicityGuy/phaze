@@ -1,19 +1,21 @@
-<div class="px-4 pb-4">
+<div class="min-w-0 max-w-full px-4 pb-4">
     {% if group.truncated %}
     <p class="mb-2 text-xs font-medium text-amber-600 dark:text-amber-400">
         This group has more than {{ group.count }} copies -- only the first {{ group.count }} are shown below.
     </p>
     {% endif %}
-    <form hx-post="/duplicates/{{ group.sha256_hash }}/resolve"
-          hx-target="#group-{{ group.sha256_hash }}"
+    <form id="comparison-group-{{ group.sha256_hash }}"
+          hx-post="/duplicates/{{ group.sha256_hash }}/review"
+          hx-target="#comparison-group-{{ group.sha256_hash }}"
           hx-swap="outerHTML"
-          x-data="{ selected: '{{ group.canonical_id }}' }">
-        <fieldset>
+          x-data="{ selected: '{{ group.canonical_id }}' }"
+          class="min-w-0 max-w-full">
+        <fieldset class="min-w-0 max-w-full">
             <legend class="sr-only">Select canonical file for group {{ group.sha256_hash[:12] }}</legend>
-            <div class="overflow-x-auto">
+            <div class="max-w-full overflow-x-auto">
                 <table class="w-full text-sm">
                     <thead>
-                        <tr class="bg-gray-50 dark:bg-phaze-panel text-left text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase">
+                        <tr class="bg-gray-50 dark:bg-phaze-panel text-left text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">
                             <th class="w-8 px-3 py-3"></th>
                             <th class="px-3 py-3">Original Path</th>
                             <th class="px-3 py-3">Size</th>
@@ -73,7 +75,7 @@
         </fieldset>
         <button type="submit"
                 class="bg-green-600 hover:bg-green-700 text-white text-sm font-semibold px-4 py-2 rounded-md mt-4">
-            Resolve Group
+            Review decision
         </button>
     </form>
 </div>

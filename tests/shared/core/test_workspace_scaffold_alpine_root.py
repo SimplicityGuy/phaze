@@ -2,8 +2,8 @@
 
 ``_workspace_scaffold.html``'s ``ws.workspace()`` macro used to emit ``x-data`` on its ``<section>``
 root ONLY when the caller passed ``x_data`` (``<section{% if x_data %} x-data="{{ x_data }}"{% endif
-%}>``). 13 of its 14 real callers (every stage but ``discover_workspace.html``) never pass
-``x_data``, so those stage fragments rendered with NO Alpine root at all.
+%}>``). Most callers never passed ``x_data``, so those stage fragments rendered with NO Alpine root
+at all.
 
 Per this repo's own locked convention (see ``test_rail_root_carries_alpine_x_data`` below, and the
 CR-01 comment in ``_file_table.html``): Alpine only initializes ``x-data``-ROOTED subtrees. A rail
@@ -45,23 +45,18 @@ def _strip_comments(text: str) -> str:
     return _JINJA_COMMENT_RE.sub("", text)
 
 
-# The 12 real ws.workspace() callers that pass NO x_data (the failure surface) -- every stage but
-# discover_workspace.html, the one caller that already supplies its own x_data. Each of these
+# The real ws.workspace() callers that pass NO x_data (the failure surface). Each of these
 # renders standalone with an empty Jinja context (no DB, no app), because none of them touch a
 # variable that lacks safe Undefined-falsy fallback behavior in Jinja ({% if %} / {% for %} over an
 # Undefined value degrades to "nothing", it does not raise) at the top level.
 _STANDALONE_CALLERS = [
     "pipeline/partials/analyze_workspace.html",
     "pipeline/partials/dedupe_workspace.html",
-    "pipeline/partials/tagwrite_workspace.html",
     "pipeline/partials/cue_workspace.html",
-    "pipeline/partials/rename_workspace.html",
-    "pipeline/partials/metadata_workspace.html",
-    "pipeline/partials/move_workspace.html",
-    "shell/partials/summary_placeholder.html",
 ]
 
-# tracklist_workspace.html, propose_workspace.html and (phaze-t0b8) files_workspace.html need
+# tracklist_workspace.html, propose_workspace.html, metadata_workspace.html and (phaze-t0b8)
+# files_workspace.html need
 # substantial route-supplied context (tracklist_steps, propose_pagination/propose_stats/
 # propose_view, files_page/sort, further nested includes) to render at all, so they are not
 # exercised as a live render here -- the macro-level guard below
@@ -70,7 +65,10 @@ _STANDALONE_CALLERS = [
 _CONTEXT_HEAVY_CALLERS = [
     "pipeline/partials/tracklist_workspace.html",
     "pipeline/partials/propose_workspace.html",
+    "pipeline/partials/metadata_workspace.html",
     "pipeline/partials/files_workspace.html",
+    "pipeline/partials/changes_workspace.html",
+    "shell/partials/summary_overview.html",
 ]
 
 
@@ -126,12 +124,10 @@ def test_context_heavy_callers_are_still_enumerated() -> None:
         assert "x_data" not in source[call_start:call_end], f"{rel_path} now passes x_data -- move it into _STANDALONE_CALLERS or re-verify manually"
 
 
-def test_discover_workspace_keeps_its_own_x_data() -> None:
-    """Sanity: the one caller that already supplies x_data is unaffected by the `or '{}'` fallback."""
+def test_discover_workspace_uses_default_x_data_after_removing_collapsed_settings() -> None:
+    """Discover retains an Alpine root after its obsolete local ``scanOpen`` state was removed."""
     html = _env().get_template("pipeline/partials/discover_workspace.html").render()
     soup = BeautifulSoup(html, "html.parser")
     section = soup.find("section")
     assert isinstance(section, Tag), "discover_workspace.html did not render an outer <section>"
-    assert section.get("x-data") == "{ scanOpen: false }", (
-        f"discover_workspace.html's own x_data was clobbered by the fallback: {section.get('x-data')!r}"
-    )
+    assert section.get("x-data") == "{}"
