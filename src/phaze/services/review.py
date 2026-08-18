@@ -410,7 +410,7 @@ async def get_proposal_workspace_page(
         return ProposalWorkspacePage(
             rows=[],
             pagination=Pagination(page=1, page_size=page_size, total=0),
-            stats=ProposalStats(total=0, pending=0, approved=0, executed=0, rejected=0, avg_confidence=None),
+            stats=ProposalStats(total=0, pending=0, approved=0, executed=0, rejected=0, failed=0, avg_confidence=None),
         )
 
 

@@ -1060,6 +1060,41 @@ async def test_apply_counter_row_accounts_for_executed_proposals(
 
 
 @pytest.mark.asyncio
+async def test_apply_counter_row_accounts_for_failed_proposals(
+    client: AsyncClient, session: AsyncSession, seed_pending_proposal: Callable[..., Awaitable[RenameProposal]]
+) -> None:
+    """phaze-5uh4u: the Execute counter row shows a Blocked metric for `failed` proposals.
+
+    Closes the last accounting gap phaze-te2g3 left open (see the test above): before this bead
+    `failed` had no visible term at all, so the five metrics summed to Total only when no proposal
+    had failed. This corpus includes one, so the arithmetic assertion fails on the old card
+    regardless of label wording.
+    """
+    approved = await seed_pending_proposal(0.95, original_filename="counter-approved-2.mp3")
+    approved.status = ProposalStatus.APPROVED.value
+    executed = await seed_pending_proposal(0.95, original_filename="counter-executed-2.mp3")
+    executed.status = ProposalStatus.EXECUTED.value
+    rejected = await seed_pending_proposal(0.40, original_filename="counter-rejected-2.mp3")
+    rejected.status = ProposalStatus.REJECTED.value
+    blocked = await seed_pending_proposal(0.95, original_filename="counter-blocked.mp3")
+    blocked.status = ProposalStatus.FAILED.value
+    await seed_pending_proposal(0.95, original_filename="counter-pending-2.mp3")
+    await session.commit()
+
+    body = (await client.get("/s/apply", headers={"HX-Request": "true"})).text
+
+    def metric(label: str) -> int:
+        after = body.split(f">{label}</span>", 1)
+        assert len(after) == 2, f"the Execute counter row has no {label!r} metric"
+        return int(after[1].split(">", 2)[1].split("<")[0].strip())
+
+    assert metric("Blocked") == 1, "a failed proposal must have its own visible count"
+    assert (metric("Needs Review") + metric("Approved") + metric("Executed") + metric("Blocked") + metric("Rejected")) == metric("Total"), (
+        "the per-status metrics must account for every proposal Total counts, including Blocked"
+    )
+
+
+@pytest.mark.asyncio
 async def test_apply_workspace_disables_execute_with_nothing_approved(client: AsyncClient) -> None:
     """With zero approved proposals the trigger is inert and says why -- it does not post an empty batch.
 
