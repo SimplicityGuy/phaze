@@ -45,6 +45,34 @@ Every path, filename and hash below is synthetic and follows the ``docs/spikes``
 vocabulary (``<set-NN>``, ``<track-NN>``, ``<archive-mount>``). Nothing here was copied from, or
 derived from, a real archive. Keep it that way: a browser test that needs "a realistic filename"
 needs an *invented* realistic filename.
+
+The single seeding surface (phaze-jimgu)
+=========================================
+
+``tests/browser/_seed.py`` (from ``phaze-fk1ww``) landed in the same PR as this module (from
+``phaze-8p1uq``) without either bead seeing the other's work, so the suite briefly had two
+independent definitions of "a populated database". ``phaze-jimgu`` folded ``_seed.py`` in here:
+:func:`reset_dsn` and :func:`seed_populated` are that module's two entry points, moved onto this
+module's engine/session plumbing (:func:`sessionmaker_for`) and its full-catalogue :func:`reset`
+instead of the narrower ``TRUNCATE files, agents, tracklists CASCADE`` the old module ran by hand.
+That widening is deliberate and safe: every table the old cascade could not reach (because nothing
+FK's up to ``files``/``agents``/``tracklists``) is a table :func:`seed_populated` never wrote to
+either, so the wider reset changes no test's observable state, only its robustness -- it also picks
+up the deadlock retry that only the ``Seeder`` path had before.
+
+Both surviving entry points keep their original shapes deliberately:
+
+* :class:`Seeder` builds ONE row (or a small deliberately-linked handful) per call, for tests that
+  assert a specific state -- an APPROVED proposal, a FAILED scan, an unresolved duplicate group.
+  It is bound to a session this test process already holds open (see the ``seed`` fixture in
+  ``conftest.py``).
+* :func:`seed_populated` builds rows behind EVERY rail destination at once, for tests that walk the
+  whole shell (the responsive/theme/state matrix, the wide-table keyboard check) and need something
+  in every workspace rather than one behaviour under test. It takes a raw DSN rather than a session
+  because its callers seed *between page navigations* against the live app's database from outside
+  any fixture-held session, and it is not rebuilt on top of ``Seeder`` because it needs models
+  (``AnalysisResult``, ``Tracklist``, ``TracklistVersion``, ``TracklistTrack``) ``Seeder`` has no
+  factories for -- states no single-behaviour test in this suite currently needs one row at a time.
 """
 
 from __future__ import annotations
@@ -61,12 +89,14 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from phaze.enums.execution import ExecutionStatus
 from phaze.models.agent import Agent
+from phaze.models.analysis import AnalysisResult
 from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
+from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 
 
 if TYPE_CHECKING:
@@ -436,3 +466,207 @@ def sessionmaker_for(dsn: str) -> tuple[Any, async_sessionmaker[AsyncSession]]:
     """
     engine = create_async_engine(dsn, pool_size=1, max_overflow=1, poolclass=None)
     return engine, async_sessionmaker(engine, expire_on_commit=False)
+
+
+async def reset_dsn(dsn: str) -> None:
+    """:func:`reset`, for a caller that only has a DSN rather than an already-open session.
+
+    The matrix/keyboard tests seed and reset *between page navigations* against the live app's
+    database from outside any fixture-held session, so they cannot use the ``seed`` fixture's
+    ``Seeder``. This opens a throwaway engine, runs the same full-catalogue truncate every other
+    caller gets, and disposes it -- see the module docstring for why that widened this reset's
+    original ``TRUNCATE files, agents, tracklists CASCADE`` without changing any test's meaning.
+    """
+    engine, make_session = sessionmaker_for(dsn)
+    try:
+        async with make_session() as session:
+            await reset(session)
+    finally:
+        await engine.dispose()
+
+
+# Display names for :func:`seed_populated`, deliberately in the shapes the product actually
+# renders: a short track, a long multi-hour set with the punctuation an operator's real names
+# carry, and a name long enough to push a table cell wide (the case a matrix that only ever sees
+# an empty table never reaches).
+_MATRIX_TRACK_NAMES = (
+    "<track-01>.mp3",
+    "<track-02>.m4a",
+    "<track-03>.ogg",
+    "Artist - Event - <track-04> (2024) [remastered, extended club edit, side B].mp3",
+)
+_MATRIX_SET_NAMES = ("<set-01>.mp3", "<set-02>.mp3")
+
+# The in-container path placeholder from CLAUDE.md's vocabulary table, distinct from this module's
+# own ``ARCHIVE_MOUNT``: the matrix seeds the app's OWN filesystem view (what the running uvicorn
+# would see mounted), which is the in-container side of the same mount ``Seeder`` names host-side.
+_MATRIX_ARCHIVE_MOUNT = "<archive-mount-in-container>"
+
+
+async def seed_populated(dsn: str, *, with_failures: bool = False) -> None:
+    """Put rows behind every rail destination the responsive/state matrix visits.
+
+    Unlike :class:`Seeder`, which builds one deliberately-shaped row (or a small linked handful) per
+    call for a test asserting one behaviour, this seeds a comprehensive "everything has data" state
+    in one call -- files, metadata, analysis results, pending and executed proposals, a duplicate
+    group and an approved tracklist -- for tests that walk the whole shell rather than probe one
+    flow. See the module docstring for why the two entry points stay separate rather than one being
+    rebuilt on top of the other.
+
+    ``with_failures`` additionally seeds the two terminal-failure markers the Summary workspace
+    turns into ``danger``-toned attention cards (``file_metadata.failed_at`` and
+    ``analysis_results.failed_at``, per ``services/stage_status.failed_clause``). That is the
+    product's real warning/degraded surface, which is why the matrix drives it rather than
+    injecting a banner.
+    """
+    now = datetime.now(UTC)
+    engine, make_session = sessionmaker_for(dsn)
+    try:
+        async with make_session() as session:
+            session.add(
+                Agent(
+                    id=DEFAULT_AGENT_ID,
+                    name="browser fileserver",
+                    kind="fileserver",
+                    scan_roots=[_MATRIX_ARCHIVE_MOUNT],
+                    last_seen_at=now,
+                    last_status={"state": "online"},
+                )
+            )
+            await session.commit()
+
+            def _file(name: str, *, sha: str | None = None) -> FileRecord:
+                return FileRecord(
+                    id=uuid.uuid4(),
+                    agent_id=DEFAULT_AGENT_ID,
+                    sha256_hash=sha or _sha256(),
+                    original_path=f"{_MATRIX_ARCHIVE_MOUNT}/{uuid.uuid4().hex}/{name}",
+                    original_filename=name,
+                    current_path=f"{_MATRIX_ARCHIVE_MOUNT}/{name}",
+                    file_type=name.rsplit(".", 1)[-1],
+                    file_size=1024 * 1024,
+                )
+
+            tracks = [_file(name) for name in _MATRIX_TRACK_NAMES]
+            sets = [_file(name) for name in _MATRIX_SET_NAMES]
+            # A duplicate group: two files sharing one digest is what /s/dedupe groups on.
+            shared = _sha256()
+            dupes = [_file(f"<track-0{5 + i}>.mp3", sha=shared) for i in range(2)]
+            session.add_all([*tracks, *sets, *dupes])
+            await session.commit()
+
+            # Metadata + analysis behind /s/metadata and /s/analyze.
+            for index, file in enumerate(tracks):
+                session.add(
+                    FileMetadata(
+                        id=uuid.uuid4(),
+                        file_id=file.id,
+                        artist="Synthetic Artist",
+                        title=f"Synthetic Title {index + 1}",
+                        album="Synthetic Album",
+                        year=2024,
+                        genre="Electronic",
+                        track_number=index + 1,
+                        duration=245.0,
+                        bitrate=320000,
+                    )
+                )
+                session.add(
+                    AnalysisResult(
+                        id=uuid.uuid4(),
+                        file_id=file.id,
+                        bpm=128.0 + index,
+                        musical_key="Am",
+                        mood="energetic",
+                        style="techno",
+                        fine_windows_analyzed=60,
+                        fine_windows_total=60,
+                        coarse_windows_analyzed=30,
+                        coarse_windows_total=30,
+                        analysis_completed_at=now,
+                    )
+                )
+
+            # Pending proposals behind /s/propose and /s/rename (the Changes Review diff rows).
+            pending = [
+                RenameProposal(
+                    id=uuid.uuid4(),
+                    file_id=file.id,
+                    proposed_filename=f"Synthetic Artist - Synthetic Album - {index + 1:02d} Synthetic Title.mp3",
+                    proposed_path=f"{_MATRIX_ARCHIVE_MOUNT}/Synthetic Artist/Synthetic Album/{index + 1:02d}.mp3",
+                    confidence=0.94,
+                    status=ProposalStatus.PENDING.value,
+                )
+                for index, file in enumerate(tracks)
+            ]
+            # One executed proposal + its execution log, so /s/audit and /s/apply have history.
+            executed = RenameProposal(
+                id=uuid.uuid4(),
+                file_id=sets[0].id,
+                proposed_filename="Artist - Event - <set-01> (2024).mp3",
+                status=ProposalStatus.EXECUTED.value,
+            )
+            session.add_all([*pending, executed])
+            await session.commit()
+            session.add(
+                ExecutionLog(
+                    id=uuid.uuid4(),
+                    proposal_id=executed.id,
+                    operation="rename",
+                    source_path=f"{_MATRIX_ARCHIVE_MOUNT}/{_MATRIX_SET_NAMES[0]}",
+                    destination_path=f"{_MATRIX_ARCHIVE_MOUNT}/Artist - Event - <set-01> (2024).mp3",
+                    sha256_verified=True,
+                    status="success",
+                )
+            )
+
+            # An approved tracklist with timestamped tracks: the cue-eligibility gate, so /s/cue and
+            # /s/tracklist render real cards rather than their empty states.
+            tracklist = Tracklist(
+                id=uuid.uuid4(),
+                external_id=f"ext-{uuid.uuid4().hex[:12]}",
+                source_url="https://example.test/tracklist",
+                file_id=sets[0].id,
+                status="approved",
+            )
+            session.add(tracklist)
+            await session.commit()
+            version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tracklist.id, version_number=1)
+            session.add(version)
+            await session.commit()
+            session.add_all(
+                [
+                    TracklistTrack(
+                        id=uuid.uuid4(),
+                        version_id=version.id,
+                        position=position,
+                        title=f"Synthetic Title {position}",
+                        artist="Synthetic Artist",
+                        timestamp=f"0{position - 1}:00:00",
+                    )
+                    for position in (1, 2, 3)
+                ]
+            )
+            tracklist.latest_version_id = version.id
+            await session.commit()
+
+            if with_failures:
+                session.add(
+                    FileMetadata(
+                        id=uuid.uuid4(),
+                        file_id=sets[1].id,
+                        failed_at=now,
+                        error_message="synthetic metadata failure (browser matrix)",
+                    )
+                )
+                session.add(
+                    AnalysisResult(
+                        id=uuid.uuid4(),
+                        file_id=sets[1].id,
+                        failed_at=now,
+                        error_message="synthetic analysis failure (browser matrix)",
+                    )
+                )
+                await session.commit()
+    finally:
+        await engine.dispose()
