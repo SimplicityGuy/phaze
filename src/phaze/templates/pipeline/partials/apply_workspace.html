@@ -176,7 +176,7 @@
         </p>
     </div>
 
-    <div class="mt-4 grid grid-cols-2 gap-4 border-t border-gray-200 p-6 dark:border-phaze-border lg:grid-cols-6">
+    <div class="mt-4 grid grid-cols-2 gap-4 border-t border-gray-200 p-6 dark:border-phaze-border lg:grid-cols-7">
         <div>
             <span class="{{ _eyebrow }}">Total</span>
             <p class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ stats.total }}</p>
@@ -192,9 +192,8 @@
            executed proposal vanished from every visible status while still inflating Total.
            `stats.executed` below is that missing term, and the ADR now records the split.
 
-           The four status numbers still do not sum to Total when any proposal is `failed` (operator vocabulary:
-           Blocked) -- that count does not exist on ProposalStats yet. It is bead phaze-5uh4u, and
-           it is the ONLY remaining term. #}
+           phaze-5uh4u adds `stats.failed` (operator vocabulary: Blocked) below, the last missing
+           term -- the five status numbers now sum to Total unconditionally. #}
         <div>
             <span class="{{ _eyebrow }}">Needs Review</span>
             <p class="text-xl font-semibold text-amber-600 dark:text-amber-400">{{ stats.pending }}</p>
@@ -206,6 +205,10 @@
         <div>
             <span class="{{ _eyebrow }}">Executed</span>
             <p class="text-xl font-semibold text-gray-700 dark:text-gray-300">{{ stats.executed }}</p>
+        </div>
+        <div>
+            <span class="{{ _eyebrow }}">Blocked</span>
+            <p class="text-xl font-semibold text-red-600 dark:text-red-400">{{ stats.failed }}</p>
         </div>
         <div>
             <span class="{{ _eyebrow }}">Rejected</span>
