@@ -158,6 +158,45 @@ def test_record_slide_in_is_a_trapped_modal_dialog() -> None:
     assert "x-trap" in tag, "record panel is missing the x-trap focus-trap directive"
 
 
+def _record_body_after_swap() -> str:
+    """The ``hx-on::after-swap`` expression on ``#record-body`` (the host's only one)."""
+    m = _AFTER_SWAP.search(_strip_comments(_RECORD.read_text()))
+    assert m, "expected an hx-on::after-swap handler on #record-body in record_host.html"
+    return m.group(1)
+
+
+def test_record_after_swap_waits_for_the_reveal_before_focusing_the_heading() -> None:
+    """phaze-f65nu: the heading focus must be gated on #record-body being VISIBLE.
+
+    The dialog is ``aria-modal`` and inert-s the shell behind it, so an open that does not move
+    focus leaves the keyboard operator stranded in the inert half (WCAG 2.4.3 / 4.1.2). The
+    original handler read correctly and did nothing: it flipped ``loaded = true`` and called
+    ``h.focus()`` on the very next statement, but ``loaded`` is what reveals ``#record-body``
+    through ``x-show`` and Alpine defers that reveal onto a later task — so ``focus()`` ran against
+    a ``display:none`` element, where it is a silent no-op.
+
+    Guarded here rather than only in ``tests/browser`` because the browser suite is a separate,
+    non-blocking job: this is the lane that keeps a "simplification" back to a straight-line
+    ``focus()`` from shipping. Asserted structurally (the call is not a top-level statement, and
+    the handler consults a visibility primitive) so the guard survives the wait being reshaped.
+    """
+    expr = _record_body_after_swap()
+    focus = re.search(r"\.focus\(\)", expr)
+    assert focus, "the #record-body after-swap handler no longer focuses the record heading at all"
+
+    depth = expr[: focus.start()].count("{") - expr[: focus.start()].count("}")
+    assert depth > 0, (
+        "the heading focus is a TOP-LEVEL statement in the after-swap handler, so it runs on the "
+        "same task as the `loaded` flip — while x-show still has #record-body at display:none, "
+        "where focus() silently no-ops and the dialog opens with focus outside it (phaze-f65nu)"
+    )
+    assert "getClientRects" in expr or "checkVisibility" in expr, (
+        "the after-swap handler no longer checks that #record-body is actually visible before "
+        "focusing its heading — deferring by a tick is NOT enough, because Alpine's x-show reveal "
+        "lands on a later task than anything the handler can queue (phaze-f65nu)"
+    )
+
+
 # --- Dead detail-pane removal (shell.html) ----------------------------------------
 
 

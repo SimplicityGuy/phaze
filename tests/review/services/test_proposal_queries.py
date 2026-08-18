@@ -121,7 +121,7 @@ class TestPagination:
 
 class TestProposalStats:
     def test_dataclass_fields(self):
-        stats = ProposalStats(total=10, pending=5, approved=3, rejected=2, avg_confidence=0.75)
+        stats = ProposalStats(total=10, pending=5, approved=3, executed=0, rejected=2, avg_confidence=0.75)
         assert stats.total == 10
         assert stats.avg_confidence == 0.75
 
@@ -137,6 +137,7 @@ async def test_get_proposal_stats_empty(session: AsyncSession) -> None:
     assert stats.total == 0
     assert stats.pending == 0
     assert stats.approved == 0
+    assert stats.executed == 0
     assert stats.rejected == 0
     assert stats.avg_confidence is None
 
@@ -151,9 +152,51 @@ async def test_get_proposal_stats_with_data(session: AsyncSession) -> None:
     assert stats.total == 3
     assert stats.pending == 1
     assert stats.approved == 1
+    assert stats.executed == 0
     assert stats.rejected == 1
     assert stats.avg_confidence is not None
     assert abs(stats.avg_confidence - 0.7667) < 0.01
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_stats_counts_executed_separately_from_approved(session: AsyncSession) -> None:
+    """phaze-te2g3: `executed` is its own term, and `approved` does NOT absorb it.
+
+    ADR-0008 maps the operator state Approved onto persisted `approved` OR `executed`, and the
+    amendment this bead made to that ADR records why this query does not: the Execute stage needs
+    "still to dispatch", so the union is a per-surface presentation choice, not a query one.
+    Both halves are pinned here -- a future change that "conforms" this to the ADR by summing the
+    two would break the Execute card's meaning silently.
+    """
+    await _create_proposal(session, original_filename="e1.mp3", status=ProposalStatus.APPROVED, confidence=0.90)
+    await _create_proposal(session, original_filename="e2.mp3", status=ProposalStatus.EXECUTED, confidence=0.90)
+    await _create_proposal(session, original_filename="e3.mp3", status=ProposalStatus.EXECUTED, confidence=0.90)
+
+    stats = await get_proposal_stats(session)
+    assert stats.approved == 1, "approved must stay persisted-`approved` only"
+    assert stats.executed == 2
+    assert stats.total == 3
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_stats_terms_account_for_total(session: AsyncSession) -> None:
+    """phaze-te2g3: no proposal is counted by `total` and by no other term.
+
+    This is the defect the bead exists to close, stated as arithmetic rather than as a field name:
+    an executed proposal used to be in `total` and in nothing else. `failed` is the one status still
+    without a term (bead phaze-5uh4u), so it is deliberately absent from this corpus -- adding it
+    here would assert an identity this type cannot yet satisfy.
+    """
+    for name, status in (
+        ("t1.mp3", ProposalStatus.PENDING),
+        ("t2.mp3", ProposalStatus.APPROVED),
+        ("t3.mp3", ProposalStatus.EXECUTED),
+        ("t4.mp3", ProposalStatus.REJECTED),
+    ):
+        await _create_proposal(session, original_filename=name, status=status, confidence=0.90)
+
+    stats = await get_proposal_stats(session)
+    assert stats.pending + stats.approved + stats.executed + stats.rejected == stats.total
 
 
 # ---------------------------------------------------------------------------
