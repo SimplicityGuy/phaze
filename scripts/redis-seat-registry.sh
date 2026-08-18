@@ -123,6 +123,11 @@
 # fields against the lease stamp classification saw, and declines if either has moved. See its
 # comment for the failure it closes (phaze-r311e).
 #
+# The compare-and-delete and the FLUSHDB of the freed logical DB are themselves ONE server-side
+# script (FREE_SEAT_LUA), not two round trips -- see its comment for the narrower failure THAT
+# closes (phaze-atu2e) and the one residual window it documents rather than closes (the L1
+# `CLIENT LIST` re-verification, which cannot run from Lua at all).
+#
 # Usage:
 #   redis-seat-registry.sh allocate --redis-container C --seat S --capacity N [--origin PATH]
 #   redis-seat-registry.sh release  --redis-container C --seat S [--pg-container C] [--force]
@@ -482,17 +487,32 @@ cmd_allocate() {
 #
 #   1. Re-read L1 immediately before touching anything. A client that has connected since
 #      classification means a suite is running in that seat right now.
-#   2. Compare-and-delete the registry fields against the lease stamp classification saw.
-#      `test-db-for` re-stamps `phaze:test:redis-db-seen` on EVERY call -- including the idempotent
-#      already-allocated path -- so a seat re-claimed mid-sweep has moved its stamp and the delete
-#      declines. That comparison and the deletes happen inside one server-side script, so the seat
-#      cannot be re-claimed between the check and the delete either.
+#   2. Compare-and-delete the registry fields against the lease stamp classification saw, AND flush
+#      the freed logical DB, in the SAME server-side script.
 #
-# The FLUSHDB runs only after the delete succeeds. The order matters: flushing first and then
-# discovering the seat had moved would have destroyed the keys already.
+# Both destructive effects -- the registry delete and the FLUSHDB -- run inside FREE_SEAT_LUA, as
+# one Redis EVAL. This closes phaze-atu2e: earlier, the delete and the FLUSHDB were two separate
+# `docker exec` round trips, so between them the freed index was registry-free and a concurrent
+# `allocate` could legitimately claim it, clear what it saw as leftover data, and start writing --
+# and the second round trip, a FLUSHDB decided on stale information, then wiped the NEW holder's
+# live keys. Folding both into one EVAL removes the gap entirely: Redis is single-threaded and a
+# script's effects are atomic and invisible to every other client until the whole script returns,
+# so no other client can ever observe "registry entry gone, logical DB not yet flushed" -- there is
+# no state left to race into. The delete-before-flush ORDERING inside the script still matters for
+# the reason it always did: if the CAS declines (the seat moved or was restamped), nothing must be
+# destroyed, so the flush is reached only after the delete has already succeeded.
+#
+# What this does NOT close (documented per phaze-atu2e review finding 2, not fixed): the L1
+# `CLIENT LIST` re-verification a few lines below is its OWN separate `docker exec`, issued BEFORE
+# this EVAL, so a client that connects to the freed index in that sub-second gap is still flushed.
+# It cannot be folded into FREE_SEAT_LUA -- `CLIENT LIST` (and `CLIENT` generally) is flagged
+# `noscript` and Redis refuses to run it from EVAL at all ("This Redis command is not allowed from
+# script"), confirmed against a live container while implementing this fix. This residual window is
+# real, is not covered by any test, and is narrower than the one this bead closes -- but it is not
+# nothing, so do not assume `free_seat` is race-free end to end.
 readonly FREE_SEAT_LUA='
 local reg, seen, origin_key = KEYS[1], KEYS[2], KEYS[3]
-local seat, expected_index, expected_seen = ARGV[1], ARGV[2], ARGV[3]
+local seat, expected_index, expected_seen, cap = ARGV[1], ARGV[2], ARGV[3], tonumber(ARGV[4])
 
 local current_index = redis.call("HGET", reg, seat)
 if current_index == false then return "vanished" end
@@ -505,6 +525,13 @@ if current_seen ~= expected_seen then return "restamped" end
 redis.call("HDEL", reg, seat)
 redis.call("HDEL", seen, seat)
 redis.call("HDEL", origin_key, seat)
+
+local index = tonumber(expected_index)
+if index and index >= 1 and cap and index < cap then
+  redis.call("SELECT", index)
+  redis.call("FLUSHDB")
+end
+
 return "freed"
 '
 
@@ -555,8 +582,11 @@ free_seat() {
     return 1
   fi
 
+  # `cap` rides along as a 4th ARGV so the script itself can decide, atomically alongside the
+  # delete, whether the freed index is in range to flush (phaze-atu2e). Nothing outside this one
+  # EVAL touches logical DB `index` on the success path any more.
   local verdict
-  verdict="$(registry_cli EVAL "$FREE_SEAT_LUA" 3 "$REGISTRY_KEY" "$SEEN_KEY" "$ORIGIN_KEY" "$name" "$raw" "$expected_seen")"
+  verdict="$(registry_cli EVAL "$FREE_SEAT_LUA" 3 "$REGISTRY_KEY" "$SEEN_KEY" "$ORIGIN_KEY" "$name" "$raw" "$expected_seen" "$cap")"
   case "$verdict" in
     freed) ;;
     vanished)
@@ -576,14 +606,16 @@ free_seat() {
       return 1
       ;;
   esac
-
-  if [ "$index" -ge 1 ] && [ "$index" -lt "$cap" ]; then
-    docker exec "$redis_container" redis-cli -n "$index" FLUSHDB >/dev/null
-  fi
 }
 
 # Unconditional. Only `release --force` reaches this: naming a seat AND passing --force is the
 # operator asserting both that it is finished and that they have read why the guards objected.
+#
+# This one is NOT phaze-atu2e's bug even though it is also two round trips: it flushes BEFORE it
+# deletes the registry fields, so the registry still shows the seat holding `index` for the whole
+# FLUSHDB. `allocate`'s scan skips indices still present in the registry, so nothing can claim
+# `index` until the HDELs below run -- there is no window where a new holder's keys are exposed to
+# a stale flush the way there was in `free_seat`.
 free_seat_unconditionally() {
   local name="$1" index="$2" cap="$3"
   if [ "$index" -ge 1 ] && [ "$index" -lt "$cap" ]; then

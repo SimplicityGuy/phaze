@@ -147,9 +147,11 @@ class ProposalStats:
     in ``total``. Carrying ``executed`` as a separate field is the presentation-only fix: no
     consumer's existing number changes, and every surface can show a set of counts that adds up.
 
-    ``failed`` (operator vocabulary: *Blocked*) is still unrepresented here, so the accounting
-    identity this type supports is ``pending + approved + executed + rejected + failed == total``
-    with the last term unavailable. That gap is bead phaze-5uh4u, not an oversight of this one.
+    ``failed`` (operator vocabulary: *Blocked*) rides the SAME aggregate as its siblings
+    (phaze-5uh4u), closing the accounting identity this type exists to support:
+    ``pending + approved + executed + rejected + failed == total``. It was the last missing term --
+    a ``failed`` proposal used to inflate ``total`` while appearing under no visible status, the same
+    shape of gap ``executed`` had before phaze-te2g3.
 
     This is a presentation contract only. ADR-0008's requirement that ``approved`` and ``executed``
     stay DISTINCT in the persisted data is untouched -- nothing here migrates or collapses a status.
@@ -160,6 +162,7 @@ class ProposalStats:
     approved: int
     executed: int
     rejected: int
+    failed: int
     avg_confidence: float | None
 
 
@@ -287,10 +290,11 @@ async def bulk_approve_selected_above_confidence(
 async def get_proposal_stats(session: AsyncSession) -> ProposalStats:
     """Get aggregate proposal statistics in a single query.
 
-    ``executed`` rides the SAME aggregate as its four siblings (phaze-te2g3). It is one more
-    ``count(case(...))`` term over the scan this function already performs, so the new number costs
-    no extra round trip and -- more importantly -- cannot disagree with ``total``. Reading it
-    separately would reintroduce, between two reads, exactly the arithmetic the field exists to fix.
+    ``executed`` and ``failed`` ride the SAME aggregate as their siblings (phaze-te2g3,
+    phaze-5uh4u). Each is one more ``count(case(...))`` term over the scan this function already
+    performs, so the new numbers cost no extra round trip and -- more importantly -- cannot
+    disagree with ``total``. Reading either separately would reintroduce, between two reads, exactly
+    the arithmetic the fields exist to fix.
 
     Every existing term is unchanged, deliberately: ``approved`` still counts persisted ``approved``
     ONLY. See :class:`ProposalStats` for why the ADR-0008 union is a presentation choice made per
@@ -302,6 +306,7 @@ async def get_proposal_stats(session: AsyncSession) -> ProposalStats:
         func.count(case((RenameProposal.status == ProposalStatus.APPROVED, 1))).label("approved"),
         func.count(case((RenameProposal.status == ProposalStatus.EXECUTED, 1))).label("executed"),
         func.count(case((RenameProposal.status == ProposalStatus.REJECTED, 1))).label("rejected"),
+        func.count(case((RenameProposal.status == ProposalStatus.FAILED, 1))).label("failed"),
         func.avg(RenameProposal.confidence).label("avg_confidence"),
     ).select_from(RenameProposal)
 
@@ -313,6 +318,7 @@ async def get_proposal_stats(session: AsyncSession) -> ProposalStats:
         approved=row.approved,
         executed=row.executed,
         rejected=row.rejected,
+        failed=row.failed,
         avg_confidence=float(row.avg_confidence) if row.avg_confidence is not None else None,
     )
 

@@ -275,6 +275,49 @@ def _run(container: str, *args: str, env: dict[str, str] | None = None) -> subpr
     )
 
 
+def _interleave_at_docker_call(
+    tmp_path: Path, match: str, action: str, *, occurrence: int = 1, shim_name: str = "shim-bin", counter_name: str = "calls"
+) -> tuple[dict[str, str], Path]:
+    """Env that makes the script run ``action`` just before its ``occurrence``-th call matching ``match``.
+
+    Generalizes the ``docker`` PATH-shim trick both interleaving families in this module rely on: a
+    real timing window in the script's own sequence of ``docker exec`` calls, forced open
+    deterministically instead of raced with sleeps — see ``_interleave_at_client_list`` (the
+    phaze-r311e precedent, keyed on ``CLIENT LIST``) for the full rationale. ``match`` is a
+    ``case``-pattern fragment tested against `` $* `` (space-padded, so ``"-n 3 FLUSHDB"`` matches
+    only that literal call, not a substring of some other argument).
+
+    Returns the env AND the counter file path, so a caller can assert how many times ``match`` was
+    actually seen — including zero, which is itself the interesting outcome when a fix removes a
+    round trip a test used to be able to interleave into.
+    """
+    real_docker = shutil.which("docker")
+    assert real_docker is not None, "the module-level skip should have caught this"
+
+    action_script = tmp_path / f"interleaved-{shim_name}-action.sh"
+    action_script.write_text(f"#!/usr/bin/env bash\nset -euo pipefail\nexport PATH={shlex.quote(os.environ['PATH'])}\n{action}\n", encoding="utf-8")
+    action_script.chmod(0o755)
+
+    counter = tmp_path / counter_name
+    bin_dir = tmp_path / shim_name
+    bin_dir.mkdir()
+    shim = bin_dir / "docker"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        'case " $* " in\n'
+        f'  *"{match}"*)\n'
+        f"    seen=$(( $(cat {shlex.quote(str(counter))} 2>/dev/null || echo 0) + 1 ))\n"
+        f'    printf %s "$seen" >{shlex.quote(str(counter))}\n'
+        f'    if [ "$seen" = "{occurrence}" ]; then {shlex.quote(str(action_script))} >&2; fi\n'
+        "    ;;\n"
+        "esac\n"
+        f'exec {shlex.quote(real_docker)} "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}, counter
+
+
 def _interleave_at_client_list(tmp_path: Path, action: str, *, occurrence: int = 2) -> dict[str, str]:
     """Env that makes the script run ``action`` just before its ``occurrence``-th ``CLIENT LIST``.
 
@@ -291,31 +334,8 @@ def _interleave_at_client_list(tmp_path: Path, action: str, *, occurrence: int =
     rather than a re-implementation of it. ``action`` runs with the ORIGINAL ``PATH``, so its own
     ``docker`` calls reach the real binary and cannot re-enter the shim.
     """
-    real_docker = shutil.which("docker")
-    assert real_docker is not None, "the module-level skip should have caught this"
-
-    action_script = tmp_path / "interleaved-action.sh"
-    action_script.write_text(f"#!/usr/bin/env bash\nset -euo pipefail\nexport PATH={shlex.quote(os.environ['PATH'])}\n{action}\n", encoding="utf-8")
-    action_script.chmod(0o755)
-
-    counter = tmp_path / "client-list-calls"
-    bin_dir = tmp_path / "shim-bin"
-    bin_dir.mkdir()
-    shim = bin_dir / "docker"
-    shim.write_text(
-        "#!/usr/bin/env bash\n"
-        'case " $* " in\n'
-        '  *" CLIENT LIST "*)\n'
-        f"    seen=$(( $(cat {shlex.quote(str(counter))} 2>/dev/null || echo 0) + 1 ))\n"
-        f'    printf %s "$seen" >{shlex.quote(str(counter))}\n'
-        f'    if [ "$seen" = "{occurrence}" ]; then {shlex.quote(str(action_script))} >&2; fi\n'
-        "    ;;\n"
-        "esac\n"
-        f'exec {shlex.quote(real_docker)} "$@"\n',
-        encoding="utf-8",
-    )
-    shim.chmod(0o755)
-    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    env, _counter = _interleave_at_docker_call(tmp_path, "CLIENT LIST", action, occurrence=occurrence)
+    return env
 
 
 def _allocate(container: str, seat: str, *, origin: str | None = None, capacity: int = _CAPACITY) -> subprocess.CompletedProcess[str]:
@@ -343,6 +363,92 @@ def _blocking_client(container: str, index: int) -> None:
             return
         time.sleep(0.1)
     pytest.skip("could not park a client on the throwaway Redis")
+
+
+# ---------------------------------------------------------------------------------------------
+# Reachability probe (phaze-yq7jk) — phaze-nu09o
+#
+# The top-level `docker exec "$redis_container" redis-cli PING` probe retries up to three times,
+# 0.3s apart, before declaring Redis unreachable. It exists because a single `docker exec` can fail
+# against a container that is up and answering — observed with four suites in flight, where it
+# turned an `allocate` that should have refused with the exhaustion message into the false
+# diagnosis "not reachable, start the harness with `just test-db`" about a harness already running.
+# `_fail_first_ping_then_succeed` forces that exact window deterministically: a PATH shim answers
+# the probe's own first `docker exec ... redis-cli PING` itself (no output, exit 1) and forwards
+# every later one — matched, not counted, so the loop's OWN retries are what recovers — to the real
+# `docker` binary.
+# ---------------------------------------------------------------------------------------------
+
+
+def _fail_first_ping_then_succeed(tmp_path: Path) -> dict[str, str]:
+    """Env that fails the reachability probe's first `redis-cli PING` and lets later ones through.
+
+    Matches on the literal ``"redis-cli PING"`` — the probe's exact call, with no ``-n`` flag and no
+    other arguments. Nothing else in the script produces that substring: `registry_cli` always
+    passes ``-n 0`` first, and the other bare `redis-cli` calls (`TIME`, `CONFIG GET databases`)
+    have their own distinct trailing tokens. So this shim cannot fire on any call except the probe.
+    """
+    real_docker = shutil.which("docker")
+    assert real_docker is not None, "the module-level skip should have caught this"
+
+    bin_dir = tmp_path / "ping-fail-shim"
+    bin_dir.mkdir()
+    counter = tmp_path / "ping_calls"
+    shim = bin_dir / "docker"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f"counter={shlex.quote(str(counter))}\n"
+        'case " $* " in\n'
+        '  *"redis-cli PING"*)\n'
+        '    seen=$(( $(cat "$counter" 2>/dev/null || echo 0) + 1 ))\n'
+        '    printf %s "$seen" >"$counter"\n'
+        '    if [ "$seen" -eq 1 ]; then exit 1; fi\n'
+        "    ;;\n"
+        "esac\n"
+        f'exec {shlex.quote(real_docker)} "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+
+
+def test_a_transient_first_ping_failure_is_retried_and_not_reported_as_unreachable(registry: str, tmp_path: Path) -> None:
+    """phaze-yq7jk: one failed `docker exec ... PING` against a live Redis must not become
+    "not reachable, start the harness with `just test-db`" about a harness that is already running.
+
+    Deterministic reproduction of the phaze-b2qs9 contention, not a sleep racing a real concurrent
+    `docker exec`: the shim fails the probe's first attempt itself and forwards the second to the
+    real, live `throwaway_redis`, so the retry loop's own second iteration is what has to recover —
+    exactly the window the fix added. Proven to fail against the pre-fix script: checked out at
+    ``cac798b2^`` (the single, un-retried `docker exec ... redis-cli PING`), the identical shim and
+    command exit 1 with the "not reachable" message this test asserts is absent — see the bead
+    report for the manual run, since that revision is not what this suite exercises.
+    """
+    env = _fail_first_ping_then_succeed(tmp_path)
+
+    result = _run(registry, "list", "--capacity", str(_CAPACITY), env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert "not reachable" not in result.stderr
+    seen = int((tmp_path / "ping_calls").read_text())
+    assert seen >= 2, "the fix's own retry loop must have made a second PING attempt to recover"
+
+
+def test_a_genuinely_absent_redis_container_still_fails_fast_with_the_unreachable_message(tmp_path: Path) -> None:
+    """The other direction the same acceptance criteria asks for, pinned next to the retry above.
+
+    No `throwaway_redis` fixture: the container name is one nothing will ever answer to, so this is
+    the genuinely-absent path at real `docker` speed, with no shim of any kind — the probe's own
+    three attempts, ~0.3s apart, all fail against a container Docker has never heard of, and the
+    script still exits with the same operator-facing diagnosis the retry loop exists to reserve for
+    this case alone.
+    """
+    result = _run("phaze-seatreg-test-container-does-not-exist", "list", "--capacity", str(_CAPACITY))
+
+    assert result.returncode == 1
+    assert "not reachable" in result.stderr
+    assert "just test-db" in result.stderr
 
 
 # ---------------------------------------------------------------------------------------------
@@ -530,6 +636,62 @@ def test_release_frees_the_index_and_clears_only_that_seats_keys(registry: str, 
     assert _redis(registry, "-n", str(theirs), "DBSIZE") == "1", "another seat's keys are none of release's business"
     assert _registry_cli(registry, "HGET", _SEEN_KEY, "seat_mine") == ""
     assert _registry_cli(registry, "HGET", _ORIGIN_KEY, "seat_mine") == ""
+
+
+def test_free_seat_folds_the_registry_delete_and_the_flush_into_one_atomic_script(registry: str, tmp_path: Path) -> None:
+    """phaze-atu2e: ``free_seat``'s registry delete and its ``FLUSHDB`` used to be two round trips.
+
+    Before this fix, ``free_seat`` CAS-deleted the registry entry inside one ``EVAL``, then issued
+    ``FLUSHDB`` on the freed index as a SEPARATE ``docker exec``. Between those two calls the index
+    was registry-free — and worst exactly when the registry is FULL, which is exactly when an
+    operator runs ``reclaim --apply`` (the bead's own point): a concurrent ``allocate`` has nowhere
+    else to go but the just-freed index, so it legitimately claims it, clears what it sees as
+    leftover data from the old seat, and starts writing. The still-pending, now-stale ``FLUSHDB``
+    then wipes the new holder's live keys.
+
+    So this fills every allocatable index first, forcing recycling to be the ONLY option, then
+    interleaves a racing ``allocate`` + write at exactly the old two-round-trip boundary — the same
+    PATH-shim technique ``_interleave_at_client_list`` uses for phaze-r311e: intercept the specific
+    ``-n <index> FLUSHDB`` call ``free_seat`` used to issue as its second round trip, and fire the
+    racer immediately before forwarding that call to the real Redis. Against the fix, no such call
+    exists on this path any more — folded into the same ``EVAL`` as the delete — so the shim's
+    target is never matched at all (asserted below via the zero-occurrence counter file), and the
+    same race, driven sequentially instead, shows the freed index comes back clean and stays that
+    way.
+    """
+    seats = {seat: _index_of(_allocate(registry, seat, origin=str(tmp_path))) for seat in (f"seat_{n}" for n in range(_ALLOCATABLE))}
+    old = seats["seat_2"]
+    _redis(registry, "-n", str(old), "SET", "old-marker", "x")
+
+    racer_env, occurrences = _interleave_at_docker_call(
+        tmp_path,
+        f"-n {old} FLUSHDB",
+        action=(
+            f"{shlex.quote(str(_SCRIPT))} allocate --redis-container {shlex.quote(registry)} "
+            f"--seat seat_racer --capacity {_CAPACITY} --origin {shlex.quote(str(tmp_path))} >/dev/null\n"
+            f"docker exec {shlex.quote(registry)} redis-cli -n {old} SET racer-canary 1 >/dev/null\n"
+        ),
+        shim_name="shim-bin-flushdb",
+        counter_name="flushdb-calls",
+    )
+
+    released = _run(registry, "release", "--seat", "seat_2", "--capacity", str(_CAPACITY), env=racer_env)
+
+    assert released.returncode == 0, released.stderr
+    assert not occurrences.exists(), (
+        "free_seat must no longer issue a separate `-n <index> FLUSHDB` round trip after its registry "
+        "delete -- that second round trip is the phaze-atu2e window this test guards against"
+    )
+
+    # The interception above never fired -- there is no separate FLUSHDB left to intercept -- so drive
+    # the identical race sequentially instead: whoever claims the freed index next must get it clean,
+    # and nothing left running from the already-finished `release` call may still act on it afterward.
+    reused = _index_of(_allocate(registry, "seat_racer", origin=str(tmp_path)))
+    assert reused == old, "with the registry full, the freed index is the only one left to hand over"
+    _redis(registry, "-n", str(reused), "SET", "racer-canary", "1")
+
+    assert _redis(registry, "-n", str(reused), "GET", "racer-canary") == "1", "the new holder's key must survive release"
+    assert _redis(registry, "-n", str(reused), "DBSIZE") == "1", "nothing from the finished `release` call may still act on this index"
 
 
 def test_release_of_an_unknown_seat_is_a_no_op(registry: str) -> None:
