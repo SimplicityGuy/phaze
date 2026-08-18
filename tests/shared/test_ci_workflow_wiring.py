@@ -229,3 +229,79 @@ def test_setup_job_reads_the_canonical_ci_shards_json() -> None:
             assert token.startswith("tests/"), f"shard {shard['name']!r} path {token!r} must start with tests/"
             bucket = token.removeprefix("tests/").split("/")[0]
             assert bucket in known_buckets, f"shard {shard['name']!r} path {token!r} references unknown bucket {bucket!r}"
+
+
+def _ffmpeg_install_step() -> dict[str, Any]:
+    """Return the test job's ffmpeg install step."""
+    steps = _load_workflow()["jobs"]["test"]["steps"]
+    matches = [s for s in steps if s.get("name", "").endswith("Install ffmpeg")]
+    assert len(matches) == 1, f"expected exactly one ffmpeg install step, found {len(matches)}"
+    return matches[0]
+
+
+def test_ffmpeg_install_budget_covers_the_measured_worst_case() -> None:
+    """phaze-i61p6: the ffmpeg fetch budget must exceed the slowest install this repo has seen.
+
+    The step shipped with `timeout 90` per apt phase. That bound is UNDER the 9m47s (587s)
+    install the step's own comment records, so on a degraded azure.archive.ubuntu.com every
+    attempt died at the bound: measured on run 32084625278, all nine attempts across the
+    discovery / shared-core / shared-rest buckets ended in a `timeout` kill (exit 124) with
+    zero apt error output, red-lighting a PR that could not affect apt.
+
+    A bound below the measured worst case does not bound a hang, it manufactures a failure.
+    Anyone re-tightening it has to move this number too, and confront the measurement.
+    """
+    step = _ffmpeg_install_step()
+    run = step["run"]
+
+    budget_match = re.search(r"^\s*BUDGET_SEC=(\d+)\s*$", run, re.MULTILINE)
+    assert budget_match, f"ffmpeg install step must declare a BUDGET_SEC wall budget, run was:\n{run}"
+    budget = int(budget_match.group(1))
+    assert budget >= 587, f"ffmpeg fetch budget {budget}s is under the 587s (9m47s) worst case actually measured on these runners"
+
+    # The whole point is a deadline-derived bound, not a fixed per-attempt one that can sit
+    # under the worst case. A bare `timeout <literal>` around apt is the shape that failed.
+    assert not re.search(r"timeout\s+\d+\s+sudo\s+apt-get", run), (
+        "ffmpeg install must bound apt from the remaining wall budget, not a hardcoded per-attempt timeout"
+    )
+
+
+def test_ffmpeg_install_failure_distinguishes_a_timeout_from_an_apt_error() -> None:
+    """phaze-i61p6: the step's failure text must not assert "could not be installed" for a timeout.
+
+    The original message claimed the package could not be installed when what happened was
+    that apt was not given long enough — which sent a reviewer to the wrong place. A timeout
+    (exit 124) and a real apt error need different words, and both need to read as
+    infrastructure rather than as a test failure, because a red run whose cause is unrelated
+    to the change is exactly what trains reviewers to wave away the next genuine red.
+    """
+    run = _ffmpeg_install_step()["run"]
+
+    assert "124" in run, "the step must special-case `timeout`'s exit 124 to name a timeout as a timeout"
+    assert "TIMED OUT" in run, "the step must report a timeout kill distinctly"
+    assert "APT ERROR" in run, "the step must report a genuine apt failure distinctly"
+    assert "INFRASTRUCTURE FAILURE" in run, "a failed ffmpeg install must announce itself as infrastructure, not as a test failure"
+
+
+def test_ffmpeg_debs_are_cached_so_the_normal_path_needs_no_apt_fetch() -> None:
+    """phaze-i61p6: the .deb closure is cached, and the install step reads the cached path.
+
+    `--no-install-recommends ffmpeg` resolves to 87 packages / 62.8 MB on ubuntu-24.04, and
+    fetching that from a degraded mirror on every shard of every run is the whole defect. The
+    cache is what actually removes the live apt fetch from the steady-state path; a budget
+    raise alone only makes the bad case slower instead of red. If the cache step is dropped,
+    every run is a cold run again.
+    """
+    steps = _load_workflow()["jobs"]["test"]["steps"]
+    cache_steps = [s for s in steps if "actions/cache" in s.get("uses", "") and "ffmpeg" in json.dumps(s)]
+    assert len(cache_steps) == 1, f"expected exactly one ffmpeg .deb cache step, found {len(cache_steps)}"
+
+    cached_path = cache_steps[0]["with"]["path"]
+    assert cached_path == "~/ffmpeg-debs", f"unexpected ffmpeg cache path {cached_path!r}"
+
+    run = _ffmpeg_install_step()["run"]
+    assert 'DEB_DIR="${HOME}/ffmpeg-debs"' in run, "the install step must read the same directory actions/cache restores"
+
+    # The cache step has to come BEFORE the install step or it restores into nothing.
+    names = [s.get("name", "") for s in steps]
+    assert names.index(cache_steps[0]["name"]) < names.index(_ffmpeg_install_step()["name"])

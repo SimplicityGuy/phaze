@@ -59,7 +59,13 @@ jobs:
     name: Tests (${{ matrix.bucket.name }})
     needs: [setup]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # phaze-i61p6: 15 -> 20. The ffmpeg step below now carries a 600s wall budget so a
+    # degraded apt mirror cannot fail the job on a bound that is under the worst case this
+    # repository has actually measured (9m47s). 600s of ffmpeg + ~180s of job setup + the
+    # slowest shard's ~250s of tests is ~17m, which does not fit inside 15. On the normal
+    # path (cache hit, ffmpeg restored with no network) the step costs ~10s and this ceiling
+    # is never approached -- it exists only so the cold path has somewhere to go.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -132,6 +138,37 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # phaze-i61p6: the ffmpeg .deb closure is cached so the steady-state install touches NO
+      # network at all. `--no-install-recommends ffmpeg` resolves to 87 packages / 62.8 MB on
+      # ubuntu-24.04 (counted in run 32084625278), and fetching that from a degraded
+      # azure.archive.ubuntu.com is the entirety of this step's flakiness. Restoring the .debs
+      # and `dpkg -i`-ing them removes the live apt fetch from the normal path.
+      #
+      # ImageOS / ImageVersion are runner PROCESS env vars. The `env` expression context only
+      # exposes workflow/job/step `env:` maps, so they cannot be interpolated into the cache key
+      # directly -- they have to be read in a shell step and handed back via GITHUB_OUTPUT.
+      # Keying on ImageVersion keeps the .debs in step with the image's apt state; the
+      # ImageOS-only restore-key means an image roll falls back to the previous image's .debs
+      # (same Ubuntu release, so they still install) rather than stampeding apt from 11 shards
+      # simultaneously, which is the exact shape of the outage this bead fixed.
+      - name: 🔑 Compute the ffmpeg .deb cache key
+        id: ffmpeg-cache-key
+        run: |
+          set -euo pipefail
+          {
+            echo "key=ffmpeg-debs-${ImageOS:-unknown}-${ImageVersion:-unknown}"
+            echo "restore-prefix=ffmpeg-debs-${ImageOS:-unknown}-"
+          } >> "${GITHUB_OUTPUT}"
+
+      # All 11 shards restore the same cache and all 11 attempt to save it; the 10 losers log
+      # "Cache already exists" as a WARNING, not a failure. That is expected, not a defect.
+      - name: 🎬 Restore the cached ffmpeg .deb closure
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/ffmpeg-debs
+          key: ${{ steps.ffmpeg-cache-key.outputs.key }}
+          restore-keys: ${{ steps.ffmpeg-cache-key.outputs.restore-prefix }}
+
       - name: 🎬 Install ffmpeg
         # phaze-l832u: `analysis.py::_probe_duration_sec` shells out to `ffprobe` (D-10), so the
         # analysis path now needs the BINARY, not just essentia's bundled decode libraries. Before
@@ -143,44 +180,175 @@ jobs:
         # gated to that one: the probe is reachable from any test that analyzes real audio, and a
         # per-shard gate would silently re-break the moment a real-audio test moves shard.
         #
-        # Deliberately NOT solved by falling back to MetadataReader when ffprobe is missing --
-        # that fallback returns 0 for Matroska, which is the exact defect this bead fixed. A host
-        # without ffmpeg must fail loudly.
-        #
         # phaze-ffmpeg-ci: bounded + retried, because the bare `apt-get update && apt-get install`
         # pair is the single largest cost in CI and has twice consumed an entire job. Measured on
         # one run: 9m47s on the agents shard (against 1m46s of actual tests), and on shared-core it
-        # hung past the 15-minute job timeout so the job was cancelled with steps 8-11 SKIPPED --
-        # zero tests executed. That surfaces as "the tests are timing out" when no test ever ran,
-        # which is how it was reported. It runs on all 13 shards, so a stalled mirror costs the
-        # repository roughly two hours of wall clock per run.
+        # hung past the job timeout so the job was cancelled with steps 8-11 SKIPPED -- zero tests
+        # executed. That surfaces as "the tests are timing out" when no test ever ran, which is how
+        # it was reported. It runs on every shard, so a stalled mirror costs the repository roughly
+        # two hours of wall clock per run.
         #
-        # ffmpeg is NOT in the ubuntu-24.04 runner image (checked against the image manifest), so
-        # apt is genuinely required -- the `command -v` probe is there to skip the work if a future
-        # image adds it, and to record in the log which path was taken. Each attempt is bounded so
-        # a stalled mirror can never eat the job again, and retried so a transient stall does not
-        # fail the run either. Three bounded attempts cost at most 9 minutes in the pathological
-        # case, still inside the 15-minute job timeout, versus an unbounded hang.
+        # ffmpeg is NOT in the ubuntu-24.04 runner image (re-confirmed empirically: the `command -v`
+        # probe below missed on every shard of run 32084625278), so apt is genuinely required. The
+        # probe stays to skip the work if a future image adds it, and to record which path was taken.
+        #
+        # phaze-i61p6 -- WHAT THE 90s BOUND ACTUALLY DID. The previous shape was three attempts of
+        # `timeout 90` per apt phase with a flat 5s backoff, failing with "ffmpeg could not be
+        # installed after 3 bounded attempts". That message was wrong in the way that matters: apt
+        # never failed. Measured across the three red buckets of run 32084625278 (discovery,
+        # shared-core, shared-rest), ALL NINE attempts ended at exactly the bound --
+        #   discovery:    90.006s / 90.006s / 90.006s, killed inside `apt-get update`
+        #   shared-core:  95.2s / 93.6s / 94.0s  (update ok in ~5s, killed inside `apt-get install`)
+        #   shared-rest: 105.2s / 91.8s / 91.9s  (update ok in ~7-14s, killed inside `apt-get install`)
+        # -- i.e. `timeout` firing (exit 124) every single time, with zero apt error diagnostics in
+        # any log. Two distinct slow paths, one cause: azure.archive.ubuntu.com was degraded.
+        # Discovery lost ~37s per attempt to azure stalling on connect before apt's mirrorlist fell
+        # back to archive.ubuntu.com, leaving too little of the 90s to finish the index fetch.
+        # shared-core reached the package fetch and managed 9 of 87 packages in 90s (individual
+        # gaps of 24s and 30s between `Get:` lines) against 62.8 MB to download. Retrying a slow
+        # mirror at 5s intervals cannot help, and the evidence says it did not: every attempt in
+        # every bucket failed identically.
+        #
+        # So the bound is replaced by a WALL BUDGET (600s, above the 9m47s worst case this repo has
+        # measured) enforced by a deadline that each `timeout` invocation is derived from, rather
+        # than by a fixed per-attempt bound that can be under the worst case. Attempts stop when the
+        # budget is spent, not after an arbitrary count. Every attempt logs its elapsed time and
+        # exit status, and a 124 is reported as a timeout while any other status is reported as a
+        # real apt error -- because if apt is genuinely erroring, more budget fixes nothing and the
+        # log has to say so instead of blaming availability.
+        #
+        # Deliberately NOT solved by falling back to MetadataReader when ffprobe is missing --
+        # that fallback returns 0 for Matroska, which is the exact defect phaze-l832u fixed. A host
+        # without ffmpeg must fail loudly.
         run: |
           set -euo pipefail
+          shopt -s nullglob
+
+          DEB_DIR="${HOME}/ffmpeg-debs"
+          BUDGET_SEC=600
+          UPDATE_BOUND_SEC=120
+          deadline=$(( $(date +%s) + BUDGET_SEC ))
+          last_outcome="no apt attempt was made"
+          last_rc=0
+
+          remaining() { echo $(( deadline - $(date +%s) )); }
+
+          # Run one bounded apt phase and report WHY it ended. `timeout` exits 124 when it kills
+          # the child, so 124 is "the mirror was too slow" and anything else is "apt itself said
+          # no" -- conflating the two is what sent this bead's reviewer to the wrong place.
+          bounded() {
+            local label="$1" bound="$2"
+            shift 2
+            local start rc=0 elapsed
+            start=$(date +%s)
+            timeout "${bound}" "$@" || rc=$?
+            elapsed=$(( $(date +%s) - start ))
+            last_rc="${rc}"
+            if [[ "${rc}" -eq 0 ]]; then
+              echo "${label}: ok in ${elapsed}s (exit 0)"
+            elif [[ "${rc}" -eq 124 ]]; then
+              last_outcome="TIMED OUT -- ${label} was killed at its ${bound}s bound after"
+              last_outcome="${last_outcome} ${elapsed}s (exit 124). apt reported no error; the mirror was too slow."
+              echo "${last_outcome}" >&2
+            else
+              last_outcome="APT ERROR -- ${label} exited ${rc} after ${elapsed}s. This is apt refusing, not a timeout; more time would not help."
+              echo "${last_outcome}" >&2
+            fi
+            return "${rc}"
+          }
+
+          install_debs() {
+            local debs=("${DEB_DIR}"/*.deb)
+            if (( ${#debs[@]} == 0 )); then
+              return 1
+            fi
+            echo "installing ${#debs[@]} .deb(s) from ${DEB_DIR} (no network)"
+            sudo dpkg -i "${debs[@]}" || sudo dpkg --configure -a
+            command -v ffprobe >/dev/null 2>&1
+          }
+
           if command -v ffprobe >/dev/null 2>&1; then
-            echo "ffprobe already present: $(ffprobe -version | head -1)"
+            echo "ffprobe already on PATH: $(ffprobe -version | head -1)"
             exit 0
           fi
-          for attempt in 1 2 3; do
-            echo "::group::ffmpeg install attempt ${attempt}"
-            if timeout 90 sudo apt-get update && timeout 90 sudo apt-get install -y --no-install-recommends ffmpeg; then
-              echo "::endgroup::"
-              ffprobe -version | head -1
-              exit 0
+
+          echo "::group::ffmpeg from the restored .deb cache"
+          if install_debs; then
+            echo "::endgroup::"
+            ffprobe -version | head -1
+            exit 0
+          fi
+          echo "::endgroup::"
+          echo "no usable cached .debs; fetching from apt (budget ${BUDGET_SEC}s)" >&2
+
+          # apt needs `partial/` to exist under an overridden Dir::Cache::archives, and the runner
+          # user must own the tree afterwards or actions/cache cannot save it.
+          mkdir -p "${DEB_DIR}/partial"
+          attempt=0
+          fetched=0
+          apt_errors=0
+          while (( $(remaining) > 30 )); do
+            attempt=$(( attempt + 1 ))
+            rem=$(remaining)
+            update_bound=$(( UPDATE_BOUND_SEC < rem ? UPDATE_BOUND_SEC : rem ))
+            echo "::group::ffmpeg apt attempt ${attempt} (${rem}s of the ${BUDGET_SEC}s budget left)"
+            last_rc=0
+            if bounded "apt-get update" "${update_bound}" sudo apt-get update; then
+              # `timeout 0` means NO timeout in coreutils and a negative value parses as an
+              # option, so the download bound is never derived blindly from the remaining budget.
+              download_bound=$(remaining)
+              if (( download_bound < 10 )); then
+                last_rc=124
+                last_outcome="TIMED OUT -- the ${BUDGET_SEC}s budget was exhausted by apt-get update before the package fetch could start."
+                echo "${last_outcome}" >&2
+              elif bounded "apt-get download" "${download_bound}" \
+                sudo apt-get install -y --no-install-recommends -d \
+                  -o "Dir::Cache::archives=${DEB_DIR}" ffmpeg; then
+                fetched=1
+              fi
             fi
             echo "::endgroup::"
-            echo "attempt ${attempt} failed or timed out; retrying" >&2
-            sleep 5
+            if (( fetched == 1 )); then
+              break
+            fi
+            # An exit status other than 124 is apt refusing, not the clock. Spending the rest of
+            # the budget re-running a command that answers in milliseconds would busy-loop dozens
+            # of hopeless attempts AND bury the real diagnostic; one retry covers a transient
+            # (dpkg lock, mid-publish index), a second identical answer ends it.
+            if (( last_rc != 124 )); then
+              apt_errors=$(( apt_errors + 1 ))
+              if (( apt_errors >= 2 )); then
+                echo "apt failed twice with a non-timeout status; not spending the rest of the budget on it" >&2
+                break
+              fi
+            fi
+            if (( $(remaining) > 45 )); then
+              echo "retrying in 15s" >&2
+              sleep 15
+            fi
           done
-          echo "::error::ffmpeg could not be installed after 3 bounded attempts." >&2
-          echo "Without ffprobe every real-audio test fails with AnalysisProbeError (D-10, phaze-l832u)." >&2
-          exit 1
+
+          sudo chown -R "$(id -u):$(id -g)" "${DEB_DIR}"
+
+          if (( fetched == 0 )); then
+            # One `echo` -- a multi-line ::error:: would render as several unrelated annotations.
+            msg="INFRASTRUCTURE FAILURE (not a test failure): ffmpeg could not be fetched within"
+            msg="${msg} its ${BUDGET_SEC}s budget after ${attempt} attempt(s). Last outcome: ${last_outcome}"
+            echo "::error::${msg}" >&2
+            echo "Without ffprobe every real-audio test fails with AnalysisProbeError (D-10, phaze-l832u)." >&2
+            echo "If the last outcome says TIMED OUT the Ubuntu mirror is degraded and a re-run is the right response;" >&2
+            echo "if it says APT ERROR the package or the index is genuinely broken and re-running will not help." >&2
+            exit 1
+          fi
+
+          echo "::group::ffmpeg from the freshly fetched .debs"
+          if ! install_debs; then
+            echo "::endgroup::"
+            echo "::error::INFRASTRUCTURE FAILURE (not a test failure): the ffmpeg .debs downloaded but dpkg did not yield a working ffprobe." >&2
+            exit 1
+          fi
+          echo "::endgroup::"
+          ffprobe -version | head -1
 
       - name: 🐘 Create migrations test database
         env:
