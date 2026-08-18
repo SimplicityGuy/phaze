@@ -59,8 +59,10 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from phaze.enums.execution import ExecutionStatus
 from phaze.models.agent import Agent
 from phaze.models.dedup_resolution import DedupResolution
+from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
@@ -309,6 +311,47 @@ class Seeder:
         return [
             await self.proposal(status=ProposalStatus.APPROVED, filename=f"<set-{index + 1:02d}>.mp3", agent_id=agent_id) for index in range(count)
         ]
+
+    # --- execution history ------------------------------------------------------------------
+
+    async def execution_log(
+        self,
+        *,
+        status: ExecutionStatus = ExecutionStatus.COMPLETED,
+        operation: str = "rename",
+        error_message: str | None = None,
+        sha256_verified: bool = True,
+        filename: str = "<set-01>.mp3",
+        proposal: RenameProposal | None = None,
+    ) -> ExecutionLog:
+        """Insert one audit-log row (and, unless one is supplied, the EXECUTED proposal it records.
+
+        The Audit Log workspace is reachable from an empty corpus but says only "No renames have been
+        executed yet" -- its filter tabs, its per-tab counts and its filtered-to-nothing branch are all
+        downstream of this table having rows, and ``execution_log`` gains one ONLY when an approved
+        proposal is executed. That is a manual, LLM-costing operator sequence with no fixture-friendly
+        HTTP route, which is exactly the case the module docstring reserves model-level seeding for.
+
+        ``status`` is a real :class:`ExecutionStatus` rather than a free string. The audit filter tabs
+        compare against ``pending`` / ``in_progress`` / ``completed`` / ``failed`` verbatim, so a value
+        outside the enum renders a row that the "All" tab counts and no other tab can ever reach --
+        a seeded state the product cannot produce, which would make a filter assertion meaningless.
+        """
+        target = proposal if proposal is not None else await self.proposal(status=ProposalStatus.EXECUTED, filename=filename)
+        record = ExecutionLog(
+            id=uuid.uuid4(),
+            proposal_id=target.id,
+            operation=operation,
+            source_path=f"{ARCHIVE_MOUNT}/incoming/{filename}",
+            destination_path=target.proposed_path or f"{ARCHIVE_MOUNT}/organized/{filename}",
+            sha256_verified=sha256_verified,
+            status=status.value,
+            error_message=error_message,
+        )
+        self.session.add(record)
+        await self.session.commit()
+        await self.session.refresh(record)
+        return record
 
     # --- duplicates -----------------------------------------------------------------------
 

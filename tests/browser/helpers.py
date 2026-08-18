@@ -41,6 +41,44 @@ async def wait_for_stage(page: Any, document_title: str) -> None:
     )
 
 
+async def settled_focus(page: Any, describe: str = "id", *, timeout_ms: int = 5_000) -> str:
+    """Wait until focus stops moving, then return how the focused element describes itself.
+
+    Every dismiss path in this app restores focus from an Alpine ``$nextTick`` -- deliberately, and
+    with a comment saying why: a synchronous ``focus()`` is undone when the browser resets focus to
+    ``<body>`` as the hidden panel's focused child is removed on the same tick. The consequence for a
+    test is that the *observable* post-condition of a dismiss (the panel is gone) lands one tick
+    BEFORE the focus restore, so reading ``document.activeElement`` immediately after it is a race
+    that passes on a fast machine and fails on a slow one.
+
+    Waiting for stability rather than for a specific expected id keeps the failure message useful:
+    the caller still asserts, and still gets to say what it wanted and what it got, instead of a bare
+    selector timeout.
+
+    ``describe`` names the property to read back -- ``"id"`` or an attribute like ``"aria-label"``.
+    """
+    read = "el.id" if describe == "id" else f"el.getAttribute({describe!r})"
+    script = f"""() => {{
+        const el = document.activeElement;
+        return el ? ({read} || '') : '';
+    }}"""
+
+    deadline_polls = max(1, timeout_ms // 100)
+    previous = await page.evaluate(script)
+    stable = 0
+    for _ in range(deadline_polls):
+        await page.wait_for_timeout(100)
+        current = await page.evaluate(script)
+        if current == previous and current not in ("", "BODY"):
+            stable += 1
+            if stable >= 2:
+                return str(current)
+        else:
+            stable = 0
+        previous = current
+    return str(previous)
+
+
 async def settled(page: Any) -> None:
     """Wait until htmx has no request in flight.
 
