@@ -79,6 +79,10 @@ if [ -n "$untracked" ]; then
 fi
 
 head_before="$(git rev-parse HEAD)"
+# repowise records ingest times in UTC. The gate compares both ingests against this to prove THIS
+# run produced them -- without it, a refresh whose ingests silently no-op'd is indistinguishable
+# from one that worked, because the previous run's rows sit there looking perfectly healthy.
+run_started_utc="$(date -u +"%Y-%m-%d %H:%M:%S")"
 
 # --- test isolation ------------------------------------------------------------------------------
 # CLAUDE.md: never share Postgres OR Redis between concurrent agents, and always copy the exports
@@ -203,4 +207,5 @@ uv run python scripts/repowise_coverage_gate.py \
   --coverage-status "${tmpdir}/coverage-status.json" \
   --index-status "${tmpdir}/index-status.json" \
   --coverage-xml coverage.xml \
+  --started-at "$run_started_utc" \
   --expected-commit "$head_before"

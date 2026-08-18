@@ -1,4 +1,4 @@
-"""Fail the repowise coverage refresh unless BOTH ingests landed, at the SAME commit as the index.
+"""Fail the repowise coverage refresh unless BOTH ingests landed, freshly, against the indexed tree.
 
 ``scripts/repowise-coverage.sh`` (driven by ``just repowise-coverage``) runs the five-step refresh:
 reindex, suite-with-contexts, ``repowise coverage add .coverage``, ``coverage xml`` +
@@ -19,9 +19,17 @@ Trap 2 -- index/coverage commit skew (phaze-2rgq2).
     Health findings carry LINE NUMBERS. An index built at commit A paired with coverage measured
     at commit B maps coverage onto lines that have moved. The suite takes ~21 minutes, which is
     exactly long enough for ``main`` to advance underneath the run; during the session that filed
-    this bead the index went behind twice within the hour. repowise records an
-    ``ingested_commit_sha`` on each ingest and a ``state.last_sync_commit`` on the index, so the
-    pairing is machine-checkable: all three must equal the HEAD the run started from.
+    this bead the index went behind twice within the hour.
+
+    ``ingested_commit_sha`` looks like the field that settles this and IS NOT. Measured while
+    verifying this recipe: repowise stamps it from ``repositories.head_commit``, which
+    ``repowise init`` sets and ``repowise update`` never refreshes -- an update to 85111c59, with
+    git HEAD and ``state.last_sync_commit`` both at 85111c59, still stamped a days-old 1c85e2ec on
+    a correct 249-of-249 ingest. Gating on it reds every incrementally-updated repo. So the pairing
+    is enforced from evidence that IS maintained: ``state.last_sync_commit`` must equal HEAD, both
+    ``ingested_at`` timestamps must be newer than the moment the run started, and the driver pins
+    HEAD before the suite and refuses if it moved by the end. A missing sha still fails -- that
+    shape meant a structurally broken repository row when it turned up for real.
 
 Trap 3 -- the fragment ingest (found while verifying this recipe, phaze-2rgq2).
     ``repowise coverage add`` maps the report's paths onto the files it has INDEXED, keeps whatever
@@ -36,10 +44,11 @@ Inputs (paths, so the caller keeps the raw JSON for debugging):
     ``--index-status``     ``repowise status --format json`` output.
     ``--expected-commit``  the ``git rev-parse HEAD`` captured BEFORE the run started.
     ``--coverage-xml``     the report that was ingested; every file in it must have mapped.
+    ``--started-at``       UTC ``YYYY-MM-DD HH:MM:SS`` from before the run; both ingests must be newer.
 
 Exit semantics (FAIL CLOSED):
-    0   -- both ingests present, ``line_coverage_pct`` is a real number, and index + both ingests
-           are pinned to ``--expected-commit``.
+    0   -- both ingests present and fresher than ``--started-at``, ``line_coverage_pct`` is a real
+           number, every file in the report mapped, and the index is at ``--expected-commit``.
     1   -- any of the above is false; every violated condition is named on stderr.
     !=0 -- a missing/unparseable status file raises, which propagates. A missing gate input NEVER
            exits 0: "no evidence" is not "verified".
@@ -48,6 +57,7 @@ Exit semantics (FAIL CLOSED):
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 from pathlib import Path
 import re
@@ -110,14 +120,26 @@ def count_report_files(coverage_xml: Path) -> int:
     return len(set(re.findall(r'<class\b[^>]*\bfilename="([^"]*)"', text)))
 
 
+def _parse_ingested_at(value: object) -> datetime | None:
+    """Parse repowise's ``ingested_at`` (UTC, ``YYYY-MM-DD HH:MM:SS[.ffffff]``); None if unusable."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+
+
 def check(
     coverage_status: dict[str, Any],
     index_status: dict[str, Any],
     expected_commit: str,
     report_file_count: int | None = None,
-) -> list[str]:
-    """Return every reason this refresh is not trustworthy; an empty list means it is."""
+    started_at: datetime | None = None,
+) -> tuple[list[str], list[str]]:
+    """Return (failures, notes). An empty failures list means the refresh is trustworthy."""
     failures: list[str] = []
+    notes: list[str] = []
 
     if not index_status.get("indexed"):
         failures.append("repowise reports this repo as NOT indexed — run `repowise init` in the durable checkout first.")
@@ -159,14 +181,39 @@ def check(
 
     for label, block in (("per-file coverage", coverage), ("test-to-code map", test_map)):
         if not block:
-            continue  # already reported as empty above; a sha check on nothing adds noise.
+            continue  # already reported as empty above; further checks on nothing add noise.
+
+        # FRESHNESS is the real "this run produced this coverage" evidence, and it is a hard gate.
+        # Without it a refresh whose ingests silently no-op'd would be indistinguishable from one
+        # that worked, because the previous run's rows are still sitting there looking healthy.
+        ingested_at = _parse_ingested_at(block.get("ingested_at"))
+        if started_at is not None:
+            if ingested_at is None:
+                failures.append(f"{label} carries no readable ingested_at — cannot tell whether THIS run produced it.")
+            elif ingested_at < started_at:
+                failures.append(
+                    f"{label} was last ingested at {ingested_at} UTC, BEFORE this run started ({started_at} UTC) — "
+                    "the rows in the database are left over from an earlier run, not what was just measured."
+                )
+
+        # ingested_commit_sha is ADVISORY, not a gate — see the module docstring. repowise stamps it
+        # from `repositories.head_commit`, which `repowise init` sets and `repowise update` does NOT
+        # refresh (it advances `churn_anchor_sha` and state.json's last_sync_commit instead).
+        # Measured on this repo: after an update to 85111c59 with HEAD at 85111c59 and
+        # last_sync_commit at 85111c59, a correct 249-of-249 ingest still stamped 1c85e2ec, days
+        # stale. Failing on that would red every incrementally-updated repo, so only a MISSING sha
+        # fails — that shape meant a structurally broken repository row when it appeared for real.
         sha = str(block.get("ingested_commit_sha") or "")
-        if not _shas_match(sha, expected_commit):
+        if not sha:
             failures.append(
-                f"{label} was ingested at commit {sha or '<none>'}, not {expected_commit} — findings carry line numbers, so this maps coverage onto stale lines."
+                f"{label} carries no ingested_commit_sha at all — repowise had no repository head to stamp, which means the index registration is broken."
+            )
+        elif not _shas_match(sha, expected_commit):
+            notes.append(
+                f"{label} is stamped {sha[:12]} rather than {expected_commit[:12]} — expected; repowise only refreshes that field on a full `repowise init`."
             )
 
-    return failures
+    return failures, notes
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -175,12 +222,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--index-status", required=True, type=Path, help="`repowise status --format json` output")
     parser.add_argument("--expected-commit", required=True, help="git rev-parse HEAD captured before the run started")
     parser.add_argument("--coverage-xml", type=Path, help="the coverage.xml that was ingested; its file count must all have mapped into the index")
+    parser.add_argument("--started-at", help="UTC 'YYYY-MM-DD HH:MM:SS' captured before the run; both ingests must be newer")
     args = parser.parse_args(argv)
 
     coverage_status = _load_json(args.coverage_status)
     index_status = _load_json(args.index_status)
     report_file_count = count_report_files(args.coverage_xml) if args.coverage_xml else None
-    failures = check(coverage_status, index_status, args.expected_commit, report_file_count)
+    started_at = _parse_ingested_at(args.started_at) if args.started_at else None
+    if args.started_at and started_at is None:
+        msg = f"--started-at {args.started_at!r} is not 'YYYY-MM-DD HH:MM:SS'"
+        raise ValueError(msg)
+    failures, notes = check(coverage_status, index_status, args.expected_commit, report_file_count, started_at)
+
+    for note in notes:
+        print(f"note: {note}", file=sys.stderr)  # noqa: T201
 
     if failures:
         print("❌ repowise coverage refresh is NOT trustworthy:", file=sys.stderr)  # noqa: T201

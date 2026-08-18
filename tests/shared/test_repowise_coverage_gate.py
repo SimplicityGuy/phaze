@@ -162,12 +162,31 @@ def test_missing_test_map_fails(tmp_path: Path, capsys: pytest.CaptureFixture[st
     assert "test-to-code map is EMPTY" in capsys.readouterr().err
 
 
-def test_coverage_ingested_at_a_different_commit_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """TRAP 2: coverage measured on a tree the index does not describe."""
+def test_a_stale_ingested_commit_sha_is_a_note_not_a_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """ingested_commit_sha is ADVISORY — gating on it would red every incrementally-updated repo.
+
+    Measured while verifying this recipe: repowise stamps the field from
+    ``repositories.head_commit``, which ``repowise init`` sets and ``repowise update`` never
+    refreshes. A correct 249-of-249 ingest, with git HEAD and last_sync_commit both at 85111c59,
+    still carried a days-old 1c85e2ec. The first version of this gate failed on exactly that and
+    was wrong to.
+    """
     module = _load_gate_module()
 
-    assert _run(module, tmp_path, coverage=_coverage_block(sha=_OTHER_HEAD), test_map=_test_map_block()) == 1
-    assert "per-file coverage was ingested at commit" in capsys.readouterr().err
+    assert _run(module, tmp_path, coverage=_coverage_block(sha=_OTHER_HEAD), test_map=_test_map_block()) == 0
+    assert "is stamped" in capsys.readouterr().err
+
+
+def test_missing_ingested_commit_sha_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """No sha at all is a different shape: repowise had no repository head to stamp.
+
+    That is what a structurally broken registration looks like, and it is how the very first
+    verification run was caught — so it stays a hard failure even though a STALE sha does not.
+    """
+    module = _load_gate_module()
+
+    assert _run(module, tmp_path, coverage=_coverage_block(sha=""), test_map=_test_map_block()) == 1
+    assert "no ingested_commit_sha at all" in capsys.readouterr().err
 
 
 def test_stale_index_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -193,12 +212,13 @@ def test_abbreviated_sha_is_accepted(tmp_path: Path) -> None:
     assert _run(module, tmp_path, coverage=_coverage_block(), test_map=_test_map_block(), expected=_HEAD[:12]) == 0
 
 
-def test_empty_sha_never_matches(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """Prefix tolerance must not degenerate: an absent sha matches nothing (``"".startswith`` is True)."""
+def test_prefix_tolerance_does_not_degenerate_on_an_empty_sha(tmp_path: Path) -> None:
+    """``"".startswith(x)`` is False but ``x.startswith("")`` is True — the length floor blocks it."""
     module = _load_gate_module()
 
-    assert _run(module, tmp_path, coverage=_coverage_block(sha=""), test_map=_test_map_block()) == 1
-    assert "ingested at commit <none>" in capsys.readouterr().err
+    assert module._shas_match("", _HEAD) is False
+    assert module._shas_match(_HEAD, "") is False
+    assert module._shas_match(_HEAD, _HEAD[:12]) is True
 
 
 def test_human_preamble_before_the_json_is_tolerated(tmp_path: Path) -> None:
@@ -363,3 +383,103 @@ def test_stale_rows_above_the_report_count_are_not_a_failure(tmp_path: Path) -> 
         )
         == 0
     )
+
+
+def _run_with_started_at(module: ModuleType, tmp_path: Path, started_at: str) -> int:
+    """Drive ``main()`` over a healthy status pair, varying only ``--started-at``."""
+    coverage_status = _write(
+        tmp_path,
+        "coverage-status.json",
+        {"indexed": True, "coverage": _coverage_block(), "test_map": _test_map_block()},
+    )
+    index_status = _write(tmp_path, "index-status.json", {"indexed": True, "state": {"last_sync_commit": _HEAD}})
+    return int(
+        module.main(
+            [
+                "--coverage-status",
+                str(coverage_status),
+                "--index-status",
+                str(index_status),
+                "--expected-commit",
+                _HEAD,
+                "--started-at",
+                started_at,
+            ]
+        )
+    )
+
+
+def test_ingests_older_than_the_run_fail(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """FRESHNESS is what actually proves this run produced the coverage.
+
+    The fixtures' ingested_at values are 2026-08-18 04:40/04:41. A run that started at 05:00 and
+    still sees them did NOT ingest anything — the previous run's rows are sitting there looking
+    healthy, which is indistinguishable from success on every other check.
+    """
+    module = _load_gate_module()
+
+    assert _run_with_started_at(module, tmp_path, "2026-08-18 05:00:00") == 1
+    err = capsys.readouterr().err
+    assert "BEFORE this run started" in err
+    assert "left over from an earlier run" in err
+
+
+def test_ingests_newer_than_the_run_pass(tmp_path: Path) -> None:
+    """The same status, against a run that started before those ingests, is trustworthy."""
+    module = _load_gate_module()
+
+    assert _run_with_started_at(module, tmp_path, "2026-08-18 04:00:00") == 0
+
+
+def test_unreadable_ingested_at_fails_when_freshness_is_being_checked(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """No usable timestamp means the question cannot be answered — which is not the same as yes."""
+    module = _load_gate_module()
+    coverage = _coverage_block()
+    coverage["ingested_at"] = "not a timestamp"
+    coverage_status = _write(
+        tmp_path,
+        "coverage-status.json",
+        {"indexed": True, "coverage": coverage, "test_map": _test_map_block()},
+    )
+    index_status = _write(tmp_path, "index-status.json", {"indexed": True, "state": {"last_sync_commit": _HEAD}})
+
+    exit_code = module.main(
+        [
+            "--coverage-status",
+            str(coverage_status),
+            "--index-status",
+            str(index_status),
+            "--expected-commit",
+            _HEAD,
+            "--started-at",
+            "2026-08-18 04:00:00",
+        ]
+    )
+
+    assert exit_code == 1
+    assert "no readable ingested_at" in capsys.readouterr().err
+
+
+def test_a_malformed_started_at_raises_rather_than_silently_skipping_the_check(tmp_path: Path) -> None:
+    """FAIL CLOSED: a bad --started-at must not quietly degrade into "freshness not checked"."""
+    module = _load_gate_module()
+    coverage_status = _write(
+        tmp_path,
+        "coverage-status.json",
+        {"indexed": True, "coverage": _coverage_block(), "test_map": _test_map_block()},
+    )
+    index_status = _write(tmp_path, "index-status.json", {"indexed": True, "state": {"last_sync_commit": _HEAD}})
+
+    with pytest.raises(ValueError, match="not 'YYYY-MM-DD HH:MM:SS'"):
+        module.main(
+            [
+                "--coverage-status",
+                str(coverage_status),
+                "--index-status",
+                str(index_status),
+                "--expected-commit",
+                _HEAD,
+                "--started-at",
+                "yesterday",
+            ]
+        )
