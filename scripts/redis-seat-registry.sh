@@ -221,7 +221,26 @@ registry_cli() {
   docker exec "$redis_container" redis-cli -n 0 "$@"
 }
 
-if ! docker exec "$redis_container" redis-cli PING >/dev/null 2>&1; then
+# A container that is genuinely absent stays absent, so re-asking costs a few hundred milliseconds
+# once and settles the question. A SINGLE `docker exec` does not settle it: under load the daemon
+# can fail one exec on a container that is up and answering, and this probe then reports the one
+# thing guaranteed to be unhelpful -- "not reachable, start the harness" about a harness already
+# running. Observed on a machine with four suites in flight, where it turned an `allocate` that
+# should have refused with the exhaustion message (exit 3) into exit 1.
+#
+# This is a probe, not a guard: it decides whether we can TALK to Redis, never what the registry
+# says. Nothing below retries, and no allocation, refusal or reclaim verdict is affected by how many
+# times we asked -- in particular the exhaustion refusal is reached through the allocator's own EVAL
+# and is untouched by this loop.
+redis_reachable=0
+for _ in 1 2 3; do
+  if docker exec "$redis_container" redis-cli PING >/dev/null 2>&1; then
+    redis_reachable=1
+    break
+  fi
+  sleep 0.3
+done
+if [ "$redis_reachable" -eq 0 ]; then
   echo "❌ Redis container '${redis_container}' is not reachable. Start the shared harness with \`just test-db\`." >&2
   exit 1
 fi
