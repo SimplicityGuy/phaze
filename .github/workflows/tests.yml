@@ -8,6 +8,33 @@ env:
   CI: true
   PYTHON_VERSION: "3.14"
 
+  # phaze-m3qte: the ffmpeg CI toolchain, pinned. Change the version HERE and nowhere else.
+  #
+  # THESE THREE VALUES NAME ONE BUILD AND MUST BE UPDATED TOGETHER. Bumping FFMPEG_VERSION
+  # alone leaves the tag and checksum pointing at the old asset -- the download would still
+  # succeed and still verify, and CI would keep running the previous binary while the file
+  # claims otherwise. That silent-wrong-version outcome is worse than an outright failure, so
+  # treat the block as one unit:
+  #
+  #   1. pick a dated tag from https://github.com/BtbN/FFmpeg-Builds/releases (never `latest`,
+  #      which is mutable and whose asset names contain the literal word "latest")
+  #   2. copy the exact linux64-gpl asset name from that release
+  #   3. sha256sum the downloaded file and paste it below
+  #
+  # FFMPEG_VERSION is the upstream release branch and is documentation for the reader; the TAG
+  # and ASSET are what actually resolve, and the checksum is what makes it safe.
+  #
+  # CACHED, and the cache key is what makes a version bump safe. The key contains the RELEASE
+  # TAG and the ASSET NAME, so a bumped version resolves to a different key and simply misses --
+  # a stale entry from the previous version can never be served. There is deliberately NO
+  # `restore-keys` prefix fallback: a partial match is exactly the failure this design must not
+  # have, because it would hand back a DIFFERENT build under the new version's name. A miss
+  # costs one 126 MB download; a wrong hit costs a silently wrong toolchain.
+  FFMPEG_VERSION: "8.1"
+  FFMPEG_RELEASE_TAG: "autobuild-2026-08-17-13-05"
+  FFMPEG_ASSET: "ffmpeg-n8.1.2-44-g7c533d0f86-linux64-gpl-8.1.tar.xz"
+  FFMPEG_SHA256: "802a6ad62d310814a42c4aea4a95354f4a5e04bd3e792c4ca55970d25577808b"
+
 permissions:
   contents: read
 
@@ -132,6 +159,18 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # phaze-m3qte: keyed on the RELEASE TAG + ASSET NAME, so a version bump lands on a new key
+      # and misses cleanly. No `restore-keys`: a prefix fallback would serve the PREVIOUS build
+      # under the new version's name, which is the one outcome this pinning exists to prevent.
+      # The cached payload is the two binaries, not the tarball -- nothing has to be unpacked on
+      # a hit, and the 126 MB download is skipped entirely on 12 of the 13 shards.
+      - name: 🎬 Restore the pinned ffmpeg binaries
+        id: ffmpeg-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/ffmpeg-bin
+          key: ffmpeg-${{ env.FFMPEG_RELEASE_TAG }}-${{ env.FFMPEG_ASSET }}
+
       - name: 🎬 Install ffmpeg
         # phaze-l832u: `analysis.py::_probe_duration_sec` shells out to `ffprobe` (D-10), so the
         # analysis path now needs the BINARY, not just essentia's bundled decode libraries. Before
@@ -147,40 +186,86 @@ jobs:
         # that fallback returns 0 for Matroska, which is the exact defect this bead fixed. A host
         # without ffmpeg must fail loudly.
         #
-        # phaze-ffmpeg-ci: bounded + retried, because the bare `apt-get update && apt-get install`
-        # pair is the single largest cost in CI and has twice consumed an entire job. Measured on
-        # one run: 9m47s on the agents shard (against 1m46s of actual tests), and on shared-core it
-        # hung past the 15-minute job timeout so the job was cancelled with steps 8-11 SKIPPED --
-        # zero tests executed. That surfaces as "the tests are timing out" when no test ever ran,
-        # which is how it was reported. It runs on all 13 shards, so a stalled mirror costs the
-        # repository roughly two hours of wall clock per run.
+        # phaze-m3qte: apt is NOT the source any more. `apt-get install ffmpeg` resolves an
+        # 87-package / 62.8 MB closure from azure.archive.ubuntu.com, and when that mirror
+        # degrades the whole job dies before a single test runs. Measured on run 32084625278:
+        # three shards red, ALL NINE install attempts killed by their timeout (exit 124) with
+        # zero apt error output -- apt never refused, it was just too slow. Before any bound
+        # existed the same condition hung past the job timeout and the job was cancelled with
+        # the test steps SKIPPED, which reads as "the tests are timing out" when no test ever
+        # ran. Across 13 shards that cost roughly two hours of wall clock per run.
         #
-        # ffmpeg is NOT in the ubuntu-24.04 runner image (checked against the image manifest), so
-        # apt is genuinely required -- the `command -v` probe is there to skip the work if a future
-        # image adds it, and to record in the log which path was taken. Each attempt is bounded so
-        # a stalled mirror can never eat the job again, and retried so a transient stall does not
-        # fail the run either. Three bounded attempts cost at most 9 minutes in the pathological
-        # case, still inside the 15-minute job timeout, versus an unbounded hang.
+        # This step now downloads ONE pinned tarball (~126 MB, single file, single host) and
+        # unpacks two static binaries from it. No package manager, no dependency closure, no
+        # mirror.
+        #
+        # VERSION: 8.1, via the FFMPEG_* workflow env block at the top of this file -- bumping
+        # it is a one-line edit there. Note the operator's deployment runs 7.1.5, so CI is a
+        # major version AHEAD of production here; that gap is deliberate and known, because
+        # BtbN/FFmpeg-Builds publishes only master, n8.1 and n9.0 -- 7.x is EOL upstream and no
+        # n7.1 asset exists in any of its releases (checked back ~10 months of autobuild tags).
+        # The previous apt path installed 6.1.1, i.e. CI was already a major version BEHIND
+        # production and silently so. See phaze-m3qte; phaze-b62ri owns the image side.
+        #
+        # THE TAG IS PINNED, NOT `latest`. BtbN's `latest` release is mutable and its asset
+        # names carry the literal string "latest", so pinning there would silently change the
+        # binary under a fixed checksum. A dated autobuild tag is immutable and its asset name
+        # carries the exact build (n8.1.2-44-g7c533d0f86). FFMPEG_SHA256 belongs to THAT asset:
+        # the three FFMPEG_* values move together or not at all, and the checksum is verified
+        # before anything is unpacked. A mismatch is a hard failure, never a retry.
         run: |
           set -euo pipefail
           if command -v ffprobe >/dev/null 2>&1; then
             echo "ffprobe already present: $(ffprobe -version | head -1)"
             exit 0
           fi
-          for attempt in 1 2 3; do
-            echo "::group::ffmpeg install attempt ${attempt}"
-            if timeout 90 sudo apt-get update && timeout 90 sudo apt-get install -y --no-install-recommends ffmpeg; then
-              echo "::endgroup::"
-              ffprobe -version | head -1
-              exit 0
-            fi
+
+          # Cache hit: the binaries are already the pinned build, because the key names the tag
+          # and the asset. Install and skip the network entirely.
+          if [ -x "${HOME}/ffmpeg-bin/ffprobe" ] && [ -x "${HOME}/ffmpeg-bin/ffmpeg" ]; then
+            echo "restored from cache: ffmpeg-${FFMPEG_RELEASE_TAG}-${FFMPEG_ASSET}"
+            sudo install -m 0755 "${HOME}/ffmpeg-bin/ffmpeg" /usr/local/bin/ffmpeg
+            sudo install -m 0755 "${HOME}/ffmpeg-bin/ffprobe" /usr/local/bin/ffprobe
+            ffmpeg -version | head -1
+            ffprobe -version | head -1
+            exit 0
+          fi
+
+          url="https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_RELEASE_TAG}/${FFMPEG_ASSET}"
+          echo "::group::download ${FFMPEG_ASSET}"
+          started=${SECONDS}
+          if ! curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 600 -o /tmp/ffmpeg.tar.xz "${url}"; then
+            status=$?
             echo "::endgroup::"
-            echo "attempt ${attempt} failed or timed out; retrying" >&2
-            sleep 5
-          done
-          echo "::error::ffmpeg could not be installed after 3 bounded attempts." >&2
-          echo "Without ffprobe every real-audio test fails with AnalysisProbeError (D-10, phaze-l832u)." >&2
-          exit 1
+            echo "::error::INFRASTRUCTURE -- could not download ffmpeg after $(( SECONDS - started ))s (curl exit ${status}); no test has run." >&2
+            echo "This is not a test failure. Source: ${url}" >&2
+            exit 1
+          fi
+          echo "::endgroup::"
+          echo "downloaded in $(( SECONDS - started ))s"
+
+          echo "${FFMPEG_SHA256}  /tmp/ffmpeg.tar.xz" | sha256sum -c - || {
+            echo "::error::CHECKSUM MISMATCH for ${FFMPEG_ASSET}." >&2
+            echo "Expected ${FFMPEG_SHA256}, got $(sha256sum /tmp/ffmpeg.tar.xz | cut -d' ' -f1)." >&2
+            echo "The FFMPEG_* env values must be updated together -- tag, asset and checksum name ONE build." >&2
+            exit 1
+          }
+
+          if ! tar -xJf /tmp/ffmpeg.tar.xz -C /tmp; then
+            echo "::error::could not unpack ${FFMPEG_ASSET} -- the archive verified but is not usable." >&2
+            exit 1
+          fi
+          # Populate the cache directory from the VERIFIED extraction, then install from it, so
+          # the bytes that get cached are the same bytes this run is about to use.
+          mkdir -p "${HOME}/ffmpeg-bin"
+          install -m 0755 "/tmp/${FFMPEG_ASSET%.tar.xz}/bin/ffmpeg" "${HOME}/ffmpeg-bin/ffmpeg"
+          install -m 0755 "/tmp/${FFMPEG_ASSET%.tar.xz}/bin/ffprobe" "${HOME}/ffmpeg-bin/ffprobe"
+          sudo install -m 0755 "${HOME}/ffmpeg-bin/ffmpeg" /usr/local/bin/ffmpeg
+          sudo install -m 0755 "${HOME}/ffmpeg-bin/ffprobe" /usr/local/bin/ffprobe
+          rm -rf /tmp/ffmpeg.tar.xz "/tmp/${FFMPEG_ASSET%.tar.xz}"
+
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
 
       - name: 🐘 Create migrations test database
         env:
@@ -314,8 +399,87 @@ jobs:
       - name: 📦 Install dependencies
         run: just install
 
+      # phaze-m3qte: the Chromium download is ~150 MB and is re-fetched on every run. Cache it.
+      #
+      # The key has to track the PLAYWRIGHT VERSION, because the browser build is chosen by the
+      # playwright package -- a cache keyed on anything coarser would hand a new playwright the
+      # previous version's Chromium, which is the same silently-wrong-toolchain failure the
+      # ffmpeg pinning above exists to prevent.
+      #
+      # That version has to be RESOLVED AT RUNTIME rather than read from a lockfile, because
+      # playwright is deliberately not a project dependency: `just test-browser-install` runs
+      # `uv run --with playwright`, which resolves whatever is newest on PyPI at that moment
+      # (see the comment at pyproject.toml:138). So this step asks the tool what it is, and the
+      # answer becomes the key. A playwright release therefore misses the cache and re-downloads
+      # -- which is correct, that IS a different browser.
+      #
+      # Worth recording: the floating version means the browser suite's Chromium can change
+      # under it without any change to this repository. Pinning it is not this bead's scope.
+      - name: 🎭 Resolve the playwright version
+        id: playwright
+        run: |
+          set -euo pipefail
+          version="$(uv run --with playwright playwright --version | awk '{print $2}')"
+          if [ -z "${version}" ]; then
+            echo "::error::could not resolve the playwright version; refusing to cache under an empty key." >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "playwright ${version}"
+
+      - name: 🎭 Restore the Chromium build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      # phaze-m7bf7: refresh the package index BEFORE `--with-deps` resolves against it. This is
+      # the only apt call left in the test workflow -- phaze-m3qte took ffmpeg off apt entirely --
+      # and it is bounded here so a degraded mirror cannot eat the job the way it did before that
+      # bead. A failure to refresh is NOT fatal: the runner image ships a usable index, and
+      # Chromium's libraries are largely present already, so a stale index is a slower resolve
+      # rather than a broken one. It is reported, not swallowed.
+      - name: 🎭 Refresh the apt index for Chromium's system libraries
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -uo pipefail
+          if timeout 180 sudo -E apt-get update; then
+            echo "apt index refreshed"
+          else
+            echo "::warning::apt-get update did not complete within 180s; continuing against the image's existing index." >&2
+          fi
+
       - name: 🎭 Install the Chromium build
-        run: just test-browser-install
+        # A no-op for the DOWNLOAD when the cache hit -- `playwright install` verifies the browser
+        # is present and returns. `--with-deps` still runs apt for Chromium's system libraries,
+        # which the cache cannot cover.
+        #
+        # DEBIAN_FRONTEND=noninteractive is REQUIRED, not hygiene. Observed on PR #446 (job
+        # 95581386833): the cache restored at 03:01:07, so no download was outstanding, and this
+        # step still sat in_progress for ~10 minutes against a 20-minute job timeout. With the
+        # frontend unset, apt is free to open an interactive prompt -- a config-file question or a
+        # service-restart prompt -- and on a runner with no TTY to answer it that blocks
+        # indefinitely. It does not fail, it does not print, it just never returns, which is why
+        # this presented as a hang rather than an error.
+        #
+        # Bounded for the same reason the ffmpeg step is (phaze-i61p6): a step that hangs past the
+        # job timeout gets the job cancelled with the later steps SKIPPED -- zero tests executed,
+        # reported as "the tests are timing out" when no test ever ran.
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          if ! timeout 600 just test-browser-install; then
+            status=$?
+            if [ "${status}" -eq 124 ]; then
+              echo "::error::INFRASTRUCTURE -- the Chromium install did not complete within 600s; no test has run." >&2
+              echo "The cache restore step above says whether a download was even outstanding; if it hit, this is the apt half." >&2
+            else
+              echo "::error::the Chromium install failed with exit ${status}." >&2
+            fi
+            exit 1
+          fi
 
       - name: 🌐 Run the browser contract suite
         # `just test-browser` depends on `tailwind`: without the compiled app.css the app serves an

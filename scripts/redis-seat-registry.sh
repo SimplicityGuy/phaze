@@ -41,6 +41,20 @@
 #       idle-looking suite is still visible here. It is the same signal `just test-db-down` already
 #       trusts to refuse a teardown. Postgres evidence is MANDATORY for `reclaim`: if the Postgres
 #       container cannot be reached, the sweep refuses rather than treating unknown as free.
+#
+#       L2 therefore has THREE states, and collapsing them is the phaze-gmkua defect: the query
+#       used to end `2>/dev/null || true`, so an unreachable Postgres returned an EMPTY list --
+#       byte-identical to "no seat has a backend attached", i.e. unknown silently read as free.
+#
+#         obtained     the query answered. `pg_live` is authoritative, empty or not.
+#         unavailable  a container was named but did not answer. NOT a finding: every seat's L2
+#                      state is unknown, so classification keeps them all.
+#         waived       the operator passed `--no-postgres-check`, accepting a sweep on L1/L3/O1/O2
+#                      alone. `reclaim` always says so on stderr -- see `cmd_reclaim`, and note the
+#                      warning is gated on the EVIDENCE, never on whether `--pg-container` happened
+#                      to be passed: the justfile recipe always passes it, so the old
+#                      `-z "$pg_container"` gate silenced the warning on the only shape an operator
+#                      ever types.
 #   L3  Its lease has not expired -- `test-db-for` stamps `phaze:test:redis-db-seen` on every call,
 #       and a seat stamped within PHAZE_TEST_REDIS_SEAT_LEASE_HOURS (default 72) is left alone.
 #       This is what protects the claimed-but-idle seat that L1 and L2 cannot see.
@@ -62,6 +76,12 @@
 # `release <seat>` is the operator-driven path and deliberately ignores L3/O1/O2: naming a seat IS
 # the assertion that it is finished. It still refuses on L1/L2 (use --force to override).
 #
+# Every registry VALUE is data and is sanitized before it is used as an index -- `classify_seats`
+# always did this, `cmd_release` did not, and the gap was phaze-nbfuc: a value of `.*` reached the
+# L1 grep as a regex, matched every `CLIENT LIST` line, and left the seat reporting in use forever.
+# A value that is not an index is now reported and released: no logical database can correspond to
+# it, so there is nothing a client could be holding and nothing to clear.
+#
 # ATOMICITY AND IDEMPOTENCE
 #
 # Allocation is one server-side Lua script: read-existing / scan-used / claim happen inside a
@@ -77,13 +97,31 @@
 #   phaze:test:redis-db-index   hash seat -> index   (unchanged shape; pre-existing entries load)
 #   phaze:test:redis-db-seen    hash seat -> unix seconds of last `test-db-for` (lease stamp)
 #   phaze:test:redis-db-origin  hash seat -> absolute path of the worktree that claimed it
-#   phaze:test:redis-db-counter DEPRECATED. No longer read or written; left in place rather than
-#                               deleted so an older checkout's `test-db-for` running against the
-#                               same container keeps its own behaviour instead of restarting from 1.
+#   phaze:test:redis-db-counter The ALL-TIME high-water mark: the largest index ever handed out on
+#                               this container, which is exactly what the old monotonic counter
+#                               already held. It is no longer the allocator (the scan is), but it
+#                               is what makes "prefer an index nobody has ever held" true --
+#                               deriving that mark from the CURRENTLY REGISTERED entries collapses
+#                               it the moment the top seat is freed (phaze-08sww). It only ever
+#                               RISES: `allocate` raises it when it hands out a fresh index, and
+#                               `release` and `reclaim --apply` raise it to cover everything still
+#                               registered BEFORE they free anything, because freeing is what erases
+#                               the evidence. Keeping the same key also keeps an older checkout's
+#                               `INCR`-based `test-db-for` behaving sanely against the same
+#                               container -- and a mark left at 68/73/80 by the counter era is not
+#                               clamped, because it is telling the truth: in a 64-database space
+#                               every allocatable index really has been handed out at some point, so
+#                               there is nothing fresh left to prefer and recycling is all there is.
 #
 # Seat names are the DERIVED identifiers from `scripts/derive-seat-name.sh` (phaze-fmfk); this
 # script does not normalize anything itself, so the registry key, the Postgres database pair and
 # the printed exports can never disagree about what a seat is called.
+#
+# Freeing is atomic in the same way and for a sharper reason. `reclaim` classifies every seat once
+# and then destroys them from that snapshot, so the snapshot is stale by construction -- a 5-seat
+# sweep measured 5.46s. `free_seat` therefore re-reads L1 and compare-and-deletes the registry
+# fields against the lease stamp classification saw, and declines if either has moved. See its
+# comment for the failure it closes (phaze-r311e).
 #
 # Usage:
 #   redis-seat-registry.sh allocate --redis-container C --seat S --capacity N [--origin PATH]
@@ -100,6 +138,7 @@ set -euo pipefail
 readonly REGISTRY_KEY="phaze:test:redis-db-index"
 readonly SEEN_KEY="phaze:test:redis-db-seen"
 readonly ORIGIN_KEY="phaze:test:redis-db-origin"
+readonly HIGHWATER_KEY="phaze:test:redis-db-counter"
 
 lease_hours="${PHAZE_TEST_REDIS_SEAT_LEASE_HOURS:-72}"
 
@@ -182,7 +221,26 @@ registry_cli() {
   docker exec "$redis_container" redis-cli -n 0 "$@"
 }
 
-if ! docker exec "$redis_container" redis-cli PING >/dev/null 2>&1; then
+# A container that is genuinely absent stays absent, so re-asking costs a few hundred milliseconds
+# once and settles the question. A SINGLE `docker exec` does not settle it: under load the daemon
+# can fail one exec on a container that is up and answering, and this probe then reports the one
+# thing guaranteed to be unhelpful -- "not reachable, start the harness" about a harness already
+# running. Observed on a machine with four suites in flight, where it turned an `allocate` that
+# should have refused with the exhaustion message (exit 3) into exit 1.
+#
+# This is a probe, not a guard: it decides whether we can TALK to Redis, never what the registry
+# says. Nothing below retries, and no allocation, refusal or reclaim verdict is affected by how many
+# times we asked -- in particular the exhaustion refusal is reached through the allocator's own EVAL
+# and is untouched by this loop.
+redis_reachable=0
+for _ in 1 2 3; do
+  if docker exec "$redis_container" redis-cli PING >/dev/null 2>&1; then
+    redis_reachable=1
+    break
+  fi
+  sleep 0.3
+done
+if [ "$redis_reachable" -eq 0 ]; then
   echo "❌ Redis container '${redis_container}' is not reachable. Start the shared harness with \`just test-db\`." >&2
   exit 1
 fi
@@ -219,23 +277,51 @@ live_redis_indices() {
 # Databases with a live client backend on the shared Postgres (liveness signal L2). Same query
 # shape `just test-db-down` uses to refuse a teardown; pytest holds its advisory-lock connection
 # for the whole session, so a suite that is merely thinking still shows up.
-live_postgres_databases() {
-  [ -n "$pg_container" ] || return 0
-  docker exec "$pg_container" psql -U phaze -d postgres -tAc \
-    "SELECT DISTINCT datname FROM pg_stat_activity
-      WHERE backend_type = 'client backend' AND pid <> pg_backend_pid() AND datname LIKE 'phaze%'" 2>/dev/null || true
+readonly PG_LIVE_SQL="SELECT DISTINCT datname FROM pg_stat_activity
+      WHERE backend_type = 'client backend' AND pid <> pg_backend_pid() AND datname LIKE 'phaze%'"
+
+# Set by collect_postgres_evidence, read by classify_seats / cmd_release / cmd_reclaim.
+# `pg_evidence` is one of obtained | unavailable | waived (see the L2 note in the header); `pg_live`
+# is meaningful ONLY when it is `obtained`, which is the whole point of keeping the two apart.
+pg_evidence="waived"
+pg_live=""
+
+collect_postgres_evidence() {
+  pg_live=""
+  if [ -z "$pg_container" ]; then
+    pg_evidence="waived"
+    return 0
+  fi
+  # Asked for even under --no-postgres-check: that flag waives the REFUSAL, not evidence that is
+  # there for the taking. A reachable Postgres still protects a running suite either way.
+  if pg_live="$(docker exec "$pg_container" psql -U phaze -d postgres -tAc "$PG_LIVE_SQL" 2>/dev/null)"; then
+    pg_evidence="obtained"
+    return 0
+  fi
+  # The query failed. An empty answer would be indistinguishable from "nobody is connected", so
+  # say so instead of returning one (phaze-gmkua defect B).
+  pg_live=""
+  if [ "$skip_postgres_check" -eq 1 ]; then
+    pg_evidence="waived"
+  else
+    pg_evidence="unavailable"
+  fi
 }
 
+# `-F` in both, because both needles are DATA: the index comes from the registry hash and the seat
+# name from its field. Without it a registry value of `.*` is a regex that matches every CLIENT LIST
+# line, which reported the seat permanently in use and made it unreleasable (phaze-nbfuc). Callers
+# sanitize the index as well -- this is the second line of defence, not the only one.
 seat_is_redis_live() {
   local index="$1" live
   live="$2"
-  printf '%s\n' "$live" | grep -qx "$index"
+  printf '%s\n' "$live" | grep -qxF "$index"
 }
 
 seat_is_postgres_live() {
   local name="$1" live
   live="$2"
-  printf '%s\n' "$live" | grep -qx -e "phaze_${name}_test" -e "phaze_${name}_migrations_test"
+  printf '%s\n' "$live" | grep -qxF -e "phaze_${name}_test" -e "phaze_${name}_migrations_test"
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -246,7 +332,7 @@ seat_is_postgres_live() {
 # lease), else claim the LOWEST FREE index in [1, capacity), else report exhaustion. Index 0 is
 # reserved for this registry itself and is never handed out.
 readonly ALLOCATE_LUA='
-local reg, seen, origin_key = KEYS[1], KEYS[2], KEYS[3]
+local reg, seen, origin_key, highwater_key = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
 local seat, capacity, origin_path = ARGV[1], tonumber(ARGV[2]), ARGV[3]
 local now = redis.call("TIME")[1]
 
@@ -263,26 +349,41 @@ if existing_index and existing_index >= 1 and existing_index < capacity then
 end
 
 local used = {}
-local highwater = 0
 local flat = redis.call("HGETALL", reg)
 for i = 1, #flat, 2 do
   if flat[i] ~= seat then
     local value = tonumber(flat[i + 1])
-    if value then
-      used[value] = true
-      if value < capacity and value > highwater then highwater = value end
-    end
+    if value then used[value] = true end
   end
 end
 
+-- The ALL-TIME high-water mark, persisted rather than derived. Deriving it from the entries above
+-- is what phaze-08sww reported: freeing the top seat collapsed the mark, so the very next
+-- allocation recycled an index that had been in use seconds earlier -- weakest precisely after a
+-- sweep, which is the moment recycling happens at all. The registered entries are still folded in
+-- as a FLOOR, so a container whose mark predates this key (or was written by an older checkout)
+-- cannot start below what it has already handed out.
+local stored = tonumber(redis.call("GET", highwater_key)) or 0
+local highwater = stored
+for i = 1, #flat, 2 do
+  local value = tonumber(flat[i + 1])
+  if value and value < capacity and value > highwater then highwater = value end
+end
+-- Write the floor back rather than recomputing it every call. Otherwise the entries that raised it
+-- can be released before any above-mark allocation persists it, and the mark collapses after all --
+-- the same defect, just one allocation later. This makes the FIRST call against a container whose
+-- key predates this change durable, which is the only case where the floor does any work.
+if highwater > stored then redis.call("SET", highwater_key, highwater) end
+
 local function claim(index)
   redis.call("HSET", reg, seat, index)
+  if index > highwater then redis.call("SET", highwater_key, index) end
   stamp()
   if existing then return "reallocated " .. index end
   return "allocated " .. index
 end
 
--- Prefer an index no seat has ever held (above the current high-water mark) before recycling a
+-- Prefer an index no seat has ever held (above the all-time high-water mark) before recycling a
 -- freed one. Reclaim can only ever be as good as its evidence, and one hazard survives every
 -- check: a shell that still has a stale PHAZE_REDIS_URL exported keeps using its old index even
 -- after the registry hands it back. Recycling last, rather than first, means that hazard is only
@@ -304,7 +405,7 @@ cmd_allocate() {
   local cap result verdict index
   cap="$(effective_capacity)"
 
-  result="$(registry_cli EVAL "$ALLOCATE_LUA" 3 "$REGISTRY_KEY" "$SEEN_KEY" "$ORIGIN_KEY" "$seat" "$cap" "$origin")"
+  result="$(registry_cli EVAL "$ALLOCATE_LUA" 4 "$REGISTRY_KEY" "$SEEN_KEY" "$ORIGIN_KEY" "$HIGHWATER_KEY" "$seat" "$cap" "$origin")"
   verdict="${result%% *}"
   index="${result##* }"
 
@@ -368,7 +469,122 @@ cmd_allocate() {
 # Hand an index back: wipe the seat's keys so the next holder starts clean, then drop the three
 # registry fields. Touches nothing outside logical DB `index` and the registry hashes -- the
 # containers, every other seat's keys, and every Postgres database are untouched.
+#
+# Freeing is CONDITIONAL, and that is the whole of phaze-r311e. `reclaim` classifies every seat
+# ONCE and then destroys them one at a time from that snapshot; a 5-seat sweep measured 5.46s
+# end to end, and a 38-seat registry is 20s+ of exposure. An agent running `just test-db-for` inside
+# that window is handed its existing index back, correctly and atomically -- and the sweep, acting
+# on a snapshot taken before that happened, used to flush the database anyway and hand the index to
+# the next allocate. Two seats, one logical DB: exactly the phaze-fwo7 shape this registry exists to
+# prevent, from a snapshot that was merely stale rather than wrong.
+#
+# So the destruction re-derives its own evidence rather than trusting the snapshot:
+#
+#   1. Re-read L1 immediately before touching anything. A client that has connected since
+#      classification means a suite is running in that seat right now.
+#   2. Compare-and-delete the registry fields against the lease stamp classification saw.
+#      `test-db-for` re-stamps `phaze:test:redis-db-seen` on EVERY call -- including the idempotent
+#      already-allocated path -- so a seat re-claimed mid-sweep has moved its stamp and the delete
+#      declines. That comparison and the deletes happen inside one server-side script, so the seat
+#      cannot be re-claimed between the check and the delete either.
+#
+# The FLUSHDB runs only after the delete succeeds. The order matters: flushing first and then
+# discovering the seat had moved would have destroyed the keys already.
+readonly FREE_SEAT_LUA='
+local reg, seen, origin_key = KEYS[1], KEYS[2], KEYS[3]
+local seat, expected_index, expected_seen = ARGV[1], ARGV[2], ARGV[3]
+
+local current_index = redis.call("HGET", reg, seat)
+if current_index == false then return "vanished" end
+if current_index ~= expected_index then return "moved" end
+
+local current_seen = redis.call("HGET", seen, seat)
+if current_seen == false then current_seen = "" end
+if current_seen ~= expected_seen then return "restamped" end
+
+redis.call("HDEL", reg, seat)
+redis.call("HDEL", seen, seat)
+redis.call("HDEL", origin_key, seat)
+return "freed"
+'
+
+# Raise the persisted all-time high-water mark to cover everything CURRENTLY registered. Both
+# freeing paths call this before they destroy anything, and the ordering is the entire point: once
+# an entry is gone the allocator can no longer infer that its index was ever handed out, and the
+# "prefer an index no seat has ever held" preference collapses exactly when it is needed most
+# (phaze-08sww). `allocate` folds the same floor in, so a container that has allocated under this
+# script already carries a correct mark -- this is what covers a registry written before the key
+# existed, whose first operation under this script is a release or a sweep rather than an allocate.
+#
+# Purely additive: the mark only ever rises, and nothing reads it except the allocator's preference.
+readonly RAISE_HIGHWATER_LUA='
+local highwater_key, reg = KEYS[1], KEYS[2]
+local capacity = tonumber(ARGV[1])
+local stored = tonumber(redis.call("GET", highwater_key)) or 0
+local highwater = stored
+local flat = redis.call("HGETALL", reg)
+for i = 1, #flat, 2 do
+  local value = tonumber(flat[i + 1])
+  if value and value < capacity and value > highwater then highwater = value end
+end
+if highwater > stored then redis.call("SET", highwater_key, highwater) end
+return tostring(highwater)
+'
+
+raise_highwater() {
+  local cap="$1"
+  registry_cli EVAL "$RAISE_HIGHWATER_LUA" 2 "$HIGHWATER_KEY" "$REGISTRY_KEY" "$cap" >/dev/null
+}
+
+# Set by free_seat when it declines, so the caller can say which guard objected.
+free_seat_refusal=""
+
+# Returns 0 having freed the seat, or non-zero having touched nothing at all.
 free_seat() {
+  local name="$1" index="$2" cap="$3" expected_seen="$4" raw="$5"
+  free_seat_refusal=""
+
+  # Index 0 is the registry's own connection, so it is always "live" and must never be tested here;
+  # classify_seats reports a corrupt registry value as index 0 for exactly that reason. An
+  # out-of-range index cannot have a client either -- Redis refuses SELECT past `databases` -- so
+  # the check is a no-op there rather than a special case.
+  local redis_live
+  redis_live="$(live_redis_indices)"
+  if [ "$index" -ge 1 ] && seat_is_redis_live "$index" "$redis_live"; then
+    free_seat_refusal="a Redis client connected to DB ${index} since classification (L1)"
+    return 1
+  fi
+
+  local verdict
+  verdict="$(registry_cli EVAL "$FREE_SEAT_LUA" 3 "$REGISTRY_KEY" "$SEEN_KEY" "$ORIGIN_KEY" "$name" "$raw" "$expected_seen")"
+  case "$verdict" in
+    freed) ;;
+    vanished)
+      free_seat_refusal="its registry entry was already gone"
+      return 1
+      ;;
+    moved)
+      free_seat_refusal="it moved to a different index since classification"
+      return 1
+      ;;
+    restamped)
+      free_seat_refusal="it was re-claimed since classification (\`test-db-for\` re-stamped its lease)"
+      return 1
+      ;;
+    *)
+      free_seat_refusal="unexpected registry response '${verdict}'"
+      return 1
+      ;;
+  esac
+
+  if [ "$index" -ge 1 ] && [ "$index" -lt "$cap" ]; then
+    docker exec "$redis_container" redis-cli -n "$index" FLUSHDB >/dev/null
+  fi
+}
+
+# Unconditional. Only `release --force` reaches this: naming a seat AND passing --force is the
+# operator asserting both that it is finished and that they have read why the guards objected.
+free_seat_unconditionally() {
   local name="$1" index="$2" cap="$3"
   if [ "$index" -ge 1 ] && [ "$index" -lt "$cap" ]; then
     docker exec "$redis_container" redis-cli -n "$index" FLUSHDB >/dev/null
@@ -380,43 +596,113 @@ free_seat() {
 
 cmd_release() {
   [ -n "$seat" ] || usage
-  local cap index
+  local cap raw index seen_at
   cap="$(effective_capacity)"
-  index="$(registry_cli HGET "$REGISTRY_KEY" "$seat")"
-  if [ -z "$index" ]; then
+  raw="$(registry_cli HGET "$REGISTRY_KEY" "$seat")"
+  if [ -z "$raw" ]; then
     echo "🟢 '${seat}' holds no Redis logical DB; nothing to release."
     return 0
   fi
 
-  if [ "$force" -ne 1 ]; then
-    local redis_live pg_live
-    redis_live="$(live_redis_indices)"
-    pg_live="$(live_postgres_databases)"
-    if seat_is_redis_live "$index" "$redis_live"; then
-      echo "❌ Refusing to release '${seat}': a client is connected to Redis logical DB ${index} right now." >&2
-      echo "   Releasing it would clear keys a running suite is using. Wait for it, or --force." >&2
-      exit 4
-    fi
-    if [ -n "$pg_container" ] && seat_is_postgres_live "$seat" "$pg_live"; then
-      echo "❌ Refusing to release '${seat}': a client backend is connected to its Postgres database." >&2
-      echo "   pytest holds that connection for the whole session, so a suite is running in this seat." >&2
-      echo "   Wait for it to finish, or --force." >&2
-      exit 4
-    fi
+  # Sanitize exactly as classify_seats does, and for the same reason (phaze-nbfuc). The registry
+  # value is data, and release used to hand it straight to `seat_is_redis_live`, which greps for it
+  # -- so a value of `.*` was read as a REGEX, matched every `CLIENT LIST` line, and the seat
+  # reported permanently in use and could not be released without --force. `raw` stays byte-exact
+  # for the compare-and-delete; `index` is the sanitized number the liveness check and FLUSHDB use,
+  # and it is 0 when the value is not an index, because 0 is the registry's own connection and is
+  # never tested for liveness.
+  if [[ "$raw" =~ ^[0-9]+$ ]]; then
+    index="$raw"
+  else
+    index=0
+    echo "⚠️  '${seat}' has a corrupt registry value '${raw}', which is not an index. No Redis logical" >&2
+    echo "    DB can correspond to it, so there is nothing to clear; releasing the entry itself." >&2
+  fi
+  seen_at="$(registry_cli HGET "$SEEN_KEY" "$seat")"
+
+  # What the success line calls the thing that was freed. A corrupt value has no logical DB to name,
+  # and reporting the sanitized 0 would name the registry's own database.
+  local freed_what="Redis logical DB ${index}"
+  [ "$index" -ge 1 ] || freed_what="corrupt registry entry '${raw}'"
+
+  # Before either path frees anything: releasing the top seat must not lose the record that its
+  # index was handed out, or the next allocation recycles it instead of taking a fresh one
+  # (phaze-08sww).
+  raise_highwater "$cap"
+
+  if [ "$force" -eq 1 ]; then
+    free_seat_unconditionally "$seat" "$index" "$cap"
+    echo "✅ released ${freed_what} from '${seat}' (keys cleared, index free for the next seat)"
+    return 0
   fi
 
-  free_seat "$seat" "$index" "$cap"
-  echo "✅ released Redis logical DB ${index} from '${seat}' (keys cleared, index free for the next seat)"
+  local redis_live
+  redis_live="$(live_redis_indices)"
+  collect_postgres_evidence
+  # `-ge 1` for the same reason free_seat has it: index 0 is the registry's own connection and is
+  # always "live", so a sanitized-to-0 corrupt value must never reach the L1 check.
+  if [ "$index" -ge 1 ] && seat_is_redis_live "$index" "$redis_live"; then
+    echo "❌ Refusing to release '${seat}': a client is connected to Redis logical DB ${index} right now." >&2
+    echo "   Releasing it would clear keys a running suite is using. Wait for it, or --force." >&2
+    exit 4
+  fi
+  if [ "$pg_evidence" = "unavailable" ]; then
+    # Same rule as the sweep: a named container that will not answer leaves L2 unknown, and
+    # unknown is never read as free (phaze-gmkua).
+    echo "❌ Refusing to release '${seat}': Postgres container '${pg_container}' did not answer, so a" >&2
+    echo "   suite running in this seat would be invisible. Start the harness (\`just test-db\`), or --force." >&2
+    exit 4
+  fi
+  if [ "$pg_evidence" = "obtained" ] && seat_is_postgres_live "$seat" "$pg_live"; then
+    echo "❌ Refusing to release '${seat}': a client backend is connected to its Postgres database." >&2
+    echo "   pytest holds that connection for the whole session, so a suite is running in this seat." >&2
+    echo "   Wait for it to finish, or --force." >&2
+    exit 4
+  fi
+
+  # Conditional even here: the checks above are a snapshot too, just a much fresher one. The
+  # compare-and-delete gets `raw`, not `index` -- it has to match the registry byte for byte, and a
+  # corrupt value sanitized to 0 would never match itself.
+  if ! free_seat "$seat" "$index" "$cap" "$seen_at" "$raw"; then
+    echo "❌ Did not release '${seat}': ${free_seat_refusal}." >&2
+    echo "   Nothing was cleared. Re-run \`just test-db-seats\` to see where the seat stands now." >&2
+    exit 4
+  fi
+  echo "✅ released ${freed_what} from '${seat}' (keys cleared, index free for the next seat)"
 }
 
 # Shared by `list` and `reclaim`: classify every registry entry against the liveness rules above.
-# Emits one TAB-separated record per seat: name, index, verdict, reason.
+# Emits one TAB-separated record per seat:
+#
+#   name  index  raw  seen  verdict  reason
+#
+# `index` is sanitized (0 when the registry value is not an index, so arithmetic and the L1 check
+# stay safe); `raw` is the byte-exact registry value and `seen` the lease stamp AS OBSERVED HERE.
+# Those last two are what free_seat compares against before it destroys anything -- the record is a
+# snapshot, and carrying what the snapshot saw is what lets the destruction notice it went stale
+# (phaze-r311e). `reason` stays last because it is the only field that contains spaces.
+#
+# `raw` and `seen` are emitted as EMPTY_FIELD when they are empty, and the readers translate it
+# back. TAB is an IFS *whitespace* character, so `read` collapses runs of tabs and strips leading
+# and trailing ones: an empty field in the middle of a record silently shifts every field after it,
+# which is how an unstamped seat first arrived at free_seat wearing another field's verdict. Lease
+# stamps are digits and a registry value is never a bare '-', so the sentinel cannot collide.
+#
+readonly EMPTY_FIELD="-"
+
+decode_field() {
+  [ "$1" != "$EMPTY_FIELD" ] || return 0
+  printf '%s' "$1"
+}
+
+# Reads `pg_evidence`/`pg_live`, which the CALLER must have filled with collect_postgres_evidence.
+# Not collected here: every caller captures this function with `$(...)`, and a command substitution
+# runs in a subshell, so anything assigned inside would be discarded on the way out.
 classify_seats() {
   local cap="$1"
-  local now redis_live pg_live lease_seconds
+  local now redis_live lease_seconds
   now="$(server_now)"
   redis_live="$(live_redis_indices)"
-  pg_live="$(live_postgres_databases)"
   lease_seconds=$((lease_hours * 3600))
 
   # Each hash is fetched ONCE and looked up locally. A per-seat `HGET` would be three `docker exec`
@@ -440,14 +726,19 @@ classify_seats() {
     if ! [[ "$index" =~ ^[0-9]+$ ]]; then
       verdict="reclaim"
       reason="registry value '${index}' is not an index"
-      printf '%s\t%s\t%s\t%s\n' "$name" "0" "$verdict" "$reason"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "0" "${index:-$EMPTY_FIELD}" "${seen_at:-$EMPTY_FIELD}" "$verdict" "$reason"
       continue
     fi
 
     if seat_is_redis_live "$index" "$redis_live"; then
       reason="a Redis client is connected to DB ${index} (L1)"
-    elif [ -n "$pg_container" ] && seat_is_postgres_live "$name" "$pg_live"; then
+    elif [ "$pg_evidence" = "obtained" ] && seat_is_postgres_live "$name" "$pg_live"; then
       reason="a Postgres backend is connected to phaze_${name}_test (L2)"
+    elif [ "$pg_evidence" = "unavailable" ]; then
+      # A container was named and did not answer. Its silence says nothing about this seat, so it
+      # must not fall through to O1/L3 and be read as absence of life (phaze-gmkua defect B). This
+      # branch is only reachable from `list`; `reclaim` refuses outright before classifying.
+      reason="Postgres container '${pg_container}' did not answer, so L2 is unknown for this seat and unknown is never read as free"
     elif [ -n "$origin_path" ] && [ ! -d "$origin_path" ]; then
       verdict="reclaim"
       reason="origin worktree ${origin_path} no longer exists (O1)"
@@ -470,7 +761,7 @@ classify_seats() {
       fi
     fi
 
-    printf '%s\t%s\t%s\t%s\n' "$name" "$index" "$verdict" "$reason"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$index" "$index" "${seen_at:-$EMPTY_FIELD}" "$verdict" "$reason"
   done <<<"$pairs"
 }
 
@@ -493,6 +784,11 @@ require_postgres_evidence() {
 cmd_list() {
   local cap records
   cap="$(effective_capacity)"
+  collect_postgres_evidence
+  if [ "$pg_evidence" = "unavailable" ]; then
+    echo "⚠️  Postgres container '${pg_container}' did not answer, so the L2 evidence is missing." >&2
+    echo "    Every seat is reported in-use below on that basis alone; unknown is not free." >&2
+  fi
   records="$(classify_seats "$cap")"
   if [ -z "$records" ]; then
     echo "No Redis logical DBs are allocated on ${redis_container} (capacity ${cap}, index 0 reserved for the registry)."
@@ -502,7 +798,7 @@ cmd_list() {
   echo ""
   printf '  %-6s  %-40s  %-9s  %s\n' "DB" "SEAT" "STATE" "EVIDENCE"
   local state
-  while IFS=$'\t' read -r name index verdict reason; do
+  while IFS=$'\t' read -r name index _raw _seen verdict reason; do
     [ -n "$name" ] || continue
     case "$verdict" in
       keep) state="in-use" ;;
@@ -520,20 +816,46 @@ cmd_list() {
 cmd_reclaim() {
   [ -n "$capacity" ] || usage
   [ "$skip_postgres_check" -eq 1 ] || require_postgres_evidence
-  if [ "$skip_postgres_check" -eq 1 ] && [ -z "$pg_container" ]; then
-    echo "⚠️  --no-postgres-check: sweeping without the Postgres evidence (L2). A suite that is running" >&2
-    echo "    but not currently touching Redis is invisible to this sweep." >&2
+
+  local cap records freed=0 kept=0 unstamped=0 raced=0
+  cap="$(effective_capacity)"
+  collect_postgres_evidence
+
+  # Report on the evidence that was actually OBTAINED, not on which flags were passed. The old
+  # gate was `--no-postgres-check AND no --pg-container`, but the justfile recipe always passes
+  # `--pg-container` -- so `just test-db-reclaim --no-postgres-check`, the only shape an operator
+  # ever types, swept with L2 missing and said nothing at all (phaze-gmkua defect A).
+  if [ "$skip_postgres_check" -eq 1 ]; then
+    if [ "$pg_evidence" = "obtained" ]; then
+      echo "ℹ️  --no-postgres-check: the refusal was waived, but '${pg_container}' answered, so the Postgres" >&2
+      echo "    evidence (L2) was collected and used anyway. Seats with a live backend are still protected." >&2
+    else
+      echo "⚠️  --no-postgres-check: sweeping without the Postgres evidence (L2). A suite that is running" >&2
+      echo "    but not currently touching Redis is invisible to this sweep." >&2
+    fi
+  elif [ "$pg_evidence" != "obtained" ]; then
+    # require_postgres_evidence passed its probe, then the liveness query itself failed. Reading
+    # that as "no seat has a backend attached" is exactly what defect B did.
+    echo "❌ The Postgres liveness query against '${pg_container}' failed, so the L2 evidence this sweep" >&2
+    echo "   requires is unavailable. Refusing rather than reading unknown as free." >&2
+    echo "   Re-run once the harness is answering, or pass --no-postgres-check to sweep on the remaining" >&2
+    echo "   evidence alone -- only do that when you know no suite is running." >&2
+    exit 1
   fi
 
-  local cap records freed=0 kept=0 unstamped=0
-  cap="$(effective_capacity)"
   records="$(classify_seats "$cap")"
   if [ -z "$records" ]; then
     echo "No Redis logical DBs are allocated on ${redis_container}; nothing to reclaim."
     return 0
   fi
 
-  while IFS=$'\t' read -r name index verdict reason; do
+  # Before the first entry is destroyed, not after: a sweep is the one moment that can erase the
+  # evidence of which indices have been handed out, and an index freed by a sweep is precisely the
+  # one a shell somewhere is most likely to still have exported (phaze-08sww). A dry run mutates
+  # nothing, including this.
+  [ "$apply" -ne 1 ] || raise_highwater "$cap"
+
+  while IFS=$'\t' read -r name index raw seen verdict reason; do
     [ -n "$name" ] || continue
     if [ "$verdict" = "keep" ]; then
       kept=$((kept + 1))
@@ -543,18 +865,31 @@ cmd_reclaim() {
       unstamped=$((unstamped + 1))
       continue
     fi
-    freed=$((freed + 1))
-    if [ "$apply" -eq 1 ]; then
-      free_seat "$name" "$index" "$cap"
+    if [ "$apply" -ne 1 ]; then
+      freed=$((freed + 1))
+      echo "•  would reclaim DB ${index} from '${name}' — ${reason}"
+      continue
+    fi
+    raw="$(decode_field "$raw")"
+    seen="$(decode_field "$seen")"
+    # The verdict above was reached before any of this loop's other seats were touched. free_seat
+    # re-derives its own evidence and declines if the seat moved underneath the snapshot; a decline
+    # counts as kept, because the seat is still held (phaze-r311e).
+    if free_seat "$name" "$index" "$cap" "$seen" "$raw"; then
+      freed=$((freed + 1))
       echo "✅ reclaimed DB ${index} from '${name}' — ${reason}"
     else
-      echo "•  would reclaim DB ${index} from '${name}' — ${reason}"
+      raced=$((raced + 1))
+      echo "🟥 left '${name}' alone: ${free_seat_refusal}. Nothing was cleared."
     fi
   done <<<"$records"
 
   echo ""
   if [ "$apply" -eq 1 ]; then
     echo "🧹 reclaimed ${freed} seat(s); left ${kept} in-use seat(s) alone. The shared containers were not touched."
+    if [ "$raced" -gt 0 ]; then
+      echo "${raced} seat(s) classified as stale came back to life during the sweep and were left alone."
+    fi
   else
     echo "Dry run: ${freed} seat(s) would be reclaimed, ${kept} left alone. Re-run with --apply to free them."
   fi
