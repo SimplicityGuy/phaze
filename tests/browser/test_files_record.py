@@ -29,6 +29,12 @@ pytestmark = pytest.mark.browser
 # Playwright's strict mode fails the click -- scope to the ``hidden md:block`` table wrapper.
 _DESKTOP_TABLE = "#files-table-view .md\\:block"
 
+# An INVENTED filename in the product's naming shape (CLAUDE.md sanctions these explicitly), used by
+# the ⌘K path only. It has to be word-shaped for the reason test_command_palette_search.py documents
+# at length: ``/search/`` is Postgres full-text search, so a ``<track-01>.mp3`` placeholder is one
+# opaque lexeme with no searchable word in it and no query would ever surface it as a palette row.
+_PALETTE_FILENAME = "Example Artist - Norwood Festival - Opening Set (2024).mp3"
+
 
 def _details_button(file_id: Any) -> str:
     return f'{_DESKTOP_TABLE} button[hx-get="/record/{file_id}"]'
@@ -57,6 +63,33 @@ async def _wait_for_record(page: Any) -> None:
     await page.wait_for_function("() => document.getElementById('record-body').checkVisibility()")
 
 
+async def _settled_focus_in_record(page: Any, *, timeout_ms: int = 5_000) -> str:
+    """Wait, bounded, for focus to land inside ``#record-body``; describe where it ended up.
+
+    A bounded wait rather than a bare read, for the reason ``helpers.settled_focus`` documents on the
+    dismiss side: the focus move is queued in JavaScript, so it lands AFTER the post-condition a test
+    can wait on. Here it is queued behind the x-show reveal specifically (phaze-f65nu), so it is one
+    or more animation frames later than ``#record-body`` becoming visible -- reading
+    ``document.activeElement`` the instant ``_wait_for_record`` returns is a race that passes on a
+    fast machine and fails on a slow one.
+
+    Returns a description of the focused element either way, so the caller's assertion can name what
+    it got instead of raising a bare selector timeout.
+    """
+    describe = """() => {
+        const el = document.activeElement;
+        if (! el) return 'nothing';
+        const inside = document.getElementById('record-body').contains(el);
+        return (inside ? 'IN ' : 'OUT ') + el.tagName + '[' + (el.getAttribute('aria-label') || el.textContent.trim().slice(0, 40)) + ']';
+    }"""
+    for _ in range(max(1, timeout_ms // 100)):
+        where = str(await page.evaluate(describe))
+        if where.startswith("IN "):
+            return where
+        await page.wait_for_timeout(100)
+    return str(await page.evaluate(describe))
+
+
 async def test_opening_a_file_record_names_that_file(page: Any, seed: Any) -> None:
     """The open contract of the record slide-in, which no server-side assertion reaches.
 
@@ -70,7 +103,7 @@ async def test_opening_a_file_record_names_that_file(page: Any, seed: Any) -> No
     which file a screen-reader operator is now looking at. It is computed in JavaScript from the
     swapped heading's ``textContent`` -- there is no server-rendered form of it to assert on.
 
-    Whether focus actually ENTERS the dialog is a separate claim, and it is currently false: see
+    Whether focus actually ENTERS the dialog is a separate claim, asserted on its own by
     ``test_opening_a_record_moves_focus_into_the_dialog`` below (phaze-f65nu).
     """
     target = await seed.file(filename="<track-01>.mp3")
@@ -91,21 +124,16 @@ async def test_opening_a_file_record_names_that_file(page: Any, seed: Any) -> No
     assert target.current_path in await page.locator("#record-body").inner_text(), "the record shows a different file than the row that opened it"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "phaze-f65nu, FOUND BY THIS TEST: opening a record leaves focus on the Details button that opened it -- "
-        "an element x-trap has just marked inert -- so an aria-modal dialog opens with the keyboard operator "
-        "outside it and the refined aria-label is never announced. record_host.html's after-swap handler sets "
-        "`loaded = true` and calls `h.focus()` synchronously, but x-show reveals #record-body on Alpine's "
-        "scheduler, so focus() runs against a display:none element and no-ops. hide() already defers its own "
-        "focus restore into a $nextTick for exactly this reason; the open path does not. Fixing the product is "
-        "not this coverage bead's scope. strict=True on purpose: the fix turns this into an XPASS, which is the "
-        "signal to delete the marker."
-    ),
-)
 async def test_opening_a_record_moves_focus_into_the_dialog(page: Any, seed: Any) -> None:
     """A modal dialog must take the keyboard with it when it opens.
+
+    phaze-f65nu, FOUND BY THIS TEST and now fixed: opening a record used to leave focus on the
+    Details button that opened it -- an element ``x-trap.inert`` has just marked inert -- so an
+    ``aria-modal`` dialog opened with the keyboard operator outside it and the refined aria-label was
+    never announced. ``record_host.html``'s after-swap handler flipped ``loaded = true`` and called
+    ``h.focus()`` on the next statement, but ``loaded`` is what reveals ``#record-body`` through
+    ``x-show``, and Alpine defers that reveal onto a later task -- so the focus ran against a
+    ``display:none`` element and silently no-opped. The handler now waits for the reveal.
 
     Kept as a running assertion rather than a comment: the panel is ``aria-modal="true"`` and inert-s
     the shell behind it, so "did focus follow the dialog" is not a nicety here -- it decides whether
@@ -119,12 +147,41 @@ async def test_opening_a_record_moves_focus_into_the_dialog(page: Any, seed: Any
     await page.click(_details_button(target.id))
     await _wait_for_record(page)
 
-    focused = await page.evaluate("document.getElementById('record-body').contains(document.activeElement)")
-    assert focused, (
-        "focus is outside the open record dialog — landed on "
-        f"{await page.evaluate('document.activeElement.tagName')}"
-        f"[{await page.evaluate('document.activeElement.getAttribute("aria-label")')!r}]"
+    where = await _settled_focus_in_record(page)
+    assert where.startswith("IN "), f"focus is outside the open record dialog — landed on {where}"
+    assert await page.evaluate("document.activeElement.tagName") == "H2", (
+        f"focus entered the record but not on its heading ({where}) — the heading is the tabindex=-1 landing "
+        "point that names the opened file to a screen reader"
     )
+
+
+async def test_opening_a_record_from_the_command_palette_also_moves_focus_into_it(page: Any, seed: Any) -> None:
+    """The ⌘K Files row is the second opener of the SAME host, so it gets the same guarantee.
+
+    A palette row and a Details button reach ``record_host.html`` by different routes -- different
+    template, different fragment, and the palette additionally closes ITSELF on ``record:open`` -- but
+    they share one after-swap handler, so covering only one of them leaves the other free to regress
+    on its own. The palette path is also the harsher case: it dismisses the layer the operator was
+    typing in, so a record that fails to take focus leaves it on a row inside a now-hidden palette
+    rather than merely on a still-visible button.
+    """
+    await seed.file(filename=_PALETTE_FILENAME)
+
+    await open_shell(page, "/s/files")
+    await settled(page)
+
+    await page.click("#cmdk-trigger")
+    await page.locator("#cmdk-dialog").wait_for(state="visible")
+    await page.fill("#cmdk-dialog input[name='q']", "Norwood")
+    await page.wait_for_selector("#cmdk-file-1", timeout=15_000)
+    await page.click("#cmdk-file-1")
+    await _wait_for_record(page)
+
+    assert await _record_dialog_label(page) == f"File record: {_PALETTE_FILENAME}", (
+        "the palette opened a record that does not announce the row's file"
+    )
+    where = await _settled_focus_in_record(page)
+    assert where.startswith("IN "), f"a record opened from the command palette left focus outside it — landed on {where}"
 
 
 async def test_dismissing_a_record_returns_focus_to_the_row_that_opened_it(page: Any, seed: Any) -> None:
