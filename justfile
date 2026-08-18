@@ -314,6 +314,41 @@ coverage-combine:
     uv run coverage report --fail-under=95
     uv run python scripts/coverage_floor.py
 
+# phaze-2rgq2: refreshing the coverage repowise folds into its health scores is a FIVE-command
+# path, and two of those commands are invisible from the tools' own output. Encoding it here is
+# the point of the recipe; the two things worth reading before changing it are:
+#
+# WHY BOTH INGESTS. `repowise coverage add .coverage` and
+# `coverage xml && repowise coverage add coverage.xml` are NOT alternatives -- they populate two
+# DIFFERENT tables, and doing only the first is a silent partial success. The .coverage report
+# carries per-test CONTEXTS but no per-file line totals, so that ingest builds the test-to-code map
+# (29317 test->file records when this was measured) and nothing else. It prints "Built the
+# test-to-code map: N test->file record(s)" and `repowise coverage status` then renders a populated
+# map, so every surface says success -- while `line_coverage_pct` stays NULL, `get_health` reports
+# coverage {file_count: 0}, and the `untested_hotspot` biomarker keeps firing on files that are
+# 96-100% covered. Only the Cobertura coverage.xml populates the per-file table (249 files, 98.4%).
+# Conversely coverage.xml carries no contexts, so it can never build the map -- and an empty map
+# makes `get_risk`'s tests_to_run and the impacted-tests skill return nothing, which reads as "no
+# tests" when it means "unknown". Hence: both, always, and the run FAILS if the second one does
+# not land. Exiting 0 with only the map is precisely the state that looks correct while leaving
+# every health score wrong.
+#
+# WHY THE COMMIT PAIRING. Health findings carry line numbers. An index built at commit A paired
+# with coverage measured at commit B maps coverage onto lines that have moved. The suite takes ~21
+# minutes -- long enough that `main` advanced twice within an hour during the session that filed
+# this bead -- so the script pins HEAD before the run, refuses on modified tracked files, warns on
+# untracked ones, and fails if HEAD moved by the end. `scripts/repowise_coverage_gate.py` then
+# re-reads repowise's own recorded `ingested_commit_sha` / `last_sync_commit` and fails closed on
+# any skew, so the pairing is verified rather than assumed.
+#
+# Per-file health is `repowise health --file <path> --format json` (or the MCP `get_health`). The
+# positional argument to `repowise health` is a REPO PATH, so `repowise health src/phaze/foo.py`
+# fails with `Not a directory: .../foo.py/.repowise` and then prints a misleading "Healthy 10.0/10".
+[doc('Refresh repowise: reindex, run the suite with per-test coverage contexts, ingest BOTH coverage artifacts, fold into health. ~21 min. Pass a seat name to auto-provision an isolated test DB.')]
+[group('test')]
+repowise-coverage seat="":
+    @bash scripts/repowise-coverage.sh "{{seat}}"
+
 [doc('Classify changed files (newline-delimited on stdin) as code-changed=true|false for the CI doc-only skip gate (CI-04)')]
 [group('test')]
 detect-code-changes:
