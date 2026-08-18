@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from phaze.models.proposal import ProposalStatus
-from tests.browser.axe import CONTRAST_RULES, RULES, describe, run_axe
+from tests.browser.axe import CONTRAST_RULES, describe, run_axe
 from tests.browser.helpers import open_shell, settled
 from tests.browser.test_command_palette_search import HALCYON, NORWOOD
 
@@ -28,10 +28,6 @@ if TYPE_CHECKING:
 
 
 pytestmark = pytest.mark.browser
-
-# The palette gate, minus the ONE rule it currently fails. That failure is held as its own strict
-# xfail below rather than folded in here, so this stays a genuine gate over everything else.
-_PALETTE_GATED_RULES = tuple(rule for rule in RULES if rule != "aria-required-children")
 
 
 async def _populate(seed: Seeder) -> None:
@@ -138,6 +134,11 @@ async def test_the_open_command_palette_is_accessible(page: Any, seed: Seeder) -
 
     Scanned with results rendered, not empty: an empty listbox trivially satisfies its children
     requirement.
+
+    ``aria-required-children`` used to be excluded here and held as its own strict xfail, because
+    the ``#cmdk-command-result`` live region rendered INSIDE the listbox. phaze-jng72 hoisted it out
+    to a sibling of ``#cmdk-results``, so the exclusion and the xfail are both gone and the full
+    ``RULES`` gate now covers the palette.
     """
     # Word-shaped names, because /search/ is Postgres full-text -- see the NORWOOD/HALCYON comment
     # in test_command_palette_search.py for why a `<track-NN>.mp3` name is unsearchable.
@@ -154,46 +155,8 @@ async def test_the_open_command_palette_is_accessible(page: Any, seed: Seeder) -
         timeout=15_000,
     )
 
-    violations = await run_axe(page, include="#cmdk-dialog", rules=_PALETTE_GATED_RULES)
+    violations = await run_axe(page, include="#cmdk-dialog")
     assert violations == [], f"the open command palette has automated accessibility violations:\n{describe(violations)}"
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FOUND BY THIS BEAD, pre-existing, NOT fixed here: palette_results.html:149 renders "
-        "<div id='cmdk-command-result' role='status'> INSIDE #cmdk-results, which is role='listbox'. ARIA "
-        "allows a listbox to contain only option/group children, so axe rates this critical. Two real "
-        "consequences: the listbox's semantics are invalid for a screen reader, and -- because the live "
-        "region is inside the subtree the debounced search swaps -- any command result it announces is "
-        "destroyed by the next keystroke. The fix is to hoist the live region into cmdk_modal.html as a "
-        "SIBLING of #cmdk-results (it is an hx-target and an aria-describedby referent, so it wants to be "
-        "stable across swaps anyway), which is a product change in a shared template and belongs to its own "
-        "bead. strict=True: this XPASSes the moment it is fixed, which is the cue to delete this test and "
-        "drop the exclusion from _PALETTE_GATED_RULES."
-    ),
-)
-async def test_the_palette_listbox_contains_only_listbox_children(page: Any, seed: Seeder) -> None:
-    """The one palette rule that fails today, isolated so the rest of the palette is really gated.
-
-    Kept as its own test rather than as a widened exclusion: an exclusion silently covers every
-    FUTURE violation of the same rule anywhere in the palette, whereas this fails the moment the
-    single known cause is fixed and covers nothing else in the meantime.
-    """
-    await seed.file(filename=NORWOOD)
-
-    await open_shell(page)
-    await page.click("#cmdk-trigger")
-    await page.locator("#cmdk-dialog").wait_for(state="visible")
-    await page.fill("#cmdk-dialog input[name='q']", "Norwood")
-    await page.wait_for_function(
-        """expected => document.getElementById('cmdk-results').textContent.includes(expected)""",
-        arg=NORWOOD,
-        timeout=15_000,
-    )
-
-    violations = await run_axe(page, include="#cmdk-dialog", rules=("aria-required-children",))
-    assert violations == [], f"the palette listbox holds non-listbox children:\n{describe(violations)}"
 
 
 async def test_the_execute_confirmation_dialog_is_accessible(page: Any, seed: Seeder) -> None:

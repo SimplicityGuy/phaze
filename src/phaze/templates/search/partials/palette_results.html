@@ -146,7 +146,11 @@
         class="{{ row_class }} w-full text-left">
   <span aria-hidden="true">▶</span><span class="flex-1 text-gray-900 dark:text-gray-100">Extract metadata</span>
 </button>
-<div id="cmdk-command-result" role="status" aria-live="polite" aria-atomic="true" class="min-h-6 px-3 py-1 text-sm text-gray-500 dark:text-gray-400"></div>
+{# The #cmdk-command-result live region the two buttons above target is NOT rendered here — it is a
+   sibling of #cmdk-results in cmdk_modal.html (phaze-jng72). It used to sit right here, which made
+   #cmdk-results an invalid listbox AND meant the next keystroke's swap destroyed every announcement
+   before it was read. Do not move it back into this fragment: htmx resolves hx-target and ARIA
+   resolves aria-describedby document-wide, so the referents work fine from in here. #}
 {% if query and not file_results and not tracklist_results and not discogs_results and not artists %}
   <div class="px-3 py-6 text-center text-sm text-gray-500 dark:text-gray-500">
     No results found for "{{ query }}". Try a different search or one of the commands above.

@@ -143,6 +143,71 @@ def test_cmdk_listbox_and_dialog_present() -> None:
     assert 'aria-label="Command palette"' in html, "cmdk_modal.html dialog is missing its aria-label"
 
 
+# --- phaze-jng72: the ⌘K command live region must outlive a search swap -------------
+
+# The live region rendered INSIDE palette_results.html, i.e. inside #cmdk-results, which is the
+# debounced search's hx-swap="innerHTML" target. That is the same trap as CONSOLE-03 below
+# (a fixed element parked inside a swap target), plus an ARIA one: a listbox may own only
+# option/group children, so a role="status" child made #cmdk-results structurally invalid and axe
+# rated it critical. The behavioural half is the one that actually hurt — a swapped-away node
+# cannot be announced, so ⌘K commands gave a screen-reader user no feedback at all.
+#
+# The browser suite proves the node's identity survives a keystroke; these guards are the blocking
+# lane's copy, because the browser job is non-blocking and cannot stop the hoist being undone.
+_PALETTE_RESULTS = _TEMPLATES / "search" / "partials" / "palette_results.html"
+# The live region's own opening tag (no `>` inside any attribute value, so `[^>]*` bounds it).
+_CMDK_LIVE_REGION = re.compile(r'<div\b[^>]*\bid="cmdk-command-result"[^>]*>', re.DOTALL)
+
+
+def test_cmdk_live_region_is_a_sibling_of_the_results_listbox() -> None:
+    """#cmdk-command-result must live OUTSIDE #cmdk-results — an innerHTML swap destroys anything inside it."""
+    html = _strip_comments(_CMDK.read_text())
+    start = html.find('id="cmdk-results"')
+    assert start != -1, "expected the #cmdk-results swap target in cmdk_modal.html"
+    # #cmdk-results is an EMPTY element in source (the fragment is swapped in), so the first
+    # `</div>` after it is its own closing tag.
+    close = html.find("</div>", start)
+    inner = html[html.find(">", start) + 1 : close]
+    assert "cmdk-command-result" not in inner, (
+        "the ⌘K command live region must live OUTSIDE the #cmdk-results swap target — the debounced "
+        "search swaps innerHTML on every keystroke, which destroys the node before the announcement "
+        "is read, and a role=status child also makes the listbox invalid (axe: critical)"
+    )
+    region = _CMDK_LIVE_REGION.search(html)
+    assert region, "cmdk_modal.html must render the #cmdk-command-result live region itself"
+    assert html.find('id="cmdk-command-result"') > close, "the live region must be a SIBLING that follows #cmdk-results, not an ancestor-nested node"
+
+
+def test_cmdk_live_region_keeps_its_status_semantics_and_stays_rendered() -> None:
+    """The region announces only if it is a rendered live region BEFORE the content lands in it."""
+    html = _strip_comments(_CMDK.read_text())
+    region = _CMDK_LIVE_REGION.search(html)
+    assert region, "cmdk_modal.html must render the #cmdk-command-result live region"
+    tag = region.group(0)
+    assert 'role="status"' in tag, "the ⌘K command live region is missing role=status"
+    assert 'aria-live="polite"' in tag, "the ⌘K command live region is missing aria-live=polite"
+    assert 'aria-atomic="true"' in tag, "the ⌘K command live region is missing aria-atomic=true"
+    # Hiding it while empty reintroduces the defect in a different costume: a live region that is
+    # created or revealed at announce time is not being observed when the mutation happens.
+    for hidden in ("x-show=", "x-if=", "display:none", "display: none", "empty:hidden", " hidden"):
+        assert hidden not in tag, f"the ⌘K command live region must stay rendered while empty — found {hidden!r} on it"
+
+
+def test_the_palette_results_fragment_references_the_live_region_without_owning_it() -> None:
+    """The swapped fragment keeps targeting the region by id; htmx and ARIA resolve it document-wide."""
+    results = _strip_comments(_PALETTE_RESULTS.read_text())
+    assert 'id="cmdk-command-result"' not in results, (
+        "palette_results.html must not RENDER #cmdk-command-result — this fragment is the innerHTML "
+        "of #cmdk-results, so a live region declared here is both an invalid listbox child and "
+        "destroyed by the next keystroke (phaze-jng72)"
+    )
+    targeting = results.count('hx-target="#cmdk-command-result"')
+    assert targeting >= 1, "the ⌘K command rows must still post their outcome into #cmdk-command-result"
+    assert results.count('aria-describedby="cmdk-command-result"') == targeting, (
+        "every command row that targets the live region must also name it via aria-describedby"
+    )
+
+
 # --- Record slide-in (record_host.html) -------------------------------------------
 
 
