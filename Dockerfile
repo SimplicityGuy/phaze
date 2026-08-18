@@ -147,6 +147,16 @@ RUN uv sync --frozen --no-dev
 # Prevent uv run from re-syncing at runtime
 ENV UV_NO_SYNC=1
 
+# phaze-u5k0d: put the project venv's console scripts (phaze, alembic, uvicorn, ...) on
+# PATH so a bare `docker compose exec api phaze <subcommand>` works exactly as documented
+# in docs/runbook.md / docs/deployment.md / docs/k8s-burst.md. Without this, CMD's `uv run`
+# resolves the venv for the entrypoint process only -- a plain `docker exec` inherits none
+# of that, so `phaze`/`import phaze` fail with "executable file not found" even though the
+# package is fully installed at /app/.venv (verified against a real container 2026-08-17,
+# see the bead). `uv sync` always creates the venv at `<project root>/.venv` by default
+# (WORKDIR is /app and UV_PROJECT_ENVIRONMENT is unset above), so this path is not a guess.
+ENV PATH="/app/.venv/bin:${PATH}"
+
 # Non-root user pinned to uid/gid 1000 so the container can read media owned by
 # uid 1000 (mode 700/770). The previous `-r` system account auto-assigned uid 999,
 # which could not read uid-1000-owned files and silently produced 0-file scans.
