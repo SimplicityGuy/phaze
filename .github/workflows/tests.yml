@@ -433,12 +433,53 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
 
+      # phaze-m7bf7: refresh the package index BEFORE `--with-deps` resolves against it. This is
+      # the only apt call left in the test workflow -- phaze-m3qte took ffmpeg off apt entirely --
+      # and it is bounded here so a degraded mirror cannot eat the job the way it did before that
+      # bead. A failure to refresh is NOT fatal: the runner image ships a usable index, and
+      # Chromium's libraries are largely present already, so a stale index is a slower resolve
+      # rather than a broken one. It is reported, not swallowed.
+      - name: 🎭 Refresh the apt index for Chromium's system libraries
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -uo pipefail
+          if timeout 180 sudo -E apt-get update; then
+            echo "apt index refreshed"
+          else
+            echo "::warning::apt-get update did not complete within 180s; continuing against the image's existing index." >&2
+          fi
+
       - name: 🎭 Install the Chromium build
-        # A no-op when the cache hit -- `playwright install` verifies the browser is present and
-        # returns. `--with-deps` still runs apt for Chromium's system libraries, which the cache
-        # cannot cover; those are a small, already-present set on ubuntu-24.04, not the 87-package
-        # closure the ffmpeg step used to pull.
-        run: just test-browser-install
+        # A no-op for the DOWNLOAD when the cache hit -- `playwright install` verifies the browser
+        # is present and returns. `--with-deps` still runs apt for Chromium's system libraries,
+        # which the cache cannot cover.
+        #
+        # DEBIAN_FRONTEND=noninteractive is REQUIRED, not hygiene. Observed on PR #446 (job
+        # 95581386833): the cache restored at 03:01:07, so no download was outstanding, and this
+        # step still sat in_progress for ~10 minutes against a 20-minute job timeout. With the
+        # frontend unset, apt is free to open an interactive prompt -- a config-file question or a
+        # service-restart prompt -- and on a runner with no TTY to answer it that blocks
+        # indefinitely. It does not fail, it does not print, it just never returns, which is why
+        # this presented as a hang rather than an error.
+        #
+        # Bounded for the same reason the ffmpeg step is (phaze-i61p6): a step that hangs past the
+        # job timeout gets the job cancelled with the later steps SKIPPED -- zero tests executed,
+        # reported as "the tests are timing out" when no test ever ran.
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          if ! timeout 600 just test-browser-install; then
+            status=$?
+            if [ "${status}" -eq 124 ]; then
+              echo "::error::INFRASTRUCTURE -- the Chromium install did not complete within 600s; no test has run." >&2
+              echo "The cache restore step above says whether a download was even outstanding; if it hit, this is the apt half." >&2
+            else
+              echo "::error::the Chromium install failed with exit ${status}." >&2
+            fi
+            exit 1
+          fi
 
       - name: 🌐 Run the browser contract suite
         # `just test-browser` depends on `tailwind`: without the compiled app.css the app serves an
