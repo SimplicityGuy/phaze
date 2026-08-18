@@ -198,8 +198,9 @@ Run against `refactor/code-quality-decomposition`, Chromium via Playwright, driv
 application (uvicorn, real lifespan, real Alembic migrations, real Postgres and Redis) with the
 compiled Tailwind `app.css` — an unstyled page satisfies every layout assertion vacuously, so a run
 without `just tailwind` proves nothing. Harness: `tests/browser/test_responsive_matrix.py` and
-`tests/browser/test_keyboard_screen_reader.py`; state seeding in `tests/browser/_seed.py`. Whole
-browser suite: **74 passed, 1 skipped, 4 xfailed, 97s**.
+`tests/browser/test_keyboard_screen_reader.py`; state seeding in `tests/browser/_seed.py` (folded
+into `tests/browser/seed.py` by `phaze-jimgu`, which reconciled the two seeding modules the suite
+had accumulated). Whole browser suite: **74 passed, 1 skipped, 4 xfailed, 97s**.
 
 #### What was exercised
 
