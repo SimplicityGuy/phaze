@@ -45,6 +45,25 @@ Any child output resets the deadline, not just protocol lines: a child mid-essen
 is demonstrably alive, and treating an unparsed stderr line as silence would kill a
 healthy job for a cosmetic reason.
 
+That last rule is also why ``_settle`` AWAITS (phaze-2mz81, measured). An unsettled pump does
+not merely leak — it keeps calling ``_touch`` for a job nobody is waiting on, and a heartbeat
+is exactly what this watchdog reads as "live work". So an orphaned pump would hold the stall
+deadline open for CANCELLED work, on top of reporting that work alive to the SAQ broker
+through ``heartbeat_cb``. Both hazards were reproduced by reintroducing the pre-phaze-w55w1
+shape (cancel only the watchdog) and instrumenting the dispatch: 58 heartbeat callbacks landed
+AFTER the reap, spread across the child's whole remaining life. Settled, the count is zero.
+
+The boundary itself has a property worth naming, because it looks like that defect and is not.
+``cancel()`` is a REQUEST, not a barrier: a callback the event loop had already queued before
+the cancel arrived is still delivered, on the iteration after it, before this coroutine is
+resumed at all. Measured, such a callback lands 0.05-0.14 ms after ``cancel()`` and always
+before ``_kill_and_reap`` — one callback the loop already owed, never a stream of them. It is
+benign and it is not retractable from here; do not add a "suppress callbacks once cancellation
+is requested" fence to make it go away. Muting the channel would hide the orphaned pump above
+rather than prevent it, and it would defeat
+``test_cancellation_mid_watchdog_stops_the_pumps_even_if_the_kill_does_not_land``, whose gated
+child exists precisely to tell the two apart.
+
 Error contract (chosen to slot into the lanes' existing terminal handling):
 - stall              → :class:`AnalysisStalledError`, a ``TimeoutError`` subclass, so the
   lanes' existing ``except TimeoutError`` terminal handling ("timeout" failure reason, no

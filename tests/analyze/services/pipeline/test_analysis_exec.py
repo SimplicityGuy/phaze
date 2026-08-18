@@ -29,6 +29,9 @@ if TYPE_CHECKING:
 
 _STUBS = "tests.analyze._child_stubs"
 _REPO_ROOT = Path(__file__).resolve().parents[4]
+# Beats the gated child emits before it parks (phaze-2mz81). Two, so the cancellation test still
+# cancels a driver that is demonstrably mid-stream rather than one that has barely started.
+_GATE_BEATS = 2
 
 
 @pytest.fixture(autouse=True)
@@ -375,6 +378,7 @@ async def test_environment_reaches_the_child(monkeypatch: pytest.MonkeyPatch) ->
 
 async def test_cancellation_mid_watchdog_stops_the_pumps_even_if_the_kill_does_not_land(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """Cancelling the driver must settle BOTH inner tasks, not just the watchdog (phaze-w55w1).
 
@@ -387,18 +391,47 @@ async def test_cancellation_mid_watchdog_stops_the_pumps_even_if_the_kill_does_n
     **Why this test neuters ``kill``.** The obvious version of it -- cancel, then watch for a late
     beat -- passes against the BROKEN code, verified by mutation. Killing the child stops its
     output, so the orphaned pumps starve and finish quietly, and the guarantee looks like it holds
-    when it is only being masked by a favourable race. Making ``Process.kill`` a no-op removes the
-    mask: the child keeps emitting for the rest of its (short) run, so pumps that were merely
-    abandoned rather than settled are directly observable as callbacks arriving after the caller's
-    ``CancelledError``. That is also the real-world shape worth defending against -- a kill that is
-    slow or does not land is exactly when an orphaned pump has time to matter.
+    when it is only being masked by a favourable race. Taking ``Process.kill`` off the child
+    removes the mask: the child keeps emitting for the rest of its (short) run, so pumps that were
+    merely abandoned rather than settled are directly observable as callbacks arriving after the
+    caller's ``CancelledError``. That is also the real-world shape worth defending against -- a
+    kill that is slow or does not land is exactly when an orphaned pump has time to matter.
+
+    **Why the child is GATED rather than free-running (phaze-2mz81).** A free-running child made
+    this test flaky at roughly 7% per run, and the failure was indistinguishable from the defect:
+    exactly one extra beat, reported as "a pump outlived the reap". It was not one. Measured with
+    the dispatch instrumented, the late beat arrived 0.05-0.14 ms after ``task.cancel()``, while
+    ``task.cancelling() == 1`` and BEFORE ``proc.kill`` -- i.e. on the very next loop iteration,
+    from a pump that had read the line before the cancel and had its wakeup queued ahead of the
+    driver's. ``cancel()`` is a request, not a barrier: the loop owes the pump that already-queued
+    turn, and nothing in production code can or should retract it. (The genuine defect looks
+    nothing like it: mutated, this same instrumentation records 58 extra beats spread over the
+    child's whole remaining life, all of them AFTER the reap.)
+
+    So the fix belongs in the test, and it is a fence rather than a tolerance. The child emits
+    ``_GATE_BEATS`` beats and then parks (``PHAZE_STUB_GATE_AFTER``). Once the parent has counted
+    them the pipe is provably empty and no callback is in flight, so the snapshot is exact by
+    construction instead of by luck. The gate is then reopened FROM ``proc.kill`` -- the reap
+    boundary, which correct code only reaches after ``_settle`` has cancelled AND awaited both
+    pumps -- so every beat the child emits from then on is one a properly settled pump cannot
+    possibly deliver, and one an orphaned pump certainly will. The property the test guards is
+    therefore strictly sharper than before, not weaker: no ``<=``, no slop, no retry.
     """
+    gate = tmp_path / "reopen-the-child"
     _point_child_at(monkeypatch, "crawling_analyze")
     monkeypatch.setenv("PHAZE_STUB_BEAT_SEC", "0.02")
-    monkeypatch.setenv("PHAZE_STUB_BEATS", "60")  # ~1.2s: outlives the cancel, ends the test promptly
-    # No-op kill: the reap still awaits the child, but the child is not actually killed, so its
-    # output continues and any surviving pump keeps calling back.
-    monkeypatch.setattr(asyncio.subprocess.Process, "kill", lambda _self: None)
+    # _GATE_BEATS before the gate, the rest after it: ~0.4s of post-reap output for an orphaned
+    # pump to be caught reporting, and a child that ends promptly so the reap's `wait` returns.
+    monkeypatch.setenv("PHAZE_STUB_BEATS", "22")
+    monkeypatch.setenv("PHAZE_STUB_GATE_AFTER", str(_GATE_BEATS))
+    monkeypatch.setenv("PHAZE_STUB_GATE_FILE", str(gate))
+
+    def _reopen_instead_of_killing(_self: asyncio.subprocess.Process) -> None:
+        # The kill does not land -- the child is released, not killed, so its output resumes at
+        # exactly the reap boundary and any surviving pump keeps calling back.
+        gate.touch()
+
+    monkeypatch.setattr(asyncio.subprocess.Process, "kill", _reopen_instead_of_killing)
     beats: list[str] = []
 
     task = asyncio.ensure_future(
@@ -409,8 +442,8 @@ async def test_cancellation_mid_watchdog_stops_the_pumps_even_if_the_kill_does_n
             stall_timeout=30.0,  # generous: cancellation, not a stall, is the subject
         )
     )
-    while len(beats) < 2:  # wait until the child is genuinely streaming into the pumps
-        await asyncio.sleep(0.02)
+    while len(beats) < _GATE_BEATS:  # wait until the child is genuinely streaming into the pumps
+        await asyncio.sleep(0.01)
 
     task.cancel()
     # Snapshot HERE, not after `await task`. `cancel()` is synchronous and callbacks only run on
@@ -418,6 +451,7 @@ async def test_cancellation_mid_watchdog_stops_the_pumps_even_if_the_kill_does_n
     # abandoned pump does its damage DURING that await. Sampling afterwards was the flaw that let
     # an earlier version of this test pass against the broken code.
     seen_at_cancel = len(beats)
+    assert seen_at_cancel == _GATE_BEATS, "the child emitted past its gate: the snapshot is not the quiescent one"
 
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -425,4 +459,7 @@ async def test_cancellation_mid_watchdog_stops_the_pumps_even_if_the_kill_does_n
     for _ in range(20):
         await asyncio.sleep(0.02)
 
+    # Without this the test could pass vacuously: an unreached reap never reopens the child, and a
+    # silent child cannot expose an orphaned pump -- the very masking the no-op kill exists to undo.
+    assert gate.exists(), "the reap never reached proc.kill(), so the orphan probe was never armed"
     assert len(beats) == seen_at_cancel, f"{len(beats) - seen_at_cancel} callback(s) fired after cancellation: a pump outlived the reap"
