@@ -387,7 +387,7 @@ async def test_live_keys_read_failure_raises_from_the_core_instead_of_masqueradi
     f = await _file(db_session)
     await _ledger(db_session, "analyze", f)  # a genuinely LIVE (in-flight) file, no live saq_jobs row seeded
 
-    monkeypatch.setattr("phaze.services.pipeline._LIVE_KEYS_SQL", text("SELECT key FROM nonexistent_saq_jobs_probe"))
+    monkeypatch.setattr("phaze.services.pipeline.orphans._LIVE_KEYS_SQL", text("SELECT key FROM nonexistent_saq_jobs_probe"))
 
     with pytest.raises(Exception, match="nonexistent_saq_jobs_probe"):
         await _compute_stage_orphan_counts(db_session)

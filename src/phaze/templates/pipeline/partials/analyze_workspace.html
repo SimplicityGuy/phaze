@@ -30,7 +30,7 @@
             {% include "pipeline/partials/awaiting_cloud_card.html" %}
             {{ ui.metric("Completed", '<span x-text="$store.pipeline.analyzeDone">0</span>' | safe, "all analyzed files", "success") }}
         {% endcall %}
-        <div aria-label="Analyze queue progression" class="flex items-center gap-2 overflow-x-auto rounded-lg border border-gray-200 px-3 py-2 text-xs text-gray-500 dark:border-phaze-border dark:text-gray-400">
+        <div aria-label="Analyze queue progression" class="relative flex items-center gap-2 overflow-x-auto rounded-lg border border-gray-200 px-3 py-2 text-xs text-gray-500 dark:border-phaze-border dark:text-gray-400">
             <span class="whitespace-nowrap font-medium text-gray-700 dark:text-gray-200">Queued</span>
             <span aria-hidden="true" class="text-blue-500">→</span>
             <span class="whitespace-nowrap">lane capacity</span>

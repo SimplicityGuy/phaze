@@ -776,20 +776,6 @@ async def test_approve_from_v7_workspace_returns_diff_row(client: AsyncClient, s
 
 
 @pytest.mark.asyncio
-async def test_reject_from_v7_move_workspace_returns_skipped_diff_row(client: AsyncClient, session: AsyncSession) -> None:
-    """Rejecting from the Move workspace returns a skipped diff-row keyed to move-row (phaze-3a2j)."""
-    proposal = await create_test_proposal(session, proposed_path="performances/A")
-    response = await client.patch(
-        f"/proposals/{proposal.id}/reject",
-        headers={"HX-Request": "true", "HX-Target": f"move-row-{proposal.id}"},
-    )
-    assert response.status_code == 200
-    body = response.text
-    assert f'id="move-row-{proposal.id}"' in body
-    assert "skipped" in body
-
-
-@pytest.mark.asyncio
 async def test_edit_from_v7_workspace_returns_diff_row(client: AsyncClient, session: AsyncSession) -> None:
     """Editing from a v7 workspace returns the pending diff-row with the new value (phaze-3a2j)."""
     proposal = await create_test_proposal(session)
@@ -854,127 +840,79 @@ async def test_approve_without_hx_target_returns_the_shared_diff_row(client: Asy
 
 
 # ---------------------------------------------------------------------------
-# bulk-approve-high-confidence row sync for the v7 Rename/Move workspaces (phaze-71hi)
+# phaze-7tiqp: the retired bulk-approve-high-confidence chain and the dangling row stems
 #
-# rename_workspace.html / move_workspace.html hx-targeted this endpoint at their own tiny
-# #rename-trigger-response / #move-trigger-response status div, and the workspaces ran no row poll
-# (R-2) to pick a change up on their own. Before this fix, every row the predicate approved stayed
-# rendered PENDING with live APPROVE/EDIT/SKIP controls; a subsequent click 409'd silently.
+# PATCH /proposals/bulk-approve-high-confidence was a server-predicate bulk approve whose only two
+# callers were rename_workspace.html and move_workspace.html, deleted by phaze-tzy6s.11 / ADR-0008
+# when Changes Review became the sole surface that authorizes anything. phaze-tzy6s.17 verified the
+# chain was unreachable from every template and deferred the keep-or-retire call; this bead retired
+# it. The tests it used to have were the route's ONLY callers -- they asserted an HX-Target contract
+# ("rename-trigger-response" / "move-trigger-response") that no template could produce, which is the
+# shape that kept the chain looking alive.
 #
-# phaze-tzy6s.11 / ADR-0008: both of those workspaces were deleted when rename, destination, and tag
-# decisions were consolidated into Changes Review, which bulk-approves through the selection-driven
-# PATCH /proposals/bulk instead. NO template calls /proposals/bulk-approve-high-confidence any more,
-# so the tests below are currently the route's only callers -- they hold the server contract, not a
-# live UI path. Bead phaze-tzy6s.12 (Execute preflight) owns the keep-or-retire decision; see
-# routers/proposals.py::_BULK_HIGH_CONFIDENCE_TARGETS.
+# What is asserted below is the retirement itself, so a re-introduction is a test failure rather
+# than a silent regrowth.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_bulk_approve_high_confidence_from_rename_workspace_syncs_approved_row(client: AsyncClient, session: AsyncSession) -> None:
-    """From the Rename workspace, the response OOB-swaps the transitioned row to row_state=approved."""
-    high = await create_test_proposal(session, confidence=0.95, original_filename="high.mp3")
-    low = await create_test_proposal(session, confidence=0.5, original_filename="low.mp3")
+async def test_bulk_approve_high_confidence_route_is_gone(client: AsyncClient, session: AsyncSession) -> None:
+    """The retired route is not served, and nothing it would have approved is touched.
 
-    response = await client.patch(
-        "/proposals/bulk-approve-high-confidence",
-        headers={"HX-Request": "true", "HX-Target": "rename-trigger-response"},
-    )
-    assert response.status_code == 200
-    body = response.text
-
-    high_row = await session.get(RenameProposal, high.id)
-    assert high_row is not None
-    assert high_row.status == ProposalStatus.APPROVED.value
-
-    # The transitioned row is OOB-swapped in place, keyed to the rename-row prefix, showing the
-    # approved lifecycle affordances -- not left with live APPROVE/EDIT/SKIP controls (phaze-71hi).
-    assert f'id="rename-row-{high.id}"' in body
-    assert 'hx-swap-oob="true"' in body
-    assert "approved" in body
-    assert "UNDO" in body
-
-    # The still-pending row (confidence below threshold) must NOT appear in the response at all --
-    # it was never transitioned, so no OOB fragment is needed for it.
-    assert f"rename-row-{low.id}" not in body
-
-
-@pytest.mark.asyncio
-async def test_bulk_approve_high_confidence_from_move_workspace_syncs_approved_row(client: AsyncClient, session: AsyncSession) -> None:
-    """From the Move workspace, the OOB row fragment uses the move-row prefix and path facet."""
-    high = await create_test_proposal(session, confidence=0.95, proposed_path="performances/A", original_filename="high.mp3")
-
-    response = await client.patch(
-        "/proposals/bulk-approve-high-confidence",
-        headers={"HX-Request": "true", "HX-Target": "move-trigger-response"},
-    )
-    assert response.status_code == 200
-    body = response.text
-
-    assert f'id="move-row-{high.id}"' in body
-    assert 'hx-swap-oob="true"' in body
-    assert "approved" in body
-    assert (await session.get(RenameProposal, high.id)).status == ProposalStatus.APPROVED.value
-
-
-@pytest.mark.asyncio
-async def test_bulk_approve_high_confidence_v7_response_omits_nonexistent_stats_bar(client: AsyncClient, session: AsyncSession) -> None:
-    """The v7 response must not OOB-target #stats-bar -- it does not exist in the v7 shell (phaze-71hi)."""
-    await create_test_proposal(session, confidence=0.95)
-    response = await client.patch(
-        "/proposals/bulk-approve-high-confidence",
-        headers={"HX-Request": "true", "HX-Target": "rename-trigger-response"},
-    )
-    assert response.status_code == 200
-    assert "stats-bar" not in response.text
-
-
-@pytest.mark.asyncio
-async def test_bulk_approve_high_confidence_pluralizes_a_single_v7_approval(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-zbgi9: exactly one pending proposal clears the predicate -- the toast must read
-    '1 proposal approved.', not '1 proposals approved.' (_bulk_toast's own pluralization, reused
-    here rather than a second hand-rolled string). Covers the v7-target response path; the
-    no-target path is covered by ``test_bulk_approve_high_confidence_without_v7_target_returns_the_toast_alone``.
+    The status assertion is deliberately "not 2xx" rather than a literal 405: what matters is that
+    no request reaches an approve, not which rejection FastAPI's router happens to produce for a
+    path that now only matches ``/proposals/{proposal_id}`` shapes.
     """
-    await create_test_proposal(session, confidence=0.95)
-    response = await client.patch(
-        "/proposals/bulk-approve-high-confidence",
-        headers={"HX-Request": "true", "HX-Target": "rename-trigger-response"},
-    )
-    assert response.status_code == 200
-    assert "1 proposal approved." in response.text
-    assert "1 proposals approved." not in response.text
+    proposal = await create_test_proposal(session, confidence=0.99)
 
-
-@pytest.mark.asyncio
-async def test_bulk_approve_high_confidence_zero_matches_returns_toast_with_no_oob_rows(client: AsyncClient, session: AsyncSession) -> None:
-    """No pending row meets the predicate: a toast is returned but no OOB row fragment is emitted."""
-    await create_test_proposal(session, confidence=0.5)
-    response = await client.patch(
-        "/proposals/bulk-approve-high-confidence",
-        headers={"HX-Request": "true", "HX-Target": "rename-trigger-response"},
-    )
-    assert response.status_code == 200
-    assert "Nothing matched" in response.text
-    assert 'hx-swap-oob="true"' not in response.text
-
-
-@pytest.mark.asyncio
-async def test_bulk_approve_high_confidence_without_v7_target_returns_the_toast_alone(client: AsyncClient, session: AsyncSession) -> None:
-    """A caller naming neither workspace status div gets the toast and NO OOB rows -- never a stats-bar.
-
-    phaze-vvmh: the deleted fallback rendered ``approve_response.html`` with ``proposal=None``, i.e.
-    a response whose entire payload was an OOB fragment aimed at an id no served document contains.
-    There is no row prefix to key OOB rows to here, so the honest answer is the toast by itself.
-    """
-    await create_test_proposal(session, confidence=0.95)
     response = await client.patch("/proposals/bulk-approve-high-confidence")
+
+    assert not response.is_success, f"the retired route answered {response.status_code}"
+    assert (await session.get(RenameProposal, proposal.id)).status == ProposalStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_a_dangling_row_stem_no_longer_selects_its_own_shape(client: AsyncClient, session: AsyncSession) -> None:
+    """``move-row`` is no longer a known stem, so it gets the default rename/filename row.
+
+    ``_V7_ROW_FACETS`` carried "changes-row", "record-row" and "move-row" long after the workspaces
+    that rendered them were deleted. No browser could send those targets, so they only ever resolved
+    for a hand-built request -- and "move-row" resolved to the PATH facet, a response shape the
+    product had no way to ask for. A request naming one now falls through to the same default any
+    other unknown target gets (phaze-vvmh: one response shape per route).
+    """
+    proposal = await create_test_proposal(session, proposed_path="performances/A")
+
+    response = await client.patch(
+        f"/proposals/{proposal.id}/reject",
+        headers={"HX-Request": "true", "HX-Target": f"move-row-{proposal.id}"},
+    )
+
     assert response.status_code == 200
-    assert "stats-bar" not in response.text
-    # phaze-zbgi9: singular, matching the module's own _bulk_toast pluralization -- was
-    # "1 proposals approved." before the fix, which this test used to pin rather than catch.
-    assert "1 proposal approved." in response.text
-    assert 'hx-swap-oob="true"' not in response.text
+    assert f'id="move-row-{proposal.id}"' not in response.text
+    assert f'id="rename-row-{proposal.id}"' in response.text
+    assert "skipped" in response.text
+
+
+@pytest.mark.asyncio
+async def test_no_response_marks_a_diff_row_as_an_out_of_band_swap(client: AsyncClient, session: AsyncSession) -> None:
+    """The row partial's ``hx-swap-oob`` went with the chain that was its only producer.
+
+    Only the bulk-approve-high-confidence response ever set it: its primary swap target was a small
+    status div, so it had to push each transitioned row in out of band. Every surviving response
+    swaps the row it was targeted at, which is also what R-2 (counts-only polling, never re-render
+    an approval subtree) requires of this partial.
+    """
+    proposal = await create_test_proposal(session)
+
+    response = await client.patch(
+        f"/proposals/{proposal.id}/approve",
+        data={"expected_updated_at": proposal.updated_at.isoformat()},
+        headers={"HX-Request": "true", "HX-Target": f"rename-row-{proposal.id}"},
+    )
+
+    assert response.status_code == 200
+    assert "hx-swap-oob" not in response.text
 
 
 # ---------------------------------------------------------------------------

@@ -253,21 +253,25 @@ async def test_unknown_task_raises_value_error() -> None:
 # ---------------------------------------------------------------------------
 
 
-_SERVICES_PIPELINE = _REPO_ROOT / "src" / "phaze" / "services" / "pipeline.py"
+# phaze-vsqpr: ``services/pipeline.py`` became the package ``services/pipeline/``. The guard below
+# scans the WHOLE package rather than one named file, so a future move of ``_backfill_candidates_stmt``
+# between submodules keeps the guard green while a DELETION still fails it -- the property that matters.
+_SERVICES_PIPELINE = _REPO_ROOT / "src" / "phaze" / "services" / "pipeline"
 
 
 def _backfill_candidates_stmt_source() -> str:
-    """Return the source segment of ``_backfill_candidates_stmt`` in services/pipeline.py.
+    """Return the source segment of ``_backfill_candidates_stmt`` in services/pipeline/.
 
-    Parses the module with :mod:`ast` (so a future rename/move is caught by the lookup failing)
+    Parses each module with :mod:`ast` (so a future rename/removal is caught by the lookup failing)
     and returns the exact function source for the membership assertions below.
     """
-    source = _SERVICES_PIPELINE.read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(_SERVICES_PIPELINE))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "_backfill_candidates_stmt":
-            return ast.get_source_segment(source, node) or ""
-    raise AssertionError("_backfill_candidates_stmt not found in src/phaze/services/pipeline.py")
+    for path in sorted(_SERVICES_PIPELINE.glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_backfill_candidates_stmt":
+                return ast.get_source_segment(source, node) or ""
+    raise AssertionError("_backfill_candidates_stmt not found in src/phaze/services/pipeline/")
 
 
 def test_submit_cloud_job_is_a_routed_controller_task() -> None:

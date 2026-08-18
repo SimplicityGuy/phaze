@@ -62,9 +62,17 @@ async def _drain_background() -> None:
     import phaze.routers.pipeline as pipeline_mod
 
     for _ in range(500):
-        if not pipeline_mod._background_tasks:
+        pending = set(pipeline_mod._background_tasks)
+        if not pending:
             return
-        await asyncio.sleep(0)
+        # `asyncio.sleep(0)` only YIELDS -- it never waits for I/O. Under full-suite load all 500
+        # yields can elapse while a background task is still awaiting a database round-trip, so this
+        # returned EARLY and the `session` fixture's `outer.rollback()` fired while that task still
+        # held savepoints -- surfacing as `InvalidSavepointSpecificationError: savepoint
+        # "sa_savepoint_N" does not exist` at TEARDOWN, and green on isolated re-run. Awaiting the
+        # tasks themselves drains for real; the bounded loop stays because a draining task may
+        # spawn another.
+        await asyncio.wait(pending, timeout=10)
 
 
 # Registry fixtures driving the Phase-67 (D-14, REG-04) reduction the rewired pipeline reads:
@@ -1012,7 +1020,9 @@ async def test_backfill_marker_clear_is_staged_before_routing_commit(
     an interruption window that permanently stranded held files. Proving the strips are already staged
     when routing is entered proves there is no separate second commit.
     """
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package; `_route_discovered_by_duration` is read from the
+    # `backfill` submodule's namespace, so patching the facade would silently no-op.
+    import phaze.routers.pipeline.backfill as pipeline_mod
 
     (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
     await seed_active_agent(session, "nox", kind="fileserver")
@@ -1053,7 +1063,9 @@ async def test_route_discovered_by_duration_skips_a_file_deleted_before_its_hold
     mid-loop); the second is untouched. The FK violation on the first must cost exactly one skipped
     file, not the second file's hold or the whole request.
     """
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package; `hold_awaiting_cloud` is read from the
+    # `analysis` submodule's namespace, so patching the facade would silently no-op.
+    import phaze.routers.pipeline.analysis as pipeline_mod
     from phaze.services.backends import hold_awaiting_cloud
 
     doomed = _make_file()
@@ -1558,8 +1570,10 @@ async def test_dashboard_context_binds_lanes(client: AsyncClient, session: Async
     The snapshot is monkeypatched directly (it resolves the registry via ``get_settings()``, a distinct
     singleton from the module-level ``settings``) so the seed is asserted independent of registry wiring.
     """
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package; `get_backend_lane_snapshot` is read from the
+    # `dashboard_stats` submodule's namespace, so patching the facade would silently no-op.
     from phaze.routers.pipeline import build_dashboard_context
+    import phaze.routers.pipeline.dashboard_stats as pipeline_mod
 
     sentinel: list[dict[str, object]] = [
         {
@@ -2324,7 +2338,9 @@ async def test_recover_invokes_recover_orphaned_work_forced(client: AsyncClient,
     module-level ``async_session`` sessionmaker. The producer is patched so no real DB/queue work
     runs — we only assert the wiring and force flag.
     """
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package; `recover_orphaned_work` is read from the
+    # `recovery` submodule's namespace, so patching the facade would silently no-op.
+    import phaze.routers.pipeline.recovery as pipeline_mod
 
     captured: dict[str, object] = {}
 
@@ -2357,7 +2373,9 @@ async def test_recover_returns_200_when_producer_raises_is_isolated(client: Asyn
     The producer runs fire-and-forget in a background task, so even a raising recover_orphaned_work
     cannot 500 the request (T-42-06): the operator always gets the "recovery started" fragment.
     """
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package; `recover_orphaned_work` is read from the
+    # `recovery` submodule's namespace, so patching the facade would silently no-op.
+    import phaze.routers.pipeline.recovery as pipeline_mod
 
     async def boom(ctx: dict[str, object], *, force: bool = False) -> dict[str, object]:
         raise RuntimeError("recovery boom")
@@ -2386,7 +2404,9 @@ async def test_run_recovery_logs_producer_exception_instead_of_letting_it_vanish
     an on-call engineer could see except asyncio's default "Task exception was never retrieved" at
     GC. This pins that ``_run_recovery`` itself never raises and DOES log.
     """
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package; `recover_orphaned_work` is read from the
+    # `recovery` submodule's namespace, so patching the facade would silently no-op.
+    import phaze.routers.pipeline.recovery as pipeline_mod
 
     async def boom(ctx: dict[str, object], *, force: bool = False) -> dict[str, object]:
         raise RuntimeError("recovery boom")
@@ -2405,7 +2425,9 @@ async def test_run_recovery_logs_the_final_tally_on_success(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """_run_recovery logs the producer's return value on the happy path (visibility parity with startup)."""
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package; `recover_orphaned_work` is read from the
+    # `recovery` submodule's namespace, so patching the facade would silently no-op.
+    import phaze.routers.pipeline.recovery as pipeline_mod
 
     async def fake_recover(ctx: dict[str, object], *, force: bool = False) -> dict[str, object]:
         return {"detected_loss": True, "forced": force, "stages": {"process_file": {"reenqueued": 3, "skipped": 1, "errored": 0, "unreplayable": 0}}}
@@ -2433,7 +2455,9 @@ async def test_run_recovery_logs_the_final_tally_on_success(
 
 def _set_recovery_state(*, running: bool = False, failed: bool = False, result: dict[str, object] | None = None) -> None:
     """Pin the in-process last-recovery cell the status fragment renders from."""
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package; `_recovery_state` is read from the
+    # `recovery` submodule's namespace, so patching the facade would silently no-op.
+    import phaze.routers.pipeline.recovery as pipeline_mod
 
     pipeline_mod._recovery_state.update(running=running, failed=failed, result=result)
 
@@ -2451,7 +2475,9 @@ def _recovery_result(**stages: dict[str, int]) -> dict[str, object]:
 @pytest.mark.asyncio
 async def test_recover_response_polls_for_the_final_outcome(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """The POST fragment carries the poll that will replace it with the real tally."""
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package; `recover_orphaned_work` is read from the
+    # `recovery` submodule's namespace, so patching the facade would silently no-op.
+    import phaze.routers.pipeline.recovery as pipeline_mod
 
     async def fake_recover(ctx: dict[str, object], *, force: bool = False) -> dict[str, object]:
         return _recovery_result()
@@ -2529,7 +2555,9 @@ async def test_recover_status_before_any_run(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_run_recovery_publishes_the_tally_for_the_operator(monkeypatch: pytest.MonkeyPatch) -> None:
     """``_run_recovery`` publishes the producer's result -- the controller log is no longer the only surface."""
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package; `recover_orphaned_work` is read from the
+    # `recovery` submodule's namespace, so patching the facade would silently no-op.
+    import phaze.routers.pipeline.recovery as pipeline_mod
 
     result = _recovery_result(s3_upload={"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 2})
 
@@ -2549,7 +2577,9 @@ async def test_run_recovery_publishes_the_tally_for_the_operator(monkeypatch: py
 @pytest.mark.asyncio
 async def test_run_recovery_clears_running_when_the_producer_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """A crashed run must settle the fragment, not leave it polling forever on a dead task."""
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package; `recover_orphaned_work` is read from the
+    # `recovery` submodule's namespace, so patching the facade would silently no-op.
+    import phaze.routers.pipeline.recovery as pipeline_mod
 
     async def boom(ctx: dict[str, object], *, force: bool = False) -> dict[str, object]:
         raise RuntimeError("recovery boom")

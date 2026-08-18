@@ -161,8 +161,18 @@ Only **terminal** scans (`completed` / `failed`) are deletable; the delete runs 
 | GET    | `/proposals/{id}/detail`      | Expanded detail panel              |
 | GET    | `/proposals/{id}/timeline`    | Windowed multi-lane analysis timeline |
 | PATCH  | `/proposals/{id}/edit`        | Inline-edit a pending proposal's filename/path |
-| PATCH  | `/proposals/bulk-approve-high-confidence` | Server-predicate bulk approve (confidence ≥ 0.9). **No UI caller** since phaze-tzy6s.11 / ADR-0008 — Changes Review bulk-approves through `/proposals/bulk`. phaze-tzy6s.17 re-verified this on the assembled branch and confirmed the whole chain (route, `_BULK_HIGH_CONFIDENCE_TARGETS`, the OOB row branch, `_bulk_approve_high_confidence_response.html`) is unreachable from any template. Retained deliberately — it is a documented endpoint, so removal is a behavioural change; keep-or-retire is bead `phaze-7tiqp`. The `.12` decision the previous note pointed at never happened. |
 | PATCH  | `/proposals/bulk`             | Bulk approve/reject — the live Changes Review bulk path (`action=approve_eligible\|reject` over selected `review_tokens`) |
+
+> **Removed:** `PATCH /proposals/bulk-approve-high-confidence` (bead `phaze-7tiqp`). The
+> server-predicate bulk approve (confidence ≥ 0.9) lost its only two callers when phaze-tzy6s.11 /
+> ADR-0008 consolidated the Rename and Move workspaces into Changes Review, which bulk-approves a
+> reviewed *selection* through `/proposals/bulk` instead. phaze-tzy6s.17 re-verified the whole chain
+> was unreachable from any template and deferred the call; this bead made it. The route, its
+> `_BULK_HIGH_CONFIDENCE_TARGETS` map, the OOB row branch,
+> `_bulk_approve_high_confidence_response.html` and the `approve_pending_above_confidence` service
+> function are all gone. phaze is a single-user admin tool on a private network with no external API
+> consumers, and none were found. A caller that wants the old behaviour selects the rows in Changes
+> Review — which is the point of ADR-0008: nothing is approved without being seen.
 
 ## Execution (`/execution`, `/audit`)
 

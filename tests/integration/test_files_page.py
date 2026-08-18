@@ -230,7 +230,7 @@ async def test_degrades_to_empty_page_on_error(db_env: tuple[AsyncSession, Async
 
     # The statement is built INSIDE get_files_page's begin_nested try/except, so a build-time raise
     # degrades exactly like a DB hiccup would.
-    monkeypatch.setattr("phaze.services.pipeline.stage_status_case", _boom)
+    monkeypatch.setattr("phaze.services.pipeline.files.stage_status_case", _boom)
 
     page = await get_files_page(session, page=1, page_size=10)
     assert page.rows == []

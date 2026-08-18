@@ -109,10 +109,37 @@
    clicks, because Escape, the backdrop, the close button and any successful HTMX navigation all
    close the drawer without the trigger hearing about it. x-effect fires on init and on every
    subsequent change, so the header cannot miss an edge or start out of sync. #}
+{# phaze-bdeih: closing the drawer is also a FOCUS MOVE, and it has to be ordered against itself.
+
+   Closing does three things to focus, all inside the one Alpine reactive flush that `navOpen =
+   false` schedules: x-trap calls focus-trap's `deactivate()` (which removes its focusin guard
+   synchronously), the `:class` binding below applies `max-lg:invisible`, and `visibility: hidden`
+   immediately un-focuses whatever inside the drawer had focus -- which, on the keyboard navigation
+   path, is the rail link the user just pressed Enter on. Anything that focuses BEFORE that flush is
+   therefore either yanked back into the drawer by the still-live trap or blanked by the visibility
+   flip; the observed result was `document.activeElement === document.body`.
+
+   So the restore is anchored to `$nextTick`, which runs after that flush -- the point past which
+   the drawer can no longer touch focus at all. It is NOT anchored to the slide-out `transitionend`:
+   the transform transition is `motion-safe:` only, so it never fires under
+   `prefers-reduced-motion: reduce`, and it is irrelevant anyway because visibility (the thing that
+   destroys focus) flips at the start of the transition, not at its end.
+
+   `restore` names where focus belongs afterwards, because the two ways out of the drawer differ:
+   a navigation ('stage') hands focus to the workspace heading the swap just rendered, while
+   Escape/backdrop/close (the default) hands it back to the trigger the user opened from. #}
 <div x-data="{
         navOpen: false,
         isNarrow: window.matchMedia('(max-width: 1023.98px)').matches,
-        closeNav() { this.navOpen = false },
+        closeNav(restore) {
+            if (!this.navOpen) return;
+            this.navOpen = false;
+            this.$nextTick(() => {
+                if (restore === 'stage' && window._focusStageHeading && window._focusStageHeading()) return;
+                const trigger = document.getElementById('rail-drawer-trigger');
+                if (trigger) trigger.focus();
+            });
+        },
      }"
      x-init="window.matchMedia('(max-width: 1023.98px)').addEventListener('change', (e) => { isNarrow = e.matches });"
      x-effect="$dispatch('rail:state', { open: navOpen })"
@@ -133,10 +160,10 @@
         Keep it a method call. Re-inlining `navOpen = false` here re-reddens CI. The sibling
         bindings below assign inline and are fine -- the rule needs the attribute name too. #}
      @keydown.escape.window="closeNav()"
-     @htmx:after-request="navOpen = false"
+     @htmx:after-request="closeNav('stage')"
      class="contents">
 
-    <div x-show="navOpen" x-cloak aria-hidden="true" @click="navOpen = false" class="fixed inset-0 z-40 bg-black/50 lg:hidden"></div>
+    <div x-show="navOpen" x-cloak aria-hidden="true" @click="closeNav()" class="fixed inset-0 z-40 bg-black/50 lg:hidden"></div>
 
     {# phaze-tzy6s.17 (CR-13-1): role="dialog" + aria-modal below `lg` ONLY. This restores the
        pairing the rest of the tree already treats as an invariant -- record_host.html and
@@ -149,13 +176,21 @@
        Both are bound rather than static so they VANISH at `lg`+ (Alpine removes an attribute bound
        to null). A permanent role="dialog" would be the mirror-image defect on desktop, where the
        rail is not modal and traps nothing. #}
-    <aside x-trap.noscroll="navOpen"
+    {# phaze-bdeih: `.noreturn` is load-bearing, not a preference. Without it, x-trap hands
+       focus-trap `returnFocus: true`, and focus-trap defers that restore onto a `setTimeout(0)`
+       that lands AFTER the same flush applied `max-lg:invisible` here -- so it focuses a node
+       inside a `visibility: hidden` subtree, which is a silent no-op, and focus ends on <body>.
+       The restore it was doing badly is done deliberately by `closeNav()` above, which knows the
+       difference between leaving by navigation and leaving by Escape. If `.noreturn` is dropped,
+       restore `closeNav`'s two callers with it -- the close button and backdrop below would
+       otherwise leave focus nowhere at all. #}
+    <aside x-trap.noscroll.noreturn="navOpen"
            id="rail-drawer"
            :role="isNarrow ? 'dialog' : null"
            :aria-modal="isNarrow ? 'true' : null"
            aria-label="Pipeline navigation"
            :class="navOpen ? 'max-lg:translate-x-0 max-lg:visible' : 'max-lg:-translate-x-full max-lg:invisible'"
-           class="w-[280px] shrink-0 overflow-y-auto border-r border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel py-4 lg:visible lg:translate-x-0 max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-50 max-lg:w-[min(20rem,85vw)] max-lg:shadow-xl motion-safe:max-lg:transition-transform">
+           class="lg:relative w-[280px] shrink-0 overflow-y-auto border-r border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel py-4 lg:visible lg:translate-x-0 max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-50 max-lg:w-[min(20rem,85vw)] max-lg:shadow-xl motion-safe:max-lg:transition-transform">
 
         {# Drawer chrome -- phone/tablet only; the desktop rail needs no title bar or close control.
            The title is a <p>, NOT an <h2>: the four <h2>s in this partial are the domain groups
@@ -164,7 +199,7 @@
            outline that carries no destination -- noise for anyone navigating by heading. #}
         <div class="mb-2 flex items-center justify-between px-4 lg:hidden">
             <p class="font-jura text-sm font-medium uppercase tracking-[0.15em] text-gray-700 dark:text-gray-300">Navigation</p>
-            <button type="button" @click="navOpen = false" aria-label="Close navigation"
+            <button type="button" @click="closeNav()" aria-label="Close navigation"
                     class="inline-flex h-11 w-11 items-center justify-center rounded-md text-gray-500 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-gray-400 dark:hover:text-gray-100"><span aria-hidden="true">✕</span></button>
         </div>
 

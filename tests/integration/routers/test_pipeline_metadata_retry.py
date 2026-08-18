@@ -53,9 +53,17 @@ async def _drain_background() -> None:
     import phaze.routers.pipeline as pipeline_mod
 
     for _ in range(500):
-        if not pipeline_mod._background_tasks:
+        pending = set(pipeline_mod._background_tasks)
+        if not pending:
             return
-        await asyncio.sleep(0)
+        # `asyncio.sleep(0)` only YIELDS -- it never waits for I/O. Under full-suite load all 500
+        # yields can elapse while a background task is still awaiting a database round-trip, so this
+        # returned EARLY and the `session` fixture's `outer.rollback()` fired while that task still
+        # held savepoints -- surfacing as `InvalidSavepointSpecificationError: savepoint
+        # "sa_savepoint_N" does not exist` at TEARDOWN, and green on isolated re-run. Awaiting the
+        # tasks themselves drains for real; the bounded loop stays because a draining task may
+        # spawn another.
+        await asyncio.wait(pending, timeout=10)
 
 
 def _make_file() -> FileRecord:

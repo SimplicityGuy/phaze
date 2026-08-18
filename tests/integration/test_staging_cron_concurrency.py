@@ -30,6 +30,7 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.services import kube_staging, s3_staging
 from phaze.tasks.release_awaiting_cloud import stage_cloud_window
+from tests._backends_patch import patch_backends_get_settings
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_agent
 from tests.kube_fakes import fake_local_queue
 
@@ -91,7 +92,7 @@ def _patch_settings(monkeypatch: pytest.MonkeyPatch, *, max_in_flight: int = 2, 
     """Pin stage_cloud_window's get_settings() to a registry-derived stub (copied from the donor)."""
     stub = _StubCfg(active_cap=max_in_flight, cloud_enabled=cloud_kind is not None, active_cloud_kind=cloud_kind)
     monkeypatch.setattr("phaze.tasks.release_awaiting_cloud.get_settings", lambda: stub)
-    monkeypatch.setattr("phaze.services.backends.get_settings", lambda: stub)
+    patch_backends_get_settings(monkeypatch, lambda: stub)
 
 
 def _patch_s3(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -146,9 +146,41 @@ jobs:
         # Deliberately NOT solved by falling back to MetadataReader when ffprobe is missing --
         # that fallback returns 0 for Matroska, which is the exact defect this bead fixed. A host
         # without ffmpeg must fail loudly.
+        #
+        # phaze-ffmpeg-ci: bounded + retried, because the bare `apt-get update && apt-get install`
+        # pair is the single largest cost in CI and has twice consumed an entire job. Measured on
+        # one run: 9m47s on the agents shard (against 1m46s of actual tests), and on shared-core it
+        # hung past the 15-minute job timeout so the job was cancelled with steps 8-11 SKIPPED --
+        # zero tests executed. That surfaces as "the tests are timing out" when no test ever ran,
+        # which is how it was reported. It runs on all 13 shards, so a stalled mirror costs the
+        # repository roughly two hours of wall clock per run.
+        #
+        # ffmpeg is NOT in the ubuntu-24.04 runner image (checked against the image manifest), so
+        # apt is genuinely required -- the `command -v` probe is there to skip the work if a future
+        # image adds it, and to record in the log which path was taken. Each attempt is bounded so
+        # a stalled mirror can never eat the job again, and retried so a transient stall does not
+        # fail the run either. Three bounded attempts cost at most 9 minutes in the pathological
+        # case, still inside the 15-minute job timeout, versus an unbounded hang.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          set -euo pipefail
+          if command -v ffprobe >/dev/null 2>&1; then
+            echo "ffprobe already present: $(ffprobe -version | head -1)"
+            exit 0
+          fi
+          for attempt in 1 2 3; do
+            echo "::group::ffmpeg install attempt ${attempt}"
+            if timeout 90 sudo apt-get update && timeout 90 sudo apt-get install -y --no-install-recommends ffmpeg; then
+              echo "::endgroup::"
+              ffprobe -version | head -1
+              exit 0
+            fi
+            echo "::endgroup::"
+            echo "attempt ${attempt} failed or timed out; retrying" >&2
+            sleep 5
+          done
+          echo "::error::ffmpeg could not be installed after 3 bounded attempts." >&2
+          echo "Without ffprobe every real-audio test fails with AnalysisProbeError (D-10, phaze-l832u)." >&2
+          exit 1
 
       - name: 🐘 Create migrations test database
         env:
@@ -223,6 +255,11 @@ jobs:
   # A brand-new browser suite has no flake record; gating merges on it before that record exists
   # would train everyone to re-run CI on red, which is exactly how a real failure gets waved
   # through. Promote it to blocking once it has a clean run of 10 (tracked on phaze-8p1uq).
+  #
+  # phaze-8p1uq: the record and the promotion procedure live in tests/browser/FLAKE_RECORD.md.
+  # Status there is 0 of 10 -- this job cannot accumulate post-merge runs until epic phaze-tzy6s
+  # merges to main, so the count starts then. Record each run in that file rather than deciding
+  # from memory; the file also lists what to suspect first when a CI-only failure appears.
   browser:
     name: Browser contract (non-blocking)
     runs-on: ubuntu-latest

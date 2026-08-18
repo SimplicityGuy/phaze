@@ -137,7 +137,7 @@
            is wrapped in a table row whose id its own reveal script keys on). #}
         <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel">
             <p class="{{ _eyebrow }} mb-3">Windowed analysis · multi-lane timeline</p>
-            <div class="overflow-x-auto"><table class="w-full"><tbody><tr id="timeline-{{ file.id }}">
+            <div class="relative overflow-x-auto"><table class="w-full"><tbody><tr id="timeline-{{ file.id }}">
                 {% include "proposals/partials/analysis_timeline.html" %}
             </tr></tbody></table></div>
         </div>
@@ -155,7 +155,7 @@
             <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel">
                 <p class="{{ _eyebrow }} mb-2">Identity</p>
                 {% if identity %}
-                <div class="overflow-x-auto"><table class="w-full"><tbody><tr id="detail-{{ file.id }}">
+                <div class="relative overflow-x-auto"><table class="w-full"><tbody><tr id="detail-{{ file.id }}">
                     {% with proposal=identity %}{% include "proposals/partials/row_detail.html" %}{% endwith %}
                 </tr></tbody></table></div>
                 {% else %}

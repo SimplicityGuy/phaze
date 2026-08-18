@@ -94,6 +94,54 @@ def test_every_visible_table_scrolls_inside_its_own_container() -> None:
     assert not offenders, "tables with no overflow-x container (the page will scroll sideways):\n  " + "\n  ".join(offenders)
 
 
+def test_every_scroll_container_is_a_containing_block() -> None:
+    """A scroll container is also positioned, so absolute descendants cannot escape it.
+
+    phaze-mrg1c. The rule above -- wrap the table in ``overflow-x-auto`` -- was satisfied by every
+    template in the product and the page scrolled sideways anyway, on ``/s/files`` (429px at desktop
+    1440, 644px with failures, 229px at tablet) and ``/s/audit`` (386px at tablet, 756px at phone).
+    Wrapping is only half the contract.
+
+    ``overflow`` clips a descendant only when the scroller is that descendant's CONTAINING BLOCK. An
+    unpositioned scroller is not one for ``position: absolute`` content, which then resolves against
+    the initial containing block: it is painted at its static position -- out at the far edge of a
+    1890px-wide table -- while belonging, for overflow purposes, to the document. The table scrolls
+    correctly the whole time; the DOCUMENT is what grows, and the header and rail ride off screen
+    with it.
+
+    The trigger was mundane and is everywhere: Tailwind's ``.sr-only`` is ``position: absolute``, so
+    one ``<th><span class="sr-only">Details</span></th>`` in a table's last header cell was the
+    entire 745px of overflow at phone width. That is also why the two shapes in the bead differ only
+    in degree -- ``/s/files`` needed long filenames to push the last ``<th>`` past the viewport,
+    while ``/s/audit``'s header row is 1188px wide on a single minimal row -- and why one class
+    fixed both.
+
+    ``overflow-y-auto`` counts: a non-``visible`` value on one axis computes the other to ``auto``,
+    so a vertical scroller is a scroll container horizontally too and leaks in exactly the same way.
+    A responsive variant (``max-lg:fixed`` on the rail) establishes the containing block only inside
+    its own branch, so the base utility has to cover the other branch -- hence ``lg:relative`` there.
+    """
+    scroller = re.compile(r"\boverflow(?:-[xy])?-(?:auto|scroll)\b")
+    # `relative` etc. bare or behind any variant (`lg:relative`, `max-lg:fixed`) -- a scroller whose
+    # position is set only in one responsive branch still needs the other branch covered, but that is
+    # a judgement the branch's author makes; what this refuses is a scroller with NO positioning at
+    # all, which is the shape that leaks unconditionally.
+    positioned = re.compile(r"(?:^|[\s\"])(?:[\w.:\[\]-]+:)?(?:relative|absolute|fixed|sticky)\b")
+    offenders: list[str] = []
+    for path in _templates():
+        source = _source(path)
+        for match in re.finditer(r'class="([^"]*)"', source):
+            classes = match.group(1)
+            if scroller.search(classes) and not positioned.search(classes):
+                line = source[: match.start()].count("\n") + 1
+                offenders.append(f"{path.relative_to(_TEMPLATES)}:{line}: {classes.strip()[:90]}")
+    assert not offenders, (
+        "scroll containers that establish no containing block (absolutely positioned descendants -- "
+        "every .sr-only span is one -- will escape into the document's scrollable overflow and scroll "
+        "the whole page sideways). Add `relative`:\n  " + "\n  ".join(offenders)
+    )
+
+
 def test_every_icon_only_control_has_an_accessible_name() -> None:
     """A button whose only content is a glyph carries ``aria-label``.
 

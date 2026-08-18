@@ -43,9 +43,17 @@ async def _drain_background() -> None:
     import phaze.routers.pipeline as pipeline_mod
 
     for _ in range(500):
-        if not pipeline_mod._background_tasks:
+        pending = set(pipeline_mod._background_tasks)
+        if not pending:
             return
-        await asyncio.sleep(0)
+        # `asyncio.sleep(0)` only YIELDS -- it never waits for I/O. Under full-suite load all 500
+        # yields can elapse while a background task is still awaiting a database round-trip, so this
+        # returned EARLY and the `session` fixture's `outer.rollback()` fired while that task still
+        # held savepoints -- surfacing as `InvalidSavepointSpecificationError: savepoint
+        # "sa_savepoint_N" does not exist` at TEARDOWN, and green on isolated re-run. Awaiting the
+        # tasks themselves drains for real; the bounded loop stays because a draining task may
+        # spawn another.
+        await asyncio.wait(pending, timeout=10)
 
 
 def _make_file() -> FileRecord:
@@ -94,7 +102,11 @@ async def test_a_raced_completed_file_does_not_void_the_restore_for_the_rest_of_
     install_fake_queues(client)
 
     from phaze.database import async_session
-    import phaze.routers.pipeline as pipeline_mod
+
+    # phaze-oau1o: `routers/pipeline.py` is now a package. `enqueue_process_file` is bound in the
+    # `analysis` submodule's namespace, so the patch must name that module -- patching the
+    # facade would set an attribute nothing reads and silently no-op this test.
+    import phaze.routers.pipeline.analysis as pipeline_mod
 
     real_enqueue = pipeline_mod.enqueue_process_file
 

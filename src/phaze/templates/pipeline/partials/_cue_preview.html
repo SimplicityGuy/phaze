@@ -15,7 +15,7 @@
     {% if card.eligible %}
     <details open class="mt-3">
         <summary class="cursor-pointer font-jura text-[11px] uppercase tracking-wider text-gray-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-gray-300">Artifact preview</summary>
-        <pre class="mt-2 max-h-80 overflow-auto whitespace-pre rounded-lg bg-gray-50 p-3 font-mono text-[11px] leading-relaxed text-gray-600 dark:bg-phaze-bg dark:text-gray-300">{{ card.cue_text }}</pre>
+        <pre class="relative mt-2 max-h-80 overflow-auto whitespace-pre rounded-lg bg-gray-50 p-3 font-mono text-[11px] leading-relaxed text-gray-600 dark:bg-phaze-bg dark:text-gray-300">{{ card.cue_text }}</pre>
     </details>
     {% elif card.build_error %}
     <div class="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
