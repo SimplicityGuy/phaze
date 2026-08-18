@@ -37,16 +37,60 @@ Deliberately a source scan rather than a runtime assertion, for the same reason
 ``tests/shared/test_redis_worktree_isolation.py`` scans source: the defect is invisible on a
 single-seat run, so a runtime check would pass in exactly the conditions where the bug is dormant
 and only fail on the shared machine where the evidence is hardest to collect.
+
+PER-OCCURRENCE, NOT PER-FILE (phaze-fmyvq)
+-------------------------------------------
+
+The original scan asked two file-wide questions -- does this file contain a ``FROM pg_locks`` /
+``FROM pg_stat_activity`` match, AND does ``current_database()`` appear ANYWHERE in the same file
+-- so a single scoped query anywhere in a module silently exempted every OTHER query in it. The
+fix that closed phaze-esmn3 (an unscoped query added to ``tests/shared/test_redis_seat_registry.py``)
+put ``current_database()`` into that file and, without this change, would have made it permanently
+exempt: a second unscoped query added there later would have passed the guard vacuously.
+
+The scan now walks every match of the query pattern and requires the scoping token to appear near
+THAT occurrence, not merely somewhere in the file. Two refinements make that precise rather than a
+guess:
+
+* **Comments and docstrings are excluded from matching.** Several modules describe the historical
+  bug or reference a query defined elsewhere in English/SQL-shorthand prose (e.g. db_guard.py's
+  ``# ... SELECT 1 FROM pg_locks WHERE NOT granted ...`` explaining why the barrier changed, or a
+  test docstring's ``select count(*) from pg_locks ...`` describing an assertion). Those are not
+  executable queries and must not be forced to repeat a scoping predicate that lives in the real
+  query a few dozen lines away. Detected via ``tokenize`` (``#`` comments) and ``ast`` (bare string
+  expression statements -- what a docstring is).
+* **A bounded character window, not the whole file, is searched for the scoping token** around
+  each surviving occurrence. Every real occurrence in this codebase pairs its query with
+  ``current_database()`` within roughly 250 characters (the SQL text is built from at most a
+  handful of adjacent string literals or a short multi-line statement); the window is generous
+  against that and still nowhere near "anywhere in the file".
+
+**Deliberately, this now parses every scanned file with `ast`/`tokenize` and does not catch
+`SyntaxError`/`TokenizeError`.** The old scan was pure regex and could not fail on malformed
+input; this one can, and that is intentional rather than an oversight. A ``tests/`` or ``src/``
+module this Python version cannot parse is already a broken repository state -- falling back to
+a regex-only scan for such a file would risk silently downgrading it to the weaker, file-wide
+check this bead exists to remove, in exactly the case where nobody is watching closely enough to
+notice. A loud collection-time failure is the correct outcome, not a bug in the guard.
 """
 
 from __future__ import annotations
 
+import ast
+import io
 from pathlib import Path
 import re
+import tokenize
+from typing import TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCANNED_ROOTS = (REPO_ROOT / "tests", REPO_ROOT / "src")
+_THIS_FILE = Path(__file__).resolve()
 
 # A real query, not a mention: `FROM pg_locks`, `from pg_stat_activity l`, `join pg_locks`.
 _QUERY_RE = re.compile(r"\b(?:from|join)\s+(pg_locks|pg_stat_activity)\b", re.IGNORECASE)
@@ -55,18 +99,101 @@ _QUERY_RE = re.compile(r"\b(?:from|join)\s+(pg_locks|pg_stat_activity)\b", re.IG
 # name so the same source works for every worktree's database without templating.
 _SCOPE_TOKEN = "current_database()"
 
+# How far from a real occurrence the scoping token may sit and still count as "the same query".
+# The largest legitimate distance measured across the current codebase is ~215 characters (a
+# multi-line SELECT ... FROM ... WHERE ... AND database = (...current_database())); this leaves
+# comfortable headroom without approaching "anywhere in the file".
+_WINDOW = 300
 
-def _sources() -> list[Path]:
-    return sorted(path for root in SCANNED_ROOTS for path in root.rglob("*.py"))
+
+def _sources(roots: Sequence[Path] | None = None) -> list[Path]:
+    roots = roots if roots is not None else SCANNED_ROOTS
+    return sorted(path for root in roots for path in root.rglob("*.py") if root.exists())
 
 
-def _unscoped_query_files() -> list[str]:
-    """Return files that query a cluster-wide view without a ``current_database()`` predicate."""
+def _char_offsets(text: str) -> list[int]:
+    """Cumulative character offset at the start of each 1-indexed source line."""
+    offsets = [0]
+    for line in text.splitlines(keepends=True):
+        offsets.append(offsets[-1] + len(line))
+    return offsets
+
+
+def _prose_ranges(text: str) -> list[tuple[int, int]]:
+    """Character ranges that are commentary rather than executable SQL.
+
+    Two shapes: ``#`` comments (via ``tokenize``), and bare string-expression statements --
+    docstrings, and any other string literal not assigned or passed to anything (via ``ast``). A
+    scan that treated these as real queries would flag the historical-bug explanations in
+    ``tests/db_guard.py`` and the docstring in
+    ``tests/integration/test_tag_bulk_write_advisory_lock.py``, both of which describe a query in
+    prose without being the query itself.
+
+    Raises ``SyntaxError`` (from ``ast.parse``) or ``tokenize.TokenizeError`` uncaught if ``text``
+    does not parse under this Python version. Not a fallback case: see the module docstring.
+    """
+    offsets = _char_offsets(text)
+
+    def to_offset(row: int, col: int) -> int:
+        return offsets[row - 1] + col
+
+    ranges: list[tuple[int, int]] = []
+
+    for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+        if tok.type == tokenize.COMMENT:
+            ranges.append((to_offset(*tok.start), to_offset(*tok.end)))
+
+    tree = ast.parse(text)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            assert node.end_lineno is not None
+            assert node.end_col_offset is not None
+            ranges.append((to_offset(node.lineno, node.col_offset), to_offset(node.end_lineno, node.end_col_offset)))
+
+    return ranges
+
+
+def _in_any_range(pos: int, ranges: list[tuple[int, int]]) -> bool:
+    return any(start <= pos < end for start, end in ranges)
+
+
+def _unscoped_occurrences(text: str) -> list[str]:
+    """Return a description of each real query occurrence in ``text`` lacking a nearby scoping token.
+
+    "Real" excludes comments and docstrings (see ``_prose_ranges``); "nearby" is a bounded window
+    around the occurrence, not the whole text -- the fix for phaze-fmyvq.
+    """
+    prose = _prose_ranges(text)
     offenders = []
-    for path in _sources():
+    for match in _QUERY_RE.finditer(text):
+        if _in_any_range(match.start(), prose):
+            continue
+        start = max(0, match.start() - _WINDOW)
+        end = min(len(text), match.end() + _WINDOW)
+        if _SCOPE_TOKEN not in text[start:end]:
+            line_no = text.count("\n", 0, match.start()) + 1
+            offenders.append(f"line {line_no}: {match.group(0)!r}")
+    return offenders
+
+
+def _unscoped_query_files(roots: Sequence[Path] | None = None) -> list[str]:
+    """Return files containing at least one unscoped occurrence of a cluster-wide catalogue query.
+
+    Excludes this guard's own module: its docstring and self-tests deliberately contain example
+    SQL fragments, both scoped and unscoped, to pin the detector's behaviour, and those examples
+    are not real queries run against the database.
+    """
+    offenders = []
+    for path in _sources(roots):
+        if path.resolve() == _THIS_FILE:
+            continue
         text = path.read_text(encoding="utf-8")
-        if _QUERY_RE.search(text) and _SCOPE_TOKEN not in text:
-            offenders.append(str(path.relative_to(REPO_ROOT)))
+        if _unscoped_occurrences(text):
+            try:
+                label = str(path.relative_to(REPO_ROOT))
+            except ValueError:
+                label = str(path)
+            offenders.append(label)
     return offenders
 
 
@@ -125,6 +252,74 @@ def test_the_detector_recognises_the_shapes_it_is_meant_to_catch() -> None:
     )
     assert _QUERY_RE.search(scoped_count) is not None, "the fixed form is still a query"
     assert _SCOPE_TOKEN in scoped_count, "...and it must now satisfy the scoping check"
+
+
+def _scoped_query_snippet() -> str:
+    """A correctly scoped advisory-lock count, in the exact shape the real code uses.
+
+    Built from plain concatenated literals -- no interpolation -- specifically so this fixture
+    text is not itself flagged as a query-construction-via-formatting risk by the security linter.
+    """
+    return (
+        "_SCOPED_SQL = text(\n"
+        "    \"select count(*) from pg_locks where locktype = 'advisory' \"\n"
+        '    "and database = (select oid from pg_database where datname = current_database())"\n'
+        ")\n"
+    )
+
+
+def _unscoped_query_snippet() -> str:
+    """The same query with the scoping predicate removed."""
+    return "_UNSCOPED_SQL = text(\"select count(*) from pg_locks where locktype = 'advisory'\")\n"
+
+
+def _filler_lines(count: int = 60) -> str:
+    """Enough unrelated comment lines to separate two occurrences well past ``_WINDOW``."""
+    return "\n".join(f"# filler line {i} unrelated to either query" for i in range(count))
+
+
+def test_a_scoped_occurrence_does_not_exempt_an_unscoped_occurrence_in_the_same_text() -> None:
+    """Regression for phaze-fmyvq: the guard is per-occurrence, not per-file.
+
+    Before this fix, one ``current_database()`` anywhere in a module satisfied the check for
+    every query in it. Here two queries share one text -- one correctly scoped, one not, far
+    enough apart that a file-wide substring search would (incorrectly) call the second one
+    covered by the first.
+    """
+    text = "\n".join((_scoped_query_snippet(), _filler_lines(), "", _unscoped_query_snippet()))
+
+    offenders = _unscoped_occurrences(text)
+
+    assert len(offenders) == 1, f"expected exactly the unscoped occurrence to be flagged, got: {offenders}"
+    assert "pg_locks" in offenders[0]
+
+
+def test_a_fixture_module_with_one_scoped_and_one_unscoped_query_fails_the_guard(tmp_path: Path) -> None:
+    """The same regression, proven at the ``_unscoped_query_files`` (whole-guard) level.
+
+    A real module on disk, scanned the same way the guard scans ``tests/`` and ``src/`` -- this
+    is the acceptance criterion for phaze-fmyvq, not just the lower-level helper.
+    """
+    fixture = tmp_path / "fixture_cluster_wide_query_module.py"
+    fixture.write_text(
+        "\n".join(("from sqlalchemy import text", "", _scoped_query_snippet(), _filler_lines(), "", _unscoped_query_snippet())),
+        encoding="utf-8",
+    )
+
+    offenders = _unscoped_query_files(roots=[tmp_path])
+
+    assert offenders == [str(fixture)], f"the fixture's unscoped query must be flagged, got: {offenders}"
+
+
+def test_a_fixture_module_where_every_query_is_scoped_passes_the_guard(tmp_path: Path) -> None:
+    """The counterpart to the previous test: no false positive when every occurrence is scoped."""
+    fixture = tmp_path / "fixture_fully_scoped_module.py"
+    fixture.write_text(
+        "\n".join(("from sqlalchemy import text", "", _scoped_query_snippet())),
+        encoding="utf-8",
+    )
+
+    assert _unscoped_query_files(roots=[tmp_path]) == []
 
 
 def test_the_three_barrier_modules_share_one_definition() -> None:
