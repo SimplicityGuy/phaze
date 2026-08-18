@@ -316,7 +316,9 @@ coverage-combine:
 
 # phaze-2rgq2: refreshing the coverage repowise folds into its health scores is a FIVE-command
 # path, and two of those commands are invisible from the tools' own output. Encoding it here is
-# the point of the recipe; the two things worth reading before changing it are:
+# the point of the recipe. Verifying it end to end turned up two more, so there are now THREE
+# silent-partial shapes and one command whose green output means nothing. Read all of it before
+# changing any of it -- every claim below was measured on this repo, not inferred.
 #
 # WHY BOTH INGESTS. `repowise coverage add .coverage` and
 # `coverage xml && repowise coverage add coverage.xml` are NOT alternatives -- they populate two
@@ -337,9 +339,38 @@ coverage-combine:
 # with coverage measured at commit B maps coverage onto lines that have moved. The suite takes ~21
 # minutes -- long enough that `main` advanced twice within an hour during the session that filed
 # this bead -- so the script pins HEAD before the run, refuses on modified tracked files, warns on
-# untracked ones, and fails if HEAD moved by the end. `scripts/repowise_coverage_gate.py` then
-# re-reads repowise's own recorded `ingested_commit_sha` / `last_sync_commit` and fails closed on
-# any skew, so the pairing is verified rather than assumed.
+# untracked ones, and fails if HEAD moved by the end.
+#
+# `ingested_commit_sha` is NOT the field that settles this, however much it looks like it.
+# repowise stamps it from `repositories.head_commit`, which `repowise init` sets and
+# `repowise update` never refreshes -- it advances `churn_anchor_sha` and state.json's
+# `last_sync_commit` instead. Measured here: an update to 85111c59, with git HEAD and
+# last_sync_commit BOTH at 85111c59, still stamped a days-old 1c85e2ec on a correct 249-of-249
+# ingest. The first version of this gate failed on that and was wrong to -- it would red every
+# incrementally-updated repo. The gate now pairs on evidence repowise does maintain
+# (`last_sync_commit` == HEAD) plus INGEST FRESHNESS (both `ingested_at` newer than the run's
+# start), and treats a stale sha as a note. A MISSING sha still fails: that shape is a broken
+# repository registration, and it is how the first verification run got caught.
+#
+# TRAP 3, AND IT IS WORSE THAN TRAP 1. `repowise coverage add` maps the report's paths onto the
+# files it has INDEXED, keeps whatever maps, prints "N report file(s) did not map to the repo tree"
+# as a NOTE, and exits 0. Measured: a run that mapped 1 of 249 files and 26 of 29,334 test->file
+# pairs reported success on every surface. Trap 1 leaves `line_coverage_pct` NULL, which reads as
+# missing; trap 3 fills it in with a plausible number computed from almost nothing, which reads as
+# FINE. A reader who only knows traps 1 and 2 will believe a wrong percentage. Hence the gate takes
+# `--coverage-xml` and fails when fewer files mapped than the report contains. (Cause, if you hit
+# it: repowise keys its index on the repo's ABSOLUTE path. A checkout at a new path gets a NEW,
+# EMPTY repository row from `repowise update`, and coverage then maps against that.)
+#
+# `repowise status` IS NOT A VALIDITY CHECK, and this is the one to remember when wiring CI
+# (phaze-6it9k). During the 1-of-249 run it reported `indexed: true`, the CORRECT
+# `last_sync_commit`, and `file_count: 2251` -- every signal green while the ingest could map 9
+# files. `repowise health --format json` is no better: it re-parses the working tree and reported
+# `file_count: 2251` against a repository row holding nothing. `repowise context` on a known file
+# also still succeeds. Nothing available fails early, which is why this recipe fails LATE, after
+# the suite, by deliberate design rather than omission -- and why the gate reads the stored state
+# back instead of trusting an exit code. `repowise coverage add` exits 0 even when it ingests
+# NOTHING and prints "No indexed files found -- run `repowise init` first"; verified directly.
 #
 # Per-file health is `repowise health --file <path> --format json` (or the MCP `get_health`). The
 # positional argument to `repowise health` is a REPO PATH, so `repowise health src/phaze/foo.py`
