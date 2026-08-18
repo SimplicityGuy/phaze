@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -23,6 +22,7 @@ from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tracklist import Tracklist
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, ProcessFilePayload
+from tests._background_drain import drain_router_background_tasks
 from tests._queue_fakes import (
     DedupFakeQueue,
     DedupFakeTaskRouter,
@@ -55,24 +55,6 @@ if TYPE_CHECKING:
 # so tests can assert the exact destination queue per endpoint -- proving the
 # v4.0.6 default-queue misrouting is gone.
 # ---------------------------------------------------------------------------
-
-
-async def _drain_background() -> None:
-    """Yield until the router's background enqueue tasks have drained."""
-    import phaze.routers.pipeline as pipeline_mod
-
-    for _ in range(500):
-        pending = set(pipeline_mod._background_tasks)
-        if not pending:
-            return
-        # `asyncio.sleep(0)` only YIELDS -- it never waits for I/O. Under full-suite load all 500
-        # yields can elapse while a background task is still awaiting a database round-trip, so this
-        # returned EARLY and the `session` fixture's `outer.rollback()` fired while that task still
-        # held savepoints -- surfacing as `InvalidSavepointSpecificationError: savepoint
-        # "sa_savepoint_N" does not exist` at TEARDOWN, and green on isolated re-run. Awaiting the
-        # tasks themselves drains for real; the bounded loop stays because a draining task may
-        # spawn another.
-        await asyncio.wait(pending, timeout=10)
 
 
 # Registry fixtures driving the Phase-67 (D-14, REG-04) reduction the rewired pipeline reads:
@@ -198,7 +180,7 @@ async def test_analyze_enqueues_discovered(client: AsyncClient, session: AsyncSe
     data = response.json()
     assert data["enqueued"] == 3
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert len(capture) == 3
     assert {(q, t) for q, t, _ in capture} == {("phaze-agent-test-fileserver-analyze", "process_file")}
     assert all(q != "default" for q, _, _ in capture)
@@ -229,7 +211,7 @@ async def test_analyze_enqueues_complete_process_file_payload(client: AsyncClien
     assert response.status_code == 200
     assert response.json()["enqueued"] == 1
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert len(capture) == 1
     queue_name, task_name, kwargs = capture[0]
     assert (queue_name, task_name) == ("phaze-agent-test-fileserver-analyze", "process_file")
@@ -362,7 +344,7 @@ async def test_extract_metadata_enqueues_complete_payload(client: AsyncClient, s
     assert response.status_code == 200
     assert response.json()["enqueued"] == 1
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert len(capture) == 1
     queue_name, task_name, kwargs = capture[0]
     assert (queue_name, task_name) == ("phaze-agent-test-fileserver-meta", "extract_file_metadata")
@@ -401,7 +383,7 @@ async def test_analyze_enqueues_bounded_timeout_and_retries(client: AsyncClient,
     assert response.status_code == 200
     assert response.json()["enqueued"] == 1
 
-    await _drain_background()
+    await drain_router_background_tasks()
     queue = task_router.queues["test-fileserver-analyze"]
     assert len(queue.captured_policy) == 1
     # Phase 32: the shared helper now also sets the deterministic dedup key.
@@ -442,7 +424,7 @@ async def test_analyze_enqueues_deterministic_key_per_file(client: AsyncClient, 
     assert response.status_code == 200
     assert response.json()["enqueued"] == 3
 
-    await _drain_background()
+    await drain_router_background_tasks()
     queue = task_router.queues["test-fileserver-analyze"]
     assert len(queue.captured_policy) == 3
     # Every enqueue carries a key, and it matches that same enqueue's payload file_id.
@@ -465,7 +447,7 @@ async def test_analyze_ui_enqueues_bounded_timeout_and_retries(client: AsyncClie
     response = await client.post("/pipeline/analyze")
     assert response.status_code == 200
 
-    await _drain_background()
+    await drain_router_background_tasks()
     queue = task_router.queues["test-fileserver-analyze"]
     assert len(queue.captured_policy) == 1
     # Phase 32: the shared helper now also sets the deterministic dedup key.
@@ -505,7 +487,7 @@ async def test_analyze_no_active_agent(client: AsyncClient, session: AsyncSessio
     assert data["enqueued"] == 0
     assert "no active agent" in data["message"].lower()
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []
 
 
@@ -594,7 +576,7 @@ async def test_analyze_long_file_held_awaiting_cloud_even_with_compute_online(cl
     assert data["local"] == 0
     assert data["awaiting_cloud"] == 1
 
-    await _drain_background()
+    await drain_router_background_tasks()
     # No direct-to-compute (or any) enqueue: the file holds for the staging cron.
     assert capture == []
     assert await _is_awaiting_cloud(session, long_file.id)
@@ -620,7 +602,7 @@ async def test_analyze_long_held_even_without_fileserver(client: AsyncClient, se
     assert data["awaiting_cloud"] == 1
     assert data["skipped"] == 1
 
-    await _drain_background()
+    await drain_router_background_tasks()
     # Nothing is enqueued (the long file is held; the short file is skipped, never enqueued).
     assert capture == []
     assert await _is_awaiting_cloud(session, long_file.id)
@@ -642,7 +624,7 @@ async def test_analyze_long_file_no_compute_holds_awaiting_cloud(client: AsyncCl
     assert data["cloud"] == 0
     assert data["local"] == 0
 
-    await _drain_background()
+    await drain_router_background_tasks()
     # The held file is NEVER enqueued (the load-bearing CLOUDROUTE-02 safety invariant).
     assert capture == []
     assert await _is_awaiting_cloud(session, long_file.id)
@@ -661,7 +643,7 @@ async def test_analyze_short_and_null_route_to_fileserver_with_key(client: Async
     assert data["local"] == 2
     assert data["cloud"] == 0
 
-    await _drain_background()
+    await drain_router_background_tasks()
     queue = task_router.queues["test-fileserver-analyze"]
     assert len(queue.captured) == 2
     assert {p["key"] for p in queue.captured_policy} == {f"process_file:{short_file.id}", f"process_file:{null_file.id}"}
@@ -679,7 +661,7 @@ async def test_analyze_no_agents_at_all_surfaces_no_active_agent(client: AsyncCl
     assert data["enqueued"] == 0
     assert "no active agent" in data["message"].lower()
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []
 
 
@@ -736,7 +718,7 @@ async def test_analyze_ui_no_agents_renders_no_active_agent_fragment(client: Asy
     assert response.status_code == 200
     assert "No active agent available" in response.text
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []
 
 
@@ -762,7 +744,7 @@ async def test_analyze_ui_no_agents_surfaces_held_count(client: AsyncClient, ses
     # The file really is held in AWAITING_CLOUD (derived from the cloud_job sidecar, Phase 90 D-09).
     assert len(await _awaiting_cloud_ids(session)) == 1
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []
 
 
@@ -929,7 +911,7 @@ async def test_backfill_selects_long_failed_resets_and_holds_awaiting_cloud(clie
     response = await client.post("/pipeline/backfill-cloud")
     assert response.status_code == 200
 
-    await _drain_background()
+    await drain_router_background_tasks()
     # No direct-to-compute (or any) enqueue: the long failed file is held for the staging cron.
     assert capture == []
 
@@ -976,7 +958,7 @@ async def test_backfill_no_compute_holds_a_clean_awaiting_cloud_file(client: Asy
     response = await client.post("/pipeline/backfill-cloud")
     assert response.status_code == 200
 
-    await _drain_background()
+    await drain_router_background_tasks()
     # The held file is NEVER enqueued (the load-bearing CLOUDROUTE-02 safety invariant).
     assert capture == []
     assert await _is_awaiting_cloud(session, long_failed.id)
@@ -1001,7 +983,7 @@ async def test_backfill_with_compute_online_still_holds_a_clean_awaiting_cloud_f
     response = await client.post("/pipeline/backfill-cloud")
     assert response.status_code == 200
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []  # no direct compute enqueue
     assert await _is_awaiting_cloud(session, long_failed.id)
     assert await _analysis_failed_at(session, long_failed.id) is None
@@ -1109,7 +1091,7 @@ async def test_backfill_double_click_holds_nothing_new(client: AsyncClient, sess
 
     r1 = await client.post("/pipeline/backfill-cloud")
     assert r1.status_code == 200
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []  # held, never directly enqueued
     assert len(await _awaiting_cloud_ids(session)) == 2  # both long failed files held once (cloud_job awaiting)
 
@@ -1117,7 +1099,7 @@ async def test_backfill_double_click_holds_nothing_new(client: AsyncClient, sess
     # _backfill_candidates_stmt excludes them, Phase 90 PR-A), so the second click selects nothing new.
     r2 = await client.post("/pipeline/backfill-cloud")
     assert r2.status_code == 200
-    await _drain_background()
+    await drain_router_background_tasks()
     assert len(await _awaiting_cloud_ids(session)) == 2  # unchanged — no over-enqueue
     assert "No timed-out long files" in r2.text
 
@@ -1138,7 +1120,7 @@ async def test_backfill_makes_every_candidate_a_clean_awaiting_cloud_hold(client
 
     response = await client.post("/pipeline/backfill-cloud")
     assert response.status_code == 200
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []  # held, never directly enqueued
 
     file_ids = [f.id for f in files]  # capture before _awaiting_cloud_ids() expires the ORM objects
@@ -1159,7 +1141,7 @@ async def test_backfill_zero_candidates_returns_empty_fragment(client: AsyncClie
     assert response.status_code == 200
     assert "No timed-out long files" in response.text
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []
 
 
@@ -1185,7 +1167,7 @@ async def test_backfill_disabled_when_cloud_local(client: AsyncClient, session: 
     response = await client.post("/pipeline/backfill-cloud")
     assert response.status_code == 200
 
-    await _drain_background()
+    await drain_router_background_tasks()
     # Nothing enqueued anywhere -- the disabled path never routes.
     assert capture == []
     # The ANALYSIS_FAILED file is NEVER reset to DISCOVERED (no silent re-time-out, Pitfall 2).
@@ -1205,7 +1187,7 @@ async def test_backfill_enabled_resets_and_holds(client: AsyncClient, session: A
     response = await client.post("/pipeline/backfill-cloud")
     assert response.status_code == 200
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []  # held, never directly enqueued
     assert await _is_awaiting_cloud(session, long_failed.id)
 
@@ -1228,7 +1210,7 @@ async def test_backfill_compute_clears_marker_and_deletes_ledger_row(client: Asy
 
     response = await client.post("/pipeline/backfill-cloud")
     assert response.status_code == 200
-    await _drain_background()
+    await drain_router_background_tasks()
 
     assert await _is_awaiting_cloud(session, long_failed.id)
     assert await _analysis_failed_at(session, long_failed.id) is None
@@ -1252,7 +1234,7 @@ async def test_backfill_kueue_clears_marker_and_deletes_ledger_row(
 
     response = await client.post("/pipeline/backfill-cloud")
     assert response.status_code == 200
-    await _drain_background()
+    await drain_router_background_tasks()
 
     assert await _is_awaiting_cloud(session, long_failed.id)
     assert await _analysis_failed_at(session, long_failed.id) is None
@@ -1295,7 +1277,7 @@ async def test_backfill_skips_file_with_live_process_file_job(client: AsyncClien
 
     response = await client.post("/pipeline/backfill-cloud")
     assert response.status_code == 200
-    await _drain_background()
+    await drain_router_background_tasks()
 
     # The live-job file is untouched: failure marker retained, ledger row (the live in-flight marker)
     # NOT deleted, and it is NOT held in AWAITING_CLOUD -- so no local+cloud double-dispatch.
@@ -1369,7 +1351,7 @@ async def test_backfill_cas_delete_removes_every_candidates_ledger_row(client: A
 
     response = await client.post("/pipeline/backfill-cloud")
     assert response.status_code == 200
-    await _drain_background()
+    await drain_router_background_tasks()
 
     for candidate in candidates:
         assert await _process_file_ledger_rows(session, candidate.id) == [], (
@@ -1413,7 +1395,7 @@ async def test_backfill_local_redrives_nothing(client: AsyncClient, session: Asy
 
     response = await client.post("/pipeline/backfill-cloud")
     assert response.status_code == 200
-    await _drain_background()
+    await drain_router_background_tasks()
 
     # The all-local early-return mutates nothing: the failure marker + the prior ledger row survive.
     assert await _analysis_failed_at(session, long_failed.id) is not None
@@ -1509,7 +1491,7 @@ async def test_backfill_compute_held_file_is_drainable(client: AsyncClient, sess
 
     response = await client.post("/pipeline/backfill-cloud")
     assert response.status_code == 200
-    await _drain_background()
+    await drain_router_background_tasks()
 
     # The held file is now a CLEAN drainable candidate: awaiting cloud_job kept, failed_at + ledger cleared.
     assert await _is_awaiting_cloud(session, long_failed.id)
@@ -1541,7 +1523,7 @@ async def test_backfill_kueue_held_file_is_drainable(client: AsyncClient, sessio
 
     response = await client.post("/pipeline/backfill-cloud")
     assert response.status_code == 200
-    await _drain_background()
+    await drain_router_background_tasks()
 
     assert await _is_awaiting_cloud(session, long_failed.id)
     marker = (await session.execute(select(AnalysisResult.failed_at).where(AnalysisResult.file_id == long_failed.id))).scalar_one()
@@ -1741,7 +1723,7 @@ async def test_retry_reenqueues_all_failed_and_flips_state(client: AsyncClient, 
     assert response.status_code == 200
     assert "re-queued 3 failed file(s)" in response.text.lower()
 
-    await _drain_background()  # phaze-zecg: the enqueue loop now runs as a background task
+    await drain_router_background_tasks()  # phaze-zecg: the enqueue loop now runs as a background task
     queue = task_router.queues["test-fileserver-analyze"]
     assert len(queue.captured) == 3
     assert queue.name == "phaze-agent-test-fileserver-analyze"
@@ -1773,7 +1755,7 @@ async def test_retry_no_active_agent_enqueues_nothing_and_keeps_state(client: As
     assert response.status_code == 200
     assert "no active agent" in response.text.lower()
 
-    await _drain_background()
+    await drain_router_background_tasks()
     # Nothing enqueued anywhere -- never the default queue.
     assert capture == []
     # Derived failure markers UNCHANGED: the no-op retry clears nothing (the marker is the sole authority).
@@ -1791,7 +1773,7 @@ async def test_retry_zero_failed_is_noop(client: AsyncClient, session: AsyncSess
     assert response.status_code == 200
     assert "no failed files to retry" in response.text.lower()
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []
 
 
@@ -1837,7 +1819,7 @@ async def test_proposals_generate_batches(client: AsyncClient, session: AsyncSes
     assert data["total_files"] == 15
     assert data["enqueued_batches"] == 2  # 15 files / 10 batch_size = 2 batches
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert len(capture) == 2
     assert {(q, t) for q, t, _ in capture} == {("controller", "generate_proposals")}
 
@@ -1882,7 +1864,7 @@ async def test_proposals_generate_refuses_while_batch_in_flight(client: AsyncCli
     assert data["total_files"] == 0
     assert "already in progress" in data["message"]
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []
 
 
@@ -1944,7 +1926,7 @@ async def test_match_tracklists_routes_to_controller_queue(client: AsyncClient, 
     response = await client.post("/pipeline/match-tracklists")
     assert response.status_code == 200
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert len(capture) == 3
     assert {(q, t) for q, t, _ in capture} == {("controller", "match_tracklist_to_discogs")}
     assert all(q != "default" for q, _, _ in capture)
@@ -1974,7 +1956,7 @@ async def test_match_tracklists_excludes_discogs_reachable(client: AsyncClient, 
     response = await client.post("/pipeline/match-tracklists")
     assert response.status_code == 200
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert len(capture) == 1
     assert capture[0][2]["tracklist_id"] == str(pending.id)
 
@@ -1987,7 +1969,7 @@ async def test_match_tracklists_no_pending_returns_200(client: AsyncClient) -> N
     assert response.status_code == 200
     assert "No tracklists ready for matching" in response.text
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []
 
 
@@ -2047,7 +2029,7 @@ async def test_prioritize_ineligible_file_flags_nothing_and_enqueues_nothing(cli
     assert "Not yet looked up" in response.text
 
     assert await load_flagged_file_ids(session) == set()
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []
 
 
@@ -2076,7 +2058,7 @@ async def test_prioritize_file_with_embedded_tracklist_flags_nothing_and_enqueue
     assert "excluded from the drain queue" in response.text
 
     assert await load_flagged_file_ids(session) == set()
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []
 
 
@@ -2094,7 +2076,7 @@ async def test_prioritize_already_tracklisted_file_is_a_noop(client: AsyncClient
     assert response.status_code == 200
 
     assert await load_flagged_file_ids(session) == set()
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []
 
 
@@ -2129,7 +2111,7 @@ async def test_prioritize_a_cache_suppressed_negative_flags_nothing_and_enqueues
     assert "will not queue a lookup" in response.text
 
     assert await load_flagged_file_ids(session) == set()
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []
 
 
@@ -2155,7 +2137,7 @@ async def test_refresh_rearms_the_drain_for_an_already_tracklisted_file(client: 
     assert "Refresh requested" in response.text
 
     assert await load_flagged_file_ids(session) == {file_rec.id}
-    await _drain_background()
+    await drain_router_background_tasks()
     assert {(q, t) for q, t, _ in capture} == {("controller", "drain_tracklists")}
     assert [c[2].get("limit") for c in capture] == [1]
 
@@ -2173,7 +2155,7 @@ async def test_refresh_on_a_file_with_no_tracklist_does_nothing(client: AsyncCli
     assert "Refresh requested" not in response.text
 
     assert await load_flagged_file_ids(session) == set()
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []
 
 
@@ -2357,7 +2339,7 @@ async def test_recover_invokes_recover_orphaned_work_forced(client: AsyncClient,
     assert "Recovery started" in response.text
     assert "nothing will double-enqueue" in response.text
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert captured["force"] is True, "manual Recover must force=True (bypass the no-op detect gate, not the dedup)"
     ctx = captured["ctx"]
     assert isinstance(ctx, dict)
@@ -2387,7 +2369,7 @@ async def test_recover_returns_200_when_producer_raises_is_isolated(client: Asyn
     assert response.status_code == 200
     assert "Recovery started" in response.text
 
-    await _drain_background()
+    await drain_router_background_tasks()
 
 
 @pytest.mark.asyncio
@@ -2488,7 +2470,7 @@ async def test_recover_response_polls_for_the_final_outcome(client: AsyncClient,
     response = await client.post("/pipeline/recover")
     assert response.status_code == 200
     assert 'hx-get="/pipeline/recover/status"' in response.text
-    await _drain_background()
+    await drain_router_background_tasks()
 
 
 @pytest.mark.asyncio
@@ -2681,7 +2663,7 @@ async def test_trigger_analysis_ui_with_files(client: AsyncClient, session: Asyn
     assert "text/html" in response.headers["content-type"]
     assert "analysis" in response.text
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert len(capture) == 2
     assert {(q, t) for q, t, _ in capture} == {("phaze-agent-test-fileserver-analyze", "process_file")}
     # UI path enqueues a complete payload too (every job carries all five fields).
@@ -2700,7 +2682,7 @@ async def test_trigger_analysis_ui_no_active_agent(client: AsyncClient, session:
     assert response.status_code == 200
     assert "No active agent available" in response.text
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []
 
 
@@ -2732,7 +2714,7 @@ async def test_trigger_proposals_ui_with_files(client: AsyncClient, session: Asy
     assert "text/html" in response.headers["content-type"]
     assert "proposal generation" in response.text
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert len(capture) == 1
     assert {(q, t) for q, t, _ in capture} == {("controller", "generate_proposals")}
 
@@ -2766,7 +2748,7 @@ async def test_trigger_proposals_ui_refuses_while_batch_in_flight(client: AsyncC
     assert response.status_code == 200
     assert "already in progress" in response.text
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []
 
 
@@ -2783,7 +2765,7 @@ async def test_enqueue_analysis_background(client: AsyncClient, session: AsyncSe
     # Verify the enqueue was called (background task may complete by now)
     assert response.json()["enqueued"] == 1
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert len(capture) == 1
     queue_name, task_name, kwargs = capture[0]
     assert queue_name == "phaze-agent-test-fileserver-analyze"
@@ -2823,7 +2805,7 @@ async def test_enqueue_proposals_background(client: AsyncClient, session: AsyncS
     assert data["total_files"] == 5
     assert data["enqueued_batches"] == 1  # 5 files / 10 batch_size = 1 batch
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert [(q, t) for q, t, _ in capture] == [("controller", "generate_proposals")]
 
 
@@ -2840,7 +2822,7 @@ async def test_extract_metadata_enqueues(client: AsyncClient, session: AsyncSess
     data = response.json()
     assert data["enqueued"] == 3
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert len(capture) == 3
     assert {(q, t) for q, t, _ in capture} == {("phaze-agent-test-fileserver-meta", "extract_file_metadata")}
 
@@ -2858,7 +2840,7 @@ async def test_extract_metadata_no_active_agent(client: AsyncClient, session: As
     assert data["enqueued"] == 0
     assert "no active agent" in data["message"].lower()
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []
 
 
@@ -2884,7 +2866,7 @@ async def test_trigger_extraction_ui_with_files(client: AsyncClient, session: As
     assert "text/html" in response.headers["content-type"]
     assert "metadata extraction" in response.text
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert len(capture) == 2
     assert {(q, t) for q, t, _ in capture} == {("phaze-agent-test-fileserver-meta", "extract_file_metadata")}
 
@@ -2900,7 +2882,7 @@ async def test_trigger_extraction_ui_no_active_agent(client: AsyncClient, sessio
     assert response.status_code == 200
     assert "No active agent available" in response.text
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert capture == []
 
 
@@ -3480,7 +3462,7 @@ async def test_force_local_analyze_api_routes_local_no_hold(client: AsyncClient,
     assert data["local"] == 1
     assert data["awaiting_cloud"] == 0
 
-    await _drain_background()
+    await drain_router_background_tasks()
     # Anti-cheat: ZERO cloud_job awaiting rows (not a bare enqueue count) -- fails if the
     # `and not await get_route_control(session)` clause were dropped from gate L396. Phase 90 (D-09):
     # "held" derives from the cloud_job sidecar, not files.state.
@@ -3508,7 +3490,7 @@ async def test_force_local_analyze_ui_routes_local_no_hold(client: AsyncClient, 
     assert "1 local" in text
     assert "0 awaiting cloud" in text
 
-    await _drain_background()
+    await drain_router_background_tasks()
     # Anti-cheat: ZERO cloud_job awaiting rows -- fails if the force-local clause were dropped from gate
     # L718. Phase 90 (D-09): "held" derives from the cloud_job sidecar, not files.state.
     assert await _awaiting_cloud_ids(session) == set()
@@ -3535,7 +3517,7 @@ async def test_force_local_analyze_api_false_control_still_holds(client: AsyncCl
     assert data["cloud"] == 0
     assert data["awaiting_cloud"] == 1
 
-    await _drain_background()
+    await drain_router_background_tasks()
     # The long file IS held (nothing enqueued from here -- the staging cron is the sole compute entry).
     assert capture == []
     assert await _awaiting_cloud_ids(session) == {long_file.id}
@@ -3575,7 +3557,7 @@ async def test_force_local_backfill_zero_mutation_no_op(client: AsyncClient, ses
     response = await client.post("/pipeline/backfill-cloud")
     assert response.status_code == 200
 
-    await _drain_background()
+    await drain_router_background_tasks()
     # Signal 1: nothing enqueued anywhere -- the forced-local path never routes.
     assert capture == []
     # Signal 2: the ANALYSIS_FAILED file is NEVER reset to DISCOVERED (no silent re-time-out / hold).
@@ -3627,7 +3609,7 @@ async def test_extract_metadata_routes_each_file_to_its_owning_agent(client: Asy
     assert response.status_code == 200
     assert response.json()["enqueued"] == 2
 
-    await _drain_background()
+    await drain_router_background_tasks()
     destinations = {kwargs["file_id"]: q for q, _t, kwargs in capture}
     assert destinations == {
         str(east_file.id): "phaze-agent-fileserver-east-meta",
@@ -3656,5 +3638,5 @@ async def test_analyze_skips_files_of_offline_owner_and_routes_the_rest(client: 
     assert data["local"] == 1
     assert data["skipped"] == 1
 
-    await _drain_background()
+    await drain_router_background_tasks()
     assert [(q, kwargs["file_id"]) for q, _t, kwargs in capture] == [("phaze-agent-fileserver-east-analyze", str(east_file.id))]

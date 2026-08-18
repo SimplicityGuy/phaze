@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,10 +24,7 @@ import pytest
 from phaze.schemas.agent_heartbeat import HeartbeatRequest
 from phaze.schemas.agent_identity import AgentIdentity
 from phaze.tasks.heartbeat import _heartbeat_loop, send_heartbeat
-
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
+from tests._async_settle import wait_until
 
 
 def _make_ctx(*, hang_info: bool = False) -> dict[str, Any]:
@@ -53,15 +50,6 @@ def _make_ctx(*, hang_info: bool = False) -> dict[str, Any]:
         queue.info = AsyncMock(return_value={"queued": 5, "active": 0, "scheduled": 0, "name": "q", "workers": {}, "jobs": []})
     worker.queue = queue
     return {"api_client": client, "agent_identity": identity, "worker": worker, "job": MagicMock()}
-
-
-async def _wait_until(predicate: Callable[[], bool], *, timeout: float = 2.0) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while not predicate():
-        if loop.time() > deadline:
-            return
-        await asyncio.sleep(0)
 
 
 async def test_hung_queue_info_still_posts_the_heartbeat(caplog: pytest.LogCaptureFixture) -> None:
@@ -111,7 +99,7 @@ async def test_loop_survives_a_beat_that_hangs_forever(caplog: pytest.LogCapture
         patch("phaze.tasks.heartbeat.AGENT_HEARTBEAT_INTERVAL_SECONDS", 0),
     ):
         task = asyncio.create_task(_heartbeat_loop(ctx))
-        await _wait_until(lambda: calls["n"] >= 3)
+        await wait_until(lambda: calls["n"] >= 3, description="the loop kept beating past the hung beat (calls >= 3)")
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -135,7 +123,7 @@ async def test_beat_deadline_is_independent_of_the_cadence() -> None:
         patch("phaze.tasks.heartbeat.os.getpid", return_value=999),
     ):
         task = asyncio.create_task(_heartbeat_loop(ctx))
-        await _wait_until(lambda: ctx["api_client"].heartbeat.await_count >= 3)
+        await wait_until(lambda: ctx["api_client"].heartbeat.await_count >= 3, description="3 beats actually POSTed at a 0s cadence")
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -158,7 +146,10 @@ async def test_loop_emits_periodic_proof_of_life(caplog: pytest.LogCaptureFixtur
         patch("phaze.tasks.heartbeat.os.getpid", return_value=999),
     ):
         task = asyncio.create_task(_heartbeat_loop(ctx))
-        await _wait_until(lambda: any("heartbeat loop alive" in r.getMessage() for r in caplog.records))
+        await wait_until(
+            lambda: any("heartbeat loop alive" in r.getMessage() for r in caplog.records),
+            description="the periodic proof-of-life line was logged",
+        )
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task

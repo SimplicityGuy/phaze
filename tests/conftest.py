@@ -4,12 +4,15 @@ import asyncio
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 import hashlib
+import itertools
 import secrets
+from typing import Any
 import uuid
 
 from httpx import ASGITransport, AsyncClient
 import pytest
 import pytest_asyncio
+from sqlalchemy import event
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -24,6 +27,7 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from tests._background_drain import leaked_background_tasks_message, pending_router_background_tasks
 from tests._queue_fakes import install_fake_queues
 from tests.db_guard import (
     SharedTestDatabaseError,
@@ -313,7 +317,128 @@ async def _db_connection(async_engine) -> AsyncGenerator[AsyncConnection]:  # ty
     transaction is never committed, would read ZERO/STALE under read-committed isolation.
     """
     async with async_engine.connect() as conn:
+        _watch_savepoint_order(conn)
         yield conn
+
+
+# --------------------------------------------------------------------------------------------------
+# phaze-5lq8a: the savepoint-ordering probe.
+#
+# Sharing ONE connection between the test's `session`, the app's `get_session` override, the `verify`
+# read session and the production fan-out is what makes uncommitted rows mutually visible (D-07). The
+# price is that all of them push onto ONE Postgres savepoint stack, and `RELEASE SAVEPOINT s` destroys
+# `s` AND EVERY SAVEPOINT ESTABLISHED AFTER IT. So the arrangement is sound only while those sessions
+# nest strictly LIFO, and nothing in the wiring enforces that.
+#
+# When a router background task outlives the test body it breaks LIFO invisibly: it opens savepoint N,
+# `verify`'s first read opens N+1, the task commits and RELEASEs N -- taking N+1 with it -- and the
+# only symptom is `InvalidSavepointSpecificationError: savepoint "sa_savepoint_N+1" does not exist`
+# raised from a FIXTURE FINALIZER, long after the test body passed. The run then reports
+# "1 passed ... 1 error" and exits 1.
+#
+# This probe watches the stack directly, so the diagnosis is available whether or not the offending
+# task is still alive at teardown -- which the `pending_router_background_tasks()` check alone cannot
+# do, because the common case is a task that finished between corrupting the stack and teardown.
+# --------------------------------------------------------------------------------------------------
+_SAVEPOINT_ORDER_KEY = "phaze_savepoint_order"
+
+
+def _watch_savepoint_order(conn: AsyncConnection) -> None:
+    """Record every out-of-order savepoint release on this connection, for the finalizers to report."""
+    sync_conn = conn.sync_connection
+    state: dict[str, list[str]] = {"stack": [], "violations": []}
+    sync_conn.info[_SAVEPOINT_ORDER_KEY] = state
+    # `Connection._savepoint_impl` dispatches `savepoint` BEFORE it mints the name, so the event
+    # hands us ``None`` and the name has to be mirrored from the same per-connection counter it
+    # uses (`sa_savepoint_1`, `sa_savepoint_2`, ...). Both start at zero because this probe is
+    # installed the moment the connection is checked out. The release/rollback events, which DO
+    # carry the real name, are what keeps that mirror honest: a name we never minted is simply
+    # ignored below rather than mistaken for a violation.
+    counter = itertools.count(1)
+
+    def _destroyed(name: str) -> None:
+        """``name`` is going away; in Postgres so is everything established above it."""
+        stack = state["stack"]
+        if name not in stack:
+            return
+        index = stack.index(name)
+        collateral = stack[index + 1 :]
+        if collateral:
+            state["violations"].append(f"{name} was released with {', '.join(collateral)} still established above it")
+        del stack[index:]
+
+    # `savepoint` is (conn, name); `release_savepoint` / `rollback_savepoint` are (conn, name, context).
+    @event.listens_for(sync_conn, "savepoint")
+    def _pushed(conn_: Any, name: str | None) -> None:
+        state["stack"].append(name or f"sa_savepoint_{next(counter)}")
+
+    @event.listens_for(sync_conn, "release_savepoint")
+    def _released(conn_: Any, name: str, context: Any) -> None:
+        _destroyed(name)
+
+    @event.listens_for(sync_conn, "rollback_savepoint")
+    def _rolled_back(conn_: Any, name: str, context: Any) -> None:
+        _destroyed(name)
+
+
+def _savepoint_order_violations(conn: AsyncConnection) -> list[str]:
+    state = conn.sync_connection.info.get(_SAVEPOINT_ORDER_KEY)
+    return list(state["violations"]) if state else []
+
+
+async def _finalize_shared_connection_session(s: AsyncSession, leaked: list[asyncio.Task[Any]], violations: list[str], rollback: Any = None) -> None:
+    """Close a session bound to the shared connection, then report what corrupted it (phaze-5lq8a).
+
+    ``rollback`` is :func:`session`'s outer-transaction rollback and is omitted by :func:`verify`,
+    which owns no outer transaction.
+
+    THE ORDERING IS THE POINT, and it is why this is a function rather than four inline lines.
+    ``s.close()`` is exactly what raises when another session on the connection released a savepoint
+    out of order, and the previous ``await s.close()`` / ``await outer.rollback()`` pair ran them
+    SEQUENTIALLY -- so a raising close skipped the rollback entirely and the per-test outer
+    transaction was left open on a connection about to be handed back. The hermeticity contract
+    (D-06/D-07) says that rollback ALWAYS runs; `finally` is what makes that true.
+
+    Raising the diagnosis from the same ``finally`` is deliberate too: Python keeps the close's
+    exception as this one's ``__context__``, so the asyncpg evidence is preserved under a headline
+    that names the cause. Nothing is swallowed.
+    """
+    try:
+        await s.close()
+    finally:
+        if rollback is not None:
+            await rollback()
+        if leaked or violations:
+            raise AssertionError(_shared_connection_failure_message(leaked, violations))
+
+
+def _shared_connection_failure_message(leaked: list[asyncio.Task[Any]], violations: list[str]) -> str:
+    """Name the cause at the fixture that is about to fail because of it (phaze-5lq8a).
+
+    Without this the whole class reads as a bare
+    ``InvalidSavepointSpecificationError: savepoint "sa_savepoint_N" does not exist`` raised from a
+    fixture the test never mentions, AFTER the test body passed -- which is how it survived on main
+    long enough to be attributed to a reused database, an event loop, and two unrelated epics.
+    """
+    parts: list[str] = []
+    if violations:
+        parts.append(
+            "savepoints on the shared per-test connection were released OUT OF ORDER: "
+            + "; ".join(violations)
+            + ". In Postgres a RELEASE destroys every savepoint established above it, so the session that "
+            "owned those is now holding a savepoint the server has already discarded -- its close() raises "
+            "'InvalidSavepointSpecificationError: savepoint \"sa_savepoint_N\" does not exist' at teardown."
+        )
+    if leaked:
+        parts.append(leaked_background_tasks_message(leaked))
+    elif violations:
+        parts.append(
+            "No router background task was still running at teardown, so the offender finished between "
+            "corrupting the stack and this point -- the usual shape. Look for a request that detaches work "
+            "(`asyncio.create_task`) with no following "
+            "`await tests._background_drain.drain_router_background_tasks()`."
+        )
+    return " ".join(parts)
 
 
 @pytest_asyncio.fixture
@@ -366,8 +491,15 @@ async def session(_db_connection: AsyncConnection, _route_stats_fanout: None) ->
     try:
         yield s
     finally:
-        await s.close()
-        await outer.rollback()
+        # phaze-5lq8a: sample the leak BEFORE closing -- the close is what fails when a router
+        # background task has been releasing savepoints on this same connection behind the test's
+        # back, and by then the diagnosis has to already be in hand. See `_watch_savepoint_order`.
+        leaked = pending_router_background_tasks()
+        violations = _savepoint_order_violations(_db_connection)
+        # The outer rollback is the hermeticity contract (D-06/D-07) and must run even when the close
+        # raises -- previously a raising close skipped it entirely. Pinned by
+        # `tests/shared/test_conftest_hermeticity.py::test_the_outer_rollback_runs_even_when_the_close_raises`.
+        await _finalize_shared_connection_session(s, leaked, violations, rollback=outer.rollback)
 
 
 @pytest_asyncio.fixture
@@ -394,7 +526,20 @@ async def verify(session: AsyncSession, _db_connection: AsyncConnection) -> Asyn
     try:
         yield s
     finally:
-        await s.close()
+        # phaze-5lq8a: this finalizer is the one the savepoint error was reported from, and it is
+        # the FIRST of the DB fixtures to tear down (it depends on `session`, so it unwinds before
+        # it) -- which makes it the earliest point at which an undrained router background task can
+        # be named. Sampled before the close for the same reason as in `session`.
+        #
+        # Being first is also why this can only DIAGNOSE and never PREVENT: every fixture that could
+        # host a drain runs after this one, and by then the leaked task has already issued the
+        # RELEASE that discarded this session's savepoint. Prevention lives in the test body, in the
+        # `drain_router_background_tasks()` call before the first read through `verify` -- see
+        # `tests/_background_drain`, "AND NO, THIS CANNOT BE MOVED INTO A FIXTURE", before deleting
+        # one of those calls on the grounds that this guard would catch it.
+        leaked = pending_router_background_tasks()
+        violations = _savepoint_order_violations(_db_connection)
+        await _finalize_shared_connection_session(s, leaked, violations)
 
 
 @pytest_asyncio.fixture

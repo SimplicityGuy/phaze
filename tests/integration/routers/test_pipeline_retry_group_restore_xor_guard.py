@@ -18,7 +18,6 @@ The fix scopes the restore with ``AnalysisResult.analysis_completed_at.is_(None)
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 import uuid
@@ -28,6 +27,7 @@ from sqlalchemy import select, update
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
+from tests._background_drain import drain_router_background_tasks
 from tests._queue_fakes import install_fake_queues, make_agent_live
 
 
@@ -37,23 +37,6 @@ if TYPE_CHECKING:
 
 
 pytestmark = pytest.mark.integration
-
-
-async def _drain_background() -> None:
-    import phaze.routers.pipeline as pipeline_mod
-
-    for _ in range(500):
-        pending = set(pipeline_mod._background_tasks)
-        if not pending:
-            return
-        # `asyncio.sleep(0)` only YIELDS -- it never waits for I/O. Under full-suite load all 500
-        # yields can elapse while a background task is still awaiting a database round-trip, so this
-        # returned EARLY and the `session` fixture's `outer.rollback()` fired while that task still
-        # held savepoints -- surfacing as `InvalidSavepointSpecificationError: savepoint
-        # "sa_savepoint_N" does not exist` at TEARDOWN, and green on isolated re-run. Awaiting the
-        # tasks themselves drains for real; the bounded loop stays because a draining task may
-        # spawn another.
-        await asyncio.wait(pending, timeout=10)
 
 
 def _make_file() -> FileRecord:
@@ -131,7 +114,7 @@ async def test_a_raced_completed_file_does_not_void_the_restore_for_the_rest_of_
     response = await client.post("/pipeline/analysis-failed/retry")
     assert response.status_code == 200
 
-    await _drain_background()
+    await drain_router_background_tasks()
 
     # The genuinely-failed file (no race) MUST get its failure marker restored -- this is the id the
     # unguarded restore would have lost as collateral damage from the raced row's CHECK violation.

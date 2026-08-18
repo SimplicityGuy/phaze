@@ -35,6 +35,7 @@ from sqlalchemy import select
 from phaze.enums.stage import Stage, Status, domain_completed
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
+from tests._background_drain import drain_router_background_tasks
 from tests._queue_fakes import install_fake_queues, make_agent_live
 
 
@@ -86,6 +87,10 @@ async def test_retry_clears_analysis_failure_marker(client: AsyncClient, session
     response = await client.post("/pipeline/analysis-failed/retry")
     assert response.status_code == 200
 
+    # phaze-5lq8a: the bulk trigger detaches its enqueue loop, whose restore session binds to this
+    # test's connection -- assert only once it has drained, or its savepoint churn races teardown.
+    await drain_router_background_tasks()
+
     session.expire_all()
     rows = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id.in_([uuid.UUID(i) for i in failed_ids])))).scalars().all()
     assert len(rows) == 3
@@ -108,6 +113,10 @@ async def test_retry_clears_marker_without_touching_state(client: AsyncClient, s
 
     assert (await client.post("/pipeline/analysis-failed/retry")).status_code == 200
 
+    # phaze-5lq8a: the bulk trigger detaches its enqueue loop, whose restore session binds to this
+    # test's connection -- assert only once it has drained, or its savepoint churn races teardown.
+    await drain_router_background_tasks()
+
     session.expire_all()
     ids = [uuid.UUID(i) for i in failed_ids]
     rows = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id.in_(ids)))).scalars().all()
@@ -125,6 +134,10 @@ async def test_retried_file_is_not_domain_completed(client: AsyncClient, session
     install_fake_queues(client)
 
     assert (await client.post("/pipeline/analysis-failed/retry")).status_code == 200
+
+    # phaze-5lq8a: the bulk trigger detaches its enqueue loop, whose restore session binds to this
+    # test's connection -- assert only once it has drained, or its savepoint churn races teardown.
+    await drain_router_background_tasks()
 
     session.expire_all()
     row = (await session.execute(select(AnalysisResult))).scalars().one()
