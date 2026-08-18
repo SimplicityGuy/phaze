@@ -176,20 +176,25 @@
         </p>
     </div>
 
-    <div class="mt-4 grid grid-cols-2 gap-4 border-t border-gray-200 p-6 dark:border-phaze-border lg:grid-cols-5">
+    <div class="mt-4 grid grid-cols-2 gap-4 border-t border-gray-200 p-6 dark:border-phaze-border lg:grid-cols-6">
         <div>
             <span class="{{ _eyebrow }}">Total</span>
             <p class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ stats.total }}</p>
         </div>
         {# phaze-tzy6s.17 / ADR-0008: these are proposal statuses, so they carry the operator
            vocabulary -- `pending` reads "Needs Review".
-           NOT fixed here, filed instead: `stats.approved` is `get_proposal_stats`'s
-           `count(case(status == APPROVED))` (proposal_queries.py:253), so it counts ONLY persisted
-           `approved` -- while ADR-0008's Approved state is `approved` OR `executed`. An executed
-           proposal is therefore absent from this card even though `total` counts it, so these four
-           numbers do not sum to Total. Correcting that means changing what the query returns (a
-           behavioural change, and this card is the Execute control's own "still to dispatch"
-           reading), so it is bead phaze-te2g3 rather than a relabel here. #}
+
+           phaze-te2g3 FIXED the accounting hole .17 filed here. `stats.approved` still counts ONLY
+           persisted `approved` -- on THIS card that is the right number, because Execute's question
+           is "what is still to dispatch", and folding ADR-0008's `approved OR executed` union into
+           it would count work this control has already done as work it is about to do. What was
+           actually broken is that `executed` was counted by `total` and by nothing else, so an
+           executed proposal vanished from every visible status while still inflating Total.
+           `stats.executed` below is that missing term, and the ADR now records the split.
+
+           The four status numbers still do not sum to Total when any proposal is `failed` (operator vocabulary:
+           Blocked) -- that count does not exist on ProposalStats yet. It is bead phaze-5uh4u, and
+           it is the ONLY remaining term. #}
         <div>
             <span class="{{ _eyebrow }}">Needs Review</span>
             <p class="text-xl font-semibold text-amber-600 dark:text-amber-400">{{ stats.pending }}</p>
@@ -197,6 +202,10 @@
         <div>
             <span class="{{ _eyebrow }}">Approved</span>
             <p class="text-xl font-semibold text-emerald-600 dark:text-emerald-300">{{ stats.approved }}</p>
+        </div>
+        <div>
+            <span class="{{ _eyebrow }}">Executed</span>
+            <p class="text-xl font-semibold text-gray-700 dark:text-gray-300">{{ stats.executed }}</p>
         </div>
         <div>
             <span class="{{ _eyebrow }}">Rejected</span>

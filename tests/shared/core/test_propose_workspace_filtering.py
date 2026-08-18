@@ -84,15 +84,16 @@ async def test_workspace_renders_filter_tabs_and_search(
     # Assert on each tab's DESTINATION rather than its visible word: "All"/"Pending" etc. occur in
     # unrelated chrome all over the shell, so a label-substring check would pass against a page with
     # no tabs at all.
-    for value in ("all", "pending", "approved", "rejected"):
+    for value in ("all", "pending", "approved", "executed", "rejected"):
         assert f"status={value}" in body, f"the {value} tab must render with its own filter URL"
 
     assert 'name="q"' in body, "the adopted search box must render"
     assert 'placeholder="Search by filename..."' in body
 
-    # The count badges are corpus-wide, not page-wide: 6 total / 3 pending / 2 approved / 1 rejected.
+    # The count badges are corpus-wide, not page-wide: 6 total / 3 pending / 2 approved / 0 executed
+    # / 1 rejected.
     badges = [chunk.split("<")[0].strip() for chunk in body.split('rounded-full px-2 py-0.5 ml-1">')[1:]]
-    assert badges == ["6", "3", "2", "1"], f"tab counts must be total/pending/approved/rejected, got {badges}"
+    assert badges == ["6", "3", "2", "0", "1"], f"tab counts must be total/pending/approved/executed/rejected, got {badges}"
 
 
 @pytest.mark.asyncio
@@ -186,6 +187,38 @@ async def test_propose_exposes_complete_candidate_values(
 
 
 @pytest.mark.asyncio
+async def test_executed_proposals_are_counted_by_a_tab_and_not_only_by_all(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """Regression (phaze-te2g3): an executed proposal is reachable and accounted for, not just totalled.
+
+    ``All`` is ``stats.total``, a plain ``count()`` over every row. Before this bead ``ProposalStats``
+    had no ``executed`` term at all, so an executed proposal inflated the All badge while appearing
+    under none of the other tabs and being reachable through none of them -- the badges beneath All
+    silently failed to account for it. The assertion that matters is the ARITHMETIC one: it fails on
+    the old query no matter which labels the tabs happen to carry.
+    """
+    await _seed_mixed(session, seed_pending_proposal)
+    executed = await seed_pending_proposal(0.9, original_filename="executed-0.mp3", proposed_filename="Executed 0.mp3")
+    await session.execute(update(RenameProposal).where(RenameProposal.id == executed.id).values(status=ProposalStatus.EXECUTED.value))
+    await session.commit()
+
+    body = (await client.get("/s/propose?status=all", headers=_LIST_TARGET)).text
+    badges = [int(chunk.split("<")[0].strip()) for chunk in body.split('rounded-full px-2 py-0.5 ml-1">')[1:]]
+    total, per_status = badges[0], badges[1:]
+    assert total == 7, f"the corpus is 3 pending + 2 approved + 1 executed + 1 rejected, got All={total}"
+    assert sum(per_status) == total, f"the per-status badges {per_status} do not account for All={total}"
+    assert per_status[2] == 1, "the executed proposal must be counted by the Executed tab"
+
+    # And the tab is a real filter, not a badge with nowhere to go.
+    only_executed = (await client.get("/s/propose?status=executed", headers=_LIST_TARGET)).text
+    assert "Executed 0.mp3" in only_executed
+    assert "Pending 0.mp3" not in only_executed and "Approved 0.mp3" not in only_executed
+
+
+@pytest.mark.asyncio
 async def test_status_filter_selects_the_matching_proposals(
     client: AsyncClient,
     session: AsyncSession,
@@ -231,7 +264,7 @@ async def test_tab_click_updates_active_underline_and_aria_current(
     tabs_markup = approved.split("</nav>")[0]
     assert tabs_markup.count('aria-current="page"') == 1, "exactly one tab may be announced current"
     blocks = {block.split("status=")[1].split("&")[0]: block for block in tabs_markup.split("<button")[1:]}
-    assert set(blocks) == {"all", "pending", "approved", "rejected"}
+    assert set(blocks) == {"all", "pending", "approved", "executed", "rejected"}
 
     assert 'aria-current="page"' in blocks["approved"], "the clicked (now-active) tab must be aria-current"
     assert "border-b-2 border-blue-600" in blocks["approved"], "the clicked tab must carry the active underline"

@@ -240,7 +240,7 @@ async def test_summary_independent_reads_run_in_parallel_under_the_shared_bound(
         return _progress(total=0)
 
     async def proposal_stats(_session: object) -> ProposalStats:
-        return ProposalStats(total=0, pending=0, approved=0, rejected=0, avg_confidence=None)
+        return ProposalStats(total=0, pending=0, approved=0, executed=0, rejected=0, avg_confidence=None)
 
     async def zero(_session: object) -> int:
         return 0

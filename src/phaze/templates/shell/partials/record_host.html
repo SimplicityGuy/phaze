@@ -120,7 +120,31 @@
                loaded file name (textContent is XSS-safe — no |e / no |tojson needed) or reset it
                to the generic default on a 404 (record_not_found.html has no <h2>, so the PREVIOUS
                file's aria-label must not persist), flip `loaded`, and move focus to the new
-               heading (off whatever the panel showed before). #}
+               heading (off whatever the panel showed before).
+
+               phaze-f65nu — the heading focus must WAIT FOR THE REVEAL, not merely follow the
+               `loaded` flip on the next statement. `loaded = true` is what reveals this element
+               through x-show, and `focus()` on a display:none element is a silent no-op, so the
+               original straight-line `loaded = true; h.focus();` left an aria-modal dialog open
+               with the keyboard operator still on the Details button that opened it -- inside the
+               subtree x-trap.inert had just marked inert (WCAG 2.4.3 / 4.1.2) -- and the refined
+               aria-label above, the only thing naming the file on screen, was never announced.
+
+               Deferring one tick is NOT enough, which is the trap here: hide()'s $nextTick idiom
+               below does not transplant. Alpine's x-show reveal is itself deferred
+               (clickAwayCompatibleShow -> setTimeout(show)) and lands on a LATER task than
+               anything this handler can queue. Measured in Chromium against the real app
+               (alpinejs 3.15.12): #record-body is still display:none in $nextTick, in a
+               setTimeout(0), in a nested setTimeout(0) AND in a requestAnimationFrame, and only
+               becomes visible ~13 ms after after-swap. So poll for the reveal instead of betting
+               on a queue ordering: getClientRects() is the same visibility primitive
+               paletteIsOpen()/nestedModalOpen() use above.
+
+               Both guards on the poll are load-bearing. `h.isConnected` drops the poll of an open
+               whose body has since been swapped out from under it, so a slow first open cannot
+               steal focus into a stale heading; and because a dismissed panel is never visible
+               again, an Esc during the wait simply runs the poll out rather than yanking focus
+               back off whatever hide() restored it to. #}
             <div id="record-body"
                  x-show="loaded"
                  hx-on::after-swap="if (window.Alpine) Alpine.initTree(this);
@@ -129,7 +153,14 @@
                                     if (h && dialog) { dialog.setAttribute('aria-label', 'File record: ' + h.textContent.trim()); }
                                     else if (dialog) { dialog.setAttribute('aria-label', 'File record'); }
                                     if (window.Alpine) Alpine.$data(this).loaded = true;
-                                    if (h) h.focus();"></div>
+                                    const body = this;
+                                    let framesLeft = 120;
+                                    const focusHeadingWhenShown = () => {
+                                        if (!h || !h.isConnected) return;
+                                        if (body.getClientRects().length > 0) { h.focus(); return; }
+                                        if (framesLeft-- > 0) requestAnimationFrame(focusHeadingWhenShown);
+                                    };
+                                    focusHeadingWhenShown();"></div>
         </div>
     </div>
 </div>
