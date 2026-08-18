@@ -171,3 +171,84 @@ async def test_the_palette_survives_a_stage_swap(page: Any, seed: Any) -> None:
         arg=NORWOOD,
         timeout=15_000,
     )
+
+
+async def test_a_command_outcome_is_not_destroyed_by_the_next_keystroke(page: Any, seed: Any) -> None:
+    """phaze-jng72: the ⌘K outcome live region survives a search swap AS THE SAME NODE.
+
+    The region used to be rendered by ``palette_results.html``, i.e. inside ``#cmdk-results`` — the
+    debounced search's ``hx-swap="innerHTML"`` target. Two things were wrong with that, and only
+    the first is visible to a markup assertion: the listbox owned a ``role="status"`` child (invalid
+    ARIA, axe critical), and every command outcome swapped into it was DELETED by the next
+    keystroke. A live region announces a mutation of a node the screen reader is already observing,
+    so a region that is replaced wholesale announces nothing — the operator got no feedback at all
+    from a ⌘K command.
+
+    Existence is therefore not the property to assert: a fresh, empty ``#cmdk-command-result``
+    re-rendered by the swap satisfies "it exists" while being exactly the bug. This holds a direct
+    JS reference to the node and an expando written onto it, neither of which can survive
+    re-rendering, and checks both after a swap the test proves actually happened.
+    """
+    await seed.file(filename=NORWOOD)
+    await seed.file(filename=HALCYON)
+
+    await open_shell(page)
+    await _open_palette(page)
+
+    await page.fill("#cmdk-dialog input[name='q']", "Norwood")
+    await page.wait_for_function(
+        """expected => document.getElementById('cmdk-results').textContent.includes(expected)""",
+        arg=NORWOOD,
+        timeout=15_000,
+    )
+
+    outside = await page.evaluate(
+        """() => {
+            const region = document.getElementById('cmdk-command-result');
+            const results = document.getElementById('cmdk-results');
+            return !!region && !!results && !results.contains(region);
+        }"""
+    )
+    assert outside, "#cmdk-command-result is inside #cmdk-results — the swap target destroys it on every keystroke"
+
+    # Stand in for a command's hx-swap into the region (the real command posts to /pipeline/* behind
+    # an hx-confirm; what is under test is the region's survival, not the pipeline).
+    await page.evaluate(
+        """() => {
+            const region = document.getElementById('cmdk-command-result');
+            region.innerHTML = 'Queued for analysis.';
+            region.dataset.jng72 = 'stamped';
+            window.__cmdkOutcomeNode = region;
+        }"""
+    )
+
+    # A keystroke that demonstrably re-swaps #cmdk-results.
+    await page.fill("#cmdk-dialog input[name='q']", "Halcyon")
+    await page.wait_for_function(
+        """expected => document.getElementById('cmdk-results').textContent.includes(expected)""",
+        arg=HALCYON,
+        timeout=15_000,
+    )
+    await page.wait_for_function(
+        """gone => !document.getElementById('cmdk-results').textContent.includes(gone)""",
+        arg=NORWOOD,
+        timeout=15_000,
+    )
+
+    after = await page.evaluate(
+        """() => {
+            const region = document.getElementById('cmdk-command-result');
+            return {
+                present: !!region,
+                same_node: region === window.__cmdkOutcomeNode,
+                stamped: region ? region.dataset.jng72 === 'stamped' : false,
+                text: region ? region.textContent.trim() : null,
+            };
+        }"""
+    )
+    assert after["present"], "the ⌘K outcome live region vanished after a search swap"
+    assert after["same_node"], (
+        "the ⌘K outcome live region was REPLACED by the search swap — an announcement made into it is destroyed before it is read"
+    )
+    assert after["stamped"], "the ⌘K outcome live region lost its node identity across the swap"
+    assert after["text"] == "Queued for analysis.", f"the announced command outcome was wiped by the next keystroke: {after['text']!r}"
