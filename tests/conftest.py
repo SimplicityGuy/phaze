@@ -386,6 +386,32 @@ def _savepoint_order_violations(conn: AsyncConnection) -> list[str]:
     return list(state["violations"]) if state else []
 
 
+async def _finalize_shared_connection_session(s: AsyncSession, leaked: list[asyncio.Task[Any]], violations: list[str], rollback: Any = None) -> None:
+    """Close a session bound to the shared connection, then report what corrupted it (phaze-5lq8a).
+
+    ``rollback`` is :func:`session`'s outer-transaction rollback and is omitted by :func:`verify`,
+    which owns no outer transaction.
+
+    THE ORDERING IS THE POINT, and it is why this is a function rather than four inline lines.
+    ``s.close()`` is exactly what raises when another session on the connection released a savepoint
+    out of order, and the previous ``await s.close()`` / ``await outer.rollback()`` pair ran them
+    SEQUENTIALLY -- so a raising close skipped the rollback entirely and the per-test outer
+    transaction was left open on a connection about to be handed back. The hermeticity contract
+    (D-06/D-07) says that rollback ALWAYS runs; `finally` is what makes that true.
+
+    Raising the diagnosis from the same ``finally`` is deliberate too: Python keeps the close's
+    exception as this one's ``__context__``, so the asyncpg evidence is preserved under a headline
+    that names the cause. Nothing is swallowed.
+    """
+    try:
+        await s.close()
+    finally:
+        if rollback is not None:
+            await rollback()
+        if leaked or violations:
+            raise AssertionError(_shared_connection_failure_message(leaked, violations))
+
+
 def _shared_connection_failure_message(leaked: list[asyncio.Task[Any]], violations: list[str]) -> str:
     """Name the cause at the fixture that is about to fail because of it (phaze-5lq8a).
 
@@ -470,14 +496,10 @@ async def session(_db_connection: AsyncConnection, _route_stats_fanout: None) ->
         # back, and by then the diagnosis has to already be in hand. See `_watch_savepoint_order`.
         leaked = pending_router_background_tasks()
         violations = _savepoint_order_violations(_db_connection)
-        try:
-            await s.close()
-        finally:
-            # The outer rollback is the hermeticity contract (D-06/D-07) and must run even when the
-            # close above raised -- previously a raising close skipped it entirely.
-            await outer.rollback()
-            if leaked or violations:
-                raise AssertionError(_shared_connection_failure_message(leaked, violations))
+        # The outer rollback is the hermeticity contract (D-06/D-07) and must run even when the close
+        # raises -- previously a raising close skipped it entirely. Pinned by
+        # `tests/shared/test_conftest_hermeticity.py::test_the_outer_rollback_runs_even_when_the_close_raises`.
+        await _finalize_shared_connection_session(s, leaked, violations, rollback=outer.rollback)
 
 
 @pytest_asyncio.fixture
@@ -510,11 +532,7 @@ async def verify(session: AsyncSession, _db_connection: AsyncConnection) -> Asyn
         # be named. Sampled before the close for the same reason as in `session`.
         leaked = pending_router_background_tasks()
         violations = _savepoint_order_violations(_db_connection)
-        try:
-            await s.close()
-        finally:
-            if leaked or violations:
-                raise AssertionError(_shared_connection_failure_message(leaked, violations))
+        await _finalize_shared_connection_session(s, leaked, violations)
 
 
 @pytest_asyncio.fixture
