@@ -278,15 +278,26 @@ Or use rsync, ansible, or any one-time file transfer mechanism. The operator-dis
 ## Step 3 — Register an agent and mint a token
 
 On the **app-server host**, run the bundled `phaze agents add` management CLI (it
-ships with the application image; run it inside the API container or any
+ships with the application image; run it inside the API container, or any
 environment that has the `phaze` package installed and `DATABASE_URL` configured):
 
 ```bash
-phaze agents add \
+docker compose exec api uv run phaze agents add \
     --id fileserver-east \
     --name "File Server East" \
     --scan-roots /data/music,/data/concerts
 ```
+
+> **`uv run` is required, not optional (phaze-u5k0d).** The `api`/`worker` containers' `CMD`
+> is `uv run ...` — the project resolves through uv's environment rather than an installed
+> system Python — so a bare `docker compose exec api phaze agents add ...` fails with
+> `executable file not found in $PATH` (verified against a deployed container, image
+> `2026.8.4`, 2026-08-17; same defect as `docs/runbook.md`'s "Stranded `active` SAQ jobs"
+> section). The image also now puts the venv's `bin/` on `PATH`, so the bare form works too
+> if you type it from memory — `uv run` is kept here anyway because it's correct regardless
+> of that `PATH` env change. Outside the container (a host or CI environment with `phaze`
+> `pip`/`uv`-installed directly and `DATABASE_URL` reachable), drop the `docker compose exec
+> api uv run` prefix and just run `phaze agents add ...`.
 
 The CLI mints a strong bearer token, stores only its sha256 hash in the `agents`
 table, and prints two things you need:

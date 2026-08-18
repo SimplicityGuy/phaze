@@ -627,7 +627,11 @@ async def _build_summary_context(app_state: Any, session: AsyncSession) -> dict[
             # get_stage_progress already owns its bounded per-node sessions; wrapping it would hold
             # a semaphore slot while its children wait for that same semaphore.
             get_stage_progress(session),
-            _read_in_own_session(fanout, get_proposal_stats, ProposalStats(total=0, pending=0, approved=0, rejected=0, avg_confidence=None)),
+            _read_in_own_session(
+                fanout,
+                get_proposal_stats,
+                ProposalStats(total=0, pending=0, approved=0, executed=0, rejected=0, failed=0, avg_confidence=None),
+            ),
             _read_in_own_session(fanout, get_analysis_stalled_count, 0),
             _read_in_own_session(fanout, get_inadmissible_count, 0),
             _read_in_own_session(fanout, get_awaiting_cloud_count, 0),

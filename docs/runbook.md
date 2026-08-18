@@ -267,8 +267,18 @@ keying 2,411 files that had never been analyzed.
 Read the queue:
 
 ```bash
-phaze queue status --queue phaze-agent-<agent>-analyze
+docker compose exec api uv run phaze queue status --queue phaze-agent-<agent>-analyze
 ```
+
+> **`uv run` is required, not optional (phaze-u5k0d).** Every `phaze <subcommand>` example in
+> this runbook runs inside the `api` (or `worker`) container via `docker compose exec`, and
+> needs the `uv run` prefix: the container's `CMD` is `uv run uvicorn ...`, i.e. the project
+> resolves through uv's environment rather than an installed system Python, so a bare
+> `docker compose exec api phaze ...` fails with `executable file not found in $PATH`
+> (verified against a deployed container, image `2026.8.4`, 2026-08-17). The Dockerfile also
+> now puts the venv's `bin/` on `PATH` (phaze-u5k0d) so the bare form works too if you type it
+> from memory; `uv run` is kept in this runbook anyway because it is correct independent of
+> that `PATH` env change.
 
 `stranded` is the count of rows past their own job timeout plus `PHAZE_ACTIVE_REAP_SLACK_SECONDS`
 — exactly what `reap_stranded_active_jobs` will delete on its next minute tick. The command **exits
@@ -296,9 +306,13 @@ it needs one operator action. After deploying:
 1. Confirm the reaper is running and the count is falling:
 
    ```bash
-   phaze queue status --queue phaze-agent-<agent>-analyze   # watch `stranded` drop toward 0
-   docker compose logs controller | grep "stranded 'active' jobs reaped"
+   docker compose exec api uv run phaze queue status --queue phaze-agent-<agent>-analyze   # watch `stranded` drop toward 0
+   docker compose logs worker | grep "stranded 'active' jobs reaped"
    ```
+
+   (`worker` — not `controller`, which is not a compose service name; `docker-compose.yml`'s
+   `worker` service is the one that runs `PHAZE_ROLE=control`, i.e. the controller role.
+   phaze-u5k0d.)
 
    The log line names every released key, so it is also the record of which files were unblocked.
 
@@ -456,8 +470,11 @@ From the `api` (or `worker` — both build from the same `Dockerfile`, both have
 `PHAZE_QUEUE_URL` / `PHAZE_REDIS_URL` wired) container:
 
 ```bash
-docker compose exec api phaze backfill reenqueue-incomplete-analyses
+docker compose exec api uv run phaze backfill reenqueue-incomplete-analyses
 ```
+
+> `uv run` is required here, not optional — see the phaze-u5k0d note under
+> ["Stranded `active` SAQ jobs"](#stranded-active-saq-jobs-phaze-o0n6) above for why.
 
 The command prints, in order: the count of pre-Phase-43 legacy rows it is deliberately leaving
 alone (all four windows columns NULL — see the module docstring for why), the count of
