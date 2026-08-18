@@ -366,6 +366,92 @@ def _blocking_client(container: str, index: int) -> None:
 
 
 # ---------------------------------------------------------------------------------------------
+# Reachability probe (phaze-yq7jk) — phaze-nu09o
+#
+# The top-level `docker exec "$redis_container" redis-cli PING` probe retries up to three times,
+# 0.3s apart, before declaring Redis unreachable. It exists because a single `docker exec` can fail
+# against a container that is up and answering — observed with four suites in flight, where it
+# turned an `allocate` that should have refused with the exhaustion message into the false
+# diagnosis "not reachable, start the harness with `just test-db`" about a harness already running.
+# `_fail_first_ping_then_succeed` forces that exact window deterministically: a PATH shim answers
+# the probe's own first `docker exec ... redis-cli PING` itself (no output, exit 1) and forwards
+# every later one — matched, not counted, so the loop's OWN retries are what recovers — to the real
+# `docker` binary.
+# ---------------------------------------------------------------------------------------------
+
+
+def _fail_first_ping_then_succeed(tmp_path: Path) -> dict[str, str]:
+    """Env that fails the reachability probe's first `redis-cli PING` and lets later ones through.
+
+    Matches on the literal ``"redis-cli PING"`` — the probe's exact call, with no ``-n`` flag and no
+    other arguments. Nothing else in the script produces that substring: `registry_cli` always
+    passes ``-n 0`` first, and the other bare `redis-cli` calls (`TIME`, `CONFIG GET databases`)
+    have their own distinct trailing tokens. So this shim cannot fire on any call except the probe.
+    """
+    real_docker = shutil.which("docker")
+    assert real_docker is not None, "the module-level skip should have caught this"
+
+    bin_dir = tmp_path / "ping-fail-shim"
+    bin_dir.mkdir()
+    counter = tmp_path / "ping_calls"
+    shim = bin_dir / "docker"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f"counter={shlex.quote(str(counter))}\n"
+        'case " $* " in\n'
+        '  *"redis-cli PING"*)\n'
+        '    seen=$(( $(cat "$counter" 2>/dev/null || echo 0) + 1 ))\n'
+        '    printf %s "$seen" >"$counter"\n'
+        '    if [ "$seen" -eq 1 ]; then exit 1; fi\n'
+        "    ;;\n"
+        "esac\n"
+        f'exec {shlex.quote(real_docker)} "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+
+
+def test_a_transient_first_ping_failure_is_retried_and_not_reported_as_unreachable(registry: str, tmp_path: Path) -> None:
+    """phaze-yq7jk: one failed `docker exec ... PING` against a live Redis must not become
+    "not reachable, start the harness with `just test-db`" about a harness that is already running.
+
+    Deterministic reproduction of the phaze-b2qs9 contention, not a sleep racing a real concurrent
+    `docker exec`: the shim fails the probe's first attempt itself and forwards the second to the
+    real, live `throwaway_redis`, so the retry loop's own second iteration is what has to recover —
+    exactly the window the fix added. Proven to fail against the pre-fix script: checked out at
+    ``cac798b2^`` (the single, un-retried `docker exec ... redis-cli PING`), the identical shim and
+    command exit 1 with the "not reachable" message this test asserts is absent — see the bead
+    report for the manual run, since that revision is not what this suite exercises.
+    """
+    env = _fail_first_ping_then_succeed(tmp_path)
+
+    result = _run(registry, "list", "--capacity", str(_CAPACITY), env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert "not reachable" not in result.stderr
+    seen = int((tmp_path / "ping_calls").read_text())
+    assert seen >= 2, "the fix's own retry loop must have made a second PING attempt to recover"
+
+
+def test_a_genuinely_absent_redis_container_still_fails_fast_with_the_unreachable_message(tmp_path: Path) -> None:
+    """The other direction the same acceptance criteria asks for, pinned next to the retry above.
+
+    No `throwaway_redis` fixture: the container name is one nothing will ever answer to, so this is
+    the genuinely-absent path at real `docker` speed, with no shim of any kind — the probe's own
+    three attempts, ~0.3s apart, all fail against a container Docker has never heard of, and the
+    script still exits with the same operator-facing diagnosis the retry loop exists to reserve for
+    this case alone.
+    """
+    result = _run("phaze-seatreg-test-container-does-not-exist", "list", "--capacity", str(_CAPACITY))
+
+    assert result.returncode == 1
+    assert "not reachable" in result.stderr
+    assert "just test-db" in result.stderr
+
+
+# ---------------------------------------------------------------------------------------------
 # Allocation
 # ---------------------------------------------------------------------------------------------
 
