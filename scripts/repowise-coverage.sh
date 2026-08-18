@@ -16,7 +16,9 @@
 # record(s)", `repowise coverage status` then shows a populated map, and yet line_coverage_pct
 # stays null and the untested_hotspot biomarker keeps firing on 96-100%-covered files. So this
 # script never exits 0 on that state -- `scripts/repowise_coverage_gate.py` re-reads repowise's own
-# status at the end and fails closed on it, and on any index/coverage commit skew.
+# status at the end and fails closed on it, on any index/coverage commit skew, and on a report whose
+# files did not all map into the index (which `repowise coverage add` reports as a note, not an
+# error -- a 1-of-249 ingest otherwise looks entirely healthy).
 #
 # Usage: repowise-coverage.sh [seat-name]
 #   with a seat name    provisions an isolated test DB + Redis index via `just test-db-for <seat>`
@@ -200,4 +202,5 @@ repowise status --format json >"${tmpdir}/index-status.json"
 uv run python scripts/repowise_coverage_gate.py \
   --coverage-status "${tmpdir}/coverage-status.json" \
   --index-status "${tmpdir}/index-status.json" \
+  --coverage-xml coverage.xml \
   --expected-commit "$head_before"

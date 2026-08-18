@@ -246,3 +246,120 @@ def test_non_json_status_file_fails_closed(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="no JSON object"):
         module.main(["--coverage-status", str(broken), "--index-status", str(index_status), "--expected-commit", _HEAD])
+
+
+_COBERTURA = """<?xml version="1.0" ?>
+<coverage version="7.6.1">
+  <packages>
+    <package name="phaze">
+      <classes>
+        <class name="shell.py" filename="src/phaze/routers/shell.py" line-rate="0.96"/>
+        <class name="pipeline.py" filename="src/phaze/services/pipeline.py" line-rate="0.99"/>
+        <class name="dupe.py" filename="src/phaze/services/pipeline.py" line-rate="0.99"/>
+      </classes>
+    </package>
+  </packages>
+</coverage>
+"""
+
+
+def test_report_file_count_counts_distinct_filenames(tmp_path: Path) -> None:
+    """Two <class> entries for one file (a module with several classes) count once."""
+    module = _load_gate_module()
+    report = tmp_path / "coverage.xml"
+    report.write_text(_COBERTURA, encoding="utf-8")
+
+    assert module.count_report_files(report) == 2
+
+
+def test_fragment_ingest_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """TRAP 3: coverage.xml listed more files than mapped into the index.
+
+    Hit for real while verifying this recipe: ``repowise coverage add`` mapped 1 of 249 files,
+    printed "248 report file(s) did not map to the repo tree" as a NOTE, and exited 0. The stored
+    line_coverage_pct was real and the map was populated, so every emptiness check passed while the
+    ingested coverage described a single file.
+    """
+    module = _load_gate_module()
+    report = tmp_path / "report.xml"
+    report.write_text(_COBERTURA, encoding="utf-8")
+    coverage_status = _write(
+        tmp_path,
+        "coverage-status.json",
+        {"indexed": True, "coverage": _coverage_block(file_count=1), "test_map": _test_map_block()},
+    )
+    index_status = _write(tmp_path, "index-status.json", {"indexed": True, "state": {"last_sync_commit": _HEAD}})
+
+    exit_code = module.main(
+        [
+            "--coverage-status",
+            str(coverage_status),
+            "--index-status",
+            str(index_status),
+            "--expected-commit",
+            _HEAD,
+            "--coverage-xml",
+            str(report),
+        ]
+    )
+
+    assert exit_code == 1
+    assert "only 1 of the 2 file(s) in coverage.xml mapped" in capsys.readouterr().err
+
+
+def test_full_mapping_passes(tmp_path: Path) -> None:
+    """Every file in the report mapped -> no trap-3 failure."""
+    module = _load_gate_module()
+    report = tmp_path / "report.xml"
+    report.write_text(_COBERTURA, encoding="utf-8")
+    coverage_status = _write(
+        tmp_path,
+        "coverage-status.json",
+        {"indexed": True, "coverage": _coverage_block(file_count=2), "test_map": _test_map_block()},
+    )
+    index_status = _write(tmp_path, "index-status.json", {"indexed": True, "state": {"last_sync_commit": _HEAD}})
+
+    assert (
+        module.main(
+            [
+                "--coverage-status",
+                str(coverage_status),
+                "--index-status",
+                str(index_status),
+                "--expected-commit",
+                _HEAD,
+                "--coverage-xml",
+                str(report),
+            ]
+        )
+        == 0
+    )
+
+
+def test_stale_rows_above_the_report_count_are_not_a_failure(tmp_path: Path) -> None:
+    """repowise upserts rather than replaces, so leftovers from an earlier report may exceed it."""
+    module = _load_gate_module()
+    report = tmp_path / "report.xml"
+    report.write_text(_COBERTURA, encoding="utf-8")
+    coverage_status = _write(
+        tmp_path,
+        "coverage-status.json",
+        {"indexed": True, "coverage": _coverage_block(file_count=249), "test_map": _test_map_block()},
+    )
+    index_status = _write(tmp_path, "index-status.json", {"indexed": True, "state": {"last_sync_commit": _HEAD}})
+
+    assert (
+        module.main(
+            [
+                "--coverage-status",
+                str(coverage_status),
+                "--index-status",
+                str(index_status),
+                "--expected-commit",
+                _HEAD,
+                "--coverage-xml",
+                str(report),
+            ]
+        )
+        == 0
+    )
