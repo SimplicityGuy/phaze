@@ -765,6 +765,46 @@ def test_release_refuses_while_a_client_is_connected(registry: str, tmp_path: Pa
     assert _allocated_seats(registry) == {}
 
 
+def test_release_refused_by_a_connected_client_leaves_the_highwater_mark_untouched(registry: str, tmp_path: Path) -> None:
+    """A REFUSED release must not mutate anything -- not even a key its own output never mentions.
+
+    ``cmd_release`` used to call ``raise_highwater`` unconditionally, before ANY of its refusal
+    checks (L1 here, L2 further down). So a release that declined to free anything -- and said so,
+    with "nothing was cleared" on stderr -- had nonetheless written to
+    ``phaze:test:redis-db-counter`` in DB 0. The effect was always benign (the mark only ever
+    rises, and only to values genuinely present in the registry, so it could never cause a wrong
+    allocation), but a command that reports no action while having mutated the registry is a
+    surprise worth removing (phaze-4xsbe).
+
+    Fails against the pre-fix revision (7716938e, where ``raise_highwater`` ran at the top of
+    ``cmd_release`` before the L1 check below): naively releasing an ``allocate``d seat does NOT
+    reproduce the defect, because ``allocate`` already raises the mark to cover the index it just
+    handed out, so a pre-fix release's redundant raise is a no-op and the bug is invisible. The
+    entry here bypasses ``allocate`` entirely (``HSET`` straight into the registry, the same
+    "legacy" shape ``test_releasing_the_top_seat_of_a_pre_existing_registry_still_raises_the_mark``
+    uses), so nothing has raised the mark for it yet and a pre-fix run's unconditional raise moves
+    it from unset straight to this entry's index -- on a call that refuses and clears nothing.
+    After the fix the raise lives inside ``free_seat``'s own atomic script (see
+    ``FREE_SEAT_LUA``'s comment) and is reached only on an actual free, so a refusal -- from L1
+    here, from L2, or from ``free_seat``'s own compare-and-delete losing a race -- leaves this key
+    exactly as it found it, the same way ``reclaim``'s dry run does (see
+    ``test_reclaim_is_a_dry_run_until_apply``).
+    """
+    index = 2
+    _registry_cli(registry, "HSET", _REGISTRY_KEY, "seat_legacy_busy", str(index))
+    _blocking_client(registry, index)
+    assert _registry_cli(registry, "GET", _HIGHWATER_KEY) == "", (
+        "the fixture starts with no mark, and this entry bypassed `allocate` so nothing has raised it yet"
+    )
+
+    refused = _run(registry, "release", "--seat", "seat_legacy_busy", "--capacity", str(_CAPACITY))
+
+    assert refused.returncode == 4, refused.stderr
+    assert _registry_cli(registry, "GET", _HIGHWATER_KEY) == "", (
+        "a refused release must leave the high-water mark exactly as it found it, the same as a refused reclaim does"
+    )
+
+
 # ---------------------------------------------------------------------------------------------
 # Reclaim — the sweep, and what it refuses to do
 # ---------------------------------------------------------------------------------------------

@@ -109,10 +109,15 @@
 #                               is what makes "prefer an index nobody has ever held" true --
 #                               deriving that mark from the CURRENTLY REGISTERED entries collapses
 #                               it the moment the top seat is freed (phaze-08sww). It only ever
-#                               RISES: `allocate` raises it when it hands out a fresh index, and
-#                               `release` and `reclaim --apply` raise it to cover everything still
-#                               registered BEFORE they free anything, because freeing is what erases
-#                               the evidence. Keeping the same key also keeps an older checkout's
+#                               RISES: `allocate` raises it when it hands out a fresh index; a
+#                               non-`--force` `release` raises it atomically inside the SAME EVAL
+#                               that frees the seat, immediately before the delete, so a REFUSED
+#                               release (L1/L2 live, or free_seat's own compare-and-delete losing
+#                               the race) leaves this key untouched (phaze-4xsbe; see FREE_SEAT_LUA's
+#                               comment) -- `--force` and `reclaim --apply` raise it via a separate,
+#                               prior EVAL instead, which is safe for them because neither has a
+#                               refusal path left to reach once it starts freeing. Keeping the same
+#                               key also keeps an older checkout's
 #                               `INCR`-based `test-db-for` behaving sanely against the same
 #                               container -- and a mark left at 68/73/80 by the counter era is not
 #                               clamped, because it is telling the truth: in a 64-database space
@@ -508,6 +513,17 @@ cmd_allocate() {
 # the reason it always did: if the CAS declines (the seat moved or was restamped), nothing must be
 # destroyed, so the flush is reached only after the delete has already succeeded.
 #
+# The high-water raise (phaze-4xsbe) is folded in here too, not issued as a prior separate EVAL: it
+# runs AFTER the CAS checks above and BEFORE the HDELs below, so it is reached if and only if this
+# script is about to actually free the seat. `cmd_release` used to call `raise_highwater` before any
+# of this -- including before the L1/L2 liveness checks that can still refuse the release outright
+# -- so a release that declined to do anything had nonetheless written to the registry. The mark
+# must still be raised BEFORE the delete and not after: once the HDELs below run, this entry no
+# longer appears in the HGETALL scan, and a registry entry written before the mark existed (the
+# `INCR`-era counter, see the header) is the one case this raise exists to cover at all. Folding it
+# into the same atomic script gets both properties at once -- raised before the entry disappears,
+# but only when the entry is genuinely about to disappear.
+#
 # What this does NOT close (documented per phaze-atu2e review finding 2, not fixed): the L1
 # `CLIENT LIST` re-verification a few lines below is its OWN separate `docker exec`, issued BEFORE
 # this EVAL, so a client that connects to the freed index in that sub-second gap is still flushed.
@@ -517,7 +533,7 @@ cmd_allocate() {
 # real, is not covered by any test, and is narrower than the one this bead closes -- but it is not
 # nothing, so do not assume `free_seat` is race-free end to end.
 readonly FREE_SEAT_LUA='
-local reg, seen, origin_key = KEYS[1], KEYS[2], KEYS[3]
+local reg, seen, origin_key, highwater_key = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
 local seat, expected_index, expected_seen, cap = ARGV[1], ARGV[2], ARGV[3], tonumber(ARGV[4])
 
 local current_index = redis.call("HGET", reg, seat)
@@ -527,6 +543,15 @@ if current_index ~= expected_index then return "moved" end
 local current_seen = redis.call("HGET", seen, seat)
 if current_seen == false then current_seen = "" end
 if current_seen ~= expected_seen then return "restamped" end
+
+local stored_highwater = tonumber(redis.call("GET", highwater_key)) or 0
+local highwater = stored_highwater
+local flat = redis.call("HGETALL", reg)
+for i = 1, #flat, 2 do
+  local value = tonumber(flat[i + 1])
+  if value and value < cap and value > highwater then highwater = value end
+end
+if highwater > stored_highwater then redis.call("SET", highwater_key, highwater) end
 
 redis.call("HDEL", reg, seat)
 redis.call("HDEL", seen, seat)
@@ -592,7 +617,7 @@ free_seat() {
   # delete, whether the freed index is in range to flush (phaze-atu2e). Nothing outside this one
   # EVAL touches logical DB `index` on the success path any more.
   local verdict
-  verdict="$(registry_cli EVAL "$FREE_SEAT_LUA" 3 "$REGISTRY_KEY" "$SEEN_KEY" "$ORIGIN_KEY" "$name" "$raw" "$expected_seen" "$cap")"
+  verdict="$(registry_cli EVAL "$FREE_SEAT_LUA" 4 "$REGISTRY_KEY" "$SEEN_KEY" "$ORIGIN_KEY" "$HIGHWATER_KEY" "$name" "$raw" "$expected_seen" "$cap")"
   case "$verdict" in
     freed) ;;
     vanished)
@@ -663,12 +688,12 @@ cmd_release() {
   local freed_what="Redis logical DB ${index}"
   [ "$index" -ge 1 ] || freed_what="corrupt registry entry '${raw}'"
 
-  # Before either path frees anything: releasing the top seat must not lose the record that its
-  # index was handed out, or the next allocation recycles it instead of taking a fresh one
-  # (phaze-08sww).
-  raise_highwater "$cap"
-
   if [ "$force" -eq 1 ]; then
+    # Before the free, not after: releasing the top seat must not lose the record that its index
+    # was handed out, or the next allocation recycles it instead of taking a fresh one
+    # (phaze-08sww). --force always reaches the free below, so raising here is never observed on a
+    # refusal path -- there is no refusal path once --force is given.
+    raise_highwater "$cap"
     free_seat_unconditionally "$seat" "$index" "$cap"
     echo "✅ released ${freed_what} from '${seat}' (keys cleared, index free for the next seat)"
     return 0
@@ -701,6 +726,12 @@ cmd_release() {
   # Conditional even here: the checks above are a snapshot too, just a much fresher one. The
   # compare-and-delete gets `raw`, not `index` -- it has to match the registry byte for byte, and a
   # corrupt value sanitized to 0 would never match itself.
+  # `free_seat` raises the high-water mark itself, atomically, inside FREE_SEAT_LUA, immediately
+  # before the HDELs it performs on success (see that script's comment) -- so a refusal here, exactly
+  # like a refusal from L1/L2 above or reclaim's dry run (`[ "$apply" -ne 1 ] || raise_highwater
+  # "$cap"` below), leaves the registry untouched. There is deliberately no separate raise_highwater
+  # call on this path (phaze-4xsbe): a second, non-atomic EVAL here would reopen the exact window
+  # this fix closes -- refuse first, mutate never.
   if ! free_seat "$seat" "$index" "$cap" "$seen_at" "$raw"; then
     echo "❌ Did not release '${seat}': ${free_seat_refusal}." >&2
     echo "   Nothing was cleared. Re-run \`just test-db-seats\` to see where the seat stands now." >&2
