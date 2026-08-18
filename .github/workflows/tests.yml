@@ -160,8 +160,12 @@ jobs:
             echo "restore-prefix=ffmpeg-debs-${ImageOS:-unknown}-"
           } >> "${GITHUB_OUTPUT}"
 
-      # All 11 shards restore the same cache and all 11 attempt to save it; the 10 losers log
-      # "Cache already exists" as a WARNING, not a failure. That is expected, not a defect.
+      # All 11 shards restore the same cache and all 11 attempt to save it. Exactly one wins;
+      # the other 10 log `Failed to save: Unable to reserve cache with key ffmpeg-debs-...,
+      # another job may be creating this cache` as a WARNING and the job still succeeds
+      # (observed on run 32087180315, the cold-cache run that verified this step). That line is
+      # the expected outcome of a concurrent save, not a defect -- do not "fix" it by serialising
+      # the save into its own job.
       - name: 🎬 Restore the cached ffmpeg .deb closure
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -216,6 +220,14 @@ jobs:
         # exit status, and a 124 is reported as a timeout while any other status is reported as a
         # real apt error -- because if apt is genuinely erroring, more budget fixes nothing and the
         # log has to say so instead of blaming availability.
+        #
+        # VERIFIED on run 32087180315 (PR #444), cold cache, all 11 shards green on the ffmpeg step
+        # at the first attempt. `apt-get download` alone took 4 / 17 / 46 / 50 / 53 / 76 / 84 / 93 /
+        # 111 / 148 / 179 s across the shards -- FOUR of them past the old 90s per-phase bound on a
+        # day the mirror was otherwise healthy, which is how thin that bound always was. The `review`
+        # shard reproduced this bead's failure exactly: `apt-get update` killed at its bound (exit
+        # 124) on attempts 1 AND 2, then succeeded in 5s on attempt 3 and downloaded in 53s. Under
+        # the old shape those two stalls were the whole retry budget.
         #
         # Deliberately NOT solved by falling back to MetadataReader when ffprobe is missing --
         # that fallback returns 0 for Matroska, which is the exact defect phaze-l832u fixed. A host
