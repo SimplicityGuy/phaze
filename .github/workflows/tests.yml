@@ -24,12 +24,12 @@ env:
   # FFMPEG_VERSION is the upstream release branch and is documentation for the reader; the TAG
   # and ASSET are what actually resolve, and the checksum is what makes it safe.
   #
-  # Deliberately NOT cached. The apt path was cached because it fetched an 87-package closure
-  # from a mirror that could degrade; this fetches one file from GitHub's own release CDN --
-  # the same host the runner already talks to for checkout and actions -- with curl retries.
-  # A cache would add a key-correctness problem (a stale entry serving the previous version)
-  # to buy very little. If download time ever becomes the bottleneck, add caching keyed on
-  # FFMPEG_RELEASE_TAG + FFMPEG_ASSET so a version bump can never hit a stale entry.
+  # CACHED, and the cache key is what makes a version bump safe. The key contains the RELEASE
+  # TAG and the ASSET NAME, so a bumped version resolves to a different key and simply misses --
+  # a stale entry from the previous version can never be served. There is deliberately NO
+  # `restore-keys` prefix fallback: a partial match is exactly the failure this design must not
+  # have, because it would hand back a DIFFERENT build under the new version's name. A miss
+  # costs one 126 MB download; a wrong hit costs a silently wrong toolchain.
   FFMPEG_VERSION: "8.1"
   FFMPEG_RELEASE_TAG: "autobuild-2026-08-17-13-05"
   FFMPEG_ASSET: "ffmpeg-n8.1.2-44-g7c533d0f86-linux64-gpl-8.1.tar.xz"
@@ -159,6 +159,18 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # phaze-m3qte: keyed on the RELEASE TAG + ASSET NAME, so a version bump lands on a new key
+      # and misses cleanly. No `restore-keys`: a prefix fallback would serve the PREVIOUS build
+      # under the new version's name, which is the one outcome this pinning exists to prevent.
+      # The cached payload is the two binaries, not the tarball -- nothing has to be unpacked on
+      # a hit, and the 126 MB download is skipped entirely on 12 of the 13 shards.
+      - name: 🎬 Restore the pinned ffmpeg binaries
+        id: ffmpeg-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/ffmpeg-bin
+          key: ffmpeg-${{ env.FFMPEG_RELEASE_TAG }}-${{ env.FFMPEG_ASSET }}
+
       - name: 🎬 Install ffmpeg
         # phaze-l832u: `analysis.py::_probe_duration_sec` shells out to `ffprobe` (D-10), so the
         # analysis path now needs the BINARY, not just essentia's bundled decode libraries. Before
@@ -208,6 +220,17 @@ jobs:
             exit 0
           fi
 
+          # Cache hit: the binaries are already the pinned build, because the key names the tag
+          # and the asset. Install and skip the network entirely.
+          if [ -x "${HOME}/ffmpeg-bin/ffprobe" ] && [ -x "${HOME}/ffmpeg-bin/ffmpeg" ]; then
+            echo "restored from cache: ffmpeg-${FFMPEG_RELEASE_TAG}-${FFMPEG_ASSET}"
+            sudo install -m 0755 "${HOME}/ffmpeg-bin/ffmpeg" /usr/local/bin/ffmpeg
+            sudo install -m 0755 "${HOME}/ffmpeg-bin/ffprobe" /usr/local/bin/ffprobe
+            ffmpeg -version | head -1
+            ffprobe -version | head -1
+            exit 0
+          fi
+
           url="https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_RELEASE_TAG}/${FFMPEG_ASSET}"
           echo "::group::download ${FFMPEG_ASSET}"
           started=${SECONDS}
@@ -232,8 +255,13 @@ jobs:
             echo "::error::could not unpack ${FFMPEG_ASSET} -- the archive verified but is not usable." >&2
             exit 1
           fi
-          sudo install -m 0755 "/tmp/${FFMPEG_ASSET%.tar.xz}/bin/ffmpeg" /usr/local/bin/ffmpeg
-          sudo install -m 0755 "/tmp/${FFMPEG_ASSET%.tar.xz}/bin/ffprobe" /usr/local/bin/ffprobe
+          # Populate the cache directory from the VERIFIED extraction, then install from it, so
+          # the bytes that get cached are the same bytes this run is about to use.
+          mkdir -p "${HOME}/ffmpeg-bin"
+          install -m 0755 "/tmp/${FFMPEG_ASSET%.tar.xz}/bin/ffmpeg" "${HOME}/ffmpeg-bin/ffmpeg"
+          install -m 0755 "/tmp/${FFMPEG_ASSET%.tar.xz}/bin/ffprobe" "${HOME}/ffmpeg-bin/ffprobe"
+          sudo install -m 0755 "${HOME}/ffmpeg-bin/ffmpeg" /usr/local/bin/ffmpeg
+          sudo install -m 0755 "${HOME}/ffmpeg-bin/ffprobe" /usr/local/bin/ffprobe
           rm -rf /tmp/ffmpeg.tar.xz "/tmp/${FFMPEG_ASSET%.tar.xz}"
 
           ffmpeg -version | head -1
