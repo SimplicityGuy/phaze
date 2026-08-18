@@ -90,6 +90,8 @@ are unaffected and remain correct for modal `max-w` guards.
 | Every workspace holds the layout contract at 3 widths × 2 themes × 5 states | `tests/browser/test_responsive_matrix.py` (phaze-fk1ww) |
 | The dark theme actually paints, and is not just a class name | `tests/browser/test_responsive_matrix.py` |
 | The six-step keyboard/screen-reader script, at every width | `tests/browser/test_keyboard_screen_reader.py` (phaze-fk1ww) |
+| Rendered ARIA/labelling violations, per workspace | `tests/browser/test_accessibility.py` + `tests/browser/axe.py` |
+| Computed WCAG AA contrast, both themes | `tests/browser/test_accessibility.py` — **currently a strict xfail; see ADR-0010** |
 
 The sweep is filesystem-based and covers **all** templates, including partials that render only in
 states a smoke test rarely reaches. Real-browser checks are complementary, not redundant: this lane
@@ -110,6 +112,18 @@ rendered colour, and the browser suite does not try. That is a real gap in this 
 enforcement rather than a delegation, and it is tracked as such (`phaze-8p1uq`) instead of being
 described here as already done. An ADR asserting a guard exists is worse than one admitting it does
 not, because the claim is what the next reader checks against instead of the suite.
+
+**Superseded 2026-08-18.** Both now exist. `tests/browser/axe.py` runs axe with an explicit rule
+list, and `tests/browser/test_accessibility.py` drives it per workspace — so the axe half of the gap
+above is closed, and the paragraph before this one is now itself out of date and kept only as the
+record of what was true on 2026-08-17.
+
+The contrast half is closed differently: the check **runs on every invocation and fails**, recorded
+as a strict xfail across 10 parametrised cells rather than disabled, because the palette itself is
+non-conformant. See **ADR-0010**, which decides the repaint and its target ratio; `phaze-qvid8`
+implements it and folds `color-contrast` into `axe.py`'s blocking `RULES`. A guard that runs and is
+red is a different state from one that does not exist, and this ADR should not be read as claiming
+either that contrast is unchecked or that it passes.
 
 ## The browser contract suite (phaze-tzy6s.14)
 
@@ -273,6 +287,10 @@ the entries have to be deleted with the fix instead of surviving as stale text.
 - **No computed-contrast assertion ran.** Colour values are recorded above; nothing computed a
   contrast ratio against them. Both this and an axe integration remain deferred to phaze-8p1uq, as
   the corrected paragraph above already states.
+  *(Superseded 2026-08-18: both landed. The computed-contrast check now runs and FAILS — 15 failing
+  light-theme colours across 508 class-string uses, 3 dark-theme across 62, worst case 2.36:1. The
+  repaint that fixes it is ADR-0010, implemented by `phaze-qvid8`. This 2026-08-17 record stands as
+  written; it is not amended, only annotated.)*
 - **Step 4's populated half is not covered**: the Execute confirm dialog *with approved work* was
   not driven from the keyboard. Only the disabled/empty branch was.
 - The seeded data is synthetic and deliberately smaller than the real archive. Real filenames are
