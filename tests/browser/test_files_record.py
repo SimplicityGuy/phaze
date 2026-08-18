@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from tests.browser.helpers import open_shell, settled, settled_focus
+from tests.browser.helpers import click_swap, open_shell, settled, settled_focus, swap_settles
 
 
 pytestmark = pytest.mark.browser
@@ -216,10 +216,12 @@ async def test_filtering_the_files_table_swaps_in_place_without_nesting_a_second
 
     # No seeded file has a metadata failure, so Metadata=failed is a filter that matches nothing --
     # which is also the branch that has to keep the filter bar reachable so it can be cleared.
-    await page.select_option("#filter-stage", "metadata")
-    await settled(page)
-    await page.select_option("#filter-bucket", "failed")
-    await settled(page)
+    # Each select is its own swap into #files-table-view, so the second must not be driven while the
+    # first is still settling -- see helpers.swap_settles for the race that shape produces.
+    async with swap_settles(page):
+        await page.select_option("#filter-stage", "metadata")
+    async with swap_settles(page):
+        await page.select_option("#filter-bucket", "failed")
     await page.wait_for_function("() => document.querySelector('#files-table-view').innerText.includes('No failed files in Metadata')")
 
     assert await page.evaluate("window.__documentAlive === true"), "the filter reloaded the document instead of swapping"
@@ -227,8 +229,8 @@ async def test_filtering_the_files_table_swaps_in_place_without_nesting_a_second
     assert "bucket=failed" in page.url, "hx-push-url did not carry the filter into the address bar, so the filtered view is not bookmarkable"
     assert await page.locator("#status-filter-bar").count() == 1, "the filter bar did not survive its own empty result — the filter cannot be cleared"
 
-    await page.select_option("#filter-bucket", "")
-    await settled(page)
+    async with swap_settles(page):
+        await page.select_option("#filter-bucket", "")
     await page.wait_for_function("() => document.querySelectorAll('#files-table-view tbody tr').length === 2")
     assert await page.locator("#files-table-view").count() == 1, "clearing the filter nested a second #files-table-view"
 
@@ -254,8 +256,7 @@ async def test_sorting_a_column_re_renders_its_own_aria_sort(page: Any, seed: An
     assert await page.get_attribute(file_header, "aria-sort") == "ascending", "the default Files order is not announced on the File column"
     assert await page.get_attribute(type_header, "aria-sort") == "none"
 
-    await page.click(f"{type_header} button")
-    await settled(page)
+    await click_swap(page, f"{type_header} button")
     await page.wait_for_function(
         """() => {
             const headers = [...document.querySelectorAll('#files-table-view th')];

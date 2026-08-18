@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 
 from phaze.enums.execution import ExecutionStatus
-from tests.browser.helpers import open_shell, settled
+from tests.browser.helpers import click_swap, open_shell, settled
 
 
 pytestmark = pytest.mark.browser
@@ -175,8 +175,7 @@ async def test_switching_the_audit_filter_moves_aria_pressed_with_the_rows(page:
     assert await page.get_attribute(_tab("all"), "aria-pressed") == "true", "the audit log does not open on All"
     assert await page.locator("#audit-table-container tbody tr:not(.hidden)").count() == 2, "both seeded operations are not listed under All"
 
-    await page.click(_tab("failed"))
-    await settled(page)
+    await click_swap(page, _tab("failed"))
     await page.wait_for_function("""sel => document.querySelector(sel)?.getAttribute('aria-pressed') === 'true'""", arg=_tab("failed"))
 
     assert await page.get_attribute(_tab("all"), "aria-pressed") == "false", (
@@ -206,8 +205,7 @@ async def test_an_audit_filter_that_matches_nothing_offers_the_way_back(page: An
     await open_shell(page, "/s/audit")
     await settled(page)
 
-    await page.click(_tab("in_progress"))
-    await settled(page)
+    await click_swap(page, _tab("in_progress"))
     await page.wait_for_function("() => document.querySelector('#audit-content').innerText.includes('No entries match this filter')")
 
     empty = await page.locator("#audit-content").inner_text()
@@ -216,8 +214,7 @@ async def test_an_audit_filter_that_matches_nothing_offers_the_way_back(page: An
     )
     assert "2 operations are recorded, but none are in this filter." in empty, f"the empty state does not say what is actually there: {empty[:400]!r}"
 
-    await page.click('#audit-table-container button[hx-get^="/audit/?status=all"]')
-    await settled(page)
+    await click_swap(page, '#audit-table-container button[hx-get^="/audit/?status=all"]')
     await page.wait_for_function("""sel => document.querySelector(sel)?.getAttribute('aria-pressed') === 'true'""", arg=_tab("all"))
 
     assert await page.locator("#audit-table-container tbody tr:not(.hidden)").count() == 2, (
@@ -242,12 +239,10 @@ async def test_back_restores_the_previous_audit_filter(page: Any, seed: Any) -> 
     await open_shell(page, "/s/audit")
     await settled(page)
 
-    await page.click(_tab("failed"))
-    await settled(page)
+    await click_swap(page, _tab("failed"))
     await page.wait_for_function("""sel => document.querySelector(sel)?.getAttribute('aria-pressed') === 'true'""", arg=_tab("failed"))
 
-    await page.click(_tab("completed"))
-    await settled(page)
+    await click_swap(page, _tab("completed"))
     await page.wait_for_function("""sel => document.querySelector(sel)?.getAttribute('aria-pressed') === 'true'""", arg=_tab("completed"))
 
     await page.go_back()

@@ -12,7 +12,12 @@ extend rather than replace.
 
 from __future__ import annotations
 
-from typing import Any
+import contextlib
+from typing import TYPE_CHECKING, Any
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 
 async def open_shell(page: Any, path: str = "/s/summary") -> None:
@@ -41,6 +46,55 @@ async def wait_for_stage(page: Any, document_title: str) -> None:
     )
 
 
+_SWAP_COUNTER = """() => {
+    if (!window.__phazeSwapCounterArmed) {
+        window.__phazeSwapCounterArmed = true;
+        window.__phazeSwaps = 0;
+        document.body.addEventListener('htmx:afterSettle', () => { window.__phazeSwaps++; });
+    }
+    return window.__phazeSwaps;
+}"""
+
+
+@contextlib.asynccontextmanager
+async def swap_settles(page: Any) -> AsyncGenerator[None]:
+    """Wrap an interaction that triggers an htmx swap; exit once that swap has SETTLED.
+
+    ``settled()`` is the wrong barrier immediately after an interaction: it polls for zero in-flight
+    requests, and right after ``page.click()`` returns there are usually none yet -- the request has
+    not started -- so it passes instantly and guarantees nothing. Waiting on a post-condition in the
+    swapped content is better but still lands one phase early, because htmx renders and then runs a
+    separate SETTLE phase in which it finishes the node's attribute transitions and does its
+    ``hx-push-url`` history bookkeeping.
+
+    Driving a SECOND interaction inside that window is what this exists to avoid. Measured on the
+    Audit filter tabs, which swap the container the tabs themselves live in: clicking the next tab the
+    instant the previous tab's ``aria-pressed`` flipped lost the second click entirely -- no request
+    was ever issued, the URL stayed on the first filter, and the test timed out. It reproduced 4 times
+    in 6 isolated runs, and every attempt to observe it made it disappear, because each extra
+    round-trip an instrumenting call adds is enough delay to close the window. That is the signature
+    of a settle-phase race in the TEST, not a product defect: driven at operator speed, or with any
+    pause at all, the tabs work correctly every time. With this barrier the same file ran 8 for 8.
+
+    ``htmx:afterSettle`` is the event that says the phase is over, so counting it is the barrier the
+    mechanism actually provides. A retry around the click would have hidden the same race behind a
+    green run.
+    """
+    before = await page.evaluate(_SWAP_COUNTER)
+    yield
+    await page.wait_for_function("n => window.__phazeSwaps > n", arg=before)
+
+
+async def click_swap(page: Any, selector: str) -> None:
+    """Click an htmx control and wait for its swap to settle -- :func:`swap_settles` for one click.
+
+    Read that context manager's docstring for why a settle barrier is the right one; this is the
+    common case, where the interaction is a single click.
+    """
+    async with swap_settles(page):
+        await page.click(selector)
+
+
 async def settled_focus(page: Any, describe: str = "id", *, timeout_ms: int = 5_000) -> str:
     """Wait until focus stops moving, then return how the focused element describes itself.
 
@@ -63,18 +117,18 @@ async def settled_focus(page: Any, describe: str = "id", *, timeout_ms: int = 5_
         return el ? ({read} || '') : '';
     }}"""
 
-    deadline_polls = max(1, timeout_ms // 100)
+    # An empty read means focus is on <body> (or an element with no such attribute), which is the
+    # FAILURE this helper exists to report rather than a state to settle on -- so it never counts
+    # towards stability. A genuinely broken restore therefore spends the full timeout and returns "",
+    # and the caller's assertion says so plainly.
     previous = await page.evaluate(script)
     stable = 0
-    for _ in range(deadline_polls):
+    for _ in range(max(1, timeout_ms // 100)):
         await page.wait_for_timeout(100)
         current = await page.evaluate(script)
-        if current == previous and current not in ("", "BODY"):
-            stable += 1
-            if stable >= 2:
-                return str(current)
-        else:
-            stable = 0
+        stable = stable + 1 if current == previous and current else 0
+        if stable >= 2:
+            return str(current)
         previous = current
     return str(previous)
 

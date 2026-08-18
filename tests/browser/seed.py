@@ -324,7 +324,7 @@ class Seeder:
         filename: str = "<set-01>.mp3",
         proposal: RenameProposal | None = None,
     ) -> ExecutionLog:
-        """Insert one audit-log row (and, unless one is supplied, the EXECUTED proposal it records.
+        """Insert one audit-log row, and unless one is supplied the EXECUTED proposal it records.
 
         The Audit Log workspace is reachable from an empty corpus but says only "No renames have been
         executed yet" -- its filter tabs, its per-tab counts and its filtered-to-nothing branch are all

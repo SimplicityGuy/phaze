@@ -25,7 +25,7 @@ from typing import Any
 import pytest
 
 from phaze.models.proposal import ProposalStatus
-from tests.browser.helpers import open_shell, settled, wait_for_stage
+from tests.browser.helpers import click_swap, open_shell, settled, wait_for_stage
 
 
 pytestmark = pytest.mark.browser
@@ -135,7 +135,7 @@ async def test_going_back_from_the_handoff_restores_a_working_tracklist_workspac
 
     await open_shell(page, "/s/summary")
     await settled(page)
-    await page.click('a[data-rail-stage="tracklist"]')
+    await click_swap(page, 'a[data-rail-stage="tracklist"]')
     await wait_for_stage(page, "Tracklists")
     await settled(page)
 

@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from tests.browser.helpers import open_shell, settled, wait_for_stage
+from tests.browser.helpers import click_swap, open_shell, settled, wait_for_stage
 
 
 pytestmark = pytest.mark.browser
@@ -136,7 +136,7 @@ async def test_the_eligible_files_view_loads_itself_after_a_rail_swap(page: Any,
     await open_shell(page, "/s/summary")
     await settled(page)
 
-    await page.click('a[data-rail-stage="metadata"]')
+    await click_swap(page, 'a[data-rail-stage="metadata"]')
     await wait_for_stage(page, "Metadata")
     await settled(page)
 
