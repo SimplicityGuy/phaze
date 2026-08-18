@@ -117,14 +117,46 @@ just test-db-reclaim               # dry run: which seats a sweep would free
 just test-db-reclaim --apply       # free every seat that is no longer in use
 ```
 
-A seat is left alone while a client is connected to its Redis DB, while a Postgres backend is on
-its database (pytest holds one for the whole session, so an idle-looking suite is still protected),
-or while its lease is unexpired — `test-db-for` stamps the lease on every call and it runs
-`PHAZE_TEST_REDIS_SEAT_LEASE_HOURS`, default 72. Allocations made before this existed have no
-stamp, so their age is unknown; the sweep reports them and leaves them alone unless you pass
-`--include-unstamped`. `scripts/redis-seat-registry.sh` documents the full rule set. **A full
-registry is never a reason to run `test-db-down`** — reclaim first, and only consider raising
-`PHAZE_TEST_REDIS_DATABASES` if the sweep frees nothing.
+A seat is in use, and left alone, while **any** of three signals holds:
+
+- **L1** — a client is connected to its Redis logical DB.
+- **L2** — a Postgres backend is on `phaze_<seat>_test` or `phaze_<seat>_migrations_test`. pytest
+  holds one for the whole session and often holds no Redis connection at all, so this is what
+  protects an idle-looking suite. It is **mandatory for `reclaim`**: if the Postgres container
+  cannot be reached, the sweep *refuses* rather than reading unknown as free (phaze-gmkua).
+  `--no-postgres-check` waives the refusal, not the evidence — it warns, and a reachable Postgres
+  is still consulted and still protects a seat.
+- **L3** — its lease is unexpired. `test-db-for` stamps the lease on every call and it runs
+  `PHAZE_TEST_REDIS_SEAT_LEASE_HOURS`, default 72.
+
+**Two conditions override L3 — a live lease is not on its own enough to keep a seat.** Neither ever
+overrides L1 or L2; nothing reclaims a seat that is demonstrably in use.
+
+- **O1 — its origin worktree is gone.** The sweep records the directory that ran `test-db-for` and
+  frees the seat once that directory no longer exists, *however much lease is left*. A seat with 60
+  hours still on its 72-hour lease is reclaimable the moment its worktree is removed — which is the
+  normal end of `bh work merge`, so this is the common case, not the exotic one. Read it as the
+  intended design: the worktree is gone, so the seat cannot come back.
+- **O2 — its index is past the container's database count.** Redis refuses `SELECT` there, so no
+  client can be using it. These are the 68/73/74/80 allocations the old counter minted.
+
+Allocations made before this existed have no lease stamp, so their age is genuinely unknown; the
+sweep reports them and leaves them alone unless you pass `--include-unstamped`.
+
+`test-db-release <name>` is the operator-driven path and deliberately ignores L3/O1/O2 — naming a
+seat *is* the assertion that it is finished — but it still refuses on L1/L2 unless you add
+`--force`. A registry value that is not an index is reported and released: no logical database can
+correspond to it (phaze-nbfuc).
+
+A freed index is not first in line for the next seat. The allocator prefers an index no seat has
+ever held over recycling one, because a shell with a stale `PHAZE_REDIS_URL` still exported is the
+one hazard no liveness check can see — so **after a sweep, expect the next `test-db-for` to hand out
+a fresh index rather than one it just freed** (phaze-08sww). Recycling happens only once the space
+genuinely demands it.
+
+`scripts/redis-seat-registry.sh` documents the full rule set. **A full registry is never a reason to
+run `test-db-down`** — reclaim first, and only consider raising `PHAZE_TEST_REDIS_DATABASES` if the
+sweep frees nothing.
 
 ### One database, one pytest process (phaze-ieqg)
 
