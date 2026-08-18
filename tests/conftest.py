@@ -530,6 +530,13 @@ async def verify(session: AsyncSession, _db_connection: AsyncConnection) -> Asyn
         # the FIRST of the DB fixtures to tear down (it depends on `session`, so it unwinds before
         # it) -- which makes it the earliest point at which an undrained router background task can
         # be named. Sampled before the close for the same reason as in `session`.
+        #
+        # Being first is also why this can only DIAGNOSE and never PREVENT: every fixture that could
+        # host a drain runs after this one, and by then the leaked task has already issued the
+        # RELEASE that discarded this session's savepoint. Prevention lives in the test body, in the
+        # `drain_router_background_tasks()` call before the first read through `verify` -- see
+        # `tests/_background_drain`, "AND NO, THIS CANNOT BE MOVED INTO A FIXTURE", before deleting
+        # one of those calls on the grounds that this guard would catch it.
         leaked = pending_router_background_tasks()
         violations = _savepoint_order_violations(_db_connection)
         await _finalize_shared_connection_session(s, leaked, violations)

@@ -47,6 +47,29 @@ stack above with no indication anything had gone wrong. ``tests/conftest.py`` ba
 :func:`session` and :func:`verify` finalizers fail the test outright when it leaks a task, so a
 missing drain surfaces as a named diagnosis instead of an asyncpg traceback from a fixture the test
 never mentions.
+
+AND NO, THIS CANNOT BE MOVED INTO A FIXTURE
+-------------------------------------------
+
+The obvious "simplification" is to delete the per-test calls and drain once in a fixture instead.
+It does not work, and the reason is teardown ORDER rather than taste.
+
+pytest finalizes in reverse setup order, so a fixture always tears down BEFORE the fixtures it
+depends on. ``verify`` depends on ``session``, which means ``verify`` unwinds FIRST -- and ``verify``
+is the session whose savepoint the leaked task destroys. Any fixture that could host a drain is
+therefore either ``verify`` itself or something ``verify`` is built on, i.e. something that runs
+AFTER the damage. Worse, draining at that point cannot undo it: by then the background task has
+already issued its ``RELEASE``, and a released savepoint does not come back.
+
+So the split is absolute, and it is the reason the call sites are not redundant with the guard:
+
+* only a drain IN THE TEST BODY, before the first read through ``verify``, PREVENTS the corruption;
+* the ``conftest`` guard can only DIAGNOSE it afterwards.
+
+Deleting a ``drain_router_background_tasks()`` call because "the fixtures catch it anyway" trades
+prevention for a post-mortem. The guard going quiet afterwards is not evidence the drain was
+unnecessary; on a fast machine the race simply does not fire (measured: with three such calls
+removed, a 7050-test suite still passed with zero guard hits).
 """
 
 from __future__ import annotations
