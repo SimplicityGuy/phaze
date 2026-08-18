@@ -183,3 +183,12 @@ graphify-out/graph.html
 
 # Update script backups
 .backups/
+
+# Beadhive gate lock — transient, written per-session
+/.beads.gate.lock
+
+# Codex agent state (sibling of .claude/, machine-local)
+/.codex/
+
+# Agent instruction file — mirrors CLAUDE.md, kept local rather than tracked
+/AGENTS.md
