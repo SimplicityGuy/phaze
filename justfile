@@ -369,8 +369,13 @@ coverage-combine:
 # `file_count: 2251` against a repository row holding nothing. `repowise context` on a known file
 # also still succeeds. Nothing available fails early, which is why this recipe fails LATE, after
 # the suite, by deliberate design rather than omission -- and why the gate reads the stored state
-# back instead of trusting an exit code. `repowise coverage add` exits 0 even when it ingests
-# NOTHING and prints "No indexed files found -- run `repowise init` first"; verified directly.
+# back instead of trusting an exit code.
+#
+# THE EXIT CODE OF THE INGEST CARRIES NO INFORMATION. `repowise coverage add` exits 0 even when it
+# ingests NOTHING and prints "No indexed files found -- run `repowise init` first" -- verified
+# directly, and it exits 0 on the partial mappings above too. Checking `$?` after it therefore
+# proves precisely nothing; the ONLY way to know a refresh worked is to read the stored state back,
+# which is what the gate does. Anyone automating this later will otherwise check `$?` and believe it.
 #
 # Per-file health is `repowise health --file <path> --format json` (or the MCP `get_health`). The
 # positional argument to `repowise health` is a REPO PATH, so `repowise health src/phaze/foo.py`
