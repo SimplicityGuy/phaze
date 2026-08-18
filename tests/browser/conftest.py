@@ -67,6 +67,50 @@ Seeding
 ``seed`` (see ``tests/browser/seed.py``) writes application rows to that same database over this
 process's own connection. Read that module's docstring before adding a test that needs state -- in
 particular, seed BEFORE navigating, because nothing re-reads a page that has already rendered.
+
+CI diagnosability -- Playwright tracing on failure (phaze-17ni3)
+================================================================
+
+Before this, a failing browser test in CI left nothing behind but the pytest assertion text: no
+trace, no screenshot, no artifact upload. The state that produced the failure was gone with the
+runner the moment the job ended -- and this suite is exactly the kind that produces hard-to-
+reproduce failures (an htmx settle race that vanished under instrumentation, a documented
+``reset()`` deadlock seen once in 124 runs; see ``FLAKE_RECORD.md``).
+
+Every context created by ``_browser_pages`` now starts a `Playwright trace
+<https://playwright.dev/python/docs/trace-viewer>`_ (``screenshots=True, snapshots=True,
+sources=True``) unconditionally, and the trace is written to ``test-results/traces/`` ONLY when the
+test that owns it failed -- retain-on-failure, not always-on. This is Playwright's own recommended
+default: starting a trace is cheap (it records into memory as the test runs), the expensive part is
+exporting it, and a passing test discards it via ``tracing.stop()`` with no ``path``. The trace zip
+is the high-value artifact: it embeds a per-action timeline, the DOM snapshot before/after each
+action (so a screenshot never has to be captured separately), the network log, console output and
+source locations -- opened with ``playwright show-trace`` or trace.playwright.dev.
+
+Naming is per-test AND per-context: contexts are created per test (not per session -- see "Fixture
+scoping" above), so a fixed filename would overwrite and a test that opens more than one context
+(``page_at`` inside a loop, e.g. ``test_responsive_matrix.py``) would collide on the last one.
+``_trace_path`` encodes the pytest node id (parametrization included), a per-node call counter
+(``_browser_pages`` can be entered more than once per test) and the context's index within that
+call.
+
+Failure detection has to cover two different call shapes this harness exposes, and neither alone is
+reliable:
+
+- ``page`` / ``tablet_page`` / ``phone_page`` / ``open_page`` -- the ``_browser_pages`` generator is
+  owned by a FIXTURE and its ``finally`` runs during pytest's teardown phase, after the test body has
+  already returned or raised. An exception raised inside the test body never reaches this generator
+  at all, so the only signal available is the recorded pytest report -- ``_test_failed`` reads it
+  back off ``item.stash``, populated by the ``pytest_runtest_makereport`` hook below.
+- ``page_at`` / ``open_page_cm`` -- used directly as ``async with page_at(...) as page:`` INSIDE the
+  test body, so an exception raised in that block propagates through this generator's own ``yield``
+  via ``athrow`` before the test has "returned" from pytest's point of view, and the stash lookup
+  above would still see no report. The ``except BaseException`` clause below catches that case
+  directly -- excluding ``pytest.skip()`` / ``pytest.xfail()``, which are ``BaseException`` too but
+  are not failures; see ``_NON_FAILURE_OUTCOMES``.
+
+Both paths funnel into one boolean so the save-or-discard decision at ``finally`` is a single check
+regardless of which fixture a test used.
 """
 
 from __future__ import annotations
@@ -76,6 +120,7 @@ import contextlib
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import subprocess
 import sys
@@ -93,6 +138,63 @@ if TYPE_CHECKING:
 _BROWSER_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _BROWSER_DIR.parent.parent
 _BOOT_TIMEOUT_SEC = 180.0
+
+# --- CI artifacts: Playwright tracing on failure (phaze-17ni3) ----------------------------------
+
+_ARTIFACT_DIR = _REPO_ROOT / "test-results"
+_TRACE_DIR = _ARTIFACT_DIR / "traces"
+
+# Stashes the per-phase pytest report on the test item, so a fixture torn down AFTER the test body
+# has already run/raised (see the module docstring) can still ask "did the test I was serving fail?"
+_PHASE_REPORT_KEY = pytest.StashKey[dict[str, pytest.TestReport]]()
+
+# A monotonic per-test counter for how many times `_browser_pages` has been entered -- `page_at`
+# opens a fresh browser+context on every call, and a single test can call it more than once (e.g. a
+# viewport/theme sweep in a loop), so the test's node id alone is not a unique trace filename.
+_CALL_COUNTER_KEY = pytest.StashKey[int]()
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) -> Iterator[None]:
+    """Record each phase's report on the item so fixture teardown can read the outcome back.
+
+    Standard hookwrapper pattern (the same one pytest-playwright uses): pytest calls this once per
+    phase (setup/call/teardown); we let the real implementation run, then stash its result.
+    """
+    outcome = yield
+    report = outcome.get_result()
+    item.stash.setdefault(_PHASE_REPORT_KEY, {})[report.when] = report
+
+
+def _test_failed(request: pytest.FixtureRequest) -> bool:
+    """Whether the test currently owning ``request`` has already been recorded as failed.
+
+    Only meaningful from fixture teardown, after the "call" phase report exists -- see the module
+    docstring for why ``page_at``/``open_page_cm`` cannot rely on this alone.
+    """
+    reports = request.node.stash.get(_PHASE_REPORT_KEY, {})
+    return any(report.failed for report in reports.values())
+
+
+# Raised by `pytest.skip()` / `pytest.xfail()` -- both are `BaseException`, NOT `Exception`,
+# specifically so plugins can tell "the test opted out" apart from "the test failed". Excluded from
+# the `except BaseException` catch in `_browser_pages` below: `test_a_wide_table_scrolls_inside_...`
+# (test_keyboard_screen_reader.py) calls `pytest.skip()` from INSIDE a `page_at` block for a
+# viewport with no visible table, and without this exclusion that skip was caught, misread as a
+# failure, and given a trace it did not earn -- found by running the real suite while building this,
+# not by inspection.
+_NON_FAILURE_OUTCOMES = (pytest.skip.Exception, pytest.xfail.Exception)
+
+
+def _sanitize_for_filename(value: str) -> str:
+    """Collapse a pytest node id (or any string) into a safe, readable filename component."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_")
+
+
+def _trace_path(request: pytest.FixtureRequest, *, call_index: int, context_index: int) -> Path:
+    """Where to save a failed context's trace: unique per test, per call, per context."""
+    node = _sanitize_for_filename(request.node.nodeid)
+    return _TRACE_DIR / f"{node}__call{call_index}__ctx{context_index}.zip"
 
 
 def _seat_dsn() -> str:
@@ -274,44 +376,77 @@ async def _pin_theme(context: Any, theme: str | None) -> None:
 
 
 @contextlib.asynccontextmanager
-async def _browser_pages(live_server: str) -> AsyncGenerator[Any]:
+async def _browser_pages(live_server: str, request: pytest.FixtureRequest) -> AsyncGenerator[Any]:
     """Yield a factory that opens pages on ONE browser, closing every context on exit.
 
     One Chromium per test, N contexts within it -- the launch is the expensive part (~1s) and the
     context is what actually carries the isolation, so a test comparing two viewports or two themes
     pays for one browser rather than two.
+
+    Every context this factory opens carries a Playwright trace from the moment it is created. On
+    exit, a context's trace is exported to ``test-results/traces/`` if the test that owns it failed,
+    and discarded otherwise -- see the module docstring, "CI diagnosability", for why the failure
+    check needs both an exception-based path and a stashed-report-based path.
     """
     from playwright.async_api import async_playwright
+
+    # `_browser_pages` can be entered more than once per test (`page_at` opens a fresh browser per
+    # call); this disambiguates their trace filenames.
+    call_index = request.node.stash.get(_CALL_COUNTER_KEY, 0)
+    request.node.stash[_CALL_COUNTER_KEY] = call_index + 1
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
         contexts: list[Any] = []
+        raised = False
         try:
 
             async def _open(viewport: str | dict[str, Any] = "desktop", *, theme: str | None = None, **context_kwargs: Any) -> Any:
                 kwargs = _viewport_context_kwargs(viewport, theme) | context_kwargs
                 context = await browser.new_context(base_url=live_server, **kwargs)
                 contexts.append(context)
+                await context.tracing.start(screenshots=True, snapshots=True, sources=True)
                 await _pin_theme(context, theme)
                 return await context.new_page()
 
             yield _open
+        except _NON_FAILURE_OUTCOMES:
+            # `pytest.skip()` / `pytest.xfail()` called from inside a `page_at` block: not a
+            # failure, so fall through without setting `raised` -- see `_NON_FAILURE_OUTCOMES`.
+            raise
+        except BaseException:
+            # `page_at`/`open_page_cm` wrap the test body directly, so a test failure propagates
+            # into this generator via `athrow` -- catch it here rather than relying solely on the
+            # stashed report, which is not populated yet at this point for that call shape.
+            raised = True
+            raise
         finally:
-            for context in contexts:
+            failed = raised or _test_failed(request)
+            if failed and contexts:
+                _TRACE_DIR.mkdir(parents=True, exist_ok=True)
+            for context_index, context in enumerate(contexts):
+                with contextlib.suppress(Exception):
+                    if failed:
+                        trace_path = _trace_path(request, call_index=call_index, context_index=context_index)
+                        await context.tracing.stop(path=str(trace_path))
+                    else:
+                        await context.tracing.stop()
                 with contextlib.suppress(Exception):
                     await context.close()
             await browser.close()
 
 
 @contextlib.asynccontextmanager
-async def open_page_cm(live_server: str, *, viewport: str = "desktop", theme: str | None = None, **context_kwargs: Any) -> AsyncGenerator[Any]:
+async def open_page_cm(
+    live_server: str, request: pytest.FixtureRequest, *, viewport: str = "desktop", theme: str | None = None, **context_kwargs: Any
+) -> AsyncGenerator[Any]:
     """A single page at a named viewport, optionally pinned to a theme before the first paint."""
-    async with _browser_pages(live_server) as factory:
+    async with _browser_pages(live_server, request) as factory:
         yield await factory(viewport, theme=theme, **context_kwargs)
 
 
 @pytest_asyncio.fixture
-def page_at(live_server: str) -> Any:
+def page_at(live_server: str, request: pytest.FixtureRequest) -> Any:
     """Factory fixture: ``async with page_at(viewport=..., theme=...) as page``.
 
     A factory rather than a matrix of named fixtures because the caller decides how many pages one
@@ -320,19 +455,19 @@ def page_at(live_server: str) -> Any:
     """
 
     def _factory(*, viewport: str = "desktop", theme: str | None = None, **context_kwargs: Any) -> Any:
-        return open_page_cm(live_server, viewport=viewport, theme=theme, **context_kwargs)
+        return open_page_cm(live_server, request, viewport=viewport, theme=theme, **context_kwargs)
 
     return _factory
 
 
 @pytest_asyncio.fixture
-async def open_page(live_server: str) -> AsyncGenerator[Any]:
+async def open_page(live_server: str, request: pytest.FixtureRequest) -> AsyncGenerator[Any]:
     """Factory fixture: ``await open_page("tablet", theme="dark")`` -> a Playwright page.
 
     The general form the named fixtures below are built from. Use it directly when a test needs a
     width or theme that has no dedicated fixture, or needs two pages at once.
     """
-    async with _browser_pages(live_server) as factory:
+    async with _browser_pages(live_server, request) as factory:
         yield factory
 
 
