@@ -46,11 +46,24 @@ async def wait_for_stage(page: Any, document_title: str) -> None:
     )
 
 
-_SWAP_COUNTER = """() => {
+# Paths the app polls on its own schedule, which settle exactly like an interaction does and must
+# NOT satisfy an interaction's barrier. The shell's 5s /pipeline/stats poll runs on EVERY page, so
+# without this filter a poll tick landing between arming the counter and the interaction's own settle
+# would release the barrier early and reintroduce the race it exists to close -- rarely, which is the
+# worst rate. The others are the per-surface self-polls this suite drives (agents table, lane detail).
+_SELF_POLL_PATHS = ("/pipeline/stats", "/admin/agents/_table", "/pipeline/lanes/")
+
+_SWAP_COUNTER = """paths => {
     if (!window.__phazeSwapCounterArmed) {
         window.__phazeSwapCounterArmed = true;
         window.__phazeSwaps = 0;
-        document.body.addEventListener('htmx:afterSettle', () => { window.__phazeSwaps++; });
+        window.__phazeSelfPollPaths = paths;
+        document.body.addEventListener('htmx:afterSettle', event => {
+            const path = (event.detail && event.detail.requestConfig && event.detail.requestConfig.path) || '';
+            if (!window.__phazeSelfPollPaths.some(prefix => path.startsWith(prefix))) {
+                window.__phazeSwaps++;
+            }
+        });
     }
     return window.__phazeSwaps;
 }"""
@@ -80,7 +93,7 @@ async def swap_settles(page: Any) -> AsyncGenerator[None]:
     mechanism actually provides. A retry around the click would have hidden the same race behind a
     green run.
     """
-    before = await page.evaluate(_SWAP_COUNTER)
+    before = await page.evaluate(_SWAP_COUNTER, list(_SELF_POLL_PATHS))
     yield
     await page.wait_for_function("n => window.__phazeSwaps > n", arg=before)
 
