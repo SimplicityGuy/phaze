@@ -399,7 +399,45 @@ jobs:
       - name: 📦 Install dependencies
         run: just install
 
+      # phaze-m3qte: the Chromium download is ~150 MB and is re-fetched on every run. Cache it.
+      #
+      # The key has to track the PLAYWRIGHT VERSION, because the browser build is chosen by the
+      # playwright package -- a cache keyed on anything coarser would hand a new playwright the
+      # previous version's Chromium, which is the same silently-wrong-toolchain failure the
+      # ffmpeg pinning above exists to prevent.
+      #
+      # That version has to be RESOLVED AT RUNTIME rather than read from a lockfile, because
+      # playwright is deliberately not a project dependency: `just test-browser-install` runs
+      # `uv run --with playwright`, which resolves whatever is newest on PyPI at that moment
+      # (see the comment at pyproject.toml:138). So this step asks the tool what it is, and the
+      # answer becomes the key. A playwright release therefore misses the cache and re-downloads
+      # -- which is correct, that IS a different browser.
+      #
+      # Worth recording: the floating version means the browser suite's Chromium can change
+      # under it without any change to this repository. Pinning it is not this bead's scope.
+      - name: 🎭 Resolve the playwright version
+        id: playwright
+        run: |
+          set -euo pipefail
+          version="$(uv run --with playwright playwright --version | awk '{print $2}')"
+          if [ -z "${version}" ]; then
+            echo "::error::could not resolve the playwright version; refusing to cache under an empty key." >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "playwright ${version}"
+
+      - name: 🎭 Restore the Chromium build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
       - name: 🎭 Install the Chromium build
+        # A no-op when the cache hit -- `playwright install` verifies the browser is present and
+        # returns. `--with-deps` still runs apt for Chromium's system libraries, which the cache
+        # cannot cover; those are a small, already-present set on ubuntu-24.04, not the 87-package
+        # closure the ffmpeg step used to pull.
         run: just test-browser-install
 
       - name: 🌐 Run the browser contract suite
