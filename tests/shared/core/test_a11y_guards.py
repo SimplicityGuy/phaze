@@ -568,13 +568,22 @@ _DARK_TEXT_COLOUR = re.compile(r"dark:text-(?:[a-z-]+)-\d{2,3}\b")
 # 4.5:1 threshold that decides which one goes. `proposals/partials/filter_tabs.html` -- the same
 # component without the strays -- independently agrees on `text-gray-500 dark:text-gray-400`.
 #
-# KNOWN LIMIT (phaze-o8voj): a class string assembled through a `{% set %}` variable or passed into
-# a macro is opaque to this guard, which reads one attribute at a time. Swept manually at redrive
-# time and clean -- no `{% set %}`-defined class string in the tree carries two `dark:text-*`
-# colours, and no attribute composes such a variable with a colliding literal -- but a future one
-# would not be caught. Also swept at redrive time, also clean: `dark:bg-*` and `dark:border-*`,
-# which have the same duplicate-is-always-a-defect property and would be the natural widening if
-# either ever grows an offender.
+# phaze-o8voj RESOLVED the `{% set %}` half of this limit: a same-file `{% set NAME = '...' %}`
+# (single or double quoted) bare-string-literal assignment now resolves into every attribute that
+# references `{{ NAME }}`, so a class string assembled across a `{% set %}` and the attribute that
+# uses it is no longer opaque -- see `_extract_set_vars` below.
+#
+# KNOWN LIMIT (still open): a class string passed INTO a macro -- i.e. bound to a macro parameter
+# by the call site, not assigned via `{% set %}` -- stays opaque, because that requires following
+# the call site into the macro body across (possibly) file boundaries, which is a materially larger
+# analysis than resolving a same-file literal. Also opaque, deliberately: a `{% set %}` built from
+# something other than a bare string literal -- concatenation (`~`), a filter, or another variable
+# -- because guessing its value would risk a false positive, which is worse than staying blind (see
+# module docstring's guiding principle at the top of this file). Swept manually at redrive time and
+# clean on both counts: no macro-parameter class string and no non-literal `{% set %}` carries two
+# `dark:text-*` colours in the tree today. Also swept at redrive time, also clean: `dark:bg-*` and
+# `dark:border-*`, which have the same duplicate-is-always-a-defect property and would be the
+# natural widening if either ever grows an offender.
 
 # `{% ... %}` / `{{ ... }}`; DOTALL because a wrapped attribute puts newlines inside both.
 _JINJA_BRANCH_TAG = re.compile(r"\{%-?\s*(if|elif|else|endif)\b.*?-?%\}", re.DOTALL)
@@ -589,12 +598,50 @@ _COMMENTS = re.compile(r"<!--.*?-->|\{#.*?#\}", re.DOTALL)
 # a `"` (that is what closes it), so `[^"]*` bounds the attribute exactly even across newlines.
 _CLASS_ATTR = re.compile(r'(?P<alpine>:)?class="(?P<value>[^"]*)"')
 
+# A same-file `{% set NAME = '...' %}` / `{% set NAME = "..." %}` bare-string-literal assignment.
+# Deliberately narrow: `NAME = other_var`, `NAME = a ~ b`, `NAME = a|filter`, and multi-target
+# `{% set a, b = ... %}` all fail to match and stay opaque (see the KNOWN LIMIT comment above) --
+# guessing a value here would risk manufacturing a false positive, which this guard must not do.
+_SET_STRING = re.compile(r"\{%-?\s*set\s+(\w+)\s*=\s*(?:'([^']*)'|\"([^\"]*)\")\s*-?%\}")
+# A `{{ ... }}` expression that is nothing but a bare variable reference -- no filter, no ternary,
+# no attribute/index access -- is the only shape resolved against `{% set %}` literals below.
+_BARE_VAR = re.compile(r"^\{\{\s*(\w+)\s*\}\}$")
 
-def _expression_alternatives(expr: str) -> list[str]:
-    """Class strings a `{{ ... }}` (or Alpine ternary) can contribute -- at most ONE quoted literal."""
+
+def _extract_set_vars(source: str) -> dict[str, list[str]]:
+    """Same-file `{% set NAME = '...' %}` string literals this template defines, by name.
+
+    A name `{% set %}` more than once (e.g. once per branch of an `{% if %}`/`{% elif %}` chain,
+    like ``lane_color`` in ``_lane_card.html``) collects every distinct literal it was ever
+    assigned, mirroring how this guard already treats `{% if %}` branches as alternatives: each
+    literal is one possible render, and a duplicate is flagged if ANY of them collides.
+    """
+    resolved: dict[str, list[str]] = {}
+    for match in _SET_STRING.finditer(source):
+        name = match.group(1)
+        value = match.group(2) if match.group(2) is not None else match.group(3)
+        values = resolved.setdefault(name, [])
+        if value not in values:
+            values.append(value)
+    return resolved
+
+
+def _expression_alternatives(expr: str, set_vars: dict[str, list[str]] | None = None) -> list[str]:
+    """Class strings a `{{ ... }}` (or Alpine ternary) can contribute -- at most ONE quoted literal.
+
+    A bare `{{ NAME }}` reference to a same-file `{% set %}` string literal resolves to that
+    literal's alternatives (phaze-o8voj); anything else stays opaque, the "" no-contribution
+    alternative, exactly as before.
+    """
     literals = _SINGLE_QUOTED.findall(expr)
-    # "" covers the falsy/no-literal branch, so an expression never fabricates a duplicate on its own.
-    return [*literals, ""] if literals else [""]
+    if literals:
+        # "" covers the falsy/no-literal branch, so an expression never fabricates a duplicate on
+        # its own.
+        return [*literals, ""]
+    bare = _BARE_VAR.match(expr)
+    if bare and set_vars and bare.group(1) in set_vars:
+        return list(set_vars[bare.group(1)])
+    return [""]
 
 
 def _alpine_class_alternatives(expr: str) -> list[str]:
@@ -608,11 +655,11 @@ def _alpine_class_alternatives(expr: str) -> list[str]:
     return _expression_alternatives(expr) if "?" in expr else [expr]
 
 
-def _expand_expressions(text: str) -> list[str]:
+def _expand_expressions(text: str, set_vars: dict[str, list[str]] | None = None) -> list[str]:
     """Expand a branch-free fragment into every class string it can emit."""
     emitted = [""]
     for part in _JINJA_EXPR.split(text):
-        alternatives = _expression_alternatives(part) if part.startswith("{{") else [_JINJA_ANY_TAG.sub(" ", part)]
+        alternatives = _expression_alternatives(part, set_vars) if part.startswith("{{") else [_JINJA_ANY_TAG.sub(" ", part)]
         emitted = [f"{done} {alternative}" for done in emitted for alternative in alternatives]
     return list(dict.fromkeys(emitted))
 
@@ -644,18 +691,18 @@ def _split_top_level_if(text: str) -> tuple[str, list[str], str] | None:
     return None
 
 
-def _emitted_class_strings(attr: str) -> list[str]:
+def _emitted_class_strings(attr: str, set_vars: dict[str, list[str]] | None = None) -> list[str]:
     """Every class string this attribute can render as -- one per combination of branches taken."""
     split = _split_top_level_if(attr)
     if split is None:
-        return _expand_expressions(attr)
+        return _expand_expressions(attr, set_vars)
     prefix, branches, suffix = split
     emitted = [
         f"{before} {inside} {after}"
-        for before in _expand_expressions(prefix)
+        for before in _expand_expressions(prefix, set_vars)
         for branch in branches
-        for inside in _emitted_class_strings(branch)
-        for after in _emitted_class_strings(suffix)
+        for inside in _emitted_class_strings(branch, set_vars)
+        for after in _emitted_class_strings(suffix, set_vars)
     ]
     return list(dict.fromkeys(emitted))
 
@@ -666,10 +713,14 @@ def test_no_element_carries_two_dark_text_colours() -> None:
         source = template.read_text()
         # Blank comments out rather than deleting them, so offsets (and line numbers) stay true.
         scannable = _COMMENTS.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), source)
+        # Same-file `{% set %}` string literals this template defines (phaze-o8voj) -- resolved
+        # into any `{{ NAME }}` reference below, so a class string assembled across a `{% set %}`
+        # and the attribute that uses it is no longer invisible to this scan.
+        set_vars = _extract_set_vars(scannable)
         for match in _CLASS_ATTR.finditer(scannable):
             line_no = scannable.count("\n", 0, match.start()) + 1
             value = match.group("value")
-            renders = _alpine_class_alternatives(value) if match.group("alpine") else _emitted_class_strings(value)
+            renders = _alpine_class_alternatives(value) if match.group("alpine") else _emitted_class_strings(value, set_vars)
             for emitted in renders:
                 hits = _DARK_TEXT_COLOUR.findall(emitted)
                 if len(hits) > 1:
@@ -689,9 +740,9 @@ def test_no_element_carries_two_dark_text_colours() -> None:
 # these fix the two blind spots as executable cases rather than as a comment nobody re-checks. Each
 # `_carries` case is a real shape lifted from this tree; each `_permits` case is the false positive
 # the narrowing must not produce.
-def _worst_case(attr: str, *, alpine: bool = False) -> int:
+def _worst_case(attr: str, *, alpine: bool = False, set_vars: dict[str, list[str]] | None = None) -> int:
     """Most `dark:` text colours any single render of this attribute puts on one element."""
-    renders = _alpine_class_alternatives(attr) if alpine else _emitted_class_strings(attr)
+    renders = _alpine_class_alternatives(attr) if alpine else _emitted_class_strings(attr, set_vars)
     return max(len(_DARK_TEXT_COLOUR.findall(emitted)) for emitted in renders)
 
 
@@ -748,3 +799,60 @@ def test_the_duplicate_dark_utility_guard_sees_a_duplicate_in_one_alpine_ternary
 def test_the_duplicate_dark_utility_guard_permits_a_hover_variant_alongside_a_base_colour() -> None:
     # `dark:hover:text-*` is a different variant, not a competing declaration for the same state.
     assert _worst_case("text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300") == 1
+
+
+# --- phaze-o8voj: same-file `{% set %}` class strings are no longer opaque to the guard -----------
+#
+# The bead's own example: `{% set _btn = 'text-gray-700 dark:text-gray-300' %}` followed by
+# `class="{{ _btn }} dark:text-gray-400"` puts two competing `dark:` text colours on one element,
+# but only through a variable, not a literal in the attribute itself.
+
+_SET_BTN_SOURCE = "{% set _btn = 'text-gray-700 dark:text-gray-300' %}"
+
+
+def test_the_pre_o8voj_guard_could_not_see_a_set_composed_duplicate_at_all() -> None:
+    """Proves the gap: with NO `{% set %}` resolution (the guard as it stood before this bead),
+    `{{ _btn }}` is fully opaque -- its "" no-contribution alternative is all `_expression_alternatives`
+    could ever return for a bare variable reference -- so the composed duplicate below was invisible.
+    """
+    assert _worst_case("{{ _btn }} dark:text-gray-400") == 1
+
+
+def test_the_duplicate_dark_utility_guard_sees_a_set_variable_composed_with_a_colliding_literal() -> None:
+    # Same fixture, now WITH `{% set %}` resolution: `_btn` resolves to its literal, so the guard
+    # sees both `dark:text-gray-300` (from the variable) and `dark:text-gray-400` (from the
+    # attribute) landing on the same element.
+    set_vars = _extract_set_vars(_SET_BTN_SOURCE)
+    assert _worst_case("{{ _btn }} dark:text-gray-400", set_vars=set_vars) == 2
+
+
+def test_the_duplicate_dark_utility_guard_permits_a_set_variable_that_does_not_collide() -> None:
+    # The narrowing must not manufacture a false positive: `_btn` still contributes its ONE colour,
+    # and nothing else in the attribute collides with it.
+    set_vars = _extract_set_vars(_SET_BTN_SOURCE)
+    assert _worst_case("{{ _btn }} font-semibold", set_vars=set_vars) == 1
+
+
+def test_the_duplicate_dark_utility_guard_sees_a_set_variable_defined_per_if_branch() -> None:
+    # A name `{% set %}` once per branch (the real shape of `lane_color` in `_lane_card.html`) --
+    # each literal is an alternative, and a duplicate is flagged if the attribute pairs ANY of them
+    # with a colliding literal.
+    source = "{% if a %}{% set c = 'dark:text-emerald-300' %}{% else %}{% set c = 'dark:text-blue-300' %}{% endif %}"
+    set_vars = _extract_set_vars(source)
+    assert set_vars["c"] == ["dark:text-emerald-300", "dark:text-blue-300"]
+    assert _worst_case("{{ c }} dark:text-blue-300", set_vars=set_vars) == 2
+
+
+def test_set_variable_extraction_ignores_non_literal_assignments() -> None:
+    # `{% set %}` built from another variable, a filter, or concatenation is not a bare string
+    # literal -- stays opaque rather than guessed, so it cannot manufacture a false positive.
+    assert _extract_set_vars("{% set _cls = other_var %}") == {}
+    assert _extract_set_vars("{% set _cls = 'a' ~ suffix %}") == {}
+    assert _extract_set_vars("{% set _cls = raw_cls|trim %}") == {}
+
+
+def test_set_variable_extraction_reads_double_quoted_literals_too() -> None:
+    # `{% set %}` in this tree uses both quote styles (e.g. `heading_class` in rail.html uses
+    # double quotes) -- both must resolve.
+    set_vars = _extract_set_vars('{% set c = "dark:text-gray-300" %}')
+    assert set_vars == {"c": ["dark:text-gray-300"]}
