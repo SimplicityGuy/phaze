@@ -24,7 +24,6 @@ Uses the operator ``client`` fixture (tests/conftest.py) + the fake named-queue 
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 import uuid
@@ -37,6 +36,7 @@ from phaze.enums.stage import ELIGIBLE_AFTER_FAILURE, Stage, Status, eligible
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
 from phaze.schemas.agent_tasks import ProcessFilePayload
+from tests._background_drain import drain_router_background_tasks
 from tests._queue_fakes import install_fake_queues, make_agent_live, wire_fakes
 
 
@@ -46,30 +46,6 @@ if TYPE_CHECKING:
 
 
 pytestmark = pytest.mark.integration
-
-
-async def _drain_background() -> None:
-    """Yield until the router's background enqueue tasks have drained (phaze-zecg).
-
-    ``retry_analysis_failed`` now backgrounds its enqueue loop via ``asyncio.create_task`` +
-    ``_background_tasks`` (same discipline as every other bulk trigger in the router), so the
-    HTTP response returns before the loop necessarily finishes. Assertions on the fake queue's
-    captured payloads must wait for the background task to drain first.
-    """
-    import phaze.routers.pipeline as pipeline_mod
-
-    for _ in range(500):
-        pending = set(pipeline_mod._background_tasks)
-        if not pending:
-            return
-        # `asyncio.sleep(0)` only YIELDS -- it never waits for I/O. Under full-suite load all 500
-        # yields can elapse while a background task is still awaiting a database round-trip, so this
-        # returned EARLY and the `session` fixture's `outer.rollback()` fired while that task still
-        # held savepoints -- surfacing as `InvalidSavepointSpecificationError: savepoint
-        # "sa_savepoint_N" does not exist` at TEARDOWN, and green on isolated re-run. Awaiting the
-        # tasks themselves drains for real; the bounded loop stays because a draining task may
-        # spawn another.
-        await asyncio.wait(pending, timeout=10)
 
 
 def _make_file() -> FileRecord:
@@ -237,7 +213,7 @@ async def test_bulk_retry_reenqueues_all_failed_through_guarded_funnel(client: A
     assert response.status_code == 200
     assert "re-queued 3 failed file(s) for analysis" in response.text.lower()
 
-    await _drain_background()  # phaze-zecg: the enqueue loop now runs as a background task
+    await drain_router_background_tasks()  # phaze-zecg: the enqueue loop now runs as a background task
     queue = task_router.queues["test-fileserver-analyze"]
     assert queue.name != "default"
     assert {p["file_id"] for _t, p in queue.captured} == {str(f.id) for f in files}
