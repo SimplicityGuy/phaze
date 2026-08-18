@@ -978,6 +978,28 @@ def test_list_reports_an_unreachable_postgres_instead_of_calling_seats_stale(reg
     assert "unknown is never read as free" in row
 
 
+def test_list_reports_an_out_of_range_seat_as_stale_even_when_postgres_is_unreachable(registry: str) -> None:
+    """O2 does not need L2 at all: its evidence is structural, not observational (phaze-hrnww).
+
+    An index past the container's database count has no logical DB left for any client to
+    ``SELECT``, so it cannot possibly be in use whether or not Postgres answers. Before this fix
+    ``classify_seats`` checked ``unavailable`` L2 evidence ahead of O2, so an unreachable Postgres
+    reported exactly the 68/73/74/80-shaped wedged entries phaze-68wky exists to surface as
+    "in-use" — silencing the diagnostic at the moment an operator running ``test-db-seats`` with
+    Postgres down is most likely to need it. Unlike O1 (the previous test), O2 must fire regardless
+    of L2 state.
+    """
+    _registry_cli(registry, "HSET", _REGISTRY_KEY, "seat_wild_legacy", "68")
+
+    listing = _run(registry, "list", "--capacity", str(_CAPACITY), "--pg-container", _ABSENT_PG_CONTAINER)
+
+    assert listing.returncode == 0, listing.stderr
+    assert "did not answer" in listing.stderr
+    row = next(line for line in listing.stdout.splitlines() if "seat_wild_legacy" in line)
+    assert "stale" in row, f"O2 must fire even while L2 is unknown: {row}"
+    assert "(O2)" in row
+
+
 def test_a_seat_reclaimed_mid_sweep_survives_the_sweep(registry: str, tmp_path: Path) -> None:
     """The TOCTOU that made the sweep able to destroy a live seat (phaze-r311e).
 
