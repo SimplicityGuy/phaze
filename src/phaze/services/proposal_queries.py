@@ -131,11 +131,34 @@ class Pagination:
 
 @dataclass
 class ProposalStats:
-    """Aggregate statistics for proposals."""
+    """Aggregate statistics for proposals.
+
+    ``executed`` is its OWN count, not folded into ``approved`` (phaze-te2g3, ADR-0008 amendment).
+
+    ADR-0008 maps the operator state *Approved* onto persisted ``approved`` OR ``executed``, and
+    the obvious reading of that table is that ``approved`` here should be the union. It is
+    deliberately not, and the reason is that this dataclass feeds the Execute stage, where the
+    number an operator wants is "still to dispatch" -- persisted ``approved`` alone. Folding
+    ``executed`` in would make the Execute card count work it has already done as work it is about
+    to do, on the one screen that moves bytes.
+
+    The defect that opened the bead was not the split, it was that ``executed`` was counted by
+    ``total`` and by nothing else, so the per-status counts silently did not account for every row
+    in ``total``. Carrying ``executed`` as a separate field is the presentation-only fix: no
+    consumer's existing number changes, and every surface can show a set of counts that adds up.
+
+    ``failed`` (operator vocabulary: *Blocked*) is still unrepresented here, so the accounting
+    identity this type supports is ``pending + approved + executed + rejected + failed == total``
+    with the last term unavailable. That gap is bead phaze-5uh4u, not an oversight of this one.
+
+    This is a presentation contract only. ADR-0008's requirement that ``approved`` and ``executed``
+    stay DISTINCT in the persisted data is untouched -- nothing here migrates or collapses a status.
+    """
 
     total: int
     pending: int
     approved: int
+    executed: int
     rejected: int
     avg_confidence: float | None
 
@@ -262,11 +285,22 @@ async def bulk_approve_selected_above_confidence(
 
 
 async def get_proposal_stats(session: AsyncSession) -> ProposalStats:
-    """Get aggregate proposal statistics in a single query."""
+    """Get aggregate proposal statistics in a single query.
+
+    ``executed`` rides the SAME aggregate as its four siblings (phaze-te2g3). It is one more
+    ``count(case(...))`` term over the scan this function already performs, so the new number costs
+    no extra round trip and -- more importantly -- cannot disagree with ``total``. Reading it
+    separately would reintroduce, between two reads, exactly the arithmetic the field exists to fix.
+
+    Every existing term is unchanged, deliberately: ``approved`` still counts persisted ``approved``
+    ONLY. See :class:`ProposalStats` for why the ADR-0008 union is a presentation choice made per
+    surface rather than baked in here.
+    """
     stmt = select(
         func.count().label("total"),
         func.count(case((RenameProposal.status == ProposalStatus.PENDING, 1))).label("pending"),
         func.count(case((RenameProposal.status == ProposalStatus.APPROVED, 1))).label("approved"),
+        func.count(case((RenameProposal.status == ProposalStatus.EXECUTED, 1))).label("executed"),
         func.count(case((RenameProposal.status == ProposalStatus.REJECTED, 1))).label("rejected"),
         func.avg(RenameProposal.confidence).label("avg_confidence"),
     ).select_from(RenameProposal)
@@ -277,6 +311,7 @@ async def get_proposal_stats(session: AsyncSession) -> ProposalStats:
         total=row.total,
         pending=row.pending,
         approved=row.approved,
+        executed=row.executed,
         rejected=row.rejected,
         avg_confidence=float(row.avg_confidence) if row.avg_confidence is not None else None,
     )

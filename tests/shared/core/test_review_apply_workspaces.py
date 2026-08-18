@@ -1021,6 +1021,45 @@ async def test_apply_workspace_hosts_the_execute_trigger(
 
 
 @pytest.mark.asyncio
+async def test_apply_counter_row_accounts_for_executed_proposals(
+    client: AsyncClient, session: AsyncSession, seed_pending_proposal: Callable[..., Awaitable[RenameProposal]]
+) -> None:
+    """Regression (phaze-te2g3): the Execute counter row shows every proposal it totals.
+
+    ``Total`` is a plain ``count()``. ``Approved`` is ``count(case(status == APPROVED))`` and stays
+    that way deliberately -- on THIS card the operator's question is "what is still to dispatch", so
+    folding ADR-0008's ``approved OR executed`` union into it would count already-done work as
+    pending work on the one control that moves bytes. The defect was the other half: ``executed``
+    was counted by ``Total`` and by no visible status, so the row silently did not account for a
+    proposal it had already included in its own total.
+
+    Asserted as arithmetic over the rendered numbers rather than as the presence of a label, so it
+    fails on the old query regardless of what the new card happens to be called.
+    """
+    approved = await seed_pending_proposal(0.95, original_filename="counter-approved.mp3")
+    approved.status = ProposalStatus.APPROVED.value
+    executed = await seed_pending_proposal(0.95, original_filename="counter-executed.mp3")
+    executed.status = ProposalStatus.EXECUTED.value
+    rejected = await seed_pending_proposal(0.40, original_filename="counter-rejected.mp3")
+    rejected.status = ProposalStatus.REJECTED.value
+    await seed_pending_proposal(0.95, original_filename="counter-pending.mp3")
+    await session.commit()
+
+    body = (await client.get("/s/apply", headers={"HX-Request": "true"})).text
+
+    def metric(label: str) -> int:
+        after = body.split(f">{label}</span>", 1)
+        assert len(after) == 2, f"the Execute counter row has no {label!r} metric"
+        return int(after[1].split(">", 2)[1].split("<")[0].strip())
+
+    assert metric("Executed") == 1, "an executed proposal must have its own visible count"
+    assert metric("Approved") == 1, "Approved must NOT absorb executed rows -- Execute reads it as 'still to dispatch'"
+    assert metric("Needs Review") + metric("Approved") + metric("Executed") + metric("Rejected") == metric("Total"), (
+        "the per-status metrics must account for every proposal Total counts"
+    )
+
+
+@pytest.mark.asyncio
 async def test_apply_workspace_disables_execute_with_nothing_approved(client: AsyncClient) -> None:
     """With zero approved proposals the trigger is inert and says why -- it does not post an empty batch.
 
