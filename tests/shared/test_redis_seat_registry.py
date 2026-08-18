@@ -163,14 +163,42 @@ def throwaway_postgres() -> Iterator[str]:
         _docker("rm", "-f", container)
 
 
+# Both catalogue queries below are scoped with ``current_database()`` and run while connected to the
+# database they are asking about, rather than sweeping `datname LIKE 'phaze%'` from the `postgres`
+# database. `pg_stat_activity` is CLUSTER-wide, and `tests/shared/test_cluster_wide_catalog_scoping`
+# fails the build on an unscoped `FROM` for exactly that reason (phaze-ieqg).
+#
+# Being honest about the risk here: these run against a THROWAWAY container this module started, so
+# no other worktree's backends can appear in them and the cross-seat bug the guard exists to catch
+# is structurally impossible. The guard is a blunt source scan and does not know that. Scoping is
+# still the right answer -- an exemption would blunt a build-failing check for every other module to
+# excuse two queries that lose nothing by being precise, and "it is fine because of where it runs"
+# is exactly the reasoning that stops being true when someone later points a helper at the shared
+# harness.
+_BACKENDS_ON_THIS_DATABASE = (
+    "select count(*) from pg_stat_activity where backend_type = 'client backend' and datname = current_database() and pid <> pg_backend_pid()"
+)
+
+
 @pytest.fixture
 def postgres(throwaway_postgres: str) -> Iterator[str]:
     """Hand each test an empty Postgres: no ``phaze%`` databases and no backends left attached."""
     yield throwaway_postgres
-    _psql(throwaway_postgres, "select pg_terminate_backend(pid) from pg_stat_activity where datname like 'phaze%'")
-    for database in _psql(throwaway_postgres, "select datname from pg_database where datname like 'phaze%'").splitlines():
-        if database.strip():
-            _psql(throwaway_postgres, f'drop database if exists "{database.strip()}"')
+    for row in _psql(throwaway_postgres, "select datname from pg_database where datname like 'phaze%'").splitlines():
+        database = row.strip()
+        if not database:
+            continue
+        # Connected to the database being cleared, so `current_database()` names it; `pg_terminate_backend`
+        # cannot run from here against another database's backends, which is why this is a loop and not
+        # one sweep. Our own backend is excluded or we would terminate the connection issuing the query.
+        _psql(
+            throwaway_postgres,
+            "select pg_terminate_backend(pid) from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid()",
+            database=database,
+        )
+        # The drop runs from `postgres`: you cannot drop the database you are connected to, and the
+        # terminate above has already exited its own psql by now.
+        _psql(throwaway_postgres, f'drop database if exists "{database}"')
 
 
 def _psql(container: str, sql: str, *, database: str = "postgres") -> str:
@@ -191,9 +219,13 @@ def _attach_backend(container: str, database: str) -> None:
     """
     attached = _docker("exec", "-d", container, "psql", "-U", "phaze", "-d", database, "-c", "select pg_sleep(600)")
     assert attached.returncode == 0, attached.stderr
-    counted = f"select count(*) from pg_stat_activity where backend_type = 'client backend' and datname = '{database}'"  # noqa: S608 - test-literal database name, throwaway container
+    # Counted from INSIDE `database`, so the predicate is `current_database()` rather than an
+    # interpolated name -- which also retires the S608 waiver this line used to carry. Excluding our
+    # own pid is what keeps the count meaningful: the counting psql is itself a client backend on
+    # this database, so without it the loop would succeed on the first pass whether or not the
+    # sleeper ever attached, and every L2 test would be asserting against its own connection.
     for _ in range(80):
-        if int(_psql(container, counted)) >= 1:
+        if int(_psql(container, _BACKENDS_ON_THIS_DATABASE, database=database)) >= 1:
             return
         time.sleep(0.25)
     pytest.skip(f"could not attach a Postgres backend to {database}")
