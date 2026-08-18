@@ -48,7 +48,11 @@
 #
 #         obtained     the query answered. `pg_live` is authoritative, empty or not.
 #         unavailable  a container was named but did not answer. NOT a finding: every seat's L2
-#                      state is unknown, so classification keeps them all.
+#                      state is unknown, so classification keeps them all -- EXCEPT O2 (below),
+#                      whose evidence is structural rather than observational and so does not need
+#                      L2 at all (phaze-hrnww): `list` still reports an out-of-range legacy seat as
+#                      stale even when Postgres cannot be reached. `reclaim` is unaffected, since it
+#                      refuses outright on unavailable L2 before classify_seats ever runs.
 #         waived       the operator passed `--no-postgres-check`, accepting a sweep on L1/L3/O1/O2
 #                      alone. `reclaim` always says so on stderr -- see `cmd_reclaim`, and note the
 #                      warning is gated on the EVIDENCE, never on whether `--pg-container` happened
@@ -65,7 +69,9 @@
 # liveness test this design refuses. Each such seat stamps itself the next time its worktree runs
 # `test-db-for`, so the backlog drains on its own as seats are used.
 #
-# Two conditions override L3 (never L1/L2 -- nothing reclaims a seat that is demonstrably in use):
+# Two conditions override L3 (never L1/L2 -- nothing reclaims a seat that is demonstrably in use).
+# O2 also overrides unavailable L2 evidence in `list`'s reporting (phaze-hrnww) -- see the L2 note
+# above; O1 does not, and stays behind unavailable L2 as the weaker case.
 #
 #   O1  The seat's recorded origin directory (`phaze:test:redis-db-origin`, the worktree that ran
 #       `test-db-for`) no longer exists. The worktree is gone; the seat cannot come back.
@@ -766,6 +772,17 @@ classify_seats() {
       reason="a Redis client is connected to DB ${index} (L1)"
     elif [ "$pg_evidence" = "obtained" ] && seat_is_postgres_live "$name" "$pg_live"; then
       reason="a Postgres backend is connected to phaze_${name}_test (L2)"
+    elif [ "$index" -ge "$cap" ]; then
+      # Ahead of the `unavailable` branch below on purpose (phaze-hrnww): O2's evidence is
+      # structural, not observational -- an index past the cap has no logical DB for any client to
+      # `SELECT`, so Postgres being unreachable tells this branch nothing it needs. Reporting it
+      # "in-use" anyway (the pre-fix ordering) hid exactly the wedged 68/73/74/80-shaped entries an
+      # operator running `just test-db-seats` with Postgres down is most likely hunting for. This is
+      # `list`-only reporting: `reclaim --apply` still refuses outright on unavailable L2 evidence
+      # before it ever reaches classify_seats (see `require_postgres_evidence`), so nothing here
+      # weakens that refusal.
+      verdict="reclaim"
+      reason="index ${index} is past the ${cap}-database cap, so no client can be using it (O2)"
     elif [ "$pg_evidence" = "unavailable" ]; then
       # A container was named and did not answer. Its silence says nothing about this seat, so it
       # must not fall through to O1/L3 and be read as absence of life (phaze-gmkua defect B). This
@@ -774,9 +791,6 @@ classify_seats() {
     elif [ -n "$origin_path" ] && [ ! -d "$origin_path" ]; then
       verdict="reclaim"
       reason="origin worktree ${origin_path} no longer exists (O1)"
-    elif [ "$index" -ge "$cap" ]; then
-      verdict="reclaim"
-      reason="index ${index} is past the ${cap}-database cap, so no client can be using it (O2)"
     elif [ -z "$seen_at" ]; then
       # Allocated before phaze-68wky added lease stamps, so its age is genuinely unknown -- and
       # inventing an age for it would be exactly the guessed-at liveness test this design refuses.
