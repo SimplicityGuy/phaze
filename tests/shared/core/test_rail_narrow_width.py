@@ -33,6 +33,7 @@ from jinja2 import Environment, FileSystemLoader
 _TEMPLATES = Path(__file__).resolve().parents[3] / "src" / "phaze" / "templates"
 _RAIL_HTML = _TEMPLATES / "shell" / "partials" / "rail.html"
 _HEADER_HTML = _TEMPLATES / "shell" / "partials" / "header.html"
+_SHELL_HTML = _TEMPLATES / "shell" / "shell.html"
 
 # An opening <button ...> or <a ...> tag (attribute values never contain '>', so a
 # non-greedy [^>]* is safe even across the multi-line tags rail.html uses).
@@ -269,6 +270,77 @@ def test_the_traps_focus_restore_is_the_drawers_own_and_not_focus_traps() -> Non
     # and with `.noreturn` there is nothing else left to move focus anywhere.
     strays = [line.strip() for line in rail.splitlines() if re.search(r'=\s*"navOpen\s*=\s*false"', line)]
     assert not strays, f"close path(s) bypassing closeNav(), so focus is dropped when they fire: {strays}"
+
+
+def _close_nav_stage_binding() -> tuple[str, str]:
+    """The (event name, whole attribute) of the binding that calls ``closeNav('stage')``."""
+    match = re.search(
+        r"@(?P<event>htmx:[a-zA-Z-]+)(?P<modifiers>(?:\.[a-zA-Z-]+)*)=\"(?P<body>[^\"]*closeNav\(\s*['\"]stage['\"]\s*\)[^\"]*)\"",
+        _rail_source(),
+    )
+    assert match is not None, "no htmx binding calls closeNav('stage') -- an HTMX navigation no longer restores focus at all (phaze-bdeih)"
+    return match.group("event"), match.group(0)
+
+
+# htmx events that fire once the response has been swapped in. `htmx:afterSwap` is spelled
+# `htmx:after-swap` in an Alpine attribute (Alpine lowercases and hyphenates the listener name).
+_AFTER_SWAP_EVENTS = frozenset({"htmx:after-request", "htmx:after-settle", "htmx:after-swap", "htmx:after-on-load"})
+
+
+def test_the_navigation_restore_is_ordered_after_the_swap_that_creates_its_target() -> None:
+    """phaze-bdeih: `closeNav('stage')` must be bound to an event that fires AFTER the swap.
+
+    Its restore target is the ``<h1>`` the swap renders into ``#stage-workspace``. On any
+    ``before``-swap event that heading is still the OLD workspace's, or gone; ``_focusStageHeading()``
+    then either focuses a node the swap is about to destroy or fails outright, and `closeNav()` falls
+    back to the drawer trigger.
+
+    That failure is silent in the worst way: the browser cell asserts focus is not ``<body>``, and a
+    fallback to the trigger satisfies it. So the user is returned to the rail they just left --
+    the exact complaint this bead records -- while every lane stays green. Only pinning the ordering
+    here catches it, which is why this guard lives in the blocking suite and not the browser one.
+    """
+    event, attribute = _close_nav_stage_binding()
+    assert "before" not in event, f"{event} fires before the swap, so closeNav('stage') aims at a heading that does not exist yet (phaze-bdeih)"
+    assert event in _AFTER_SWAP_EVENTS, (
+        f"closeNav('stage') is bound to {event}, which is not known to fire after the swap. "
+        f"If it genuinely does, add it to _AFTER_SWAP_EVENTS with a reason. Binding: {attribute}"
+    )
+
+
+def test_the_stage_heading_focus_reports_whether_it_actually_landed() -> None:
+    """phaze-bdeih: `_focusStageHeading()` must read `activeElement` back, and `closeNav` must use it.
+
+    ``.focus()`` on an element inside a ``visibility: hidden`` or otherwise inert subtree is a no-op
+    that throws nothing -- the same silent-failure shape phaze-f65nu hit on the record slide-in. A
+    ``return !!heading`` here would report success for a focus that never landed, and `closeNav()`
+    would skip its fallback on the strength of it, leaving focus on ``<body>``.
+
+    Both halves are pinned because either alone is useless: an honest return value nothing reads,
+    or a fallback keyed off a value that is always true.
+    """
+    shell = _SHELL_HTML.read_text(encoding="utf-8")
+    start = shell.find("function _focusStageHeading()")
+    assert start != -1, "shell.html no longer defines _focusStageHeading() -- the drawer's restore calls it by name"
+    # Bounded by the next top-level function in the same <script>, or EOF if this is the last one.
+    # Falling through to a bare find() of -1 would slice to the end MINUS one character and quietly
+    # scan the whole file, so the guard would pass on a body that no longer contains either line.
+    end = shell.find("\n        function ", start + 1)
+    body = shell[start : end if end != -1 else len(shell)]
+
+    assert "heading.focus()" in body, "_focusStageHeading no longer focuses the heading"
+    assert "document.activeElement === heading" in body, (
+        "_focusStageHeading no longer verifies the focus LANDED -- a focus into a hidden subtree is a silent no-op (phaze-bdeih)"
+    )
+
+    rail = _rail_source()
+    _, binding = _close_nav_stage_binding()
+    close_nav = re.search(r"closeNav\(restore\)\s*\{(?P<body>.*?)\n\s*\},", rail, re.DOTALL)
+    assert close_nav is not None, "closeNav no longer takes a `restore` argument, so it cannot tell a navigation from an Escape (phaze-bdeih)"
+    assert "_focusStageHeading()" in close_nav.group("body"), f"closeNav no longer asks for the workspace heading; binding is {binding}"
+    assert "rail-drawer-trigger" in close_nav.group("body"), (
+        "closeNav has no fallback for a heading focus that did not land -- with `.noreturn` there is nothing else to move focus (phaze-bdeih)"
+    )
 
 
 def test_the_drawer_role_breakpoint_matches_tailwinds_lg() -> None:
