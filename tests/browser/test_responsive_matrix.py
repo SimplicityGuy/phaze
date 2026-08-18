@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from tests.browser import _seed
+from tests.browser import seed as _seed
 from tests.browser.conftest import THEMES, VIEWPORTS
 
 
@@ -241,7 +241,7 @@ def _collect_console(page: Any, sink: list[str]) -> None:
 
 async def _apply_state(dsn: str, state: str) -> None:
     """Put the app's database into one of the matrix's named states."""
-    await _seed.reset(dsn)
+    await _seed.reset_dsn(dsn)
     if state == "populated":
         await _seed.seed_populated(dsn)
     elif state == "degraded":
@@ -334,7 +334,7 @@ async def test_every_workspace_holds_the_layout_contract(viewport: str, theme: s
                     )
                     results.append({"stage": stage, "state": state, **probe})
     finally:
-        await _seed.reset(browser_dsn)
+        await _seed.reset_dsn(browser_dsn)
 
     # Printed BEFORE the assertion, so a failing cell still reports what it managed to exercise.
     # `-s` surfaces it; a normal run swallows it.
@@ -434,7 +434,7 @@ async def test_the_shell_survives_a_slow_workspace_fetch(viewport: str, page_at:
             assert probe["dark"] is True, f"{viewport}: the theme was dropped during a swap"
             assert not errors, f"{viewport}: console errors during a slow fetch {errors}"
     finally:
-        await _seed.reset(browser_dsn)
+        await _seed.reset_dsn(browser_dsn)
 
 
 @pytest.mark.parametrize("viewport", list(VIEWPORTS))
@@ -462,4 +462,4 @@ async def test_a_failed_refresh_renders_its_alert_without_breaking_the_layout(vi
             assert not probe["unnamed"], f"{viewport}: icon-only control(s) with no accessible name beside the error banner: {probe['unnamed']}"
             assert not errors, f"{viewport}: console errors while the error banner is up {errors}"
     finally:
-        await _seed.reset(browser_dsn)
+        await _seed.reset_dsn(browser_dsn)

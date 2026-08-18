@@ -305,10 +305,10 @@ async def test_a_wide_table_scrolls_inside_its_own_container(viewport: str, page
     Seeded, because an empty table has nothing to scroll and the step is therefore vacuous against
     the empty database every previous check ran on.
     """
-    from tests.browser import _seed
+    from tests.browser import seed as _seed
 
     try:
-        await _seed.reset(browser_dsn)
+        await _seed.reset_dsn(browser_dsn)
         await _seed.seed_populated(browser_dsn)
         async with page_at(viewport=viewport, theme="dark") as page:
             await _open(page, "/s/files")
@@ -336,7 +336,7 @@ async def test_a_wide_table_scrolls_inside_its_own_container(viewport: str, page
             assert scrolled["reached"] > 0, f"{viewport}: the files table container does not actually scroll"
             print(f"[tables] {viewport}: container scrollable by {scrolled['scrollable']}px, reached {scrolled['reached']}px")
     finally:
-        await _seed.reset(browser_dsn)
+        await _seed.reset_dsn(browser_dsn)
 
 
 # --- Step 6: focus survives an htmx swap --------------------------------------------------------

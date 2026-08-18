@@ -915,7 +915,8 @@ log line).
 
 ```bash
 # On the control plane: mint the compute-agent token, then paste it into secret.yaml below.
-phaze agents add --kind compute
+# `uv run` is required (phaze-u5k0d) — see docs/deployment.md Step 3 for why.
+docker compose exec api uv run phaze agents add --kind compute
 kubectl apply -f secret.yaml
 ```
 
