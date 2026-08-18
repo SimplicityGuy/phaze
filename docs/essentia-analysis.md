@@ -79,9 +79,11 @@ above `_FINE_CHUNK_WINDOWS`:
 - each chunk needs its own decode pass, because `MonoLoader` cannot seek. Non-final chunks
   interpose a `Trimmer` directly on the loader so the decode stops at the chunk boundary. That
   gate **is** taken on the deployed essentia — measured, zero fallbacks, full window sets — and is
-  worth **18.5–27%** of a non-final chunk's decode in a controlled A/B. The
-  `duration × (K + 1) / 2` figure describes the *audio volume* decoded and **not** the wall clock:
-  measured per-chunk decode time is not proportional to the chunk boundary (`phaze-b2qs9` §4).
+  worth **18.5–36.0%** of a non-final chunk's decode in a controlled A/B (`phaze-b2qs9` §4c, §4e).
+  The `duration × (K + 1) / 2` figure describes the *audio volume* decoded, not the wall clock:
+  measured per-chunk decode time is **not** proportional to the chunk boundary — across every
+  full run it instead *falls* as chunk index rises, and the ungated final chunk, which decodes the
+  whole file, is consistently the **cheapest** chunk of all (`phaze-b2qs9` §4b, §4d).
 
 > **⚠️ Measured on real hardware, and the table above does NOT describe the process.**
 > `phaze-b2qs9` (2026-08-12, [report](spikes/phaze-b2qs9-exhaustive-analysis-measurement.md)) ran

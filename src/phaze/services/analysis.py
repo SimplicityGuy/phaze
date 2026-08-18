@@ -1155,8 +1155,16 @@ def _decode_windows_streaming(
     above from a hazard into the mechanism: a ``Trimmer`` hung STRAIGHT off the loader (no
     ``Scale`` interposer) is exactly what stops the shared decode, so one interposed at the head
     of the fan-out with ``endTime`` just past the chunk's last window ends the decode there.
-    Total decode across ``K`` chunks falls from ``K x duration`` to roughly
-    ``duration x (K + 1) / 2``. It is an OPTIMISATION only: ``startTime`` stays 0 so every window
+    ``duration x (K + 1) / 2`` is the AUDIO VOLUME a gated run decodes across ``K`` chunks,
+    against ``K x duration`` ungated -- it is not a wall-clock model. phaze-b2qs9 §4 measured the
+    gate directly: it IS taken on the deployed essentia (zero fallbacks, full window sets, every
+    non-final chunk of every tier of every file) and it IS worth something -- **18.5-36.0%** of a
+    non-final chunk's decode in a controlled A/B (§4c, §4e) -- but per-chunk decode time is NOT
+    proportional to the chunk boundary. Across every full run it instead FALLS monotonically with
+    chunk index, and the ungated final chunk -- which decodes the whole file -- is consistently
+    the CHEAPEST chunk of all (§4b, §4d); a fine chunk admitting 11x the audio of chunk 0 cost
+    only 1.16x the wall clock. Treat the formula as the volume it is, not the saving it was
+    written to claim. It is still an OPTIMISATION only: ``startTime`` stays 0 so every window
     keeps absolute file time, the margin (:data:`_CHUNK_GATE_MARGIN_SEC`) guarantees the last
     window of the chunk is complete, and the final chunk is passed ``stop_at_sec=None`` because
     it runs to EOF anyway. If the gated network cannot be built or run, :func:`_decode_windows`
