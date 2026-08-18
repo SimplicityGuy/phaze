@@ -475,8 +475,19 @@ jobs:
             if [ "${status}" -eq 124 ]; then
               echo "::error::INFRASTRUCTURE -- the Chromium install did not complete within 600s; no test has run." >&2
               echo "The cache restore step above says whether a download was even outstanding; if it hit, this is the apt half." >&2
+              # phaze-17ni3: the ::error:: line above is real but gets buried behind the service
+              # containers' Postgres healthcheck spam when someone pulls raw job logs to diagnose a
+              # red run (observed on PRs #452, #453, #456). The step SUMMARY is a separate tab that
+              # spam never reaches, so put the one-line verdict there too.
+              {
+                echo "### 🚧 Browser job: INFRASTRUCTURE failure, not a test failure"
+                echo "The Chromium install did not complete within 600s -- no test ran. This is not evidence of a"
+                echo "product regression; re-running is reasonable. See the *Install the Chromium build* step's log"
+                echo "for whether the cache hit (then this is the apt half) or missed (then the download)."
+              } >> "${GITHUB_STEP_SUMMARY}"
             else
               echo "::error::the Chromium install failed with exit ${status}." >&2
+              echo "### ❌ Browser job: Chromium install failed (exit ${status})" >> "${GITHUB_STEP_SUMMARY}"
             fi
             exit 1
           fi
@@ -486,3 +497,30 @@ jobs:
         # unstyled page, and every layout assertion (drawer visibility, horizontal overflow) passes
         # vacuously. A browser suite with no CSS is worse than no browser suite.
         run: just test-browser
+
+      # phaze-17ni3: before this step, a failing test here left nothing behind but the pytest
+      # assertion text in the log -- the trace, screenshot-equivalent DOM snapshots and network log
+      # that `tests/browser/conftest.py` now captures on failure (see its "CI diagnosability"
+      # section) never left the runner. `test-results/traces/` is empty on a fully green run (the
+      # suite discards a passing test's trace rather than saving it -- retain-on-failure, not
+      # always-on), which is why `if-no-files-found` is `ignore` rather than `warn`/`error`.
+      #
+      # `!cancelled()` rather than `failure()`: a run that hits the job's 20-minute timeout is
+      # CANCELLED, not FAILED, and that is precisely when the evidence matters most -- whichever
+      # test was mid-flight when the timeout fired is the one nobody could otherwise diagnose.
+      # `always()` would additionally re-run this after an infrastructure failure further up (the
+      # Chromium install steps above), where `test-results/` cannot exist; `if-no-files-found:
+      # ignore` covers that case too rather than needing a second condition.
+      #
+      # Retention is 14 days, chosen deliberately rather than left at the repo/org default: long
+      # enough to cover the promotion window this job is on (FLAKE_RECORD.md's 10-consecutive-green
+      # bar), short enough that a suite with real, if rare, failures does not accumulate zip files
+      # indefinitely.
+      - name: 📤 Upload browser test artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: browser-test-results
+          path: test-results/
+          retention-days: 14
+          if-no-files-found: ignore
