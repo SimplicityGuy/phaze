@@ -275,6 +275,49 @@ def _run(container: str, *args: str, env: dict[str, str] | None = None) -> subpr
     )
 
 
+def _interleave_at_docker_call(
+    tmp_path: Path, match: str, action: str, *, occurrence: int = 1, shim_name: str = "shim-bin", counter_name: str = "calls"
+) -> tuple[dict[str, str], Path]:
+    """Env that makes the script run ``action`` just before its ``occurrence``-th call matching ``match``.
+
+    Generalizes the ``docker`` PATH-shim trick both interleaving families in this module rely on: a
+    real timing window in the script's own sequence of ``docker exec`` calls, forced open
+    deterministically instead of raced with sleeps — see ``_interleave_at_client_list`` (the
+    phaze-r311e precedent, keyed on ``CLIENT LIST``) for the full rationale. ``match`` is a
+    ``case``-pattern fragment tested against `` $* `` (space-padded, so ``"-n 3 FLUSHDB"`` matches
+    only that literal call, not a substring of some other argument).
+
+    Returns the env AND the counter file path, so a caller can assert how many times ``match`` was
+    actually seen — including zero, which is itself the interesting outcome when a fix removes a
+    round trip a test used to be able to interleave into.
+    """
+    real_docker = shutil.which("docker")
+    assert real_docker is not None, "the module-level skip should have caught this"
+
+    action_script = tmp_path / f"interleaved-{shim_name}-action.sh"
+    action_script.write_text(f"#!/usr/bin/env bash\nset -euo pipefail\nexport PATH={shlex.quote(os.environ['PATH'])}\n{action}\n", encoding="utf-8")
+    action_script.chmod(0o755)
+
+    counter = tmp_path / counter_name
+    bin_dir = tmp_path / shim_name
+    bin_dir.mkdir()
+    shim = bin_dir / "docker"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        'case " $* " in\n'
+        f'  *"{match}"*)\n'
+        f"    seen=$(( $(cat {shlex.quote(str(counter))} 2>/dev/null || echo 0) + 1 ))\n"
+        f'    printf %s "$seen" >{shlex.quote(str(counter))}\n'
+        f'    if [ "$seen" = "{occurrence}" ]; then {shlex.quote(str(action_script))} >&2; fi\n'
+        "    ;;\n"
+        "esac\n"
+        f'exec {shlex.quote(real_docker)} "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}, counter
+
+
 def _interleave_at_client_list(tmp_path: Path, action: str, *, occurrence: int = 2) -> dict[str, str]:
     """Env that makes the script run ``action`` just before its ``occurrence``-th ``CLIENT LIST``.
 
@@ -291,31 +334,8 @@ def _interleave_at_client_list(tmp_path: Path, action: str, *, occurrence: int =
     rather than a re-implementation of it. ``action`` runs with the ORIGINAL ``PATH``, so its own
     ``docker`` calls reach the real binary and cannot re-enter the shim.
     """
-    real_docker = shutil.which("docker")
-    assert real_docker is not None, "the module-level skip should have caught this"
-
-    action_script = tmp_path / "interleaved-action.sh"
-    action_script.write_text(f"#!/usr/bin/env bash\nset -euo pipefail\nexport PATH={shlex.quote(os.environ['PATH'])}\n{action}\n", encoding="utf-8")
-    action_script.chmod(0o755)
-
-    counter = tmp_path / "client-list-calls"
-    bin_dir = tmp_path / "shim-bin"
-    bin_dir.mkdir()
-    shim = bin_dir / "docker"
-    shim.write_text(
-        "#!/usr/bin/env bash\n"
-        'case " $* " in\n'
-        '  *" CLIENT LIST "*)\n'
-        f"    seen=$(( $(cat {shlex.quote(str(counter))} 2>/dev/null || echo 0) + 1 ))\n"
-        f'    printf %s "$seen" >{shlex.quote(str(counter))}\n'
-        f'    if [ "$seen" = "{occurrence}" ]; then {shlex.quote(str(action_script))} >&2; fi\n'
-        "    ;;\n"
-        "esac\n"
-        f'exec {shlex.quote(real_docker)} "$@"\n',
-        encoding="utf-8",
-    )
-    shim.chmod(0o755)
-    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    env, _counter = _interleave_at_docker_call(tmp_path, "CLIENT LIST", action, occurrence=occurrence)
+    return env
 
 
 def _allocate(container: str, seat: str, *, origin: str | None = None, capacity: int = _CAPACITY) -> subprocess.CompletedProcess[str]:
@@ -530,6 +550,62 @@ def test_release_frees_the_index_and_clears_only_that_seats_keys(registry: str, 
     assert _redis(registry, "-n", str(theirs), "DBSIZE") == "1", "another seat's keys are none of release's business"
     assert _registry_cli(registry, "HGET", _SEEN_KEY, "seat_mine") == ""
     assert _registry_cli(registry, "HGET", _ORIGIN_KEY, "seat_mine") == ""
+
+
+def test_free_seat_folds_the_registry_delete_and_the_flush_into_one_atomic_script(registry: str, tmp_path: Path) -> None:
+    """phaze-atu2e: ``free_seat``'s registry delete and its ``FLUSHDB`` used to be two round trips.
+
+    Before this fix, ``free_seat`` CAS-deleted the registry entry inside one ``EVAL``, then issued
+    ``FLUSHDB`` on the freed index as a SEPARATE ``docker exec``. Between those two calls the index
+    was registry-free — and worst exactly when the registry is FULL, which is exactly when an
+    operator runs ``reclaim --apply`` (the bead's own point): a concurrent ``allocate`` has nowhere
+    else to go but the just-freed index, so it legitimately claims it, clears what it sees as
+    leftover data from the old seat, and starts writing. The still-pending, now-stale ``FLUSHDB``
+    then wipes the new holder's live keys.
+
+    So this fills every allocatable index first, forcing recycling to be the ONLY option, then
+    interleaves a racing ``allocate`` + write at exactly the old two-round-trip boundary — the same
+    PATH-shim technique ``_interleave_at_client_list`` uses for phaze-r311e: intercept the specific
+    ``-n <index> FLUSHDB`` call ``free_seat`` used to issue as its second round trip, and fire the
+    racer immediately before forwarding that call to the real Redis. Against the fix, no such call
+    exists on this path any more — folded into the same ``EVAL`` as the delete — so the shim's
+    target is never matched at all (asserted below via the zero-occurrence counter file), and the
+    same race, driven sequentially instead, shows the freed index comes back clean and stays that
+    way.
+    """
+    seats = {seat: _index_of(_allocate(registry, seat, origin=str(tmp_path))) for seat in (f"seat_{n}" for n in range(_ALLOCATABLE))}
+    old = seats["seat_2"]
+    _redis(registry, "-n", str(old), "SET", "old-marker", "x")
+
+    racer_env, occurrences = _interleave_at_docker_call(
+        tmp_path,
+        f"-n {old} FLUSHDB",
+        action=(
+            f"{shlex.quote(str(_SCRIPT))} allocate --redis-container {shlex.quote(registry)} "
+            f"--seat seat_racer --capacity {_CAPACITY} --origin {shlex.quote(str(tmp_path))} >/dev/null\n"
+            f"docker exec {shlex.quote(registry)} redis-cli -n {old} SET racer-canary 1 >/dev/null\n"
+        ),
+        shim_name="shim-bin-flushdb",
+        counter_name="flushdb-calls",
+    )
+
+    released = _run(registry, "release", "--seat", "seat_2", "--capacity", str(_CAPACITY), env=racer_env)
+
+    assert released.returncode == 0, released.stderr
+    assert not occurrences.exists(), (
+        "free_seat must no longer issue a separate `-n <index> FLUSHDB` round trip after its registry "
+        "delete -- that second round trip is the phaze-atu2e window this test guards against"
+    )
+
+    # The interception above never fired -- there is no separate FLUSHDB left to intercept -- so drive
+    # the identical race sequentially instead: whoever claims the freed index next must get it clean,
+    # and nothing left running from the already-finished `release` call may still act on it afterward.
+    reused = _index_of(_allocate(registry, "seat_racer", origin=str(tmp_path)))
+    assert reused == old, "with the registry full, the freed index is the only one left to hand over"
+    _redis(registry, "-n", str(reused), "SET", "racer-canary", "1")
+
+    assert _redis(registry, "-n", str(reused), "GET", "racer-canary") == "1", "the new holder's key must survive release"
+    assert _redis(registry, "-n", str(reused), "DBSIZE") == "1", "nothing from the finished `release` call may still act on this index"
 
 
 def test_release_of_an_unknown_seat_is_a_no_op(registry: str) -> None:
