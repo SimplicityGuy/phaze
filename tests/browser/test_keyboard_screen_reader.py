@@ -63,6 +63,11 @@ _ACTIVE_JS = """
         name: (el.getAttribute('aria-label') || el.innerText || '').trim().slice(0, 60),
         inRail: !!el.closest('aside[aria-label="Pipeline navigation"]'),
         inDialog: !!el.closest('[role="dialog"]'),
+        // phaze-bdeih: "not <body>" is too weak a bar for the drawer path. Falling back to the
+        // drawer trigger also satisfies it, and that is precisely the outcome the bead complains
+        // about -- the keyboard user is returned to the rail they just left. Reading whether focus
+        // is inside the swapped-in workspace is what distinguishes the two.
+        inWorkspace: !!el.closest('#stage-workspace'),
     };
 }
 """
@@ -357,6 +362,12 @@ async def test_focus_is_not_dropped_to_the_body_when_navigating_by_keyboard(view
     comment on the ``x-data`` there for why the ordering cannot be lost rather than merely usually
     won. If this reddens below ``lg`` again, the suspect is a close path that stopped going through
     ``closeNav()``, not this assertion's timing.
+
+    The landing assertion is stricter than the bead's own wording. "Not ``<body>``" is satisfied by
+    ``closeNav()``'s FALLBACK to the drawer trigger too, so a restore that silently stopped reaching
+    the workspace -- rebinding it to a ``before``-swap htmx event does exactly that -- would still
+    have read green here while returning the user to the rail they just left. The sibling test below
+    covers what one navigation per browser cannot: repetition, and ``prefers-reduced-motion``.
     """
     async with page_at(viewport=viewport, theme=theme) as page:
         await _open(page)
@@ -374,8 +385,82 @@ async def test_focus_is_not_dropped_to_the_body_when_navigating_by_keyboard(view
                 return marker !== null && marker.dataset.documentTitle === 'Metadata';
             }"""
         )
-        active = await _settle(page, lambda a: a["tag"] != "body")
+        active = await _settle(page, lambda a: a["tag"] != "body" and a["inWorkspace"])
         assert active["tag"] != "body", f"{viewport}/{theme}: the rail swap dropped focus to <body>"
+        # Stricter than the bead's own wording, deliberately. `!= "body"` is also satisfied by
+        # `closeNav()`'s fallback to the drawer trigger, and a user parked back on the trigger has
+        # to tab the whole rail again -- the very complaint. Only landing inside the workspace the
+        # swap just rendered is the property worth pinning.
+        assert active["inWorkspace"], f"{viewport}/{theme}: focus landed on {active['id'] or active['name']!r}, outside the swapped-in workspace"
+
+
+_BELOW_LG_VIEWPORTS = [v for v in VIEWPORTS if VIEWPORTS[v]["width"] < _LG_BREAKPOINT_PX]
+
+_SWAP_COUNTER = """
+() => {
+    window.__stageSwaps = 0;
+    document.body.addEventListener('htmx:afterSwap', (event) => {
+        const target = (event.detail && event.detail.target) || event.target;
+        if (target && target.id === 'stage-workspace') window.__stageSwaps++;
+    });
+}
+"""
+
+# Cycled rather than repeated: navigating to the stage already mounted is a different (and easier)
+# path than replacing one workspace with another, and only the latter destroys the node focus was
+# on. Six distinct destinations, so no iteration is a no-op re-render.
+_STAGE_CYCLE = ("metadata", "analyze", "tracklist", "files", "summary", "discover")
+
+
+@pytest.mark.parametrize("motion", ["no-preference", "reduce"])
+@pytest.mark.parametrize("viewport", _BELOW_LG_VIEWPORTS)
+async def test_the_drawer_restores_focus_on_every_navigation_and_under_reduced_motion(viewport: str, motion: str, page_at: Any) -> None:
+    """phaze-bdeih: the drawer's focus restore, exercised repeatedly and with the animation removed.
+
+    Two properties the single-navigation cell above cannot show, both of which the fix's own
+    reasoning depends on.
+
+    **Repetition.** The defect this bead records was intermittent -- 8 of 12 cell-runs -- because it
+    was a race between the restore and the drawer's close flush. One navigation per browser samples
+    that race once. Six consecutive navigations inside one page sample it six times, and also cover
+    the state the first navigation cannot reach: a drawer that has already opened, closed and
+    restored focus once before.
+
+    **Reduced motion.** ``closeNav()`` deliberately anchors its restore to ``$nextTick`` rather than
+    the drawer's slide-out ``transitionend``, because that transition is ``motion-safe:`` only and
+    therefore never fires under ``prefers-reduced-motion: reduce``. Nothing exercised that
+    preference, so a re-anchor to ``transitionend`` would have passed every existing cell while
+    dropping focus permanently for exactly the users who asked for less animation. This
+    parametrization is the cell that would catch it.
+
+    Measured 2026-08-18, macOS/arm64, Chromium: **12 consecutive runs of this test and the one above,
+    0 failures** -- 336 below-``lg`` keyboard drawer navigations, every one landing on the workspace
+    ``<h1>``. The bead recorded 8 of 12 below-``lg`` cell-runs dropping focus before the fix, so a
+    count is the only honest form the evidence can take; a single green run says nothing about a
+    race.
+    """
+    async with page_at(viewport=viewport, theme="light", reduced_motion=motion) as page:
+        await _open(page)
+        await page.evaluate(_SWAP_COUNTER)
+
+        landings: list[str] = []
+        for index, stage in enumerate(_STAGE_CYCLE):
+            await page.locator("#rail-drawer-trigger").focus()
+            await page.keyboard.press("Enter")
+            await page.locator("#rail-drawer").wait_for(state="visible")
+
+            await page.locator(f'a[data-rail-stage="{stage}"]').first.focus()
+            await page.keyboard.press("Enter")
+            await page.wait_for_function("(seen) => window.__stageSwaps > seen", arg=index)
+
+            active = await _settle(page, lambda a: a["tag"] != "body" and a["inWorkspace"])
+            landings.append(f"{stage}->{active['tag']}#{active['id'] or ''}")
+            assert active["tag"] != "body", f"{viewport}/{motion}: navigation {index + 1} to {stage} dropped focus to <body>"
+            assert active["inWorkspace"], (
+                f"{viewport}/{motion}: navigation {index + 1} to {stage} left focus on "
+                f"{active['id'] or active['name']!r}, outside the swapped-in workspace"
+            )
+        print(f"[drawer-focus] {viewport}/{motion}: {', '.join(landings)}")
 
 
 # --- The screen-reader surrogate: the platform accessibility tree -------------------------------
