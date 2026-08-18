@@ -98,7 +98,12 @@ def test_palette_has_close_control_platform_shortcuts_and_required_groups() -> N
     assert ">Navigate<" in results
     assert ">Commands<" in results
     command_soup = BeautifulSoup(results, "html.parser")
-    outcome = command_soup.select_one('#cmdk-command-result[role="status"][aria-live="polite"]')
+    # phaze-jng72: the outcome live region belongs to the MODAL, not to this swapped fragment —
+    # #cmdk-results is an hx-swap="innerHTML" target, so a live region rendered here is destroyed
+    # by the next keystroke (and is an invalid child of role="listbox"). It must still exist, and
+    # the command rows must still resolve it by id from inside the swapped subtree.
+    assert command_soup.select_one("#cmdk-command-result") is None
+    outcome = BeautifulSoup(modal, "html.parser").select_one('#cmdk-command-result[role="status"][aria-live="polite"]')
     assert isinstance(outcome, Tag)
     for command in command_soup.select('button[id^="cmdk-cmd-"]'):
         assert command.get("hx-target") == "#cmdk-command-result"
