@@ -390,6 +390,20 @@ coverage-combine:
 repowise-coverage seat="":
     @bash scripts/repowise-coverage.sh "{{seat}}"
 
+# Reuse CI's combined coverage without re-running the 21-minute suite. The workflow run is the
+# source-of-truth for BOTH inputs: its head SHA is temporarily checked out at this durable repo
+# path for `repowise update`, and its own `coverage-combined` artifact supplies .coverage plus
+# coverage.xml. The script restores the caller's branch even on failure; the durable Repowise
+# index intentionally remains at the selected run SHA so source lines and coverage never drift.
+#
+# With no argument, the newest successful `CI` push on main is selected. Pass a numeric Actions
+# run ID to reproduce an older successful main run. Pull-request, failed, incomplete, expired,
+# mismatched, or artifact-less runs are rejected before the checkout/index is changed.
+[doc('Refresh repowise from CI coverage: latest successful main run by default, or pass an exact Actions run ID')]
+[group('test')]
+repowise-coverage-ci run_id="":
+    @uv run python scripts/repowise_coverage_from_ci.py "{{run_id}}"
+
 [doc('Classify changed files (newline-delimited on stdin) as code-changed=true|false for the CI doc-only skip gate (CI-04)')]
 [group('test')]
 detect-code-changes:
