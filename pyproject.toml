@@ -145,9 +145,9 @@ ignore_missing_imports = true
 module = ["yaml"]
 ignore_missing_imports = true
 
-# Playwright ITSELF is still never a project dependency (ephemeral `uv run --with playwright`)
-# -- scripts/analyze_browser_soak.py (Phase 95, phaze-zqvh.5) is the sole consumer, run manually
-# against a live dev instance, never in CI.
+# Playwright is pinned in the `browser` dependency group for the real-browser test suite and
+# scripts/analyze_browser_soak.py. It is not a runtime project dependency; production uses the
+# separately pinned Patchright package below.
 #
 # SUPERSEDED IN PART (phaze-fq9h.1, 2026-08-02): the "zero-new-dependencies" constraint this
 # comment used to cite as the reason NO browser automation library could be a real dependency was
@@ -155,7 +155,7 @@ ignore_missing_imports = true
 # pinned real dependency (see [project].dependencies) because the 1001Tracklists render path
 # cannot work without a browser at runtime, in production, on a worker -- an `uv run --with`
 # invocation cannot serve that. Do not re-litigate this as an accidental dependency; the ephemeral
-# rule survives only for the manual soak script above.
+# boundary survives because Playwright remains isolated to a development-only dependency group.
 [[tool.mypy.overrides]]
 module = ["playwright.*"]
 ignore_missing_imports = true
@@ -191,10 +191,9 @@ markers = [
     "browser: real-browser Playwright tests (phaze-tzy6s.14). Excluded from the default run by `addopts`; run with `just test-browser`.",
 ]
 # phaze-tzy6s.14: the browser suite is deselected by DEFAULT, not merely un-run by convention.
-# Playwright is not a project dependency (only Patchright is -- see the mypy override comment
-# below), so a bare `uv run pytest` in a fresh checkout would otherwise fail at import on a
-# dependency the project deliberately does not install. `-m browser` on the command line
-# overrides this, which is what `just test-browser` passes.
+# Playwright is isolated to the optional `browser` dependency group (only Patchright is a runtime
+# dependency -- see the mypy override comment below), so a default `uv sync` does not install it.
+# `-m browser` on the command line overrides this, which is what `just test-browser` passes.
 addopts = "-m 'not browser'"
 testpaths = ["tests"]
 
@@ -308,6 +307,9 @@ constraint-dependencies = [
 ]
 
 [dependency-groups]
+browser = [
+    "playwright==1.62.0",
+]
 dev = [
     "bandit>=1.9.4",
     "defusedxml>=0.7.1",

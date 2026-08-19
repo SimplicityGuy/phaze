@@ -253,10 +253,10 @@ test-file FILE:
 # Alembic migrations) against its OWN database, derived from this worktree's TEST_DATABASE_URL seat
 # by appending `_browser`, and drives it with Playwright.
 #
-# Playwright is deliberately NOT a project dependency (only Patchright is — it is needed at RUNTIME
-# by the 1001Tracklists render path; see the pyproject mypy-override comment). This suite therefore
-# uses the ephemeral `uv run --with` idiom, the same one scripts/analyze_browser_soak.py uses. The
-# browsers themselves are a one-off install:
+# Playwright is pinned in pyproject.toml's development-only `browser` dependency group. Keeping the
+# runner and browser revision in uv.lock prevents the browser toolchain from changing under an
+# unchanged commit; Patchright remains the separate runtime browser dependency. Browser binaries
+# are a one-off install:
 #
 #     just test-browser-install     # once per machine
 #     just test-db                  # the shared Postgres/Redis harness must be up
@@ -267,7 +267,15 @@ test-file FILE:
 [doc('Install the Chromium build the browser suite drives (run once per machine)')]
 [group('test')]
 test-browser-install:
-    uv run --with playwright playwright install --with-deps chromium
+    uv run --group browser playwright install --with-deps chromium
+
+# CI runners already contain Chromium's shared libraries. Installing only Playwright's pinned
+# headless shell avoids the unconditional apt-get update performed by `install --with-deps`, which
+# can hang on an unhealthy Ubuntu mirror even when the browser cache hits.
+[doc('Install only the pinned headless Chromium build for CI (no apt/system dependency changes)')]
+[group('test')]
+test-browser-install-ci:
+    uv run --group browser playwright install --only-shell chromium
 
 # Depends on `tailwind` deliberately. Without the compiled src/phaze/static/css/app.css the app
 # serves an UNSTYLED page: every asset request 404s and every layout assertion (drawer visibility,
@@ -277,7 +285,7 @@ test-browser-install:
 [doc('Run the real-browser Playwright suite (needs `just test-db` up; excluded from the default run)')]
 [group('test')]
 test-browser: tailwind
-    uv run --with playwright --with pytest-asyncio --with asyncpg pytest tests/browser -m browser -q
+    uv run --group browser pytest tests/browser -m browser -q
 
 # Non-blocking dead-code sweep (CLEAN-02). NOT a CI/pre-commit gate — framework-invoked
 # code produces false-positives that need per-candidate human reachability judgment. A
