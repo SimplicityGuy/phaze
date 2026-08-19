@@ -1,4 +1,4 @@
-"""Tests for the ``*/5`` in-flight K8s reconcile cron (Phase 54, Plan 06 -- KSUBMIT-02..06, D-01..D-08).
+"""Tests for the every-minute in-flight K8s reconcile cron (Phase 54, Plan 06 -- KSUBMIT-02..06, D-01..D-08).
 
 ``reconcile_cloud_jobs(ctx)`` iterates the ``cloud_job`` in-flight registry (status IN SUBMITTED,
 RUNNING -- D-02), reads each Job + paired Kueue Workload through the monkeypatched ``kube_staging``
@@ -360,12 +360,17 @@ async def test_admission_to_success_sequence(session: AsyncSession, monkeypatch:
     monkeypatch.setattr("phaze.services.kube_staging.get_job", GetJobSpy(fake_job(name=name)))
     monkeypatch.setattr("phaze.services.kube_staging.get_workload_for", GetWorkloadSpy(PENDING))
     await reconcile_cloud_jobs(ctx)
-    assert (await _read_cloud_job(session, fid)).status == CloudJobStatus.SUBMITTED.value
+    pending = await _read_cloud_job(session, fid)
+    assert pending.status == CloudJobStatus.SUBMITTED.value
+    assert pending.cloud_phase == CloudPhase.QUEUED_BEHIND_QUOTA.value
 
     # Tick 2: Admitted -> RUNNING.
     monkeypatch.setattr("phaze.services.kube_staging.get_workload_for", GetWorkloadSpy(ADMITTED))
     await reconcile_cloud_jobs(ctx)
-    assert (await _read_cloud_job(session, fid)).status == CloudJobStatus.RUNNING.value
+    running = await _read_cloud_job(session, fid)
+    assert running.status == CloudJobStatus.RUNNING.value
+    assert running.cloud_phase == CloudPhase.RUNNING.value
+    assert running.inadmissible is False
 
     # Tick 3: still Admitted -> stays RUNNING (idempotent).
     await reconcile_cloud_jobs(ctx)

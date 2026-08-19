@@ -9,7 +9,7 @@ Task 1 (this wave, RED-first) locks the two degrade-safe lane-data helpers in ``
   writes no ``cloud_job`` row, but genuinely completes work and must show it, read straight off
   ``files``/``analysis``); each row's ``completed_at`` is the TRUE ``AnalysisResult.analysis_completed_at``
   instant, not a lane-side observation timestamp (the kueue lane's old ``CloudJob.updated_at`` only moves
-  on the next ``*/5 * * * *`` reconcile tick, clustering every completion on a 5-minute boundary); and
+  on a periodic reconcile tick, historically clustering completion observations on 5-minute boundaries); and
   each row's ``label`` is the file's own name, never the bare ``file_id.hex[:8]`` the panel used to show
   (confirmed a UUID prefix, not the sha256 it was presumed to be).
 * ``get_lane_queue_depths(app_state, backend_id)`` -- per-lane-tier queue depth, each source degrading
@@ -103,9 +103,9 @@ async def test_recent_completions_bounded_newest_first(session: AsyncSession, ma
 async def test_recent_completions_prefers_true_completion_time_over_reconcile_tick(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
     """phaze-2u8v.3 (b): a row's completed_at is the TRUE analysis_completed_at, not the lagging cloud_job.updated_at.
 
-    Regression fixture for the confirmed root cause: ``reconcile_cloud_jobs`` is a fixed ``*/5 * * * *``
-    CronJob (``tasks/controller.py``), so a kueue completion's ``cloud_job.updated_at`` is stamped on
-    whichever 5-minute tick happens to notice it -- always LATER than, and unrelated in spacing to, the
+    Regression fixture for the confirmed root cause: ``reconcile_cloud_jobs`` is periodic, so a kueue
+    completion's ``cloud_job.updated_at`` is stamped on whichever tick happens to notice it -- always
+    LATER than, and unrelated in spacing to, the
     real completion instant recorded in ``analysis.analysis_completed_at`` by the agent callback. This
     mirrors the live-archive shape confirmed for phaze-2u8v.3: a completion whose true instant was
     ``20:05:21`` read back with ``cloud_job.updated_at`` bucketed to the next tick, ``20:10:00``.
@@ -114,7 +114,7 @@ async def test_recent_completions_prefers_true_completion_time_over_reconcile_ti
 
     file = await make_file(original_filename="live-set.mp3")
     true_completed_at = datetime(2026, 7, 27, 20, 5, 21, tzinfo=UTC)
-    tick_observed_at = datetime(2026, 7, 27, 20, 10, 0)  # naive: the next */5 cron tick after the real completion
+    tick_observed_at = datetime(2026, 7, 27, 20, 10, 0)  # naive: a later historical reconcile observation
     session.add(
         CloudJob(
             id=uuid.uuid4(),

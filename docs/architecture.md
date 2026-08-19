@@ -319,7 +319,7 @@ lifespan as `app.state.task_router`.
   allow-list, the shared whole-host rate limiter, the render engine's Turnstile handling,
   and the caches), and Discogs matching. It also owns the **cloud/backend control plane**:
   `stage_cloud_window` (the tiered-drain top-up cron, `tasks/release_awaiting_cloud.py`), `submit_cloud_job`
-  (Kueue Job submission), and `reconcile_cloud_jobs` (the `*/5` in-flight cloud-job
+  (Kueue Job submission), and `reconcile_cloud_jobs` (the every-minute in-flight cloud-job
   reconcile cron). It further registers the control-only reapers and recovery producer:
   `reap_stalled_scans` (every-minute no-progress scan reaper), `reap_stuck_aborting_jobs`
   (every-minute reaper for SAQ rows stuck in `status='aborting'`, `tasks/aborting_reaper.py`,
