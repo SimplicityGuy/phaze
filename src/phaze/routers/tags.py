@@ -24,7 +24,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Literal, cast
 import uuid
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -619,13 +619,26 @@ async def _load_bulk_candidates(
     return candidates, validated
 
 
+# The closed set of per-candidate outcomes. A Literal (not a bare str) so mypy forces
+# _run_bulk_candidates to stay exhaustive: an outcome added here without a matching tally branch
+# is a type error, not a silent "skipped".
+_BulkOutcome = Literal["queued", "noop", "skipped", "failed"]
+
+
 async def _dispatch_bulk_candidate(
     session: AsyncSession,
     request: Request,
     candidate: _BulkCandidate,
     validated: dict[uuid.UUID, tuple[dict[str, Any], dict[str, str | int | None]]],
-) -> str:
+) -> _BulkOutcome:
     """Resolve ONE bulk-write candidate; returns ``"queued" | "noop" | "skipped" | "failed"``.
+
+    phaze-oc06m review finding: the return is a ``Literal``, not a bare ``str``. The
+    pre-decomposition code incremented the tallies inline, where a typo'd outcome was impossible;
+    once the branch result travels as a string, an unrecognised value would fall through every
+    ``elif`` in :func:`_run_bulk_candidates` and be silently counted as ``"skipped"`` -- the file
+    dispatched, the operator's toast under-reporting it, and no error anywhere. The ``Literal``
+    makes that a mypy failure instead.
 
     phaze-oc06m: extracted from :func:`bulk_write_no_discrepancies`'s per-candidate loop body to
     bring the function under the CCN/nesting bar -- a pure move, not a behavior change. Every
@@ -853,6 +866,13 @@ async def bulk_write_no_discrepancies(
         if owns_lock_conn:
             await lock_conn.commit()
 
+        # phaze-oc06m review finding: bound BEFORE the try, as the pre-decomposition code was.
+        # Today the inner try has only a ``finally``, so a raise from ``_load_bulk_candidates``
+        # propagates past the ``return`` below and these can't be read unbound -- but that is safe
+        # by accident, not by construction. Adding any ``except`` clause here later would turn a
+        # swallowed error into an UnboundLocalError at the return instead of a zero-tally response.
+        queued, noop, failed = 0, 0, 0
+        resolved_ids: list[uuid.UUID] = []
         try:
             candidates, validated = await _load_bulk_candidates(session, reviewed_by_id)
             queued, noop, failed, resolved_ids = await _run_bulk_candidates(session, request, candidates, validated)
