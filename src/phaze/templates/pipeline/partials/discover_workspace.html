@@ -4,14 +4,14 @@
 {% set last_scan_when = recent_scans[0].created_at.strftime('%Y-%m-%d %H:%M') if recent_scans and recent_scans[0].created_at else 'never' %}
 {% set subcount = '`${$store.pipeline.discovered} files · last scan ' ~ last_scan_when ~ ' · ${$store.pipeline.notYetEnriched} not yet enriched`' %}
 {% set _secondary = 'inline-flex h-9 items-center justify-center rounded-lg border border-gray-300 bg-white px-3 font-jura text-xs font-medium uppercase tracking-wider text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-300 dark:hover:bg-white/5' %}
-{% set _recover = 'inline-flex h-9 items-center justify-center rounded-lg border border-amber-400 px-3 font-jura text-xs font-medium uppercase tracking-wider text-amber-800 hover:bg-amber-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950' %}
+{% set _recover = 'inline-flex h-9 items-center justify-center rounded-lg border border-amber-400 px-3 font-jura text-xs font-medium uppercase tracking-wider text-warn hover:bg-amber-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-amber-700 dark:hover:bg-amber-950' %}
 
 {% call ws.workspace(title="DISCOVER", subcount=subcount) %}
     <div class="space-y-6 p-4 sm:p-6">
         <section aria-labelledby="scan-files-heading">
             <div class="mb-3">
                 <h2 id="scan-files-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-900 dark:text-gray-100">SCAN FILES</h2>
-                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Choose the agent and directory below. These routine settings stay visible so a scan can start without opening another panel.</p>
+                <p class="mt-1 text-sm text-muted ">Choose the agent and directory below. These routine settings stay visible so a scan can start without opening another panel.</p>
             </div>
             {% include "pipeline/partials/trigger_scan_card.html" %}
         </section>
@@ -19,7 +19,7 @@
         <section aria-labelledby="recovery-heading" class="border-t border-gray-200 pt-5 dark:border-phaze-border">
             <div class="mb-3">
                 <h2 id="recovery-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-900 dark:text-gray-100">EXCEPTIONAL RECOVERY</h2>
-                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Recovery re-enqueues scheduled work that no queue or agent is currently processing. It is not required for routine scans.</p>
+                <p class="mt-1 text-sm text-muted ">Recovery re-enqueues scheduled work that no queue or agent is currently processing. It is not required for routine scans.</p>
             </div>
             <div x-show="$store.pipeline.metadataOrphan + $store.pipeline.analyzeOrphan > 0" x-cloak>
                 {% call ui.actionable_alert('Orphaned work detected', 'Metadata or analysis work was scheduled but is no longer present in a live queue. Recover replays only that orphaned ledger work; already-running jobs remain deduplicated.', 'attention') %}
@@ -33,7 +33,7 @@
                                 aria-describedby="recover-gate-copy"
                                 class="{{ _recover }}">Recover orphaned work</button>
                         <span id="discover-recover-spinner" class="htmx-indicator text-xs">Recovering…</span>
-                        <span x-show="error" class="text-xs text-red-700 dark:text-red-300">Recovery could not start. Retry.</span>
+                        <span x-show="error" class="text-xs text-danger ">Recovery could not start. Retry.</span>
                     </span>
                     <span id="recover-gate-copy" x-show="$store.pipeline.agentBusy > 0" class="text-xs">Recovery is gated while agent jobs are active. Wait for the active queue to settle.</span>
                 {% endcall %}
@@ -41,7 +41,7 @@
             <details x-show="$store.pipeline.metadataOrphan + $store.pipeline.analyzeOrphan === 0" class="rounded-lg border border-gray-200 bg-gray-50 dark:border-phaze-border dark:bg-phaze-panel">
                 <summary class="cursor-pointer px-4 py-3 text-sm font-semibold text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-gray-300">No orphaned enrich work detected</summary>
                 <div class="border-t border-gray-200 p-4 dark:border-phaze-border">
-                    <p class="text-sm text-gray-500 dark:text-gray-400">Use recovery only after diagnostics identify lost scheduled work. Active jobs disable the action to avoid competing with normal queue processing.</p>
+                    <p class="text-sm text-muted ">Use recovery only after diagnostics identify lost scheduled work. Active jobs disable the action to avoid competing with normal queue processing.</p>
                     <span class="mt-3 inline-flex flex-wrap items-center gap-2" x-data="{ error: false }" @htmx:after-request="error = !$event.detail.successful">
                         <button type="button"
                                 hx-post="/pipeline/recover" hx-target="#discover-recover-response" hx-swap="innerHTML"
@@ -50,10 +50,10 @@
                                 @click="error = false"
                                 :disabled="$store.pipeline.agentBusy > 0"
                                 class="{{ _secondary }}">Run recovery check</button>
-                        <span id="discover-recover-spinner-idle" class="htmx-indicator text-xs text-gray-500 dark:text-gray-400">Recovering…</span>
-                        <span x-show="error" class="text-xs text-red-700 dark:text-red-400">Recovery could not start. Retry.</span>
+                        <span id="discover-recover-spinner-idle" class="htmx-indicator text-xs text-muted ">Recovering…</span>
+                        <span x-show="error" class="text-xs text-danger ">Recovery could not start. Retry.</span>
                     </span>
-                    <p x-show="$store.pipeline.agentBusy > 0" class="mt-2 text-xs text-amber-700 dark:text-amber-400">Unavailable while agent jobs are active.</p>
+                    <p x-show="$store.pipeline.agentBusy > 0" class="mt-2 text-xs text-warn ">Unavailable while agent jobs are active.</p>
                 </div>
             </details>
             <div id="discover-recover-response" class="mt-3 text-sm empty:hidden" aria-live="polite"></div>

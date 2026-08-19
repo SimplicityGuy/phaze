@@ -20,34 +20,34 @@
          hx-get="/pipeline/recover/status"
          hx-trigger="every 2s"
          hx-swap="outerHTML">
-        <span class="inline-flex items-center gap-2 text-sm text-green-600 dark:text-green-400 font-medium">
+        <span class="inline-flex items-center gap-2 text-sm text-ok font-medium">
             Recovery started — re-enqueuing any orphaned work across all stages.
         </span>
-        <span class="block mt-1 text-xs text-gray-500 dark:text-gray-400">
+        <span class="block mt-1 text-xs text-muted ">
             Already-running work is deduplicated — nothing will double-enqueue.
         </span>
     </div>
 {% elif failed %}
     <div id="discover-recover-status">
-        <span class="inline-flex items-center gap-2 text-sm text-rose-600 dark:text-rose-400 font-medium">
+        <span class="inline-flex items-center gap-2 text-sm text-danger font-medium">
             Recovery failed before it finished — nothing further was re-enqueued.
         </span>
-        <span class="block mt-1 text-xs text-gray-500 dark:text-gray-400">
+        <span class="block mt-1 text-xs text-muted ">
             Check the controller logs, then retry. Orphaned work stays in the scheduling ledger, so nothing was lost.
         </span>
     </div>
 {% elif result is none %}
     <div id="discover-recover-status">
-        <span class="inline-flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+        <span class="inline-flex items-center gap-2 text-sm text-muted ">
             No recovery has been run in this controller process yet.
         </span>
     </div>
 {% elif unreplayable %}
     <div id="discover-recover-status">
-        <span class="inline-flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400 font-medium">
+        <span class="inline-flex items-center gap-2 text-sm text-warn font-medium">
             Recovery finished — {{ reenqueued }} re-enqueued, but {{ unreplayable }} item{{ '' if unreplayable == 1 else 's' }} could NOT be recovered and {{ 'was' if unreplayable == 1 else 'were' }} skipped.
         </span>
-        <span class="block mt-1 text-xs text-gray-500 dark:text-gray-400">
+        <span class="block mt-1 text-xs text-muted ">
             Skipped: {{ unreplayable_stages|join(', ') }}. Their queued work carried credentials that had expired and could not be regenerated
             (no online file-server agent, or no staging bucket recorded). Those files are NOT covered by this run — they stay in the
             scheduling ledger and the staging pass or a later Recover will pick them up. Nothing was double-enqueued and nothing was lost.
@@ -55,10 +55,10 @@
     </div>
 {% else %}
     <div id="discover-recover-status">
-        <span class="inline-flex items-center gap-2 text-sm text-green-600 dark:text-green-400 font-medium">
+        <span class="inline-flex items-center gap-2 text-sm text-ok font-medium">
             Recovery complete — {{ reenqueued }} re-enqueued, {{ already_running }} already running.
         </span>
-        <span class="block mt-1 text-xs text-gray-500 dark:text-gray-400">
+        <span class="block mt-1 text-xs text-muted ">
             {% if errored %}{{ errored }} row{{ '' if errored == 1 else 's' }} hit a transient error and stayed in the ledger for the next pass. {% endif %}
             Already-running work was deduplicated — nothing double-enqueued.
         </span>

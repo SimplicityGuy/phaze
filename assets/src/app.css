@@ -16,6 +16,47 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* Semantic colour vocabulary. Templates consume these intent names instead of
+ * coupling meaning to a Tailwind hue/rung pair. Each text token has one light
+ * value here and one dark value in the .dark scope below; all combinations
+ * exceed the ADR-0010 5.5:1 target on the app's real surfaces. */
+:root {
+    --phaze-text-muted: #5b6272;
+    --phaze-text-link: #006b87;
+    --phaze-text-info: #036b85;
+    --phaze-text-ok: #00714a;
+    --phaze-text-warn: #9c4c01;
+    --phaze-text-danger: #c7080d;
+
+    /* White-on-fill actions. These are theme-independent because their
+     * contrast is against their own white label, not the page surface. */
+    --phaze-action-brand: #036b85;
+    --phaze-action-brand-hover: #006b87;
+    --phaze-action-ok: #00623e;
+    --phaze-action-ok-hover: #00714a;
+    --phaze-action-warn: #843b00;
+    --phaze-action-warn-hover: #9c4c01;
+    --phaze-action-danger: #a50008;
+    --phaze-action-danger-hover: #c7080d;
+}
+
+@theme inline {
+    --color-muted: var(--phaze-text-muted);
+    --color-link: var(--phaze-text-link);
+    --color-info: var(--phaze-text-info);
+    --color-ok: var(--phaze-text-ok);
+    --color-warn: var(--phaze-text-warn);
+    --color-danger: var(--phaze-text-danger);
+    --color-action-brand: var(--phaze-action-brand);
+    --color-action-brand-hover: var(--phaze-action-brand-hover);
+    --color-action-ok: var(--phaze-action-ok);
+    --color-action-ok-hover: var(--phaze-action-ok-hover);
+    --color-action-warn: var(--phaze-action-warn);
+    --color-action-warn-hover: var(--phaze-action-warn-hover);
+    --color-action-danger: var(--phaze-action-danger);
+    --color-action-danger-hover: var(--phaze-action-danger-hover);
+}
+
 @theme {
     /* WCAG AA contrast ramp — deliberately overrides Tailwind's stock values.
      * Text rungs target at least 5.5:1 against #f3f4f6; see ADR-0010.
@@ -57,6 +98,13 @@
  * repaint above cannot serve both backgrounds, so restore those values within
  * the theme scope; this asymmetry is the load-bearing part of ADR-0010. */
 .dark {
+    --phaze-text-muted: #99a1af;
+    --phaze-text-link: #4dcae3;
+    --phaze-text-info: #4dcae3;
+    --phaze-text-ok: #6ee7b7;
+    --phaze-text-warn: #fcd34d;
+    --phaze-text-danger: #fca5a5;
+
     --color-gray-400: #99a1af;
     --color-violet-400: #a684ff;
 }

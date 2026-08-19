@@ -43,7 +43,7 @@ def test_metric_strip_uses_semantic_markup_and_palette_tones() -> None:
 
     assert 'aria-label="Pipeline metrics"' in html
     assert "<dl" in html and html.count("<dt") == 2 and html.count("<dd") == 4
-    assert "text-blue-700" in html and "text-red-700" in html
+    assert "text-info" in html and "text-danger" in html
     assert "overflow-x-auto" in html
 
 
@@ -115,7 +115,7 @@ def test_empty_loading_and_error_states_have_distinct_live_semantics() -> None:
 
     assert 'role="status"' in empty and "No files" in empty
     assert 'role="status"' in loading and "motion-safe:animate-pulse" in loading
-    assert 'role="alert"' in error and "text-red-600" in error
+    assert 'role="alert"' in error and "text-danger" in error
 
 
 def test_refresh_status_exposes_exactly_one_message_per_request_state() -> None:
@@ -140,10 +140,9 @@ def test_confirmation_is_contrast_safe_and_dismissible_without_breaking_native_d
 
     assert 'id="confirm-run"' in html and 'aria-labelledby="confirm-run-title"' in html
     assert 'hx-post="/analysis/run"' in html and 'hx-target="#result"' in html
-    assert "bg-amber-800 hover:bg-amber-700" in html
-    assert "bg-amber-600" not in html
-    assert "bg-red-700 hover:bg-red-600" in danger
-    for color in ("92400e", "b45309", "b91c1c", "dc2626"):
+    assert "bg-action-warn hover:bg-action-warn-hover" in html
+    assert "bg-action-danger hover:bg-action-danger-hover" in danger
+    for color in ("843b00", "9c4c01", "a50008", "c7080d"):
         assert _contrast_against_white(color) >= 4.5
     assert 'onpointerdown="if (event.target === this) this.close()"' in html
     assert '<form method="dialog">' in html

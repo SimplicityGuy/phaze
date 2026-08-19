@@ -522,6 +522,61 @@ def test_detail_pane_own_tick_does_not_resteal_focus() -> None:
     )
 
 
+# phaze-coypu: direct-surface text colours are intent-named. The repainted Tailwind
+# rungs remain available for borders, focus rings, tinted backgrounds, and the few
+# deep-rung text colours intentionally paired with tinted alert surfaces. They are
+# no longer the vocabulary for muted, link/info, or status text on the four app
+# surfaces: those meanings resolve once per theme in assets/src/app.css.
+_RAW_SEMANTIC_TEXT_COLOUR = re.compile(
+    r"text-(?:"
+    r"gray-(?:400|500)|"
+    r"blue-(?:500|600|700)|"
+    r"green-(?:600|700)|"
+    r"emerald-(?:600|700)|"
+    r"amber-(?:500|600|700)|"
+    r"red-(?:600|700)|"
+    r"rose-600"
+    r")\b|"
+    r"dark:text-(?:"
+    r"gray-400|"
+    r"blue-(?:300|400)|"
+    r"green-400|"
+    r"emerald-(?:300|400)|"
+    r"amber-(?:300|400)|"
+    r"red-(?:300|400)|"
+    r"rose-(?:300|400)"
+    r")\b"
+)
+_SEMANTIC_TEXT_OPACITY = re.compile(r"text-(?:muted|link|info|ok|warn|danger)/\d+\b")
+_ROUTERS = _TEMPLATES.parent / "routers"
+
+
+def test_semantic_colour_guard_recognizes_raw_variants_and_permits_tokens() -> None:
+    raw = ("text-gray-500", "dark:text-gray-400", "hover:text-green-700", "aria-[current=page]:text-blue-700", "text-warn/80")
+    semantic = ("text-muted", "text-link", "text-info", "text-ok", "text-warn", "text-danger")
+
+    assert all(_RAW_SEMANTIC_TEXT_COLOUR.search(utility) or _SEMANTIC_TEXT_OPACITY.search(utility) for utility in raw)
+    assert not any(_RAW_SEMANTIC_TEXT_COLOUR.search(utility) or _SEMANTIC_TEXT_OPACITY.search(utility) for utility in semantic)
+
+
+def test_direct_surface_text_colours_use_semantic_tokens() -> None:
+    """Raw hue/rung text utilities cannot bypass the theme-resolved vocabulary."""
+    offenders: list[str] = []
+    sources = [*_TEMPLATES.rglob("*.html"), *_ROUTERS.rglob("*.py")]
+    for source_path in sorted(sources):
+        source = source_path.read_text()
+        scannable = _COMMENTS.sub(lambda match: re.sub(r"[^\n]", " ", match.group(0)), source)
+        for pattern in (_RAW_SEMANTIC_TEXT_COLOUR, _SEMANTIC_TEXT_OPACITY):
+            for match in pattern.finditer(scannable):
+                line_no = scannable.count("\n", 0, match.start()) + 1
+                offenders.append(f"{source_path.relative_to(_TEMPLATES.parent)}:{line_no} -> {match.group(0)}")
+
+    assert not offenders, (
+        "direct-surface text must use opaque intent-named utilities (text-muted, text-link, text-info, "
+        "text-ok, text-warn, text-danger) instead of a raw hue/rung or opacity modifier:\n  " + "\n  ".join(offenders)
+    )
+
+
 # phaze-4yrle: two competing `dark:` utilities of the SAME property on one element is always a
 # defect, and a silent one. Which utility wins is decided by the order Tailwind emits them into
 # the stylesheet, NOT by their order in the class attribute, so the rendered dark-mode colour is

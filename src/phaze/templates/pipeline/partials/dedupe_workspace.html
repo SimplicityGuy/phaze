@@ -14,7 +14,7 @@
    with it, or a successful undo leaves the workspace claiming N files restored with no cards. #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% set subcount = "'" ~ (dedupe_groups | length) ~ " duplicate groups · pick the keeper, others archived'" %}
-{% set _bulk_btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-amber-500/40 text-amber-700 dark:text-amber-200 hover:bg-amber-500/10 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
+{% set _bulk_btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-amber-500/40 text-warn hover:bg-amber-500/10 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
 {% set actions %}
     <button type="button"
             hx-post="/duplicates/review-all"
@@ -54,7 +54,7 @@
     {% else %}
     <div class="px-6 py-12 text-center">
         <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">No duplicates found</p>
-        <p class="text-sm text-gray-500 dark:text-gray-400">No duplicate groups surfaced. Nothing to reconcile.</p>
+        <p class="text-sm text-muted ">No duplicate groups surfaced. Nothing to reconcile.</p>
     </div>
     {% endif %}
 {% endcall %}

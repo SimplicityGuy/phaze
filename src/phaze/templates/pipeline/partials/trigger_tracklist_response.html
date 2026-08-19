@@ -4,9 +4,9 @@
    unit is "tracklists" (not "files"); the shared trigger_response.html stays untouched so the 6
    existing file-unit endpoints + their copy-asserting tests keep using it. #}
 {% if count > 0 %}
-<span class="text-sm text-green-600 dark:text-green-400 font-medium">
+<span class="text-sm text-ok font-medium">
     Enqueued {{ count }} tracklists for {{ action }}.
 </span>
 {% else %}
-<span class="text-sm text-gray-500 dark:text-gray-400">No tracklists ready for {{ action }}.</span>
+<span class="text-sm text-muted ">No tracklists ready for {{ action }}.</span>
 {% endif %}

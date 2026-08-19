@@ -21,8 +21,8 @@
      * host_id   -- the id of the host div this fragment is swapped into (hx-target for the pager).
 #}
 {% set _match_color = {
-    "matched": "text-emerald-600 dark:text-emerald-300",
-    "candidate": "text-amber-600 dark:text-amber-300",
+    "matched": "text-ok",
+    "candidate": "text-warn",
 } %}
 <div>
     {% set columns = ["Set", "Tracklist", "Tracks", "Matched to file"] %}
@@ -30,25 +30,25 @@
     {% for s in sets_page.rows %}
         {% if s.tracks_total == 0 %}
             {% set coverage_text = "—" %}
-            {% set coverage_color = "text-gray-500 dark:text-gray-400" %}
+            {% set coverage_color = "text-muted " %}
         {% else %}
             {% set coverage_text = "%d/%d" | format(s.tracks_confident, s.tracks_total) %}
             {% if s.tracks_confident == s.tracks_total %}
-                {% set coverage_color = "text-emerald-600 dark:text-emerald-300" %}
+                {% set coverage_color = "text-ok " %}
             {% else %}
-                {% set coverage_color = "text-blue-600 dark:text-blue-300" %}
+                {% set coverage_color = "text-info " %}
             {% endif %}
         {% endif %}
         {% if s.matched_to_file %}
             {% set matched_text = "matched" %}
-            {% set matched_color = "text-emerald-600 dark:text-emerald-300" %}
+            {% set matched_color = "text-ok " %}
         {% else %}
             {% set matched_text = "—" %}
-            {% set matched_color = "text-gray-500 dark:text-gray-400" %}
+            {% set matched_color = "text-muted " %}
         {% endif %}
         {% set _ = ns.rows.append([
             {'text': s.set_name, 'mono': True, 'title': s.path},
-            {'text': s.tracklist_state, 'color': _match_color.get(s.tracklist_state, "text-gray-500 dark:text-gray-400")},
+            {'text': s.tracklist_state, 'color': _match_color.get(s.tracklist_state, "text-muted ")},
             {'text': coverage_text, 'mono': True, 'color': coverage_color},
             {'text': matched_text, 'color': matched_color},
         ]) %}
@@ -61,7 +61,7 @@
 {% else %}
     {% import "ui/primitives.html" as ui %}
     {% call ui.state("empty", "No tracklists yet", "Lookup is the required first step. Start a bounded provider-safe batch, then return here to inspect matches.") %}
-        <a href="/s/tracklist#tracklist-lookup" class="rounded-md bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg">Go to Lookup</a>
+        <a href="/s/tracklist#tracklist-lookup" class="rounded-md bg-action-brand px-3 py-2 text-sm font-semibold text-white hover:bg-action-brand-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg">Go to Lookup</a>
     {% endcall %}
 {% endif %}
 
@@ -72,9 +72,9 @@
        instead of silently snapping back to the default mid-scan. Empty when unsorted. #}
     {% set _qs = '&page_size=' ~ sets_page.page_size ~ (sort.query_state() if sort else '') %}
     {% set _pbtn = 'text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel' %}
-    {% set _pdis = 'text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-gray-400 dark:text-gray-400 cursor-not-allowed' %}
+    {% set _pdis = 'text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-muted cursor-not-allowed' %}
     <nav aria-label="Tracklist sets pagination" class="flex items-center justify-between mt-6">
-        <p class="text-sm text-gray-500 dark:text-gray-400">Page {{ sets_page.page }}</p>
+        <p class="text-sm text-muted ">Page {{ sets_page.page }}</p>
         <div class="flex gap-1">
             {% if sets_page.has_prev %}
             <button hx-get="/pipeline/tracklist-sets?page={{ sets_page.page - 1 }}{{ _qs }}" hx-target="#{{ host_id }}" hx-swap="innerHTML" class="{{ _pbtn }}">Previous</button>

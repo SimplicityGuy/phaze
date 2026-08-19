@@ -15,7 +15,7 @@
    own undo toast targets. Guarded on restored_count so a replayed Undo All (which restores nothing)
    cannot inject a second copy of a card that is already on screen. #}
 <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">Undo All complete</p>
-<p class="text-sm text-gray-500 dark:text-gray-400">{{ restored_count }} file{{ "" if restored_count == 1 else "s" }} restored to their previous duplicate state.</p>
+<p class="text-sm text-muted ">{{ restored_count }} file{{ "" if restored_count == 1 else "s" }} restored to their previous duplicate state.</p>
 
 {% if restored_count and dedupe_groups %}
 {# OOB: put back the cards bulk resolve deleted, in the SAME _dupe_group.html shape the workspace

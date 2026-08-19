@@ -100,6 +100,18 @@ def test_bucket_recipe_defers_the_coverage_gate() -> None:
     assert "pytest {{PATHS}}" in recipe_body, f"test-bucket recipe must run pytest against the PATHS param:\n{recipe_body}"
 
 
+def test_bucket_recipe_records_per_test_coverage_contexts() -> None:
+    """Every binary coverage shard retains the contexts required by repowise.
+
+    Cobertura XML carries per-file totals but cannot represent pytest's per-test execution
+    contexts. The binary ``.coverage.<bucket>`` shards are therefore the only CI output that can
+    build repowise's test-to-code map after ``coverage combine``. Keep the flag in the shared
+    recipe so every matrix leg records compatible context-bearing data.
+    """
+    recipe_body = _extract_recipe(_JUSTFILE.read_text(encoding="utf-8"), "test-bucket")
+    assert "--cov-context=test" in recipe_body, f"test-bucket recipe lost per-test coverage contexts:\n{recipe_body}"
+
+
 def test_coverage_combine_recipe_enforces_the_gate_exactly_once() -> None:
     """`coverage-combine` merges shards and enforces the global gate on the COMBINED number.
 
@@ -165,6 +177,26 @@ def test_combine_job_downloads_shards_and_runs_the_combine_recipe() -> None:
 
     # combine must wait on the full matrix fan-out, not run ahead of shard uploads.
     assert combine_job["needs"] == ["test"]
+
+
+def test_combine_job_exports_both_repowise_coverage_inputs() -> None:
+    """The run artifact exposes the contextual map and the per-file totals together.
+
+    CI must not ingest into its ephemeral repowise index. It does need to preserve the combined
+    binary report (per-test contexts) alongside ``coverage.xml`` (per-file totals), so a human can
+    download a commit-paired report while the durable local refresh remains
+    ``just repowise-coverage <seat>``.
+    """
+    combine_steps = _load_workflow()["jobs"]["combine"]["steps"]
+    uploads = [step for step in combine_steps if "actions/upload-artifact" in step.get("uses", "")]
+    combined_uploads = [step for step in uploads if step.get("with", {}).get("name") == "coverage-combined"]
+    assert len(combined_uploads) == 1, f"expected one coverage-combined artifact upload, found: {combined_uploads}"
+
+    upload_with = combined_uploads[0]["with"]
+    uploaded_paths = set(upload_with["path"].splitlines())
+    assert uploaded_paths == {".coverage", "coverage.xml"}, upload_with
+    assert upload_with.get("include-hidden-files") is True, upload_with
+    assert upload_with.get("if-no-files-found") == "error", upload_with
 
 
 def test_matrix_bucket_list_is_derived_via_fromjson_not_hardcoded() -> None:

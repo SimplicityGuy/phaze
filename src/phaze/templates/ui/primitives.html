@@ -5,7 +5,7 @@
 <div class="flex flex-col gap-3 border-b border-gray-200 px-4 py-4 sm:flex-row sm:items-start sm:justify-between sm:px-6 dark:border-phaze-border">
     <div class="min-w-0">
         <h1 tabindex="-1" class="font-jura text-lg font-medium uppercase tracking-[0.15em] text-gray-900 focus:outline-none dark:text-gray-100">{{ title }}</h1>
-        {% if subtitle %}<p{% if subtitle_id %} id="{{ subtitle_id }}"{% endif %} class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ subtitle }}</p>{% endif %}
+        {% if subtitle %}<p{% if subtitle_id %} id="{{ subtitle_id }}"{% endif %} class="mt-1 text-sm text-muted ">{{ subtitle }}</p>{% endif %}
     </div>
     {% if actions %}<div class="flex flex-wrap items-center gap-2 sm:shrink-0">{{ actions }}</div>{% endif %}
 </div>
@@ -19,36 +19,36 @@
 
 {% macro metric(label, value, detail='', tone='neutral', id='', oob=false) %}
 {% set tones = {
-    'accent': 'text-blue-700 dark:text-blue-400',
-    'attention': 'text-amber-700 dark:text-amber-400',
-    'success': 'text-emerald-700 dark:text-emerald-400',
-    'danger': 'text-red-700 dark:text-red-400',
+    'accent': 'text-info ',
+    'attention': 'text-warn ',
+    'success': 'text-ok ',
+    'danger': 'text-danger ',
     'neutral': 'text-gray-900 dark:text-gray-100'
 } %}
 <div{% if id %} id="{{ id }}"{% endif %}{% if oob %} hx-swap-oob="true"{% endif %} class="min-w-32 px-4 py-3">
-    <dt class="font-jura text-[10px] uppercase tracking-[0.2em] text-gray-500 dark:text-gray-400">{{ label }}</dt>
+    <dt class="font-jura text-[10px] uppercase tracking-[0.2em] text-muted ">{{ label }}</dt>
     <dd class="mt-1 font-mono text-xl font-semibold tabular-nums {{ tones.get(tone, tones.neutral) }}">{{ value }}</dd>
-    {% if detail %}<dd class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{{ detail }}</dd>{% endif %}
+    {% if detail %}<dd class="mt-0.5 text-xs text-muted ">{{ detail }}</dd>{% endif %}
 </div>
 {% endmacro %}
 
 {% macro status_badge(label, status, tone='neutral', icon='—', pulse=false, aria_label='') %}
 {% set tones = {
-    'accent': 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-400',
-    'attention': 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300',
-    'success': 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-400',
-    'danger': 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400',
+    'accent': 'bg-blue-100 text-info dark:bg-blue-950 ',
+    'attention': 'bg-amber-100 text-warn dark:bg-amber-950 ',
+    'success': 'bg-green-100 text-ok dark:bg-green-950 ',
+    'danger': 'bg-red-100 text-danger dark:bg-red-950 ',
     'skipped': 'bg-violet-100 text-violet-700 ring-1 ring-dashed ring-violet-400/60 dark:bg-violet-950 dark:text-violet-300',
-    'neutral': 'bg-gray-100 text-gray-500 dark:bg-gray-800/60 dark:text-gray-400'
+    'neutral': 'bg-gray-100 text-muted dark:bg-gray-800/60 '
 } %}
 <span class="text-xs font-semibold px-2 py-0.5 rounded-full {{ tones.get(tone, tones.neutral) }}{% if pulse %} motion-safe:animate-pulse{% endif %}" aria-label="{{ aria_label or (label ~ ': ' ~ status) }}"><span aria-hidden="true">{{ icon }}</span> {{ status }}</span>
 {% endmacro %}
 
 {% macro actionable_alert(title, message, tone='attention', id='', oob=false) %}
 {% set tones = {
-    'attention': 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300',
-    'danger': 'border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300',
-    'info': 'border-blue-300 bg-blue-50 text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-300'
+    'attention': 'border-amber-300 bg-amber-50 text-warn dark:border-amber-700 dark:bg-amber-950 ',
+    'danger': 'border-red-300 bg-red-50 text-danger dark:border-red-800 dark:bg-red-950 ',
+    'info': 'border-blue-300 bg-blue-50 text-info dark:border-blue-800 dark:bg-blue-950 '
 } %}
 <section{% if id %} id="{{ id }}"{% endif %}{% if oob %} hx-swap-oob="true"{% endif %} role="alert" class="rounded-lg border p-4 {{ tones.get(tone, tones.attention) }}">
     <div class="flex items-start gap-3">
@@ -90,7 +90,7 @@
 
 {% macro data_table_button(label, url='', target='', disabled=false, push_url=false) %}
 {% if disabled %}
-<span aria-disabled="true" class="cursor-not-allowed rounded-md border border-gray-200 px-3 py-1.5 text-sm text-gray-400 dark:border-phaze-border dark:text-gray-400">{{ label }}</span>
+<span aria-disabled="true" class="cursor-not-allowed rounded-md border border-gray-200 px-3 py-1.5 text-sm text-muted dark:border-phaze-border ">{{ label }}</span>
 {% else %}
 <button type="button" hx-get="{{ url }}"{% if target %} hx-target="{{ target }}"{% endif %} hx-swap="innerHTML"{% if push_url %} hx-push-url="true"{% endif %} class="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-300 dark:hover:bg-white/5 {{ _focus }}">{{ label }}</button>
 {% endif %}
@@ -98,24 +98,24 @@
 
 {% macro state(kind, title, message, id='') %}
 {% set tones = {
-    'empty': 'text-blue-500',
-    'loading': 'text-blue-500',
-    'error': 'text-red-600 dark:text-red-400'
+    'empty': 'text-info',
+    'loading': 'text-info',
+    'error': 'text-danger '
 } %}
 <section{% if id %} id="{{ id }}"{% endif %}{% if kind == 'error' %} role="alert"{% else %} role="status"{% endif %} class="grid place-items-center px-4 py-10 text-center sm:px-6">
     <div class="max-w-lg">
         <span aria-hidden="true" class="inline-flex h-8 w-8 items-center justify-center rounded-full border border-current {{ tones.get(kind, tones.empty) }}{% if kind == 'loading' %} motion-safe:animate-pulse{% endif %}">{% if kind == 'error' %}✕{% elif kind == 'loading' %}…{% else %}—{% endif %}</span>
         <h2 class="mt-3 text-sm font-semibold text-gray-900 dark:text-gray-100">{{ title }}</h2>
-        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ message }}</p>
+        <p class="mt-1 text-sm text-muted ">{{ message }}</p>
         {% if caller is defined %}<div class="mt-4 flex flex-wrap justify-center gap-2">{{ caller() }}</div>{% endif %}
     </div>
 </section>
 {% endmacro %}
 
 {% macro refresh_status(text='Up to date', refreshing_text='Refreshing…', indicator_id='') %}
-<span{% if indicator_id %} id="{{ indicator_id }}"{% endif %} role="status" aria-live="polite" class="inline-flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+<span{% if indicator_id %} id="{{ indicator_id }}"{% endif %} role="status" aria-live="polite" class="inline-flex items-center gap-1.5 text-xs text-muted ">
     <span class="htmx-idle inline-flex items-center gap-1.5"><span aria-hidden="true" class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span> {{ text }}</span>
-    <span class="htmx-loading items-center gap-1 text-blue-700 dark:text-blue-400"><span aria-hidden="true">↻</span> {{ refreshing_text }}</span>
+    <span class="htmx-loading items-center gap-1 text-info "><span aria-hidden="true">↻</span> {{ refreshing_text }}</span>
 </span>
 {% endmacro %}
 
@@ -127,7 +127,7 @@
         <div class="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <form method="dialog"><button class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm dark:border-phaze-border {{ _focus }}">{{ cancel_label }}</button></form>
             <form hx-{{ method }}="{{ action }}"{% if target %} hx-target="{{ target }}"{% endif %} hx-swap="innerHTML" hx-on::after-request="if(event.detail.successful) this.closest('dialog').close()">
-                <button class="w-full rounded-md px-3 py-2 text-sm font-semibold text-white {% if tone == 'danger' %}bg-red-700 hover:bg-red-600{% else %}bg-amber-800 hover:bg-amber-700{% endif %} {{ _focus }}">{{ confirm_label }}</button>
+                <button class="w-full rounded-md px-3 py-2 text-sm font-semibold text-white {% if tone == 'danger' %}bg-action-danger hover:bg-action-danger-hover{% else %}bg-action-warn hover:bg-action-warn-hover{% endif %} {{ _focus }}">{{ confirm_label }}</button>
             </form>
         </div>
     </div>
@@ -139,7 +139,7 @@
     <div class="flex h-full flex-col">
         <div class="flex items-center justify-between gap-3 border-b border-gray-200 p-4 dark:border-phaze-border">
             <h2 id="{{ id }}-title" tabindex="-1" class="font-jura text-sm font-medium uppercase tracking-[0.15em]">{{ title }}</h2>
-            <form method="dialog"><button aria-label="Close {{ title }}" class="rounded-md p-2 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100 {{ _focus }}"><span aria-hidden="true">✕</span></button></form>
+            <form method="dialog"><button aria-label="Close {{ title }}" class="rounded-md p-2 text-muted hover:text-gray-900 dark:hover:text-gray-100 {{ _focus }}"><span aria-hidden="true">✕</span></button></form>
         </div>
         <div class="relative min-h-0 flex-1 overflow-y-auto p-4">{{ caller() }}</div>
     </div>

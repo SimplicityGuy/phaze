@@ -1,11 +1,11 @@
 {% import "ui/primitives.html" as ui %}
 {% set _kind = lane.kind %}
 {% if _kind == "local" %}
-    {% set lane_glyph, lane_color = "🖥️", "text-emerald-700 dark:text-emerald-300" %}
+    {% set lane_glyph, lane_color = "🖥️", "text-ok " %}
 {% elif _kind == "compute" %}
-    {% set lane_glyph, lane_color = "☁️", "text-blue-700 dark:text-blue-300" %}
+    {% set lane_glyph, lane_color = "☁️", "text-info " %}
 {% elif _kind == "kueue" %}
-    {% set lane_glyph, lane_color = "⎈", "text-amber-700 dark:text-amber-300" %}
+    {% set lane_glyph, lane_color = "⎈", "text-warn " %}
 {% else %}
     {% set lane_glyph, lane_color = "▪", "text-gray-700 dark:text-gray-300" %}
 {% endif %}
@@ -26,13 +26,13 @@
      class="grid cursor-pointer gap-3 border-t border-gray-200 bg-white px-4 py-3 first:border-t-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 dark:border-phaze-border dark:bg-phaze-panel sm:grid-cols-12 sm:items-center{% if selected_lane == lane.id %} ring-2 ring-blue-500 ring-inset{% endif %}{% if not lane.available %} opacity-60{% endif %}">
     <div class="min-w-0 sm:col-span-3">
         <p class="truncate text-sm font-semibold {{ lane_color }}">{{ lane_glyph }} {{ lane.kind|upper }} · {{ lane.id }}</p>
-        <p class="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">Configured capacity {{ lane.cap }}</p>
+        <p class="mt-0.5 text-[11px] text-muted ">Configured capacity {{ lane.cap }}</p>
     </div>
     <dl class="grid grid-cols-2 gap-3 sm:col-span-7 sm:grid-cols-5">
-        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-gray-500">Queue</dt><dd class="font-mono text-sm tabular-nums">{{ _queued if _queued is not none else "—" }}</dd></div>
-        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-gray-500">Active</dt><dd class="font-mono text-sm tabular-nums">{{ _active if _active is not none else "—" }}</dd></div>
-        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-gray-500">Capacity</dt><dd class="font-mono text-sm tabular-nums {% if _capacity_over %}text-red-700 dark:text-red-400{% endif %}">{{ _in_flight if _in_flight is not none else "—" }}/{{ lane.cap }}</dd></div>
-        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-gray-500">Status</dt><dd class="mt-0.5">
+        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Queue</dt><dd class="font-mono text-sm tabular-nums">{{ _queued if _queued is not none else "—" }}</dd></div>
+        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Active</dt><dd class="font-mono text-sm tabular-nums">{{ _active if _active is not none else "—" }}</dd></div>
+        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Capacity</dt><dd class="font-mono text-sm tabular-nums {% if _capacity_over %}text-danger {% endif %}">{{ _in_flight if _in_flight is not none else "—" }}/{{ lane.cap }}</dd></div>
+        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">Status</dt><dd class="mt-0.5">
             {% if _capacity_over %}{{ ui.status_badge("Lane status", "OVER LIMIT", "danger", "✕") }}
             {% elif not lane.available %}{{ ui.status_badge("Lane status", "OFFLINE", "attention", "!") }}
             {% elif _kind == "kueue" and lane.inadmissible %}{{ ui.status_badge("Lane status", "BLOCKED", "attention", "!") }}
@@ -40,17 +40,17 @@
             {% elif _active %}{{ ui.status_badge("Lane status", "ACTIVE", "accent", "●") }}
             {% else %}{{ ui.status_badge("Lane status", "READY", "success", "✓") }}{% endif %}
         </dd></div>
-        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-gray-500">24h</dt><dd class="font-mono text-sm tabular-nums">{{ _processed_24h if _processed_24h is not none else "—" }}</dd></div>
+        <div><dt class="font-jura text-[10px] uppercase tracking-wider text-muted">24h</dt><dd class="font-mono text-sm tabular-nums">{{ _processed_24h if _processed_24h is not none else "—" }}</dd></div>
     </dl>
-    <div class="flex items-center justify-end gap-2 text-xs font-medium text-blue-700 dark:text-blue-400 sm:col-span-2">Open details <span aria-hidden="true">→</span></div>
+    <div class="flex items-center justify-end gap-2 text-xs font-medium text-info sm:col-span-2">Open details <span aria-hidden="true">→</span></div>
     {% if _capacity_over %}
-    <p role="alert" class="rounded-md bg-red-50 px-3 py-2 text-xs text-red-800 dark:bg-red-950 dark:text-red-300 sm:col-span-12">In-flight {{ _in_flight }} exceeds scheduler cap {{ lane.cap }}. New work can compound resource pressure; stop admission and inspect this lane.</p>
+    <p role="alert" class="rounded-md bg-red-50 px-3 py-2 text-xs text-danger dark:bg-red-950  sm:col-span-12">In-flight {{ _in_flight }} exceeds scheduler cap {{ lane.cap }}. New work can compound resource pressure; stop admission and inspect this lane.</p>
     {% elif _capacity_full and lane.available %}
-    <p role="status" class="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300 sm:col-span-12">At scheduler cap {{ lane.cap }}. New work remains queued until a slot opens; wait for completion or safely raise configured capacity.</p>
+    <p role="status" class="rounded-md bg-amber-50 px-3 py-2 text-xs text-warn dark:bg-amber-950  sm:col-span-12">At scheduler cap {{ lane.cap }}. New work remains queued until a slot opens; wait for completion or safely raise configured capacity.</p>
     {% endif %}
     <details id="lane-diagnostics-{{ lane.id }}" data-poll-preserve-disclosure class="sm:col-span-12"
              onclick="event.stopPropagation()" onkeydown="event.stopPropagation()" onkeyup="event.stopPropagation()">
-        <summary id="lane-diagnostics-summary-{{ lane.id }}" class="cursor-pointer text-xs text-gray-500 underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Lane diagnostics</summary>
+        <summary id="lane-diagnostics-summary-{{ lane.id }}" class="cursor-pointer text-xs text-muted underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Lane diagnostics</summary>
         <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 rounded-md bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-phaze-bg dark:text-gray-300">
             <span>RANK {{ lane.rank }} · cap {{ lane.cap }}</span>
             {% if not lane.available %}<span>Availability: offline</span>{% endif %}

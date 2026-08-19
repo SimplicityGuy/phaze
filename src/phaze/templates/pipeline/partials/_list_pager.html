@@ -41,7 +41,7 @@
    record). #}
 {% if pagination.total_pages > 1 or pagination.total %}
 <div class="flex items-center justify-between mt-4 px-6 pb-4 text-sm">
-    <div class="text-gray-500 dark:text-gray-400">
+    <div class="text-muted ">
         Showing {{ pagination.start }}-{{ pagination.end }} of {{ pagination.total }} proposals
     </div>
 
@@ -55,7 +55,7 @@
                 hx-push-url="true"
                 {% if is_current %}aria-current="page"{% endif %}
                 aria-label="{{ 'Page ' ~ target_page if label is none else label }}"
-                class="{% if is_current %}bg-blue-600 dark:bg-blue-700 text-white{% else %}text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-phaze-panel{% endif %} rounded px-3 py-1"
+                class="{% if is_current %}bg-action-brand text-white{% else %}text-muted hover:bg-gray-100 dark:hover:bg-phaze-panel{% endif %} rounded px-3 py-1"
             >{{ label if label is not none else target_page }}</button>
         {% endmacro %}
 
@@ -73,13 +73,13 @@
         {% else %}
             {{ page_link(1, none, current_page == 1) }}
             {% if current_page > 3 %}
-                <span class="px-2 text-gray-400 dark:text-gray-400" aria-hidden="true">…</span>
+                <span class="px-2 text-muted " aria-hidden="true">…</span>
             {% endif %}
             {% for p in range([current_page - 1, 2] | max, [current_page + 2, total_pages - 1] | min + 1) %}
                 {{ page_link(p, none, p == current_page) }}
             {% endfor %}
             {% if current_page < total_pages - 2 %}
-                <span class="px-2 text-gray-400 dark:text-gray-400" aria-hidden="true">…</span>
+                <span class="px-2 text-muted " aria-hidden="true">…</span>
             {% endif %}
             {{ page_link(total_pages, none, current_page == total_pages) }}
         {% endif %}
@@ -89,7 +89,7 @@
     {% endif %}
 
     <div class="flex items-center gap-2">
-        <span class="text-gray-500 dark:text-gray-400">Per page:</span>
+        <span class="text-muted ">Per page:</span>
         {% for size in page_size_choices %}
             <button
                 hx-get="{{ pager_url }}?{{ view.query(page_size=size, page=1) }}"
@@ -98,7 +98,7 @@
                 hx-push-url="true"
                 aria-label="Show {{ size }} per page"
                 {% if pagination.page_size == size %}aria-current="true"{% endif %}
-                class="{% if pagination.page_size == size %}font-semibold text-blue-600 dark:text-blue-400{% else %}text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300{% endif %} px-1"
+                class="{% if pagination.page_size == size %}font-semibold text-info {% else %}text-muted hover:text-gray-700 dark:hover:text-gray-300{% endif %} px-1"
             >{{ size }}</button>
         {% endfor %}
     </div>

@@ -300,7 +300,7 @@ async def test_tab_click_updates_active_underline_and_aria_current(
     assert set(blocks) == {"all", "pending", "approved", "executed", "failed", "rejected"}
 
     assert 'aria-current="page"' in blocks["approved"], "the clicked (now-active) tab must be aria-current"
-    assert "border-b-2 border-blue-600" in blocks["approved"], "the clicked tab must carry the active underline"
+    assert "border-b-2 border-action-brand" in blocks["approved"], "the clicked tab must carry the active underline"
 
     assert 'aria-current="false"' in blocks["pending"], "the previously-active tab must be demoted"
     assert "border-b-2 border-blue-600" not in blocks["pending"], "the previously-active tab's underline must be gone"

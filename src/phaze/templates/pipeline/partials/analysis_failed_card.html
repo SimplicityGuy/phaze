@@ -12,26 +12,26 @@
     <div class="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
         <div class="min-w-0">
             {% if analysis_failed_count %}
-                <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Analysis health", "FAILED", "danger", "✕") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-red-800 dark:text-red-300">{{ analysis_failed_count }} file(s) need recovery</h2></div>
-                <p class="mt-1 text-sm text-red-700 dark:text-red-300">Terminal analysis failures will not progress. Retry them, or backfill long failures to a cloud lane.</p>
+                <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Analysis health", "FAILED", "danger", "✕") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-danger ">{{ analysis_failed_count }} file(s) need recovery</h2></div>
+                <p class="mt-1 text-sm text-danger ">Terminal analysis failures will not progress. Retry them, or backfill long failures to a cloud lane.</p>
             {% elif lane_state.over_cap %}
-                <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Lane capacity", "UNSAFE", "danger", "✕") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-red-800 dark:text-red-300">{{ lane_state.over_cap.kind|upper }} · {{ lane_state.over_cap.id }} exceeds capacity</h2></div>
-                <p class="mt-1 text-sm text-red-700 dark:text-red-300">{{ lane_state.over_cap.in_flight }} in-flight jobs exceed scheduler cap {{ lane_state.over_cap.cap }}. Stop new admission and inspect the lane before increasing capacity.</p>
+                <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Lane capacity", "UNSAFE", "danger", "✕") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-danger ">{{ lane_state.over_cap.kind|upper }} · {{ lane_state.over_cap.id }} exceeds capacity</h2></div>
+                <p class="mt-1 text-sm text-danger ">{{ lane_state.over_cap.in_flight }} in-flight jobs exceed scheduler cap {{ lane_state.over_cap.cap }}. Stop new admission and inspect the lane before increasing capacity.</p>
             {% elif inadmissible_count %}
-                <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Cloud admission", "BLOCKED", "attention", "!") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-amber-800 dark:text-amber-300">K8s jobs are not admitting</h2></div>
-                <p class="mt-1 text-sm text-amber-700 dark:text-amber-300">{{ inadmissible_count }} job(s) cannot enter the cluster. Verify the LocalQueue and ClusterQueue configuration.</p>
+                <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Cloud admission", "BLOCKED", "attention", "!") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-warn ">K8s jobs are not admitting</h2></div>
+                <p class="mt-1 text-sm text-warn ">{{ inadmissible_count }} job(s) cannot enter the cluster. Verify the LocalQueue and ClusterQueue configuration.</p>
             {% elif localqueue_unreachable %}
-                <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Cloud lane", "OFFLINE", "attention", "!") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-amber-800 dark:text-amber-300">K8s LocalQueue is unreachable</h2></div>
-                <p class="mt-1 text-sm text-amber-700 dark:text-amber-300">Cloud dispatch is paused for this lane. Verify cluster connectivity and the configured LocalQueue key.</p>
+                <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Cloud lane", "OFFLINE", "attention", "!") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-warn ">K8s LocalQueue is unreachable</h2></div>
+                <p class="mt-1 text-sm text-warn ">Cloud dispatch is paused for this lane. Verify cluster connectivity and the configured LocalQueue key.</p>
             {% elif lane_state.at_cap %}
-                <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Lane capacity", "CONGESTED", "attention", "!") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-amber-800 dark:text-amber-300">{{ lane_state.at_cap.kind|upper }} · {{ lane_state.at_cap.id }} is at capacity</h2></div>
-                <p class="mt-1 text-sm text-amber-700 dark:text-amber-300">{{ lane_state.at_cap.in_flight }} in-flight jobs fill scheduler cap {{ lane_state.at_cap.cap }}. New work remains queued; wait for a slot or safely raise configured capacity.</p>
+                <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Lane capacity", "CONGESTED", "attention", "!") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-warn ">{{ lane_state.at_cap.kind|upper }} · {{ lane_state.at_cap.id }} is at capacity</h2></div>
+                <p class="mt-1 text-sm text-warn ">{{ lane_state.at_cap.in_flight }} in-flight jobs fill scheduler cap {{ lane_state.at_cap.cap }}. New work remains queued; wait for a slot or safely raise configured capacity.</p>
             {% elif awaiting_cloud_count %}
-                <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Routing", "WAITING", "attention", "!") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-amber-800 dark:text-amber-300">{{ awaiting_cloud_count }} file(s) awaiting route</h2></div>
-                <p class="mt-1 text-sm text-amber-700 dark:text-amber-300">{{ awaiting_hold_reason }}. Work remains safely held until compatible capacity is available.</p>
+                <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Routing", "WAITING", "attention", "!") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-warn ">{{ awaiting_cloud_count }} file(s) awaiting route</h2></div>
+                <p class="mt-1 text-sm text-warn ">{{ awaiting_hold_reason }}. Work remains safely held until compatible capacity is available.</p>
             {% else %}
                 <div class="flex flex-wrap items-center gap-2">{{ ui.status_badge("Analysis health", "HEALTHY", "success", "✓") }}<h2 class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-gray-700 dark:text-gray-200">No actionable analysis exceptions</h2></div>
-                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Routing and lane health are within configured limits.</p>
+                <p class="mt-1 text-sm text-muted ">Routing and lane health are within configured limits.</p>
             {% endif %}
         </div>
         <a id="analysis-view-diagnostics" href="#analysis-diagnostics" onclick="document.getElementById('analysis-diagnostics').open = true" class="shrink-0 rounded-md border border-current px-3 py-1.5 font-jura text-[11px] font-medium uppercase tracking-wider focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">View diagnostics</a>
@@ -40,12 +40,12 @@
         <summary id="analysis-health-summary" class="cursor-pointer px-4 py-2 text-xs font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Analysis Health and recovery details</summary>
         <div class="grid gap-3 border-t border-current/10 p-4 sm:grid-cols-2">
             <div class="rounded-md border border-amber-300/60 p-3 dark:border-amber-700/60" title="Killed by the heartbeat watchdog after no analysis progress for the configured stall window.">
-                <p class="font-mono text-lg font-semibold text-amber-700 dark:text-amber-400">{{ analysis_stalled_count }}</p>
+                <p class="font-mono text-lg font-semibold text-warn ">{{ analysis_stalled_count }}</p>
                 <p class="text-sm font-medium">Stalled</p>
                 <p class="text-xs opacity-75">no progress; heartbeat watchdog terminated the attempt</p>
             </div>
             <div class="rounded-md border border-red-300/60 p-3 dark:border-red-800/60">
-                <p class="font-mono text-lg font-semibold text-red-700 dark:text-red-400">{{ analysis_failed_count }}</p>
+                <p class="font-mono text-lg font-semibold text-danger ">{{ analysis_failed_count }}</p>
                 <p class="text-sm font-medium">Analysis failed</p>
                 <p class="text-xs opacity-75">terminal; recovery action required</p>
                 {% if analysis_failed_count %}
@@ -55,7 +55,7 @@
                             class="rounded-md bg-red-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Retry failed</button>
                     <button id="analysis-backfill-cloud" type="button" hx-post="/pipeline/backfill-cloud" hx-target="#backfill-response" hx-swap="innerHTML"
                             hx-confirm="Backfill the timed-out long failed files to the cloud?"
-                            class="rounded-md bg-blue-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Backfill to cloud</button>
+                            class="rounded-md bg-action-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-action-brand-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Backfill to cloud</button>
                 </div>
                 <span id="retry-failed-result" data-poll-preserve-response class="mt-2 block"></span>
                 <span id="backfill-response" data-poll-preserve-response class="mt-2 block"></span>

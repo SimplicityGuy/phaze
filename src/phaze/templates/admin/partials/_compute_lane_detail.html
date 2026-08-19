@@ -29,10 +29,10 @@
     {% set _kind = lane.kind %}
     {% if _kind == "compute" %}
         {% set lane_glyph = "☁️" %}
-        {% set lane_color = "text-blue-600 dark:text-blue-300" %}
+        {% set lane_color = "text-info " %}
     {% elif _kind == "kueue" %}
         {% set lane_glyph = "⎈" %}
-        {% set lane_color = "text-amber-600 dark:text-amber-300" %}
+        {% set lane_color = "text-warn " %}
     {% else %}
         {% set lane_glyph = "▪" %}
         {% set lane_color = "text-gray-600 dark:text-gray-300" %}
@@ -45,17 +45,17 @@
         <div class="flex flex-wrap items-center gap-2">
             <span class="text-sm font-medium {{ lane_color }}">{{ lane_glyph }} {{ lane.backend_id }}</span>
             {% if lane.state == "ACTIVE" %}
-            <span class="inline-flex items-center gap-2 text-sm font-semibold text-emerald-700 dark:text-emerald-300">
+            <span class="inline-flex items-center gap-2 text-sm font-semibold text-ok ">
                 <span class="w-2.5 h-2.5 rounded-full bg-emerald-400" aria-hidden="true"></span>
                 <span aria-label="Compute lane {{ lane.backend_id }}: active">ACTIVE</span>
             </span>
             {% elif lane.state == "WAITING" %}
-            <span class="inline-flex items-center gap-2 text-sm font-semibold text-amber-700 dark:text-amber-300" role="alert">
+            <span class="inline-flex items-center gap-2 text-sm font-semibold text-warn " role="alert">
                 <span class="w-2.5 h-2.5 rounded-full bg-amber-400" aria-hidden="true"></span>
                 <span aria-label="Compute lane {{ lane.backend_id }}: waiting on quota">WAITING · quota</span>
             </span>
             {% else %}
-            <span class="inline-flex items-center gap-2 text-sm font-semibold text-gray-500 dark:text-gray-400">
+            <span class="inline-flex items-center gap-2 text-sm font-semibold text-muted ">
                 <span class="w-2.5 h-2.5 rounded-full bg-gray-400 dark:bg-gray-600" aria-hidden="true"></span>
                 <span aria-label="Compute lane {{ lane.backend_id }}: idle">IDLE</span>
             </span>
@@ -64,18 +64,18 @@
         {# The ephemerality Section 2's retired NOTE prose used to convey (phaze-2u8v.5) — a lane must
            never read as a perpetually-dead agent, so it says so plainly right in its own detail header
            rather than in a page-level note that vanished with the merge (acceptance rule 1). #}
-        <p class="text-xs text-gray-500 dark:text-gray-400">{{ lane.kind }} · ephemeral · no heartbeat</p>
+        <p class="text-xs text-muted ">{{ lane.kind }} · ephemeral · no heartbeat</p>
 
         {# Quota-pending count — mirrors _lane_detail.html's kueue-only quota_wait row, but here it is
            kind-agnostic: any lane can carry waiting-on-quota jobs while ComputeLane.waiting > 0. #}
         {% if lane.waiting > 0 %}
-        <p class="text-xs text-amber-700 dark:text-amber-400">{{ lane.waiting }} waiting on quota</p>
+        <p class="text-xs text-warn ">{{ lane.waiting }} waiting on quota</p>
         {% endif %}
 
         {# Running workloads — the drill-down itself (phaze-2u8v.5 acceptance): identifies the FILES
            being processed, not just a count. Newest-first, bounded by COMPUTE_LANE_RUNNING_N. #}
         <div>
-            <p class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            <p class="text-xs font-semibold uppercase tracking-wide text-muted ">
                 Running workloads
                 {% if running_jobs %}<span class="normal-case font-normal">({{ running_jobs | length }})</span>{% endif %}
             </p>
@@ -88,12 +88,12 @@
             {% else %}
             {# Idle-as-well-as-active acceptance: a lane with 0 in-flight work states so plainly, never
                a blank list that reads as a loading/error state. #}
-            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">No workloads currently running.</p>
+            <p class="mt-1 text-sm text-muted ">No workloads currently running.</p>
             {% endif %}
         </div>
 
         {# Liveness caption — re-rendered every 5s by the own-tick below (server-rendered, no setInterval). #}
-        <p class="text-xs text-gray-400 dark:text-gray-400">Updated {{ refreshed_at.strftime('%H:%M:%S') if refreshed_at else '—' }}</p>
+        <p class="text-xs text-muted ">Updated {{ refreshed_at.strftime('%H:%M:%S') if refreshed_at else '—' }}</p>
 
         {# D-03 own-tick: the loaded body carries its OWN bounded 5s self-refresh scoped to this lane,
            re-swapping itself into its EXPANDED ROW's per-lane slot (phaze-rdxfu retargets this from the
@@ -114,7 +114,7 @@
        offline"), never a 500. No own-tick: there is no lane id to poll; dismiss returns the pane to
        its resting state. #}
     <div class="rounded-xl border border-amber-500/30 p-4 opacity-60">
-        <p role="status" class="text-sm text-amber-600 dark:text-amber-400">Compute lane offline — no live workload data on this poll.</p>
-        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">This lane is not in the live registry snapshot.</p>
+        <p role="status" class="text-sm text-warn ">Compute lane offline — no live workload data on this poll.</p>
+        <p class="mt-1 text-xs text-muted ">This lane is not in the live registry snapshot.</p>
     </div>
 {% endif %}

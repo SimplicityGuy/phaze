@@ -142,8 +142,8 @@ async def test_search_returns_file_and_tracklist_results(client: AsyncClient, se
     await create_searchable_tracklist(session, artist="deadmau5", event="deadmau5 Coachella 2024")
     response = await client.get("/search/", params={"q": "deadmau5"}, headers={"HX-Request": "true"})
     assert response.status_code == 200
-    assert "bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400" in response.text  # File badge
-    assert "bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400" in response.text  # Tracklist badge
+    assert "bg-blue-100 dark:bg-blue-950 text-info" in response.text  # File badge
+    assert "bg-green-100 dark:bg-green-950 text-ok" in response.text  # Tracklist badge
 
 
 @pytest.mark.asyncio
@@ -446,8 +446,8 @@ async def test_search_three_entity_types(client: AsyncClient, session: AsyncSess
     await create_searchable_discogs_link(session, discogs_artist="bonobo", discogs_title="migration")
     response = await client.get("/search/", params={"q": "bonobo"}, headers={"HX-Request": "true"})
     assert response.status_code == 200
-    assert "bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400" in response.text  # File
-    assert "bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400" in response.text  # Tracklist
+    assert "bg-blue-100 dark:bg-blue-950 text-info" in response.text  # File
+    assert "bg-green-100 dark:bg-green-950 text-ok" in response.text  # Tracklist
     assert "bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-400" in response.text  # Discogs
 
 

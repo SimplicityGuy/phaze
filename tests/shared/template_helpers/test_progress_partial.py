@@ -172,7 +172,7 @@ def test_all_complete_pill_green() -> None:
 
 
 def test_completed_with_errors_pill_red_classes() -> None:
-    """completed=2, failed=3, total=5 -> ERRORS pill + Failed cell text-red-600 font-semibold."""
+    """completed=2, failed=3, total=5 -> ERRORS pill + semantic danger Failed cell."""
     html = _render_agents_table(
         agents=[
             {"agent_id": "agent-aaa", "name": "Alpha", "completed": 2, "failed": 3, "total": 5},
@@ -181,7 +181,7 @@ def test_completed_with_errors_pill_red_classes() -> None:
     assert "ERRORS" in html
     assert "bg-red-100" in html
     # Failed cell coloring per UI-SPEC C2.
-    assert "text-red-600" in html
+    assert "text-danger" in html
     assert "font-semibold" in html
 
 
