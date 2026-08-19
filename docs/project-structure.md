@@ -175,7 +175,7 @@ phaze/
 │   │   ├── cue_write.py        #   write_cue_sheet: CUE file write on the agent's media mount
 │   │   ├── tag_write.py        #   write_file_tags: mutagen tag write + verify on the agent, reported via HTTP
 │   │   ├── submit_cloud_job.py #   Control-plane fast Kube-submit producer
-│   │   ├── reconcile_cloud_jobs.py # */5 cron: reconcile in-flight K8s cloud jobs
+│   │   ├── reconcile_cloud_jobs.py # Every-minute cron: reconcile in-flight K8s cloud jobs
 │   │   ├── release_awaiting_cloud.py # Control-side tiered multi-backend drain (route AWAITING_CLOUD)
 │   │   └── _shared/            #   Cross-process startup helpers (DB-free where required)
 │   │       ├── agent_bootstrap.py  # Shared agent-startup helpers

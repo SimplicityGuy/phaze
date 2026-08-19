@@ -652,6 +652,35 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
     assert "setInterval" not in body
 
 
+def test_kueue_lane_card_renders_four_running_and_no_quota_wait() -> None:
+    """The reconciled four-slot state renders the exact Active, Capacity, and diagnostic values."""
+    from phaze.routers.pipeline import templates
+
+    body = templates.get_template("pipeline/partials/_lane_card.html").render(
+        lane={
+            "id": "k8s-test",
+            "kind": "kueue",
+            "rank": 10,
+            "cap": 4,
+            "in_flight": 4,
+            "available": True,
+            "quota_wait": 0,
+            "inadmissible": 0,
+            "queued": 0,
+            "working": 4,
+            "active": 4,
+            "processed_24h": 49,
+            "processed_lifetime": 487,
+        },
+        selected_lane=None,
+    )
+
+    assert re.search(r">Active</dt><dd[^>]*>\s*4\s*</dd>", body)
+    assert re.search(r">Capacity</dt><dd[^>]*>\s*4/4\s*</dd>", body)
+    assert "Post-submit window 4 · pod running 4" in body
+    assert "Quota: 0 waiting · 0 inadmissible" in body
+
+
 @pytest.mark.asyncio
 async def test_analyze_workspace_leads_with_flow_then_alerts_and_lanes(client: AsyncClient, session: AsyncSession) -> None:
     """The default hierarchy is scoped flow, actionable health, lane comparison, then diagnostics."""
