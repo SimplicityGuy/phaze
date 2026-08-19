@@ -7,207 +7,76 @@ This file is consumed by `just vulture` (see the justfile `vulture` recipe):
         --min-confidence 80 \\
         --ignore-decorators "@router.*,@app.*,@field_validator,@model_validator,@validator,@pytest.fixture"
 
-Every reference below marks a symbol as "used" so vulture does not report it. It was seeded with
-`uv run vulture src/phaze --make-whitelist` and then HAND-AUDITED (Phase 66): each entry was
-verified to be a genuinely-LIVE framework false-positive, not dead code. The audit found ZERO
-genuinely-dead symbols — nothing was deleted. The false-positive categories are:
+Every reference below marks a symbol as "used" so vulture does not report it.
 
-  * FastAPI route handlers (`@router.*`) — invoked by the router, never by name. Also covered by
-    `--ignore-decorators` in the recipe; kept here so the whitelist is self-sufficient.
-  * Pydantic validators (`@field_validator`/`@model_validator`) — decorator-invoked. Also
-    `--ignore-decorators`-covered; kept for self-sufficiency.
-  * SQLAlchemy ORM column attributes + Pydantic model/schema fields — read/written by the ORM and
-    by serialization (`model_dump`/response models), never by a bare Python reference vulture sees.
-  * pydantic-settings config fields — bound from env vars at runtime.
-  * Transient dynamic attributes set at runtime (`_status`, `_agent_name`, `_elapsed_seconds`,
-    `_seconds_since_progress`, `_is_stalled`, `_reconciliation`, `_track_count`, `_cue_version`, ...).
-  * watchdog Observer callbacks (`on_created`/`on_modified`) — dispatched by the watchdog framework.
-  * Imports used ONLY in string-form annotations/casts (`cast("CursorResult[Any]", ...)`,
-    `"AsyncScript | None"`) — vulture does not parse string annotations.
-  * Test-covered, deployment-gated deferred-feature helpers (`list_inflight_jobs`,
-    `get_analysis_failed_files`, `ensure_bucket_lifecycle_ttl`, `get_summary_counts`, `build_tree`,
-    `report_upload_failed`, `has_prev`/`has_next`) — exercised by the test suite and part of
-    v5.0/v6.0 deferred functionality; NOT dead. (`health_all` was the fingerprint sidecars'
-    per-engine health aggregator; it and its whole module went with phaze-0jpe.)
-  * `heartbeat_tick` — an intentional back-compat shim (Phase 46 decoupled the heartbeat from the
-    SAQ CronJob; the function is retained deliberately).
+## Scope: `--min-confidence 80` is what decides what belongs here
 
-DO NOT add the LIVE view-adjacent helpers `build_dashboard_context` / `get_stage_progress` /
-`get_queue_activity` here — vulture does not flag them (they have live callers) and they feed the
-Analyze workspace + `/pipeline/stats`.
+This is the rule that governs the file's size, and getting it wrong is how the previous revision
+rotted. vulture assigns a fixed confidence per finding KIND, not per symbol:
 
-If a NEW genuinely-dead symbol appears, DELETE it (removal-only) rather than whitelisting it. Only
-add an entry here when a symbol is a proven framework/dynamic false-positive, with a justification.
+  * unused variable (a plain local assignment / unused parameter) -- 100%
+  * unused import ---------------------------------------------- 90%
+  * unused function / method / class / property / attribute ----- 60%
+
+The recipe pins `--min-confidence 80`, so the ENTIRE 60% tier is already filtered out before the
+whitelist is consulted. Measured on `src/phaze` at the time of writing: 212 findings at
+confidence 0, of which 197 are 60% and never reach the sweep. Only the 12 unused-import and
+3 unused-variable findings below are live.
+
+That is a real difference from how the file was originally seeded. It was built with
+`vulture --make-whitelist` at the DEFAULT confidence, which emits the 60% tier, and then the
+recipe added `--min-confidence 80` on top. The result was ~170 entries suppressing findings that
+`--min-confidence 80` had already suppressed -- inert, unverifiable, and free to rot: an audit
+found 51 of them naming symbols or whole modules that no longer existed (`routers/pipeline.py`
+and `routers/tracklists.py` have since been split into packages), and 114 more whose `file:line`
+comment had drifted off the symbol it claimed to point at. None of that was detectable from the
+sweep, because none of those entries ever suppressed anything.
+
+**Do not re-seed this file with `--make-whitelist` at the default confidence.** Generate at the
+confidence the recipe actually uses:
+
+    uv run vulture src/phaze --min-confidence 80 --make-whitelist
+
+## The two live false-positive categories
+
+  * **`CursorResult` (unused import, 90%)** -- imported solely to satisfy a STRING-form
+    `cast("CursorResult[Any]", ...)`. `session.execute` is typed `Result[Any]`, but a DML statement
+    (INSERT ... ON CONFLICT DO UPDATE, UPDATE, DELETE) always yields a `CursorResult` at runtime,
+    which is what exposes `.rowcount`. vulture does not parse string annotations, so it sees the
+    import and no bare reference. One entry suppresses the name across all 12 modules; the
+    per-module comments below are an inventory, not 12 independent suppressions.
+
+  * **Protocol method parameters (unused variable, 100%)** -- `RenderPage` in
+    `services/tracklist_render.py` is a structural `Protocol` whose method bodies are `...`. The
+    parameter NAMES are the contract (callers pass `wait_until=` / `selector=`), so they cannot be
+    renamed or dropped, but no body consumes them. Only the names not already used elsewhere in
+    `src/phaze` are flagged -- `timeout`, `state` and `url` happen to be live names elsewhere, which
+    is why they are absent here rather than exempt.
+
+## Rules for changing this file
+
+  * If a NEW genuinely-dead symbol appears, **DELETE the symbol** (removal-only) rather than
+    whitelisting it. Only add an entry here when a symbol is a proven framework/dynamic
+    false-positive, with a justification.
+  * Do NOT add the LIVE view-adjacent helpers `build_dashboard_context` / `get_stage_progress` /
+    `get_queue_activity` -- vulture does not flag them (they have live callers) and they feed the
+    Analyze workspace + `/pipeline/stats`.
+  * If `--min-confidence` is ever lowered below 80, the 60% tier reappears -- FastAPI route
+    handlers, Pydantic validators, SQLAlchemy ORM column attributes, pydantic-settings fields,
+    watchdog `on_created`/`on_modified` callbacks, and transient runtime attributes. That is a
+    deliberate re-audit, not a mechanical re-seed: those categories are why the sweep is
+    non-blocking and hand-verified in the first place.
 """
 
-_.pending_count  # unused method (src/phaze/agent_watcher/debouncer.py:99)
-_.on_created  # unused method (src/phaze/agent_watcher/observer.py:83)
-_.on_modified  # unused method (src/phaze/agent_watcher/observer.py:88)
-_._agent_id  # unused attribute (src/phaze/agent_watcher/poster.py:58)
-CONTROL  # unused variable (src/phaze/config.py:65)
-_._resolve_secret_files  # unused method (src/phaze/config.py:90)
-_._strip_sqlalchemy_driver  # unused method (src/phaze/config.py:181)
-api_host  # unused variable (src/phaze/config.py:200)
-api_port  # unused variable (src/phaze/config.py:201)
-output_path  # unused variable (src/phaze/config.py:230)
-worker_health_check_interval  # unused variable (src/phaze/config.py:237)
-_._enforce_localhost_only  # unused method (src/phaze/config.py:244)
-api_tls_sans  # unused variable (src/phaze/config.py:302)
-_._validate_s3_endpoint_url  # unused method (src/phaze/config.py:597)
-analysis_fine_window_sec  # unused variable (src/phaze/config.py:786)
-analysis_coarse_window_sec  # unused variable (src/phaze/config.py:791)
-analysis_fine_min_sec  # unused variable (src/phaze/config.py:796)
-_._split_scan_roots  # unused method (src/phaze/config.py:897)
-_._enforce_required_agent_fields  # unused method (src/phaze/config.py:911)
-_._enforce_https_in_production  # unused method (src/phaze/config.py:925)
-_._enforce_redis_password_in_production  # unused method (src/phaze/config.py:939)
-Settings  # unused variable (src/phaze/config.py:1025)
-last_status  # unused variable (src/phaze/models/agent.py:32)
-fingerprint  # unused variable (src/phaze/models/analysis.py:24)
-coarse_windows_analyzed  # unused variable (src/phaze/models/analysis.py:31)
-coarse_windows_total  # unused variable (src/phaze/models/analysis.py:32)
-discogs_release_id  # unused variable (src/phaze/models/discogs_link.py:31)
-source_path  # unused variable (src/phaze/models/execution.py:32)
-sha256_verified  # unused variable (src/phaze/models/execution.py:34)
-enqueued_at  # unused variable (src/phaze/models/scheduling_ledger.py:63)
-after_tags  # unused variable (src/phaze/models/tag_write_log.py:41)
-versions  # unused variable (src/phaze/models/tracklist.py:43)
-scraped_at  # unused variable (src/phaze/models/tracklist.py:61)
-_._status  # unused attribute (src/phaze/routers/admin_agents.py:76)
-table_partial  # unused function (src/phaze/routers/admin_agents.py:116)
-AsyncScript  # unused import (src/phaze/routers/agent_exec_batches.py:45)
-create_execution_log  # unused function (src/phaze/routers/agent_execution.py:60)
-presign_download  # unused function (src/phaze/routers/agent_files.py:137)
-post_heartbeat  # unused function (src/phaze/routers/agent_heartbeat.py:19)
-CursorResult  # unused import (src/phaze/routers/agent_push.py:35)
-CursorResult  # unused import (src/phaze/routers/agent_s3.py:32)
-report_uploaded  # unused function (src/phaze/routers/agent_s3.py:59)
-report_upload_failed  # unused function (src/phaze/routers/agent_s3.py:139)
-ack_scan_terminal  # unused function (src/phaze/routers/agent_tracklists.py:185)
-trigger_association  # unused function (src/phaze/routers/companion.py:21)
-list_duplicates  # unused function (src/phaze/routers/companion.py:33)
-list_cue  # unused function (src/phaze/routers/cue.py:176)
-generate_cue  # unused function (src/phaze/routers/cue.py:238)
-list_duplicates  # unused function (src/phaze/routers/duplicates.py:79)
-compare_group  # unused function (src/phaze/routers/duplicates.py:115)
-resolve_group_endpoint  # unused function (src/phaze/routers/duplicates.py:143)
-undo_resolve_endpoint  # unused function (src/phaze/routers/duplicates.py:168)
-bulk_resolve  # unused function (src/phaze/routers/duplicates.py:198)
-bulk_undo  # unused function (src/phaze/routers/duplicates.py:232)
-start_execution  # unused function (src/phaze/routers/execution.py:83)
-execution_progress  # unused function (src/phaze/routers/execution.py:269)
-audit_log  # unused function (src/phaze/routers/execution.py:350)
-health_check  # unused function (src/phaze/routers/health.py:13)
-trigger_analysis  # unused function (src/phaze/routers/pipeline.py:370)
-trigger_proposals  # unused function (src/phaze/routers/pipeline.py:425)
-dashboard  # unused function (src/phaze/routers/pipeline.py:579)
-pipeline_stats_partial  # unused function (src/phaze/routers/pipeline.py:594)
-trigger_analysis_ui  # unused function (src/phaze/routers/pipeline.py:671)
-trigger_backfill_cloud  # unused function (src/phaze/routers/pipeline.py:738)
-deepen_analysis  # unused function (src/phaze/routers/pipeline.py:846)
-trigger_proposals_ui  # unused function (src/phaze/routers/pipeline.py:903)
-trigger_metadata_extraction  # unused function (src/phaze/routers/pipeline.py:953)
-trigger_extraction_ui  # unused function (src/phaze/routers/pipeline.py:983)
-trigger_match_tracklists_ui  # unused function (src/phaze/routers/pipeline.py:1279)
-refresh_tracklist_lookup_ui  # unused function (src/phaze/routers/pipeline.py -- phaze-2akf on-demand refresh)
-trigger_recover_ui  # unused function (src/phaze/routers/pipeline.py:1326)
-agent_roots_swap  # unused function (src/phaze/routers/pipeline_scans.py:150)
-recent_scans_partial  # unused function (src/phaze/routers/pipeline_scans.py:175)
-scan_progress  # unused function (src/phaze/routers/pipeline_scans.py:200)
-_._agent_name  # unused attribute (src/phaze/routers/pipeline_scans.py:259)
-_._elapsed_seconds  # unused attribute (src/phaze/routers/pipeline_scans.py:260)
-_._seconds_since_progress  # unused attribute (src/phaze/routers/pipeline_scans.py:261)
-_._is_stalled  # unused attribute (src/phaze/routers/pipeline_scans.py:262)
-_._reconciliation  # unused attribute (src/phaze/routers/pipeline_scans.py:263)
-delete_scan  # unused function (src/phaze/routers/pipeline_scans.py:267)
-trigger_scan  # unused function (src/phaze/routers/pipeline_scans.py:305)
-set_priority  # unused function (src/phaze/routers/pipeline_stages.py:82)
-pause  # unused function (src/phaze/routers/pipeline_stages.py:103)
-resume  # unused function (src/phaze/routers/pipeline_stages.py:117)
-tree_preview  # unused function (src/phaze/routers/preview.py:12)
-list_proposals  # unused function (src/phaze/routers/proposals.py:116)
-approve_proposal  # unused function (src/phaze/routers/proposals.py:168)
-reject_proposal  # unused function (src/phaze/routers/proposals.py:193)
-undo_proposal  # unused function (src/phaze/routers/proposals.py:218)
-row_detail  # unused function (src/phaze/routers/proposals.py:240)
-proposal_timeline  # unused function (src/phaze/routers/proposals.py:257)
-bulk_approve_high_confidence  # unused function (src/phaze/routers/proposals.py:337)
-edit_proposal  # unused function (src/phaze/routers/proposals.py:369)
-bulk_action  # unused function (src/phaze/routers/proposals.py:401)
-search_page  # unused function (src/phaze/routers/search.py:19)
-shell_home  # unused function (src/phaze/routers/shell.py:272)
-shell_stage  # unused function (src/phaze/routers/shell.py:278)
-list_tags  # unused function (src/phaze/routers/tags.py:157)
-compare_tags  # unused function (src/phaze/routers/tags.py:228)
-edit_tag_field  # unused function (src/phaze/routers/tags.py:257)
-save_tag_field  # unused function (src/phaze/routers/tags.py:290)
-write_file_tags  # unused function (src/phaze/routers/tags.py:325)
-bulk_write_no_discrepancies  # unused function (src/phaze/routers/tags.py:404)
-undo_tag_write  # unused function (src/phaze/routers/tags.py:453)
-list_tracklists  # unused function (src/phaze/routers/tracklists.py:78)
-_._track_count  # unused attribute (src/phaze/routers/tracklists.py:115)
-_._track_count  # unused attribute (src/phaze/routers/tracklists.py:117)
-_._cue_version  # unused attribute (src/phaze/routers/tracklists.py:139)
-_._cue_version  # unused attribute (src/phaze/routers/tracklists.py:141)
-_._cue_version  # unused attribute (src/phaze/routers/tracklists.py:143)
-scan_tab  # unused function (src/phaze/routers/tracklists.py:162)
-trigger_scan  # unused function (src/phaze/routers/tracklists.py:209)
-scan_status  # unused function (src/phaze/routers/tracklists.py:278)
-get_tracks  # unused function (src/phaze/routers/tracklists.py:332)
-link_tracklist  # unused function (src/phaze/routers/tracklists.py:361)
-unlink_tracklist  # unused function (src/phaze/routers/tracklists.py:381)
-rescrape_tracklist  # unused function (src/phaze/routers/tracklists.py:399)
-search_better_match  # unused function (src/phaze/routers/tracklists.py:421)
-manual_search  # unused function (src/phaze/routers/tracklists.py:476)
-undo_link  # unused function (src/phaze/routers/tracklists.py:493)
-edit_track_field  # unused function (src/phaze/routers/tracklists.py:511)
-save_track_field  # unused function (src/phaze/routers/tracklists.py:534)
-delete_track  # unused function (src/phaze/routers/tracklists.py:564)
-approve_tracklist  # unused function (src/phaze/routers/tracklists.py:580)
-reject_tracklist  # unused function (src/phaze/routers/tracklists.py:609)
-reject_low_confidence  # unused function (src/phaze/routers/tracklists.py:631)
-match_discogs  # unused function (src/phaze/routers/tracklists.py:671)
-get_discogs_candidates  # unused function (src/phaze/routers/tracklists.py:699)
-accept_discogs_link  # unused function (src/phaze/routers/tracklists.py:718)
-dismiss_discogs_link  # unused function (src/phaze/routers/tracklists.py:758)
-bulk_link_discogs  # unused function (src/phaze/routers/tracklists.py:788)
-_._track_count  # unused attribute (src/phaze/routers/tracklists.py:873)
-_._track_count  # unused attribute (src/phaze/routers/tracklists.py:875)
-_._cue_version  # unused attribute (src/phaze/routers/tracklists.py:897)
-_._cue_version  # unused attribute (src/phaze/routers/tracklists.py:899)
-_._cue_version  # unused attribute (src/phaze/routers/tracklists.py:901)
-energy  # unused variable (src/phaze/schemas/agent_analysis.py:58)
-coarse_windows_analyzed  # unused variable (src/phaze/schemas/agent_analysis.py:65)
-coarse_windows_total  # unused variable (src/phaze/schemas/agent_analysis.py:66)
-_._check_failed_at_step_coupling  # unused method (src/phaze/schemas/agent_exec_batches.py:67)
-source_path  # unused variable (src/phaze/schemas/agent_execution.py:34)
-sha256_verified  # unused variable (src/phaze/schemas/agent_execution.py:36)
-sha256_verified  # unused variable (src/phaze/schemas/agent_execution.py:55)
-agent_version  # unused variable (src/phaze/schemas/agent_heartbeat.py:14)
-worker_pid  # unused variable (src/phaze/schemas/agent_heartbeat.py:15)
-cleared  # unused variable (src/phaze/schemas/agent_metadata.py:49)
-_._require_path_when_moved  # unused method (src/phaze/schemas/agent_proposals.py:31)
-PushMismatchRequest  # unused class (src/phaze/schemas/agent_push.py:38)
-cleared  # unused variable (src/phaze/schemas/agent_push.py:63)
-_._original_path_absolute  # unused method (src/phaze/schemas/agent_s3.py:54)
-_._part_urls_http  # unused method (src/phaze/schemas/agent_s3.py:62)
-cleared  # unused variable (src/phaze/schemas/agent_s3.py:129)
-_._original_path_absolute  # unused method (src/phaze/schemas/agent_tasks.py:72)
-_._file_type_alnum  # unused method (src/phaze/schemas/agent_tasks.py:79)
-cleared  # unused variable (src/phaze/schemas/agent_tracklists.py:67)
-new_associations  # unused variable (src/phaze/schemas/companion.py:11)
-total_groups  # unused variable (src/phaze/schemas/companion.py:36)
-_.report_upload_failed  # unused method (src/phaze/services/agent_client.py:384)
-ComputeLaneState  # unused variable (src/phaze/services/agent_liveness.py:134)
-_.enqueue_for_file  # unused method (src/phaze/services/agent_task_router.py:162)
-_.infoActive  # unused attribute (src/phaze/services/analysis.py:118)
-_.warningActive  # unused attribute (src/phaze/services/analysis.py:119)
-build_tree  # unused function (src/phaze/services/collision.py:67)
-list_inflight_jobs  # unused function (src/phaze/services/kube_staging.py:264)
-get_analysis_failed_files  # unused function (src/phaze/services/pipeline.py:1053)
-_.has_prev  # unused property (src/phaze/services/proposal_queries.py:38)
-_.has_next  # unused property (src/phaze/services/proposal_queries.py:43)
-CursorResult  # unused import (src/phaze/services/scan_deletion.py:27)
-get_summary_counts  # unused function (src/phaze/services/search_queries.py:189)
-_.scheduled  # unused attribute (src/phaze/tasks/_shared/stage_control.py:141)
-heartbeat_tick  # unused function (src/phaze/tasks/heartbeat.py:116)
+# --- unused import (90%): string-form `cast("CursorResult[Any]", ...)` only ---
+# src/phaze/routers/agent_analysis.py:48          src/phaze/services/scan_deletion.py:32
+# src/phaze/routers/agent_push.py:66              src/phaze/services/stage_control.py:41
+# src/phaze/routers/agent_s3.py:44                src/phaze/services/tracklist_lookup_cache.py:20
+# src/phaze/services/backends/admission.py:25     src/phaze/tasks/ledger_reaper.py:92
+# src/phaze/services/companion.py:7               src/phaze/tasks/submit_cloud_job.py:37
+# src/phaze/services/filename_convention_learner.py:86   src/phaze/tasks/tracklist.py:66
+CursorResult
+
+# --- unused variable (100%): `RenderPage` Protocol parameters, bodies are `...` ---
+wait_until  # src/phaze/services/tracklist_render.py:161 (goto), :163 (reload)
+selector  # src/phaze/services/tracklist_render.py:165 (wait_for_selector)
