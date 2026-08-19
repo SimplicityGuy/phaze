@@ -556,6 +556,231 @@ def _bulk_write_toast(queued: int, noop: int, failed: int) -> str:
     return f"{parts[0]}. Outcomes land in the audit log as each agent reports back."
 
 
+def _parse_bulk_review_tokens(review_tokens: list[str]) -> dict[uuid.UUID, tuple[str, dict[str, Any]]]:
+    """Decode the submitted review tokens into a ``file_id``-keyed map (phaze-oc06m: extracted).
+
+    Pure move out of :func:`bulk_write_no_discrepancies` -- same 400 on an unparseable ``file_id``,
+    same last-token-wins de-duplication via dict assignment. A later token for the same file
+    overwriting an earlier one was already the behavior of the loop this replaces.
+    """
+    reviewed_by_id: dict[uuid.UUID, tuple[str, dict[str, Any]]] = {}
+    for token in review_tokens:
+        payload = _decode_tag_review_token(token)
+        try:
+            file_id = uuid.UUID(str(payload.get("file_id")))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid reviewed tag payload") from exc
+        reviewed_by_id[file_id] = (token, payload)
+    return reviewed_by_id
+
+
+async def _bulk_write_lock_busy_response(request: Request, session: AsyncSession) -> HTMLResponse:
+    """The "already in progress" branch of the bulk-write lock (phaze-oc06m: extracted, no change)."""
+    stats = await _get_tag_stats(session)
+    return templates.TemplateResponse(
+        request=request,
+        name="tags/partials/bulk_write_response.html",
+        context={
+            "request": request,
+            "stats": stats,
+            "written": 0,
+            "toast_message": "A bulk tag write is already in progress -- nothing was re-written. Wait for it to finish, then retry.",
+        },
+    )
+
+
+async def _load_bulk_candidates(
+    session: AsyncSession,
+    reviewed_by_id: dict[uuid.UUID, tuple[str, dict[str, Any]]],
+) -> tuple[list[_BulkCandidate], dict[uuid.UUID, tuple[dict[str, Any], dict[str, str | int | None]]]]:
+    """Re-query + re-validate the bulk-write candidate set (phaze-oc06m: extracted, no change).
+
+    Mirrors the pre-extraction body exactly: the anti-join SELECT bounded at
+    :data:`_MAX_BULK_TAG_WRITE` (D-03), per-file :func:`_validate_tag_review_token`, then the
+    phaze-o2ln snapshot into plain :class:`_BulkCandidate` objects outside the ORM identity map
+    before any per-candidate rollback in the caller's loop can expire them.
+    """
+    terminal_subq = _terminal_tagwrite_subq()
+    stmt = (
+        select(FileRecord)
+        .options(selectinload(FileRecord.file_metadata))
+        .where(applied_clause(), FileRecord.id.not_in(terminal_subq), FileRecord.id.in_(list(reviewed_by_id)))
+        .order_by(FileRecord.original_filename)
+        .limit(_MAX_BULK_TAG_WRITE)  # D-03: bound the operator-triggered loop at 200K scale
+    )
+    file_records = list((await session.execute(stmt)).scalars().all())
+    validated: dict[uuid.UUID, tuple[dict[str, Any], dict[str, str | int | None]]] = {}
+    for file_record in file_records:
+        validated[file_record.id] = await _validate_tag_review_token(session, file_record, reviewed_by_id[file_record.id][0])
+    # phaze-o2ln: snapshot every field the loop (or enqueue_tag_write) needs OUTSIDE the ORM
+    # identity map, right after the SELECT and before any per-file rollback can expire it -- see
+    # _BulkCandidate's docstring.
+    candidates = [_snapshot_bulk_candidate(fr) for fr in file_records]
+    return candidates, validated
+
+
+async def _dispatch_bulk_candidate(
+    session: AsyncSession,
+    request: Request,
+    candidate: _BulkCandidate,
+    validated: dict[uuid.UUID, tuple[dict[str, Any], dict[str, str | int | None]]],
+) -> str:
+    """Resolve ONE bulk-write candidate; returns ``"queued" | "noop" | "skipped" | "failed"``.
+
+    phaze-oc06m: extracted from :func:`bulk_write_no_discrepancies`'s per-candidate loop body to
+    bring the function under the CCN/nesting bar -- a pure move, not a behavior change. Every
+    branch below is byte-identical to the loop body it replaces:
+
+    * phaze-u28m/phaze-lwqk TOCTOU re-checks (terminal / already-queued) -> ``"skipped"``, same as
+      the original ``continue``.
+    * WR-01 zero-change -> persist the NO_OP marker, commit, -> ``"noop"`` (caller appends the id
+      to ``resolved_ids``, same as the original inline ``resolved_ids.append``).
+    * A qualifying change -> dispatch via :func:`enqueue_tag_write`, commit, -> ``"queued"`` or
+      ``"failed"`` by the returned log status -- same as the original ``queued += 1`` / ``failed
+      += 1``.
+    * phaze-k7g6: any exception -> roll back this candidate's uncommitted work only, log the same
+      ``bulk_tag_write_file_skipped`` warning, -> ``"failed"`` -- same as the original ``except
+      Exception`` branch.
+    """
+    file_id = candidate.id
+    try:
+        # phaze-u28m: re-check terminal status under the lock. The advisory lock blocks a
+        # concurrent BULK submit, but a per-file write_file_tags could have landed a terminal log
+        # for this candidate since the SELECT -- skip it rather than dispatch it twice.
+        if await _has_terminal_tagwrite(session, file_id):
+            return "skipped"
+        # phaze-lwqk: a per-file write_file_tags/undo could ALSO have queued a job for this
+        # candidate since the SELECT (queued is non-terminal, so the candidate SELECT above does
+        # not exclude it) -- skip it rather than raise TagWriteAlreadyQueuedError out of
+        # enqueue_tag_write below and burn a spurious "failed" tally for a file that is simply
+        # already in flight.
+        if await _has_queued_tagwrite(session, file_id):
+            return "skipped"
+
+        reviewed, proposed = validated[file_id]
+        comparison = _build_comparison(candidate.metadata, proposed)
+        if _count_changes(comparison) < 1:
+            # WR-01: a zero-change applied file has nothing to write. Persist a terminal NO_OP
+            # marker so ``_terminal_tagwrite_subq`` EVICTS it -- otherwise it re-occupies this same
+            # window on every submit and permanently starves the qualifying files behind it.
+            session.add(
+                TagWriteLog(
+                    file_id=file_id,
+                    before_tags={},
+                    after_tags={},
+                    source="bulk_noop",
+                    status=TagWriteStatus.NO_OP.value,
+                )
+            )
+            # phaze-k7g6: commit the marker immediately so a later abort cannot lose it.
+            await session.commit()
+            return "noop"
+        if not _qualifies_for_bulk_write(comparison):
+            # A >=1-change file that would blank an existing tag: never bulk-written (stays
+            # per-file Approve/Edit/Skip). ``compute_proposed_tags`` never blanks, so defensive.
+            return "skipped"
+        tags: dict[str, str | int | list[str] | None] = {k: v for k, v in proposed.items() if v is not None}
+        log_entry = await enqueue_tag_write(
+            session,
+            request.app.state.task_router,
+            candidate,
+            tags,
+            source="proposal",
+            reviewed_before_tags=reviewed["before"],
+            review_source_versions=reviewed["sources"],
+        )
+        # phaze-k7g6: commit the audit row atomically with the dispatch it describes, so a
+        # mid-loop cancellation/crash can never leave a job enqueued with no TagWriteLog row for
+        # its agent callback to PATCH (which would strand the write silently).
+        await session.commit()
+
+        # phaze-5j82 / phaze-6bkk: count only what the server actually observed -- the hand-off.
+        # The real per-file outcome arrives asynchronously via the agent callback.
+        return "queued" if log_entry.status == TagWriteStatus.QUEUED else "failed"
+    except Exception:
+        # phaze-k7g6: roll back only this file's uncommitted work (prior per-file commits stand)
+        # and keep going. A raised ValueError/TagWriteAlreadyQueuedError/DB error is a failed
+        # file, not a batch abort.
+        await session.rollback()
+        logger.warning("bulk_tag_write_file_skipped", file_id=str(file_id), exc_info=True)
+        return "failed"
+
+
+async def _run_bulk_candidates(
+    session: AsyncSession,
+    request: Request,
+    candidates: list[_BulkCandidate],
+    validated: dict[uuid.UUID, tuple[dict[str, Any], dict[str, str | int | None]]],
+) -> tuple[int, int, int, list[uuid.UUID]]:
+    """Dispatch every candidate and tally the outcomes (phaze-oc06m: extracted, no change).
+
+    Returns ``(queued, noop, failed, resolved_ids)`` -- ``resolved_ids`` is the phaze-gwe1 list of
+    files that reached a TERMINAL state this pass (today: only the zero-change NO_OP markers,
+    since a dispatched write stays non-terminal until the agent reports back).
+    """
+    queued = 0
+    noop = 0
+    failed = 0
+    resolved_ids: list[uuid.UUID] = []
+    for candidate in candidates:
+        outcome = await _dispatch_bulk_candidate(session, request, candidate, validated)
+        if outcome == "queued":
+            queued += 1
+        elif outcome == "noop":
+            noop += 1
+            resolved_ids.append(candidate.id)  # phaze-gwe1: now terminal -- remove the stale pending row
+        elif outcome == "failed":
+            failed += 1
+        # "skipped" tallies nothing, matching the original bare ``continue``.
+    return queued, noop, failed, resolved_ids
+
+
+async def _bulk_write_response(
+    request: Request,
+    session: AsyncSession,
+    queued: int,
+    noop: int,
+    failed: int,
+    resolved_ids: list[uuid.UUID],
+) -> HTMLResponse:
+    """Build the final bulk-write response (phaze-oc06m: extracted, no change).
+
+    phaze-gwe1: re-queries the SAME builder the workspace itself renders from (deferred import --
+    services.review imports helpers FROM this module, so importing it back at module scope would
+    cycle; by call time this module is already fully loaded) so the refreshed subcount always
+    matches the row count the operator actually sees after this OOB update lands.
+
+    phaze-bto9: this re-scan is the SECOND full pass of every submit (the first rendered the page
+    the operator submitted from), so the remediation path used to pay twice over. It is now
+    bounded the same way the render is -- capped candidate batches, batched per-page lookups --
+    and reports a "N+" floor when the scan was truncated, matching the workspace's own subcount
+    exactly.
+    """
+    stats = await _get_tag_stats(session)
+    toast_message = _bulk_write_toast(queued, noop, failed)
+    from phaze.services.review import get_tagwrite_review_page  # noqa: PLC0415 -- deferred to break the tags<->review import cycle
+
+    remaining_page = await get_tagwrite_review_page(session)
+    remaining = f"{len(remaining_page.rows)}{'+' if remaining_page.partial else ''}"
+    subcount = f"{remaining} awaiting approval · the file server writes these tags"
+    return templates.TemplateResponse(
+        request=request,
+        name="tags/partials/bulk_write_response.html",
+        context={
+            "request": request,
+            "stats": stats,
+            # phaze-6bkk: the hand-off count, not an on-disk write count -- the api never observes
+            # the write. The template does not render it today; it stays for parity with the
+            # already-in-progress branch above.
+            "written": queued,
+            "toast_message": toast_message,
+            "resolved_ids": resolved_ids,
+            "subcount": subcount,
+            "row_id_prefix": _V7_TAGWRITE_ROW_PREFIX,
+        },
+    )
+
+
 @router.post("/bulk-write-no-discrepancies", response_class=HTMLResponse)
 async def bulk_write_no_discrepancies(
     request: Request,
@@ -586,17 +811,18 @@ async def bulk_write_no_discrepancies(
     write is by definition not yet terminal, so its row correctly stays. The response OOB-removes
     exactly the NO_OP rows (keyed by ``tagwrite-row-{id}``, the SAME id the workspace renders) and
     refreshes the subcount.
+
+    phaze-oc06m: the body below is decomposed into :func:`_parse_bulk_review_tokens`,
+    :func:`_bulk_write_lock_busy_response`, :func:`_load_bulk_candidates`,
+    :func:`_dispatch_bulk_candidate` / :func:`_run_bulk_candidates` and :func:`_bulk_write_response`
+    -- a pure extract-method pass (CCN 22 -> see each helper's own docstring for the exact
+    correspondence), not a behavior change. The advisory-lock acquire/release/commit/close sequence
+    and its phaze-yhhy / phaze-7bjjj rationale stay inline here because they bracket the ENTIRE
+    request, not any one extracted step.
     """
     if len(review_tokens) > _MAX_BULK_TAG_WRITE:
         raise HTTPException(status_code=400, detail=f"At most {_MAX_BULK_TAG_WRITE} reviewed tag decisions may be submitted")
-    reviewed_by_id: dict[uuid.UUID, tuple[str, dict[str, Any]]] = {}
-    for token in review_tokens:
-        payload = _decode_tag_review_token(token)
-        try:
-            file_id = uuid.UUID(str(payload.get("file_id")))
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail="Invalid reviewed tag payload") from exc
-        reviewed_by_id[file_id] = (token, payload)
+    reviewed_by_id = _parse_bulk_review_tokens(review_tokens)
     if not reviewed_by_id:
         raise HTTPException(status_code=400, detail="Select at least one reviewed tag decision")
 
@@ -611,17 +837,7 @@ async def bulk_write_no_discrepancies(
         # single-user tool: a double-click gets a clear "already in progress" toast instead of
         # silently re-tagging every file.
         if not await _acquire_bulk_tagwrite_lock(lock_conn):
-            stats = await _get_tag_stats(session)
-            return templates.TemplateResponse(
-                request=request,
-                name="tags/partials/bulk_write_response.html",
-                context={
-                    "request": request,
-                    "stats": stats,
-                    "written": 0,
-                    "toast_message": "A bulk tag write is already in progress -- nothing was re-written. Wait for it to finish, then retry.",
-                },
-            )
+            return await _bulk_write_lock_busy_response(request, session)
 
         # phaze-7bjjj: ``_acquire_bulk_tagwrite_lock``'s SELECT is ``lock_conn``'s first statement,
         # and this engine runs with no AUTOCOMMIT, so it auto-begins a transaction that nothing else
@@ -637,109 +853,9 @@ async def bulk_write_no_discrepancies(
         if owns_lock_conn:
             await lock_conn.commit()
 
-        queued = 0
-        noop = 0
-        failed = 0
-        # phaze-gwe1 / phaze-6bkk: files that reached a TERMINAL state this pass -- now only the
-        # zero-change NO_OP markers, since a dispatched write stays non-terminal until the agent
-        # reports. The response removes exactly these rows; a QUEUED row stays (correctly) on
-        # screen.
-        resolved_ids: list[uuid.UUID] = []
         try:
-            terminal_subq = _terminal_tagwrite_subq()
-            stmt = (
-                select(FileRecord)
-                .options(selectinload(FileRecord.file_metadata))
-                .where(applied_clause(), FileRecord.id.not_in(terminal_subq), FileRecord.id.in_(list(reviewed_by_id)))
-                .order_by(FileRecord.original_filename)
-                .limit(_MAX_BULK_TAG_WRITE)  # D-03: bound the operator-triggered loop at 200K scale
-            )
-            file_records = list((await session.execute(stmt)).scalars().all())
-            validated: dict[uuid.UUID, tuple[dict[str, Any], dict[str, str | int | None]]] = {}
-            for file_record in file_records:
-                validated[file_record.id] = await _validate_tag_review_token(session, file_record, reviewed_by_id[file_record.id][0])
-            # phaze-o2ln: snapshot every field the loop (or enqueue_tag_write) needs OUTSIDE the ORM
-            # identity map, right after the SELECT and before any per-file rollback can expire it --
-            # see _BulkCandidate's docstring.
-            candidates = [_snapshot_bulk_candidate(fr) for fr in file_records]
-
-            for candidate in candidates:
-                file_id = candidate.id
-                # phaze-k7g6: isolate each file. A single bad file (e.g. a ValueError from a
-                # concurrently un-applied file, or a transient read error) must SKIP -- never abort
-                # the batch and never discard the already-committed audit rows of prior files.
-                try:
-                    # phaze-u28m: re-check terminal status under the lock. The advisory lock blocks a
-                    # concurrent BULK submit, but a per-file write_file_tags could have landed a
-                    # terminal log for this candidate since the SELECT -- skip it rather than
-                    # dispatch it twice.
-                    if await _has_terminal_tagwrite(session, file_id):
-                        continue
-                    # phaze-lwqk: a per-file write_file_tags/undo could ALSO have queued a job for
-                    # this candidate since the SELECT (queued is non-terminal, so the candidate SELECT
-                    # above does not exclude it) -- skip it rather than raise
-                    # TagWriteAlreadyQueuedError out of enqueue_tag_write below and burn a spurious
-                    # "failed" tally for a file that is simply already in flight.
-                    if await _has_queued_tagwrite(session, file_id):
-                        continue
-
-                    reviewed, proposed = validated[file_id]
-                    comparison = _build_comparison(candidate.metadata, proposed)
-                    if _count_changes(comparison) < 1:
-                        # WR-01: a zero-change applied file has nothing to write. Persist a terminal
-                        # NO_OP marker so ``_terminal_tagwrite_subq`` EVICTS it -- otherwise it
-                        # re-occupies this same window on every submit and permanently starves the
-                        # qualifying files behind it.
-                        session.add(
-                            TagWriteLog(
-                                file_id=file_id,
-                                before_tags={},
-                                after_tags={},
-                                source="bulk_noop",
-                                status=TagWriteStatus.NO_OP.value,
-                            )
-                        )
-                        # phaze-k7g6: commit the marker immediately so a later abort cannot lose it.
-                        await session.commit()
-                        noop += 1
-                        resolved_ids.append(file_id)  # phaze-gwe1: now terminal -- remove the stale pending row
-                        continue
-                    if not _qualifies_for_bulk_write(comparison):
-                        # A >=1-change file that would blank an existing tag: never bulk-written
-                        # (stays per-file Approve/Edit/Skip). ``compute_proposed_tags`` never blanks,
-                        # so defensive.
-                        continue
-                    tags: dict[str, str | int | list[str] | None] = {k: v for k, v in proposed.items() if v is not None}
-                    log_entry = await enqueue_tag_write(
-                        session,
-                        request.app.state.task_router,
-                        candidate,
-                        tags,
-                        source="proposal",
-                        reviewed_before_tags=reviewed["before"],
-                        review_source_versions=reviewed["sources"],
-                    )
-                    # phaze-k7g6: commit the audit row atomically with the dispatch it describes, so
-                    # a mid-loop cancellation/crash can never leave a job enqueued with no
-                    # TagWriteLog row for its agent callback to PATCH (which would strand the write
-                    # silently).
-                    await session.commit()
-
-                    # phaze-5j82 / phaze-6bkk: count only what the server actually observed -- the
-                    # hand-off. The real per-file outcome arrives asynchronously via the agent
-                    # callback.
-                    if log_entry.status == TagWriteStatus.QUEUED:
-                        queued += 1
-                    else:
-                        failed += 1
-                except Exception:
-                    # phaze-k7g6: roll back only this file's uncommitted work (prior per-file commits
-                    # stand) and keep going. A raised ValueError/TagWriteAlreadyQueuedError/DB error
-                    # is a failed file, not a batch abort.
-                    await session.rollback()
-                    failed += 1
-                    logger.warning("bulk_tag_write_file_skipped", file_id=str(file_id), exc_info=True)
-                    continue
+            candidates, validated = await _load_bulk_candidates(session, reviewed_by_id)
+            queued, noop, failed, resolved_ids = await _run_bulk_candidates(session, request, candidates, validated)
         finally:
             # phaze-yhhy: the release runs on ``lock_conn`` -- never on ``session`` -- so it can
             # never be skipped by ``session`` sitting in an aborted transaction (the candidate
@@ -754,37 +870,7 @@ async def bulk_write_no_discrepancies(
         if owns_lock_conn:
             await lock_conn.close()
 
-    stats = await _get_tag_stats(session)
-    toast_message = _bulk_write_toast(queued, noop, failed)
-    # phaze-gwe1: re-query the SAME builder the workspace itself renders from (deferred import --
-    # services.review imports helpers FROM this module, so importing it back at module scope would
-    # cycle; by call time this module is already fully loaded) so the refreshed subcount always
-    # matches the row count the operator actually sees after this OOB update lands.
-    from phaze.services.review import get_tagwrite_review_page  # noqa: PLC0415 -- deferred to break the tags<->review import cycle
-
-    # phaze-bto9: this re-scan is the SECOND full pass of every submit (the first rendered the page
-    # the operator submitted from), so the remediation path used to pay twice over. It is now bounded
-    # the same way the render is -- capped candidate batches, batched per-page lookups -- and reports
-    # a "N+" floor when the scan was truncated, matching the workspace's own subcount exactly.
-    remaining_page = await get_tagwrite_review_page(session)
-    remaining = f"{len(remaining_page.rows)}{'+' if remaining_page.partial else ''}"
-    subcount = f"{remaining} awaiting approval · the file server writes these tags"
-    return templates.TemplateResponse(
-        request=request,
-        name="tags/partials/bulk_write_response.html",
-        context={
-            "request": request,
-            "stats": stats,
-            # phaze-6bkk: the hand-off count, not an on-disk write count -- the api never observes
-            # the write. The template does not render it today; it stays for parity with the
-            # already-in-progress branch above.
-            "written": queued,
-            "toast_message": toast_message,
-            "resolved_ids": resolved_ids,
-            "subcount": subcount,
-            "row_id_prefix": _V7_TAGWRITE_ROW_PREFIX,
-        },
-    )
+    return await _bulk_write_response(request, session, queued, noop, failed, resolved_ids)
 
 
 @router.post("/{file_id}/undo", response_class=HTMLResponse)
