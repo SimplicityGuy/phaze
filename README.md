@@ -1,4 +1,3 @@
-<!-- generated-by: gsd-doc-writer -->
 <div align="center">
 
 <picture>
@@ -9,437 +8,236 @@
 
 <br><br>
 
-[![CI](https://github.com/SimplicityGuy/phaze/actions/workflows/ci.yml/badge.svg)](https://github.com/SimplicityGuy/phaze/actions/workflows/ci.yml) [![codecov](https://codecov.io/gh/SimplicityGuy/phaze/branch/main/graph/badge.svg)](https://codecov.io/gh/SimplicityGuy/phaze) ![License: MIT](https://img.shields.io/github/license/SimplicityGuy/phaze) ![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)
+[![CI](https://github.com/SimplicityGuy/phaze/actions/workflows/ci.yml/badge.svg)](https://github.com/SimplicityGuy/phaze/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/SimplicityGuy/phaze/branch/main/graph/badge.svg)](https://codecov.io/gh/SimplicityGuy/phaze)
+![License: MIT](https://img.shields.io/github/license/SimplicityGuy/phaze)
+![Python 3.14](https://img.shields.io/badge/python-3.14-blue.svg)
 
-**A music collection organizer that ingests music and concert files, analyzes them, uses AI to propose better filenames and destination paths, and provides a web UI to review and approve renames. All file operations use a safe copy-verify-delete protocol with full audit trails.**
+**Organize a large music and concert archive without surrendering control of the files.**
 
 </div>
 
-<p align="center">
+Phaze discovers music and concert recordings, extracts metadata, performs exhaustive audio
+analysis, finds tracklists, and asks an LLM to propose better filenames and destinations. Its
+private admin console keeps those proposals behind a human review boundary: generation does not
+authorize a change, approval does not move a file, and only an explicitly started apply batch
+executes approved work.
 
-[🚀 Quick Start](#-quick-start) | [📖 Documentation](#-documentation) | [🌟 Features](#-key-features) | [💬 Community](#-support--community)
+Phaze is a single-operator application intended for a private network. It is not a hosted music
+service, player, or unattended library mutator.
 
-</p>
+## What Phaze does
 
-## 🎯 What is Phaze?
+- Discovers audio, video, playlist, CUE, and companion files through registered file-server
+  agents.
+- Reads tags with Mutagen and analyzes BPM, key, mood, style, and related features with
+  `essentia-tensorflow`.
+- Analyzes every natural fine and coarse window. There is no sampling cap or deepen mode; live
+  PCM and process peak RSS are bounded at the chunk/process boundary, and long-running work stays
+  live through progress heartbeats rather than a wall-clock timeout.
+- Searches and renders 1001Tracklists through a paced, resumable drain, then matches tracklists
+  to Discogs data.
+- Generates structured rename and destination proposals through LiteLLM.
+- Presents filename and destination decisions together in **Changes Review**. Tags remain a
+  separate, reversible authorization after execution.
+- Applies only approved work through an agent-owned copy/verify/delete path and records the
+  outcome in the audit log.
+- Detects exact duplicates from discovery-time SHA-256 hashes. Audio fingerprinting was removed;
+  there are no audfprint, Panako, AcoustID, or fingerprint pipeline stages.
 
-Phaze is a music collection organizer for managing a large personal archive of music and live concert recordings. It provides:
+## The operator workflow
 
-- **🎵 Audio Analysis**: BPM, key, mood, and style detection via essentia-tensorflow
-- **🤖 AI-Powered Renaming**: LLM-generated filename and path proposals via litellm
-- **🎧 Tracklist Matching**: Concert set identification from 1001Tracklists
-- **👀 Human-in-the-Loop**: Web UI to review, approve, or reject every proposed change
-- **🔒 Safe File Operations**: Copy-verify-delete protocol with full audit trails -- nothing moves without review
+The responsive console is one persistent shell with a labeled DAG rail organized into four
+navigation groups:
 
-Perfect for DJs, music collectors, and live recording enthusiasts who want their messy archives properly named, organized, and deduplicated.
-
-## 🏛️ Architecture Overview
-
-### 🧭 The Console (v7.0 DAG-Centric Shell)
-
-Phaze's admin UI is a **three-column "Hybrid Console"** shell — a single screen with no
-content tabs. The pipeline **DAG rail** on the left is the navigation spine: it shows every
-stage with a live count, and clicking a stage swaps the center **stage workspace** in place
-over HTMX (`GET /s/<stage>`, no full-page reload and no tab bar). The right column is the
-per-file pane. `/` renders the shell on the static, DB-free **Summary** landing placeholder
-(SQ3-02); **Analyze** is one rail click away at `/s/analyze`.
-
-- **DAG rail = navigation.** Discover → Enrich (Metadata · Analyze) →
-  Identify (Tracklist) → Propose → Review & Apply (Rename · Tag write · Move ·
-  Dedupe · Cue), with Audit log and the Agents/Compute page below the line. Live per-stage
-  counts ride the single `/pipeline/stats` 5-second poll.
-- **⌘K command palette.** A Cmd-K command palette unifies search across files, tracklists,
-  and artists plus quick commands — it replaces the old global-search tab.
-- **Header status strip.** Compute/agent liveness surfaces in a header status strip
-  alongside the **force-local pill** (the runtime routing override, below); Kueue lanes are
-  modeled as ephemeral Job-based identities, so they are never shown as perpetually dead.
-- **N-lane Analyze grid.** The Analyze workspace renders a server-derived **N-lane grid** —
-  one card per registry backend, sorted rank-ascending — showing each lane's kind, cost-tier
-  rank, per-lane in-flight/cap, live availability, and a Kueue admission caption
-  (quota-waiting / inadmissible counts). The grid is built from
-  `get_backend_lane_snapshot()` and OOB-swaps as a unit off the shared poll.
-- **Per-file record slide-in.** Opening a file row (or picking it from ⌘K) slides a full
-  per-file record — windowed analysis timeline, metadata/identity, and this file's pending
-  approvals — in over the shell.
-
-This is an information-architecture and presentation layer over the **existing** routers and
-services — the analysis, identify, proposal, and execution behavior is unchanged.
-
-### ☁️ Multi-Cloud Backends (2026.7.1)
-
-Analysis dispatch runs over a **pluggable backend registry**. Backends are declared in a
-`backends.toml` file (loaded via `PHAZE_BACKENDS_CONFIG_FILE`, default
-`/etc/phaze/backends.toml`); an absent file means an implicit **local-only** registry (a
-single `kind=local` backend at `rank=99`, `cap=1`). The file is a typed `[[backends]]` list,
-discriminated by `kind` — `local` | `compute` | `kueue` — where each backend carries a
-cost-tier `rank` (ascending = preferred; local sorts last at 99) and a concurrency `cap`.
-A `compute` backend is one rsync-over-Tailscale OCI A1 agent (≤1); a `kueue` backend is a
-Kueue cluster, and **N Kueue clusters are supported simultaneously**. Each non-local backend
-stages payloads through a per-backend S3 bucket declared in a `[[buckets]]` registry.
-
-Cloud is **derived, not toggled** — `cloud_enabled` is simply "the registry has any non-local
-backend," so there is no env master switch (the old `PHAZE_CLOUD_TARGET` selector was removed
-in Phase 67). Dispatch is a **tiered drain**: rank-first, spilling to the next rank, and only
-spilling to slow local after `cloud_spill_to_local_after_seconds` when higher ranks are
-online-but-full (immediate to local only when every non-local backend is offline). A runtime
-**force-local pill** (`POST /pipeline/routing/force-local`, a durable `route_control` row)
-lets an operator route everything local during an incident — reversible, no redeploy.
-
-Deep detail lives in [Architecture Overview](docs/architecture.md) and the
-[Runbook](docs/runbook.md).
-
-### ⚙️ Services
-
-| Service      | Port | Purpose                            | Key Technologies                         |
-| ------------ | ---- | ---------------------------------- | ---------------------------------------- |
-| **API**      | 8000 | FastAPI application server         | `FastAPI`, `SQLAlchemy`, `asyncpg`       |
-| **Worker**   | --   | SAQ async background task processor| `SAQ`, `PostgreSQL`, `essentia`, `mutagen`|
-| **Postgres** | 5432 | Primary database + SAQ queue broker| `PostgreSQL 18`, `Alembic`, `psycopg`    |
-| **Redis**    | 6379 | Cache, rate-limit, counters        | `Redis 8`                                |
-
-### 📐 System Architecture
-
-```mermaid
-graph TD
-    subgraph Frontend ["🌐 Frontend"]
-        UI["🖥️ DAG-Centric Console<br/>HTMX + Tailwind + Alpine<br/>DAG rail nav · stage workspaces · ⌘K palette"]
-    end
-
-    subgraph Backend ["⚙️ Backend"]
-        API["🚀 FastAPI<br/>async, :8000<br/>/api/v1/* · /proposals · /pipeline"]
-        WORKER["🔧 SAQ Worker<br/>async background jobs"]
-    end
-
-    subgraph Storage ["💾 Storage"]
-        PG[("🐘 PostgreSQL 18<br/>:5432<br/>DB + SAQ broker")]
-        REDIS[("🔴 Redis 8<br/>:6379<br/>cache only")]
-    end
-
-    subgraph Backends ["☁️ Analysis Backends — rank-tiered drain"]
-        LOCAL["🖥️ Local<br/>essentia · rank 99"]
-        COMPUTE["☁️ Compute agent<br/>OCI A1 · rsync/Tailscale · ≤1"]
-        KUEUE["⎈ Kueue clusters<br/>N ClusterQueues"]
-        S3[("🪣 Per-backend S3 staging")]
-    end
-
-    UI --> API
-    API --> PG
-    API --> REDIS
-    API --> WORKER
-    WORKER --> PG
-
-    API -->|dispatch by rank| LOCAL
-    API -->|dispatch by rank| COMPUTE
-    API -->|dispatch by rank| KUEUE
-    COMPUTE --> S3
-    KUEUE --> S3
-
-    style UI fill:#e3f2fd,stroke:#0d47a1,stroke-width:2px
-    style API fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
-    style WORKER fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    style PG fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
-    style REDIS fill:#ffebee,stroke:#b71c1c,stroke-width:2px
-    style LOCAL fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
-    style COMPUTE fill:#e3f2fd,stroke:#0d47a1,stroke-width:2px
-    style KUEUE fill:#fff8e1,stroke:#ff8f00,stroke-width:2px
-    style S3 fill:#ede7f6,stroke:#4527a0,stroke-width:2px
-```
-
-See [Architecture Overview](docs/architecture.md) for detailed diagrams covering data flow, service communication, and the approval pipeline.
-
-### 🔄 File Processing Pipeline
-
-After discovery, metadata extraction and analysis run as independent
-per-file stages (each reads only the file on disk). Metadata extraction is
-**operator-triggered** from its stage workspace in the DAG-centric console — it is no
-longer auto-enqueued at discovery. Proposal generation joins on analysis **and** metadata only.
-Duplicate detection groups files by their discovery-time SHA-256 hash — it is independent of
-both enrich stages.
-
-```mermaid
-stateDiagram-v2
-    [*] --> DISCOVERED
-    DISCOVERED --> METADATA_EXTRACTED : mutagen (operator‑triggered)
-    DISCOVERED --> ANALYZED : essentia
-    DISCOVERED --> DUPLICATE_RESOLVED : SHA‑256 hash match
-    METADATA_EXTRACTED --> PROPOSAL_GENERATED : LLM via litellm
-    ANALYZED --> PROPOSAL_GENERATED : LLM via litellm
-    PROPOSAL_GENERATED --> APPROVED : human review
-    PROPOSAL_GENERATED --> REJECTED : human review
-    APPROVED --> EXECUTED : copy‑verify‑delete
-    APPROVED --> FAILED
-```
-
-The v7.0 console renders this topology as the **DAG rail** — the left-hand navigation
-spine — where each stage is a node with a live count; clicking a node swaps its workspace
-into the center pane over HTMX (`/s/<stage>`), and that workspace carries the stage's
-trigger (gated by its upstream dependencies and by agent/controller availability). DB-truth
-stage counts drive every rendered count; the rail is seeded once and kept live by a 5s
-`/pipeline/stats` poll. The two agent stages (**Metadata**, **Analyze**)
-additionally have **per-stage Pause/Resume + priority control endpoints** (▲ Higher / ▼
-Lower, "lower number runs first"; see below); their live pause/priority state is seeded into
-`$store.pipeline` and rides the same 5s poll. Discovery is display-only — scanning is
-initiated solely from the Discover workspace's Trigger Scan card (the redundant "Rescan
-Files" anchor was removed in Phase 38). The legacy standalone dashboard page was removed in
-the v7.0 cutover, so `/pipeline/` now 302-redirects into the shell root `/`.
-
-**Recovery-only automation (Phase 42).** Steady state produces **zero** automatic
-enqueues — every stage advances only on an operator click. The single exception is a gated
-recovery pass on controller startup: it **no-ops** unless it detects genuine queue-loss
-(empty `saq_jobs` while the DB still shows pending work). Because the SAQ broker is durable
-**Postgres** (Phase 36), a normal restart loses nothing, so the old every-5-min
-auto-advance cron was removed. A global **Recover** button in the DAG header (`POST
-/pipeline/recover`) runs the same idempotent producer on demand (forced cold-boot safety
-net); its deterministic-key dedup means a forced reconcile can never double the backlog.
-
-### 📬 Task Queue Routing
-
-Every control-plane enqueue (API endpoint or admin-UI action) routes to a **named** SAQ queue that a worker actually consumes — the control plane never produces onto an unnamed `default` queue (which has no consumer). A single chokepoint, `resolve_queue_for_task` in `src/phaze/services/enqueue_router.py`, maps each task name to its destination:
-
-- **Controller-bound tasks** — `generate_proposals`, `match_tracklist_to_discogs`, `drain_tracklists`, `refresh_tracklists`, `submit_cloud_job` — route to the `controller` queue, consumed by the application-server `phaze-worker`.
-- **Per-agent tasks** — `process_file`, `extract_file_metadata`, `scan_directory`, `execute_approved_batch`, `s3_upload`, `push_file` — route via the `AgentTaskRouter` to a **per-lane** `phaze-agent-<id>-<lane>` queue, consumed by the matching file-server lane worker. The target agent is chosen by **active-agent selection** (the most-recently-seen, non-revoked agent). When **no active agent** is available, the operation surfaces a clear error / empty-state instead of silently enqueuing nothing.
-
-**Per-lane agent workers (quick-260707-dh1):** the file-server agent runs **three lane workers from one image** — `analyze` (`process_file`), `meta` (`extract_file_metadata` / `scan_directory` / `execute_approved_batch`), and `io` (`s3_upload` / `push_file`) — so I/O offload and cheap analysis are never head-of-line-blocked behind CPU-bound essentia backlog. The task→lane map is the single source of truth `LANE_TASKS` in `enqueue_router.py` (with `AGENT_TASKS` its derived union); `queue_for(agent_id, lane)` requires an explicit lane (no silent default). The CPU-bound `analyze` lane's concurrency and the extractor's TF thread caps are both **derived from the host's schedulable physical core count** in one place (`services/analysis_sizing.py`, phaze-rvcn) so they cannot drift apart: `intra_op_threads x concurrency ~= physical_cores`, which on nox's 8 physical cores is 2 slots x 4 threads. Pinning either half separately is what let them drift before (compose said 1 thread, config said 4 slots = 4 of 8 cores), and letting TensorFlow size its own pools is what made per-process peak RSS a property of the box rather than of the workload; `io` is off the CPU budget. **Every** lane worker heartbeats (`PHAZE_AGENT_HEARTBEAT=true` on all three), each beat tagged with its own lane and carrying that lane's `queue_depth` — the control plane keeps the per-lane breakdown, sums an honest all-lane depth, and takes `max(last_seen)` for liveness (phaze-30fo). This replaced the former "exactly one heartbeat per agent, on `analyze`" rule: pinning the whole liveness signal to one process meant a stalled `analyze` worker marked the agent DEAD and cost it work-routing rank (`select_active_agent` orders by `last_seen_at DESC`) while its other lanes were busy. Only the transitional `worker-drain` consumer sets `PHAZE_AGENT_HEARTBEAT=false` — it is unlaned, so its untagged beat would wipe the per-lane breakdown. The compute (cloud/x86) agent consumes the **single** `analyze` lane (its only task is `process_file`). See [`docs/agent-queue-lanes.md`](docs/agent-queue-lanes.md) for the topology table, concurrency knobs, and the legacy-queue drain runbook.
-
-Unknown task names fail loud (`ValueError`) — they are never silently sent to any queue. A static guard test (`tests/shared/core/test_no_default_queue_producers.py`) scans the router and service trees on every CI run and fails if anyone reintroduces a default-queue producer (a `*.state.queue` reference or an unnamed `Queue.from_url(...)`), so this bug class cannot regress unnoticed.
-
-**Schedule-safe by construction:** every routable task is keyed deterministically as `<task>:<natural_id>` at a single central SAQ `before_enqueue` hook (`apply_deterministic_key`), so a re-enqueue dedups against an in-flight job instead of doubling the queue — no call site can drift back to a random-uuid key. Task DB writes upsert (`ON CONFLICT DO UPDATE`); proposals in particular are idempotent via a partial unique index (`uq_proposals_file_id_pending`) so re-runs never duplicate rows.
-
-> **Operational note:** Jobs stranded on the legacy `default` queue from before this routing fix (e.g. the `saq:job:default:*` keys from the v4.0.6 incident) are cleared as a one-time **deploy step** after redeploy — re-triggering analysis re-enqueues them correctly onto their named queues. This is an operations task, not application code.
-
-### 🎚️ Per-Stage Pause & Priority
-
-Each of the two agent pipeline stages — **metadata** (`extract_file_metadata`) and **analyze** (`process_file`) — can be paused, resumed, and reprioritized at runtime. The durable operator intent lives in the `pipeline_stage_control` table; a `before_enqueue` hook stamps every NEW stage job from that table, while the control endpoints additionally mutate the EXISTING queued backlog (raw `saq_jobs` UPDATEs) so an action takes effect immediately. The control-table read is cached for **5s** (TTL), so a just-changed priority reaches newly-enqueued jobs within that bounded window.
-
-Each endpoint mutates the control row and the live backlog in a **single transaction** and returns `{stage, priority, paused}` sourced from the control row (the durable intent — a raw `saq_jobs` priority UPDATE reorders the dequeue column but does not rewrite a job's serialized priority, so the control row is the source of truth for the response):
-
-| Endpoint | Action |
+| Group | Workspaces |
 | --- | --- |
-| `POST /pipeline/stages/{stage}/priority` | Apply a signed `{ "delta": int }` to the stage priority. The UI steps by ±10 (10 discrete levels across 0–100); the result is clamped to `[0, 100]` and the new absolute value is returned. Reorders the queued backlog. |
-| `POST /pipeline/stages/{stage}/pause` | **Drain-pause:** in-flight (active) jobs finish; the queued backlog is parked (`scheduled = SENTINEL`, far-future) so it fails the dequeue's `now >= scheduled` gate. Sets `paused = true`. |
-| `POST /pipeline/stages/{stage}/resume` | Un-park **only** the pause-parked rows (sentinel-guarded, so genuine retry backoffs are preserved). Sets `paused = false`. Restores schedulability but **not** priority. |
+| Overview | Summary, Files |
+| Pipeline | Discover, Metadata, Analyze, Tracklists, Propose changes |
+| Review | Changes Review, Duplicates, Cue sheets, Execute approved |
+| Operations | Routing, Audit log, Agents & compute lanes |
 
-**Priority semantics:** `priority` maps **directly** onto SAQ's `saq_jobs.priority` — **lower number = higher priority = dequeues sooner** (no inversion). The default is 50; a DB CHECK keeps every stage inside `[0, 100]`, well within SAQ's `0–32767` dequeue window.
+`GET /` opens the actionable Summary. Native links work normally; HTMX enhances `/s/<stage>`
+navigation into in-place workspace swaps. The command palette and record drawer provide global
+search and per-file context without creating alternate approval paths.
 
-**Adopted defaults (locked):** control-state cache TTL = **5s**; **pause persists across reboots** and re-applies to re-enqueued jobs (the hook stamps the parked state onto restarts — Phase 32 resilience); **resume un-parks only** (it never restores a pre-pause priority); priority is a **delta** op with a default UI step of **±10**.
+The usual flow is:
 
-An unknown stage returns **422** (validated against the metadata/analyze allowlist before any backlog filter is built). These endpoints add **no app-layer auth** — like the rest of `/pipeline/*` and the `/saq` UI, they sit behind the reverse proxy's internal-realm auth on the private LAN.
+```mermaid
+flowchart LR
+    D[Discover] --> M[Metadata]
+    D --> A[Analyze]
+    M --> P[Propose changes]
+    A --> P
+    D --> T[Tracklists]
+    P --> R[Changes Review]
+    R --> E[Execute approved]
+    E --> G[Tag review / write]
+    D --> X[Exact duplicate review]
+```
 
-**Per-stage controls (Phase 38):** each control (Pause/Resume, plus a ▲ Higher / ▼ Lower priority step — the UI steps by ±10; ▲ decrements the number, lower runs sooner) POSTs to the endpoints above with `hx-swap="none"`; an Alpine `@htmx:after-request` handler writes the authoritative `{priority, paused}` from the JSON response into `$store.pipeline`, and the 5s `/pipeline/stats` poll re-pushes the live per-stage state so every refresh reconciles. The control read is degrade-safe: if `pipeline_stage_control` is unreadable, the store falls back to the defaults (running, priority 50) and the poll still returns 200 — it never 500s. The interactive control surface that lived on the removed v6.x DAG canvas is gone with the standalone dashboard page (CUT-02); the endpoints, durable intent, and live poll state are unchanged. Scanning is initiated solely from the Discover workspace's Trigger Scan card (the redundant "Rescan Files" anchor was removed in Phase 38).
+Metadata and analysis are independent enrichment stages. Steady-state advancement is
+operator-triggered; startup and the Recover action only reconcile genuine queue loss and use
+deterministic keys so repeated requests do not duplicate work.
 
-## 🌟 Key Features
+## Architecture
 
-- **🎵 Broad Format Support**: mp3, m4a, ogg, flac, wav, aiff, wma, aac, opus, plus video (mp4, mkv, avi, webm, mov) and companion files (cue, nfo, m3u)
-- **🤖 AI Rename Proposals**: LLM-generated filenames and paths with structured validation via Pydantic
-- **🎧 Tracklist Integration**: Automatic concert set identification from 1001Tracklists with fuzzy matching
-- **👀 Approval Workflow**: Every rename requires human review through the web UI
-- **🔒 Safe Operations**: Copy-verify-delete protocol ensures no data loss
-- **📊 Full Audit Trail**: Every file operation is tracked in PostgreSQL
-- **🧭 DAG-Centric Console**: A three-column shell where the pipeline DAG rail is the navigation spine — clicking a stage swaps the center workspace over HTMX (`/s/<stage>`, no tab bar), a ⌘K command palette replaces the old search tab, a header status strip shows compute/agent liveness, and a per-file record slide-in opens over any row (Agents and Audit pages reachable from the rail)
-- **🗺️ Pipeline Observability**: The DAG rail is the navigation spine — every stage is a live-count node whose workspace carries a dependency-gated trigger, all kept live by a 5s DB-truth poll
-- **⚡ Async Processing**: SAQ task queue on PostgreSQL for parallel file analysis — deterministic per-task keys and idempotent re-runs (Redis backs caching/rate-limiting only)
-- **📝 Type Safety**: Full type hints with strict mypy validation and Bandit security scanning
+Phaze separates decisions from file custody.
 
-## 🚀 Quick Start
+```mermaid
+flowchart LR
+    UI[FastAPI + HTMX console] --> PG[(PostgreSQL 18)]
+    CW[Controller SAQ worker] --> PG
+    UI --> R[(Redis 8)]
+    CW --> R
 
-### Prerequisites
+    subgraph FS[File-server agent]
+      W[Watcher]
+      AM[Meta lane]
+      AA[Analyze lane]
+      AI[I/O lane]
+      F[(Music archive)]
+      W --- F
+      AM --- F
+      AA --- F
+      AI --- F
+    end
 
-- [Docker](https://docs.docker.com/get-docker/) and Docker Compose v2
-- [uv](https://docs.astral.sh/uv/) (Python package manager)
-- [just](https://just.systems/) (command runner)
-- Python 3.14
+    W -->|authenticated HTTPS| UI
+    AM -->|Postgres-backed SAQ queue| PG
+    AA -->|Postgres-backed SAQ queue| PG
+    AI -->|Postgres-backed SAQ queue| PG
+    AM -->|results over HTTPS| UI
+    AA -->|results over HTTPS| UI
+    AI -->|results over HTTPS| UI
+```
 
-### Setup
+- **PostgreSQL** is the system of record and the durable SAQ broker (`saq_jobs`). Agents use a
+  raw libpq `PHAZE_QUEUE_URL` for their queue pool; application ORM access remains control-side.
+- **Redis** is not the task broker. It provides caches, rate limiting, execution progress, and
+  operational counters.
+- **The application server** runs the API/UI and controller worker without an archive mount.
+- **Each file server** runs a watcher plus `analyze`, `meta`, and `io` lane workers. Archive
+  mutation stays on the owning agent.
+- **Optional compute backends** are declared in `backends.toml`: local, rsync/Tailscale compute
+  agents, and one or more Kueue clusters with S3 staging. Ranks and caps drive tiered dispatch;
+  an absent registry is local-only.
+
+See [Architecture](docs/architecture.md), [Agent queue lanes](docs/agent-queue-lanes.md), and the
+[Operator runbook](docs/runbook.md) for the detailed contracts.
+
+## Quick start
+
+Prerequisites are Docker with Compose v2, `uv`, `just`, and a Python 3.14-capable host. Python
+support is deliberately `>=3.14,<3.15`, and `uv` is the only supported package manager.
 
 ```bash
 git clone https://github.com/SimplicityGuy/phaze.git
 cd phaze
-just install                   # uv sync PLUS the Tailwind CSS build (bare `uv sync` skips the CSS)
-cp .env.example .env          # Edit to configure paths and API keys
-just download-models           # Required for audio analysis
-just up                        # Start the core stack (api, worker, postgres, redis)
-just db-upgrade                # Run database migrations
-curl --cacert ./certs/phaze-ca.crt https://localhost:8000/health   # Verify: {"status": "ok"}
+cp .env.example .env
+just install
+just download-models
+just up
 ```
 
-> To bring up the agent stack too (`just up-all`), **register an agent first** — see
-> [deployment.md Step 3](docs/deployment.md). Started without a registered agent and token, the
-> agent workers cannot authenticate and will crash-loop.
-
-| Service          | URL                     | Default Credentials         |
-| ---------------- | ----------------------- | --------------------------- |
-| 🌐 **Web UI**    | https://localhost:8000  | None                        |
-| 🐘 **PostgreSQL**| `${POSTGRES_BIND_IP:-127.0.0.1}:5432` | `${POSTGRES_USER:-phaze}` / `POSTGRES_PASSWORD` (**required** — no default) |
-| 🔴 **Redis**     | `localhost:6379`        | `REDIS_PASSWORD` (default `changeme`) |
-
-> **TLS:** the container entrypoint bootstraps a self-signed internal CA and execs `uvicorn`
-> with `--ssl-keyfile`/`--ssl-certfile`, so the server speaks **HTTPS** on 8000. Pass the CA to
-> curl (`--cacert ./certs/phaze-ca.crt`); a browser will warn once on the self-signed chain until
-> you trust `certs/phaze-ca.crt`. Plain `http://localhost:8000` applies **only** under `just up-dev`,
-> whose dev overlay deliberately skips the cert-bootstrap entrypoint.
-
-> **Postgres publish:** `POSTGRES_PASSWORD` is fail-fast required (`${POSTGRES_PASSWORD:?}`, phaze-rnh7)
-> — `docker compose` errors at parse time without it. The port publishes as
-> `${POSTGRES_BIND_IP:-127.0.0.1}:5432:5432`: loopback-only by default; set `POSTGRES_BIND_IP` to the
-> app-server LAN IP when agents on other hosts must reach the queue broker.
-
-> **Logging:** all processes log through one structlog pipeline (JSON when not a TTY, console otherwise). Tune with `PHAZE_LOG_LEVEL` (`DEBUG`\|`INFO`\|`WARNING`\|`ERROR`, default `INFO`) and `PHAZE_LOG_JSON` (`true`\|`false`, default auto); set `PHAZE_LOG_LEVEL=DEBUG` to watch a running scan or model download in detail. See [Configuration → Logging / observability](docs/configuration.md#logging--observability-all-roles).
-
-> **Scan activity & stall reaping:** RUNNING scans show a live activity indicator (a green pulsing dot + "·Ns ago" in the Recent Scans table and the in-progress card) and flip to an amber "stalled?" warning when quiet (at half the reap window — 12h). A control-side cron auto-fails scans that make no progress for `PHAZE_SCAN_STALL_SECONDS` (default `86400` — 24h). See the [`PHAZE_SCAN_STALL_SECONDS` configuration row](docs/configuration.md#worker--task-queue-settings-all-roles).
->
-> **Deleting a scan:** terminal scans (`completed` / `failed`) carry a delete control in the Recent Scans table that removes the scan batch and every row associated with its files in one transaction (scoped strictly to that batch — no other scan's data is touched). Running scans and the live watcher sentinel cannot be deleted.
-
-See the [Quick Start Guide](docs/quick-start.md) for prerequisites, local development setup, and environment configuration.
-
-## 📖 Documentation
-
-### 🏁 Getting Started
-
-| Document                                   | Purpose                                           |
-| ------------------------------------------ | ------------------------------------------------- |
-| **[Quick Start Guide](docs/quick-start.md)** | 🚀 Get Phaze running in minutes                  |
-| **[Configuration](docs/configuration.md)** | ⚙️ Environment variables and settings reference   |
-
-### 📐 Reference
-
-| Document                                             | Purpose                                     |
-| ---------------------------------------------------- | ------------------------------------------- |
-| **[API Reference](docs/api.md)**                     | 🔌 REST API endpoints and usage             |
-| **[Database Schema & Migrations](docs/database.md)** | 🗄️ PostgreSQL schema and Alembic migrations |
-| **[Project Structure](docs/project-structure.md)**   | 📁 Codebase layout and module organization  |
-
-See [docs/README.md](docs/README.md) for the full documentation index.
-
-## 👨‍💻 Development
+`just install` synchronizes the Python environment and builds the Tailwind CSS bundle with the
+pinned standalone binary; no Node toolchain is required. `just up` starts the application-server
+stack: API, controller worker, PostgreSQL, and Redis. The API auto-migrates by default and serves
+HTTPS on <https://localhost:8000>; trust `certs/phaze-ca.crt` or verify it explicitly:
 
 ```bash
-just install          # Install dependencies
-just up / just down   # Start / stop services
-just test             # Run tests
-just test-cov         # Tests with coverage (95% min)
-just check            # Lint + typecheck + test
-just pre-commit       # Run all pre-commit hooks
+curl --cacert ./certs/phaze-ca.crt https://localhost:8000/health
 ```
 
-See `just --list` for the full command reference.
+This brings up the control plane, not a production file-server agent. Follow the
+[Quick Start](docs/quick-start.md) for a local walkthrough and the
+[Deployment Guide](docs/deployment.md) to register agents, distribute the internal CA, pin images,
+and deploy the split stacks.
 
-#### 🧪 Running integration tests locally
+## Development and validation
 
-The full suite needs a real PostgreSQL and Redis. `just integration-test` spins up self-contained,
-disposable containers, runs the entire suite (including `tests/integration/test_migrations/`), and tears them
-down automatically:
+Always run project tools through `uv run` or a `just` recipe:
 
 ```bash
-just integration-test   # one-shot: start ephemeral Postgres + Redis, run full suite, clean up
-just test-db            # start the ephemeral services and leave them running (iterative work)
-just test-db-down       # stop and remove the ephemeral services
+uv sync
+uv run ruff check .
+uv run mypy .
+uv run pytest tests/shared/core/test_shell_routes.py
+uv run pre-commit run --all-files
 ```
 
-The **shared** harness started by `just test-db` (also used by `just check`) listens on **5433**
-(Postgres) and **6380** (Redis) to avoid colliding with a dev database/cache on the default
-5432/6379; override with `PHAZE_TEST_DB_PORT` / `PHAZE_TEST_REDIS_PORT`. `just integration-test`
-does **not** use that pair — it runs against its own dedicated, disposable container pair whose
-host ports are dynamically assigned (port `0`, read back via `docker port`) so two concurrent runs
-can never collide; pin them with `PHAZE_INTEGRATION_TEST_DB_PORT` / `PHAZE_INTEGRATION_TEST_REDIS_PORT`
-only for a single deliberate invocation (e.g. attaching a debugger).
+The full suite needs the shared PostgreSQL/Redis test harness:
 
-The test database URLs honor the `TEST_DATABASE_URL` and `MIGRATIONS_TEST_DATABASE_URL` env vars
-(Redis via `PHAZE_REDIS_URL`); with nothing set they default to **`localhost:5433`** — the local
-ephemeral harness, deliberately **not** 5432, which is reserved for the developer's own database
-(`tests/db_guard.py`). This default is *not* what CI uses: CI always exports its own
-`TEST_DATABASE_URL` against its 5432 service container and never relies on it.
+```bash
+just test-db
+just check
+```
 
-**Concurrent agents/worktrees:** never share Postgres *or* Redis between seats. `just test-db-for
-<name>` normalizes `<name>` into `<derived>` — hyphens become underscores, plus a short hash of
-the original `<name>` so e.g. `my-seat` and `my_seat` can't collide onto one shared seat — then
-creates the isolated pair `phaze_<derived>_test` + `phaze_<derived>_migrations_test` on the shared
-harness, allocates a dedicated Redis logical database out of the test container's 64-index space
-(DB 0 holds the allocation registry, so re-running it for the same worktree is idempotent), and
-prints the exact `TEST_DATABASE_URL` / `MIGRATIONS_TEST_DATABASE_URL` / `PHAZE_REDIS_URL` exports
-to use. Always copy those printed exports rather than constructing the DSN from `<name>` yourself
-— they agree only when `<name>` has no hyphens.
+`just check` runs lint, type checking, and the full pytest suite. A trustworthy pytest header names
+a database on port 5433 and says the session holds the exclusive lock. An unreachable harness or
+`PHAZE_TEST_DB_ALLOW_SHARED=1` produces an unlocked run whose failures are not concurrency-safe.
 
-`just check` (and therefore a bare `bh work check`/`bh work submit` in a brand-new worktree, which
-have nothing exported and no services running) auto-provisions: if `TEST_DATABASE_URL` isn't
-already set in the environment, it runs `just test-db` first and exports the matching
-`TEST_DATABASE_URL` / `MIGRATIONS_TEST_DATABASE_URL` / `PHAZE_REDIS_URL` before running the suite.
-It never tears the services down afterward (unlike `integration-test`'s EXIT trap). Exporting
-`TEST_DATABASE_URL` yourself (e.g. a per-worktree database name) always takes precedence and skips
-provisioning.
+For concurrent worktrees, never share PostgreSQL or Redis. Allocate a seat and copy all three
+exports printed by the recipe:
 
-> **The auto-provision path is single-seat only — it is *not* safe from concurrent worktrees.**
-> With `TEST_DATABASE_URL` unset, every caller resolves to the *same* DSN and to `PHAZE_REDIS_URL`
-> DB 0 (`justfile:636-641`), so two seats collide on one database and one logical Redis. Since
-> phaze-ieqg the second pytest session is **hard-refused before collection** with a
-> `SharedTestDatabaseError` naming the holder's pid, rather than silently corrupting both runs.
-> For concurrent worktrees run `just test-db-for <name>` and export all three lines it prints —
-> that is the supported way to run in parallel, and it is verified green.
+```bash
+just test-db-for my-seat
+```
 
-> **`just test-db-down` is no longer unconditional.** `phaze-test-db` and `phaze-test-redis` are
-> **one shared pair of containers** that `test-db-for` carves seats out of, so tearing them down
-> mid-round destroys every other seat's database and resets the Redis allocation registry. Since
-> phaze-sco9 it **refuses while any client is connected** to a `phaze%test` database and lists the
-> seats it is protecting (`justfile:454-491`). Use `PHAZE_TEST_DB_FORCE_DOWN=1 just test-db-down`
-> only for genuinely stale connections.
+The seat name is normalized and hashed, and Redis receives a dedicated logical database. Do not
+hand-construct these values. One database also supports only one pytest process; the session lock
+refuses a competing process before collection.
 
-### 🔍 Code Quality
+Browser contracts are a separate real-application Playwright suite:
 
-- **Linter/Formatter:** [Ruff](https://docs.astral.sh/ruff/) (150-char line length, double quotes)
-- **Type checker:** [mypy](https://mypy-lang.org/) (strict mode, excludes tests)
-- **Pre-commit hooks:** ruff, bandit, mypy, shellcheck, yamllint, actionlint, jsonschema validation
-- All hooks use frozen SHAs for reproducibility
+```bash
+just test-browser-install  # once per machine
+just test-browser
+```
 
-### 🚀 CI/CD
+The suite is excluded from default pytest, boots the real app against PostgreSQL and Redis, and
+requires the compiled Tailwind bundle. CI treats it as non-blocking but uploads traces, screenshots,
+and logs on failure.
 
-GitHub Actions runs on every push and PR:
+To refresh Repowise with both line coverage and per-test coverage contexts:
 
-| Job          | Description                                              |
-|--------------|----------------------------------------------------------|
-| **Quality**  | Pre-commit hooks (ruff, mypy, yamllint, etc.)            |
-| **Test**     | pytest with PostgreSQL, coverage upload to Codecov       |
-| **Security** | pip-audit, bandit, osv-scanner, Semgrep, TruffleHog, Trivy |
-| **Docker**   | hadolint Dockerfile lint, image build smoke test, docker-compose validation |
+```bash
+just repowise-coverage my-seat
+```
 
-## 🛠️ Technology Stack
+## Deployment
 
-| Category       | Technology                              | Purpose                              |
-|----------------|-----------------------------------------|--------------------------------------|
-| **Runtime**    | Python 3.14                             | Application runtime                  |
-| **Web**        | FastAPI + Uvicorn                       | Async API server                     |
-| **Database**   | PostgreSQL 18 + SQLAlchemy + asyncpg    | Primary data store (async ORM)       |
-| **Migrations** | Alembic (async template)                | Database schema management           |
-| **Task Queue** | SAQ on PostgreSQL (psycopg3)            | Async background job processing       |
-| **Cache**      | Redis                                   | LLM rate-limiting + pipeline counters |
-| **Audio Tags** | mutagen                                 | Read/write audio metadata            |
-| **Analysis**   | essentia-tensorflow                     | BPM, key, mood, style detection      |
-| **AI/LLM**     | litellm (pinned `>=1.94.1,<1.95.0`)    | Unified LLM API for rename proposals (capped after the 1.82.7/1.82.8 supply-chain incident) |
-| **Scraping**   | BeautifulSoup4 + lxml                   | 1001Tracklists integration           |
-| **Matching**   | rapidfuzz                               | Fuzzy string matching                |
-| **UI**         | Jinja2 + HTMX + Tailwind CSS + Alpine.js| Server-rendered interactive UI       |
-| **Deploy**     | Docker Compose                          | Container orchestration              |
+Production uses separate Compose files:
 
-## 💬 Support & Community
+| File | Placement | Services |
+| --- | --- | --- |
+| `docker-compose.yml` | Application server | `api`, controller `worker`, `postgres`, `redis` |
+| `docker-compose.agent.yml` | Each file server | `worker-analyze`, `worker-meta`, `worker-io`, `watcher` |
+| `docker-compose.cloud-agent.yml` | Optional compute host | One analysis-only compute worker |
+| `docker-compose.dev.yml` | Local development overlay | Reloading API/worker overrides |
 
-- 🐛 **Bug Reports**: [GitHub Issues](https://github.com/SimplicityGuy/phaze/issues)
-- 💡 **Feature Requests**: [GitHub Discussions](https://github.com/SimplicityGuy/phaze/discussions)
-- ❓ **Questions**: [Discussions Q&A](https://github.com/SimplicityGuy/phaze/discussions/categories/q-a)
-- 📖 **Full Documentation**: [docs/README.md](docs/README.md)
+Production image tags use CalVer `YYYY.M.REVISION` and should be pinned rather than left at
+`latest`. The complete rollout, rollback, TLS, secrets, release, and image-publish procedures live
+in [Deployment](docs/deployment.md). Kueue and compute-agent setup live in
+[Kubernetes burst](docs/k8s-burst.md), [Cloud burst](docs/cloud-burst.md), and
+[Multi-compute](docs/multi-compute.md).
 
-## 📄 License
+## Documentation map
 
-This project is licensed under the MIT License -- see the [LICENSE](LICENSE) file for details.
+- [Documentation index](docs/README.md)
+- [Configuration reference](docs/configuration.md)
+- [Database and migrations](docs/database.md)
+- [API and HTMX endpoints](docs/api.md)
+- [Project structure](docs/project-structure.md)
+- [Essentia analysis constraints](docs/essentia-analysis.md)
+- [UI compatibility reference](docs/ui-design-reference.md)
+- [Architecture decisions](docs/design/)
+- [Documentation audit inventory](docs/documentation-audit-2026-08-19.md)
 
-## 🙏 Acknowledgments
+The dated spike, design-specification, incident, and `.planning/` trees are retained evidence, not
+the current operator manual. Their measurements and historical decisions remain exact; use the
+canonical pages above for current behavior.
 
-- 🎼 [discogsography](https://github.com/SimplicityGuy/discogsography) for the CI/CD patterns, project conventions, and HTTP API integration target that shaped this project
-- 🎵 [Discogs](https://www.discogs.com/) for music identification services
-- 🎧 [1001Tracklists](https://www.1001tracklists.com/) for concert tracklist data
-- 🚀 [uv](https://github.com/astral-sh/uv) for blazing-fast package management
-- 🔥 [Ruff](https://github.com/astral-sh/ruff) for lightning-fast linting
-- 🐍 The Python community for excellent libraries and tools
+## License
 
-______________________________________________________________________
-
-<div align="center">
-Made with ❤️ in the Pacific Northwest
-</div>
+Phaze is released under the [MIT License](LICENSE).

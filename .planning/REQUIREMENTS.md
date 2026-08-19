@@ -1,5 +1,9 @@
 # Requirements: Phaze — Milestone 2026.7.7 Console & Cloud-Burst Hardening
 
+> **Historical planning snapshot (2026-07-29).** Checkboxes and traceability below record this
+> milestone's planning state; they are not today's requirements backlog. See
+> [`.planning/README.md`](README.md).
+
 **Defined:** 2026-07-14
 **Core Value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres — human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
 

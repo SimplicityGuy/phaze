@@ -226,8 +226,8 @@ phaze/
 │   ├── integration/               #   End-to-end + Alembic migration tests (test_migrations/)
 │   └── shared/                    #   Config, template-helper, utils, and cross-cutting tests
 ├── alembic/                    # Database migrations (async template)
-│   └── versions/               #   Migration scripts (20): the flattened 039_baseline_schema.py plus the
-│                               #   post-baseline chain 040..058 (tag_write_log timestamptz, tracklist_version
+│   └── versions/               #   Migration scripts (24): the flattened 039_baseline_schema.py plus the
+│                               #   post-baseline chain 040..062 (tag_write_log timestamptz, tracklist_version
 │                               #   unique, scheduling_ledger redrive_attempt, discogs one-accepted-per-track,
 │                               #   scan_batches no-duplicate-running, files.original_filename_repaired,
 │                               #   046 drop fingerprint schema, 047 drop analysis.fingerprint,
@@ -236,7 +236,9 @@ phaze/
 │                               #   priority flags, 053 filename_convention, 054 cloud_job node-loss
 │                               #   redrives, 055 cloud_budget ledger, 056 fix double-prefixed CHECK
 │                               #   constraints, 057 cloud_job node-loss pending, 058 analysis
-│                               #   completed_at btree) — head is 058; see database.md#migrations
+│                               #   completed_at btree, 059 tracklist-drain ARM/DISARM state, 060 drop sampled,
+│                               #   061 durable duplicate-review plans, 062 reviewed-before tags/source versions)
+│                               #   — head is 062; see database.md#migrations
 ├── .github/workflows/          # CI/CD pipelines
 │   ├── ci.yml                  #   Main orchestrator
 │   ├── code-quality.yml        #   Pre-commit hooks

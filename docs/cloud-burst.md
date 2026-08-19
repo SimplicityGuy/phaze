@@ -251,7 +251,7 @@ broker zero rights in `public` (`CREATE SCHEMA saq; ALTER TABLE … SET SCHEMA s
 ## Step 4 — Release the `-arm64` image
 
 Ship a CalVer release. The Phase 47 `build-arm64` CI job publishes the native arm64 image as a
-separate `-arm64` tag — `ghcr.io/simplicityguy/phaze:2026.7.1-arm64` (and `:latest-arm64` on the
+separate `-arm64` tag — `ghcr.io/simplicityguy/phaze:2026.8.4-arm64` (and `:latest-arm64` on the
 default branch). The cloud-agent compose pins it via `PHAZE_IMAGE_TAG` (see
 [arm64-agent-image.md → Tag naming](arm64-agent-image.md)). There is no multi-arch manifest, so
 the `-arm64` suffix is mandatory.
@@ -290,7 +290,7 @@ PHAZE_CLOUD_SCRATCH_DIR=/scratch                               # MUST match this
 # governs concurrency in lane mode; WORKER_MAX_JOBS alone is only a ceiling).
 MODELS_PATH=/models
 PHAZE_AGENT_CA_FILE=/certs/phaze-ca.crt
-PHAZE_IMAGE_TAG=2026.7.1                                      # pulls 2026.7.1-arm64
+PHAZE_IMAGE_TAG=2026.8.4                                      # pulls 2026.8.4-arm64
 # NO DATABASE_URL (DIST-04). NO SCAN_PATH / PHAZE_AGENT_SCAN_ROOTS (kind=compute relaxes it).
 ```
 

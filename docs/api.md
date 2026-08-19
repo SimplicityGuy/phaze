@@ -1,13 +1,13 @@
 <!-- generated-by: gsd-doc-writer -->
 # API Reference
 
-## v7.0 Console (shell)
+## Console shell
 
-The v7.0 "Hybrid Console" three-column shell. `shell.py` owns the application root (`GET /`) and the per-stage rail-node workspaces; `record.py` serves the per-file full-record fragment.
+The responsive console shell. `shell.py` owns the application root (`GET /`) and the rail workspaces; `record.py` serves the per-file full-record fragment.
 
 | Method | Path              | Description                                                              |
 |--------|-------------------|-------------------------------------------------------------------------|
-| GET    | `/`               | DAG console shell root (Analyze node selected by default)               |
+| GET    | `/`               | Console shell root with the actionable Summary selected                 |
 | GET    | `/s/{stage}`      | Single rail-node stage workspace (`stage` whitelisted via `STAGE_PARTIALS`; unknown stage 404s) |
 | GET    | `/record/{file_id}` | Per-file full-record read-only detail fragment (typed `uuid.UUID`, strictly `file_id`-scoped) |
 
@@ -26,7 +26,7 @@ A direct/bookmark navigation to `/` or `/s/{stage}` renders the full shell chrom
 | POST   | `/api/v1/extract-metadata`     | Enqueue metadata extraction jobs (operator-triggered only) |
 | POST   | `/api/v1/analyze`              | Enqueue audio analysis jobs              |
 | POST   | `/api/v1/proposals/generate`   | Enqueue LLM proposal generation          |
-| GET    | `/pipeline/`                   | Pipeline dashboard (HTML)                |
+| GET    | `/pipeline/`                   | Legacy route: 302-redirects to the console root (`/`) |
 | GET    | `/pipeline/stats`              | Pipeline stats bar + per-job-type DAG node counts (HTMX partial) |
 | POST   | `/pipeline/extract-metadata`   | HTMX trigger for metadata extraction     |
 | POST   | `/pipeline/analyze`            | HTMX trigger for audio analysis          |
@@ -34,6 +34,8 @@ A direct/bookmark navigation to `/` or `/s/{stage}` renders the full shell chrom
 | POST   | `/pipeline/match-tracklists`   | HTMX trigger for bulk Discogs matching over the pending set (Phase 41) |
 | GET    | `/pipeline/tracklist-drain-status` | Drain queue depth, whole-host ceiling and ETA (spends no host request) |
 | POST   | `/pipeline/run-tracklist-drain` | Enqueue ONE bounded `drain_tracklists` slice |
+| POST   | `/pipeline/arm-tracklist-drain` | Persistently arm continuous bounded drain slices |
+| POST   | `/pipeline/disarm-tracklist-drain` | Disarm continuous drain after the current slice |
 | POST   | `/pipeline/tracklists/{file_id}/prioritize` | Flag a file so the next drain slice answers it first |
 | POST   | `/pipeline/tracklists/{file_id}/unprioritize` | Clear that flag |
 | POST   | `/pipeline/tracklists/{file_id}/refresh` | On-demand re-read of a file's tracklist page (phaze-2akf) |

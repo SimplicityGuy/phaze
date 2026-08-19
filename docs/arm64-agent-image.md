@@ -144,7 +144,7 @@ essentia C++ compile is ~324 s cold; **no QEMU** (a cross-compile is prohibitive
 ```bash
 # Operator fallback (mirrors the CI build-arm64 job):
 just image-build-arm64            # builds ghcr.io/<owner>/phaze:latest-arm64
-just image-build-arm64 2026.7.1   # builds ...:2026.7.1-arm64
+just image-build-arm64 2026.8.4   # builds ...:2026.8.4-arm64
 
 # Raw docker:
 docker build --build-arg TF_VERSION=2.20.0 -f Dockerfile.agent-arm64 \
@@ -224,9 +224,9 @@ investigate**, not a tolerance to widen.
 ## Tag naming (consumed by Phase 51)
 
 The image is published as `ghcr.io/<owner>/phaze:<tag>-arm64` — `latest-arm64` on the
-default branch and `<version>-arm64` (e.g. `2026.7.1-arm64`) on a release tag (via
+default branch and `<version>-arm64` (e.g. `2026.8.4-arm64`) on a release tag (via
 `flavor: suffix=-arm64,onlatest=true`). The **Phase 51 cloud-agent compose** defaults to
 `${PHAZE_IMAGE_TAG:-latest}-arm64` — i.e. **`latest-arm64` unless pinned**
 ([`docker-compose.cloud-agent.yml`](../docker-compose.cloud-agent.yml)). Production should
-**pin a specific `<version>-arm64`** by setting `PHAZE_IMAGE_TAG=2026.7.1` in the A1's `.env`,
+**pin a specific `<version>-arm64`** by setting `PHAZE_IMAGE_TAG=2026.8.4` in the A1's `.env`,
 rather than tracking the moving `latest-arm64`.

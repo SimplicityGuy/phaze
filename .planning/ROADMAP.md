@@ -1,5 +1,8 @@
 # Roadmap: Phaze
 
+> **Historical planning snapshot (2026-07-29).** Active/in-progress labels below are frozen
+> evidence from the GSD roadmap and are not the live backlog. See [`.planning/README.md`](README.md).
+
 ## Milestones
 
 - ✅ **v1.0 MVP** — Phases 1-11 (shipped 2026-03-30)

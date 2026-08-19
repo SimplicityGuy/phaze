@@ -1,6 +1,6 @@
 # Phaze UI Design Reference
 
-**Status:** Compatibility contract for the production UI as of 2026-08-14
+**Status:** Compatibility contract for the production UI as of 2026-08-19
 **Scope:** Visual identity and interaction language only; this is not a redesign specification
 **Fixture:** [Privacy-safe reference states](ui-reference-fixtures.html)
 
@@ -33,7 +33,7 @@ These characteristics make the interface recognizably Phaze and must remain stab
 2. **Tracked technical headings.** Product, stage, group, table, and compact action labels use uppercase Jura with generous tracking. The result should remain technical and instrument-like, not editorial or decorative.
 3. **Wave/cycle brand marks.** Preserve the blue circular-wave header mark, the waveform empty-state mark, the compact favicon, and the tracked `PHAZE` wordmark as one related family. Do not substitute a generic music-note logo.
 4. **Dark technical character.** Dark mode is the primary visual character: near-black canvas, slightly lifted cool panels, quiet cool-gray borders, dense information, and restrained depth. It must not become a generic flat black dashboard or a high-gloss neon interface.
-5. **Cyan-blue accent family.** The project overrides Tailwind blue with cyan (`#00b0d8` at 500/600). It identifies the brand, navigation/current state, links, primary actions, progress, and keyboard focus.
+5. **Cyan-blue accent family.** The project overrides Tailwind blue with a contrast-adjusted cyan-blue scale (`#036b85` at 500/600 and `#1abbdb` at 400). It identifies the brand, navigation/current state, links, primary actions, progress, and keyboard focus.
 6. **Amber review and operator-attention family.** Amber separates human review/apply work and recoverable attention states from normal pipeline flow. It is not the generic color for every highlighted control.
 7. **Persistent console shell.** The compact top header and left pipeline/DAG rail remain the stable frame around a swappable stage workspace. The flow stays visible while work changes.
 8. **Thin outline icon language.** Navigation and utility icons are simple inline SVG outlines, normally `24 x 24`, `currentColor`, round caps/joins, and about `1.5` stroke width. Icons support labels rather than replace meaning.
@@ -96,7 +96,7 @@ The geometry currently differs between placements. Preserve the recognizable cyc
 | Border | gray 200/300 | `phaze-border` `#232832` | Quiet one-pixel separation. |
 | Primary text | gray 900 | gray 100/200 | Titles and values. |
 | Secondary text | gray 500/600 | gray 400/500 | Captions and metadata. |
-| Accent/focus | custom blue 500/600 `#00b0d8` | custom blue 400-600 | Brand, current location, links, primary actions, progress, focus. |
+| Accent/focus | custom blue 500/600 `#036b85` | custom blue 400-600 (`#1abbdb` to `#036b85`) | Brand, current location, links, primary actions, progress, focus. |
 
 The custom `blue` scale is visually cyan. Documentation and code may call it blue because that is the Tailwind token name; design discussion should say **cyan-blue** when the distinction matters.
 
@@ -128,7 +128,7 @@ Amber has two related but distinct jobs: it identifies the human review domain a
 The production rhythm follows Tailwind's 4 px scale:
 
 - Persistent header: 56 px (`h-14`), 16 px horizontal inset, 16 px principal gap.
-- Expanded rail: 280 px; compact rail: 64 px at `max-lg`, with labels visually hidden but retained for assistive technology, counts hidden, and icons centered.
+- Navigation rail: 280 px at `lg` and wider. Below `lg`, an off-canvas 280 px drawer preserves visible labels and counts; the former 64 px icon-only rail was retired by ADR-0009.
 - Workspace header: 24 px horizontal, 16 px vertical; stage body sections commonly use 24 px.
 - Top-level cards: commonly 16 px padding with 12-16 px internal gaps.
 - Table headers: 24 px horizontal and 10 px vertical; data rows: 24 px horizontal and 12 px vertical.

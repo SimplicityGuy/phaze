@@ -1,5 +1,9 @@
 # Phaze
 
+> **Historical planning snapshot (2026-07-29).** This file is not the current product brief or
+> backlog. See [`.planning/README.md`](README.md) for the archive boundary and the repository
+> [`README.md`](../README.md) for shipped behavior.
+
 ## What This Is
 
 A music collection organizer that ingests music files (mp3, m4a, ogg, opus) and concert video streams — the full collection is ~200K files, of which **11,412 have been ingested so far** (measured for ADR-0002) — analyzes them for BPM/mood/style/key, uses AI to propose better filenames and destination paths, and provides an admin web UI to review and approve the renames/moves. As of v4.0, phaze runs as a **two-host distributed system**: an application server (API, UI, Postgres, Redis, fileless workers, no file mounts) and one or more file-server agents that own the music/video files locally, pull jobs from per-agent SAQ queues, and write every state change back over authenticated HTTPS. Designed for a single user managing a large personal archive of music and live concert recordings (primarily full sets from events like Coachella).

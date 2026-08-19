@@ -1,7 +1,7 @@
 <!-- generated-by: gsd-doc-writer -->
-# Phaze 2026.7.1 Deployment Guide
+# Phaze Deployment Guide
 
-Production deployment of Phaze 2026.7.1 (Distributed Agents + Multi-Cloud Backends) runs as **two compose files on two (or more) hosts**:
+Production Phaze runs as **two compose files on two (or more) hosts**:
 
 - **Application server** (`docker-compose.yml`): API/UI, controller worker, Postgres, Redis. No music/model/output file mounts. HTTPS via an internal CA. Redis `requirepass` + LAN binding.
 - **File servers** (`docker-compose.agent.yml`, one per host): three per-lane agent workers (`worker-analyze`, `worker-meta`, `worker-io`) and a watcher. Holds music/video files locally; reaches the app-server over HTTPS for every state change.
@@ -173,7 +173,7 @@ restart, with no re-provisioning.
 
 ## Controller vs Agent roles
 
-Phaze 2026.7.1 selects its settings class at process boot from the `PHAZE_ROLE` env var (default `control`), via `phaze.config.get_settings()`:
+Phaze selects its settings class at process boot from the `PHAZE_ROLE` env var (default `control`), via `phaze.config.get_settings()`:
 
 - `PHAZE_ROLE=control` → `ControlSettings` (LLM proposal generation, Discogs matching, fileless tasks). Used by the app-server `api` + `worker`.
 - `PHAZE_ROLE=agent` → `AgentSettings` (HTTP client to the app-server, file-bound tasks). Used by the file-server's three lane workers (`worker-analyze`/`worker-meta`/`worker-io`) + `watcher`. The validators in `AgentSettings` raise at construction time if `PHAZE_AGENT_API_URL`, `PHAZE_AGENT_TOKEN`, or `PHAZE_AGENT_SCAN_ROOTS` is missing — agents fail fast with a clear error rather than emitting runtime 401s.
@@ -384,7 +384,7 @@ Edit `.env` to set the required variables. The agent stack uses `${VAR:?msg}` in
   backs `/models`.
 - `CA_PATH=./certs`
 - `PHAZE_AGENT_SCAN_ROOTS=/data/music,/data/concerts`
-- `PHAZE_IMAGE_TAG=2026.7.1` (or `latest` for first-time setup)
+- `PHAZE_IMAGE_TAG=2026.8.4` (or `latest` for first-time setup)
 
 See [docs/configuration.md](configuration.md) for the complete env-var reference and defaults.
 
@@ -396,9 +396,10 @@ On the **file-server host**:
 just up-agent
 ```
 
-`just up-agent` runs `docker compose -f docker-compose.agent.yml up -d`, which brings up all three lane workers (`worker-analyze`, `worker-meta`, `worker-io`) plus `watcher` (the off-by-default `worker-drain` profile service is not included). On first start, each lane worker boots, calls `/api/internal/agent/whoami` to verify its token, then downloads ~150MB of essentia weights to `./models/` (2-5 minutes; logs an INFO line). The watcher comes up in parallel.
+`just up-agent` runs `docker compose -f docker-compose.agent.yml up -d`, which brings up all three lane workers (`worker-analyze`, `worker-meta`, `worker-io`) plus `watcher` (the off-by-default `worker-drain` profile service is not included). On first start, the lane workers call `/api/internal/agent/whoami` to verify their token and validate ~3.1 GB of essentia weights (68 model/config files) in the shared `./models/` volume. A file lock lets one lane perform the download while its siblings wait and then revalidate; a fresh multi-GB transfer can take many minutes. The watcher comes up in parallel.
 
-Watch the logs (`worker-analyze` also carries the agent's one liveness heartbeat):
+Watch any lane's logs. Every active lane worker publishes its own heartbeat; `worker-analyze` is
+usually the most useful stream when checking audio-analysis startup:
 
 ```bash
 docker compose -f docker-compose.agent.yml logs -f worker-analyze
@@ -407,11 +408,13 @@ docker compose -f docker-compose.agent.yml logs -f worker-analyze
 You should see (per lane worker; `lane=` varies by service):
 
 - `phaze.tasks.agent_worker startup role=agent api=https://... auth_id_prefix=phaze_agent_a1b2... queue=phaze-agent-fileserver-east-analyze lane=analyze`
-- `/models is empty; downloading essentia weights (~150MB, takes 2-5min on first start)...`
-- `Models downloaded successfully to /models`
+- `validating model weights -- essentia weights at /models (~3.1 GB across 68 files); ...`
+- `another worker holds the model download lock -- waiting for it to finish before re-validating`
+  (the sibling lanes on a fresh start)
+- `models validated`
 - `phaze.tasks.agent_worker startup complete agent_id=fileserver-east queue=phaze-agent-fileserver-east-analyze lane=analyze`
 
-After ~5 minutes, the heartbeat — an asyncio background task in **each** of the three lane workers (every 30s, each beat tagged with its own lane; see [agent-queue-lanes.md](agent-queue-lanes.md)) — starts firing against `POST /api/internal/agent/heartbeat`.
+After each lane completes startup, its heartbeat — an asyncio background task in **each** of the three lane workers (every 30s, each beat tagged with its own lane; see [agent-queue-lanes.md](agent-queue-lanes.md)) — starts firing against `POST /api/internal/agent/heartbeat`.
 
 > **Run both stacks on one host (dev convenience):** `just up-all` runs `docker compose -f docker-compose.yml -f docker-compose.agent.yml up -d`. This is for development only — production keeps the app-server and file-server stacks on separate hosts to preserve filesystem isolation (DIST-01).
 
@@ -481,10 +484,10 @@ This workflow produces **three** GHCR artifacts across three build stages (`push
 
 - The `api` image publishes to the **bare** repo URL `ghcr.io/simplicityguy/phaze` (no sub-path) so `docker-compose.agent.yml`'s three lane workers + `watcher` can pull it directly; the arm64 variant is the same bare URL with a `-arm64` tag suffix. `ghcr.io/simplicityguy/phaze/api` is a **deprecated/orphaned** path from a pre-D-15 convention — it is no longer published and must NOT be pulled or referenced.
 - Tag strategy (via `docker/metadata-action`): `latest` on the default branch, plus `{{version}}` and `{{major}}.{{minor}}` semver tags, `ref`-based tags (tag/branch/PR), and a dated schedule tag. Tagged releases therefore produce **both** `:latest` and `:<version>`.
-- Release tags MUST be 3-part CalVer (`YYYY.MM.REVISION`, e.g. `2026.7.0`) — `ci.yml` triggers the publish pipeline on `push` of a `[0-9]+.[0-9]+.[0-9]+` tag, and the `{{version}}` / `{{major}}.{{minor}}` image tags are only produced for a 3-part ref. A 2-part tag (`2026.7`) will not match the trigger and will not publish version-pinnable images, so the 3-part shape is still required.
+- Release tags MUST be 3-part CalVer (`YYYY.M.REVISION`, e.g. `2026.7.0`) — `ci.yml` triggers the publish pipeline on `push` of a `[0-9]+.[0-9]+.[0-9]+` tag, and the `{{version}}` / `{{major}}.{{minor}}` image tags are only produced for a 3-part ref. A 2-part tag (`2026.7`) will not match the trigger and will not publish version-pinnable images, so the 3-part shape is still required.
 - Builds with `provenance: true` and `sbom: true` for supply-chain attestation, on `linux/amd64`.
 
-**Release version scheme (CalVer).** Releases use CalVer `YYYY.MM.REVISION` with a **bare** tag (no `v` prefix — the first CalVer tag is `2026.7.0`) and a **no-leading-zero month** (`2026.7.0`, not `2026.07.0`). REVISION is a **per-month zero-based** counter: the Nth release within a given `YYYY.MM`, starting at `0` and **resetting each calendar month**, so same-month patch releases just increment REVISION (`2026.7.0` → `2026.7.1`). Milestones are named; versions are dated — the two are decoupled.
+**Release version scheme (CalVer).** Releases use CalVer `YYYY.M.REVISION` with a **bare** tag (no `v` prefix — the first CalVer tag is `2026.7.0`) and a **no-leading-zero month** (`2026.7.0`, not `2026.07.0`). REVISION is a **per-month zero-based** counter: the Nth release within a given `YYYY.M`, starting at `0` and **resetting each calendar month**, so same-month patch releases just increment REVISION (`2026.7.0` → `2026.7.1`). Milestones are named; versions are dated — the two are decoupled.
 
 **Publish trigger (invariant).** GHCR publish fires on the **push of an annotated tag** (`git tag -a 2026.7.0 -m "…"` then `git push origin 2026.7.0`) — creating the tag locally publishes nothing; the *push* of the tag ref is the sole trigger. If a tag was pushed wrong (bad SHA, premature), delete-and-recreate it: `git push --delete origin 2026.7.0`, fix, then re-tag and push again to re-fire the pipeline. `docker-publish.yml`'s metadata-action is scheme-agnostic (`type=semver` parses `2026.7.0` → `{{version}}=2026.7.0`, `{{major}}.{{minor}}=2026.7`), so no workflow edit is needed to adopt CalVer.
 
@@ -533,7 +536,7 @@ Production-critical variables:
 | `PHAZE_AGENT_ENV=production` | file-server | Activates the `AgentSettings` guards: refuses non-`https://` `agent_api_url` (CR-01) and passwordless `redis_url` (D-06). Note: there is no production credential guard on `PHAZE_QUEUE_URL` yet — protect it via the LAN-scoped firewall + a strong DB password. |
 | `PHAZE_AGENT_TOKEN` | file-server | The plaintext bearer token; must match the `token_hash` row in `agents`. Generate via `secrets.token_urlsafe(32)`. |
 | `PHAZE_AGENT_CA_FILE` | file-server | Path to the operator-distributed `phaze-ca.crt`; the agent's HTTP client verifies the app-server TLS chain against it. |
-| `PHAZE_IMAGE_TAG` | file-server | Pin to a specific version (`2026.7.1`) in production rather than `latest`. |
+| `PHAZE_IMAGE_TAG` | file-server | Pin to a specific version (for example, `2026.8.4`) in production rather than `latest`. |
 | `SCAN_PATH` | file-server | The music-library root, bind-mounted read-only into all agent services. Compose parse fails if unset. |
 
 ### Secrets via files (Docker secrets)
@@ -653,14 +656,14 @@ For first-time setup, `PHAZE_IMAGE_TAG=latest` pulls the most recent tagged rele
 
 ```bash
 # On the file-server host's .env:
-PHAZE_IMAGE_TAG=2026.7.1
+PHAZE_IMAGE_TAG=2026.8.4
 ```
 
-Then `just up-agent` pulls exactly that version. The `docker-publish.yml` workflow tags both `:latest` and `:<version>` on tagged releases. The pin MUST be a 3-part CalVer `YYYY.MM.REVISION` value (e.g. `2026.7.1`) matching a published release tag (`ci.yml` only publishes on `push` of a `[0-9]+.[0-9]+.[0-9]+` tag).
+Then `just up-agent` pulls exactly that version. The `docker-publish.yml` workflow tags both `:latest` and `:<version>` on tagged releases. The pin MUST be a 3-part CalVer `YYYY.M.REVISION` value (for example, `2026.8.4`) matching a published release tag (`ci.yml` only publishes on `push` of a `[0-9]+.[0-9]+.[0-9]+` tag).
 
 ## Pre-warming models (skip the first-start wait)
 
-To avoid the 2-5 minute model download on first agent boot:
+To avoid the multi-GB model download on first agent boot:
 
 ```bash
 # On the file-server host BEFORE just up-agent:
@@ -719,7 +722,7 @@ Before shipping a file-server host to production:
 - [ ] `PHAZE_AGENT_TOKEN` generated via `secrets.token_urlsafe(32)`, not a placeholder
 - [ ] `phaze-ca.crt` distributed via secure channel (scp over SSH, not email/chat)
 - [ ] `phaze-ca.key` NEVER copied off the app-server host
-- [ ] `PHAZE_IMAGE_TAG` pinned to a specific version (`2026.7.1`), not `latest`
+- [ ] `PHAZE_IMAGE_TAG` pinned to a specific release (for example, `2026.8.4`), not `latest`
 - [ ] `SCAN_PATH` points at the actual music library root (compose parse fails if unset)
 - [ ] Production bring-up uses `just up` (base `docker-compose.yml` only) — the dev overlay `docker-compose.dev.yml` is opt-in via `just up-dev` and is no longer auto-merged, so it cannot bypass the cert-bootstrap entrypoint (phaze-476w)
 - [ ] Filesystem-isolation smoke confirmed (see above) — `docker compose exec api ls /data/music` returns "No such file or directory"

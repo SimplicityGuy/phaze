@@ -1,5 +1,9 @@
 # Project Retrospective
 
+> **Historical planning archive.** This retrospective preserves milestone evidence through its
+> last recorded update; it is not a statement of current architecture. See
+> [`.planning/README.md`](README.md).
+
 *A living document updated after each milestone. Lessons feed forward into future planning.*
 
 ## Milestone: v1.0 — MVP

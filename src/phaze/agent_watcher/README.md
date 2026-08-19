@@ -60,13 +60,15 @@ The watcher requires a registered agent in the `agents` table. On a brand-new do
    docker compose up -d api worker
    docker compose logs api  # look for: "seeded dev agent id=dev-agent ..."
    ```
-7. Bring up the watcher (image is the same as `worker`, but the command is `python -m phaze.agent_watcher`):
+7. Bring up the watcher from the agent compose file. The root compose file does not define a
+   watcher service:
    ```
-   docker compose up -d watcher
+   docker compose -f docker-compose.agent.yml up -d watcher
    ```
 8. Drop an MP3 into the scan path (mounted to `/data/music` inside the watcher container). After the 10s settle window, the watcher posts the file to the api:
    ```
-   docker logs watcher --tail=20  # look for: POST /api/internal/agent/files -> 200
+   docker compose -f docker-compose.agent.yml logs --tail=20 watcher
+   # look for: POST /api/internal/agent/files -> 200
    ```
 9. (Production checklist) Once the dev path is working, flip `PHAZE_DEV_SEED_AGENT=false`, provision real agents via the management CLI, and rotate `PHAZE_AGENT_TOKEN`.
 
@@ -100,7 +102,7 @@ Output respects `PHAZE_LOG_LEVEL` / `PHAZE_LOG_JSON` (above): JSON when stdout i
 
 ## Import-boundary invariant
 
-This module MUST NOT import `phaze.database`, `phaze.tasks.session`, `sqlalchemy.ext.asyncio`, or `phaze.tasks.agent_worker`. Enforced by `tests/test_task_split.py::test_agent_watcher_does_not_import_phaze_database`. The watcher reaches the database only via the HTTP boundary (DIST-04).
+This module MUST NOT import `phaze.database`, `phaze.tasks.session`, `sqlalchemy.ext.asyncio`, or `phaze.tasks.agent_worker`. Enforced by `tests/shared/core/test_task_split.py::test_agent_watcher_does_not_import_phaze_database`. The watcher reaches the database only via the HTTP boundary (DIST-04).
 
 ## Compose layout (post-Phase-29)
 
@@ -108,6 +110,6 @@ Phase 27 originally landed the watcher in the root `docker-compose.yml` alongsid
 
 ## Operational notes
 
-- Container restart count climbing in `docker compose ps`: usually transient API boot (~63s budget absorbed by `whoami_with_retry`). If persistent, check `docker compose logs watcher` for `AgentApiAuthError` (RESEARCH Pitfall 7 -- bad PHAZE_AGENT_TOKEN).
+- Container restart count climbing in `docker compose -f docker-compose.agent.yml ps`: usually transient API boot (~63s budget absorbed by `whoami_with_retry`). If persistent, check `docker compose -f docker-compose.agent.yml logs watcher` for `AgentApiAuthError` (RESEARCH Pitfall 7 -- bad PHAZE_AGENT_TOKEN).
 - Inotify fallback for NFS/FUSE (or macOS docker bind mounts): set `PHAZE_WATCHER_POLLING_MODE=true`. `main()` branches on `cfg.watcher_polling_mode` to construct a `PollingObserver(timeout=watcher_sweep_interval_seconds)` instead of the native `Observer()`. No code edit required — it is a runtime env toggle.
-- Catch-up on startup is intentionally NOT performed (D-04). Operator runs a manual `/pipeline/` scan trigger after a watcher restart if they want to backfill files that landed during downtime.
+- Catch-up on startup is intentionally NOT performed (D-04). The operator runs a manual scan from the **Discover** workspace (`/s/discover`) after a watcher restart to backfill files that landed during downtime.

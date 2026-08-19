@@ -327,12 +327,12 @@ A music collection organizer that ingests music files (mp3, m4a, ogg) and concer
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
 | Python | 3.14 | Runtime | Project constraint. essentia-tensorflow dev1438+ ships cp314 wheels only, requiring Python 3.14. |
-| FastAPI | >=0.139.0 | Web framework / API | De facto standard for async Python APIs. Native async, auto-generated OpenAPI docs, Pydantic integration, SSE support for real-time UI updates. Massive ecosystem and community. |
-| SQLAlchemy | >=2.0.51 | ORM / database toolkit | Industry standard Python ORM. Full async support via `create_async_engine` + asyncpg driver. Declarative models, relationship management, migration support via Alembic. |
+| FastAPI | >=0.141.1 | Web framework / API | De facto standard for async Python APIs. Native async, auto-generated OpenAPI docs, Pydantic integration, SSE support for real-time UI updates. Massive ecosystem and community. |
+| SQLAlchemy | >=2.0.52 | ORM / database toolkit | Industry standard Python ORM. Full async support via `create_async_engine` + asyncpg driver. Declarative models, relationship management, migration support via Alembic. |
 | asyncpg | >=0.31.0 | PostgreSQL async driver | Fastest Python PostgreSQL driver. Purpose-built for asyncio. Used as SQLAlchemy's async backend. |
-| Alembic | >=1.18.5 | Database migrations | Official SQLAlchemy migration tool. Async template support (`alembic init -t async`). Autogenerate from model changes. |
+| Alembic | >=1.19.1 | Database migrations | Official SQLAlchemy migration tool. Async template support (`alembic init -t async`). Autogenerate from model changes. |
 | PostgreSQL | 16+ (pinned to `postgres:18-alpine` in docker-compose/CI) | Primary database | Project constraint. Handles large-scale file metadata, complex queries, JSON columns for flexible metadata, full-text search for future features. |
-| Redis | 8.x in prod (`redis:8-alpine`), client pinned `redis>=8.0.1,<9.0` | Cache / pub-sub | No longer the SAQ broker (Phase 36 migrated the task queue to Postgres); used for caching analysis results and rate-limiting LLM API calls. **The test harness runs `redis:7-alpine`** (`justfile:352,358`) while production runs `redis:8-alpine` (`docker-compose.yml:143`) — a version-skew gap the suite does not cover. |
+| Redis | 8.x in prod (`redis:8-alpine`), client pinned `redis>=8.1.0,<9.0` | Cache / pub-sub | No longer the SAQ broker (Phase 36 migrated the task queue to Postgres); used for caching analysis results and rate-limiting LLM API calls. **The test harness runs `redis:7-alpine`** (`justfile:352,358`) while production runs `redis:8-alpine` (`docker-compose.yml:143`) — a version-skew gap the suite does not cover. |
 | Docker Compose | 2.x | Deployment orchestration | Project constraint. Runs PostgreSQL, Redis, API server, worker processes as separate containers. |
 ### Audio / Music Libraries
 | Library | Version | Purpose | Why Recommended |
@@ -356,13 +356,13 @@ A music collection organizer that ingests music files (mp3, m4a, ogg) and concer
 ### AI / LLM Integration
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
-| litellm | >=1.85.7,<1.86.0 (pin exact minor) | Unified LLM API client | Single interface to 100+ LLM providers (OpenAI, Anthropic, local models). Avoids vendor lock-in. Use for filename/path proposals. **IMPORTANT:** Pin exact minor line due to the March 2026 supply chain incident on versions 1.82.7-1.82.8. Verify checksums. |
+| litellm | >=1.97.0,<1.98.0 (pin exact minor) | Unified LLM API client | Single interface to 100+ LLM providers (OpenAI, Anthropic, local models). Avoids vendor lock-in. Use for filename/path proposals. **IMPORTANT:** Pin exact minor line due to the March 2026 supply chain incident on versions 1.82.7-1.82.8. Verify checksums. |
 | pydantic | >=2.10 | Data validation / LLM structured output | Already a FastAPI dependency. Use for validating LLM responses (proposed filenames, paths). Structured output parsing. |
 ### Configuration / Infrastructure
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
-| pydantic-settings | >=2.14.2 | Configuration management | Type-safe config from env vars, .env files, Docker secrets. Native Pydantic integration. Supports `SecretStr` for API keys. |
-| uvicorn | >=0.51.0 | ASGI server | Standard production server for FastAPI. Use with `--workers` for multi-process or behind gunicorn for production. |
+| pydantic-settings | >=2.15.0 | Configuration management | Type-safe config from env vars, .env files, Docker secrets. Native Pydantic integration. Supports `SecretStr` for API keys. |
+| uvicorn | >=0.52.3 | ASGI server | Standard production server for FastAPI. Use with `--workers` for multi-process or behind gunicorn for production. |
 ### Development Tools
 | Tool | Purpose | Notes |
 |------|---------|-------|
@@ -405,13 +405,13 @@ A music collection organizer that ingests music files (mp3, m4a, ogg) and concer
 ## Version Compatibility
 | Package A | Compatible With | Notes |
 |-----------|-----------------|-------|
-| SQLAlchemy >=2.0.51 | asyncpg >=0.31.0 | Use `postgresql+asyncpg://` connection string. Some older asyncpg versions (0.29.x) had issues with `create_async_engine`. |
+| SQLAlchemy >=2.0.52 | asyncpg >=0.31.0 | Use `postgresql+asyncpg://` connection string. Some older asyncpg versions (0.29.x) had issues with `create_async_engine`. |
 | essentia-tensorflow >=2.1b6.dev1438 | Python 3.14 | dev1438+ ships cp314 wheels only (macOS arm64/x86_64 + linux x86_64; no linux/arm64). Keep platform marker `sys_platform != 'linux' or platform_machine == 'x86_64'` in dependencies. |
-| FastAPI >=0.139.0 | Pydantic >=2.10 | FastAPI requires Pydantic v2. Do not install Pydantic v1. |
-| FastAPI >=0.139.0 | Starlette >=0.46.0 | Pinned by FastAPI. Do not override. |
-| Alembic >=1.18.5 | SQLAlchemy >=2.0 | Use `alembic init -t async` for async template. Import all models in `env.py` for autogenerate to work. |
-| litellm | ALL | **Pin exact minor line.** Supply chain attack on 1.82.7/1.82.8 (March 2026). Pinned `>=1.85.7,<1.86.0`; raise the cap deliberately after vetting. Verify SHA checksums. |
-| SAQ >=0.26.4 (`saq[postgres]`) | Postgres (psycopg[binary]>=3.3.4) | Broker migrated from Redis to Postgres in Phase 36. Redis (client >=8.0.1) is used for caching only now. |
+| FastAPI >=0.141.1 | Pydantic 2.x | FastAPI requires Pydantic v2. Do not install Pydantic v1. |
+| FastAPI >=0.141.1 | Starlette (resolved through FastAPI) | Do not override FastAPI's Starlette constraint. |
+| Alembic >=1.19.1 | SQLAlchemy >=2.0 | Use `alembic init -t async` for async template. Import all models in `env.py` for autogenerate to work. |
+| litellm | ALL | **Pin exact minor line.** Supply chain attack on 1.82.7/1.82.8 (March 2026). Pinned `>=1.97.0,<1.98.0`; raise the cap deliberately after vetting. Verify SHA checksums. |
+| SAQ >=0.26.4 (`saq[postgres]`) | Postgres (psycopg[binary]>=3.3.4) | Broker migrated from Redis to Postgres in Phase 36. Redis (client >=8.1.0) is used for caching only now. |
 | chromaprint (system) | no verified consumer | Not consumed via `pyacoustid` (unused) or by any `phaze` source. **Not** an essentia-tensorflow runtime dependency either — `ldd` on the deployed `_essentia` extension shows no chromaprint link and `import essentia` succeeds without it (phaze-0jpe.6 correction; see `docs/design/0002-fingerprint-removal.md`). **Retained permanently by operator decision 2026-07-29** — phaze-0jpe.6 closed as "keep"; stays installed (`chromaprint-tools`) in Docker. |
 ## Confidence Assessment
 | Area | Confidence | Reasoning |
@@ -420,18 +420,18 @@ A music collection organizer that ingests music files (mp3, m4a, ogg) and concer
 | Database (SQLAlchemy + asyncpg + Alembic) | HIGH | Standard production stack, verified versions, extensive async documentation |
 | Audio metadata (mutagen) | HIGH | No real alternative for read+write. Stable, zero-dependency, widely used |
 | Audio analysis (essentia-tensorflow) | HIGH | Comprehensive MIR library with pre-trained models for BPM, key, mood, style classification |
-| Task queue (SAQ) | HIGH | Actively maintained, async-native, Redis-based. Drop-in replacement for arq with built-in web monitoring UI. |
+| Task queue (SAQ) | HIGH | Actively maintained and async-native. The pipeline uses SAQ's PostgreSQL backend; Redis is reserved for cache, rate limiting, execution progress, and counters. |
 | LLM integration (litellm) | MEDIUM | Best abstraction layer but recent supply chain incident is concerning. Pin versions aggressively, verify checksums |
 | Web UI (HTMX + Jinja2) | HIGH | Well-proven pattern for Python admin tools. No build step, no JS framework complexity |
 ## Sources
-- [mutagen on PyPI](https://pypi.org/project/mutagen/) -- version 1.47.0 verified
+- [mutagen on PyPI](https://pypi.org/project/mutagen/) -- project floor 1.48.1
 - [essentia on PyPI](https://pypi.org/project/essentia-tensorflow/) -- version 2.1b6.dev1438, used for audio analysis
-- [FastAPI releases](https://github.com/fastapi/fastapi/releases) -- version 0.135.2 verified
-- [SQLAlchemy on PyPI](https://pypi.org/project/SQLAlchemy/) -- version 2.0.48 verified
-- [Alembic on PyPI](https://pypi.org/project/alembic/) -- version 1.18.4 verified
-- [SAQ on PyPI](https://pypi.org/project/saq/) -- version 0.26.3, actively maintained
+- [FastAPI releases](https://github.com/fastapi/fastapi/releases) -- project floor 0.141.1
+- [SQLAlchemy on PyPI](https://pypi.org/project/SQLAlchemy/) -- project floor 2.0.52
+- [Alembic on PyPI](https://pypi.org/project/alembic/) -- project floor 1.19.1
+- [SAQ on PyPI](https://pypi.org/project/saq/) -- project floor 0.26.4
 - [litellm security incident](https://docs.litellm.ai/blog/security-update-march-2026) -- supply chain attack March 2026
-- [pydantic-settings on PyPI](https://pypi.org/project/pydantic-settings/) -- version 2.13.1 verified
+- [pydantic-settings on PyPI](https://pypi.org/project/pydantic-settings/) -- project floor 2.15.0
 - [HTMX + FastAPI patterns](https://johal.in/htmx-fastapi-patterns-hypermedia-driven-single-page-applications-2025/) -- 2025 production patterns
 - [Python task queue benchmarks](https://stevenyue.com/blogs/exploring-python-task-queue-libraries-with-load-test) -- arq/dramatiq/huey performance comparison
 <!-- GSD:stack-end -->

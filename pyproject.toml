@@ -278,7 +278,7 @@ split-on-trailing-comma = true
 #
 # What this gives up, stated so nobody has to reconstruct it: a cooldown exists so a compromised
 # release has time to be detected and yanked before it can enter a lockfile. This repo has already
-# been on the receiving end of that class -- litellm is pinned `>=1.85.7,<1.86.0` because of the
+# been on the receiving end of that class -- litellm is pinned `>=1.97.0,<1.98.0` because of the
 # March 2026 supply-chain attack on 1.82.7/1.82.8. With no window, a malicious release published
 # minutes ago is eligible the moment `uv lock` runs.
 #
