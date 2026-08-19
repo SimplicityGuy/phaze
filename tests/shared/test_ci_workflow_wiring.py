@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+import tomllib
 from typing import Any
 
 import yaml
@@ -49,6 +50,7 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _JUSTFILE = _REPO_ROOT / "justfile"
 _WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "tests.yml"
+_PYPROJECT_PATH = _REPO_ROOT / "pyproject.toml"
 _BUCKETS_JSON = _REPO_ROOT / "tests" / "buckets.json"
 _CI_SHARDS_JSON = _REPO_ROOT / "tests" / "ci_shards.json"
 
@@ -82,6 +84,18 @@ def _find_codecov_token_steps(job: dict[str, Any]) -> list[dict[str, Any]]:
         if "CODECOV_TOKEN" in json.dumps(step):
             hits.append(step)
     return hits
+
+
+def _browser_job() -> dict[str, Any]:
+    """Return the non-blocking real-browser job from the canonical test workflow."""
+    return _load_workflow()["jobs"]["browser"]
+
+
+def _find_run_step(job: dict[str, Any], needle: str) -> dict[str, Any]:
+    """Return the unique run step containing ``needle``."""
+    hits = [step for step in job["steps"] if needle in step.get("run", "")]
+    assert len(hits) == 1, f"expected one browser step containing {needle!r}, found {len(hits)}"
+    return hits[0]
 
 
 def test_bucket_recipe_defers_the_coverage_gate() -> None:
@@ -261,3 +275,68 @@ def test_setup_job_reads_the_canonical_ci_shards_json() -> None:
             assert token.startswith("tests/"), f"shard {shard['name']!r} path {token!r} must start with tests/"
             bucket = token.removeprefix("tests/").split("/")[0]
             assert bucket in known_buckets, f"shard {shard['name']!r} path {token!r} references unknown bucket {bucket!r}"
+
+
+def test_browser_toolchain_is_exactly_pinned_in_an_optional_group() -> None:
+    """The browser runner cannot float independently of the reviewed lockfile."""
+    pyproject = tomllib.loads(_PYPROJECT_PATH.read_text(encoding="utf-8"))
+    assert pyproject["dependency-groups"]["browser"] == ["playwright==1.62.0"]
+
+    justfile_text = _JUSTFILE.read_text(encoding="utf-8")
+    install_recipe = _extract_recipe(justfile_text, "test-browser-install")
+    ci_install_recipe = _extract_recipe(justfile_text, "test-browser-install-ci")
+    test_recipe = _extract_recipe(justfile_text, "test-browser")
+    for recipe in (install_recipe, ci_install_recipe, test_recipe):
+        assert "--group browser" in recipe
+        assert "--with playwright" not in recipe
+
+
+def test_browser_ci_installs_headless_shell_without_apt() -> None:
+    """Hosted CI must never enter Playwright's unconditional apt update path."""
+    browser_job = _browser_job()
+    browser_job_text = json.dumps(browser_job)
+    assert browser_job["runs-on"] == "ubuntu-latest"
+    assert "apt-get" not in browser_job_text
+    assert "--with-deps" not in browser_job_text
+
+    justfile_text = _JUSTFILE.read_text(encoding="utf-8")
+    local_recipe = _extract_recipe(justfile_text, "test-browser-install")
+    ci_recipe = _extract_recipe(justfile_text, "test-browser-install-ci")
+    assert "playwright install --with-deps chromium" in local_recipe
+    assert "playwright install --only-shell chromium" in ci_recipe
+
+
+def test_browser_cache_key_tracks_locked_toolchain_platform_and_payload() -> None:
+    """An incompatible browser build must not be restored across toolchain/platform changes."""
+    browser_job = _browser_job()
+    cache_steps = [step for step in browser_job["steps"] if "actions/cache" in step.get("uses", "")]
+    assert len(cache_steps) == 1
+    cache_step = cache_steps[0]
+    assert cache_step["id"] == "chromium-cache"
+    assert cache_step["with"]["key"] == ("playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright.outputs.version }}-headless-shell")
+
+    version_step = _find_run_step(browser_job, "playwright --version")
+    assert "uv run --group browser" in version_step["run"]
+
+
+def test_browser_install_timeout_preserves_the_real_exit_status() -> None:
+    """The install is bounded and distinguishes timeout 124 from other failures."""
+    install_step = _find_run_step(_browser_job(), "just test-browser-install-ci")
+    run = install_step["run"]
+    assert "timeout --kill-after=5s 300 just test-browser-install-ci" in run
+    assert "status=$?" in run
+    assert "if ! timeout" not in run
+    assert 'if [ "${status}" -eq 124 ]' in run
+    assert 'exit "${status}"' in run
+
+
+def test_browser_launch_smoke_precedes_the_contract_suite() -> None:
+    """A bounded real launch separates browser infrastructure failures from test failures."""
+    browser_job = _browser_job()
+    steps = browser_job["steps"]
+    smoke_step = _find_run_step(browser_job, "playwright.chromium.launch()")
+    suite_steps = [step for step in steps if step.get("run", "").strip() == "just test-browser"]
+    assert len(suite_steps) == 1
+    (suite_step,) = suite_steps
+    assert "timeout --kill-after=5s 30" in smoke_step["run"]
+    assert steps.index(smoke_step) < steps.index(suite_step)

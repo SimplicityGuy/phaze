@@ -420,27 +420,14 @@ jobs:
       - name: 📦 Install dependencies
         run: just install
 
-      # phaze-m3qte: the Chromium download is ~150 MB and is re-fetched on every run. Cache it.
-      #
-      # The key has to track the PLAYWRIGHT VERSION, because the browser build is chosen by the
-      # playwright package -- a cache keyed on anything coarser would hand a new playwright the
-      # previous version's Chromium, which is the same silently-wrong-toolchain failure the
-      # ffmpeg pinning above exists to prevent.
-      #
-      # That version has to be RESOLVED AT RUNTIME rather than read from a lockfile, because
-      # playwright is deliberately not a project dependency: `just test-browser-install` runs
-      # `uv run --with playwright`, which resolves whatever is newest on PyPI at that moment
-      # (see the comment at pyproject.toml:138). So this step asks the tool what it is, and the
-      # answer becomes the key. A playwright release therefore misses the cache and re-downloads
-      # -- which is correct, that IS a different browser.
-      #
-      # Worth recording: the floating version means the browser suite's Chromium can change
-      # under it without any change to this repository. Pinning it is not this bead's scope.
+      # phaze-ldvmy: Playwright is an exact uv lock input. Resolve that locked version for a cache
+      # key that also distinguishes runner architecture and the smaller headless-shell payload.
+      # The browser toolchain can now change only through a reviewed pyproject/uv.lock diff.
       - name: 🎭 Resolve the playwright version
         id: playwright
         run: |
           set -euo pipefail
-          version="$(uv run --with playwright playwright --version | awk '{print $2}')"
+          version="$(uv run --group browser playwright --version | awk '{print $2}')"
           if [ -z "${version}" ]; then
             echo "::error::could not resolve the playwright version; refusing to cache under an empty key." >&2
             exit 1
@@ -449,68 +436,51 @@ jobs:
           echo "playwright ${version}"
 
       - name: 🎭 Restore the Chromium build
+        id: chromium-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
-
-      # phaze-m7bf7: refresh the package index BEFORE `--with-deps` resolves against it. This is
-      # the only apt call left in the test workflow -- phaze-m3qte took ffmpeg off apt entirely --
-      # and it is bounded here so a degraded mirror cannot eat the job the way it did before that
-      # bead. A failure to refresh is NOT fatal: the runner image ships a usable index, and
-      # Chromium's libraries are largely present already, so a stale index is a slower resolve
-      # rather than a broken one. It is reported, not swallowed.
-      - name: 🎭 Refresh the apt index for Chromium's system libraries
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          set -uo pipefail
-          if timeout 180 sudo -E apt-get update; then
-            echo "apt index refreshed"
-          else
-            echo "::warning::apt-get update did not complete within 180s; continuing against the image's existing index." >&2
-          fi
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright.outputs.version }}-headless-shell
 
       - name: 🎭 Install the Chromium build
-        # A no-op for the DOWNLOAD when the cache hit -- `playwright install` verifies the browser
-        # is present and returns. `--with-deps` still runs apt for Chromium's system libraries,
-        # which the cache cannot cover.
-        #
-        # DEBIAN_FRONTEND=noninteractive is REQUIRED, not hygiene. Observed on PR #446 (job
-        # 95581386833): the cache restored at 03:01:07, so no download was outstanding, and this
-        # step still sat in_progress for ~10 minutes against a 20-minute job timeout. With the
-        # frontend unset, apt is free to open an interactive prompt -- a config-file question or a
-        # service-restart prompt -- and on a runner with no TTY to answer it that blocks
-        # indefinitely. It does not fail, it does not print, it just never returns, which is why
-        # this presented as a hang rather than an error.
-        #
-        # Bounded for the same reason the ffmpeg step is (phaze-i61p6): a step that hangs past the
-        # job timeout gets the job cancelled with the later steps SKIPPED -- zero tests executed,
-        # reported as "the tests are timing out" when no test ever ran.
         env:
-          DEBIAN_FRONTEND: noninteractive
+          CACHE_HIT: ${{ steps.chromium-cache.outputs.cache-hit }}
         run: |
           set -euo pipefail
-          if ! timeout 600 just test-browser-install; then
-            status=$?
+          echo "Chromium cache hit: ${CACHE_HIT}"
+          set +e
+          timeout --kill-after=5s 300 just test-browser-install-ci
+          status=$?
+          set -e
+          if [ "${status}" -ne 0 ]; then
             if [ "${status}" -eq 124 ]; then
-              echo "::error::INFRASTRUCTURE -- the Chromium install did not complete within 600s; no test has run." >&2
-              echo "The cache restore step above says whether a download was even outstanding; if it hit, this is the apt half." >&2
-              # phaze-17ni3: the ::error:: line above is real but gets buried behind the service
-              # containers' Postgres healthcheck spam when someone pulls raw job logs to diagnose a
-              # red run (observed on PRs #452, #453, #456). The step SUMMARY is a separate tab that
-              # spam never reaches, so put the one-line verdict there too.
-              {
-                echo "### 🚧 Browser job: INFRASTRUCTURE failure, not a test failure"
-                echo "The Chromium install did not complete within 600s -- no test ran. This is not evidence of a"
-                echo "product regression; re-running is reasonable. See the *Install the Chromium build* step's log"
-                echo "for whether the cache hit (then this is the apt half) or missed (then the download)."
-              } >> "${GITHUB_STEP_SUMMARY}"
+              echo "::error::INFRASTRUCTURE -- the pinned Chromium download did not complete within 300s; no test has run." >&2
+              echo "### 🚧 Browser job: pinned Chromium download timed out after 300s (cache hit: ${CACHE_HIT})" >> "${GITHUB_STEP_SUMMARY}"
             else
-              echo "::error::the Chromium install failed with exit ${status}." >&2
-              echo "### ❌ Browser job: Chromium install failed (exit ${status})" >> "${GITHUB_STEP_SUMMARY}"
+              echo "::error::the pinned Chromium install failed with exit ${status}; no test has run." >&2
+              echo "### ❌ Browser job: Chromium install failed (exit ${status}, cache hit: ${CACHE_HIT})" >> "${GITHUB_STEP_SUMMARY}"
             fi
-            exit 1
+            exit "${status}"
+          fi
+
+      - name: 🎭 Verify Chromium launches
+        run: |
+          set -euo pipefail
+          set +e
+          timeout --kill-after=5s 30 uv run --group browser python - <<'PY'
+          from playwright.sync_api import sync_playwright
+
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch()
+              print(f"Chromium {browser.version} launched successfully")
+              browser.close()
+          PY
+          status=$?
+          set -e
+          if [ "${status}" -ne 0 ]; then
+            echo "::error::INFRASTRUCTURE -- pinned Chromium failed its 30s launch smoke check (exit ${status}); no test has run." >&2
+            echo "### ❌ Browser job: Chromium launch smoke failed (exit ${status})" >> "${GITHUB_STEP_SUMMARY}"
+            exit "${status}"
           fi
 
       - name: 🌐 Run the browser contract suite
