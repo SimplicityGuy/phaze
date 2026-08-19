@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import re
 import shutil
 from typing import TYPE_CHECKING
 import unicodedata
@@ -45,6 +46,14 @@ from phaze.services.agent_task_router import AmbiguousEnqueueError
 
 
 _ROUTERS_DIR = Path(__file__).parent.parent.parent.parent / "src" / "phaze" / "routers"
+
+# Keep exemptions at the exceptional call site so their rationale moves with the code.
+# The required text after ``--`` prevents a bare suppression from disguising why matching
+# the database row's timezone awareness is correct. This remains router-scoped: the guard's
+# contract protects router handling of production TIMESTAMPTZ values. Repo-wide enforcement
+# would conflate that hazard with deliberate schema-bound normalization in task code and
+# should be introduced, if wanted, as its own policy with its own migration.
+_NAIVE_TZ_EXEMPTION = re.compile(r"#\s*phaze:\s*allow-naive-tz\s*--\s*\S.{9,}$")
 
 
 if TYPE_CHECKING:
@@ -161,6 +170,7 @@ def _naive_now_offenders(routers_dir: Path) -> list[str]:
     offenders: list[str] = []
     for py in routers_dir.rglob("*.py"):
         text = py.read_text()
+        lines = text.splitlines()
         tree = ast.parse(text)
         for node in ast.walk(tree):
             if (
@@ -169,7 +179,9 @@ def _naive_now_offenders(routers_dir: Path) -> list[str]:
                 and node.func.attr == "replace"
                 and any(kw.arg == "tzinfo" and isinstance(kw.value, ast.Constant) and kw.value.value is None for kw in node.keywords)
             ):
-                offenders.append(f"{py.relative_to(routers_dir)}:{node.lineno}")
+                source_line = lines[node.lineno - 1]
+                if not _NAIVE_TZ_EXEMPTION.search(source_line):
+                    offenders.append(f"{py.relative_to(routers_dir)}:{node.lineno}")
     return offenders
 
 
@@ -250,6 +262,34 @@ def test_seeded_assign_then_strip_naive_now_is_caught(tmp_path: Path) -> None:
 
     offenders = _naive_now_offenders(root)
     assert any("pipeline_scans.py" in offender for offender in offenders), "the guard failed open on the assign-then-strip shape (phaze-7l8jh)"
+
+
+def test_documented_inline_exemption_exempts_only_its_call(tmp_path: Path) -> None:
+    """A justified marker exempts its call; removing it exposes the same call."""
+    root = _copy_routers(tmp_path)
+    victim = root / "pipeline_scans.py"
+    original = victim.read_text()
+    marker = "  # phaze: allow-naive-tz -- match a schema column that deliberately stores naive timestamps"
+    seeded = original + f"\n\ndef _seeded_valid_normalization(value: object) -> None:\n    value.replace(tzinfo=None){marker}\n"
+    victim.write_text(seeded)
+
+    assert _naive_now_offenders(root) == []
+
+    victim.write_text(seeded.replace(marker, ""))
+    offenders = _naive_now_offenders(root)
+    assert any("pipeline_scans.py" in offender for offender in offenders), "removing the exemption did not expose the normalization"
+
+
+def test_bare_inline_exemption_is_not_accepted(tmp_path: Path) -> None:
+    """The escape hatch must explain why stripping timezone awareness is correct."""
+    root = _copy_routers(tmp_path)
+    victim = root / "pipeline_scans.py"
+    victim.write_text(
+        victim.read_text() + "\n\ndef _seeded_bare_exemption(value: object) -> None:\n    value.replace(tzinfo=None)  # phaze: allow-naive-tz\n"
+    )
+
+    offenders = _naive_now_offenders(root)
+    assert any("pipeline_scans.py" in offender for offender in offenders), "a bare, undocumented exemption was accepted"
 
 
 def test_elapsed_seconds_handles_tz_naive_created_at_as_utc() -> None:

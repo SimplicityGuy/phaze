@@ -117,7 +117,7 @@
         {% endif %}
         <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">{{ explain }}</p>
         {% if review.cache_entry.detail %}
-        <p class="mt-1 truncate text-xs text-gray-400 dark:text-gray-500" title="{{ review.cache_entry.detail }}">{{ review.cache_entry.detail }}</p>
+        <p class="mt-1 truncate text-xs text-gray-400 dark:text-gray-400" title="{{ review.cache_entry.detail }}">{{ review.cache_entry.detail }}</p>
         {% endif %}
         {# phaze-z8xq7: the cache verdict, said plainly, whenever it currently suppresses a
            re-query -- so an operator never sees a Prioritize/Priority-queued control promise a
@@ -150,7 +150,7 @@
         {# STATE 3b -- never looked up, and nothing else excludes it either. #}
         <p class="text-sm text-gray-500 dark:text-gray-400">Not yet looked up.</p>
         {% if not review.eligible %}
-        <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+        <p class="mt-1 text-xs text-gray-400 dark:text-gray-400">
             Not classified as a live set{% if review.classification_class %} (reads as {{ review.classification_class.value }}){% endif %} --
             it would not enter the drain queue automatically.
         </p>
@@ -193,7 +193,7 @@
         {# phaze-z8xq7: an existing flag on a cache-suppressed set is inert -- it will not enter
            the drain queue until the cache verdict changes. Say so, rather than let "Priority
            queued" stand as an unqualified claim of an active queue position. #}
-        <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+        <p class="mt-1 text-xs text-gray-400 dark:text-gray-400">
             This flag will have no effect until the cache verdict above changes -- the drain keeps a cache-suppressed set out of the queue even when flagged.
         </p>
         {% endif %}

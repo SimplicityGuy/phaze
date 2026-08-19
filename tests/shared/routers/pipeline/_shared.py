@@ -437,6 +437,24 @@ def _link_tracklist(file_rec: FileRecord) -> Tracklist:
     )
 
 
+def _link_propagated_tracklist(file_rec: FileRecord, *, external_id: str, set_key: str) -> Tracklist:
+    """Build a PROPAGATED Tracklist row linked to ``file_rec`` -- a duplicate's projection of
+    another file's canonical scrape (phaze-fq9h.7).
+
+    Unlike ``_link_tracklist``, ``external_id`` is a caller-supplied argument rather than a fresh
+    uuid, so a test can link this row to the SAME page as a canonical row it seeds separately
+    (typically via ``_link_tracklist`` on a different file) -- the combination that reproduces
+    phaze-vtovq: refreshing from the DUPLICATE's own file id.
+    """
+    return Tracklist(
+        external_id=external_id,
+        source_url=f"https://www.1001tracklists.com/tracklist/{external_id}/x.html",
+        file_id=file_rec.id,
+        propagated_from_set_key=set_key,
+        propagation_confidence="exact",
+    )
+
+
 # ---------------------------------------------------------------------------
 # phaze-fq9h.8: per-file prioritize/un-prioritize + the drain progress fragment / manual
 # slice trigger. drain_tracklists is a CONTROLLER task (Phase-30 rule); it must never land on
@@ -648,6 +666,7 @@ __all__ = [
     "_cloud_compute_registry",
     "_cloud_job_status",
     "_is_awaiting_cloud",
+    "_link_propagated_tracklist",
     "_link_tracklist",
     "_make_file",
     "_make_file_owned_by",

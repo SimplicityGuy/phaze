@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from phaze.models.proposal import ProposalStatus
-from tests.browser.axe import CONTRAST_RULES, describe, run_axe
+from tests.browser.axe import describe, run_axe
 from tests.browser.helpers import open_shell, settled
 from tests.browser.test_command_palette_search import HALCYON, NORWOOD
 
@@ -69,38 +69,17 @@ async def test_a_populated_workspace_has_no_automated_accessibility_violations(o
     assert violations == [], f"/s/{stage} ({theme} theme) has automated accessibility violations:\n{describe(violations)}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "KNOWN, PRE-EXISTING: the palette violates WCAG AA 4.5:1 in both themes -- muted greys on panel "
-        "backgrounds, the cyan link colour, and white-on-emerald buttons. Measured 2026-08-17; see "
-        "tests/browser/axe.py CONTRAST_RULES for the numbers. Repainting design tokens is out of scope for a "
-        "test bead. strict=True on purpose: when the palette IS fixed this test fails as XPASS, which is the "
-        "signal to delete this marker and fold color-contrast into RULES above."
-    ),
-)
 @pytest.mark.parametrize("theme", ["light", "dark"])
 @pytest.mark.parametrize("stage", ["summary", "rename", "apply", "dedupe", "discover"])
 async def test_a_populated_workspace_meets_wcag_aa_contrast(open_page: Any, seed: Seeder, stage: str, theme: str) -> None:
-    """The computed-contrast check ADR-0009 asked for -- RUN on every invocation, recorded as failing.
-
-    This is deliberately not a disabled rule or a commented-out assertion. Both of those decay into
-    "we have an accessibility checker" while checking nothing, and neither leaves anything behind
-    that says how bad it currently is. An ``xfail(strict=True)`` runs the real scan every time, keeps
-    the real numbers in the failure output for whoever picks up the palette work, and -- because it
-    is strict -- turns into a hard failure the moment the product gets BETTER, which is the only
-    reliable way a known-failure marker ever gets removed.
-
-    A count-based baseline was the obvious alternative and is worse: it goes stale on any unrelated
-    markup change and teaches people to bump the number.
-    """
+    """The computed-contrast check ADR-0009 requested, across every seeded workspace."""
     await _populate(seed)
 
     page = await open_page("desktop", theme=theme)
     await open_shell(page, f"/s/{stage}")
     await page.wait_for_function("t => document.documentElement.classList.contains('dark') === (t === 'dark')", arg=theme)
 
-    violations = await run_axe(page, rules=CONTRAST_RULES)
+    violations = await run_axe(page, rules=("color-contrast",))
     assert violations == [], f"/s/{stage} ({theme} theme) has contrast violations:\n{describe(violations)}"
 
 

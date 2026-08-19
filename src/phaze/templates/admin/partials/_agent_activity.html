@@ -130,7 +130,7 @@
         <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Queue depth by lane</h3>
         <p class="text-sm text-gray-700 dark:text-gray-300">
             {% for _lane, _depth in (queue_depths | default({})).items() %}
-            <span class="mr-1">{{ _lane }} <span class="font-semibold">{{ _depth }}</span></span>{% if not loop.last %}<span class="text-gray-400 dark:text-gray-500 mr-1">·</span>{% endif %}
+            <span class="mr-1">{{ _lane }} <span class="font-semibold">{{ _depth }}</span></span>{% if not loop.last %}<span class="text-gray-400 dark:text-gray-400 mr-1">·</span>{% endif %}
             {% else %}
             <span class="text-gray-500 dark:text-gray-400">Lane depths unavailable — retrying on the next tick.</span>
             {% endfor %}
@@ -146,7 +146,7 @@
             <li class="flex flex-wrap items-baseline gap-x-2">
                 <span class="font-mono text-xs text-gray-500 dark:text-gray-400">{{ _scan.status }}</span>
                 <span class="text-gray-700 dark:text-gray-300 truncate">{{ _scan.scan_path }}</span>
-                <span class="text-xs text-gray-400 dark:text-gray-500">{{ humanize_relative_time(_scan.created_at, now=now) }}</span>
+                <span class="text-xs text-gray-400 dark:text-gray-400">{{ humanize_relative_time(_scan.created_at, now=now) }}</span>
             </li>
             {% endfor %}
         </ul>

@@ -175,7 +175,7 @@
                         {% if row.queue is not none %}
                             {{ row.queue }}
                         {% else %}
-                            <span class="text-gray-400 dark:text-gray-500">—</span>
+                            <span class="text-gray-400 dark:text-gray-400">—</span>
                         {% endif %}
                     </td>
                     {# A lane has no heartbeat — the shared columns must not lie (acceptance rule 2):
@@ -184,14 +184,14 @@
                        agent, exactly the perpetually-DEAD misreading this bead exists to prevent). #}
                     <td class="px-4 py-3">
                         {% if row.status_kind == 'lane' %}
-                            <span class="text-gray-400 dark:text-gray-500">—</span>
+                            <span class="text-gray-400 dark:text-gray-400">—</span>
                         {% else %}
                             {{ humanize_relative_time(row.last_seen, now=now) }}
                         {% endif %}
                     </td>
                     <td class="px-4 py-3">
                         {% if row.status_kind == 'lane' %}
-                            <span class="text-gray-400 dark:text-gray-500">—</span>
+                            <span class="text-gray-400 dark:text-gray-400">—</span>
                         {% else %}
                             {{ row.scan_roots }}
                         {% endif %}

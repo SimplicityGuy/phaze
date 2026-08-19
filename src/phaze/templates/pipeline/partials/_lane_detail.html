@@ -53,7 +53,7 @@
         <div class="flex items-center justify-between gap-2">
             <span class="text-sm text-gray-700 dark:text-gray-200">
                 {{ lane_glyph }} {{ lane.kind|upper }} · {{ lane.id }}
-                <span class="ml-1 font-jura text-xs font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500">RANK {{ lane.rank }}</span>
+                <span class="ml-1 font-jura text-xs font-medium uppercase tracking-wider text-gray-400 dark:text-gray-400">RANK {{ lane.rank }}</span>
             </span>
             {% if lane.available %}
             <span class="font-mono text-sm font-medium {{ lane_color }}">{{ lane.in_flight }}/{{ lane.cap }}</span>
@@ -63,7 +63,7 @@
                real in-flight work behind "offline" (the lane can be unreachable for NEW dispatch
                while still draining work it already accepted). Greyed styling carries the "offline"
                signal instead of fabricating a zero. #}
-            <span class="font-mono text-sm font-medium text-gray-400 dark:text-gray-500">{{ lane.in_flight }}/{{ lane.cap }}</span>
+            <span class="font-mono text-sm font-medium text-gray-400 dark:text-gray-400">{{ lane.in_flight }}/{{ lane.cap }}</span>
             {% endif %}
         </div>
 
@@ -133,7 +133,7 @@
         </div>
 
         {# Liveness caption — re-rendered every 5s by the own-tick below (server-rendered, no setInterval). #}
-        <p class="text-xs text-gray-400 dark:text-gray-500">Updated {{ refreshed_at.strftime('%H:%M:%S') if refreshed_at else '—' }}</p>
+        <p class="text-xs text-gray-400 dark:text-gray-400">Updated {{ refreshed_at.strftime('%H:%M:%S') if refreshed_at else '—' }}</p>
 
         {# D-03 own-tick: the loaded body carries its OWN bounded 5s self-refresh scoped to this lane,
            re-swapping itself into #detail-pane. It is REMOVED on dismiss (no orphan loop): once the pane

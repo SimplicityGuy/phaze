@@ -13,6 +13,7 @@ import platform
 import resource
 from statistics import mean, median
 import subprocess  # nosec B404  # ffprobe duration probe (D-10); fixed argv, no shell
+import threading
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -58,6 +59,13 @@ log = logging.getLogger(__name__)
 # is stored (truncated again by the callers' own _ERROR_DETAIL_MAX) and read by an operator --
 # enough for ffprobe's actual complaint, never an unbounded string.
 _PROBE_STDERR_MAX = 500
+
+# A streaming chunk decode is one blocking ``essentia.run`` call, so Python cannot
+# report progress from the decoding thread until it returns.  A small watchdog thread
+# emits truthful liveness while that call is still running.  Sixty seconds is 30x
+# inside D-08's 1 800 s silence bound, leaving ample scheduling slack without making
+# heartbeat traffic meaningful at archive scale.
+_DECODE_HEARTBEAT_INTERVAL_SEC = 60.0
 
 
 class AnalysisProbeError(RuntimeError):
@@ -718,6 +726,47 @@ def aggregate_danceability(coarse: list[CoarseWindow]) -> float | None:
 
 
 # ---------------------------------------------------------------------------
+# Observability signals -- one seam for progress + liveness (phaze-mp0op)
+# ---------------------------------------------------------------------------
+#
+# phaze-w55w1's heartbeat feature added exactly ONE signal (liveness) and had to thread an
+# optional callback param through six functions, each with its own hand-written
+# ``if cb is not None:`` guard, to do it -- on top of the ``progress_cb`` signal already
+# paying the same tax on a narrower path since Phase 57.1. AnalysisSignals collapses both
+# into one object with two TOTAL methods: an unset channel is a no-op call, never a ``None``
+# a caller has to test, so the guards disappear from every call site instead of multiplying
+# with every new signal.
+#
+# Carries NO I/O and no transport -- it emits an ``(int, int)`` progress count or a
+# ``(str, int, int)`` stage beat exactly as the two raw callbacks did. Throttling and the
+# HTTP/pickle boundary stay downstream in the lane bridge (``analysis_child.py`` /
+# ``services/analysis_exec.py``), so this seam stays importable by the essentia child.
+@dataclass(frozen=True)
+class AnalysisSignals:
+    """Progress + liveness callbacks for one ``analyze_file`` run, collapsed into one seam."""
+
+    progress_cb: Callable[[int, int], None] | None = None
+    heartbeat_cb: Callable[[str, int, int], None] | None = None
+
+    def progress(self, analyzed: int, total: int) -> None:
+        """Fire the UI progress channel (fine tier only). A no-op when unset."""
+        if self.progress_cb is not None:
+            self.progress_cb(analyzed, total)
+
+    def beat(self, stage: str, done: int, total: int) -> None:
+        """Fire the liveness channel. A no-op when unset."""
+        if self.heartbeat_cb is not None:
+            self.heartbeat_cb(stage, done, total)
+
+
+NO_SIGNALS = AnalysisSignals()
+
+
+def _noop() -> None:
+    """Total default for ``_decode_windows``'s ``on_beat`` / ``_run_model_sets_over_windows``'s ``on_model_done``."""
+
+
+# ---------------------------------------------------------------------------
 # Main analysis function (synchronous, for ProcessPoolExecutor)
 # ---------------------------------------------------------------------------
 
@@ -1226,7 +1275,7 @@ def _decode_windows(
     on_skip: Callable[[int, float, float, bool], None],
     *,
     stop_at_sec: float | None = None,
-    on_beat: Callable[[], None] | None = None,
+    on_beat: Callable[[], None] = _noop,
 ) -> dict[int, Any]:
     """Decode one chunk's windows, streaming fan-out first, per-window ``EasyLoader`` as fallback.
 
@@ -1259,25 +1308,55 @@ def _decode_windows(
     ANALYSIS_FAILED -- the degradation path destroying exactly the work it exists to salvage.
     The beat says "still decoding", which is true and is all the watchdog needs.
 
-    The streaming rungs need no beat of their own: ``essentia.run`` is one blocking call that
-    cannot be instrumented from here, and the callers already beat immediately before invoking
-    a chunk decode, which covers it.
+    The streaming rungs run under a watchdog because ``essentia.run`` is one blocking C++
+    call.  The watchdog beats every 60 seconds until that call returns, decoupling D-08's
+    silence threshold from file duration and source sample rate.
     """
 
-    def _beat() -> None:
-        if on_beat is not None:
-            on_beat()
+    def _streaming(*, gated_stop_at_sec: float | None = None) -> dict[int, Any]:
+        def _run() -> dict[int, Any]:
+            # Preserve the established ungated call shape. Tests and instrumentation wrap
+            # this seam with a three-argument callable; passing ``stop_at_sec=None`` is
+            # semantically equivalent to omitting it, but unnecessarily breaks those wrappers
+            # and can demote a healthy streaming pass to the per-window fallback.
+            if gated_stop_at_sec is None:
+                return _decode_windows_streaming(file_path, sample_rate, windows)
+            return _decode_windows_streaming(file_path, sample_rate, windows, stop_at_sec=gated_stop_at_sec)
+
+        # "Nobody is listening" is an identity check against the module-level default rather
+        # than a ``None`` test, because ``on_beat`` is TOTAL since phaze-mp0op. This is the
+        # same condition the original ``on_beat is None`` guarded: an unset channel must not
+        # make a decode pay for a watchdog thread whose beats would go nowhere.
+        if on_beat is _noop:
+            return _run()
+
+        stopped = threading.Event()
+
+        def _watch() -> None:
+            while not stopped.wait(_DECODE_HEARTBEAT_INTERVAL_SEC):
+                try:
+                    on_beat()
+                except Exception:  # liveness reporting is best-effort; decode correctness wins
+                    log.warning("decode heartbeat callback failed; continuing", exc_info=True)
+
+        watchdog = threading.Thread(target=_watch, name="phaze-decode-heartbeat", daemon=True)
+        watchdog.start()
+        try:
+            return _run()
+        finally:
+            stopped.set()
+            watchdog.join()
 
     decoded: dict[int, Any] | None = None
     if stop_at_sec is not None:
         try:
-            decoded = _decode_windows_streaming(file_path, sample_rate, windows, stop_at_sec=stop_at_sec)
+            decoded = _streaming(gated_stop_at_sec=stop_at_sec)
         except Exception:  # gate-level isolation: retry the same pass without the early-stop gate
             log.warning("gated streaming decode failed at %d Hz; retrying ungated", sample_rate, exc_info=True)
-            _beat()  # the gated attempt may itself have burned minutes before failing
+            on_beat()  # the gated attempt may itself have burned minutes before failing
     if decoded is None:
         try:
-            decoded = _decode_windows_streaming(file_path, sample_rate, windows)
+            decoded = _streaming()
         except Exception:  # tier-level failure isolation: fall back to the per-window decode
             log.warning("streaming decode pass failed at %d Hz; falling back to per-window EasyLoader", sample_rate, exc_info=True)
             decoded = {}
@@ -1286,7 +1365,7 @@ def _decode_windows(
                     decoded[idx] = es.EasyLoader(filename=file_path, sampleRate=sample_rate, startTime=start, endTime=end)()
                 except Exception:  # per-window failure isolation: skip, never fail the file
                     on_skip(idx, start, end, True)
-                _beat()  # per WINDOW, and outside the try: a skip is progress too, and this loop's
+                on_beat()  # per WINDOW, and outside the try: a skip is progress too, and this loop's
                 # silence is what would otherwise get the whole fallback killed as stalled.
             _release_decode_network()
             return decoded
@@ -1348,7 +1427,7 @@ def _run_model_sets_over_windows(
     buffers: list[tuple[int, Any]],
     models_dir: str,
     on_failure: Callable[[int], None],
-    on_model_done: Callable[[], None] | None = None,
+    on_model_done: Callable[[], None] = _noop,
 ) -> tuple[dict[int, dict[str, Any]], set[int]]:
     """Run all 11 characteristic model sets + the genre model over EVERY coarse buffer of a chunk.
 
@@ -1378,17 +1457,13 @@ def _run_model_sets_over_windows(
     features: dict[int, dict[str, Any]] = {key: {model_set.name: {} for model_set in MODEL_SETS} for key, _ in buffers}
     failed: set[int] = set()
 
-    def _tick() -> None:
-        if on_model_done is not None:
-            on_model_done()
-
     for model_set in MODEL_SETS:
         for model in model_set.models:
             for key, (predictions, labels) in _sweep_one_model(model, buffers, models_dir, failed, on_failure).items():
                 features[key][model_set.name][model.variant] = [
                     {"label": label, "prediction": float(pred)} for label, pred in zip(labels, predictions, strict=False)
                 ]
-            _tick()
+            on_model_done()
 
     for key, (genre_predictions, genre_labels) in _sweep_one_model(GENRE_MODEL, buffers, models_dir, failed, on_failure).items():
         genre_pairs = list(zip(genre_labels, genre_predictions, strict=False))
@@ -1396,7 +1471,7 @@ def _run_model_sets_over_windows(
         features[key]["genre"] = {
             "predictions": [{"label": label, "confidence": float(conf)} for label, conf in genre_pairs[:10]],
         }
-    _tick()
+    on_model_done()
 
     return features, failed
 
@@ -1437,8 +1512,7 @@ def _analyze_fine_windows(
     win_sec: int,
     min_sec: int,
     *,
-    progress_cb: Callable[[int, int], None] | None = None,
-    heartbeat_cb: Callable[[str, int, int], None] | None = None,
+    signals: AnalysisSignals = NO_SIGNALS,
 ) -> tuple[list[FineWindow], int]:
     """FINE pass: BPM + key for EVERY ``win_sec`` window, in bounded 44.1 kHz chunks.
 
@@ -1453,19 +1527,19 @@ def _analyze_fine_windows(
     its own streaming decode (``MonoLoader`` cannot seek); the non-final chunks pass a
     ``stop_at_sec`` gate so their decode ends at the chunk boundary instead of at EOF.
 
-    Phase 57.1 (PROG-01): when ``progress_cb`` is provided it fires a START signal
-    ``progress_cb(0, len(natural))`` BEFORE the loop and then ``progress_cb(len(fine_windows),
+    Phase 57.1 (PROG-01): ``signals.progress`` fires a START signal ``signals.progress(0,
+    len(natural))`` BEFORE the loop and then ``signals.progress(len(fine_windows),
     len(natural))`` after every successful append. The denominator is the natural count --
     IDENTICAL to the ``fine_windows_total`` the completion PUT reports, so the in-flight bar
     and final coverage agree (denominator invariant). This seam emits only an ``(int, int)``
     count and does NO I/O; throttling and transport live DOWNSTREAM in the lane bridge, never
     here (keeps the compute seam HTTP/pickle-free).
 
-    phaze-w55w1 adds ``heartbeat_cb(stage, done, total)`` alongside it: the LIVENESS channel.
+    phaze-w55w1 adds ``signals.beat(stage, done, total)`` alongside it: the LIVENESS channel.
     It fires on window completions AND on chunk-decode boundaries, because the supervising
     layer now kills only on absence of progress (never on elapsed time) and a chunk decode is
-    the longest stretch of this pass that completes no windows. ``progress_cb`` cannot serve
-    that role: it is fine-tier-only by design (WORK-04) and says nothing during decode.
+    the longest stretch of this pass that completes no windows. ``signals.progress`` cannot
+    serve that role: it is fine-tier-only by design (WORK-04) and says nothing during decode.
 
     ``RhythmExtractor2013`` and ``KeyExtractor`` are constructed ONCE per file and reused
     across every window and every chunk (phaze-ap8y), not rebuilt per window: neither takes a
@@ -1480,22 +1554,17 @@ def _analyze_fine_windows(
     """
     natural = _iter_windows(total_sec, win_sec, min_sec, drop_short_trailing=True)
     total = len(natural)
-    if progress_cb is not None:
-        progress_cb(0, total)  # START: analyzed=0, total=natural
+    signals.progress(0, total)  # START: analyzed=0, total=natural
 
     def _skip(idx: int, start: float, end: float, exc_info: bool = True) -> None:
         log.warning("fine window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=exc_info)
-
-    def _beat(stage: str, done: int) -> None:
-        if heartbeat_cb is not None:
-            heartbeat_cb(stage, done, total)
 
     rhythm_extractor = es.RhythmExtractor2013(method="multifeature")
     key_extractor = es.KeyExtractor(profileType="edma")
     fine_windows: list[FineWindow] = []
     chunks = _chunked(natural, _FINE_CHUNK_WINDOWS)
     for position, chunk in enumerate(chunks):
-        _beat("fine_decode", len(fine_windows))
+        signals.beat("fine_decode", len(fine_windows), total)
         decoded = _decode_windows(
             file_path,
             _FINE_SAMPLE_RATE,
@@ -1504,7 +1573,7 @@ def _analyze_fine_windows(
             stop_at_sec=_chunk_stop_sec(chunks, position),
             # Keeps the per-window EasyLoader fallback audible to the stall watchdog; see
             # _decode_windows' docstring for why an unbeaten fallback is always killed.
-            on_beat=lambda: _beat("fine_decode", len(fine_windows)),
+            on_beat=lambda: signals.beat("fine_decode", len(fine_windows), total),
         )
         for idx, start, end in chunk:
             buf = decoded.pop(idx, None)  # pop, not [], so each window's PCM dies as it is consumed
@@ -1528,9 +1597,8 @@ def _analyze_fine_windows(
                 continue
             finally:
                 del buf
-            if progress_cb is not None:
-                progress_cb(len(fine_windows), total)  # bump (throttle lives downstream, not here)
-            _beat("fine", len(fine_windows))
+            signals.progress(len(fine_windows), total)  # bump (throttle lives downstream, not here)
+            signals.beat("fine", len(fine_windows), total)
         decoded.clear()  # this chunk's PCM is consumed; nothing crosses the chunk boundary
         _malloc_trim()
     return fine_windows, total
@@ -1561,7 +1629,7 @@ def _analyze_coarse_windows(
     win_sec: int,
     models_dir: str,
     *,
-    heartbeat_cb: Callable[[str, int, int], None] | None = None,
+    signals: AnalysisSignals = NO_SIGNALS,
 ) -> tuple[list[CoarseWindow], int]:
     """COARSE pass: mood/style/danceability for EVERY ``win_sec`` window (no length floor).
 
@@ -1592,7 +1660,7 @@ def _analyze_coarse_windows(
     only the ORDER of the log lines changes, since a window's inference failure is discovered
     during the sweep rather than in window order.
 
-    ``heartbeat_cb(stage, done, total)`` is the liveness channel (phaze-w55w1). The coarse
+    ``signals.beat(stage, done, total)`` is the liveness channel (phaze-w55w1). The coarse
     tier is the part of a long analysis that goes longest without completing a window, so it
     beats at chunk-decode start, after EVERY one of the 34 model sweeps, and at chunk
     assembly -- enough that a live multi-hour analysis is never mistaken for a hang.
@@ -1605,21 +1673,17 @@ def _analyze_coarse_windows(
 
     coarse_windows: list[CoarseWindow] = []
 
-    def _beat(stage: str) -> None:
-        if heartbeat_cb is not None:
-            heartbeat_cb(stage, len(coarse_windows), total)
-
     chunks = _chunked(natural, _COARSE_CHUNK_WINDOWS)
     for position, chunk in enumerate(chunks):
         # (1) decode
-        _beat("coarse_decode")
+        signals.beat("coarse_decode", len(coarse_windows), total)
         decoded = _decode_windows(
             file_path,
             _COARSE_SAMPLE_RATE,
             chunk,
             _skip,
             stop_at_sec=_chunk_stop_sec(chunks, position),
-            on_beat=lambda: _beat("coarse_decode"),
+            on_beat=lambda: signals.beat("coarse_decode", len(coarse_windows), total),
         )
         spans: list[tuple[int, float, float]] = [(idx, start, end) for idx, start, end in chunk if idx in decoded]
         buffers: list[tuple[int, Any]] = [(idx, decoded.pop(idx)) for idx, _start, _end in spans]
@@ -1628,7 +1692,7 @@ def _analyze_coarse_windows(
         # closed over the loop variable, so each chunk's callback holds ITS OWN geometry map
         # instead of whatever the last iteration left behind (ruff B023).
         features_by_window, failed = _run_model_sets_over_windows(
-            buffers, models_dir, _make_span_reporter(spans, _skip), lambda: _beat("coarse_model")
+            buffers, models_dir, _make_span_reporter(spans, _skip), lambda: signals.beat("coarse_model", len(coarse_windows), total)
         )
         buffers.clear()  # the peak is behind us; do not carry ~345 MB of PCM through assembly
         _malloc_trim()
@@ -1653,7 +1717,7 @@ def _analyze_coarse_windows(
             except Exception:  # per-window failure isolation: skip, never fail the file
                 _skip(idx, start, end)
                 continue
-        _beat("coarse")
+        signals.beat("coarse", len(coarse_windows), total)
     return coarse_windows, total
 
 
@@ -1756,12 +1820,14 @@ def analyze_file(
     """
     _suppress_essentia_logging()
 
+    # One AnalysisSignals shared by both tiers (phaze-mp0op) -- analyze_file's own signature
+    # keeps the two raw callbacks unchanged (analysis_child.py passes both by keyword), and
+    # builds the seam once here rather than threading progress_cb/heartbeat_cb separately.
+    signals = AnalysisSignals(progress_cb, heartbeat_cb)
     total_sec = _probe_duration_sec(file_path)
 
-    fine_windows, fine_total = _analyze_fine_windows(
-        file_path, total_sec, fine_window_sec, fine_min_sec, progress_cb=progress_cb, heartbeat_cb=heartbeat_cb
-    )
-    coarse_windows, coarse_total = _analyze_coarse_windows(file_path, total_sec, coarse_window_sec, models_dir, heartbeat_cb=heartbeat_cb)
+    fine_windows, fine_total = _analyze_fine_windows(file_path, total_sec, fine_window_sec, fine_min_sec, signals=signals)
+    coarse_windows, coarse_total = _analyze_coarse_windows(file_path, total_sec, coarse_window_sec, models_dir, signals=signals)
 
     # phaze-zibn: per-window failure isolation must not mask TOTAL decode failure. If the
     # file naturally had windows to analyze but every single one failed in BOTH passes, the
