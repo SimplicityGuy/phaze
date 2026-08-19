@@ -186,6 +186,46 @@ async def test_cancellation_reaps_the_child(monkeypatch: pytest.MonkeyPatch) -> 
         await task
 
 
+async def test_cancellation_settles_inner_tasks_before_reaping_the_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cancellation awaits the drive and watchdog tasks before entering the reap path.
+
+    ``Task.cancel()`` only requests cancellation. A cancel-only ``_settle`` reaches
+    ``proc.kill()`` synchronously while both inner tasks are still pending; awaiting them
+    removes both from ``asyncio.all_tasks()`` before that boundary. The fake process keeps
+    both pumps parked but makes reap immediate, so no favourable child-exit race can settle
+    the tasks on the broken implementation's behalf.
+    """
+    proc = _FakeProc(stdout_lines=[], stderr_lines=[], returncode=0)
+    proc.stdout = asyncio.StreamReader()
+    proc.stderr = asyncio.StreamReader()
+    _fake_spawn(monkeypatch, proc)
+    inner_task_names = {"_drive", "_watchdog"}
+    unsettled_at_reap: list[str] = []
+
+    def _inspect_instead_of_killing() -> None:
+        proc.kill_called = True
+        unsettled_at_reap.extend(name for task in asyncio.all_tasks() if (name := getattr(task.get_coro(), "__name__", "")) in inner_task_names)
+
+    monkeypatch.setattr(proc, "kill", _inspect_instead_of_killing)
+    task = asyncio.ensure_future(run_analysis_subprocess("/fake/audio.mp3", "/fake/models", stall_timeout=30.0))
+    for _ in range(20):
+        await asyncio.sleep(0)
+        running_inner_tasks = {
+            name for inner_task in asyncio.all_tasks() if (name := getattr(inner_task.get_coro(), "__name__", "")) in inner_task_names
+        }
+        if running_inner_tasks == inner_task_names:
+            break
+    else:
+        pytest.fail(f"driver inner tasks did not start: {sorted(running_inner_tasks)}")
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert proc.kill_called, "the cancellation path did not reach the reap boundary"
+    assert unsettled_at_reap == [], f"inner tasks were not settled before reap: {sorted(unsettled_at_reap)}"
+
+
 async def test_child_crash_raises_with_exit_code_and_message(monkeypatch: pytest.MonkeyPatch) -> None:
     """A raising analysis target surfaces as AnalysisSubprocessError with the child's
     error line and nonzero exit code (the ProcessExpired replacement)."""
