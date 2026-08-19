@@ -86,6 +86,10 @@ api_port := env_var_or_default("API_PORT", "8000")
 api_ca_cert := env_var_or_default("PHAZE_API_CA_CERT", "certs/phaze-ca.crt")
 api_base := "https://localhost:" + api_port
 
+[doc('List all available commands')]
+default:
+    @just --list
+
 [doc('Install all dependencies')]
 [group('dev')]
 install: tailwind
