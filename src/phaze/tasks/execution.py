@@ -858,15 +858,26 @@ async def _apply_file_move(
         await _move_across_filesystem(original, proposed, item, step)
 
 
+@dataclass
+class _ReportContext:
+    """Bundles the per-proposal API/reporting parameters shared verbatim by `_report_success`
+    and `_report_failure` -- both PATCH the same execution-log row and POST to the same
+    exec-batch progress endpoint for the same proposal, just with a different terminal status.
+    Built once in `_execute_one` and passed through unchanged.
+    """
+
+    api: PhazeAgentClient
+    item: ExecuteBatchProposalItem
+    execution_log_id: uuid.UUID
+    progress_request_id: uuid.UUID
+    payload: ExecuteApprovedBatchPayload
+    is_last: bool
+    start_log: ExecutionLogCreate
+
+
 async def _report_success(
-    api: PhazeAgentClient,
-    item: ExecuteBatchProposalItem,
-    execution_log_id: uuid.UUID,
-    progress_request_id: uuid.UUID,
-    payload: ExecuteApprovedBatchPayload,
-    is_last: bool,
+    ctx: _ReportContext,
     proposed: Path,
-    start_log: ExecutionLogCreate,
     *,
     start_logged: bool,
     sha_verified: bool,
@@ -884,10 +895,10 @@ async def _report_success(
     `_report_progress_failure` re-raises as `ExecBatchTerminalReportError` (phaze-j7u8) --
     propagates through this function to `_execute_one`'s dedicated `except` clause.
     """
-    start_logged = await _ensure_start_log(api, start_log, start_logged=start_logged)
+    start_logged = await _ensure_start_log(ctx.api, ctx.start_log, start_logged=start_logged)
     try:
-        await api.patch_execution_log(
-            execution_log_id,
+        await ctx.api.patch_execution_log(
+            ctx.execution_log_id,
             ExecutionLogPatch(
                 status=ExecutionStatus.COMPLETED,
                 sha256_verified=sha_verified,
@@ -896,13 +907,13 @@ async def _report_success(
     except Exception as patch_exc:
         logger.warning(
             "execute_approved_batch: could not patch completed log for %s: %s",
-            item.proposal_id,
+            ctx.item.proposal_id,
             patch_exc,
         )
 
     try:
-        await api.patch_proposal_state(
-            item.proposal_id,
+        await ctx.api.patch_proposal_state(
+            ctx.item.proposal_id,
             ProposalStatePatch(
                 proposal_state="executed",
                 file_state="moved",
@@ -912,35 +923,29 @@ async def _report_success(
     except Exception as report_exc:
         logger.error(
             "execute_approved_batch: move committed but reporting executed state failed for %s: %s",
-            item.proposal_id,
+            ctx.item.proposal_id,
             report_exc,
         )
 
     try:
-        await api.post_exec_batch_progress(
-            payload.batch_id,
+        await ctx.api.post_exec_batch_progress(
+            ctx.payload.batch_id,
             ExecBatchProgressPayload(
-                request_id=progress_request_id,
-                batch_id=payload.batch_id,
-                agent_id=payload.agent_id,
-                sub_batch_index=payload.sub_batch_index,
-                proposal_id=item.proposal_id,
+                request_id=ctx.progress_request_id,
+                batch_id=ctx.payload.batch_id,
+                agent_id=ctx.payload.agent_id,
+                sub_batch_index=ctx.payload.sub_batch_index,
+                proposal_id=ctx.item.proposal_id,
                 terminal_step="deleted",
-                sub_batch_terminal=is_last,
+                sub_batch_terminal=ctx.is_last,
             ),
         )
     except Exception as progress_exc:
-        _report_progress_failure(item, is_last, progress_exc)
+        _report_progress_failure(ctx.item, ctx.is_last, progress_exc)
 
 
 async def _report_failure(
-    api: PhazeAgentClient,
-    item: ExecuteBatchProposalItem,
-    execution_log_id: uuid.UUID,
-    progress_request_id: uuid.UUID,
-    payload: ExecuteApprovedBatchPayload,
-    is_last: bool,
-    start_log: ExecutionLogCreate,
+    ctx: _ReportContext,
     failed_step: FailedAtStep,
     formatted_error: str,
     *,
@@ -956,10 +961,10 @@ async def _report_failure(
     the same way, so the same rule applies: telemetry is swallowed, the token re-raises out of
     this function into `_execute_one`'s dedicated handler.
     """
-    start_logged = await _ensure_start_log(api, start_log, start_logged=start_logged)
+    start_logged = await _ensure_start_log(ctx.api, ctx.start_log, start_logged=start_logged)
     try:
-        await api.patch_execution_log(
-            execution_log_id,
+        await ctx.api.patch_execution_log(
+            ctx.execution_log_id,
             ExecutionLogPatch(
                 status=ExecutionStatus.FAILED,
                 error_message=formatted_error,
@@ -968,12 +973,12 @@ async def _report_failure(
     except Exception as patch_exc:
         logger.warning(
             "execute_approved_batch: could not patch failed log for %s: %s",
-            item.proposal_id,
+            ctx.item.proposal_id,
             patch_exc,
         )
     try:
-        await api.patch_proposal_state(
-            item.proposal_id,
+        await ctx.api.patch_proposal_state(
+            ctx.item.proposal_id,
             ProposalStatePatch(
                 proposal_state="failed",
                 file_state=None,
@@ -985,26 +990,26 @@ async def _report_failure(
         # not bring the whole batch down.
         logger.error(
             "execute_approved_batch: failed to report failure for %s: %s",
-            item.proposal_id,
+            ctx.item.proposal_id,
             report_exc,
         )
 
     try:
-        await api.post_exec_batch_progress(
-            payload.batch_id,
+        await ctx.api.post_exec_batch_progress(
+            ctx.payload.batch_id,
             ExecBatchProgressPayload(
-                request_id=progress_request_id,
-                batch_id=payload.batch_id,
-                agent_id=payload.agent_id,
-                sub_batch_index=payload.sub_batch_index,
-                proposal_id=item.proposal_id,
+                request_id=ctx.progress_request_id,
+                batch_id=ctx.payload.batch_id,
+                agent_id=ctx.payload.agent_id,
+                sub_batch_index=ctx.payload.sub_batch_index,
+                proposal_id=ctx.item.proposal_id,
                 terminal_step="failed",
                 failed_at_step=failed_step,
-                sub_batch_terminal=is_last,
+                sub_batch_terminal=ctx.is_last,
             ),
         )
     except Exception as progress_exc:
-        _report_progress_failure(item, is_last, progress_exc)
+        _report_progress_failure(ctx.item, ctx.is_last, progress_exc)
 
 
 async def _execute_one(
@@ -1060,6 +1065,7 @@ async def _execute_one(
         sha256_verified=False,  # not yet verified at this point
         status=ExecutionStatus.IN_PROGRESS,
     )
+    ctx = _ReportContext(api, item, execution_log_id, progress_request_id, payload, is_last, start_log)
     # phaze-87ba: REMEMBER whether this landed. _execute_one is the only component that knows the
     # POST failed, and discarding that knowledge here is what erased the audit row entirely -- see
     # _ensure_start_log.
@@ -1137,14 +1143,8 @@ async def _execute_one(
                 await job.update(meta=updated_job_meta)
 
         await _report_success(
-            api,
-            item,
-            execution_log_id,
-            progress_request_id,
-            payload,
-            is_last,
+            ctx,
             proposed,
-            start_log,
             start_logged=start_logged,
             sha_verified=sha_verified,
         )
@@ -1171,13 +1171,7 @@ async def _execute_one(
             exc_info=True,
         )
         await _report_failure(
-            api,
-            item,
-            execution_log_id,
-            progress_request_id,
-            payload,
-            is_last,
-            start_log,
+            ctx,
             failed_step,
             formatted_error,
             start_logged=start_logged,
