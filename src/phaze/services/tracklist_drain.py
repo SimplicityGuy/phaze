@@ -690,7 +690,7 @@ async def _resolve_canonical(session: AsyncSession, *, attempt: LookupAttempt, p
     file's every view with no audit trail.
     """
     external_id = attempt.external_id or ""
-    found = await session.execute(select(Tracklist).where(Tracklist.external_id == external_id, Tracklist.propagated_from_set_key.is_(None)).limit(1))
+    found = await session.execute(select(Tracklist).where(Tracklist.external_id == external_id, Tracklist.is_canonical()).limit(1))
     tracklist = found.scalar_one_or_none()
 
     if tracklist is None:
@@ -737,7 +737,7 @@ async def _upsert_propagated(
         .where(
             Tracklist.external_id == (attempt.external_id or ""),
             Tracklist.file_id == file_id,
-            Tracklist.propagated_from_set_key.is_not(None),
+            Tracklist.is_propagated(),
         )
         .limit(1)
     )
