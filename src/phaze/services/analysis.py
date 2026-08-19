@@ -1277,8 +1277,17 @@ def _decode_windows(
             on_beat()
 
     def _streaming(*, gated_stop_at_sec: float | None = None) -> dict[int, Any]:
-        if on_beat is None:
+        def _run() -> dict[int, Any]:
+            # Preserve the established ungated call shape. Tests and instrumentation wrap
+            # this seam with a three-argument callable; passing ``stop_at_sec=None`` is
+            # semantically equivalent to omitting it, but unnecessarily breaks those wrappers
+            # and can demote a healthy streaming pass to the per-window fallback.
+            if gated_stop_at_sec is None:
+                return _decode_windows_streaming(file_path, sample_rate, windows)
             return _decode_windows_streaming(file_path, sample_rate, windows, stop_at_sec=gated_stop_at_sec)
+
+        if on_beat is None:
+            return _run()
 
         stopped = threading.Event()
 
@@ -1292,7 +1301,7 @@ def _decode_windows(
         watchdog = threading.Thread(target=_watch, name="phaze-decode-heartbeat", daemon=True)
         watchdog.start()
         try:
-            return _decode_windows_streaming(file_path, sample_rate, windows, stop_at_sec=gated_stop_at_sec)
+            return _run()
         finally:
             stopped.set()
             watchdog.join()
