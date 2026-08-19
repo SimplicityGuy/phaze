@@ -381,6 +381,33 @@ async def test_process_file_skips_non_analyzable(mock_pool: AsyncMock) -> None:
     api.put_analysis.assert_not_awaited()
 
 
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_preserves_completed_non_dict_analysis(mock_pool: AsyncMock) -> None:
+    """A decoded non-object result is still PUT instead of retried after completion."""
+    mock_pool.return_value = ["unexpected", "analysis", "shape"]
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+
+    result = await process_file(_make_ctx(api_client=api), **_make_payload_kwargs())
+
+    assert result["status"] == "analyzed"
+    api.put_analysis.assert_awaited_once()
+    body = api.put_analysis.await_args.args[1]
+    assert body.model_dump(exclude_unset=True) == {
+        "bpm": None,
+        "musical_key": None,
+        "mood": None,
+        "style": None,
+        "danceability": None,
+        "energy": None,
+        "fine_windows_analyzed": None,
+        "fine_windows_total": None,
+        "coarse_windows_analyzed": None,
+        "coarse_windows_total": None,
+        "windows": [],
+    }
+
+
 @pytest.mark.parametrize("video_type", ["mp4", "mkv", "webm", "mov"])
 @patch("phaze.tasks.functions.extract_audio_track", new_callable=AsyncMock)
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)

@@ -134,7 +134,7 @@ async def _run_analysis_with_progress(
     read_path: str,
     models_path: str,
     job: Any = None,
-) -> Any:
+) -> object:
     """Run exhaustive analysis in the child subprocess while relaying throttled progress.
 
     Phase 101: the shared driver (``run_analysis_subprocess``) execs the analysis child
@@ -153,7 +153,10 @@ async def _run_analysis_with_progress(
     fire-and-forget task set as the progress POST, so a chatty long file cannot turn liveness
     into a write storm on the broker.
 
-    Returns the ``analyze_file`` result dict. Raises ``TimeoutError`` — specifically
+    Returns the analysis child's decoded JSON value. The child normally emits the
+    ``analyze_file`` result dict, but the subprocess boundary can yield another JSON
+    shape; callers preserve that completed run as an empty partial result. Raises
+    ``TimeoutError`` — specifically
     :class:`AnalysisStalledError`, when the driver kills a child that stopped reporting
     progress for ``analysis_stall_timeout_sec`` — and :class:`AnalysisSubprocessError`
     (child crash/nonzero exit — the ``ProcessExpired`` replacement) for ``process_file``'s
@@ -304,13 +307,12 @@ async def _verify_scratch_integrity(api: PhazeAgentClient, payload: ProcessFileP
 class _ExtractionOutcome:
     """Result of :func:`_extract_and_analyze`.
 
-    ``terminal_response`` is set (and ``analysis`` stays ``None``) when a terminal
-    extraction/analysis error was already reported via ``_report_terminal_failure`` and
-    ``process_file`` should return it immediately. ``None`` on both fields never happens --
-    every return path sets exactly one.
+    ``terminal_response`` is set when a terminal extraction/analysis error was already
+    reported via ``_report_terminal_failure`` and ``process_file`` should return it
+    immediately. Otherwise ``analysis`` contains the decoded child result.
     """
 
-    analysis: Any = None
+    analysis: object | None = None
     terminal_response: dict[str, Any] | None = None
 
 
@@ -431,7 +433,7 @@ def _analysis_reports_zero_natural_windows(fine_total: int | None, coarse_total:
     return (fine_total or 0) == 0 and (coarse_total or 0) == 0
 
 
-def _build_analysis_write_payload(analysis: Any) -> AnalysisWritePayload:
+def _build_analysis_write_payload(analysis: object) -> AnalysisWritePayload:
     """Build the wire payload from the ``analyze_file`` result dict (D-26, CR-01).
 
     ``mood``/``style`` are rebuilt from ``analysis["features"]`` (see module docstring);
@@ -440,21 +442,25 @@ def _build_analysis_write_payload(analysis: Any) -> AnalysisWritePayload:
     resulting model preserves partial-PUT semantics for absent keys (phaze-w55w1 dropped the
     fifth window-count field, ``sampled``, with the window caps).
     """
-    features = analysis.get("features", {}) if isinstance(analysis, dict) else {}
+    # Keep the guards: this is a subprocess JSON boundary, so a successfully decoded but
+    # non-object value still represents a completed analysis run. Preserve it as an empty
+    # partial PUT instead of raising AttributeError and causing the expensive work to retry.
+    result = analysis if isinstance(analysis, dict) else {}
+    features = result.get("features", {})
     mood_dict = _features_to_mood_dict(features) if isinstance(features, dict) else None
     style_dict = _features_to_style_dict(features) if isinstance(features, dict) else None
-    windows = [AnalysisWindowPayload(**w) for w in analysis.get("windows", [])] if isinstance(analysis, dict) else []
+    windows = [AnalysisWindowPayload(**w) for w in result.get("windows", [])]
     return AnalysisWritePayload(
-        bpm=analysis.get("bpm"),
-        musical_key=analysis.get("musical_key"),
+        bpm=result.get("bpm"),
+        musical_key=result.get("musical_key"),
         mood=mood_dict,
         style=style_dict,
-        danceability=analysis.get("danceability"),
-        energy=analysis.get("energy"),
-        fine_windows_analyzed=analysis.get("fine_windows_analyzed"),
-        fine_windows_total=analysis.get("fine_windows_total"),
-        coarse_windows_analyzed=analysis.get("coarse_windows_analyzed"),
-        coarse_windows_total=analysis.get("coarse_windows_total"),
+        danceability=result.get("danceability"),
+        energy=result.get("energy"),
+        fine_windows_analyzed=result.get("fine_windows_analyzed"),
+        fine_windows_total=result.get("fine_windows_total"),
+        coarse_windows_analyzed=result.get("coarse_windows_analyzed"),
+        coarse_windows_total=result.get("coarse_windows_total"),
         windows=windows,
     )
 
