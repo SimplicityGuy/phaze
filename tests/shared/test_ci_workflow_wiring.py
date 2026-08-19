@@ -18,8 +18,9 @@ justfile and fails loud if ``--cov-fail-under=0`` is ever dropped.
 The remaining tests assert the rest of the combine/gate protocol (the global coverage gate
 is enforced exactly once, on the COMBINED number) and the CI-02 matrix-to-``ci_shards.json``
 wiring (the matrix is derived via ``fromJSON`` of the setup job's output — not a
-hardcoded, driftable shard list inline in the workflow — and the token used for the
-Codecov upload never leaks into a per-shard matrix leg).
+hardcoded, driftable shard list inline in the workflow). Each matrix leg also emits
+JUnit XML and uploads those test results to Codecov independently from the combined
+line-coverage report.
 
 phaze-crq9k split the flat ``tests/buckets.json`` bucket-name list (still the single source
 of truth for the ``tests/<bucket>/`` DIRECTORY partition the ``test_partition_guard.py``
@@ -126,6 +127,15 @@ def test_bucket_recipe_records_per_test_coverage_contexts() -> None:
     assert "--cov-context=test" in recipe_body, f"test-bucket recipe lost per-test coverage contexts:\n{recipe_body}"
 
 
+def test_bucket_recipe_emits_legacy_junit_xml_for_codecov() -> None:
+    """Every matrix leg writes the pytest result file consumed by Codecov."""
+    recipe_body = _extract_recipe(_JUSTFILE.read_text(encoding="utf-8"), "test-bucket")
+    assert "--junitxml=junit.xml" in recipe_body, f"test-bucket recipe lost its JUnit XML output:\n{recipe_body}"
+    assert re.search(r"(?:^|\s)-o\s+junit_family=legacy(?:\s|$)", recipe_body) is not None, (
+        f"test-bucket recipe must use pytest's legacy JUnit family:\n{recipe_body}"
+    )
+
+
 def test_coverage_combine_recipe_enforces_the_gate_exactly_once() -> None:
     """`coverage-combine` merges shards and enforces the global gate on the COMBINED number.
 
@@ -141,32 +151,25 @@ def test_coverage_combine_recipe_enforces_the_gate_exactly_once() -> None:
     assert re.search(r"coverage report --fail-under=\d+", recipe_body) is not None
 
 
-def test_codecov_token_is_confined_to_the_combine_job() -> None:
-    """CODECOV_TOKEN is used exactly once, in the combine job — never in a matrix leg.
-
-    Uploading per-leg would be wasteful and wrong (9 partial-coverage uploads instead
-    of 1 combined one); it would also mean the secret is exposed to every matrix leg
-    instead of only the single post-fan-in job that needs it.
-    """
-    workflow_text = _WORKFLOW_PATH.read_text(encoding="utf-8")
-    # The single `CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}` line legitimately contains
-    # the substring twice (the env var name, then the secret reference) - so 2 total
-    # occurrences in the whole file is the "appears exactly once" invariant, not 1.
-    # A third+ occurrence would mean a second env/step referencing the token elsewhere.
-    assert workflow_text.count("CODECOV_TOKEN") == 2, (
-        "CODECOV_TOKEN must appear on exactly one line in tests.yml (the combine job's upload step only)"
-    )
-
+def test_codecov_uploads_matrix_test_results_and_combined_coverage_separately() -> None:
+    """Matrix legs publish JUnit results without changing combined coverage upload behavior."""
     workflow = _load_workflow()
     jobs = workflow["jobs"]
 
     test_job_hits = _find_codecov_token_steps(jobs["test"])
-    assert not test_job_hits, f"CODECOV_TOKEN leaked into a per-bucket matrix leg: {test_job_hits}"
+    assert len(test_job_hits) == 1, f"expected one CODECOV test-results step in each matrix leg, found {test_job_hits}"
+    (test_results_step,) = test_job_hits
+    assert test_results_step.get("name") == "📊 Upload test results to Codecov", test_results_step
+    assert test_results_step.get("if") == "${{ !cancelled() }}", test_results_step
+    assert test_results_step.get("uses") == ("codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3"), test_results_step
+    assert test_results_step.get("with") == {"token": "${{ secrets.CODECOV_TOKEN }}"}, test_results_step
 
     combine_job_hits = _find_codecov_token_steps(jobs["combine"])
     assert len(combine_job_hits) == 1, f"expected exactly one CODECOV_TOKEN-bearing step in combine, found {len(combine_job_hits)}"
     (codecov_step,) = combine_job_hits
-    assert "codecov/codecov-action" in codecov_step.get("uses", ""), codecov_step
+    assert codecov_step.get("uses") == "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f", codecov_step
+    assert codecov_step.get("with") == {"flags": "unittests", "disable_search": True, "files": "./coverage.xml"}, codecov_step
+    assert codecov_step.get("env") == {"CODECOV_TOKEN": "${{ secrets.CODECOV_TOKEN }}"}, codecov_step
 
 
 def test_combine_job_downloads_shards_and_runs_the_combine_recipe() -> None:
