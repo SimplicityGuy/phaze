@@ -29,7 +29,7 @@ import uuid
 import pytest
 
 from phaze.models.analysis import AnalysisResult
-from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord
 from phaze.services import agent_liveness as liveness_mod
 from phaze.services.agent_liveness import derive_compute_lane_identities
@@ -39,6 +39,7 @@ from phaze.services.agent_liveness import derive_compute_lane_identities
 # ``lane_metrics``' own imports, while ``resolve_backends`` / ``_probe_availability`` are resolved
 # by ``get_backend_lane_snapshot`` out of ``lane_snapshot``. Patching the facade reaches neither.
 from phaze.services.backends import (
+    _admission_by_backend_id,
     _cloud_job_succeeded_for_backend,  # noqa: F401 -- imported for symbol-existence coverage below
     _cloud_lane_active,
     _cloud_lane_queued_working,
@@ -287,6 +288,43 @@ async def test_cloud_lane_active_tracks_only_kueue_running_lifecycle(session: As
     job.status = CloudJobStatus.SUCCEEDED.value
     await session.commit()
     assert await _cloud_lane_active(session, "k8s", "kueue") == 0
+
+
+@pytest.mark.asyncio
+async def test_kueue_lane_reader_clears_quota_wait_when_fourth_pod_reaches_running(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reported 3-active/1-quota-wait state becomes 4-active/0-wait without redefining working."""
+    monkeypatch.setattr(pipeline_cloud_mod, "get_settings", _mixed_registry_settings)
+    files = [_file() for _ in range(4)]
+    session.add_all(files)
+    await session.flush()
+    jobs = [
+        CloudJob(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            s3_key=f"staging/{file.id}",
+            status=CloudJobStatus.RUNNING.value if index < 3 else CloudJobStatus.SUBMITTED.value,
+            backend_id="k8s",
+            cloud_phase=CloudPhase.RUNNING.value if index < 3 else CloudPhase.QUEUED_BEHIND_QUOTA.value,
+        )
+        for index, file in enumerate(files)
+    ]
+    session.add_all(jobs)
+    await session.commit()
+
+    assert await _cloud_lane_active(session, "k8s", "kueue") == 3
+    assert (await _admission_by_backend_id(session))["k8s"] == {"quota_wait": 1, "inadmissible": 0}
+    assert await _cloud_lane_queued_working(session, "k8s") == (0, 4)
+
+    jobs[-1].status = CloudJobStatus.RUNNING.value
+    jobs[-1].cloud_phase = CloudPhase.RUNNING.value
+    await session.commit()
+
+    assert await _cloud_lane_active(session, "k8s", "kueue") == 4
+    assert (await _admission_by_backend_id(session))["k8s"] == {"quota_wait": 0, "inadmissible": 0}
+    assert await _cloud_lane_queued_working(session, "k8s") == (0, 4)
 
 
 @pytest.mark.asyncio

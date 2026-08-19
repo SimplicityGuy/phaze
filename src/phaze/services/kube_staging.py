@@ -47,9 +47,10 @@ if TYPE_CHECKING:
     from phaze.config_backends import KubeConfig
 
 
-# 15 min = 3x the */5 reconcile tick. D-04 makes the explicit delete-after-record primary, so the
-# TTL only ever fires in the "phaze never reconciled at all" orphan case (Pitfall 1 -- never a
-# config knob; consistent with the fixed */5 cron, D-03).
+# The 15-minute wall-clock TTL is 15x the every-minute reconcile tick. D-04 makes the explicit
+# delete-after-record primary, so the TTL only ever fires in the "phaze never reconciled at all"
+# orphan case (Pitfall 1 -- never a config knob; phaze-i3pkb.1 shortened the cron without shortening
+# this safety backstop, D-03).
 JOB_TTL_SECONDS = 900
 
 # phaze-4xks: the one-shot analyze pod is ALWAYS a "compute" agent (it owns no scan roots -- it
@@ -127,8 +128,9 @@ _DISRUPTION_TARGET_CONDITION = "DisruptionTarget"
 
 # phaze-202e: how long ``PodScheduled=False/Unschedulable`` must PERSIST before it counts as a wedge
 # ("unschedulable past a scheduling probe"). A brief unschedulable window is the normal shape of a
-# cluster-autoscaler scale-up, so an instantaneous verdict would fight the autoscaler. 15 min = 3x the
-# */5 reconcile tick, measured on the k8s condition's own ``lastTransitionTime`` -- this is a clock on
+# cluster-autoscaler scale-up, so an instantaneous verdict would fight the autoscaler. The 15-minute
+# wall-clock probe remains 900 seconds across the every-minute reconcile cadence (15 ticks), measured
+# on the k8s condition's own ``lastTransitionTime`` -- this is a clock on
 # SCHEDULING FAILURE, never on run time.
 UNSCHEDULABLE_PROBE_SECONDS = 900
 
