@@ -289,6 +289,11 @@ test-browser: tailwind
 vulture:
     uv run vulture src/phaze vulture_whitelist.py --min-confidence 80 --ignore-decorators "@router.*,@app.*,@field_validator,@model_validator,@validator,@pytest.fixture"
 
+# --cov-context=test is REQUIRED: the binary .coverage shards are the only CI artifacts
+# that can retain pytest's per-test execution contexts. `coverage combine` preserves those
+# contexts, which lets a downloaded combined report build repowise's test-to-code map.
+# coverage.xml is still required for per-file totals, but Cobertura cannot carry contexts.
+#
 # --cov-fail-under=0 is REQUIRED: a single shard only exercises a fraction of
 # phaze, so pytest-cov auto-enforcing pyproject's global fail_under gate against a
 # shard's PARTIAL coverage would fail every leg (exit 1) before the shard is uploaded,
@@ -303,7 +308,7 @@ vulture:
 [doc('Run a single CI shard (one or more test paths), writing coverage data to .coverage.<name>. XDIST="" keeps DB shards serial; DB-free shards pass XDIST="-n auto".')]
 [group('test')]
 test-bucket NAME PATHS XDIST="":
-    COVERAGE_FILE=.coverage.{{NAME}} uv run pytest {{PATHS}} {{XDIST}} --cov=phaze --cov-report= --cov-fail-under=0 -q
+    COVERAGE_FILE=.coverage.{{NAME}} uv run pytest {{PATHS}} {{XDIST}} --cov=phaze --cov-context=test --cov-report= --cov-fail-under=0 -q
 
 [doc('Combine per-bucket .coverage.* shards into coverage.xml and enforce the gate')]
 [group('test')]
