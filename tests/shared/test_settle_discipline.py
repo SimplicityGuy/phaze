@@ -123,7 +123,15 @@ def test_the_scan_actually_reaches_the_modules_it_is_meant_to_police() -> None:
         "tests/metadata/test_retry_affordances.py",
         "tests/integration/routers/test_pipeline_analysis_retry_clears_marker.py",
         "tests/integration/routers/test_pipeline_retry_group_restore_xor_guard.py",
-        "tests/shared/routers/test_pipeline.py",
+        # phaze-7l8jh: tests/shared/routers/test_pipeline.py was split into
+        # tests/shared/routers/pipeline/ (mirroring routers/pipeline/); these six split files are
+        # where its drain_router_background_tasks() call sites actually live now.
+        "tests/shared/routers/pipeline/test_analysis.py",
+        "tests/shared/routers/pipeline/test_backfill.py",
+        "tests/shared/routers/pipeline/test_extraction.py",
+        "tests/shared/routers/pipeline/test_proposals.py",
+        "tests/shared/routers/pipeline/test_recovery.py",
+        "tests/shared/routers/pipeline/test_tracklists.py",
     ):
         assert expected in drain_callers, f"{expected} triggers a backgrounding endpoint but no longer drains"
     assert _REGISTRY_USE_RE.search("pending = set(pipeline_mod._background_tasks)"), "the registry matcher stopped matching a real use"
