@@ -11,7 +11,7 @@
             :disabled="$store.pipeline.analyzeBusy > 0"
             aria-label="Run analysis on all discovered files"
             class="{{ _btn }}">RUN ANALYSIS</button>
-    <span id="analyze-trigger-spinner" class="htmx-indicator text-xs text-gray-500 dark:text-gray-400">Enqueuing…</span>
+    <span id="analyze-trigger-spinner" class="htmx-indicator text-xs text-muted ">Enqueuing…</span>
     <button type="button" x-show="!$store.pipeline.analyzePaused"
             hx-post="/pipeline/stages/analyze/pause" hx-swap="none"
             :disabled="$store.pipeline.analyzeBusy === 0" aria-label="Pause analyze"
@@ -30,15 +30,15 @@
             {% include "pipeline/partials/awaiting_cloud_card.html" %}
             {{ ui.metric("Completed", '<span x-text="$store.pipeline.analyzeDone">0</span>' | safe, "all analyzed files", "success") }}
         {% endcall %}
-        <div aria-label="Analyze queue progression" class="relative flex items-center gap-2 overflow-x-auto rounded-lg border border-gray-200 px-3 py-2 text-xs text-gray-500 dark:border-phaze-border dark:text-gray-400">
+        <div aria-label="Analyze queue progression" class="relative flex items-center gap-2 overflow-x-auto rounded-lg border border-gray-200 px-3 py-2 text-xs text-muted dark:border-phaze-border ">
             <span class="whitespace-nowrap font-medium text-gray-700 dark:text-gray-200">Queued</span>
-            <span aria-hidden="true" class="text-blue-500">→</span>
+            <span aria-hidden="true" class="text-info">→</span>
             <span class="whitespace-nowrap">lane capacity</span>
-            <span aria-hidden="true" class="text-blue-500">→</span>
-            <span class="whitespace-nowrap font-medium text-blue-700 dark:text-blue-400">Active</span>
-            <span aria-hidden="true" class="text-blue-500">→</span>
-            <span class="whitespace-nowrap font-medium text-emerald-700 dark:text-emerald-400">Completed</span>
-            <span class="ml-auto whitespace-nowrap text-amber-700 dark:text-amber-400">Awaiting route branches until a lane is available</span>
+            <span aria-hidden="true" class="text-info">→</span>
+            <span class="whitespace-nowrap font-medium text-info ">Active</span>
+            <span aria-hidden="true" class="text-info">→</span>
+            <span class="whitespace-nowrap font-medium text-ok ">Completed</span>
+            <span class="ml-auto whitespace-nowrap text-warn ">Awaiting route branches until a lane is available</span>
         </div>
         {% include "pipeline/partials/analysis_failed_card.html" %}
     </div>
@@ -47,7 +47,7 @@
         <div class="flex flex-col gap-1 px-4 pb-3 sm:flex-row sm:items-end sm:justify-between sm:px-6">
             <div>
                 <h2 id="analyze-lanes-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-700 dark:text-gray-200">Lane capacity</h2>
-                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Compare queued work, active slots, status, and 24-hour throughput. Open a lane for live queue detail.</p>
+                <p class="mt-1 text-xs text-muted ">Compare queued work, active slots, status, and 24-hour throughput. Open a lane for live queue detail.</p>
             </div>
             {{ ui.refresh_status("Live · updates every 5s", "Refreshing lanes…") }}
         </div>
@@ -59,9 +59,9 @@
         <summary class="flex cursor-pointer list-none items-center justify-between gap-3 rounded-lg px-4 py-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
             <span>
                 <span class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-700 dark:text-gray-200">Technical diagnostics</span>
-                <span class="mt-1 block text-xs text-gray-500 dark:text-gray-400">Admission, reconcile, staged transfer, quota, rank, lifetime totals, health, and recovery</span>
+                <span class="mt-1 block text-xs text-muted ">Admission, reconcile, staged transfer, quota, rank, lifetime totals, health, and recovery</span>
             </span>
-            <span aria-hidden="true" class="text-gray-400 transition-transform group-open:rotate-180">⌄</span>
+            <span aria-hidden="true" class="text-muted transition-transform group-open:rotate-180">⌄</span>
         </summary>
         <div class="space-y-4 border-t border-gray-200 p-4 dark:border-phaze-border">
             {% include "pipeline/partials/inadmissible_card.html" %}
@@ -78,7 +78,7 @@
             <details class="rounded-lg border border-gray-200 dark:border-phaze-border">
                 <summary class="cursor-pointer px-4 py-3 text-sm font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Scheduling controls</summary>
                 <div class="flex flex-wrap items-center gap-1 border-t border-gray-200 p-4 dark:border-phaze-border" role="group" aria-label="Analyze priority controls">
-                    <span class="mr-1 text-xs text-gray-500 dark:text-gray-400"
+                    <span class="mr-1 text-xs text-muted "
                           x-text="'Priority: ' + ($store.pipeline.analyzePriority < 50 ? 'High' : ($store.pipeline.analyzePriority > 50 ? 'Low' : 'Normal')) + ' (' + $store.pipeline.analyzePriority + ')'">Priority: Normal (50)</span>
                     <button type="button" hx-post="/pipeline/stages/analyze/priority" hx-vals='{"delta": -10}' hx-swap="none"
                             aria-label="Raise analyze priority" title="Higher priority runs sooner (lowers the queue number)." class="{{ _btn }} px-2">▲</button>
@@ -92,7 +92,7 @@
     <section aria-labelledby="analyze-files-heading" class="border-t border-gray-200 p-4 dark:border-phaze-border sm:p-6">
         <h2 id="analyze-files-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-700 dark:text-gray-200">File progress</h2>
         <div id="analyze-files-view" hx-get="/pipeline/analyze-files" hx-trigger="load" hx-swap="innerHTML">
-            <p class="px-6 py-12 text-center text-sm text-gray-500 dark:text-gray-400">Loading files…</p>
+            <p class="px-6 py-12 text-center text-sm text-muted ">Loading files…</p>
         </div>
     </section>
 {% endcall %}

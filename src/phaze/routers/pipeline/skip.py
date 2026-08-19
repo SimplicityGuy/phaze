@@ -99,7 +99,7 @@ async def force_skip_stage(
     clean_reason = sanitize_pg_text(reason).strip()  # project memory: NUL aborts the PG txn (services/pg_text.py)
     if not clean_reason:  # D-09 reason required — inline validation on the sanitized value, NO write
         return HTMLResponse(
-            '<p class="text-sm font-medium text-red-600 dark:text-red-400" role="alert">A reason is required.</p>',
+            '<p class="text-sm font-medium text-danger" role="alert">A reason is required.</p>',
             status_code=422,
         )
     # Pre-check (T-87-27 discipline, mirrors the sibling retry endpoints): short-circuits the common

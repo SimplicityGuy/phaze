@@ -22,7 +22,7 @@
 #}
 {% set row_class = "cmdk-row rounded-lg px-3 py-2 flex items-center gap-3 cursor-pointer hover:bg-gray-100 dark:hover:bg-phaze-border" %}
 {% set row_static_class = "cmdk-row-static rounded-lg px-3 py-2 flex items-center gap-3" %}
-{% set head_class = "px-3 pt-3 pb-1 font-jura text-[11px] uppercase tracking-wider text-gray-500 dark:text-gray-400" %}
+{% set head_class = "px-3 pt-3 pb-1 font-jura text-[11px] uppercase tracking-wider text-muted " %}
 {% set badge_base = "shrink-0 text-[11px] px-1.5 py-0.5 rounded" %}
 
 <div role="presentation" class="{{ head_class }}">Navigate</div>
@@ -52,8 +52,8 @@
          @click="$dispatch('record:open', {el: $el})">
       <span aria-hidden="true">🎵</span>
       <span class="flex-1 truncate text-gray-900 dark:text-gray-100">{{ r.title }}</span>
-      {% if r.artist %}<span class="shrink-0 text-xs text-gray-500 dark:text-gray-400 truncate max-w-[10rem]">{{ r.artist }}</span>{% endif %}
-      <span class="{{ badge_base }} bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400">File</span>
+      {% if r.artist %}<span class="shrink-0 text-xs text-muted truncate max-w-[10rem]">{{ r.artist }}</span>{% endif %}
+      <span class="{{ badge_base }} bg-blue-100 dark:bg-blue-950 text-info ">File</span>
     </div>
   {% endfor %}
 {% endif %}
@@ -68,7 +68,7 @@
        class="{{ row_class }}">
       <span aria-hidden="true">📜</span>
       <span class="flex-1 truncate text-gray-900 dark:text-gray-100">{{ r.title }}</span>
-      <span class="{{ badge_base }} bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400">Tracklist</span>
+      <span class="{{ badge_base }} bg-green-100 dark:bg-green-950 text-ok ">Tracklist</span>
     </a>
   {% endfor %}
 {% endif %}
@@ -152,7 +152,7 @@
    before it was read. Do not move it back into this fragment: htmx resolves hx-target and ARIA
    resolves aria-describedby document-wide, so the referents work fine from in here. #}
 {% if query and not file_results and not tracklist_results and not discogs_results and not artists %}
-  <div class="px-3 py-6 text-center text-sm text-gray-500 dark:text-gray-400">
+  <div class="px-3 py-6 text-center text-sm text-muted ">
     No results found for "{{ query }}". Try a different search or one of the commands above.
   </div>
 {% endif %}

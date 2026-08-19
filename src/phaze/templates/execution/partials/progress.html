@@ -64,7 +64,7 @@
 
     {% if not agents %}
     {# Empty-state copy when no agents survived the revoked filter. UI-SPEC copywriting row. #}
-    <p class="text-sm text-gray-500 dark:text-gray-400">No approved proposals to execute.</p>
+    <p class="text-sm text-muted ">No approved proposals to execute.</p>
     {% else %}
 
     {# Dispatch summary heading (sse-swap="dispatch_summary" — first-connect SSE event replaces inner text). #}
@@ -75,16 +75,16 @@
     {# Aggregate counter row (sse-swap="progress" — preserves Phase 25 event name). #}
     <span sse-swap="progress" class="flex items-baseline gap-8">
         <div>
-            <div class="text-xs font-semibold uppercase text-gray-500 dark:text-gray-400">Total</div>
+            <div class="text-xs font-semibold uppercase text-muted ">Total</div>
             <div class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ total }}</div>
         </div>
         <div>
-            <div class="text-xs font-semibold uppercase text-gray-500 dark:text-gray-400">Completed</div>
+            <div class="text-xs font-semibold uppercase text-muted ">Completed</div>
             <div class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ completed }}</div>
         </div>
         <div>
-            <div class="text-xs font-semibold uppercase text-gray-500 dark:text-gray-400">Failed</div>
-            <div class="text-xl font-semibold {% if failed > 0 %}text-red-600 dark:text-red-400{% else %}text-gray-900 dark:text-gray-100{% endif %}">{{ failed }}</div>
+            <div class="text-xs font-semibold uppercase text-muted ">Failed</div>
+            <div class="text-xl font-semibold {% if failed > 0 %}text-danger {% else %}text-gray-900 dark:text-gray-100{% endif %}">{{ failed }}</div>
         </div>
     </span>
 

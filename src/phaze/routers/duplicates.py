@@ -116,7 +116,7 @@ async def compare_group(
     # "Group not found" answer as a hash that is merely unknown, rather than an unhandled 500.
     group = None if contains_pg_invalid_chars(group_hash) else await find_duplicate_group_by_hash(session, group_hash)
     if group is None:
-        return HTMLResponse(content="<p class='text-sm text-gray-500'>Group not found.</p>", status_code=200)
+        return HTMLResponse(content="<p class='text-sm text-muted'>Group not found.</p>", status_code=200)
 
     score_group(group)
     best_values = _compute_best_values(group)

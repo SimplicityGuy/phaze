@@ -28,12 +28,12 @@
    any render path that has not passed them, so the plain header is what renders by default.
 #}
 {% if not agents %}
-<p class="text-sm text-gray-500 dark:text-gray-400 italic">No active sub-jobs.</p>
+<p class="text-sm text-muted italic">No active sub-jobs.</p>
 {% else %}
 <div class="relative overflow-x-auto">
     <table class="w-full text-sm text-left">
         <caption class="sr-only">Per-agent execution progress</caption>
-        <thead class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase border-b border-gray-200 dark:border-phaze-border">
+        <thead class="text-xs font-semibold text-muted uppercase border-b border-gray-200 dark:border-phaze-border">
             <tr>
                 {% for col in ["Agent", "Status", "Completed", "Failed", "Total"] %}
                 {% if sort and sort.is_sortable(col) %}
@@ -60,21 +60,21 @@
             <tr class="hover:bg-gray-50 dark:hover:bg-phaze-panel/60">
                 <td class="px-4 py-3">
                     <span class="text-sm font-semibold text-gray-900 dark:text-gray-100 block">{{ agent.name }}</span>
-                    <span class="font-mono text-xs text-gray-500 dark:text-gray-400 block">{{ agent.agent_id }}</span>
+                    <span class="font-mono text-xs text-muted block">{{ agent.agent_id }}</span>
                 </td>
                 <td class="px-4 py-3">
                     {% if agent.completed + agent.failed == 0 %}
-                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400" aria-label="Status: pending">PENDING</span>
+                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-muted " aria-label="Status: pending">PENDING</span>
                     {% elif agent.completed + agent.failed < agent.total %}
-                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400" aria-label="Status: running">RUNNING</span>
+                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-info " aria-label="Status: running">RUNNING</span>
                     {% elif agent.failed == 0 %}
-                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400" aria-label="Status: complete">COMPLETE</span>
+                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-950 text-ok " aria-label="Status: complete">COMPLETE</span>
                     {% else %}
-                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-400" aria-label="Status: errors">ERRORS</span>
+                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-danger " aria-label="Status: errors">ERRORS</span>
                     {% endif %}
                 </td>
                 <td class="px-4 py-3 font-mono text-sm text-gray-700 dark:text-gray-300">{{ agent.completed }}</td>
-                <td class="px-4 py-3 font-mono text-sm {% if agent.failed > 0 %}text-red-600 dark:text-red-400 font-semibold{% else %}text-gray-700 dark:text-gray-300{% endif %}">{{ agent.failed }}</td>
+                <td class="px-4 py-3 font-mono text-sm {% if agent.failed > 0 %}text-danger font-semibold{% else %}text-gray-700 dark:text-gray-300{% endif %}">{{ agent.failed }}</td>
                 <td class="px-4 py-3 font-mono text-sm text-gray-700 dark:text-gray-300">{{ agent.total }}</td>
             </tr>
             {% endfor %}

@@ -5,14 +5,14 @@
    hx-swap-oob id, so the 5s stats poll keeps re-pushing #analysis-health-card untouched and the
    red count drops on the next tick. #}
 {% if no_active_agent %}
-<span class="text-sm text-amber-600 dark:text-amber-400 font-medium">
+<span class="text-sm text-warn font-medium">
     No active agent — nothing re-queued.
 </span>
 {% elif enqueue_failed %}
 {# phaze-gcdih: the enqueue itself raised AFTER the failure marker was already cleared+committed.
    The handler re-stamped the marker before returning here, so the file is honestly back in the
    failed bucket (not silently vanished) -- surface that instead of a dropped 500. #}
-<span class="text-sm text-red-600 dark:text-red-400 font-medium">
+<span class="text-sm text-danger font-medium">
     Retry failed — could not re-queue the file (see agent logs). It remains marked as failed.
 </span>
 {% elif blocked %}
@@ -21,16 +21,16 @@
    or a stuck active row) -- nothing was scheduled and nothing ever will be until the
    aborting-reaper clears the key. The failure marker was restored before this returned, so the
    file is honestly back in the failed bucket, not silently vanished. #}
-<span class="text-sm text-red-600 dark:text-red-400 font-medium">
+<span class="text-sm text-danger font-medium">
     Retry not started — a previous analysis attempt for this file is stuck and holding its slot.
     It remains marked as failed. Try again once it clears, or contact an operator if it persists.
 </span>
 {% elif count == 0 %}
-<span class="text-sm text-gray-600 dark:text-gray-400 font-medium">
+<span class="text-sm text-muted font-medium">
     No failed files to retry.
 </span>
 {% else %}
-<span class="text-sm text-green-600 dark:text-green-400 font-medium">
+<span class="text-sm text-ok font-medium">
     Re-queued {{ count }} failed file(s) for analysis.
 </span>
 {% endif %}

@@ -19,9 +19,9 @@
    `row.status_kind` check below runs FIRST so the two never collide. #}
 {% if row is defined and row.status_kind == 'lane' %}
     {% if row.kind == 'compute' %}
-    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400" aria-label="Kind: compute lane">☁️ COMPUTE</span>
+    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-info " aria-label="Kind: compute lane">☁️ COMPUTE</span>
     {% elif row.kind == 'kueue' %}
-    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400" aria-label="Kind: kueue lane">⎈ KUEUE</span>
+    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950 text-warn " aria-label="Kind: kueue lane">⎈ KUEUE</span>
     {% else %}
     <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300" aria-label="Kind: {{ row.kind }} lane">▪ {{ row.kind | upper }}</span>
     {% endif %}

@@ -70,9 +70,9 @@
        instead of silently snapping back to the default mid-scan. Empty when unsorted. #}
     {% set _qs = '&stage=' ~ stage ~ '&page_size=' ~ pending_page.page_size ~ (sort.query_state() if sort else '') %}
     {% set _pbtn = 'text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel' %}
-    {% set _pdis = 'text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-gray-400 dark:text-gray-400 cursor-not-allowed' %}
+    {% set _pdis = 'text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-muted cursor-not-allowed' %}
     <nav aria-label="{{ stage }} files pagination" class="flex items-center justify-between mt-6">
-        <p class="text-sm text-gray-500 dark:text-gray-400">Page {{ pending_page.page }}</p>
+        <p class="text-sm text-muted ">Page {{ pending_page.page }}</p>
         <div class="flex gap-1">
             {% if pending_page.has_prev %}
             <button hx-get="/pipeline/pending-files?page={{ pending_page.page - 1 }}{{ _qs }}" hx-target="#{{ host_id }}" hx-swap="innerHTML" class="{{ _pbtn }}">Previous</button>

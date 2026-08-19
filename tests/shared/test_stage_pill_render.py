@@ -60,29 +60,29 @@ def _render_matrix(*, buckets: dict[str, str] | None = None, legend: bool = Fals
 
 
 # ---------------------------------------------------------------------------
-# _stage_pill.html -- the five buckets (glyph + word + aria-label + dark: pair)
+# _stage_pill.html -- the five buckets (glyph + word + aria-label + semantic tone)
 # ---------------------------------------------------------------------------
 
-# (bucket, glyph, visible word fragment, aria-label suffix, a required light hue, a required dark class)
+# (bucket, glyph, visible word fragment, aria-label suffix, a required tint, a required text tone)
 _BUCKET_CASES = [
-    ("done", "✓", "done", "Meta: done", "bg-green-100", "dark:text-green-400"),
-    ("in_flight", "●", "in flight", "Meta: in flight", "bg-blue-100", "dark:bg-blue-950"),
-    ("not_started", "—", "not started", "Meta: not started", "bg-gray-100", "dark:text-gray-400"),
-    ("failed", "✗", "failed", "Meta: failed", "bg-red-100", "dark:bg-red-950"),
+    ("done", "✓", "done", "Meta: done", "bg-green-100", "text-ok"),
+    ("in_flight", "●", "in flight", "Meta: in flight", "bg-blue-100", "text-info"),
+    ("not_started", "—", "not started", "Meta: not started", "bg-gray-100", "text-muted"),
+    ("failed", "✗", "failed", "Meta: failed", "bg-red-100", "text-danger"),
     ("skipped", "⊘", "skipped", "Meta: skipped (force-completed)", "bg-violet-100", "dark:text-violet-300"),
 ]
 
 
-def test_every_bucket_has_glyph_word_arialabel_and_dark_pair() -> None:
-    """All 5 buckets render a glyph + word + aria-label + a ``dark:`` class (colour never the sole channel)."""
-    for bucket, glyph, word, aria, light_hue, dark_class in _BUCKET_CASES:
+def test_every_bucket_has_glyph_word_arialabel_and_semantic_tone() -> None:
+    """All five buckets combine redundant semantics with a theme-resolved text tone."""
+    for bucket, glyph, word, aria, tint, text_tone in _BUCKET_CASES:
         html = _render_pill(stage_label="Meta", bucket=bucket)
         assert glyph in html, f"{bucket}: missing glyph {glyph!r}"
         assert word in html, f"{bucket}: missing word {word!r}"
         assert f'aria-label="{aria}"' in html, f"{bucket}: missing aria-label {aria!r}"
-        assert light_hue in html, f"{bucket}: missing light hue {light_hue!r}"
+        assert tint in html, f"{bucket}: missing tint {tint!r}"
         assert "dark:" in html, f"{bucket}: no dark: class at all"
-        assert dark_class in html, f"{bucket}: missing dark class {dark_class!r}"
+        assert text_tone in html, f"{bucket}: missing text tone {text_tone!r}"
         # The pill geometry token is the project-wide pill recipe.
         assert "text-xs font-semibold px-2 py-0.5 rounded-full" in html
 

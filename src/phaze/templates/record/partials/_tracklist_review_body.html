@@ -27,24 +27,24 @@
 {% set _badge = 'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold' %}
 {% set _outcome_labels = {
     'not_found': ('No confident match on 1001Tracklists', 'text-gray-700 bg-gray-100 dark:text-gray-300 dark:bg-white/5', 'Definitive -- the search ran cleanly and the site has nothing for this set. Re-checked automatically after its TTL, since the site does gain tracklists over time.'),
-    'blocked': ('Blocked by a Turnstile challenge', 'text-amber-700 bg-amber-100 dark:text-amber-200 dark:bg-amber-500/10', 'Transient -- our own retry loop did not clear it in time. The set may well be on the site; this will be retried, not treated as absent.'),
-    'search_failed': ('Search failed', 'text-amber-700 bg-amber-100 dark:text-amber-200 dark:bg-amber-500/10', 'Transient -- the search request itself failed or its selectors did not parse. Says nothing about whether the set is on the site; will be retried.'),
-    'render_failed': ('Detail page did not render', 'text-amber-700 bg-amber-100 dark:text-amber-200 dark:bg-amber-500/10', 'Transient -- a result was found but the detail page never rendered (browser/timeout). Will be retried.'),
-    'parse_failed': ('Page rendered, nothing parsed', 'text-amber-700 bg-amber-100 dark:text-amber-200 dark:bg-amber-500/10', 'Transient -- almost always our selectors drifting against a site redesign, not an empty tracklist. Will be retried.'),
+    'blocked': ('Blocked by a Turnstile challenge', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Transient -- our own retry loop did not clear it in time. The set may well be on the site; this will be retried, not treated as absent.'),
+    'search_failed': ('Search failed', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Transient -- the search request itself failed or its selectors did not parse. Says nothing about whether the set is on the site; will be retried.'),
+    'render_failed': ('Detail page did not render', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Transient -- a result was found but the detail page never rendered (browser/timeout). Will be retried.'),
+    'parse_failed': ('Page rendered, nothing parsed', 'text-warn bg-amber-100 dark:bg-amber-500/10', 'Transient -- almost always our selectors drifting against a site redesign, not an empty tracklist. Will be retried.'),
 } %}
 {% if review is none %}
-<p class="text-sm text-red-600 dark:text-red-400">File not found.</p>
+<p class="text-sm text-danger ">File not found.</p>
 {% else %}
 
     {% if just_queued %}
-    <p class="mb-2 text-sm text-blue-600 dark:text-blue-300">
+    <p class="mb-2 text-sm text-info ">
         Prioritized and queued -- a lookup has been dispatched, but this file's own attempt has not run yet.
         Reopen this record after it does to see the result.
     </p>
     {% endif %}
 
     {% if just_refreshed %}
-    <p class="mb-2 text-sm text-blue-600 dark:text-blue-300">
+    <p class="mb-2 text-sm text-info ">
         Refresh requested -- the cached answer for this page has been dropped and a batch of tracklist lookups dispatched.
         The tracks below are the CURRENT version and stay in place until the re-read succeeds; a blocked or
         empty re-read writes nothing at all.
@@ -55,24 +55,24 @@
         {# STATE 1 -- a real result exists. Scraped vs propagated is the headline distinction. #}
         <div class="flex flex-wrap items-center gap-2">
             {% if review.is_propagated %}
-            <span class="{{ _badge }} text-blue-700 bg-blue-100 dark:text-blue-200 dark:bg-blue-500/10"
+            <span class="{{ _badge }} text-info bg-blue-100 dark:bg-blue-500/10"
                   title="This file was never fetched from 1001Tracklists directly -- the tracklist was inherited from a byte-identical duplicate file and copied here.">
                 Propagated from a duplicate · {{ review.tracklist.propagation_confidence or 'unknown' }} confidence link
             </span>
             {% else %}
-            <span class="{{ _badge }} text-emerald-700 bg-emerald-100 dark:text-emerald-200 dark:bg-emerald-500/10">
+            <span class="{{ _badge }} text-ok bg-emerald-100 dark:bg-emerald-500/10">
                 Scraped from 1001Tracklists
             </span>
             {% endif %}
             {% if review.tracklist.match_confidence is not none %}
-            <span class="text-xs text-gray-500 dark:text-gray-400" title="phaze-fq9h.6 result-scoring confidence -- did we pick the right 1001Tracklists search result for this file. NOT a claim that the tracklist's tracks were verified against the audio.">
+            <span class="text-xs text-muted " title="phaze-fq9h.6 result-scoring confidence -- did we pick the right 1001Tracklists search result for this file. NOT a claim that the tracklist's tracks were verified against the audio.">
                 match confidence {{ review.tracklist.match_confidence }}
             </span>
             {% endif %}
         </div>
         {% if review.tracklist.source_url %}
         <p class="mt-2 truncate text-xs">
-            <a href="{{ review.tracklist.source_url }}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline dark:text-blue-300">{{ review.tracklist.source_url }}</a>
+            <a href="{{ review.tracklist.source_url }}" target="_blank" rel="noopener noreferrer" class="text-link hover:underline ">{{ review.tracklist.source_url }}</a>
         </p>
         {% endif %}
 
@@ -80,7 +80,7 @@
         <div class="relative mt-3 overflow-x-auto">
             <table class="w-full text-left text-xs">
                 <thead>
-                    <tr class="text-gray-500 dark:text-gray-400">
+                    <tr class="text-muted ">
                         <th class="py-1 pr-3 font-medium">#</th>
                         <th class="py-1 pr-3 font-medium">Time</th>
                         <th class="py-1 pr-3 font-medium">Artist</th>
@@ -91,21 +91,21 @@
                 <tbody>
                     {% for track in review.tracks %}
                     <tr class="border-t border-gray-100 dark:border-white/5">
-                        <td class="py-1 pr-3 font-mono text-gray-500 dark:text-gray-400">{{ track.position }}</td>
-                        <td class="py-1 pr-3 font-mono text-gray-500 dark:text-gray-400">{{ track.timestamp or '—' }}</td>
+                        <td class="py-1 pr-3 font-mono text-muted ">{{ track.position }}</td>
+                        <td class="py-1 pr-3 font-mono text-muted ">{{ track.timestamp or '—' }}</td>
                         <td class="py-1 pr-3 text-gray-900 dark:text-gray-200">{{ track.artist or '—' }}</td>
                         <td class="py-1 pr-3 text-gray-900 dark:text-gray-200">
-                            {{ track.title or '—' }}{% if track.is_mashup %} <span class="text-gray-400">(mashup)</span>{% endif %}
-                            {% if track.remix_info %}<span class="text-gray-400"> · {{ track.remix_info }}</span>{% endif %}
+                            {{ track.title or '—' }}{% if track.is_mashup %} <span class="text-muted">(mashup)</span>{% endif %}
+                            {% if track.remix_info %}<span class="text-muted"> · {{ track.remix_info }}</span>{% endif %}
                         </td>
-                        <td class="py-1 pr-3 text-gray-500 dark:text-gray-400">{{ track.label or '—' }}</td>
+                        <td class="py-1 pr-3 text-muted ">{{ track.label or '—' }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
         {% else %}
-        <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">No track rows on the latest version.</p>
+        <p class="mt-2 text-sm text-muted ">No track rows on the latest version.</p>
         {% endif %}
 
     {% elif review.cache_entry %}
@@ -113,26 +113,26 @@
         {% set label, color, explain = _outcome_labels.get(review.cache_entry.outcome, (review.cache_entry.outcome, 'text-gray-700 bg-gray-100 dark:text-gray-300 dark:bg-white/5', '')) %}
         <span class="{{ _badge }} {{ color }}">{{ label }}</span>
         {% if review.cache_entry.result_confidence is not none %}
-        <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">best candidate scored {{ review.cache_entry.result_confidence }}</span>
+        <span class="ml-2 text-xs text-muted ">best candidate scored {{ review.cache_entry.result_confidence }}</span>
         {% endif %}
-        <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">{{ explain }}</p>
+        <p class="mt-2 text-xs text-muted ">{{ explain }}</p>
         {% if review.cache_entry.detail %}
-        <p class="mt-1 truncate text-xs text-gray-400 dark:text-gray-400" title="{{ review.cache_entry.detail }}">{{ review.cache_entry.detail }}</p>
+        <p class="mt-1 truncate text-xs text-muted " title="{{ review.cache_entry.detail }}">{{ review.cache_entry.detail }}</p>
         {% endif %}
         {# phaze-z8xq7: the cache verdict, said plainly, whenever it currently suppresses a
            re-query -- so an operator never sees a Prioritize/Priority-queued control promise a
            lookup the drain's own cache decision will not honor. #}
         {% if not review.actionable %}
             {% if review.cache_decision.value == 'suppressed_negative' %}
-        <p class="mt-2 text-xs font-medium text-amber-600 dark:text-amber-400">
+        <p class="mt-2 text-xs font-medium text-warn ">
             Suppressed until {{ review.cache_entry.expires_at.strftime('%Y-%m-%d %H:%M') if review.cache_entry.expires_at else 'unknown' }} (definitive-negative TTL) -- prioritizing this file will not queue a lookup until then.
         </p>
             {% elif review.cache_decision.value == 'backoff' %}
-        <p class="mt-2 text-xs font-medium text-amber-600 dark:text-amber-400">
+        <p class="mt-2 text-xs font-medium text-warn ">
             In backoff until {{ review.cache_entry.expires_at.strftime('%Y-%m-%d %H:%M') if review.cache_entry.expires_at else 'unknown' }} after a transient failure -- it will retry automatically; prioritizing it now would not queue a lookup.
         </p>
             {% elif review.cache_decision.value == 'transient_exhausted' %}
-        <p class="mt-2 text-xs font-medium text-red-600 dark:text-red-400">
+        <p class="mt-2 text-xs font-medium text-danger ">
             Parked after repeated transient failures -- needs a human look. Prioritizing this file will not queue a lookup.
         </p>
             {% endif %}
@@ -143,14 +143,14 @@
            scraped tracklists row (embedded tags or a .cue companion). Never "not yet looked up"
            -- this file will never be looked up automatically, and Prioritize would spend a live
            request on an unrelated set while doing nothing for this one. #}
-        <p class="text-sm text-gray-500 dark:text-gray-400">
+        <p class="text-sm text-muted ">
             Already has track data from a {{ review.answered_elsewhere }} -- excluded from the drain queue.
         </p>
     {% else %}
         {# STATE 3b -- never looked up, and nothing else excludes it either. #}
-        <p class="text-sm text-gray-500 dark:text-gray-400">Not yet looked up.</p>
+        <p class="text-sm text-muted ">Not yet looked up.</p>
         {% if not review.eligible %}
-        <p class="mt-1 text-xs text-gray-400 dark:text-gray-400">
+        <p class="mt-1 text-xs text-muted ">
             Not classified as a live set{% if review.classification_class %} (reads as {{ review.classification_class.value }}){% endif %} --
             it would not enter the drain queue automatically.
         </p>
@@ -193,7 +193,7 @@
         {# phaze-z8xq7: an existing flag on a cache-suppressed set is inert -- it will not enter
            the drain queue until the cache verdict changes. Say so, rather than let "Priority
            queued" stand as an unqualified claim of an active queue position. #}
-        <p class="mt-1 text-xs text-gray-400 dark:text-gray-400">
+        <p class="mt-1 text-xs text-muted ">
             This flag will have no effect until the cache verdict above changes -- the drain keeps a cache-suppressed set out of the queue even when flagged.
         </p>
         {% endif %}

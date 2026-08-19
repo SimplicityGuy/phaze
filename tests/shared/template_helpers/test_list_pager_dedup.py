@@ -80,7 +80,7 @@ def test_pipeline_pager_last_page_button_renders_once_on_the_final_page() -> Non
     assert html.count(">8</button>") == 1, "the last page button must render exactly once"
     # On the final page every duplicate would carry aria-current="page"; must be exactly one.
     assert html.count('aria-current="page"') == 1
-    assert html.count("bg-blue-600") == 1
+    assert html.count("bg-action-brand") == 1
 
 
 def test_pipeline_pager_last_page_button_renders_once_near_the_end() -> None:

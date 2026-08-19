@@ -17,7 +17,7 @@
 <section aria-labelledby="trigger-scan-heading"
          class="border border-gray-200 dark:border-phaze-border rounded-lg p-4 space-y-4">
     <h2 id="trigger-scan-heading" class="text-lg font-semibold">Trigger Scan</h2>
-    <p class="text-sm text-gray-500 dark:text-gray-400">
+    <p class="text-sm text-muted ">
         Walk a directory on a registered agent and ingest discovered files.
     </p>
     <form hx-post="/pipeline/scans"
@@ -51,10 +51,10 @@
 
         <div>
             <button type="submit"
-                    class="px-4 py-2 bg-blue-600 dark:bg-blue-700 text-white rounded-md hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-phaze-bg">
+                    class="px-4 py-2 bg-action-brand text-white rounded-md hover:bg-action-brand-hover disabled:opacity-50 disabled:cursor-not-allowed text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-phaze-bg">
                 Start Scan
             </button>
-            <span id="scan-submit-spinner" class="htmx-indicator ml-2 text-sm text-gray-500 dark:text-gray-400">Enqueuing…</span>
+            <span id="scan-submit-spinner" class="htmx-indicator ml-2 text-sm text-muted ">Enqueuing…</span>
         </div>
     </form>
     <div id="scan-submit-result" aria-live="polite"></div>
