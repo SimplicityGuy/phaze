@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import time
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -43,6 +44,30 @@ from phaze.services.analysis import (
 def test_model_sets_count() -> None:
     """MODEL_SETS has exactly 11 entries."""
     assert len(MODEL_SETS) == 11
+
+
+def test_streaming_decode_longer_than_stall_threshold_keeps_beating(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A healthy blocking C++ decode stays live even when it outlasts the watchdog bound."""
+    beats: list[float] = []
+
+    def _slow_streaming(*_args: Any, **_kwargs: Any) -> dict[int, Any]:
+        time.sleep(0.08)
+        return {}
+
+    monkeypatch.setattr(analysis_mod, "_DECODE_HEARTBEAT_INTERVAL_SEC", 0.01)
+    monkeypatch.setattr(analysis_mod, "_decode_windows_streaming", _slow_streaming)
+    monkeypatch.setattr(analysis_mod, "_release_decode_network", lambda: None)
+
+    result = analysis_mod._decode_windows(
+        "/fake/long-set.mp3",
+        44100,
+        [(0, 0.0, 30.0)],
+        lambda *_args: None,
+        on_beat=lambda: beats.append(time.monotonic()),
+    )
+
+    assert result == {}
+    assert len(beats) >= 3, "the blocking decode must report repeated liveness, not just boundary progress"
 
 
 def test_model_sets_have_three_variants() -> None:
