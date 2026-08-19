@@ -19,6 +19,11 @@ class _MetricRedis:
         self.values[key] = self.values.get(key, 0) + 1
 
 
+class _FailingMetricRedis:
+    async def incr(self, key: str) -> None:
+        raise ConnectionError(key)
+
+
 def _queue() -> tuple[ResilientPostgresQueue, _MetricRedis]:
     queue = ResilientPostgresQueue.from_url("postgresql://u:p@h:5432/d", name="analyze")
     metrics = _MetricRedis()
@@ -72,3 +77,39 @@ async def test_sweep_does_not_retry_programming_errors() -> None:
 
     base_sweep.assert_awaited_once()
     assert metrics.values == {}
+
+
+@pytest.mark.asyncio
+async def test_metric_increment_is_optional() -> None:
+    """Queues without the attached cache client still preserve the database failure."""
+    queue = ResilientPostgresQueue.from_url("postgresql://u:p@h:5432/d", name="analyze")
+
+    await queue._increment_upkeep_metric("retries_total")
+
+
+@pytest.mark.asyncio
+async def test_metric_failure_is_logged_without_replacing_upkeep_error() -> None:
+    """A Redis outage cannot mask the Postgres failure that exhausted the retry budget."""
+    queue = ResilientPostgresQueue.from_url("postgresql://u:p@h:5432/d", name="analyze")
+    queue.cache_redis = _FailingMetricRedis()  # type: ignore[attr-defined]
+    base_sweep = AsyncMock(side_effect=PoolTimeout("persistent outage"))
+
+    with (
+        patch.object(PostgresQueue, "sweep", base_sweep),
+        patch("phaze.tasks._shared.resilient_queue.asyncio.sleep", new=AsyncMock()),
+        patch("phaze.tasks._shared.resilient_queue.logger.warning") as warning,
+        pytest.raises(PoolTimeout, match="persistent outage"),
+    ):
+        await queue.sweep()
+
+    assert warning.call_count == 5
+    assert [call.args[0] for call in warning.call_args_list].count("saq_upkeep_metric_write_failed") == 3
+
+
+@pytest.mark.asyncio
+async def test_zero_attempt_configuration_hits_defensive_guard() -> None:
+    """The impossible fallthrough remains loud if the retry constant is misconfigured."""
+    queue, _ = _queue()
+
+    with patch("phaze.tasks._shared.resilient_queue.UPKEEP_RETRY_ATTEMPTS", 0), pytest.raises(AssertionError, match="unreachable"):
+        await queue.sweep()
