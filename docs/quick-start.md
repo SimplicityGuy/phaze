@@ -153,16 +153,16 @@ flowchart LR
     R --> E[apply]
 ```
 
-You drive each stage from either a `just` recipe (curl wrapper) or
-the DAG-centric console in the Web UI (`/` + the DAG rail; ⌘K to jump; `/s/<stage>` per stage).
+You drive each stage from the responsive console (`/` plus `/s/<stage>` workspaces; ⌘K to
+search or jump) or the documented HTTP endpoints.
 
 1. **Open the console.**
 
-   Visit https://localhost:8000/ — the three-column DAG-centric console opens on the static,
-   DB-free **Summary** landing placeholder; **Analyze** is one rail click away at
-   `/s/analyze`. The left DAG rail shows every pipeline stage with
-   a live count; clicking a stage swaps the center workspace in place. Press **⌘K** at any
-   time for the command palette (search files/tracklists/artists or jump to a stage).
+   Visit https://localhost:8000/ — the console opens on the actionable **Summary**, which
+   reports collection metrics, recent activity, operational problems, and the recommended
+   next action. The left rail groups Overview, Pipeline, Review, and Operations workspaces;
+   clicking a destination swaps the workspace in place. Press **⌘K** at any time for the
+   command palette (search files/tracklists/artists or jump to a workspace).
 
 2. **Start a scan** (file discovery, dispatched to a registered agent):
 
@@ -197,20 +197,21 @@ the DAG-centric console in the Web UI (`/` + the DAG rail; ⌘K to jump; `/s/<st
 
 4. **Review proposals in the Web UI.**
 
-   From the DAG rail, open the **Propose** / **Rename** stages (or press **⌘K**) to see each
-   AI-generated rename/move as a before → after diff. Approve, edit, or skip individually, or
-   use "approve all high-confidence". Nothing is moved on disk at this point — approval only
-   marks a proposal as ready to execute.
+   **Propose changes** generates and inspects suggestions; it is not an authorization surface.
+   Open **Changes Review** to see each filename + destination decision as an atomic before →
+   after diff. Approve, edit, or skip individual rows, or bulk-act only on the reviewed
+   selection. The former corpus-wide "approve all high-confidence" action was removed. Nothing
+   is moved on disk at this point — approval only marks a proposal as ready to execute.
 
-   Duplicate groups surface under the **Dedupe** rail stage, and concert tracklist matches
-   under the **Tracklist** stage.
+   Duplicate groups surface under **Duplicates**, and concert tracklist matches under
+   **Tracklists**.
 
 5. **Execute the approved batch.**
 
    Approved proposals are committed to disk through the safe copy-verify-delete protocol
-   from the execution view (`POST /execution/start`), with live progress at
+   from **Execute approved** after reviewing its preflight manifest (`POST /execution/start`), with live progress at
    `GET /execution/progress/{batch_id}`. The audit trail of every operation is at
-   https://localhost:8000/audit/.
+   the **Audit log** workspace (`/s/audit`; legacy `/audit/` redirects there).
 
 ## 🧪 Running the tests
 

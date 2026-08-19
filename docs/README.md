@@ -5,12 +5,18 @@
 
 This is the documentation index for the `docs/` directory. For the project overview, quick start, and technology stack, see the [main README](../README.md).
 
+The documents listed below describe the current product. Dated design specifications, spikes, and
+the `.planning/` tree are historical evidence: retain their measurements and conclusions, but do
+not treat an old “current” label as the live backlog. The [documentation audit](documentation-audit-2026-08-19.md)
+records the complete reviewed/changed/unchanged inventory for this refresh.
+
 ## 🏁 Getting Started
 
 | Document | Purpose |
 | -------- | ------- |
 | **[Quick Start Guide](quick-start.md)** | 🚀 Get Phaze running in minutes |
 | **[Configuration](configuration.md)** | ⚙️ Environment variables and settings reference |
+| **[Agentic Git Flow](AGF.md)** | 🐝 Beadhive roles, lifecycle, review, integration, and test isolation |
 
 ## 📐 Reference
 
@@ -22,6 +28,8 @@ This is the documentation index for the `docs/` directory. For the project overv
 | **[Project Structure](project-structure.md)** | 📁 Codebase layout and module organization |
 | **[Essentia Analysis & Replacement](essentia-analysis.md)** | 🔬 Where essentia is used, its true compute profile (DSP/decode-bound), the feature surface to preserve, and why no lighter drop-in replacement exists |
 | **[1001Tracklists Scraping](tracklist-scraping.md)** | 🕸️ SSRF allow-list + redirect recheck, the shared whole-host rate limiter and its single-replica limit, the render engine's Turnstile handling, the poisoned-result skip, and the two TTL caches |
+| **[Architecture Decisions](design/)** | 🧭 Accepted decisions and their status |
+| **[UI Design Reference](ui-design-reference.md)** | 🎛️ Current production visual and interaction contract |
 
 ## 🚀 Operations
 

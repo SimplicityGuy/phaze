@@ -1,5 +1,8 @@
 # Milestones
 
+> **Historical planning snapshot (2026-07-29).** This milestone ledger ends at the GSD archive
+> cutoff. See [`.planning/README.md`](README.md) for current-vs-historical guidance.
+
 ## 2026.7.5 Parallel Enrich DAG (Shipped: 2026-07-14)
 
 **Phases completed:** 16 phases, 66 plans, 100 tasks

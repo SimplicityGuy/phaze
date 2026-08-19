@@ -287,15 +287,17 @@ workspace into `#stage-workspace` over HTMX (`GET /s/<stage>`). The standalone p
 dashboard page and its single-partial DAG canvas were removed in CUT-02 (Phase 62); the
 underlying stage-progress services (`get_stage_progress`, `get_queue_activity`,
 `build_dashboard_context`) are unchanged and now back the Analyze workspace instead, and
-`/pipeline/` is a pure 302 redirect into the shell root `/` — which since SQ3-02
-(quick-260707-sq3) lands on the static, DB-free **Summary** placeholder, with Analyze one rail
-click away at `/s/analyze`. The stage graph itself is
+`/pipeline/` is a pure 302 redirect into the shell root `/`, which now renders the actionable
+**Summary** from live collection metrics, activity, routing state, and review/apply counts. Analyze
+remains directly reachable at `/s/analyze`. The stage graph itself is
 unchanged: only Metadata and Analyze converge into Proposals; the tracklist
 subgraph has no edge into Proposals.
 
 ## 🤖 Distributed Execution Architecture (Phases 26-29)
 
-v4.0 lets file-bound work run on remote file-server hosts that never connect to Postgres.
+v4.0 lets file-bound work run on remote file-server hosts that never use the application ORM or
+database models. Agent workers do connect to PostgreSQL through the narrow SAQ broker DSN
+(`PHAZE_QUEUE_URL`); all application state reads and writes still cross the authenticated HTTP API.
 Each host is modeled as an `Agent` (`models/agent.py`): a kebab-case `id`, an `scan_roots`
 list, a hashed bearer token, and `last_seen_at` / `revoked_at` liveness fields. Every
 `FileRecord` and `ScanBatch` carries a non-null `agent_id` FK (defaulting to the seeded
@@ -713,11 +715,10 @@ restored = await undo_resolve(session, parsed_states)                       # dr
 
 ## 🖥️ User Interface / Information Architecture (v7.0)
 
-The admin UI is a **three-column "Hybrid Console" shell** (Phase 57–62). It restructured the
-former flat row of ~10 sibling tabs into a single screen centered on the pipeline DAG. This
-is an **IA + presentation change only** — it is new templates over the **existing** routers
-and services documented above; no analysis, identify, proposal, or execution behavior
-changed (REQUIREMENTS "logic unchanged" rule).
+The admin UI is a responsive persistent console shell. It began as the Phase 57–62 three-column
+"Hybrid Console" and has since gained an actionable Summary, grouped navigation, shared workspace
+primitives, and narrow-screen drawer behavior. The current rail/templates are authoritative; the
+dated v7 design specifications describe the original cutover, not every later refinement.
 
 ### Shell layout
 
@@ -735,21 +736,22 @@ changed (REQUIREMENTS "logic unchanged" rule).
   revision of this file. The Enrich group lost its Fingerprint node and the Identify group its
   Track-ID node when phaze-0jpe removed fingerprinting (2026-07-28). Then phaze-tzy6s.11 /
   ADR-0008 replaced the three separate Rename / Path, Tag write and Move files nodes with the
-  single **Changes Review** destination — the only surface that authorizes filename, destination
-  and tag changes — taking the rail from sixteen destinations to fourteen. `rename`, `tagwrite`
+  single **Changes Review** destination — the only surface that authorizes filename/destination
+  proposals and the separate, reversible tag-write decisions — taking the rail from sixteen
+  destinations to fourteen. `rename`, `tagwrite`
   and `move` survive only as compatibility aliases that all resolve to Changes Review
   (`DOCUMENT_TITLES` in `routers/shell.py`). The grouping above matches
   `templates/shell/partials/rail.html`.
-- **Center — stage workspace.** The selected rail node's file queue / lane summary / approval
+- **Main — stage workspace.** The selected rail node's file queue / lane summary / approval
   diffs.
-- **Right — per-file pane** and, on demand, the full **record slide-in** overlay.
+- **Overlay — per-file record drawer.** It opens on demand without creating a second approval path.
 
 ### Rail-as-nav swap contract
 
-`src/phaze/routers/shell.py` owns the shell. `GET /` renders the full three-column shell with
-the **Summary** landing placeholder selected — a static, DB-free stage with no context branch in
-`_render_stage` (SQ3-02, quick-260707-sq3, which repointed the default landing away from Analyze;
-Analyze is unchanged and stays one rail click away at `/s/analyze`). Clicking a rail node
+`src/phaze/routers/shell.py` owns the shell. `GET /` renders the full shell with the actionable
+**Summary** selected; `_derive_summary_overview` supplies collection metrics, pipeline flow,
+recommended action, recent activity, and problem counts. Analyze stays directly reachable at
+`/s/analyze`. Clicking a rail node
 issues an HTMX `GET /s/<stage>` that
 returns only the stage's content fragment and swaps it into the single `#stage-workspace`
 target (`hx-push-url` keeps the URL bookmarkable). `stage` is resolved through a strict
@@ -782,12 +784,12 @@ existing `/pipeline/stats` 5-second poll (Phase 35/57) via out-of-band swaps int
 
 ### Review & Apply gate
 
-The five legacy approval tabs (Proposals / Preview / Tags / Cue / Duplicates) collapse into
-one Review & Apply group of stage workspaces sharing a single before → after diff interaction
-(`_diff_row.html`): per-row Approve / Edit / Skip plus a header "approve all high-confidence"
-bulk action, dedupe keeper-selection, and cue-sheet preview. Each workspace posts to the same
-existing endpoints (`/tags/*`, `/cue/*`, `/duplicates/*`, proposal approve/reject) and every
-applied change is audited and reversible.
+The Review group separates proposal authorization from execution. **Changes Review** is the one
+surface for filename/destination proposal decisions and separate reversible tag-write decisions;
+selected rows use the guarded `/proposals/bulk` path, while the former corpus-wide
+`bulk-approve-high-confidence` route is removed. Duplicates and CUE sheets retain their own review
+workspaces. **Execute approved** then shows a preflight manifest and confirmation before it calls
+`POST /execution/start`; it dispatches already-approved proposals and grants no new approval.
 
 ## 🗂️ Directory Rationale
 

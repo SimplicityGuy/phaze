@@ -176,10 +176,10 @@ just db-history              # Show migration history (alembic history)
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
 
-### Post-baseline chain (040-058)
+### Post-baseline chain (040-062)
 
-`alembic/versions/` holds **20** files: the `039` baseline plus a linear chain to the current
-head, **`058`**.
+`alembic/versions/` holds **24** files: the `039` baseline plus a linear chain to the current
+head, **`062`**.
 
 | Rev | Change |
 |-----|--------|
@@ -201,7 +201,11 @@ head, **`058`**.
 | `055` | Add the `cloud_budget` table — durable per-file cloud budget that outlives the `cloud_job` sidecar (phaze-2mwyo) |
 | `056` | Rename five double-prefixed CHECK constraints to the names the ORM actually renders (phaze-x8tof) |
 | `057` | Add `cloud_job.node_loss_pending` — durable carry for a verdict lost across the re-drive deferral (phaze-mwbz3) |
-| `058` | `analysis (analysis_completed_at)` partial btree for the lane cards' PROCESSED counts (phaze-5c6i2) — **head** |
+| `058` | `analysis (analysis_completed_at)` partial btree for the lane cards' PROCESSED counts (phaze-5c6i2) |
+| `059` | Durable operator ARM/DISARM state for the tracklist drain |
+| `060` | Drop the obsolete `analysis.sampled` column after exhaustive-window analysis shipped |
+| `061` | Durable duplicate-review plans |
+| `062` | Persist reviewed-before tags and review source versions — **head** |
 
 **Three migrations in this chain (`048`, `050`, `058`) build an index `CREATE INDEX
 CONCURRENTLY` on an autocommit connection rather than an ordinary `op.create_index`; each shares
