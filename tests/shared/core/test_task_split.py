@@ -314,7 +314,7 @@ def test_submit_cloud_job_is_control_only_not_in_agent_worker() -> None:
 def test_reconcile_cloud_jobs_is_control_only_not_in_agent_worker() -> None:
     """Phase 54 (54-06): reconcile_cloud_jobs is a CONTROL-only cron, never registered on the agent.
 
-    The */5 reconcile cron needs ``ctx["async_session"]`` + the kube creds that live on the control
+    The every-minute reconcile cron needs ``ctx["async_session"]`` + the kube creds that live on the control
     plane (DIST-01), so it is registered in ``phaze.tasks.controller.settings`` ONLY -- in BOTH
     ``functions`` and ``cron_jobs`` (mirroring ``reap_stalled_scans``). This asserts the agent worker
     does NOT carry it (subprocess with the agent env so the agent-role import does not leak into the
@@ -350,7 +350,7 @@ def test_reconcile_cloud_jobs_is_control_only_not_in_agent_worker() -> None:
     assert result.returncode == 0, f"reconcile_cloud_jobs leaked onto the agent worker:\nstdout={result.stdout}\nstderr={result.stderr}"
 
     # Complementary control-side assertions (in-process under the control-default test env): it IS a
-    # registered controller function AND a */5 CronJob, and is NOT in the routable CONTROLLER_TASKS set.
+    # registered controller function AND an every-minute CronJob, and is NOT in the routable CONTROLLER_TASKS set.
     from phaze.services.enqueue_router import CONTROLLER_TASKS
     from phaze.tasks import controller
 
@@ -358,7 +358,7 @@ def test_reconcile_cloud_jobs_is_control_only_not_in_agent_worker() -> None:
     reconcile_crons = [cj for cj in controller.settings["cron_jobs"] if getattr(cj.function, "__name__", "") == "reconcile_cloud_jobs"]
     assert "reconcile_cloud_jobs" in fn_names
     assert len(reconcile_crons) == 1, "reconcile_cloud_jobs must be registered as exactly one CronJob"
-    assert reconcile_crons[0].cron == "*/5 * * * *", "the reconcile cron must run every 5 minutes (D-03)"
+    assert reconcile_crons[0].cron == "* * * * *", "the reconcile cron must bound lifecycle freshness to one minute (phaze-i3pkb.1)"
     assert "reconcile_cloud_jobs" not in CONTROLLER_TASKS, "reconcile_cloud_jobs is cron-only -- never operator-routable"
 
 

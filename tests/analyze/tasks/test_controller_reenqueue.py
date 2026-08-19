@@ -96,8 +96,8 @@ def test_no_auto_advance_cron() -> None:
     ``reenqueue_discovered`` premise), so the schedule-string ban is refined to "no */5 cron OTHER
     than the bounded staging cron".
 
-    Phase 54 (KSUBMIT-06): ``reconcile_cloud_jobs`` joins the sanctioned-narrow allow-list -- a */5
-    safety-net that owns the K8s Job lifecycle (in-flight reconcile + bounded re-drive + terminal
+    Phase 54 (KSUBMIT-06): ``reconcile_cloud_jobs`` joins the sanctioned-narrow allow-list -- an
+    every-minute safety-net that owns the K8s Job lifecycle (in-flight reconcile + bounded re-drive + terminal
     cleanup). Like ``stage_cloud_window`` it is bounded and idempotent, NOT a general pipeline
     auto-advance, so the ban stays "no */5 cron OTHER than the sanctioned narrow crons".
 

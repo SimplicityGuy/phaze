@@ -1,4 +1,4 @@
-"""Narrow ``*/5`` in-flight K8s reconcile cron (Phase 54, Plan 06 -- KSUBMIT-02..06, D-01..D-08).
+"""Narrow every-minute in-flight K8s reconcile cron (Phase 54, Plan 06 -- KSUBMIT-02..06, D-01..D-08).
 
 THE SAFETY NET THAT OWNS THE KUEUE JOB LIFECYCLE. ``submit_cloud_job`` (Plan 05) does ONE fast kube
 POST and returns; the one-shot pod runs the analysis and PUTs its result back through the existing
@@ -153,7 +153,8 @@ PENDING_SUBMIT_CONFIRMATION_SECONDS = 3600
 # wedge. This is the "Workload wedged Admitted with no pod" shape phaze-1b39 also had to cover. Safe
 # without a run clock because it fires ONLY when the Job itself reports no active pod AND the pod list
 # is empty -- i.e. nothing is running to kill. Measured on the Job's ``status.startTime`` (when Kueue
-# un-gated it), never on how long an analysis has run. 15 min = 3x the */5 reconcile tick.
+# un-gated it), never on how long an analysis has run. The 15-minute wall-clock bound is preserved
+# across the every-minute reconcile cadence (15 ticks; phaze-i3pkb.1).
 NO_POD_PROBE_SECONDS = 900
 
 
@@ -806,7 +807,7 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
 async def reconcile_cloud_jobs(ctx: dict[str, Any]) -> dict[str, int]:
     """Reconcile every backend's in-flight ``cloud_job`` rows per-backend; return an aggregate tally.
 
-    The ``*/5`` cron body (D-01/D-03), Phase-69 SCHED-05 form: dispatch reconcile PER-BACKEND
+    The every-minute cron body (D-01/D-03; phaze-i3pkb.1), Phase-69 SCHED-05 form: dispatch reconcile PER-BACKEND
     (``for b in resolve_backends(cfg): await b.reconcile(session, ctx)``) instead of a single global
     ``select(CloudJob WHERE status IN {SUBMITTED, RUNNING})`` query. Removing that global un-scoped query
     closes the double-owner vector: a compute ``cloud_job`` row's PRIMARY terminalization stays its

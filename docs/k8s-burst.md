@@ -62,7 +62,7 @@ flowchart LR
     drain["stage_cloud_window (*/5 cron)<br/>tiered rank-first drain"]
     selbk["select_backend (rank-first + spillover)"]
     s3_staging["s3_staging (pick_bucket per file)"]
-    reconcile["reconcile_cloud_jobs (*/5 cron)<br/>per-backend, backend_id-scoped"]
+    reconcile["reconcile_cloud_jobs (every-minute cron)<br/>per-backend, backend_id-scoped"]
     kc_a["kr8s client A (context: kueue-a)"]
     kc_b["kr8s client B (context: kueue-b)"]
     callback["PUT /api/internal/agent/analysis/{file_id}<br/>(the ONLY result channel)"]
