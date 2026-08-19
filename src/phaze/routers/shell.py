@@ -966,9 +966,13 @@ async def build_changes_review_context(request: Request, session: AsyncSession) 
     }
 
 
-async def _analyze_stage_context(request: Request, session: AsyncSession) -> dict[str, Any]:
+async def _analyze_stage_context(request: Request, session: AsyncSession, stage: str) -> dict[str, Any]:
     """Build the Analyze stage's context update: the shared dashboard DAG content, the
     reload-safe selected-lane highlight, the poll content hash, and the first-run empty state.
+
+    ``stage`` is passed in (never hardcoded to ``"analyze"``) so this stays correct if
+    ``_STAGE_CONTEXT_BUILDERS`` ever aliases a second key at this function, the same way
+    ``rename``/``move``/``tagwrite`` already alias at :func:`build_changes_review_context`.
 
     Phase 88 (88-01, DRILL-03 / D-02): a reload of /s/analyze?lane={id} seeds the selected-lane
     highlight server-side for the initial full grid (the poll re-applies it thereafter). Resolved
@@ -986,8 +990,8 @@ async def _analyze_stage_context(request: Request, session: AsyncSession) -> dic
     purely via stage_partial).
     """
     update = dict(await build_dashboard_context(request.app.state, session))
-    update["stage"] = "analyze"
-    update["stage_partial"] = _stage_partial("analyze")
+    update["stage"] = stage
+    update["stage_partial"] = _stage_partial(stage)
     update["oob_counts"] = False
     lane_param = request.query_params.get("lane")
     seeded_lanes = update.get("lanes") or []
@@ -1002,11 +1006,14 @@ async def _analyze_stage_context(request: Request, session: AsyncSession) -> dic
     return update
 
 
-async def _files_stage_context(request: Request, session: AsyncSession) -> dict[str, Any]:
+async def _files_stage_context(request: Request, session: AsyncSession, stage: str) -> dict[str, Any]:
     """Build the Files stage's context: the SAME default-first-page read the standalone GET
     /pipeline/files route builds (pipeline.pipeline_files) -- the bounded, per-page-derived,
     SAVEPOINT degrade-safe get_files_page with stage/bucket filters unset (the unfiltered
     overview; the _status_filter_bar in the partial drives filtering via /pipeline/files links).
+
+    ``stage`` is passed in (never hardcoded to ``"files"``) for the same alias-robustness
+    reason as :func:`_analyze_stage_context`.
 
     phaze-a6hm.3: this is the UNSORTED default landing, so resolve against no wire sort/order --
     reuses the SAME FILES_SORT contract instance pipeline.pipeline_files() resolves against
@@ -1048,8 +1055,8 @@ async def _files_stage_context(request: Request, session: AsyncSession) -> dict[
         "active_stage": active_stage.value if active_stage is not None else None,
         "active_bucket": active_bucket,
         "sort": files_sort_state,
-        "stage": "files",
-        "stage_partial": _stage_partial("files"),
+        "stage": stage,
+        "stage_partial": _stage_partial(stage),
         "oob_counts": False,
     }
 
@@ -1184,44 +1191,49 @@ async def _audit_stage_context(request: Request, session: AsyncSession) -> dict[
     )
 
 
-async def _agents_stage_context(request: Request, session: AsyncSession) -> dict[str, Any]:
+async def _agents_stage_context(request: Request, session: AsyncSession, stage: str) -> dict[str, Any]:
     """Build the Agents/Compute utility pane's context (UTILITY_PANES, below-the-line).
+
+    ``stage`` is passed in (never hardcoded to ``"agents"``) for the same alias-robustness
+    reason as :func:`_analyze_stage_context`.
 
     phaze-uvmcr.4: context comes from admin_agents.build_agents_pane_context, the SAME assembly
     GET /admin/agents's redirect target uses -- shared so this pane and the (now-redirecting)
     legacy route can never diverge on what a render needs. That function reads
-    ?agent=/?lane=/?sort=/?order= straight off request.query_params (mirroring the ``analyze``
+    ?agent=/?clane=/?sort=/?order= straight off request.query_params (mirroring the ``analyze``
     stage's ?lane= resolution) rather than declaring typed Query() params on THIS route, so the
     wire-bounds contract stays scoped to the routes that actually declare them.
     """
     update = dict(await build_agents_pane_context(request, session))
-    update["stage"] = "agents"
-    update["stage_partial"] = _stage_partial("agents")
+    update["stage"] = stage
+    update["stage_partial"] = _stage_partial(stage)
     update["oob_counts"] = False
     return update
 
 
 # stage -> async context-update builder, dispatched by _render_stage. Every value has the
-# signature (request, session) -> dict[str, Any]; the returned mapping is merged into the base
-# shell context (T-57-01: the map is keyed by the SAME `stage` strings STAGE_PARTIALS/
-# UTILITY_PANES already whitelist, never used to build a template path itself). A stage absent
-# from this map (only "operations" today) keeps the base context untouched, matching the
+# signature (request, session, stage) -> dict[str, Any] -- `stage` is always the SAME string
+# used to key this dict entry (T-57-01: never used to build a template path itself), passed
+# through explicitly rather than assumed by the callee, so a builder stays correct if a second
+# key is ever aliased at it -- exactly like `rename`/`move`/`tagwrite` already alias at
+# build_changes_review_context below, which is stage-agnostic and ignores the argument. A stage
+# absent from this map (only "operations" today) keeps the base context untouched, matching the
 # pre-decomposition behavior of an if/elif chain with no matching branch.
-_STAGE_CONTEXT_BUILDERS: dict[str, Callable[[Request, AsyncSession], Awaitable[dict[str, Any]]]] = {
-    "summary": lambda request, session: _build_summary_context(request.app.state, session),
+_STAGE_CONTEXT_BUILDERS: dict[str, Callable[[Request, AsyncSession, str], Awaitable[dict[str, Any]]]] = {
+    "summary": lambda request, session, _stage: _build_summary_context(request.app.state, session),
     "analyze": _analyze_stage_context,
     "files": _files_stage_context,
-    "discover": lambda _request, session: _discover_stage_context(session),
-    "metadata": lambda _request, session: _metadata_stage_context(session),
-    "tracklist": lambda _request, session: _tracklist_stage_context(session),
-    "rename": build_changes_review_context,
-    "move": build_changes_review_context,
-    "tagwrite": build_changes_review_context,
-    "propose": build_propose_list_context,
-    "dedupe": lambda _request, session: _dedupe_stage_context(session),
-    "cue": lambda _request, session: _cue_stage_context(session),
-    "apply": lambda _request, session: _apply_stage_context(session),
-    "audit": _audit_stage_context,
+    "discover": lambda _request, session, _stage: _discover_stage_context(session),
+    "metadata": lambda _request, session, _stage: _metadata_stage_context(session),
+    "tracklist": lambda _request, session, _stage: _tracklist_stage_context(session),
+    "rename": lambda request, session, _stage: build_changes_review_context(request, session),
+    "move": lambda request, session, _stage: build_changes_review_context(request, session),
+    "tagwrite": lambda request, session, _stage: build_changes_review_context(request, session),
+    "propose": lambda request, session, _stage: build_propose_list_context(request, session),
+    "dedupe": lambda _request, session, _stage: _dedupe_stage_context(session),
+    "cue": lambda _request, session, _stage: _cue_stage_context(session),
+    "apply": lambda _request, session, _stage: _apply_stage_context(session),
+    "audit": lambda request, session, _stage: _audit_stage_context(request, session),
     "agents": _agents_stage_context,
 }
 
@@ -1293,7 +1305,8 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
     context keys (``stage`` / ``stage_partial`` / ``oob_counts``) that a builder's own update
     would otherwise shadow are re-asserted INSIDE that builder's return value (see
     :func:`_analyze_stage_context`, :func:`_files_stage_context`, :func:`_agents_stage_context`),
-    never here, so the merge below is always a plain ``context.update``.
+    never here, so the merge below is always a plain ``context.update``. Each builder receives
+    ``stage`` explicitly (rather than closing over it) so it stays correct under aliasing.
     """
     context: dict[str, Any] = {
         "request": request,
@@ -1309,7 +1322,7 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
     }
     builder = _STAGE_CONTEXT_BUILDERS.get(stage)
     if builder is not None:
-        context.update(await builder(request, session))
+        context.update(await builder(request, session, stage))
 
     if wants_fragment(request):
         return _render_stage_fragment(request, stage, context)
