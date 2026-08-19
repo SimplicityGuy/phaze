@@ -44,7 +44,10 @@ from phaze.services.pagination import (
 )
 from phaze.services.pipeline import analyze as pipeline_analyze_mod, get_analyze_files_page, get_analyze_working_set, get_pending_files_page
 
-from .test_pipeline import _backend_settings, _make_pipeline_file, _seed_process_file_ledger
+# phaze-7l8jh: tests/shared/services/test_pipeline.py was split into the
+# tests/shared/services/pipeline/ package (mirroring services/pipeline/); these helpers moved
+# verbatim into that package's _shared.py.
+from .pipeline._shared import _backend_settings, _make_pipeline_file, _seed_process_file_ledger
 
 
 if TYPE_CHECKING:

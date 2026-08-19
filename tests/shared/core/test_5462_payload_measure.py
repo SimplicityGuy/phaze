@@ -18,7 +18,10 @@ if TYPE_CHECKING:
 
 from phaze.models.analysis import AnalysisResult
 
-from ..services.test_pipeline import _make_pipeline_file
+# phaze-7l8jh: tests/shared/services/test_pipeline.py was split into the
+# tests/shared/services/pipeline/ package (mirroring services/pipeline/); _make_pipeline_file
+# moved verbatim into that package's _shared.py.
+from ..services.pipeline._shared import _make_pipeline_file
 
 
 @pytest.mark.asyncio
