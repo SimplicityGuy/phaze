@@ -292,6 +292,12 @@ jobs:
         # passing a third `-n auto` arg here.
         run: just test-bucket ${{ matrix.bucket.name }} "${{ matrix.bucket.paths }}"
 
+      - name: 📊 Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3  # v1.2.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+
       - name: 📤 Upload coverage shard
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
