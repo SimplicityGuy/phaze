@@ -9,7 +9,9 @@ from typing import TYPE_CHECKING
 
 from tests.shared.routers.pipeline._shared import (
     FileMetadata,
+    Tracklist,
     _cloud_compute_registry,  # noqa: F401 -- autouse fixture, never referenced by name
+    _link_propagated_tracklist,
     _link_tracklist,
     _make_tracklist,
     _seed_live_set_file,
@@ -248,6 +250,60 @@ async def test_refresh_rearms_the_drain_for_an_already_tracklisted_file(client: 
     assert "Refresh requested" in response.text
 
     assert await load_flagged_file_ids(session) == {file_rec.id}
+    await drain_router_background_tasks()
+    assert {(q, t) for q, t, _ in capture} == {("controller", "drain_tracklists")}
+    assert [c[2].get("limit") for c in capture] == [1]
+
+
+@pytest.mark.asyncio
+async def test_refresh_rearms_the_drain_for_a_propagated_files_button(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-vtovq / phaze-97pkq: REFRESH from a PROPAGATED (duplicate) file's own button must work.
+
+    The record page renders the "Refresh from 1001Tracklists" button for ANY file that has a
+    tracklist, including a propagated projection -- so the button posts the DUPLICATE's own file
+    id, not the canonical row's. Before phaze-97pkq's fix, ``_resolve_targets``'s file-id branch
+    ANDed the canonical filter directly onto that file-id predicate, and the row in scope was
+    itself a projection -- so the intersection was always empty: ``refreshed`` stayed 0, no cache
+    row was cleared, neither file was flagged, and the button silently did nothing. A status-only
+    assertion would have passed against that exact bug (the sibling test above's neighbour,
+    ``test_refresh_unknown_file_renders_fragment_not_dropped_404``, warns about the same shape of
+    trap), so this asserts the FULL outcome: the response confirms a refresh happened -- and since
+    exactly one canonical page is in play here, "Refresh requested" appearing IS ``refreshed == 1``
+    -- BOTH the canonical file and the duplicate end up flagged, the positive cache row for the
+    shared page is gone, and exactly one ``drain_tracklists`` slice is enqueued on the controller
+    queue with ``limit=1``.
+    """
+    from phaze.enums.tracklist_candidate import LookupOutcome
+    from phaze.models.tracklist_lookup_cache import TracklistLookupCache
+    from phaze.services.tracklist_lookup_cache import record_outcome
+    from phaze.services.tracklist_priority import load_flagged_file_ids
+
+    external_id = f"shared-{uuid.uuid4().hex[:12]}"
+    set_key = f"set-{uuid.uuid4().hex[:12]}"
+    canonical_file = await _seed_live_set_file(session)
+    duplicate_file = await _seed_live_set_file(session)
+    session.add(
+        Tracklist(
+            external_id=external_id,
+            source_url=f"https://www.1001tracklists.com/tracklist/{external_id}/x.html",
+            file_id=canonical_file.id,
+        )
+    )
+    session.add(_link_propagated_tracklist(duplicate_file, external_id=external_id, set_key=set_key))
+    await session.commit()
+    await record_outcome(session, set_key=set_key, query_text="propagated refresh test", outcome=LookupOutcome.FOUND, external_id=external_id)
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post(f"/pipeline/tracklists/{duplicate_file.id}/refresh")
+    assert response.status_code == 200
+    assert "Refresh requested" in response.text
+
+    assert await load_flagged_file_ids(session) == {canonical_file.id, duplicate_file.id}
+
+    cache_rows = (await session.execute(select(TracklistLookupCache).where(TracklistLookupCache.external_id == external_id))).scalars().all()
+    assert cache_rows == [], "the positive cache row for the shared page must be cleared"
+
     await drain_router_background_tasks()
     assert {(q, t) for q, t, _ in capture} == {("controller", "drain_tracklists")}
     assert [c[2].get("limit") for c in capture] == [1]

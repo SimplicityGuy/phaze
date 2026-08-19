@@ -134,16 +134,14 @@ async def _resolve_targets(session: AsyncSession, tracklist_ids: list[uuid.UUID]
         return []
     by_id: dict[uuid.UUID, Tracklist] = {}
     if tracklist_ids:
-        direct = await session.execute(select(Tracklist).where(Tracklist.id.in_(tracklist_ids), Tracklist.propagated_from_set_key.is_(None)))
+        direct = await session.execute(select(Tracklist).where(Tracklist.id.in_(tracklist_ids), Tracklist.is_canonical()))
         for row in direct.scalars():
             by_id[row.id] = row
     if file_ids:
         named = await session.execute(select(Tracklist.external_id).where(Tracklist.file_id.in_(file_ids)))
         external_ids = set(named.scalars().all())
         if external_ids:
-            canonical = await session.execute(
-                select(Tracklist).where(Tracklist.external_id.in_(external_ids), Tracklist.propagated_from_set_key.is_(None))
-            )
+            canonical = await session.execute(select(Tracklist).where(Tracklist.external_id.in_(external_ids), Tracklist.is_canonical()))
             for row in canonical.scalars():
                 by_id[row.id] = row
     return list(by_id.values())

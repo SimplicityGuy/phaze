@@ -14,6 +14,8 @@ from phaze.models.base import Base, TimestampMixin
 
 
 if TYPE_CHECKING:
+    from sqlalchemy.sql.elements import ColumnElement
+
     from phaze.models.file import FileRecord
 
 
@@ -101,6 +103,32 @@ class Tracklist(TimestampMixin, Base):
 
     file: Mapped[FileRecord | None] = relationship("FileRecord", foreign_keys=[file_id], lazy="noload")
     versions: Mapped[list[TracklistVersion]] = relationship("TracklistVersion", back_populates="tracklist", lazy="noload")
+
+    @classmethod
+    def is_canonical(cls) -> ColumnElement[bool]:
+        """The SQL form of :data:`CANONICAL_TRACKLIST_CLAUSE` -- the row actually scraped from 1001Tracklists.
+
+        phaze-vtovq was a hand-spelled copy of this predicate ANDed onto a file-id filter where the
+        row in scope was itself a propagated projection, so the intersection was always empty: the
+        refresh silently did nothing. Every ``WHERE external_id = ...`` read (or any other read that
+        means "the canonical row") MUST go through this classmethod rather than re-spell
+        ``propagated_from_set_key.is_(None)``, so the guard in
+        ``tests/shared/test_canonical_tracklist_clause.py`` can enforce it mechanically instead of
+        by review.
+        """
+        return cls.propagated_from_set_key.is_(None)
+
+    @classmethod
+    def is_propagated(cls) -> ColumnElement[bool]:
+        """The complement of :meth:`is_canonical` -- a projection propagated across a duplicate (phaze-fq9h.7).
+
+        Note the asymmetry with ``services/tracklist_priority.py``'s
+        ``tracklist.propagated_from_set_key is not None``: that is a Python ``is not`` check on an
+        already-loaded INSTANCE attribute, not a SQL predicate built for a query, so it is a
+        different thing wearing similar words and is deliberately NOT routed through this
+        classmethod (and the guard test acquits it explicitly).
+        """
+        return cls.propagated_from_set_key.is_not(None)
 
     __table_args__ = (
         Index("ix_tracklists_file_id", "file_id"),
