@@ -5,7 +5,11 @@ get_file_stage_buckets and friends -- `services/pipeline/files.py`.
 
 from __future__ import annotations
 
-from tests.shared.services.pipeline._shared import *
+from tests.shared.services.pipeline._shared import (
+    _NullSavepoint,
+    pytest,
+    uuid,
+)
 
 
 @pytest.mark.asyncio

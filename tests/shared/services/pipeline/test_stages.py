@@ -5,7 +5,13 @@ get_stage_busy_counts's activity split, the `_stats_fanout` process-global-semap
 
 from __future__ import annotations
 
-from tests.shared.services.pipeline._shared import *
+from tests.shared.services.pipeline._shared import (
+    _NullSavepoint,
+    asyncio,
+    get_stage_activity_counts,
+    pipeline_stages_mod,
+    pytest,
+)
 
 
 @pytest.mark.asyncio

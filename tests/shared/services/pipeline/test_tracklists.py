@@ -5,7 +5,21 @@ get_match_pending_tracklists, get_untracked_files -- `services/pipeline/tracklis
 
 from __future__ import annotations
 
-from tests.shared.services.pipeline._shared import *
+from typing import TYPE_CHECKING
+
+from tests.shared.services.pipeline._shared import (
+    Tracklist,
+    _make_pipeline_file,
+    _make_tracklist,
+    get_match_pending_tracklists,
+    get_untracked_files,
+    pytest,
+    uuid,
+)
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio

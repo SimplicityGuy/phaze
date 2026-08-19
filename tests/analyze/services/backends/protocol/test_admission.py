@@ -5,7 +5,20 @@
 
 from __future__ import annotations
 
-from tests.analyze.services.backends.protocol._shared import *
+from typing import TYPE_CHECKING
+
+from tests.analyze.services.backends.protocol._shared import (
+    CloudJob,
+    CloudJobStatus,
+    _make_file,
+    backends,
+    pytest,
+    uuid,
+)
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 # === hold_awaiting_cloud(): the shared go-forward awaiting writer (D-01/D-02/D-03/D-13) =====

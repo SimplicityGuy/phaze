@@ -5,7 +5,25 @@ count_proposal_pending_files, get_proposal_pending_batches -- `services/pipeline
 
 from __future__ import annotations
 
-from tests.shared.services.pipeline._shared import *
+from typing import TYPE_CHECKING
+
+from tests.shared.services.pipeline._shared import (
+    UTC,
+    AnalysisResult,
+    FileMetadata,
+    ProposalStatus,
+    RenameProposal,
+    _make_pipeline_file,
+    count_proposal_pending_files,
+    datetime,
+    get_proposal_pending_batches,
+    pytest,
+    uuid,
+)
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio

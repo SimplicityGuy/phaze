@@ -5,7 +5,10 @@ _safe_bucket_counts / _safe_bucket_snapshot degrade behavior -- `services/pipeli
 
 from __future__ import annotations
 
-from tests.shared.services.pipeline._shared import *
+from tests.shared.services.pipeline._shared import (
+    pipeline_mod,
+    pytest,
+)
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,22 @@ POST /api/v1/proposals/generate and /pipeline/proposals -- `routers/pipeline/pro
 
 from __future__ import annotations
 
-from tests.shared.routers.pipeline._shared import *
+from typing import TYPE_CHECKING
+
+from tests.shared.routers.pipeline._shared import (
+    _cloud_compute_registry,  # noqa: F401 -- autouse fixture, never referenced by name
+    _make_file_with_convergence,
+    _reset_saq_jobs_minimal,
+    drain_router_background_tasks,
+    pytest,
+    text,
+    wire_fakes,
+)
+
+
+if TYPE_CHECKING:
+    from httpx import AsyncClient
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio

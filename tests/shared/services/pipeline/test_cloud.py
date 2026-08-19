@@ -5,7 +5,32 @@ get_awaiting_cloud_count, get_cloud_phase_counts, get_pushing_count/get_pushed_c
 
 from __future__ import annotations
 
-from tests.shared.services.pipeline._shared import *
+from typing import TYPE_CHECKING
+
+from tests.shared.services.pipeline._shared import (
+    _KUEUE_AND_COMPUTE_TOML,
+    _KUEUE_ONLY_TOML,
+    CloudJob,
+    CloudJobStatus,
+    _failed_analysis_for,
+    _file,
+    _metadata_for,
+    _NullSavepoint,
+    _seed_cloud_job,
+    _seed_process_file_ledger,
+    count_backfill_candidates,
+    get_awaiting_cloud_count,
+    get_backfill_candidates,
+    get_pushed_count,
+    get_pushing_count,
+    pipeline_cloud_mod,
+    pytest,
+    uuid,
+)
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio

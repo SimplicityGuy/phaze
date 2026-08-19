@@ -5,7 +5,29 @@ deduped_count, get_scanned_total, get_global_reconciliation, get_agent_reconcili
 
 from __future__ import annotations
 
-from tests.shared.services.pipeline._shared import *
+from typing import TYPE_CHECKING
+
+from tests.shared.services.pipeline._shared import (
+    UTC,
+    Agent,
+    ScanBatch,
+    ScanStatus,
+    _completed_batch,
+    _NullSavepoint,
+    _recon_file,
+    datetime,
+    deduped_count,
+    get_agent_reconciliations,
+    get_global_reconciliation,
+    get_scanned_total,
+    pytest,
+    seed_active_agent,
+    uuid,
+)
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def test_deduped_count_none_passthrough() -> None:

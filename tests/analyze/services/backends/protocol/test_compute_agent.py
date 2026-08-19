@@ -5,7 +5,38 @@
 
 from __future__ import annotations
 
-from tests.analyze.services.backends.protocol._shared import *
+from typing import TYPE_CHECKING
+
+from tests.analyze.services.backends.protocol._shared import (
+    IN_FLIGHT_STATUSES,
+    TERMINAL_STATUSES,
+    UTC,
+    Any,
+    AsyncMock,
+    CloudJob,
+    CloudJobStatus,
+    DedupFakeTaskRouter,
+    _cloud_job_for,
+    _compute,
+    _ledger_row_exists,
+    _make_file,
+    _RaisingTaskRouter,
+    _seed_agent_row,
+    _seed_cloud_job,
+    _seed_live_saq_job,
+    _seed_push_file_ledger,
+    _seed_submitted_cloud_job,
+    backends,
+    backends_compute_agent,
+    datetime,
+    pytest,
+    seed_active_agent,
+    timedelta,
+)
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 # === select_agent_by_id (per-entry binding, D-01) ========================================

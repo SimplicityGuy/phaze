@@ -5,7 +5,12 @@
 
 from __future__ import annotations
 
-from tests.analyze.services.backends.protocol._shared import *
+from tests.analyze.services.backends.protocol._shared import (
+    _LOCAL_2KUEUE_HEAD,
+    _TWO_BUCKETS,
+    Any,
+    backends,
+)
 
 
 # === resolved_non_local_kind: N-Kueue-safe (any-kueue) + compute-only fail-fast ===========

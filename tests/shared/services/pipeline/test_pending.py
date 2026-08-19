@@ -5,7 +5,27 @@ get_discovered_files_with_duration, get_metadata_activity_summary, get_pending_f
 
 from __future__ import annotations
 
-from tests.shared.services.pipeline._shared import *
+from typing import TYPE_CHECKING
+
+from tests.shared.services.pipeline._shared import (
+    UTC,
+    FileMetadata,
+    FileRecord,
+    _file,
+    _make_pipeline_file,
+    _metadata_for,
+    _NullSavepoint,
+    datetime,
+    get_discovered_files_with_duration,
+    get_metadata_activity_summary,
+    get_metadata_pending_files,
+    pytest,
+    timedelta,
+)
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio

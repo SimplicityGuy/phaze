@@ -5,7 +5,46 @@ POST /pipeline/backfill-cloud and the L4 backfill-candidate query -- `routers/pi
 
 from __future__ import annotations
 
-from tests.shared.routers.pipeline._shared import *
+from typing import TYPE_CHECKING
+
+from tests.shared.routers.pipeline._shared import (
+    _KUEUE_BACKEND,
+    _LOCAL_BACKEND,
+    _LONG,
+    _SHORT,
+    UTC,
+    AnalysisResult,
+    Any,
+    CloudJobStatus,
+    RouteControl,
+    SchedulingLedger,
+    _analysis_failed_at,
+    _awaiting_cloud_ids,
+    _cloud_compute_registry,  # noqa: F401 -- autouse fixture, never referenced by name
+    _cloud_job_status,
+    _DrainableStubBackend,
+    _is_awaiting_cloud,
+    _persist_failed_with_duration,
+    _persist_files_with_duration,
+    _process_file_ledger_rows,
+    _reset_saq_jobs_minimal,
+    _run_stage_cloud_window,
+    datetime,
+    drain_router_background_tasks,
+    pytest,
+    seed_active_agent,
+    select,
+    settings,
+    text,
+    timedelta,
+    update,
+    wire_fakes,
+)
+
+
+if TYPE_CHECKING:
+    from httpx import AsyncClient
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 # --- Phase 55 Plan 04 Task 1 (L4): ledger-scoped backfill candidate query --------------------

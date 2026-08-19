@@ -5,7 +5,25 @@ POST /pipeline/match-tracklists, the per-file prioritize/refresh/unprioritize ac
 
 from __future__ import annotations
 
-from tests.shared.routers.pipeline._shared import *
+from typing import TYPE_CHECKING
+
+from tests.shared.routers.pipeline._shared import (
+    FileMetadata,
+    _cloud_compute_registry,  # noqa: F401 -- autouse fixture, never referenced by name
+    _link_tracklist,
+    _make_tracklist,
+    _seed_live_set_file,
+    drain_router_background_tasks,
+    pytest,
+    select,
+    uuid,
+    wire_fakes,
+)
+
+
+if TYPE_CHECKING:
+    from httpx import AsyncClient
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio

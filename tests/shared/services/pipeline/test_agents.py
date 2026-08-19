@@ -5,7 +5,28 @@ get_queue_activity, get_agent_lane_depths, get_agent_recent_scans, count_active_
 
 from __future__ import annotations
 
-from tests.shared.services.pipeline._shared import *
+from typing import TYPE_CHECKING
+
+from tests.shared.services.pipeline._shared import (
+    FakeQueue,
+    FakeTaskRouter,
+    SimpleNamespace,
+    _NullSavepoint,
+    _scan_batch,
+    count_active_agents,
+    datetime,
+    get_agent_lane_depths,
+    get_agent_recent_scans,
+    get_queue_activity,
+    pytest,
+    seed_active_agent,
+    timedelta,
+    uuid,
+)
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio

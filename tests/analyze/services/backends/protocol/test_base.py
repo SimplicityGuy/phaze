@@ -5,7 +5,19 @@ The Layer 2 D-02 cross-backend `in_flight_count` equivalence invariant -- `servi
 
 from __future__ import annotations
 
-from tests.analyze.services.backends.protocol._shared import *
+from typing import TYPE_CHECKING
+
+from tests.analyze.services.backends.protocol._shared import (
+    IN_FLIGHT_STATUSES,
+    CloudJob,
+    _compute,
+    _seed_cloud_job,
+    pytest,
+)
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 # === Layer 2: D-02 equivalence invariant =================================================

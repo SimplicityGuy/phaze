@@ -5,7 +5,20 @@ POST /pipeline/recover, GET /pipeline/recover/status, and `_run_recovery` -- `ro
 
 from __future__ import annotations
 
-from tests.shared.routers.pipeline._shared import *
+from typing import TYPE_CHECKING
+
+from tests.shared.routers.pipeline._shared import (
+    _cloud_compute_registry,  # noqa: F401 -- autouse fixture, never referenced by name
+    _recovery_result,
+    _set_recovery_state,
+    drain_router_background_tasks,
+    install_fake_queues,
+    pytest,
+)
+
+
+if TYPE_CHECKING:
+    from httpx import AsyncClient
 
 
 # ---------------------------------------------------------------------------

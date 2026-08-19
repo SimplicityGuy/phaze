@@ -5,7 +5,48 @@ POST /api/v1/analyze, /pipeline/analyze, and the ANALYSIS_FAILED bulk/per-file r
 
 from __future__ import annotations
 
-from tests.shared.routers.pipeline._shared import *
+from typing import TYPE_CHECKING
+
+from tests.shared.routers.pipeline._shared import (
+    _DEAD_DEEPEN_ARTIFACTS,
+    _JOB_HEARTBEAT_SEC,
+    _LONG,
+    _SHORT,
+    UTC,
+    AnalysisResult,
+    CloudJob,
+    CloudJobStatus,
+    DedupFakeQueue,
+    FileRecord,
+    Path,
+    ProcessFilePayload,
+    RouteControl,
+    SchedulingLedger,
+    _awaiting_cloud_ids,
+    _cloud_compute_registry,  # noqa: F401 -- autouse fixture, never referenced by name
+    _is_awaiting_cloud,
+    _make_file,
+    _make_file_owned_by,
+    _persist_files_with_duration,
+    _seed_analysis_failed,
+    datetime,
+    delete,
+    drain_router_background_tasks,
+    install_fake_queues,
+    make_agent_live,
+    postgresql,
+    pytest,
+    seed_active_agent,
+    select,
+    settings,
+    uuid,
+    wire_fakes,
+)
+
+
+if TYPE_CHECKING:
+    from httpx import AsyncClient
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio

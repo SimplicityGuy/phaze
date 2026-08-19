@@ -5,7 +5,36 @@
 
 from __future__ import annotations
 
-from tests.analyze.services.backends.protocol._shared import *
+from typing import TYPE_CHECKING
+
+from tests.analyze.services.backends.protocol._shared import (
+    Any,
+    AsyncMock,
+    CloudJob,
+    CloudJobStatus,
+    DedupFakeTaskRouter,
+    _cloud_job_for,
+    _kueue,
+    _kueue_with_buckets,
+    _make_file,
+    _RaisingTaskRouter,
+    _seed_cloud_job,
+    _seed_live_saq_job,
+    _seed_staging_cloud_job,
+    _stub_kube_available,
+    _stub_s3,
+    backends,
+    backends_kueue,
+    kube_staging,
+    pytest,
+    s3_staging,
+    seed_active_agent,
+    uuid,
+)
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio

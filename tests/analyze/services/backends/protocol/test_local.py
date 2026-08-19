@@ -5,7 +5,23 @@
 
 from __future__ import annotations
 
-from tests.analyze.services.backends.protocol._shared import *
+from typing import TYPE_CHECKING
+
+from tests.analyze.services.backends.protocol._shared import (
+    CloudJob,
+    CloudJobStatus,
+    DedupFakeTaskRouter,
+    _local,
+    _make_file,
+    backends,
+    pytest,
+    seed_active_agent,
+    uuid,
+)
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 # === is_available (3 impls) ==============================================================

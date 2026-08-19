@@ -5,7 +5,28 @@ get_analyze_working_set, get_analyze_files_page, analyze_lanes_content_hash, der
 
 from __future__ import annotations
 
-from tests.shared.services.pipeline._shared import *
+from typing import TYPE_CHECKING
+
+from tests.shared.services.pipeline._shared import (
+    CloudJob,
+    CloudJobStatus,
+    _backend,
+    _backend_settings,
+    _completed_analysis_for,
+    _failed_analysis_for,
+    _inflight_analysis_for,
+    _make_pipeline_file,
+    analyze_lanes_content_hash,
+    get_analyze_files_page,
+    get_analyze_working_set,
+    pipeline_analyze_mod,
+    pytest,
+    uuid,
+)
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio

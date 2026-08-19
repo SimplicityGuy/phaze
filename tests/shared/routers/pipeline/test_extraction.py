@@ -5,7 +5,24 @@ POST /api/v1/extract-metadata, /pipeline/extract-metadata, and the METADATA_FAIL
 
 from __future__ import annotations
 
-from tests.shared.routers.pipeline._shared import *
+from typing import TYPE_CHECKING
+
+from tests.shared.routers.pipeline._shared import (
+    ExtractMetadataPayload,
+    _cloud_compute_registry,  # noqa: F401 -- autouse fixture, never referenced by name
+    _make_file,
+    _make_file_owned_by,
+    drain_router_background_tasks,
+    make_agent_live,
+    pytest,
+    seed_active_agent,
+    wire_fakes,
+)
+
+
+if TYPE_CHECKING:
+    from httpx import AsyncClient
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio

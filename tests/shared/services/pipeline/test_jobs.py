@@ -5,7 +5,25 @@ get_stage_busy_counts, get_live_job_keys, get_match_busy_count, get_proposal_bus
 
 from __future__ import annotations
 
-from tests.shared.services.pipeline._shared import *
+from typing import TYPE_CHECKING
+
+from tests.shared.services.pipeline._shared import (
+    _BusySession,
+    _NullSavepoint,
+    count_inflight_jobs,
+    get_analysis_failed_files,
+    get_match_busy_count,
+    get_proposal_busy_count,
+    get_stage_busy_counts,
+    get_stage_progress,
+    pipeline_mod,
+    pytest,
+    text,
+)
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio

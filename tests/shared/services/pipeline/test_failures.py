@@ -5,7 +5,22 @@ get_analysis_failed_files/_count, get_analysis_stalled_count -- `services/pipeli
 
 from __future__ import annotations
 
-from tests.shared.services.pipeline._shared import *
+from typing import TYPE_CHECKING
+
+from tests.shared.services.pipeline._shared import (
+    _completed_analysis_for,
+    _failed_analysis_for,
+    _failed_file,
+    _NullSavepoint,
+    get_analysis_failed_count,
+    get_analysis_failed_files,
+    get_analysis_stalled_count,
+    pytest,
+)
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio

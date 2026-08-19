@@ -270,14 +270,6 @@ split-on-trailing-comma = true
 "src/phaze/cli/**" = ["T201"]
 "src/phaze/main.py" = ["T201"]
 "tests/**" = ["T201", "PLC", "S105", "ARG001"]
-# phaze-7l8jh: the split `tests/shared/routers/pipeline/test_*.py`,
-# `tests/shared/services/pipeline/test_*.py`, and
-# `tests/analyze/services/backends/protocol/test_*.py` suites star-import their shared
-# fixtures/helpers from `_shared.py` (a complete, explicit `__all__`) rather than duplicating the
-# whole prelude in every file -- see each package's `_shared.py` docstring for why.
-"tests/shared/routers/pipeline/test_*.py" = ["F403", "F405"]
-"tests/shared/services/pipeline/test_*.py" = ["F403", "F405"]
-"tests/analyze/services/backends/protocol/test_*.py" = ["F403", "F405"]
 
 [tool.uv]
 # nosemgrep: package_managers.uv.uv-missing-dependency-cooldown.uv-missing-dependency-cooldown

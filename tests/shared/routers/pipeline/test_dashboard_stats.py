@@ -5,7 +5,29 @@ GET /pipeline/, /pipeline/stats, build_dashboard_context, and the cloud admissio
 
 from __future__ import annotations
 
-from tests.shared.routers.pipeline._shared import *
+from typing import TYPE_CHECKING
+
+from tests.shared.routers.pipeline._shared import (
+    _ALL_SIX_CARD_IDS,
+    _VOX_KUEUE_ONLY_TOML,
+    CloudJob,
+    CloudJobStatus,
+    CloudPhase,
+    _cloud_compute_registry,  # noqa: F401 -- autouse fixture, never referenced by name
+    _make_file,
+    _seed_analysis_failed,
+    _seed_cloud_phase,
+    _seed_running_scan,
+    install_fake_queues,
+    pytest,
+    seed_active_agent,
+    uuid,
+)
+
+
+if TYPE_CHECKING:
+    from httpx import AsyncClient
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio
