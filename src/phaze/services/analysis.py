@@ -13,6 +13,7 @@ import platform
 import resource
 from statistics import mean, median
 import subprocess  # nosec B404  # ffprobe duration probe (D-10); fixed argv, no shell
+import threading
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -58,6 +59,13 @@ log = logging.getLogger(__name__)
 # is stored (truncated again by the callers' own _ERROR_DETAIL_MAX) and read by an operator --
 # enough for ffprobe's actual complaint, never an unbounded string.
 _PROBE_STDERR_MAX = 500
+
+# A streaming chunk decode is one blocking ``essentia.run`` call, so Python cannot
+# report progress from the decoding thread until it returns.  A small watchdog thread
+# emits truthful liveness while that call is still running.  Sixty seconds is 30x
+# inside D-08's 1 800 s silence bound, leaving ample scheduling slack without making
+# heartbeat traffic meaningful at archive scale.
+_DECODE_HEARTBEAT_INTERVAL_SEC = 60.0
 
 
 class AnalysisProbeError(RuntimeError):
@@ -1259,25 +1267,46 @@ def _decode_windows(
     ANALYSIS_FAILED -- the degradation path destroying exactly the work it exists to salvage.
     The beat says "still decoding", which is true and is all the watchdog needs.
 
-    The streaming rungs need no beat of their own: ``essentia.run`` is one blocking call that
-    cannot be instrumented from here, and the callers already beat immediately before invoking
-    a chunk decode, which covers it.
+    The streaming rungs run under a watchdog because ``essentia.run`` is one blocking C++
+    call.  The watchdog beats every 60 seconds until that call returns, decoupling D-08's
+    silence threshold from file duration and source sample rate.
     """
 
     def _beat() -> None:
         if on_beat is not None:
             on_beat()
 
+    def _streaming(*, gated_stop_at_sec: float | None = None) -> dict[int, Any]:
+        if on_beat is None:
+            return _decode_windows_streaming(file_path, sample_rate, windows, stop_at_sec=gated_stop_at_sec)
+
+        stopped = threading.Event()
+
+        def _watch() -> None:
+            while not stopped.wait(_DECODE_HEARTBEAT_INTERVAL_SEC):
+                try:
+                    _beat()
+                except Exception:  # liveness reporting is best-effort; decode correctness wins
+                    log.warning("decode heartbeat callback failed; continuing", exc_info=True)
+
+        watchdog = threading.Thread(target=_watch, name="phaze-decode-heartbeat", daemon=True)
+        watchdog.start()
+        try:
+            return _decode_windows_streaming(file_path, sample_rate, windows, stop_at_sec=gated_stop_at_sec)
+        finally:
+            stopped.set()
+            watchdog.join()
+
     decoded: dict[int, Any] | None = None
     if stop_at_sec is not None:
         try:
-            decoded = _decode_windows_streaming(file_path, sample_rate, windows, stop_at_sec=stop_at_sec)
+            decoded = _streaming(gated_stop_at_sec=stop_at_sec)
         except Exception:  # gate-level isolation: retry the same pass without the early-stop gate
             log.warning("gated streaming decode failed at %d Hz; retrying ungated", sample_rate, exc_info=True)
             _beat()  # the gated attempt may itself have burned minutes before failing
     if decoded is None:
         try:
-            decoded = _decode_windows_streaming(file_path, sample_rate, windows)
+            decoded = _streaming()
         except Exception:  # tier-level failure isolation: fall back to the per-window decode
             log.warning("streaming decode pass failed at %d Hz; falling back to per-window EasyLoader", sample_rate, exc_info=True)
             decoded = {}
