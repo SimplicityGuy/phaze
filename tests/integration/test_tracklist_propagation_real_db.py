@@ -263,7 +263,7 @@ async def test_a_canonical_scoped_sweep_selects_one_row_per_page(async_engine: A
                         select(Tracklist).where(
                             Tracklist.external_id == external_id,
                             Tracklist.source == "1001tracklists",
-                            Tracklist.propagated_from_set_key.is_(None),
+                            Tracklist.is_canonical(),
                             Tracklist.file_id.is_(None),
                         )
                     )

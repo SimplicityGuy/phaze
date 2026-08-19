@@ -25,6 +25,7 @@ from saq.queue.postgres import PostgresQueue
 from phaze.tasks._shared.deterministic_key import apply_deterministic_key
 from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
+from phaze.tasks._shared.resilient_queue import ResilientPostgresQueue
 from phaze.tasks._shared.stage_control import apply_stage_control
 
 
@@ -36,6 +37,7 @@ def test_returns_postgres_queue() -> None:
     """Test 1: the factory returns a PostgresQueue (NOT a redis-backed Queue)."""
     q = build_pipeline_queue("controller", _PG_URL, cache_redis_url=_REDIS_URL)
     assert isinstance(q, PostgresQueue)
+    assert isinstance(q, ResilientPostgresQueue)
     assert q.name == "controller"
 
 
