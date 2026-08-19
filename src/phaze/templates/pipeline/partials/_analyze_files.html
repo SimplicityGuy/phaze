@@ -49,7 +49,7 @@
           hx-get="/pipeline/analyze-files" hx-target="#analyze-files-view" hx-swap="innerHTML"
           hx-trigger="change"
           class="flex flex-wrap items-center gap-2 pb-3">
-        <span class="font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:text-gray-400">Show</span>
+        <span class="font-jura text-[11px] uppercase tracking-[0.2em] text-muted ">Show</span>
         <label class="sr-only" for="analyze-filter-status">Status</label>
         <select id="analyze-filter-status" name="status" aria-label="Filter analyze files by status" class="{{ _select }}">
             {% for val, label in _analyze_filters %}
@@ -60,10 +60,10 @@
         {# Clear the lens -- return to the default bounded working-set view (no status param). #}
         <button type="button"
                 hx-get="/pipeline/analyze-files" hx-target="#analyze-files-view" hx-swap="innerHTML"
-                class="text-sm px-2 py-1 rounded text-blue-600 dark:text-blue-400 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500">Clear filter</button>
+                class="text-sm px-2 py-1 rounded text-link hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500">Clear filter</button>
         {% endif %}
         {% if not active_status %}
-        <span class="text-xs text-gray-500 dark:text-gray-400">active work + latest completions — filter to browse the full archive</span>
+        <span class="text-xs text-muted ">active work + latest completions — filter to browse the full archive</span>
         {% endif %}
     </form>
 
@@ -77,11 +77,11 @@
            _lane_card.html (local 🖥️/emerald, compute ☁️/blue, kueue ⎈/amber); an unattributed cloud
            row (or an unrecognized kind) gets the neutral gray fallback. #}
         {% if f.lane_kind == 'local' %}
-            {% set badge_glyph, badge_color = '🖥️', 'text-emerald-600 dark:text-emerald-300' %}
+            {% set badge_glyph, badge_color = '🖥️', 'text-ok ' %}
         {% elif f.lane_kind == 'compute' %}
-            {% set badge_glyph, badge_color = '☁️', 'text-blue-600 dark:text-blue-300' %}
+            {% set badge_glyph, badge_color = '☁️', 'text-info ' %}
         {% elif f.lane_kind == 'kueue' %}
-            {% set badge_glyph, badge_color = '⎈', 'text-amber-600 dark:text-amber-300' %}
+            {% set badge_glyph, badge_color = '⎈', 'text-warn ' %}
         {% else %}
             {% set badge_glyph, badge_color = '▪', 'text-gray-600 dark:text-gray-300' %}
         {% endif %}
@@ -90,20 +90,20 @@
         {% if f.completed %}
             {# Completed (ANALYZED): full window coverage from the aggregate. #}
             {% set state_text = ('window %s/%s' % (f.fine_done, f.fine_total)) if f.fine_total else 'complete' %}
-            {% set state_color = 'text-emerald-600 dark:text-emerald-300' %}
+            {% set state_color = 'text-ok ' %}
         {% elif f.awaiting_cloud %}
             {% set state_text = 'pending (quota)' %}
-            {% set state_color = 'text-amber-600 dark:text-amber-300' %}
+            {% set state_color = 'text-warn ' %}
         {% elif f.analysis_failed %}
             {% set state_text = 'failed' %}
-            {% set state_color = 'text-rose-600 dark:text-rose-400' %}
+            {% set state_color = 'text-danger ' %}
         {% elif f.fine_total %}
             {# In-flight: render the merged 57.1 mid-flight N/M signal ALONGSIDE running (D-04). #}
             {% set state_text = 'running · %s/%s windows' % (f.fine_done, f.fine_total) %}
-            {% set state_color = 'text-blue-600 dark:text-blue-300' %}
+            {% set state_color = 'text-info ' %}
         {% else %}
             {% set state_text = 'running' %}
-            {% set state_color = 'text-blue-600 dark:text-blue-300' %}
+            {% set state_color = 'text-info ' %}
         {% endif %}
         {% set _ = ns.rows.append([
             {'text': f.filename, 'mono': True, 'title': f.path},
@@ -133,17 +133,17 @@
        lens + page_size as autoescaped query values (T-57-01: never a path splice). #}
     {% set _qs = '&page_size=' ~ analyze_page.page_size ~ (('&status=' ~ analyze_page.status) if analyze_page.status else '') %}
     <nav aria-label="Analyze files pagination" class="flex items-center justify-between mt-6">
-        <p class="text-sm text-gray-500 dark:text-gray-400">Page {{ analyze_page.page }}</p>
+        <p class="text-sm text-muted ">Page {{ analyze_page.page }}</p>
         <div class="flex gap-1">
             {% if analyze_page.page > 1 %}
             <button hx-get="/pipeline/analyze-files?page={{ analyze_page.page - 1 }}{{ _qs }}" hx-target="#analyze-files-view" hx-swap="innerHTML" class="text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">Previous</button>
             {% else %}
-            <span class="text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-gray-400 dark:text-gray-400 cursor-not-allowed">Previous</span>
+            <span class="text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-muted cursor-not-allowed">Previous</span>
             {% endif %}
             {% if analyze_page.has_next %}
             <button hx-get="/pipeline/analyze-files?page={{ analyze_page.page + 1 }}{{ _qs }}" hx-target="#analyze-files-view" hx-swap="innerHTML" class="text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">Next</button>
             {% else %}
-            <span class="text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-gray-400 dark:text-gray-400 cursor-not-allowed">Next</span>
+            <span class="text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-muted cursor-not-allowed">Next</span>
             {% endif %}
         </div>
     </nav>

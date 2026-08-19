@@ -53,14 +53,14 @@
             :disabled="$store.pipeline.controllerBusy > 0"
             aria-label="Generate AI proposals for all pending files"
             class="{{ _btn }}">GENERATE ALL</button>
-    <span id="propose-trigger-spinner" class="htmx-indicator text-xs text-gray-500 dark:text-gray-400">Enqueuing…</span>
+    <span id="propose-trigger-spinner" class="htmx-indicator text-xs text-muted ">Enqueuing…</span>
     <a href="/s/rename" hx-get="/s/rename" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="inline-flex h-9 items-center justify-center rounded-lg bg-amber-700 px-3 font-jura text-xs font-medium uppercase tracking-wider text-white hover:bg-amber-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg">Open Review</a>
 {% endset %}
 {% call ws.workspace(title="Propose", subcount=subcount, actions=actions) %}
     <div class="px-4 pt-4 sm:px-6">
         <div class="flex flex-col gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 sm:flex-row sm:items-center sm:justify-between dark:border-blue-900 dark:bg-blue-950/30">
             <div>
-                <p class="font-jura text-[11px] font-medium uppercase tracking-[0.18em] text-blue-700 dark:text-blue-300">Preparation stage</p>
+                <p class="font-jura text-[11px] font-medium uppercase tracking-[0.18em] text-info ">Preparation stage</p>
                 <p class="mt-1 text-sm text-gray-700 dark:text-gray-300">Generate and inspect candidate filenames and paths here. Approval and rejection happen only in Review.</p>
             </div>
             {{ ui.status_badge("Proposal provider", "litellm · " ~ llm_model, "accent", "●") }}

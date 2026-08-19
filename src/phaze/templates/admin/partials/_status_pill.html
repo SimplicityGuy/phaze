@@ -11,11 +11,11 @@
        name called `row`, so the ORIGINAL agent-only branch below (unchanged markup) is what renders. #}
 {% if row is defined and row.status_kind == 'lane' %}
     {% if row.status == 'ACTIVE' %}
-    <span class="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300"><span class="w-2 h-2 rounded-full bg-emerald-400" aria-hidden="true"></span><span aria-label="Status: active">ACTIVE</span></span>
+    <span class="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-ok "><span class="w-2 h-2 rounded-full bg-emerald-400" aria-hidden="true"></span><span aria-label="Status: active">ACTIVE</span></span>
     {% elif row.status == 'WAITING' %}
-    <span class="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300" role="alert"><span class="w-2 h-2 rounded-full bg-amber-400" aria-hidden="true"></span><span aria-label="Status: waiting on quota">WAITING</span></span>
+    <span class="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950 text-warn " role="alert"><span class="w-2 h-2 rounded-full bg-amber-400" aria-hidden="true"></span><span aria-label="Status: waiting on quota">WAITING</span></span>
     {% else %}
-    <span class="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400"><span class="w-2 h-2 rounded-full bg-gray-400 dark:bg-gray-600" aria-hidden="true"></span><span aria-label="Status: idle">IDLE</span></span>
+    <span class="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-muted "><span class="w-2 h-2 rounded-full bg-gray-400 dark:bg-gray-600" aria-hidden="true"></span><span aria-label="Status: idle">IDLE</span></span>
     {% endif %}
 {% else %}
     {# Expects `agent` in context (loop variable from agents_table.html pre-merge, or _agent_activity.html
@@ -26,11 +26,11 @@
        distinct via label text + aria-label). #}
     {% set _status = row.status if row is defined else agent._status %}
     {% if _status == 'alive' %}
-    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400" aria-label="Status: alive">ALIVE</span>
+    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-950 text-ok " aria-label="Status: alive">ALIVE</span>
     {% elif _status == 'stale' %}
-    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400" aria-label="Status: stale">STALE</span>
+    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950 text-warn " aria-label="Status: stale">STALE</span>
     {% elif _status == 'dead' %}
-    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-400" aria-label="Status: dead">DEAD</span>
+    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-danger " aria-label="Status: dead">DEAD</span>
     {% elif _status == 'revoked' %}
     <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300" aria-label="Status: revoked">REVOKED</span>
     {% elif _status == 'never' %}

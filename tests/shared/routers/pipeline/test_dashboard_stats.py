@@ -226,7 +226,7 @@ async def test_dashboard_renders_amber_stalled_for_quiet_running_scan(
     response = await client.get("/pipeline/scans/recent", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "stalled?" in response.text
-    assert "text-amber-600" in response.text
+    assert "text-warn" in response.text
 
 
 @pytest.mark.asyncio

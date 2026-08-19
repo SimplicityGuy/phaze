@@ -26,15 +26,15 @@
     {% set _kind = lane.kind %}
     {% if _kind == 'local' %}
         {% set lane_glyph = "🖥️" %}
-        {% set lane_color = "text-emerald-600 dark:text-emerald-300" %}
+        {% set lane_color = "text-ok " %}
         {% set lane_bar = "bg-emerald-400" %}
     {% elif _kind == 'compute' %}
         {% set lane_glyph = "☁️" %}
-        {% set lane_color = "text-blue-600 dark:text-blue-300" %}
+        {% set lane_color = "text-info " %}
         {% set lane_bar = "bg-blue-400" %}
     {% elif _kind == 'kueue' %}
         {% set lane_glyph = "⎈" %}
-        {% set lane_color = "text-amber-600 dark:text-amber-300" %}
+        {% set lane_color = "text-warn " %}
         {% set lane_bar = "bg-amber-400" %}
     {% else %}
         {% set lane_glyph = "▪" %}
@@ -53,7 +53,7 @@
         <div class="flex items-center justify-between gap-2">
             <span class="text-sm text-gray-700 dark:text-gray-200">
                 {{ lane_glyph }} {{ lane.kind|upper }} · {{ lane.id }}
-                <span class="ml-1 font-jura text-xs font-medium uppercase tracking-wider text-gray-400 dark:text-gray-400">RANK {{ lane.rank }}</span>
+                <span class="ml-1 font-jura text-xs font-medium uppercase tracking-wider text-muted ">RANK {{ lane.rank }}</span>
             </span>
             {% if lane.available %}
             <span class="font-mono text-sm font-medium {{ lane_color }}">{{ lane.in_flight }}/{{ lane.cap }}</span>
@@ -63,7 +63,7 @@
                real in-flight work behind "offline" (the lane can be unreachable for NEW dispatch
                while still draining work it already accepted). Greyed styling carries the "offline"
                signal instead of fabricating a zero. #}
-            <span class="font-mono text-sm font-medium text-gray-400 dark:text-gray-400">{{ lane.in_flight }}/{{ lane.cap }}</span>
+            <span class="font-mono text-sm font-medium text-muted ">{{ lane.in_flight }}/{{ lane.cap }}</span>
             {% endif %}
         </div>
 
@@ -75,7 +75,7 @@
         </div>
 
         {# Availability (word-labelled, never hue-only). #}
-        <p class="text-xs {% if lane.available %}text-gray-500 dark:text-gray-400{% else %}text-amber-600 dark:text-amber-400{% endif %}">
+        <p class="text-xs {% if lane.available %}text-muted {% else %}text-warn {% endif %}">
             {% if lane.available %}Available — accepting work.{% else %}offline — no live queue data on this poll.{% endif %}
         </p>
 
@@ -85,7 +85,7 @@
         <p class="text-xs text-gray-600 dark:text-gray-300">
             <span>{{ lane.quota_wait }} waiting</span> ·
             {% if lane.inadmissible > 0 %}
-            <span role="alert" class="text-amber-600 dark:text-amber-400">{{ lane.inadmissible }} inadmissible</span>
+            <span role="alert" class="text-warn ">{{ lane.inadmissible }} inadmissible</span>
             {% else %}
             <span>{{ lane.inadmissible }} inadmissible</span>
             {% endif %}
@@ -102,16 +102,16 @@
            names the agent the figures were read from so the panel can never again silently count a
            queue nobody writes to. #}
         <div>
-            <p class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Queue depth</p>
+            <p class="text-xs font-semibold uppercase tracking-wide text-muted ">Queue depth</p>
             {% if queue_depths %}
             <p class="mt-1 font-mono text-sm text-gray-700 dark:text-gray-200">
                 {% for tier, depth in queue_depths.items() %}{{ tier }} {{ depth }}{% if not loop.last %} · {% endif %}{% endfor %}
             </p>
             {% if queue_depths_agent %}
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">SAQ lanes of agent <span class="font-mono">{{ queue_depths_agent }}</span></p>
+            <p class="mt-1 text-xs text-muted ">SAQ lanes of agent <span class="font-mono">{{ queue_depths_agent }}</span></p>
             {% endif %}
             {% else %}
-            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ queue_depths_note or '—' }}</p>
+            <p class="mt-1 text-sm text-muted ">{{ queue_depths_note or '—' }}</p>
             {% endif %}
         </div>
 
@@ -120,7 +120,7 @@
            file_id.hex[:8], confirmed a UUID prefix, not the sha256 it was presumed to be); completed_at
            is the TRUE completion instant, not a lane-side observation timestamp that can lag/round. #}
         <div>
-            <p class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Recent completions</p>
+            <p class="text-xs font-semibold uppercase tracking-wide text-muted ">Recent completions</p>
             {% if recent_completions %}
             <ul class="mt-1 space-y-1 text-sm text-gray-700 dark:text-gray-200">
                 {% for c in recent_completions %}
@@ -128,12 +128,12 @@
                 {% endfor %}
             </ul>
             {% else %}
-            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">No completions in the last {{ recent_n | default(20) }}.</p>
+            <p class="mt-1 text-sm text-muted ">No completions in the last {{ recent_n | default(20) }}.</p>
             {% endif %}
         </div>
 
         {# Liveness caption — re-rendered every 5s by the own-tick below (server-rendered, no setInterval). #}
-        <p class="text-xs text-gray-400 dark:text-gray-400">Updated {{ refreshed_at.strftime('%H:%M:%S') if refreshed_at else '—' }}</p>
+        <p class="text-xs text-muted ">Updated {{ refreshed_at.strftime('%H:%M:%S') if refreshed_at else '—' }}</p>
 
         {# D-03 own-tick: the loaded body carries its OWN bounded 5s self-refresh scoped to this lane,
            re-swapping itself into #detail-pane. It is REMOVED on dismiss (no orphan loop): once the pane
@@ -166,7 +166,7 @@
     {# Unknown/offline backend_id -> friendly empty state (T-88-03), never a 500. No own-tick: there is
        no lane id to poll; dismiss returns the pane to its resting state. #}
     <div class="rounded-xl border border-amber-500/30 p-4 opacity-60" data-lane-id="{{ backend_id }}">
-        <p role="status" class="text-sm text-amber-600 dark:text-amber-400">Lane offline — no live queue data on this poll.</p>
-        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">This lane is not in the live registry snapshot.</p>
+        <p role="status" class="text-sm text-warn ">Lane offline — no live queue data on this poll.</p>
+        <p class="mt-1 text-xs text-muted ">This lane is not in the live registry snapshot.</p>
     </div>
 {% endif %}

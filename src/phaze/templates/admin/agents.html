@@ -35,7 +35,7 @@
 {% set worker_counts %}{{ agent_count }} agent{{ '' if agent_count == 1 else 's' }} · {{ compute_lane_count }} compute lane{{ '' if compute_lane_count == 1 else 's' }}{% endset %}
 {% call ws.workspace(title="AGENTS & COMPUTE LANES", subcount=worker_counts|tojson|forceescape) %}
     <div class="px-4 pt-4 sm:px-6">
-        <p class="text-sm text-gray-500 dark:text-gray-400">
+        <p class="text-sm text-muted ">
             Registered agents and configured compute lanes remain distinct worker types in one operational view. Refreshes every 5 seconds.
         </p>
     </div>
@@ -47,7 +47,7 @@
        monitor. Gated on enable_saq_ui -- the SAME flag that gates the /saq mount (main.py) -- so it
        never dangles as a 404. Low visual weight (muted palette). Opens in a new tab with
        rel="noopener" to prevent reverse-tabnabbing (T-66-05). #}
-    <p class="px-6 pb-6 text-xs text-gray-400 dark:text-gray-400">
+    <p class="px-6 pb-6 text-xs text-muted ">
         <a href="/saq" target="_blank" rel="noopener" class="hover:underline">SAQ monitor ↗</a>
     </p>
     {% endif %}

@@ -35,7 +35,7 @@
 {% call ws.workspace(title="AUDIT LOG") %}
 <div class="px-4 pt-4 sm:px-6" id="audit-scope-description">
     <p class="text-sm text-gray-600 dark:text-gray-300">Records approved file rename and move execution, including verification and failures.</p>
-    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Tag writes and tag-write undo actions use their separate tag audit history and do not appear in this table.</p>
+    <p class="mt-1 text-xs text-muted ">Tag writes and tag-write undo actions use their separate tag audit history and do not appear in this table.</p>
 </div>
 <div id="audit-content" class="pb-6" aria-describedby="audit-scope-description">
 {% include "execution/partials/filter_tabs.html" %}

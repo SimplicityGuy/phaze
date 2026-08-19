@@ -55,11 +55,11 @@
     <td colspan="7" class="px-4 py-4">
         <div class="flex items-center justify-between gap-2">
             <h3 id="compute-lane-detail-heading-{{ row.id }}" tabindex="-1"
-                class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Detail</h3>
+                class="text-xs font-semibold uppercase tracking-wide text-muted ">Detail</h3>
             <button type="button"
                     @click="hide()"
                     aria-label="Close detail"
-                    class="rounded-lg px-2 py-0.5 text-sm text-gray-500 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-gray-400 dark:hover:text-gray-100">
+                    class="rounded-lg px-2 py-0.5 text-sm text-muted hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:text-gray-100">
                 ✕<span class="sr-only"> Close</span>
             </button>
         </div>
@@ -75,7 +75,7 @@
              hx-trigger="load"
              hx-swap="innerHTML"
              hx-on::after-swap="if (window.Alpine) { Alpine.initTree(this); }">
-            <p class="text-sm text-gray-500 dark:text-gray-400">Loading…</p>
+            <p class="text-sm text-muted ">Loading…</p>
         </div>
     </td>
 </tr>
