@@ -15,18 +15,17 @@ import uuid
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import Select, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 import structlog
 
 from phaze.database import get_session
-from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
-from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.models.tracklist import Tracklist, TracklistTrack
 from phaze.schemas.agent_tasks import WriteCueSheetPayload
-from phaze.services.cue_generator import CueTrackData, generate_cue_content, parse_timestamp_string
-from phaze.services.stage_status import applied_clause, is_applied
+from phaze.services import cue_review
+from phaze.services.cue_generator import CueTrackData, generate_cue_content
+from phaze.services.stage_status import is_applied
 
 
 logger = structlog.get_logger(__name__)
@@ -36,83 +35,16 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(prefix="/cue", tags=["cue"])
 
 
-# The CUE list's display order (phaze-hdho): alphabetically by artist/event.
-#
-# phaze-0jpe: the leading conjunct used to be ``(Tracklist.source == "fingerprint").desc()`` -- the
-# D-02 / CUE-01 preference for putting audio-fingerprint-sourced tracklists first, because they
-# carried per-track timestamps that scraped 1001tracklists rows often lacked. Fingerprinting is gone
-# and no code path creates a ``source='fingerprint'`` row any more, so that conjunct now sorts on a
-# constant and only obscures the real order. Whether the historical rows themselves are purged is a
-# data question deliberately left to the removal runbook, NOT settled here -- and either answer
-# leaves this ordering correct.
-#
-# BOTH ``Tracklist.artist`` and ``Tracklist.event``
-# are nullable ``Text`` (models/tracklist.py), so a set of tracklists sharing a source and the same
-# -- or NULL -- artist/event forms a tie group. This tuple alone is NOT a unique sort key; every
-# caller MUST append a ``Tracklist.id`` tiebreaker (directly, or via :func:`paged_stmt`) before
-# relying on it for anything that slices or pages the result set (paging contract rule 4).
-_ELIGIBLE_DISPLAY_ORDER: tuple[Any, ...] = (
-    Tracklist.artist,
-    Tracklist.event,
-)
-
-
-def _eligible_tracklist_stmt() -> Select[Any]:
-    """Build the base (UNORDERED) SELECT for approved tracklists with EXECUTED files that have >=1 timestamped track.
-
-    Shared by every eligible-tracklist reader so the join/filter logic lives in exactly one place.
-    Deliberately carries NO ``ORDER BY`` -- callers compose :data:`_ELIGIBLE_DISPLAY_ORDER` (+ the
-    mandatory ``Tracklist.id`` tiebreaker) themselves, so it is applied exactly once per statement
-    instead of risking a double-appended sort key.
-
-    phaze-dboy: the timestamp-existence check is scoped to ``Tracklist.latest_version_id`` --
-    NOT "any version ever" -- because that is the ONLY version actual generation ever reads
-    (``_build_cue_tracks(session, tracklist.latest_version_id)`` in ``generate_cue``). A
-    re-scrape can create a newer ``latest_version_id``
-    whose tracks carry no timestamps while an OLDER version still has them; scoping this
-    predicate to "any version" previously listed that tracklist as eligible with a Generate
-    button that could never succeed (always "No tracks have timestamps"), permanently
-    inflating ``eligible`` past ``generated`` with no way to converge.
-    """
-    # Subquery: TracklistVersion ids that have at least one track with a timestamp. Matched
-    # against ``Tracklist.latest_version_id`` below (NOT ``Tracklist.id`` via ``TracklistVersion.
-    # tracklist_id``) so this evaluates the SAME version generation reads -- see phaze-dboy above.
-    has_timestamp_subq = select(TracklistTrack.version_id).where(TracklistTrack.timestamp.is_not(None)).distinct()
-
-    return (
-        select(Tracklist, FileRecord)
-        .join(FileRecord, Tracklist.file_id == FileRecord.id)
-        .where(
-            Tracklist.status == "approved",
-            Tracklist.file_id.is_not(None),
-            applied_clause(),
-            Tracklist.latest_version_id.in_(has_timestamp_subq),
-        )
-    )
-
-
-async def _get_eligible_tracklist_query(session: AsyncSession, *, limit: int | None = None) -> list[tuple[Tracklist, FileRecord]]:
-    """Query approved tracklists with EXECUTED files that have at least one timestamped track.
-
-    Ordered by :data:`_ELIGIBLE_DISPLAY_ORDER` with ``Tracklist.id`` appended as a tiebreaker so a
-    caller-supplied ``limit`` (a bare SQL ``LIMIT``, no ``OFFSET``) is deterministic even when many
-    rows tie on source/artist/event -- WITHOUT it, WHICH rows fall inside the cap could vary between
-    executions (phaze-hdho).
-
-    Pass ``limit`` to bound the result set at the SQL level. WR-03: the review-card consumer
-    (``services.review.get_cue_review_cards``) passes ``limit=_MAX_REVIEW_ROWS`` so the DB never
-    returns more than the render cap -- the eligible half is then genuinely memory-bounded, not just
-    loop-capped after materializing every eligible pair. This is the ONLY live reader of the
-    eligible set left in this router (phaze-y4s6 removed the dead ``list_cue`` / ``generate_batch``
-    legacy list-page routes, whose only purpose was rendering the now-deleted
-    ``cue/partials/cue_list.html``).
-    """
-    stmt = _eligible_tracklist_stmt().order_by(*_ELIGIBLE_DISPLAY_ORDER, Tracklist.id)
-    if limit is not None:
-        stmt = stmt.limit(limit)
-
-    result = await session.execute(stmt)
-    return list(result.tuples().all())
+# phaze-b4u3p: the eligible-tracklist query surface (display order, base SELECT, and the
+# paginated/limited reader) moved to ``services/cue_review.py`` -- it was reached into directly by
+# ``services/review.py`` (a service importing this router's underscore-prefixed helpers, a
+# layering inversion) and shared its join/filter core near-verbatim with the "gated" statement
+# review.py built independently, which was the 14-line clone repowise flagged between the two
+# files. Re-imported here under the SAME names so this router's own routes, and the existing
+# white-box tests that import them via ``phaze.routers.cue``, are unaffected.
+_ELIGIBLE_DISPLAY_ORDER = cue_review.ELIGIBLE_DISPLAY_ORDER
+_eligible_tracklist_stmt = cue_review.eligible_tracklist_stmt
+_get_eligible_tracklist_query = cue_review.get_eligible_tracklist_query
 
 
 # phaze-6bkk / phaze-9dwb: ``_get_cue_version`` lived here and did ``base_cue.exists()`` plus a full
@@ -131,46 +63,15 @@ async def _build_cue_tracks(
     session: AsyncSession,
     version_id: uuid.UUID,
 ) -> list[CueTrackData]:
-    """Build CueTrackData list from a tracklist version's tracks + Discogs links."""
-    # Load tracks
-    version_result = await session.execute(
-        select(TracklistVersion).options(selectinload(TracklistVersion.tracks)).where(TracklistVersion.id == version_id)
-    )
-    version = version_result.scalar_one_or_none()
-    if not version:
-        return []
+    """Build CueTrackData list from a tracklist version's tracks + Discogs links.
 
-    tracks = sorted(version.tracks, key=lambda t: t.position)
-    track_ids = [t.id for t in tracks]
-
-    # Load accepted Discogs links for these tracks
-    discogs_by_track: dict[uuid.UUID, DiscogsLink] = {}
-    if track_ids:
-        discogs_stmt = select(DiscogsLink).where(
-            DiscogsLink.track_id.in_(track_ids),
-            DiscogsLink.status == "accepted",
-        )
-        discogs_result = await session.execute(discogs_stmt)
-        for link in discogs_result.scalars().all():
-            discogs_by_track[link.track_id] = link
-
-    cue_tracks: list[CueTrackData] = []
-    for track in tracks:
-        ts = parse_timestamp_string(track.timestamp)
-        discogs_link = discogs_by_track.get(track.id)
-        cue_tracks.append(
-            CueTrackData(
-                position=track.position,
-                title=track.title,
-                artist=track.artist,
-                timestamp_seconds=ts,
-                genre=None,  # DiscogsLink has no genre field (D-09)
-                label=discogs_link.discogs_label if discogs_link else None,
-                year=discogs_link.discogs_year if discogs_link else None,
-            )
-        )
-
-    return cue_tracks
+    phaze-b4u3p: a single-version call into :func:`phaze.services.cue_review.build_cue_tracks_for_versions`
+    -- the batched form of this exact query pair, built to fix the cross-function N+1
+    ``services.review.get_cue_review_cards`` had calling this once per eligible tracklist. Kept as
+    a named, single-version wrapper here (rather than inlining the batched call at each of this
+    router's three single-tracklist call sites) so their call shape is unchanged.
+    """
+    return (await cue_review.build_cue_tracks_for_versions(session, [version_id])).get(version_id, [])
 
 
 async def _load_tracklist_with_file(session: AsyncSession, tracklist_id: uuid.UUID) -> tuple[Tracklist | None, FileRecord | None]:
