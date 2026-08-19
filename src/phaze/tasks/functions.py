@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from dataclasses import dataclass
 from pathlib import Path
 import time
 from typing import TYPE_CHECKING, Any
@@ -245,6 +246,268 @@ async def _report_terminal_failure(api: PhazeAgentClient, file_id: uuid.UUID, fa
         )
 
 
+async def _verify_scratch_integrity(api: PhazeAgentClient, payload: ProcessFilePayload) -> dict[str, Any] | None:
+    """CLOUDPIPE-03: verify a pushed scratch copy's bytes before trusting them.
+
+    sha256 is computed OFF the event loop (chunked stdlib hash; the scan.py pattern). A
+    mismatch means a corrupt/partial transfer -> delete it, report so the control plane
+    re-pushes (50-05 caps attempts), and DO NOT analyze (T-50-corrupt). Gated on both
+    fields being present so the bulk local producer (neither set) takes none of this
+    branch.
+
+    Returns the ``push_mismatch`` response dict when ``process_file`` should return
+    immediately, or ``None`` to continue on to analysis.
+    """
+    if not payload.scratch_path:
+        return None
+    if not payload.expected_sha256:
+        # IN-01: scratch copy present but the control plane did not pin an expected sha256.
+        # The control plane ALWAYS pins both (report_pushed reads the non-null sha256_hash), so
+        # this is only reachable via a malformed payload. Analyze anyway (the documented skip
+        # behavior) but WARN -- an unverified pushed copy is a defense-in-depth gap.
+        logger.warning(
+            "process_file: analyzing an unverified scratch copy (no expected_sha256 pinned)",
+            file_id=str(payload.file_id),
+        )
+        return None
+
+    try:
+        actual_sha256 = await asyncio.to_thread(compute_sha256, Path(payload.scratch_path))
+    except FileNotFoundError:
+        # CR-01 defense-in-depth: the scratch copy is gone (a prior attempt raced cleanup,
+        # or the push never landed). Route to a re-pushable mismatch rather than let the
+        # FileNotFoundError escape uncaught and strand the file in PUSHED with no callback.
+        # T-50-scratch-skew diagnostic: a persistent miss here most often means the
+        # control plane's PHAZE_COMPUTE_SCRATCH_DIR (which built this path) does not match
+        # the fileserver/agent PHAZE_CLOUD_SCRATCH_DIR (where push_file rsync'd the file),
+        # which otherwise only surfaces as an endless silent re-push loop. Name the path so
+        # the operator can diagnose a scratch-dir skew instead of guessing.
+        logger.warning(
+            "process_file: pushed scratch copy not found at the expected path — routing to "
+            "push-mismatch for re-push. If this repeats for every cloud file, the control "
+            "plane PHAZE_COMPUTE_SCRATCH_DIR does not match the agent PHAZE_CLOUD_SCRATCH_DIR.",
+            file_id=str(payload.file_id),
+            scratch_path=payload.scratch_path,
+        )
+        await api.report_push_mismatch(payload.file_id)
+        return {"file_id": str(payload.file_id), "status": "push_mismatch"}
+
+    if actual_sha256 != payload.expected_sha256:
+        Path(payload.scratch_path).unlink(missing_ok=True)
+        await api.report_push_mismatch(payload.file_id)
+        return {"file_id": str(payload.file_id), "status": "push_mismatch"}
+
+    return None
+
+
+@dataclass
+class _ExtractionOutcome:
+    """Result of :func:`_extract_and_analyze`.
+
+    ``terminal_response`` is set (and ``analysis`` stays ``None``) when a terminal
+    extraction/analysis error was already reported via ``_report_terminal_failure`` and
+    ``process_file`` should return it immediately. ``None`` on both fields never happens --
+    every return path sets exactly one.
+    """
+
+    analysis: Any = None
+    terminal_response: dict[str, Any] | None = None
+
+
+async def _extract_and_analyze(
+    api: PhazeAgentClient,
+    cfg: AgentSettings,
+    ctx: dict[str, Any],
+    payload: ProcessFilePayload,
+    read_path: str,
+    scratch_state: dict[str, str | None],
+) -> _ExtractionOutcome:
+    """Extract the audio track, then run analysis, mapping terminal errors to a response.
+
+    phaze-3ea41 (operator decision, format scope): pre-analysis audio-track extraction is
+    offered EVERY file (probed, then extracted only if it is not already plain audio), not
+    just recognized video extensions -- see services/video_audio.py's decision record.
+    ffprobe is the sole authority on whether read_path has an audio stream at all. Runs
+    INSIDE the concurrency semaphore, same as the analysis it feeds, so a burst of files
+    cannot spawn unbounded concurrent ffmpeg extractions alongside the essentia-bounded pool.
+
+    phaze-l832u: ``extract_audio_track`` returns an ``AudioSource``, NOT a path -- its
+    ``cleanup_path`` is ``None`` whenever nothing was created (the already-plain-audio skip),
+    which is what keeps the caller's unconditional unlink off ``read_path``: on that lane,
+    with no pushed copy, ``read_path`` IS the operator's archive original.
+
+    ``scratch_state["extracted_audio_path"]`` is written the MOMENT extraction produces a
+    cleanup path, before the analysis call that can fail -- an out-parameter rather than a
+    field on the return value, because a caller's ``finally`` must be able to find and remove
+    that scratch file even when this function raises something NONE of the four handlers
+    below catch (the original inline code got this for free from one shared function scope;
+    the caught-terminal-error cases below additionally mirror it onto the return value's
+    ``terminal_response`` path for symmetry, but ``scratch_state`` is the path that also
+    covers an unrecognized exception propagating straight out).
+
+    The four exception handlers mirror the original inline try/except: each of
+    NoAudioTrackError, AudioExtractionError, TimeoutError (stall kill) and
+    AnalysisSubprocessError (child crash) is deterministic for the same input bytes, so
+    T-43-08 treats every one as TERMINAL -- report once, no blind SAQ re-run. Any OTHER
+    exception is left to propagate to the caller's generic handler unchanged.
+    """
+    semaphore: asyncio.Semaphore | None = ctx.get("analysis_semaphore")
+    job = ctx.get("job")
+
+    async def _extraction_heartbeat() -> None:
+        # Extraction runs BEFORE run_analysis_subprocess spawns the analysis child, so the
+        # driver's inner stall watchdog isn't armed yet -- only the SAQ job's OWN outer
+        # heartbeat deadline (analysis_job_heartbeat_sec) can expire during a long
+        # extraction, and this keeps it touched exactly like _run_analysis_with_progress's
+        # _heartbeat does for the analysis phase.
+        await _touch_job_heartbeat(job)
+
+    try:
+        async with semaphore if semaphore is not None else contextlib.nullcontext():
+            audio_source = await extract_audio_track(
+                read_path,
+                file_id=str(payload.file_id),
+                # phaze-3ea41 (review correction): thread the agent's configured scratch dir --
+                # a directory provisioned for large landed files (the SAME one push_file rsyncs
+                # pushed containers into) -- rather than leaving the extracted-audio intermediate
+                # to fall back to bare /tmp, which is often a small tmpfs unfit for a
+                # multi-hour set's audio track. None (unset on a pure local-only agent) still
+                # falls back to tempfile.gettempdir() inside extract_audio_track itself.
+                scratch_dir=cfg.cloud_scratch_dir,
+                heartbeat_cb=_extraction_heartbeat if job is not None else None,
+                heartbeat_interval_sec=cfg.analysis_job_heartbeat_sec / _HEARTBEAT_TOUCHES_PER_DEADLINE,
+            )
+            # Register the scratch file for cleanup BEFORE the analysis that can fail.
+            scratch_state["extracted_audio_path"] = audio_source.cleanup_path
+            analysis = await _run_analysis_with_progress(
+                api,
+                cfg,
+                payload.file_id,
+                audio_source.analysis_path,
+                payload.models_path,
+                job=job,
+            )
+        return _ExtractionOutcome(analysis=analysis)
+    except NoAudioTrackError as exc:
+        # The container has no audio stream at all -- deterministic and TERMINAL (retrying
+        # ffprobe against the same bytes reports the same absence every time).
+        await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="error", error=str(exc)[:_ERROR_DETAIL_MAX]))
+        return _ExtractionOutcome(terminal_response={"file_id": str(payload.file_id), "status": "analysis_failed"})
+    except AudioExtractionError as exc:
+        # ffprobe/ffmpeg failed for a reason OTHER than "no audio track" -- dominantly a
+        # corrupt/truncated container, just as deterministic as an essentia child crash.
+        await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="error", error=str(exc)[:_ERROR_DETAIL_MAX]))
+        return _ExtractionOutcome(terminal_response={"file_id": str(payload.file_id), "status": "analysis_failed"})
+    except TimeoutError as exc:
+        # STALL kill (phaze-w55w1): the driver killed a child that reported no progress for
+        # analysis_stall_timeout_sec. RESEARCH §Q5: reason stays "timeout" -- the stored
+        # vocabulary and every consumer of it are unchanged -- while error carries the stall
+        # detail, so the durable marker says "stopped making progress", not merely "ran too long".
+        await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="timeout", error=str(exc)[:_ERROR_DETAIL_MAX]))
+        return _ExtractionOutcome(terminal_response={"file_id": str(payload.file_id), "status": "analysis_failed"})
+    except AnalysisSubprocessError as exc:
+        # essentia OOM/segfault/raise crashed the child (nonzero exit); the child's terminal
+        # error line rides along as detail so the durable failure marker names the actual
+        # cause -- e.g. phaze-zibn's AnalysisDecodeError is distinguishable from an essentia
+        # segfault without re-running anything.
+        await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="crashed", error=str(exc)[:_ERROR_DETAIL_MAX]))
+        return _ExtractionOutcome(terminal_response={"file_id": str(payload.file_id), "status": "analysis_failed"})
+
+
+def _analysis_reports_zero_natural_windows(fine_total: int | None, coarse_total: int | None) -> bool:
+    """True only when BOTH coverage fields are EXPLICITLY present and zero (phaze-by30).
+
+    Mirrors job_runner's zero-natural-window floor. phaze-zibn's guard in analyze_file
+    (services/analysis.py) only fires when >=1 natural window existed (``fine_total > 0 or
+    coarse_total > 0``); it is a no-op when the duration probe itself reads 0 seconds --
+    e.g. a truncated download whose readable ID3 header nonetheless yields zero-length audio
+    properties. Absence of either field (older/mocked analyzers) means "unknown", not "zero",
+    and must keep falling through to the normal partial-PUT path (see
+    test_process_file_coverage_fields_default_none_when_absent) -- hence the ``is None``
+    escape hatch below rather than treating a missing field as zero.
+    """
+    if fine_total is None or coarse_total is None:
+        return False
+    return (fine_total or 0) == 0 and (coarse_total or 0) == 0
+
+
+def _build_analysis_write_payload(analysis: Any) -> AnalysisWritePayload:
+    """Build the wire payload from the ``analyze_file`` result dict (D-26, CR-01).
+
+    ``mood``/``style`` are rebuilt from ``analysis["features"]`` (see module docstring);
+    ``windows`` is built from the plain per-window dicts (Phase 31 ANL-01) -- NO ORM/database
+    import (D-25 import boundary; tests/test_task_split.py). ``exclude_unset`` on the
+    resulting model preserves partial-PUT semantics for absent keys (phaze-w55w1 dropped the
+    fifth window-count field, ``sampled``, with the window caps).
+    """
+    features = analysis.get("features", {}) if isinstance(analysis, dict) else {}
+    mood_dict = _features_to_mood_dict(features) if isinstance(features, dict) else None
+    style_dict = _features_to_style_dict(features) if isinstance(features, dict) else None
+    windows = [AnalysisWindowPayload(**w) for w in analysis.get("windows", [])] if isinstance(analysis, dict) else []
+    return AnalysisWritePayload(
+        bpm=analysis.get("bpm"),
+        musical_key=analysis.get("musical_key"),
+        mood=mood_dict,
+        style=style_dict,
+        danceability=analysis.get("danceability"),
+        energy=analysis.get("energy"),
+        fine_windows_analyzed=analysis.get("fine_windows_analyzed"),
+        fine_windows_total=analysis.get("fine_windows_total"),
+        coarse_windows_analyzed=analysis.get("coarse_windows_analyzed"),
+        coarse_windows_total=analysis.get("coarse_windows_total"),
+        windows=windows,
+    )
+
+
+def _job_should_preserve_scratch_on_cancel(job: Any) -> bool:
+    """True when a CANCELLED job is genuinely coming back for a SAQ retry (phaze-2cqx).
+
+    SAQ cancellation (job-net timeout OR -- the routine case, since the agent worker is
+    started without shutdown_grace_period_s and saq defaults that to a ZERO-second grace --
+    every worker shutdown/restart) raises CancelledError, a BaseException the generic
+    ``except Exception`` handler never sees. A job already ``ABORTING`` (Worker.abort()) is
+    terminal with no retry, so only a retryable, non-aborting job should keep its pushed
+    scratch copy alive for the retry to re-verify and analyze (CR-01); otherwise cleanup
+    deletes the copy out from under a retry it turns out is not coming, or leaks scratch disk
+    for one that will never use it (T-50-scratch-dos).
+    """
+    return job is not None and job.retryable and job.status is not Status.ABORTING
+
+
+def _job_is_terminal_attempt(job: Any) -> bool:
+    """True when this is the LAST SAQ attempt for the job (phaze-ys4d, WR-01).
+
+    Report the terminal failure ONLY on the terminal attempt, so SAQ has already exhausted
+    retries and the durable failure marker reflects a real, final outcome rather than one
+    more re-run in flight. A retryable attempt must NOT report here -- it also keeps the
+    pushed scratch copy (CR-01): the push_file task is not re-run, so a deleted copy can
+    never be recovered for the in-place retry.
+    """
+    return job is not None and not job.retryable
+
+
+def _cleanup_process_file_scratch(payload: ProcessFilePayload, *, cleanup_scratch: bool, extracted_audio_path: str | None) -> None:
+    """Remove ``process_file``'s scratch files on the way out.
+
+    CLOUDPIPE-04: bound scratch-dir disk to the in-flight set -- delete the pushed scratch
+    copy on every TERMINAL exit path (success, timeout, crash, mismatch early-return,
+    non-retryable failure); ``missing_ok`` absorbs the mismatch branch's explicit unlink and
+    any local-file (no-scratch) job. A retryable failure leaves ``cleanup_scratch`` False so
+    the copy survives for the retry (T-50-scratch-dos still holds: a terminal failure always
+    reclaims the disk).
+
+    phaze-3ea41: the video-audio extraction scratch file, if one was produced, is removed on
+    EVERY exit path regardless of ``cleanup_scratch`` -- success, timeout, crash,
+    no-audio-track, or a retryable failure (unlike the pushed scratch copy above,
+    re-extracting from the still-present source is a cheap local operation, so there is no
+    retry case worth preserving it for).
+    """
+    if payload.scratch_path and cleanup_scratch:
+        Path(payload.scratch_path).unlink(missing_ok=True)
+    if extracted_audio_path is not None:
+        Path(extracted_audio_path).unlink(missing_ok=True)
+
+
 async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     """Run essentia analysis on a local file and post results via HTTP."""
     payload = ProcessFilePayload.model_validate(kwargs)
@@ -285,164 +548,39 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     # to keep it around, and always deleting bounds extraction scratch disk to one file's audio
     # track at a time no matter how many attempts a job takes.
     #
-    # phaze-l832u: this holds ``AudioSource.cleanup_path`` and NOTHING ELSE. It stays None when
-    # extraction was skipped (the file was already plain audio), because the finally below
-    # unlinks it unconditionally and the file that would otherwise be sitting here is the
-    # operator's archive original -- ``read_path`` is the real file on the local lane, not a
-    # staged copy. Assigning the analyzer's read path here would delete the archive.
-    extracted_audio_path: str | None = None
+    # phaze-l832u: ``scratch_state["extracted_audio_path"]`` holds ``AudioSource.cleanup_path``
+    # and NOTHING ELSE. It stays None when extraction was skipped (the file was already plain
+    # audio), because the finally below unlinks it unconditionally and the file that would
+    # otherwise be sitting here is the operator's archive original -- ``read_path`` is the
+    # real file on the local lane, not a staged copy. It is written by _extract_and_analyze the
+    # MOMENT extraction produces a scratch file, so the finally below can find and remove it
+    # however the try block exits -- success, a caught terminal error, OR an exception
+    # _extract_and_analyze does not itself catch (see that function's docstring for why this
+    # is an out-parameter rather than a field read only off its return value).
+    scratch_state: dict[str, str | None] = {"extracted_audio_path": None}
     try:
-        # CLOUDPIPE-03: integrity-verify the pushed bytes BEFORE trusting them. sha256 is computed
-        # OFF the event loop (chunked stdlib hash; the scan.py pattern). A mismatch means a
-        # corrupt/partial transfer -> delete it, report so the control plane re-pushes (50-05 caps
-        # attempts), and DO NOT analyze (T-50-corrupt). Gated on both fields being present so the
-        # bulk local producer (neither set) takes none of this branch.
-        if payload.scratch_path and payload.expected_sha256:
-            try:
-                actual_sha256 = await asyncio.to_thread(compute_sha256, Path(payload.scratch_path))
-            except FileNotFoundError:
-                # CR-01 defense-in-depth: the scratch copy is gone (a prior attempt raced cleanup,
-                # or the push never landed). Route to a re-pushable mismatch rather than let the
-                # FileNotFoundError escape uncaught and strand the file in PUSHED with no callback.
-                # T-50-scratch-skew diagnostic: a persistent miss here most often means the
-                # control plane's PHAZE_COMPUTE_SCRATCH_DIR (which built this path) does not match
-                # the fileserver/agent PHAZE_CLOUD_SCRATCH_DIR (where push_file rsync'd the file),
-                # which otherwise only surfaces as an endless silent re-push loop. Name the path so
-                # the operator can diagnose a scratch-dir skew instead of guessing.
-                logger.warning(
-                    "process_file: pushed scratch copy not found at the expected path — routing to "
-                    "push-mismatch for re-push. If this repeats for every cloud file, the control "
-                    "plane PHAZE_COMPUTE_SCRATCH_DIR does not match the agent PHAZE_CLOUD_SCRATCH_DIR.",
-                    file_id=str(payload.file_id),
-                    scratch_path=payload.scratch_path,
-                )
-                await ctx["api_client"].report_push_mismatch(payload.file_id)
-                return {"file_id": str(payload.file_id), "status": "push_mismatch"}
-            if actual_sha256 != payload.expected_sha256:
-                Path(payload.scratch_path).unlink(missing_ok=True)
-                # ``report_push_mismatch`` is added to the agent client by Plan 50-03 (same wave);
-                # reach it via the Any-typed ctx so this module need not import that parallel change.
-                await ctx["api_client"].report_push_mismatch(payload.file_id)
-                return {"file_id": str(payload.file_id), "status": "push_mismatch"}
-        elif payload.scratch_path:
-            # IN-01: scratch copy present but the control plane did not pin an expected sha256.
-            # The control plane ALWAYS pins both (report_pushed reads the non-null sha256_hash), so
-            # this is only reachable via a malformed payload. Analyze anyway (the documented skip
-            # behavior) but WARN -- an unverified pushed copy is a defense-in-depth gap.
-            logger.warning(
-                "process_file: analyzing an unverified scratch copy (no expected_sha256 pinned)",
-                file_id=str(payload.file_id),
-            )
+        # CLOUDPIPE-03 integrity gate; see _verify_scratch_integrity's docstring. A push-mismatch
+        # short-circuit returns immediately; ``None`` means the bytes are trusted (or there is no
+        # pushed copy at all) and analysis proceeds.
+        early_return = await _verify_scratch_integrity(api, payload)
+        if early_return is not None:
+            return early_return
 
-        try:
-            # Phase 101 (OBS-03): run the analysis in the exec'd child via the shared driver,
-            # with the parent-side throttled progress bridge posting
-            # ctx["api_client"].post_analysis_progress mid-analysis (best-effort). The
-            # ctx-provided semaphore (sized from worker_process_pool_size by agent_worker)
-            # preserves the retired pebble pool's concurrency bound; absent (bare test ctx),
-            # the single call needs no bound.
-            semaphore: asyncio.Semaphore | None = ctx.get("analysis_semaphore")
-            async with semaphore if semaphore is not None else contextlib.nullcontext():
-                # phaze-3ea41 (operator decision, format scope): pre-analysis audio-track
-                # extraction is offered EVERY file (probed, then extracted only if it is not
-                # already plain audio), not just recognized video extensions -- see
-                # services/video_audio.py's decision record. ffprobe is the sole authority on
-                # whether read_path has an audio stream at all; there is no payload.file_type
-                # gate here anymore. Runs INSIDE the concurrency semaphore, same as the analysis
-                # it feeds, so a burst of files cannot spawn unbounded concurrent ffmpeg
-                # extractions alongside the essentia-bounded pool.
-                #
-                # phaze-l832u: the call returns an AudioSource, NOT a path, and the two fields
-                # are not interchangeable. ``cleanup_path`` is None whenever nothing was created
-                # (the already-plain-audio skip), which is what keeps the outer finally's
-                # unconditional unlink off ``read_path`` -- on this lane, with no pushed copy,
-                # read_path IS the operator's archive original. Never assign
-                # ``extracted_audio_path`` from ``analysis_path``.
-                job = ctx.get("job")
+        # Phase 101 (OBS-03): run extraction + analysis in the exec'd child via the shared driver,
+        # with the parent-side throttled progress bridge posting
+        # ctx["api_client"].post_analysis_progress mid-analysis (best-effort). See
+        # _extract_and_analyze's docstring for the concurrency-semaphore and terminal-error mapping.
+        outcome = await _extract_and_analyze(api, cfg, ctx, payload, read_path, scratch_state)
+        if outcome.terminal_response is not None:
+            return outcome.terminal_response
+        analysis = outcome.analysis
 
-                async def _extraction_heartbeat() -> None:
-                    # Extraction runs BEFORE run_analysis_subprocess spawns the analysis
-                    # child, so the driver's inner stall watchdog isn't armed yet -- only the
-                    # SAQ job's OWN outer heartbeat deadline (analysis_job_heartbeat_sec) can
-                    # expire during a long extraction, and this keeps it touched exactly like
-                    # _run_analysis_with_progress's _heartbeat does for the analysis phase.
-                    await _touch_job_heartbeat(job)
-
-                audio_source = await extract_audio_track(
-                    read_path,
-                    file_id=str(payload.file_id),
-                    # phaze-3ea41 (review correction): thread the agent's configured scratch
-                    # dir -- a directory provisioned for large landed files (the SAME one
-                    # push_file rsyncs pushed containers into) -- rather than leaving the
-                    # extracted-audio intermediate to fall back to bare /tmp, which is often a
-                    # small tmpfs unfit for a multi-hour set's audio track. None (unset on a
-                    # pure local-only agent) still falls back to tempfile.gettempdir() inside
-                    # extract_audio_track itself.
-                    scratch_dir=cfg.cloud_scratch_dir,
-                    heartbeat_cb=_extraction_heartbeat if job is not None else None,
-                    heartbeat_interval_sec=cfg.analysis_job_heartbeat_sec / _HEARTBEAT_TOUCHES_PER_DEADLINE,
-                )
-                # Register the scratch file for cleanup BEFORE the analysis that can fail (and
-                # ``None`` when there is no scratch file at all -- the skip branch).
-                extracted_audio_path = audio_source.cleanup_path
-                analysis = await _run_analysis_with_progress(
-                    api,
-                    cfg,
-                    payload.file_id,
-                    audio_source.analysis_path,
-                    payload.models_path,
-                    job=ctx.get("job"),
-                )
-        except NoAudioTrackError as exc:
-            # phaze-3ea41: the container has no audio stream at all -- deterministic and
-            # TERMINAL (retrying ffprobe against the same bytes reports the same absence every
-            # time), so this reports immediately and does NOT fall into the generic retry path
-            # below, mirroring the TimeoutError/AnalysisSubprocessError "no blind re-run" handling.
-            await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="error", error=str(exc)[:_ERROR_DETAIL_MAX]))
-            return {"file_id": str(payload.file_id), "status": "analysis_failed"}
-        except AudioExtractionError as exc:
-            # phaze-3ea41 (review correction): ffprobe/ffmpeg failed for a reason OTHER than
-            # "no audio track" -- dominantly a corrupt/truncated container, which is just as
-            # deterministic as an essentia child crash (AnalysisSubprocessError below): the
-            # SAME bytes reproduce the SAME failure on retry. TERMINAL immediately (T-43-08:
-            # no blind re-run of a deterministically-doomed file), NOT the generic
-            # retryable-aware handler this used to fall through to.
-            await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="error", error=str(exc)[:_ERROR_DETAIL_MAX]))
-            return {"file_id": str(payload.file_id), "status": "analysis_failed"}
-        except TimeoutError as exc:
-            # STALL kill (phaze-w55w1): the driver killed a child that reported no progress for
-            # analysis_stall_timeout_sec. A file that keeps producing windows is never killed here
-            # however long it runs, so reaching this branch means the child was genuinely wedged,
-            # which is deterministic. TERMINAL -- report and return NORMALLY so SAQ marks the job
-            # COMPLETE (no blind re-run; T-43-08). RESEARCH §Q5. The report is delivery-guarded
-            # (phaze-x3dg): a failed POST must not escape into the generic retry path and re-run
-            # the doomed analysis. ``reason`` stays "timeout" -- the stored vocabulary and every
-            # consumer of it are unchanged -- while ``error`` carries the stall detail, so the
-            # durable marker says "stopped making progress", not merely "ran too long".
-            await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="timeout", error=str(exc)[:_ERROR_DETAIL_MAX]))
-            return {"file_id": str(payload.file_id), "status": "analysis_failed"}
-        except AnalysisSubprocessError as exc:
-            # essentia OOM/segfault/raise crashed the child (nonzero exit). Also deterministic ->
-            # TERMINAL the same way (the ProcessExpired mapping, preserved). The child's terminal
-            # error line rides along as detail so the durable failure marker names the actual
-            # cause -- e.g. phaze-zibn's AnalysisDecodeError (every window failed to decode)
-            # is distinguishable from an essentia segfault without re-running anything.
-            await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="crashed", error=str(exc)[:_ERROR_DETAIL_MAX]))
-            return {"file_id": str(payload.file_id), "status": "analysis_failed"}
-
-        # phaze-by30: mirror job_runner's zero-natural-window floor. phaze-zibn's guard in
-        # analyze_file (services/analysis.py) only fires when >=1 natural window existed
-        # (``fine_total > 0 or coarse_total > 0``); it is a no-op when the duration probe
-        # itself reads 0 seconds -- e.g. a truncated download whose readable ID3 header
-        # nonetheless yields zero-length audio properties. That leaves analyze_file free to
-        # return a false "success" (windows=[], all-None aggregates) which the completion PUT
-        # below would otherwise stamp as ``analysis_completed_at`` forever. Only trip this when
-        # BOTH coverage fields are EXPLICITLY present and zero -- their absence (older/mocked
-        # analyzers) means "unknown", not "zero", and must keep falling through to the normal
-        # partial-PUT path (see test_process_file_coverage_fields_default_none_when_absent).
+        # phaze-by30: see _analysis_reports_zero_natural_windows's docstring. That leaves
+        # analyze_file free to return a false "success" (windows=[], all-None aggregates) which
+        # the completion PUT below would otherwise stamp as ``analysis_completed_at`` forever.
         fine_total = analysis.get("fine_windows_total") if isinstance(analysis, dict) else None
         coarse_total = analysis.get("coarse_windows_total") if isinstance(analysis, dict) else None
-        if fine_total is not None and coarse_total is not None and (fine_total or 0) == 0 and (coarse_total or 0) == 0:
+        if _analysis_reports_zero_natural_windows(fine_total, coarse_total):
             await _report_terminal_failure(
                 api,
                 payload.file_id,
@@ -450,65 +588,25 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             )
             return {"file_id": str(payload.file_id), "status": "analysis_failed"}
 
-        features = analysis.get("features", {}) if isinstance(analysis, dict) else {}
-        mood_dict = _features_to_mood_dict(features) if isinstance(features, dict) else None
-        style_dict = _features_to_style_dict(features) if isinstance(features, dict) else None
-
-        # Phase 31 ANL-01: forward the per-window time-series. ``analyze_file`` returns
-        # ``windows`` as plain dicts (Plan 04), so we build AnalysisWindowPayload from each
-        # dict directly -- NO ORM/database import (D-25 import boundary; tests/test_task_split.py).
-        windows = [AnalysisWindowPayload(**w) for w in analysis.get("windows", [])] if isinstance(analysis, dict) else []
-
         # PUT result via HTTP (D-26 idempotent upsert; CR-01 partial-PUT semantics preserved by exclude_unset)
-        await api.put_analysis(
-            payload.file_id,
-            AnalysisWritePayload(
-                bpm=analysis.get("bpm"),
-                musical_key=analysis.get("musical_key"),
-                mood=mood_dict,
-                style=style_dict,
-                danceability=analysis.get("danceability"),
-                energy=analysis.get("energy"),
-                # Windowed-analysis progress counts (the four-field contract analyze_file emits;
-                # phaze-w55w1 dropped the fifth, `sampled`, with the window caps). Absent keys stay
-                # None so the partial-PUT contract preserves unset counts.
-                fine_windows_analyzed=analysis.get("fine_windows_analyzed"),
-                fine_windows_total=analysis.get("fine_windows_total"),
-                coarse_windows_analyzed=analysis.get("coarse_windows_analyzed"),
-                coarse_windows_total=analysis.get("coarse_windows_total"),
-                windows=windows,
-            ),
-        )
+        await api.put_analysis(payload.file_id, _build_analysis_write_payload(analysis))
         return {"file_id": str(payload.file_id), "status": "analyzed"}
     except asyncio.CancelledError:
-        # phaze-2cqx: SAQ cancellation (job-net timeout OR -- the routine case, since the
-        # agent worker is started without shutdown_grace_period_s and saq defaults that to a
-        # ZERO-second grace -- every worker shutdown/restart) raises CancelledError, a
-        # BaseException that the ``except Exception`` below never sees. Left unguarded, the
-        # outer ``finally`` still ran with ``cleanup_scratch`` at its default True and deleted
-        # the pushed scratch copy out from under a job SAQ is about to retry in place, turning
-        # a free retry into a wasted push-mismatch round-trip (CR-01). Preserve the copy only
-        # when the job is actually coming back: a job already ``ABORTING`` (Worker.abort()) is
-        # terminal with no retry, and preserving there would leak scratch disk (T-50-scratch-dos).
-        # ``ctx["job"]`` is always present under a real worker; absent only in a bare test ctx,
-        # where the default-True cleanup is correct (nothing will retry it).
-        job = ctx.get("job")
-        if job is not None and job.retryable and job.status is not Status.ABORTING:
+        # See _job_should_preserve_scratch_on_cancel's docstring (phaze-2cqx). ``ctx["job"]`` is
+        # always present under a real worker; absent only in a bare test ctx, where the
+        # default-True cleanup is correct (nothing will retry it).
+        if _job_should_preserve_scratch_on_cancel(ctx.get("job")):
             cleanup_scratch = False
         raise
     except Exception as exc:
         # Generic / possibly-transient error from the analysis pool OR the put_analysis callback
         # (the latter sits OUTSIDE the inner pool try, so it MUST be handled here too -- a put_analysis
-        # 5xx was the second CR-01 trap). Report ONLY on the terminal attempt (so SAQ has already
-        # exhausted retries). On a retryable attempt KEEP the scratch copy so the one real retry
-        # (retries=2) can re-verify and analyze it, then re-raise so SAQ records the failed attempt.
-        job = ctx.get("job")
-        if job is not None and not job.retryable:
-            # phaze-ys4d (WR-01): delivery-guarded, like every sibling terminal ack (scan.py,
-            # fingerprint.py, metadata_extraction.py). An unguarded ack POST failure (E2) would
-            # propagate INSTEAD of the bare `raise` below, so SAQ's recorded traceback leads with
-            # the ack's own error rather than the real analysis failure (exc, E1) this handler
-            # exists to report. _report_terminal_failure already swallows + logs E2.
+        # 5xx was the second CR-01 trap). See _job_is_terminal_attempt's docstring (phaze-ys4d, WR-01).
+        if _job_is_terminal_attempt(ctx.get("job")):
+            # An unguarded ack POST failure (E2) would propagate INSTEAD of the bare `raise` below,
+            # so SAQ's recorded traceback leads with the ack's own error rather than the real
+            # analysis failure (exc, E1) this handler exists to report. _report_terminal_failure
+            # already swallows + logs E2.
             await _report_terminal_failure(
                 api,
                 payload.file_id,
@@ -520,16 +618,5 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             cleanup_scratch = False
         raise
     finally:
-        # CLOUDPIPE-04: bound scratch-dir disk to the in-flight set -- delete on every TERMINAL exit
-        # path (success, timeout, crash, mismatch early-return, non-retryable failure). ``missing_ok``
-        # absorbs the mismatch branch's explicit unlink and any local-file (no-scratch) job. A
-        # retryable failure leaves ``cleanup_scratch`` False so the copy survives for the retry
-        # (T-50-scratch-dos still holds: a terminal failure always reclaims the disk).
-        if payload.scratch_path and cleanup_scratch:
-            Path(payload.scratch_path).unlink(missing_ok=True)
-        # phaze-3ea41: the video-audio extraction scratch file, if one was produced, ALWAYS on
-        # every exit path -- success, timeout, crash, no-audio-track, or a retryable failure
-        # (unlike the pushed scratch copy above, re-extraction is a cheap local operation, so
-        # there is no retry case worth preserving it for; see the variable's own comment above).
-        if extracted_audio_path is not None:
-            Path(extracted_audio_path).unlink(missing_ok=True)
+        # See _cleanup_process_file_scratch's docstring for what gets removed and why.
+        _cleanup_process_file_scratch(payload, cleanup_scratch=cleanup_scratch, extracted_audio_path=scratch_state["extracted_audio_path"])
