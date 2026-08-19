@@ -42,7 +42,7 @@ from phaze.services.stage_status import applied_clause
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterator, Sequence
     import uuid
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -126,6 +126,18 @@ async def get_eligible_tracklist_query(session: AsyncSession, *, limit: int | No
     return list(result.tuples().all())
 
 
+# asyncpg refuses a statement with more than 32,767 bind parameters, and SQLAlchemy renders
+# ``in_(list)`` as one parameter per element. 1000 keeps every generated IN list two orders of
+# magnitude clear of that ceiling while still collapsing the N+1 this module exists to fix.
+_ID_CHUNK = 1000
+
+
+def _id_chunks(ids: Sequence[uuid.UUID]) -> Iterator[list[uuid.UUID]]:
+    """Yield ``ids`` in ``_ID_CHUNK``-sized slices; yields nothing for an empty list."""
+    for start in range(0, len(ids), _ID_CHUNK):
+        yield list(ids[start : start + _ID_CHUNK])
+
+
 async def build_cue_tracks_for_versions(session: AsyncSession, version_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, list[CueTrackData]]:
     """Build ``CueTrackData`` lists for MANY tracklist versions in two queries total (phaze-b4u3p).
 
@@ -150,13 +162,25 @@ async def build_cue_tracks_for_versions(session: AsyncSession, version_ids: Sequ
     if not version_ids:
         return result
 
-    tracks_stmt = select(TracklistTrack).where(TracklistTrack.version_id.in_(version_ids))
-    tracks = (await session.execute(tracks_stmt)).scalars().all()
+    # phaze-b4u3p review finding: batching turns TWO queries per version into two per CHUNK, but a
+    # bare ``in_(...)`` over the whole batch is not safe at this call site's scale. The caller passes
+    # up to ``_MAX_REVIEW_ROWS`` (2000) version ids, and ``track_ids`` below is the union of EVERY
+    # track across all of them -- 2000 concert sets averaging ~17 timestamped tracks is already
+    # 34,000 ids. SQLAlchemy renders ``in_(list)`` as one bind parameter per element and asyncpg
+    # refuses a statement carrying more than 32,767, so the unchunked form raises InterfaceError.
+    # That would be caught by ``get_cue_review_cards``'s outer ``except Exception`` and degrade the
+    # WHOLE cue workspace to an empty list with only a log line -- an operator sees "no cue work to
+    # review", which is exactly the failure phaze-hcsb's per-card isolation exists to prevent.
+    # Chunking also bounds peak memory: without it every version's rows are resident at once.
+    tracks: list[TracklistTrack] = []
+    for chunk in _id_chunks(version_ids):
+        tracks_stmt = select(TracklistTrack).where(TracklistTrack.version_id.in_(chunk))
+        tracks.extend((await session.execute(tracks_stmt)).scalars().all())
 
     track_ids = [t.id for t in tracks]
     discogs_by_track: dict[uuid.UUID, DiscogsLink] = {}
-    if track_ids:
-        discogs_stmt = select(DiscogsLink).where(DiscogsLink.track_id.in_(track_ids), DiscogsLink.status == "accepted")
+    for chunk in _id_chunks(track_ids):
+        discogs_stmt = select(DiscogsLink).where(DiscogsLink.track_id.in_(chunk), DiscogsLink.status == "accepted")
         for link in (await session.execute(discogs_stmt)).scalars().all():
             discogs_by_track[link.track_id] = link
 

@@ -38,7 +38,7 @@ from tests.review.services.test_review_degrade import (
 
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterator
     from types import ModuleType
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -67,21 +67,26 @@ def _load_old_review_module(sha: str = _PRE_REFACTOR_SHA) -> ModuleType:
     instead of onto the shipped source -- this is a test-only shim for a HISTORICAL snapshot's
     import shape, not a real caller.
     """
-    import phaze.routers.tags as tags_module
-    from phaze.services import tag_comparison
-
-    for name in ("_get_accepted_discogs_links_for_files", "_get_tracklists_for_files"):
-        if not hasattr(tags_module, name):
-            setattr(tags_module, name, getattr(tag_comparison, name))
-
     repo_root = Path(__file__).resolve()
     completed = subprocess.run(  # noqa: S603 -- fixed argv, no shell, trusted git binary
         ["git", "show", f"{sha}:src/phaze/services/review.py"],  # noqa: S607
         cwd=repo_root.parent,
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
     )
+    if completed.returncode != 0:
+        # phaze-b4u3p review finding: this reads a HISTORICAL blob, so it needs real git history.
+        # `actions/checkout` defaults to `fetch-depth: 1`, under which the object simply is not in
+        # the clone and this failed for every test in the module with a bare CalledProcessError.
+        # tests.yml now sets `fetch-depth: 0` for the test job; this raises a diagnosable error if
+        # some future context is shallow again. It must NOT skip -- a parity suite that silently
+        # stops running is the fail-open shape phaze-7l8jh was filed to remove.
+        raise RuntimeError(
+            f"cannot read {sha}:src/phaze/services/review.py from git history "
+            f"(exit {completed.returncode}: {completed.stderr.strip()}). "
+            "A shallow clone cannot run the parity suite -- the test job needs `fetch-depth: 0`."
+        )
     source = completed.stdout
     module_name = f"phaze_services_review_pre_b4u3p_{sha[:12]}"
     spec = importlib.util.spec_from_loader(module_name, loader=None)
@@ -94,8 +99,26 @@ def _load_old_review_module(sha: str = _PRE_REFACTOR_SHA) -> ModuleType:
 
 
 @pytest.fixture(scope="module")
-def old_review() -> ModuleType:
-    return _load_old_review_module()
+def old_review() -> Iterator[ModuleType]:
+    """Load the pre-refactor module, with the historical import shim torn down afterwards.
+
+    phaze-b4u3p review finding: the shim below used to be applied inside
+    ``_load_old_review_module`` and never removed, so ``phaze.routers.tags`` kept the two batch
+    helpers injected for the REST of the pytest session. A later test asserting the new layering
+    seam -- that the batch forms are NOT reachable through ``routers.tags`` -- would then pass
+    against the shim rather than the shipped source. Applied and reverted here instead.
+    """
+    import phaze.routers.tags as tags_module
+    from phaze.services import tag_comparison
+
+    injected = [name for name in ("_get_accepted_discogs_links_for_files", "_get_tracklists_for_files") if not hasattr(tags_module, name)]
+    for name in injected:
+        setattr(tags_module, name, getattr(tag_comparison, name))
+    try:
+        yield _load_old_review_module()
+    finally:
+        for name in injected:
+            delattr(tags_module, name)
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +241,20 @@ async def test_cue_review_cards_parity_across_multiple_eligible_and_gated_sets(
     old_review: ModuleType,
     seed_cue_set: Callable[..., Awaitable[tuple[FileRecord, object, object]]],
 ) -> None:
+    """Card-level parity for the eligible/gated split -- NOT for the _build_cue_tracks rewrite.
+
+    phaze-b4u3p review finding, recorded so this test is not read as covering more than it does:
+    the "old" module's own ``from phaze.routers.cue import _build_cue_tracks`` resolves at exec
+    time against the CURRENT router, whose ``_build_cue_tracks`` this change rewrote (the
+    ``TracklistVersion`` + ``selectinload`` existence lookup became a direct ``TracklistTrack``
+    query). So both sides of the assertion below run the NEW track-building code, and that hunk is
+    compared against itself.
+
+    The two forms are in fact equivalent -- ``tracklist_tracks.version_id`` is NOT NULL with an FK
+    to ``tracklist_versions``, so a version that cannot be found can have no tracks and both forms
+    return ``[]`` -- but that equivalence is argued from the schema, not demonstrated here. What
+    this test does cover is the eligible/gated partition and the card payloads built around it.
+    """
     for i in range(4):
         await seed_cue_set(eligible=True, original_filename=f"parity-cue-elig-{i}.mp3")
     for i in range(3):
