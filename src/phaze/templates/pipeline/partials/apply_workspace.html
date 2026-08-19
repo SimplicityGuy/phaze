@@ -40,8 +40,8 @@
 {% import "ui/primitives.html" as ui %}
 {# phaze-tzy6s.17 / ADR-0008 operator vocabulary: "needing review", not "pending review". #}
 {% set subcount = "'" ~ preflight.total ~ " ready to execute · " ~ stats.pending ~ " still needing review'" %}
-{% set _apply_btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-amber-500/40 text-amber-700 dark:text-amber-200 hover:bg-amber-500/10 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
-{% set _eyebrow = 'font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:text-gray-400' %}
+{% set _apply_btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-amber-500/40 text-warn hover:bg-amber-500/10 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
+{% set _eyebrow = 'font-jura text-[11px] uppercase tracking-[0.2em] text-muted ' %}
 {% set actions %}
     {# R-4 mass-action guard. The button no longer dispatches directly: it opens the shared
        confirmation dialog, which owns the hx-post. hx-disabled-elt/controllerBusy still gate it. #}
@@ -87,7 +87,7 @@
                     {% for dest, count in preflight.conflicts %}
                     <tr class="border-t border-red-200 dark:border-red-900">
                         <td class="break-all px-3 py-2 font-mono text-gray-800 dark:text-gray-200">{{ dest }}</td>
-                        <td class="px-3 py-2 text-right tabular-nums text-red-700 dark:text-red-300">{{ count }}</td>
+                        <td class="px-3 py-2 text-right tabular-nums text-danger ">{{ count }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -104,10 +104,10 @@
             <li class="rounded-lg border border-gray-200 p-3 dark:border-phaze-border">
                 <div class="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
                     <span class="text-sm font-semibold text-gray-900 dark:text-gray-100">{{ op.label }}</span>
-                    <span class="font-jura text-sm tabular-nums text-emerald-600 dark:text-emerald-300">{{ op.count }}</span>
+                    <span class="font-jura text-sm tabular-nums text-ok ">{{ op.count }}</span>
                 </div>
-                <p class="mt-1 text-xs text-gray-600 dark:text-gray-400">{{ op.consequence }}</p>
-                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400"><span class="font-semibold">Reversibility:</span> {{ op.reversibility }}</p>
+                <p class="mt-1 text-xs text-muted ">{{ op.consequence }}</p>
+                <p class="mt-1 text-xs text-muted "><span class="font-semibold">Reversibility:</span> {{ op.reversibility }}</p>
             </li>
             {% endfor %}
         </ul>
@@ -121,7 +121,7 @@
             {% for agent in preflight.agents %}
             <li class="inline-flex items-center gap-2 rounded-md border border-gray-200 px-2.5 py-1 text-xs dark:border-phaze-border">
                 <span class="text-gray-800 dark:text-gray-200">{{ agent.name }}</span>
-                <span class="tabular-nums text-gray-500 dark:text-gray-400">{{ agent.count }}</span>
+                <span class="tabular-nums text-muted ">{{ agent.count }}</span>
             </li>
             {% endfor %}
         </ul>
@@ -139,9 +139,9 @@
                 <caption class="sr-only">Work excluded from this execution batch, with the reason and next action</caption>
                 <thead class="bg-gray-50 dark:bg-white/5">
                     <tr>
-                        <th scope="col" class="px-3 py-2 font-jura uppercase tracking-wider text-gray-600 dark:text-gray-400">Excluded</th>
-                        <th scope="col" class="px-3 py-2 text-right font-jura uppercase tracking-wider text-gray-600 dark:text-gray-400">Count</th>
-                        <th scope="col" class="px-3 py-2 font-jura uppercase tracking-wider text-gray-600 dark:text-gray-400">Why / next action</th>
+                        <th scope="col" class="px-3 py-2 font-jura uppercase tracking-wider text-muted ">Excluded</th>
+                        <th scope="col" class="px-3 py-2 text-right font-jura uppercase tracking-wider text-muted ">Count</th>
+                        <th scope="col" class="px-3 py-2 font-jura uppercase tracking-wider text-muted ">Why / next action</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -149,10 +149,10 @@
                     <tr class="border-t border-gray-200 dark:border-phaze-border">
                         <td class="px-3 py-2 align-top text-gray-800 dark:text-gray-200">
                             {{ exclusion.label }}
-                            {% if exclusion.blocking %}<span class="ml-1 font-jura text-[10px] uppercase tracking-wider text-red-700 dark:text-red-300">blocking</span>{% endif %}
+                            {% if exclusion.blocking %}<span class="ml-1 font-jura text-[10px] uppercase tracking-wider text-danger ">blocking</span>{% endif %}
                         </td>
                         <td class="px-3 py-2 text-right align-top tabular-nums text-gray-700 dark:text-gray-300">{{ exclusion.count }}{{ "+" if exclusion.at_least }}</td>
-                        <td class="px-3 py-2 align-top text-gray-600 dark:text-gray-400">{{ exclusion.reason }} {{ exclusion.next_action }}</td>
+                        <td class="px-3 py-2 align-top text-muted ">{{ exclusion.reason }} {{ exclusion.next_action }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -167,7 +167,7 @@
        it is the boundary itself, and it must not silently disappear on an empty queue. #}
     <div class="px-6 pt-4">
         <p class="{{ _eyebrow }} mb-2">Not dispatched by this control</p>
-        <p class="text-xs text-gray-600 dark:text-gray-400">
+        <p class="text-xs text-muted ">
             EXECUTE APPROVED runs approved filename and destination changes only.
             Tag writes are authorized and dispatched separately (ADR-0008); this control does not run them.
             Dispatch them from the Tag Changes section of Changes Review.
@@ -196,11 +196,11 @@
            term -- the five status numbers now sum to Total unconditionally. #}
         <div>
             <span class="{{ _eyebrow }}">Needs Review</span>
-            <p class="text-xl font-semibold text-amber-600 dark:text-amber-400">{{ stats.pending }}</p>
+            <p class="text-xl font-semibold text-warn ">{{ stats.pending }}</p>
         </div>
         <div>
             <span class="{{ _eyebrow }}">Approved</span>
-            <p class="text-xl font-semibold text-emerald-600 dark:text-emerald-300">{{ stats.approved }}</p>
+            <p class="text-xl font-semibold text-ok ">{{ stats.approved }}</p>
         </div>
         <div>
             <span class="{{ _eyebrow }}">Executed</span>
@@ -208,11 +208,11 @@
         </div>
         <div>
             <span class="{{ _eyebrow }}">Blocked</span>
-            <p class="text-xl font-semibold text-red-600 dark:text-red-400">{{ stats.failed }}</p>
+            <p class="text-xl font-semibold text-danger ">{{ stats.failed }}</p>
         </div>
         <div>
             <span class="{{ _eyebrow }}">Rejected</span>
-            <p class="text-xl font-semibold text-rose-600 dark:text-rose-400">{{ stats.rejected }}</p>
+            <p class="text-xl font-semibold text-danger ">{{ stats.rejected }}</p>
         </div>
         <div>
             <span class="{{ _eyebrow }}">Avg confidence</span>

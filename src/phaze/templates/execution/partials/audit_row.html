@@ -18,12 +18,12 @@
            result yet, so they keep the "—" placeholder. #}
         {% if log.status == "completed" %}
             {% if log.sha256_verified %}
-                <span class="text-green-600 dark:text-green-400" aria-label="SHA256 verified">&#10003;</span>
+                <span class="text-ok " aria-label="SHA256 verified">&#10003;</span>
             {% else %}
-                <span class="text-red-600 dark:text-red-400" aria-label="SHA256 not verified">&#10007;</span>
+                <span class="text-danger " aria-label="SHA256 not verified">&#10007;</span>
             {% endif %}
         {% else %}
-            <span class="text-gray-400 dark:text-gray-400" aria-label="Not applicable">&mdash;</span>
+            <span class="text-muted " aria-label="Not applicable">&mdash;</span>
         {% endif %}
     </td>
     <td class="px-4 py-3">
@@ -37,14 +37,14 @@
             {{ ui.status_badge('Status', 'Pending', 'attention', '…') }}
         {% endif %}
     </td>
-    <td class="px-4 py-3 text-gray-500 dark:text-gray-400">
+    <td class="px-4 py-3 text-muted ">
         {{ log.executed_at.strftime('%Y-%m-%d %H:%M:%S') }}
     </td>
-    <td class="px-4 py-3 text-red-600 dark:text-red-400">
+    <td class="px-4 py-3 text-danger ">
         {% if log.error_message %}
             {{ log.error_message }}
         {% else %}
-            <span class="text-gray-400 dark:text-gray-400">&mdash;</span>
+            <span class="text-muted ">&mdash;</span>
         {% endif %}
     </td>
     <td class="px-4 py-3">
@@ -60,7 +60,7 @@
                 hx-swap="innerHTML"
                 aria-expanded="false"
                 aria-controls="audit-detail-{{ log.id }}"
-                class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 text-xs px-2 py-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                class="text-muted hover:text-gray-700 dark:hover:text-gray-300 text-xs px-2 py-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                 aria-label="Show details for {{ log.source_path }}">
             Details
         </button>

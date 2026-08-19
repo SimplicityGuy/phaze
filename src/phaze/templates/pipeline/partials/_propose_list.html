@@ -94,23 +94,23 @@
 {% for p in propose_proposals %}
     {% if p.confidence is none %}
         {% set _conf_text = "—" %}
-        {% set _conf_color = "text-gray-500" %}
+        {% set _conf_color = "text-muted" %}
     {% else %}
         {% set _pct = (p.confidence * 100) | round | int %}
         {% set _conf_text = _pct ~ "%" %}
         {% if _pct >= 90 %}
-            {% set _conf_color = "text-emerald-600 dark:text-emerald-300" %}
+            {% set _conf_color = "text-ok " %}
         {% elif _pct >= 70 %}
-            {% set _conf_color = "text-amber-600 dark:text-amber-300" %}
+            {% set _conf_color = "text-warn " %}
         {% else %}
-            {% set _conf_color = "text-gray-500" %}
+            {% set _conf_color = "text-muted" %}
         {% endif %}
     {% endif %}
     {% set _ = ns.rows.append([
         {'text': p.filename, 'mono': True, 'title': p.original_path},
         {'text': p.proposed_filename},
         {'text': (p.proposed_path or "—"), 'mono': True, 'wrap': True, 'title': (p.proposed_path or "No proposed path")},
-        {'text': llm_model, 'mono': True, 'title': llm_model, 'color': 'text-gray-500 dark:text-gray-400'},
+        {'text': llm_model, 'mono': True, 'title': llm_model, 'color': 'text-muted '},
         {'text': _conf_text, 'mono': True, 'color': _conf_color},
     ]) %}
 {% endfor %}
@@ -140,8 +140,8 @@
 {% if propose_stats.pending > 0 %}
 <section aria-label="Proposal generation complete" class="mx-4 mb-4 flex flex-col gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-4 sm:mx-6 sm:flex-row sm:items-center sm:justify-between dark:border-emerald-900 dark:bg-emerald-950/30">
     <div>
-        <p class="text-sm font-semibold text-emerald-800 dark:text-emerald-300">{{ propose_stats.pending }} candidate proposal{{ "s" if propose_stats.pending != 1 else "" }} ready for review</p>
-        <p class="mt-1 text-xs text-emerald-700 dark:text-emerald-400">Inspect candidates here, then approve, edit, or reject them in the canonical Review workspace.</p>
+        <p class="text-sm font-semibold text-ok ">{{ propose_stats.pending }} candidate proposal{{ "s" if propose_stats.pending != 1 else "" }} ready for review</p>
+        <p class="mt-1 text-xs text-ok ">Inspect candidates here, then approve, edit, or reject them in the canonical Review workspace.</p>
     </div>
     <a href="/s/rename" hx-get="/s/rename" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="inline-flex h-9 shrink-0 items-center justify-center rounded-md bg-amber-700 px-3 font-jura text-xs font-medium uppercase tracking-wider text-white hover:bg-amber-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-phaze-bg">Review changes →</a>
 </section>
@@ -163,11 +163,11 @@
     {% endcall %}
 {% elif propose_generation_pending > 0 %}
     {% call ui.state("empty", empty_heading, "Files are ready for candidate generation. Use Generate All to create proposals, then inspect them here.") %}
-        <a href="#propose-generate" class="rounded-md bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Go to Generate All</a>
+        <a href="#propose-generate" class="rounded-md bg-action-brand px-3 py-2 text-sm font-semibold text-white hover:bg-action-brand-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Go to Generate All</a>
     {% endcall %}
 {% else %}
     {% call ui.state("empty", empty_heading, empty_body) %}
-        <a href="/s/metadata" hx-get="/s/metadata" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="rounded-md bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Prepare files in Metadata</a>
+        <a href="/s/metadata" hx-get="/s/metadata" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="rounded-md bg-action-brand px-3 py-2 text-sm font-semibold text-white hover:bg-action-brand-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Prepare files in Metadata</a>
     {% endcall %}
 {% endif %}
 {# pager_url / pager_target / page_size_choices come from the ROUTER context, not a {% with %} here,

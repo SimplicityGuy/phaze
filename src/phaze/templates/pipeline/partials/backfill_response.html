@@ -8,11 +8,11 @@
    neutral "nothing to backfill" copy. When the Phase-51 master toggle is off ({{ disabled }}),
    the endpoint short-circuits and surfaces the disabled notice instead (no state mutation). #}
 {% if count > 0 %}
-<span class="inline-flex items-center gap-2 text-sm text-green-600 dark:text-green-400 font-medium">
+<span class="inline-flex items-center gap-2 text-sm text-ok font-medium">
     Backfilled {{ count }} long files: {{ cloud }} cloud, {{ awaiting }} awaiting cloud.
 </span>
 {% elif disabled %}
-<span class="text-sm text-gray-500 dark:text-gray-400">Cloud burst is disabled (all-local registry) — nothing backfilled.</span>
+<span class="text-sm text-muted ">Cloud burst is disabled (all-local registry) — nothing backfilled.</span>
 {% else %}
-<span class="text-sm text-gray-500 dark:text-gray-400">No timed-out long files to backfill.</span>
+<span class="text-sm text-muted ">No timed-out long files to backfill.</span>
 {% endif %}

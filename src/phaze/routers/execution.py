@@ -770,7 +770,7 @@ async def execution_progress(request: Request, batch_id: uuid.UUID) -> EventSour
                     # batch_id). Close the stream with a terminal event rather than polling forever.
                     yield {
                         "event": "complete",
-                        "data": 'This execution is no longer available. <a href="/s/audit" class="text-blue-600 hover:underline ml-2">View Audit Log</a>',
+                        "data": 'This execution is no longer available. <a href="/s/audit" class="text-link hover:underline ml-2">View Audit Log</a>',
                     }
                     # phaze-047gd: the browser's EventSource only stops reconnecting on an
                     # sse-close-registered event; htmx-ext-sse reads sse-close exclusively from the
@@ -840,9 +840,9 @@ async def execution_progress(request: Request, batch_id: uuid.UUID) -> EventSour
             # (CONTEXT specifics line 264 widens the existing single-status check).
             if status in {"complete", "complete_with_errors"}:
                 if failed == 0:
-                    msg = f'Execution complete. All {total} files renamed successfully. <a href="/s/audit" class="text-blue-600 hover:underline ml-2">View Audit Log</a>'
+                    msg = f'Execution complete. All {total} files renamed successfully. <a href="/s/audit" class="text-link hover:underline ml-2">View Audit Log</a>'
                 else:
-                    msg = f'Execution complete. {completed} succeeded, {failed} failed. <a href="/s/audit" class="text-blue-600 hover:underline ml-2">View Audit Log</a>'
+                    msg = f'Execution complete. {completed} succeeded, {failed} failed. <a href="/s/audit" class="text-link hover:underline ml-2">View Audit Log</a>'
                 yield {"event": status, "data": msg}
                 # phaze-047gd: see the empty-hash terminal path above for why this second yield is
                 # required -- the sse-close listener lives on the sse-connect element and only ever

@@ -69,14 +69,14 @@
     <div class="border border-gray-200 dark:border-phaze-border rounded-lg p-4">
     <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
         <h2 id="agents-table-heading" class="font-jura text-xs font-medium uppercase tracking-[0.15em] text-gray-700 dark:text-gray-300">Agents &amp; compute lanes</h2>
-        <p class="font-mono text-xs tabular-nums text-gray-500 dark:text-gray-400">
+        <p class="font-mono text-xs tabular-nums text-muted ">
             {{ agent_count }} agent{{ '' if agent_count == 1 else 's' }} · {{ compute_lane_count }} lane{{ '' if compute_lane_count == 1 else 's' }}
         </p>
     </div>
     {% if not rows %}
     <div class="text-center py-8">
         <p class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">No agents registered yet</p>
-        <p class="text-sm text-gray-500 dark:text-gray-400">
+        <p class="text-sm text-muted ">
             Provision an agent token via psql, then run <code class="font-mono bg-gray-100 dark:bg-phaze-panel px-1 rounded">just up-agent</code> on the file server. Once the worker boots, it will appear here within a few seconds.
         </p>
     </div>
@@ -99,7 +99,7 @@
     <div class="relative overflow-x-auto">
         <table class="w-full text-sm text-left">
             <caption class="sr-only">Registered agents and compute lanes</caption>
-            <thead class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase border-b border-gray-200 dark:border-phaze-border">
+            <thead class="text-xs font-semibold text-muted uppercase border-b border-gray-200 dark:border-phaze-border">
                 {# phaze-a6hm.4 sortable headers, driven by the shared column_sort contract.
 
                    SERVER-SIDE: a click re-requests this table from its own endpoint under a new ORDER
@@ -166,7 +166,7 @@
                         <span class="text-sm font-semibold text-gray-900 dark:text-gray-100 block" title="{{ row.id }}">{{ row.name }}</span>
                         {# A lane's AGENT cell is just backend_id — no secondary id line (acceptance rule 2). #}
                         {% if row.secondary_id %}
-                        <span class="font-mono text-xs text-gray-500 dark:text-gray-400 block">{{ row.secondary_id }}</span>
+                        <span class="font-mono text-xs text-muted block">{{ row.secondary_id }}</span>
                         {% endif %}
                     </td>
                     <td class="px-4 py-3">{% include "admin/partials/_kind_badge.html" %}</td>
@@ -175,7 +175,7 @@
                         {% if row.queue is not none %}
                             {{ row.queue }}
                         {% else %}
-                            <span class="text-gray-400 dark:text-gray-400">—</span>
+                            <span class="text-muted ">—</span>
                         {% endif %}
                     </td>
                     {# A lane has no heartbeat — the shared columns must not lie (acceptance rule 2):
@@ -184,14 +184,14 @@
                        agent, exactly the perpetually-DEAD misreading this bead exists to prevent). #}
                     <td class="px-4 py-3">
                         {% if row.status_kind == 'lane' %}
-                            <span class="text-gray-400 dark:text-gray-400">—</span>
+                            <span class="text-muted ">—</span>
                         {% else %}
                             {{ humanize_relative_time(row.last_seen, now=now) }}
                         {% endif %}
                     </td>
                     <td class="px-4 py-3">
                         {% if row.status_kind == 'lane' %}
-                            <span class="text-gray-400 dark:text-gray-400">—</span>
+                            <span class="text-muted ">—</span>
                         {% else %}
                             {{ row.scan_roots }}
                         {% endif %}
@@ -250,7 +250,7 @@
        once per poll, forever. init()/destroy() on the x-data object is the documented
        Alpine lifecycle hook for exactly this (alpinejs.dev/globals/alpine-data), and is
        public API in the pinned 3.15.12 build — unlike $el._x_cleanups, which is internal. #}
-    <p class="text-xs text-gray-500 dark:text-gray-400 mt-2"
+    <p class="text-xs text-muted mt-2"
        x-data="{
            refreshedAt: new Date('{{ refreshed_at_iso }}'),
            now: new Date(),
@@ -269,7 +269,7 @@
        htmx:afterSwap, so this banner appears within ~2s of a failure and disappears
        within ~2s of recovery. x-cloak keeps the banner invisible until Alpine reads
        the storage key (prevents a flash of stale red on hard reload after recovery). #}
-    <p class="text-xs font-semibold text-red-700 dark:text-red-400 mt-1"
+    <p class="text-xs font-semibold text-danger mt-1"
        role="alert"
        x-data="{
            lastError: localStorage.getItem('phaze:agents:lastError'),

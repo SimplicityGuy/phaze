@@ -8,8 +8,8 @@
    legitimately differ post-cutover -- the cross-stage deadlock dissolving, not a regression. #}
 <div class="grid grid-cols-5 gap-4">
     <div class="bg-blue-50 dark:bg-blue-950 rounded-lg p-4 text-center">
-        <p class="text-2xl font-bold text-blue-700 dark:text-blue-400">{{ stats.discovered }}</p>
-        <p class="text-sm text-blue-600 dark:text-blue-400">Discovered</p>
+        <p class="text-2xl font-bold text-info ">{{ stats.discovered }}</p>
+        <p class="text-sm text-info ">Discovered</p>
     </div>
     <div class="bg-yellow-50 rounded-lg p-4 text-center">
         <p class="text-2xl font-bold text-yellow-700 dark:text-yellow-400">{{ stats.analyzed }}</p>
@@ -20,12 +20,12 @@
         <p class="text-sm text-purple-600 dark:text-purple-400">Proposed</p>
     </div>
     <div class="bg-green-50 rounded-lg p-4 text-center">
-        <p class="text-2xl font-bold text-green-700 dark:text-green-400">{{ stats.approved }}</p>
-        <p class="text-sm text-green-600 dark:text-green-400">Approved</p>
+        <p class="text-2xl font-bold text-ok ">{{ stats.approved }}</p>
+        <p class="text-sm text-ok ">Approved</p>
     </div>
     <div class="bg-gray-50 dark:bg-phaze-panel rounded-lg p-4 text-center">
         <p class="text-2xl font-bold text-gray-700 dark:text-gray-300">{{ stats.executed }}</p>
-        <p class="text-sm text-gray-600 dark:text-gray-400">Executed</p>
+        <p class="text-sm text-muted ">Executed</p>
     </div>
 </div>
 {# OOB: refresh the DAG canvas's gating-count seeds on the same 5s stats tick WITHOUT

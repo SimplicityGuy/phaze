@@ -9,11 +9,11 @@
 {% if agent is not defined or agent is none or not agent.scan_roots %}
 {% if agent is not defined or agent is none %}
 <div>
-    <label for="scan-root" class="block text-sm font-semibold text-gray-500 dark:text-gray-400 mb-1">
+    <label for="scan-root" class="block text-sm font-semibold text-muted mb-1">
         Scan root
     </label>
     <select id="scan-root" disabled
-            class="w-full text-sm rounded-md border border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel text-gray-400 dark:text-gray-400 px-3 py-2 cursor-not-allowed">
+            class="w-full text-sm rounded-md border border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel text-muted px-3 py-2 cursor-not-allowed">
         <option>Select an agent first</option>
     </select>
 </div>
@@ -37,12 +37,12 @@
 </div>
 <div>
     <label for="scan-subpath" class="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">
-        Subpath <span class="text-gray-400 dark:text-gray-400 font-normal">(optional)</span>
+        Subpath <span class="text-muted font-normal">(optional)</span>
     </label>
     <input id="scan-subpath" name="subpath" type="text"
            placeholder="e.g. 2026-coachella/"
            class="w-full text-sm rounded-md border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-bg text-gray-900 dark:text-gray-100 px-3 py-2 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+    <p class="text-xs text-muted mt-1">
         Optional. Appended to the scan root. Must not contain <code>..</code> path traversal.
     </p>
 </div>

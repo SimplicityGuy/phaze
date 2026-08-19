@@ -17,9 +17,9 @@
      aria-live="polite">
     <div class="flex items-center justify-between mb-2">
         <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Scan no longer available</h3>
-        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-200 dark:bg-gray-800 text-gray-600 dark:text-gray-400" aria-label="Status: gone">GONE</span>
+        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-200 dark:bg-gray-800 text-muted " aria-label="Status: gone">GONE</span>
     </div>
-    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">This scan was removed. Check Recent Scans for its outcome.</p>
+    <p class="text-xs text-muted mt-1">This scan was removed. Check Recent Scans for its outcome.</p>
 </div>
 {% elif batch.status == 'running' %}
 <div class="bg-white dark:bg-phaze-bg border border-gray-200 dark:border-phaze-border rounded-lg p-4"
@@ -40,19 +40,19 @@
             {% else %}
             <span class="inline-block h-2 w-2 rounded-full bg-green-500 dark:bg-green-400 motion-safe:animate-pulse" aria-hidden="true"></span>
             {% endif %}
-            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400" aria-label="Status: running">RUNNING</span>
+            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-info " aria-label="Status: running">RUNNING</span>
         </div>
     </div>
     <p class="text-sm text-gray-700 dark:text-gray-300 font-mono">
         {{ batch.processed_files }} / {{ batch.total_files or '?' }} files
     </p>
-    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+    <p class="text-xs text-muted mt-1">
         {{ agent_name }} · {{ batch.scan_path }}
     </p>
     {% if is_stalled %}
-    <p class="text-xs text-amber-600 dark:text-amber-400 mt-1">stalled? no activity for {{ seconds_since_progress }}s</p>
+    <p class="text-xs text-warn mt-1">stalled? no activity for {{ seconds_since_progress }}s</p>
     {% else %}
-    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">last activity {{ seconds_since_progress }}s ago</p>
+    <p class="text-xs text-muted mt-1">last activity {{ seconds_since_progress }}s ago</p>
     {% endif %}
 </div>
 {% elif batch.status == 'completed' %}
@@ -60,12 +60,12 @@
      aria-live="polite">
     <div class="flex items-center justify-between mb-2">
         <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Scan complete</h3>
-        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400" aria-label="Status: completed">COMPLETED</span>
+        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-950 text-ok " aria-label="Status: completed">COMPLETED</span>
     </div>
     <p class="text-sm text-gray-700 dark:text-gray-300 font-mono">
         {{ batch.processed_files }} / {{ batch.total_files }} files
     </p>
-    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+    <p class="text-xs text-muted mt-1">
         {{ agent_name }} · {{ batch.scan_path }}{% if elapsed_seconds is not none %} · finished in {{ elapsed_seconds }}s{% endif %}
     </p>
 </div>
@@ -74,16 +74,16 @@
      aria-live="polite">
     <div class="flex items-center justify-between mb-2">
         <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Scan failed</h3>
-        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-400" aria-label="Status: failed">FAILED</span>
+        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-danger " aria-label="Status: failed">FAILED</span>
     </div>
     <p class="text-sm text-gray-700 dark:text-gray-300 font-mono">
         {{ batch.processed_files }} / {{ batch.total_files or '?' }} files
     </p>
-    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+    <p class="text-xs text-muted mt-1">
         {{ agent_name }} · {{ batch.scan_path }}
     </p>
     {% if batch.error_message %}
-    <p class="text-sm text-red-600 dark:text-red-400 mt-2">{{ batch.error_message }}</p>
+    <p class="text-sm text-danger mt-2">{{ batch.error_message }}</p>
     {% endif %}
 </div>
 {% endif %}

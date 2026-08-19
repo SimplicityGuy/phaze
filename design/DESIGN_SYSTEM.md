@@ -2,7 +2,7 @@
 
 **Project:** Phaze — Align Your Music
 **Movement:** Resonant Precision
-**Version:** 1.1
+**Version:** 1.2
 
 ---
 
@@ -36,7 +36,7 @@ Sound is invisible architecture. Every visual mark is a waveform — each line, 
 
 ### Surface, Border & Text Colors (as implemented)
 
-The build defines three Phaze-specific surface/border tokens and deliberately repaints selected Tailwind colour rungs in the Tailwind v4 `@theme` block (`assets/src/app.css`). There are no separate `--bg-*`, `--border-*`, or `--text-*` custom properties. Light/dark is normally handled by Tailwind's `dark:` variant (a `.dark` class flip on the root, see `@custom-variant dark` in `app.css`). The one scoped variable adjustment restores the brighter stock `gray-400` and `violet-400` values under `.dark`, because the darker light-theme text ramp cannot serve both backgrounds.
+The build defines three Phaze-specific surface/border tokens and six semantic text tokens in `assets/src/app.css`. Templates use the semantic names for direct-surface muted, link/information, and status text; their light/dark values resolve through CSS custom properties, so templates do not carry paired hue/rung utilities. The repainted Tailwind ramp from ADR-0010 remains the low-level palette for borders, focus rings, tinted surfaces, and deep-rung text intentionally rendered on a tint.
 
 | Token | Value | Tailwind utilities | Usage |
 |-------|-------|--------------------|-------|
@@ -44,7 +44,18 @@ The build defines three Phaze-specific surface/border tokens and deliberately re
 | `--color-phaze-panel` | `#10141c` | `bg-phaze-panel` | Cards, panels |
 | `--color-phaze-border` | `#232832` | `border-phaze-border` | Borders, dividers |
 
-Text, muted captions, hover states, and light-mode surfaces remain expressed with Tailwind utility names plus `dark:` variants, but the rungs listed below are **not stock Tailwind values**. ADR-0010 repaints them to preserve hue while reaching at least **5.5:1 against `#f3f4f6`**, giving the WCAG AA 4.5:1 gate a full point of headroom.
+The intent-named direct-surface utilities have one definition per theme. Every text value reaches at least **5.5:1** on both real surfaces for its theme.
+
+| Utility | Intent | Light value / minimum ratio | Dark value / minimum ratio |
+|---------|--------|-----------------------------|----------------------------|
+| `text-muted` | Secondary, caption, disabled | `#5b6272` / 5.56:1 | `#99a1af` / 7.09:1 |
+| `text-link` | Interactive Phaze-cyan link | `#006b87` / 5.53:1 | `#4dcae3` / 9.55:1 |
+| `text-info` | Active, running, informational | `#036b85` / 5.54:1 | `#4dcae3` / 9.55:1 |
+| `text-ok` | Approved, succeeded | `#00714a` / 5.51:1 | `#6ee7b7` / 12.10:1 |
+| `text-warn` | Needs review, waiting, held | `#9c4c01` / 5.53:1 | `#fcd34d` / 12.79:1 |
+| `text-danger` | Blocked, failed, rejected | `#c7080d` / 5.50:1 | `#fca5a5` / 9.72:1 |
+
+The minimum is the lower result across `#ffffff`/`#f3f4f6` for light and `#10141c`/`#0a0c12` for dark. ADR-0010's repainted rungs still preserve hue and provide the source palette:
 
 | Repainted utility token | Value | Ratio on `#f3f4f6` |
 |-------------------------|-------|------------------------|
@@ -63,69 +74,57 @@ Text, muted captions, hover states, and light-mode surfaces remain expressed wit
 | `blue-500`, `blue-600` | `#036b85` | 5.54:1 |
 | `blue-700` | `#006b87` | 5.53:1 |
 
-The dark theme uses `dark:text-gray-400` (`#99a1af`, 7.09:1 on `#10141c`) and `dark:text-violet-400` (`#a684ff`, 6.47:1 on `#10141c`). White-on-fill actions use `blue-600`/`blue-700` or stock `emerald-700` (`#007a55`), measuring 6.09:1, 6.08:1, and 5.36:1 respectively. See ADR-0010 for the derivation and rejected alternatives.
+White-on-fill controls use `bg-action-brand`, `bg-action-ok`, `bg-action-warn`, and `bg-action-danger`, with matching `*-hover` utilities. Their normal/hover white-label ratios are 6.09/6.08, 7.46/6.07, 8.06/6.09, and 8.07/6.05 respectively.
 
 Common pairings:
 
 - Primary text: `text-gray-900 dark:text-gray-100`
-- Secondary / muted text: `text-gray-500 dark:text-gray-400`
-- Accent text: `text-blue-400` (dark), `text-blue-700` (light)
+- Secondary / muted text: `text-muted`
+- Links: `text-link`
+- Active/running information: `text-info`
+- Status: `text-ok`, `text-warn`, `text-danger`
 - Focus ring: `focus:ring-blue-400/50`
-
-> **Aspirational (NOT yet implemented):** an earlier draft of this system proposed a fuller semantic token set — `--bg-primary/-surface/-raised/-sunken/-hover`, `--border-default/-subtle/-strong/-focus`, and `--text-primary/-secondary/-muted/-inverse/-accent` with explicit dark/light value pairs. **None of these exist in the build.** Treat them as a future roadmap, not as classes you can use today.
 
 ### Status Colors
 
 | Status | Color | Background Tint | Usage |
 |--------|-------|-----------------|-------|
-| Active | `#22c55e` | `#22c55e14` | Completed, online |
-| Running | `#1abbdb` | `#1abbdb14` | In-progress, processing |
-| Warning | `#eab308` | `#eab30814` | Needs attention |
-| Error | `#ef4444` | `#ef444414` | Failed, critical |
-| Disabled | `#5b6370` light / `#99a1af` dark | Gray tint | Inactive |
+| Active | `text-ok` | Emerald tint | Completed, online |
+| Running | `text-info` | Blue tint | In-progress, processing |
+| Warning | `text-warn` | Amber tint | Needs attention |
+| Error | `text-danger` | Red/rose tint | Failed, critical |
+| Disabled | `text-muted` | Gray tint | Inactive |
 
 ### CSS Custom Properties
 
-These live in the Tailwind v4 `@theme { }` block in `assets/src/app.css` (not `:root`). Declaring them in `@theme` is what generates the `blue-*` and `phaze-*` utility classes at build time.
+Semantic values live in `:root` and `.dark`; Tailwind v4's `@theme inline` maps them into generated utilities while preserving hover, focus, and opacity variants.
 
 ```css
-@theme {
-  /* Brand accent */
-  --color-blue-50: #e6f7fb;
-  --color-blue-100: #b3e8f3;
-  --color-blue-200: #80d9eb;
-  --color-blue-300: #4dcae3;
-  --color-blue-400: #1abbdb;
-  --color-blue-500: #036b85;
-  --color-blue-600: #036b85;
-  --color-blue-700: #006b87;
-  --color-blue-800: #006882;
-  --color-blue-900: #004455;
-  --color-blue-950: #002233;
-
-  /* WCAG AA light-theme text ramp; target >= 5.5:1 on #f3f4f6 */
-  --color-gray-400: #5b6370;
-  --color-gray-500: #5b6272;
-  --color-amber-600: #9c4c01;
-  --color-red-600: #c7080d;
-  --color-green-600: #027229;
-  --color-green-700: #00722f;
-  --color-emerald-600: #00714a;
-  --color-rose-600: #c40b35;
-  --color-yellow-600: #895800;
-  --color-yellow-700: #925300;
-  --color-orange-600: #b43506;
-  --color-violet-500: #7935e5;
-
-  /* Surfaces */
-  --color-phaze-bg: #0a0c12;
-  --color-phaze-panel: #10141c;
-  --color-phaze-border: #232832;
+:root {
+  --phaze-text-muted: #5b6272;
+  --phaze-text-link: #006b87;
+  --phaze-text-info: #036b85;
+  --phaze-text-ok: #00714a;
+  --phaze-text-warn: #9c4c01;
+  --phaze-text-danger: #c7080d;
 }
 
 .dark {
-  --color-gray-400: #99a1af;
-  --color-violet-400: #a684ff;
+  --phaze-text-muted: #99a1af;
+  --phaze-text-link: #4dcae3;
+  --phaze-text-info: #4dcae3;
+  --phaze-text-ok: #6ee7b7;
+  --phaze-text-warn: #fcd34d;
+  --phaze-text-danger: #fca5a5;
+}
+
+@theme inline {
+  --color-muted: var(--phaze-text-muted);
+  --color-link: var(--phaze-text-link);
+  --color-info: var(--phaze-text-info);
+  --color-ok: var(--phaze-text-ok);
+  --color-warn: var(--phaze-text-warn);
+  --color-danger: var(--phaze-text-danger);
 }
 ```
 
@@ -200,7 +199,7 @@ These live in the Tailwind v4 `@theme { }` block in `assets/src/app.css` (not `:
 
 ```html
 <span class="rounded-sm px-2 py-0.5 text-xs font-medium
-  bg-blue-400/10 text-blue-400">  <!-- status: running -->
+  bg-blue-400/10 text-info">  <!-- status: running -->
   Processing
 </span>
 ```
@@ -211,15 +210,15 @@ Use status colors with `/10` (10% opacity) background tints.
 
 **Primary:**
 ```html
-<button class="rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white
-  hover:bg-blue-700 transition-colors">
+<button class="rounded bg-action-brand px-4 py-2 text-sm font-semibold text-white
+  hover:bg-action-brand-hover transition-colors">
   Approve
 </button>
 ```
 
 **Ghost:**
 ```html
-<button class="rounded px-4 py-2 text-sm text-gray-400
+<button class="rounded px-4 py-2 text-sm text-muted
   hover:bg-phaze-panel transition-colors">
   Cancel
 </button>
@@ -235,7 +234,7 @@ Use status colors with `/10` (10% opacity) background tints.
 
 ### Tables
 
-- Header row: `bg-phaze-bg` with `text-gray-400`, uppercase `text-xs`, `tracking-wider`
+- Header row: `bg-phaze-bg` with `text-muted`, uppercase `text-xs`, `tracking-wider`
 - Body rows: `bg-phaze-panel`, `border-b border-phaze-border`
 - Hover: `hover:bg-phaze-bg/50`
 - Cell padding: `px-4 py-3`

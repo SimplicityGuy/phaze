@@ -37,7 +37,7 @@
         <a href="{{ changes_urls[value] }}" data-changes-nav
            hx-get="{{ changes_urls[value] }}" hx-target="#{{ changes_list_id }}" hx-swap="outerHTML" hx-push-url="true"
            {% if changes_view.status == value %}aria-current="page"{% endif %}
-           class="shrink-0 px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 {% if changes_view.status == value %}border-b-2 border-blue-600 font-semibold text-blue-700 dark:text-blue-300{% else %}text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200{% endif %}">
+           class="shrink-0 px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 {% if changes_view.status == value %}border-b-2 border-action-brand font-semibold text-info {% else %}text-muted hover:text-gray-800 dark:hover:text-gray-200{% endif %}">
             {{ label }} <span class="ml-1 rounded-full bg-gray-200 px-2 py-0.5 text-xs text-gray-700 dark:bg-phaze-border dark:text-gray-300">{{ count }}</span>
         </a>
         {% endfor %}
@@ -48,11 +48,11 @@
             <div class="flex flex-col gap-3 border-b border-gray-200 p-4 sm:flex-row sm:items-start sm:justify-between dark:border-phaze-border">
                 <div>
                     <h2 id="proposal-changes-heading" class="font-jura text-xs font-medium uppercase tracking-[0.18em] text-gray-900 dark:text-gray-100">Filename + Destination</h2>
-                    <p class="mt-1 text-xs text-gray-600 dark:text-gray-400">Approve selected accepts only rows still pending and at or above 90% confidence. Low/null confidence remains available for individual approval. The server rechecks every row at submit.</p>
-                    <p class="mt-1 text-xs text-gray-600 dark:text-gray-400"><span x-text="selected.length">0</span> selected on this reviewed page.</p>
+                    <p class="mt-1 text-xs text-muted ">Approve selected accepts only rows still pending and at or above 90% confidence. Low/null confidence remains available for individual approval. The server rechecks every row at submit.</p>
+                    <p class="mt-1 text-xs text-muted "><span x-text="selected.length">0</span> selected on this reviewed page.</p>
                 </div>
                 <div class="flex flex-wrap gap-2">
-                    <button type="submit" name="action" value="approve_eligible" :disabled="selected.length === 0" hx-disabled-elt="this" class="h-9 rounded-md bg-emerald-700 px-3 font-jura text-xs uppercase tracking-wider text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50">Approve selected eligible</button>
+                    <button type="submit" name="action" value="approve_eligible" :disabled="selected.length === 0" hx-disabled-elt="this" class="h-9 rounded-md bg-action-ok px-3 font-jura text-xs uppercase tracking-wider text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50">Approve selected eligible</button>
                     <button type="submit" name="action" value="reject" :disabled="selected.length === 0" hx-disabled-elt="this" class="h-9 rounded-md border border-gray-300 px-3 font-jura text-xs uppercase tracking-wider text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-phaze-border dark:text-gray-300">Reject selected pending</button>
                 </div>
             </div>
@@ -84,10 +84,10 @@
                 </div>
                 {% endfor %}
             {% else %}
-                <div class="p-8 text-center text-sm text-gray-500 dark:text-gray-400">No filename or destination decisions match this filter.</div>
+                <div class="p-8 text-center text-sm text-muted ">No filename or destination decisions match this filter.</div>
             {% endif %}
             {% if changes_pagination.has_prev or changes_pagination.has_next %}
-            <div class="flex items-center justify-between p-4 text-xs text-gray-600 dark:text-gray-400">
+            <div class="flex items-center justify-between p-4 text-xs text-muted ">
                 <span>Showing {{ changes_pagination.start }}-{{ changes_pagination.end }} of {{ changes_pagination.total }}</span>
                 <div class="flex gap-2">
                     {% if changes_prev_url %}<a href="{{ changes_prev_url }}" data-changes-nav hx-get="{{ changes_prev_url }}" hx-target="#{{ changes_list_id }}" hx-swap="outerHTML" hx-push-url="true" class="rounded border px-2 py-1 focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border">Previous</a>{% endif %}
@@ -103,14 +103,14 @@
         <div class="flex flex-col gap-3 border-b border-gray-200 p-4 sm:flex-row sm:items-start sm:justify-between dark:border-phaze-border">
             <div>
                 <h2 id="tag-changes-heading" class="font-jura text-xs font-medium uppercase tracking-[0.18em] text-gray-900 dark:text-gray-100">Tag Changes</h2>
-                <p class="mt-1 text-xs text-gray-600 dark:text-gray-400">Available only after execution. Approval dispatches a reversible write and records before/after snapshots, verification discrepancies, and errors in the audit log.</p>
+                <p class="mt-1 text-xs text-muted ">Available only after execution. Approval dispatches a reversible write and records before/after snapshots, verification discrepancies, and errors in the audit log.</p>
             </div>
             <form hx-post="/tags/bulk-write-no-discrepancies" hx-target="#changes-bulk-result" hx-swap="innerHTML" hx-confirm="Approve the eligible tag changes visible on this reviewed page?" hx-disabled-elt="find button">
                 {% for f in changes_tag_rows if f.bulk_eligible %}<input type="hidden" name="review_tokens" value="{{ f.review_token }}">{% endfor %}
-                <button type="submit" {% if not (changes_tag_rows | selectattr('bulk_eligible') | list) %}disabled{% endif %} class="h-9 rounded-md border border-amber-500/40 px-3 font-jura text-xs uppercase tracking-wider text-amber-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50 dark:text-amber-200">Approve visible eligible tag writes</button>
+                <button type="submit" {% if not (changes_tag_rows | selectattr('bulk_eligible') | list) %}disabled{% endif %} class="h-9 rounded-md border border-amber-500/40 px-3 font-jura text-xs uppercase tracking-wider text-warn focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50 ">Approve visible eligible tag writes</button>
             </form>
         </div>
-        <p class="px-4 pt-3 text-xs text-gray-600 dark:text-gray-400">Bulk eligibility: at least one server-computed change, no existing tag blanked, no terminal prior write, and no queued write. Every condition is rechecked under the server lock. Exclusions remain listed for individual review.</p>
+        <p class="px-4 pt-3 text-xs text-muted ">Bulk eligibility: at least one server-computed change, no existing tag blanked, no terminal prior write, and no queued write. Every condition is rechecked under the server lock. Exclusions remain listed for individual review.</p>
         {% if changes_tag_rows %}
             {% for f in changes_tag_rows %}
                 {% set tag_warnings = [] %}
@@ -130,7 +130,7 @@
                 {% endwith %}
             {% endfor %}
         {% else %}
-            <div class="p-8 text-center text-sm text-gray-500 dark:text-gray-400">No tag decisions match this filter. Completed tag writes remain available in Audit.</div>
+            <div class="p-8 text-center text-sm text-muted ">No tag decisions match this filter. Completed tag writes remain available in Audit.</div>
         {% endif %}
     </section>
     {% endif %}

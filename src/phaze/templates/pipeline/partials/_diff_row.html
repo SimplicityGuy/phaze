@@ -53,7 +53,7 @@
    second poll and is never an out-of-band swap target (R-2 counts-only -- the chrome poll must never
    re-render this subtree, so an in-progress inline edit is never clobbered).
 #}
-{% set _primary = 'inline-flex items-center justify-center h-7 px-2.5 rounded-md bg-emerald-700/90 hover:bg-emerald-700 text-white font-jura text-[11px] font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-emerald-500' %}
+{% set _primary = 'inline-flex items-center justify-center h-7 px-2.5 rounded-md bg-action-ok/90 hover:bg-action-ok-hover text-white font-jura text-[11px] font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-emerald-500' %}
 {% set _sec = 'inline-flex items-center justify-center h-7 px-2.5 rounded-md border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-[11px] font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500' %}
 <div id="{{ row_id_prefix }}-{{ pid }}"
      class="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5{% if row_state and row_state != 'pending' %} opacity-70{% endif %}"
@@ -69,7 +69,7 @@
            it deliberately carries NO undo control: there is nothing on disk to revert, and the
            before-tags snapshot an undo needs does not exist until the agent reports it. #}
         {% set _life_word = 'executed ✓' if row_state == 'executed' else ('failed ✕' if row_state == 'failed' else ('applied ✓' if row_state == 'applied' else ('skipped' if row_state == 'skipped' else ('queued …' if row_state == 'queued' else ('blocked ✕' if row_state == 'blocked' else 'approved'))))) %}
-        {% set _life_tint = 'text-red-600 dark:text-red-300' if row_state in ('blocked', 'failed') else ('text-gray-500 dark:text-gray-400' if row_state in ('skipped', 'queued') else 'text-emerald-600 dark:text-emerald-300') %}
+        {% set _life_tint = 'text-danger ' if row_state in ('blocked', 'failed') else ('text-muted ' if row_state in ('skipped', 'queued') else 'text-ok ') %}
         <div class="flex items-center gap-1.5 shrink-0 ml-4">
             <span class="font-jura text-[11px] font-medium uppercase tracking-wider {{ _life_tint }}">{{ _life_word }}</span>
             {% if row_state in ('applied', 'approved', 'skipped') or (row_state == 'blocked' and show_undo|default(false)) %}
@@ -120,15 +120,15 @@
         {% endif %}
     </div>
     {% if confidence is defined %}
-    <p class="mt-2 text-xs text-gray-600 dark:text-gray-400"><span class="font-semibold">Confidence:</span> {{ ((confidence * 100) | round | int) ~ '%' if confidence is not none else 'Unavailable' }}</p>
+    <p class="mt-2 text-xs text-muted "><span class="font-semibold">Confidence:</span> {{ ((confidence * 100) | round | int) ~ '%' if confidence is not none else 'Unavailable' }}</p>
     {% endif %}
-    {% if diff_label is defined and diff_label %}<p class="mt-2 font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">{{ diff_label }}</p>{% endif %}
+    {% if diff_label is defined and diff_label %}<p class="mt-2 font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">{{ diff_label }}</p>{% endif %}
     <div class="{% if not diff_label %}mt-2 {% endif %}grid grid-cols-1 gap-2 text-xs sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:gap-3 sm:items-center">
         {# BEFORE -- current value, struck rose (removed/old = rose status tint + line-through, WCAG 1.4.1). #}
-        <code class="block whitespace-pre-wrap break-all rounded px-2 py-1 font-mono bg-rose-50 text-rose-600 line-through dark:bg-rose-500/10 dark:text-rose-300">{{ before }}</code>
-        <span class="text-gray-400 dark:text-gray-400" aria-hidden="true">&rarr;</span>
+        <code class="block whitespace-pre-wrap break-all rounded px-2 py-1 font-mono bg-rose-50 text-danger line-through dark:bg-rose-500/10 ">{{ before }}</code>
+        <span class="text-muted " aria-hidden="true">&rarr;</span>
         {# AFTER -- proposed value (emerald); swapped for the inline edit input while editing. #}
-        <template x-if="!editing"><code class="block whitespace-pre-wrap break-all rounded px-2 py-1 font-mono bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-300">{{ after }}</code></template>
+        <template x-if="!editing"><code class="block whitespace-pre-wrap break-all rounded px-2 py-1 font-mono bg-emerald-50 text-ok dark:bg-emerald-500/10 ">{{ after }}</code></template>
         {% if show_edit|default(true) %}
         <template x-if="editing">
             <input x-ref="edit" x-model="val" name="proposed"
@@ -138,11 +138,11 @@
     </div>
     {% if secondary_label is defined and secondary_label %}
     <div class="mt-2 border-t border-gray-200 pt-2 dark:border-phaze-border">
-        <p class="font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">{{ secondary_label }}</p>
+        <p class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">{{ secondary_label }}</p>
         <div class="grid grid-cols-1 gap-2 text-xs sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:items-center sm:gap-3">
-            <code class="block whitespace-pre-wrap break-all rounded bg-rose-50 px-2 py-1 font-mono text-rose-600 line-through dark:bg-rose-500/10 dark:text-rose-300">{{ secondary_before }}</code>
-            <span class="text-gray-400 dark:text-gray-400">&rarr;</span>
-            <code class="block whitespace-pre-wrap break-all rounded bg-emerald-50 px-2 py-1 font-mono text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-300">{{ secondary_after }}</code>
+            <code class="block whitespace-pre-wrap break-all rounded bg-rose-50 px-2 py-1 font-mono text-danger line-through dark:bg-rose-500/10 ">{{ secondary_before }}</code>
+            <span class="text-muted ">&rarr;</span>
+            <code class="block whitespace-pre-wrap break-all rounded bg-emerald-50 px-2 py-1 font-mono text-ok dark:bg-emerald-500/10 ">{{ secondary_after }}</code>
         </div>
     </div>
     {% endif %}
@@ -157,10 +157,10 @@
     </div>
     {% endif %}
     {% if consequences is defined and consequences %}
-    <p class="mt-2 text-xs text-gray-600 dark:text-gray-400"><span class="font-semibold">Operation:</span> {{ consequences }}</p>
+    <p class="mt-2 text-xs text-muted "><span class="font-semibold">Operation:</span> {{ consequences }}</p>
     {% endif %}
     {% if eligibility_reason is defined and eligibility_reason %}
-    <p class="mt-1 text-xs text-gray-600 dark:text-gray-400"><span class="font-semibold">Bulk eligibility:</span> {{ eligibility_reason }}</p>
+    <p class="mt-1 text-xs text-muted "><span class="font-semibold">Bulk eligibility:</span> {{ eligibility_reason }}</p>
     {% endif %}
     {% if show_edit|default(true) %}
     {# Hidden facet field -- SAVE EDIT posts it so the endpoint edits proposed_filename vs proposed_path. #}

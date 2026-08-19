@@ -19,10 +19,10 @@
      hx-get="/pipeline/recover/status"
      hx-trigger="load delay:1s, every 2s"
      hx-swap="outerHTML">
-    <span class="inline-flex items-center gap-2 text-sm text-green-600 dark:text-green-400 font-medium">
+    <span class="inline-flex items-center gap-2 text-sm text-ok font-medium">
         Recovery started — re-enqueuing any orphaned work across all stages.
     </span>
-    <span class="block mt-1 text-xs text-gray-500 dark:text-gray-400">
+    <span class="block mt-1 text-xs text-muted ">
         Already-running work is deduplicated — nothing will double-enqueue.
     </span>
 </div>

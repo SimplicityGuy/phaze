@@ -43,20 +43,20 @@
          class="space-y-3">
     {% if queued_behind_quota_count or admitted_count or running_count or finished_count %}
     {% if queued_behind_quota_count or admitted_count or running_count %}
-    <p class="text-xs text-gray-400 dark:text-gray-400">live — per reconcile, updates ~5 min</p>
+    <p class="text-xs text-muted ">live — per reconcile, updates ~5 min</p>
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
         {% if queued_behind_quota_count %}
         <div class="bg-gray-50 dark:bg-phaze-panel rounded-lg p-4 text-center">
             <p class="text-2xl font-bold text-gray-700 dark:text-gray-300">{{ queued_behind_quota_count }}</p>
-            <p class="text-sm text-gray-600 dark:text-gray-400">Queued (quota)</p>
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">waiting for cluster quota</p>
+            <p class="text-sm text-muted ">Queued (quota)</p>
+            <p class="text-xs text-muted mt-1">waiting for cluster quota</p>
         </div>
         {% endif %}
         {% if admitted_count %}
         <div class="bg-blue-50 dark:bg-blue-950 rounded-lg p-4 text-center">
-            <p class="text-2xl font-bold text-blue-700 dark:text-blue-400">{{ admitted_count }}</p>
-            <p class="text-sm text-blue-600 dark:text-blue-400">Admitted</p>
-            <p class="text-xs text-blue-500 dark:text-blue-500 mt-1">quota granted — starting</p>
+            <p class="text-2xl font-bold text-info ">{{ admitted_count }}</p>
+            <p class="text-sm text-info ">Admitted</p>
+            <p class="text-xs text-info mt-1">quota granted — starting</p>
         </div>
         {% endif %}
         {% if running_count %}
@@ -71,8 +71,8 @@
     {% if finished_count %}
     <div class="border-t border-gray-200 dark:border-phaze-border pt-3">
         <div class="bg-green-50 dark:bg-green-950 rounded-lg p-4 text-center">
-            <p class="text-2xl font-bold text-green-700 dark:text-green-400">{{ finished_count }}</p>
-            <p class="text-sm text-green-600 dark:text-green-400">Finished</p>
+            <p class="text-2xl font-bold text-ok ">{{ finished_count }}</p>
+            <p class="text-sm text-ok ">Finished</p>
             <p class="text-xs text-green-500 dark:text-green-500 mt-1">result returned — lifetime total, not a live snapshot</p>
         </div>
     </div>

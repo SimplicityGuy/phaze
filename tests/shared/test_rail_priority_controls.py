@@ -47,7 +47,7 @@ def test_orphan_badge_remains_read_only_rail_status(stage: str) -> None:
     html = _RAIL.read_text()
     assert f'x-show="$store.pipeline.{stage}Orphan > 0"' in html
     assert f'x-text="$store.pipeline.{stage}Orphan"' in html
-    assert "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400" in html
+    assert "bg-amber-100 text-warn dark:bg-amber-950" in html
     assert 'role="status"' in html
 
 

@@ -8,7 +8,7 @@
 {% if pagination.show_pager %}
 {% set _sort_qs = sort.query_state() if sort else '' %}
 <div class="flex items-center justify-between mt-4 px-4 py-3">
-    <span class="text-sm text-gray-500 dark:text-gray-400">
+    <span class="text-sm text-muted ">
         Page {{ pagination.page }}
     </span>
     <div class="flex gap-1">
@@ -16,7 +16,7 @@
         <button
             hx-get="/audit/?status={{ current_status }}&page={{ pagination.page - 1 }}&page_size={{ pagination.page_size }}{{ _sort_qs }}"
             hx-target="#audit-content"
-            class="text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel rounded px-3 py-1 text-sm">
+            class="text-muted hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel rounded px-3 py-1 text-sm">
             Previous
         </button>
         {% endif %}
@@ -25,7 +25,7 @@
         <button
             hx-get="/audit/?status={{ current_status }}&page={{ pagination.page + 1 }}&page_size={{ pagination.page_size }}{{ _sort_qs }}"
             hx-target="#audit-content"
-            class="text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel rounded px-3 py-1 text-sm">
+            class="text-muted hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel rounded px-3 py-1 text-sm">
             Next
         </button>
         {% endif %}

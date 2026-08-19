@@ -28,7 +28,7 @@
 <div id="tracklist-drain-status">
     <div class="flex flex-col gap-3 border-t border-blue-200 pt-4 sm:flex-row sm:items-center sm:justify-between dark:border-blue-900">
         <div>
-            <p class="font-jura text-[10px] font-medium uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Lookup state</p>
+            <p class="font-jura text-[10px] font-medium uppercase tracking-[0.18em] text-muted ">Lookup state</p>
             <div class="mt-1 flex flex-wrap items-center gap-2">
             {% if arm.armed %}
                 {{ ui.status_badge("1001Tracklists drain", "armed", "success", "✓") }}
@@ -50,7 +50,7 @@
                 <button type="button"
                         hx-post="/pipeline/disarm-tracklist-drain" hx-target="#tracklist-drain-status" hx-swap="outerHTML"
                         aria-label="Disarm the continuous 1001Tracklists drain"
-                        class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-red-300 dark:border-red-800 bg-white dark:bg-phaze-panel text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-red-500">
+                        class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-red-300 dark:border-red-800 bg-white dark:bg-phaze-panel text-danger hover:bg-red-50 dark:hover:bg-red-950/30 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-red-500">
                     Disarm
                 </button>
             {% else %}
@@ -58,13 +58,13 @@
                         hx-post="/pipeline/arm-tracklist-drain" hx-target="#tracklist-drain-status" hx-swap="outerHTML"
                         hx-confirm="Arm the continuous drain? Every completed slice will re-enqueue the next one automatically -- up to {{ '{:,}'.format(daily_ceiling) }} lookups/day -- until the queue is empty, the drain looks broken, or you disarm it."
                         aria-label="Arm the continuous 1001Tracklists drain"
-                        class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-emerald-300 dark:border-emerald-800 bg-white dark:bg-phaze-panel text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                        class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-emerald-300 dark:border-emerald-800 bg-white dark:bg-phaze-panel text-ok hover:bg-emerald-50 dark:hover:bg-emerald-950/30 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-emerald-500">
                     Arm
                 </button>
             {% endif %}
         </div>
     </div>
-    <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+    <p class="mt-2 text-xs text-muted ">
         {% if arm.armed %}
             Armed since {{ arm.armed_at.strftime('%Y-%m-%d %H:%M') if arm.armed_at else '—' }} -- each completed slice re-enqueues the
             next one automatically (a {{ '{:,}'.format(tracklist_drain_cooldown_sec) }}s cooldown between slices, operator-tunable).
@@ -85,14 +85,14 @@
         <div class="border-t border-gray-200 p-3 dark:border-phaze-border">
     <dl class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <div>
-            <dt class="text-xs text-gray-500 dark:text-gray-400">Queued</dt>
+            <dt class="text-xs text-muted ">Queued</dt>
             <dd class="font-mono text-lg text-gray-900 dark:text-gray-100">{{ '{:,}'.format(status.queued) }}</dd>
-            <dd class="text-xs text-gray-500 dark:text-gray-400">unique sets awaiting a lookup</dd>
+            <dd class="text-xs text-muted ">unique sets awaiting a lookup</dd>
         </div>
         <div>
-            <dt class="text-xs text-gray-500 dark:text-gray-400">Prioritized</dt>
+            <dt class="text-xs text-muted ">Prioritized</dt>
             <dd class="font-mono text-lg text-gray-900 dark:text-gray-100">{{ '{:,}'.format(status.flagged_queued) }}</dd>
-            <dd class="text-xs text-gray-500 dark:text-gray-400">
+            <dd class="text-xs text-muted ">
                 operator-flagged, still queued
                 {% if status.flagged_total > status.flagged_queued %}
                 ({{ '{:,}'.format(status.flagged_total - status.flagged_queued) }} more flagged file{{ 's' if status.flagged_total - status.flagged_queued != 1 else '' }} already answered or ineligible)
@@ -100,9 +100,9 @@
             </dd>
         </div>
         <div>
-            <dt class="text-xs text-gray-500 dark:text-gray-400">Answered by cache / parked</dt>
+            <dt class="text-xs text-muted ">Answered by cache / parked</dt>
             <dd class="font-mono text-lg text-gray-900 dark:text-gray-100">{{ '{:,}'.format(status.cached) }}</dd>
-            <dd class="text-xs text-gray-500 dark:text-gray-400">
+            <dd class="text-xs text-muted ">
                 {{ '{:,}'.format(status.cached_positive) }} found ·
                 {{ '{:,}'.format(status.cached_negative) }} confirmed absent ·
                 {{ '{:,}'.format(status.cached_backoff) }} retrying ·
@@ -110,13 +110,13 @@
             </dd>
         </div>
         <div>
-            <dt class="text-xs text-gray-500 dark:text-gray-400">Collapse ratio</dt>
+            <dt class="text-xs text-muted ">Collapse ratio</dt>
             <dd class="font-mono text-lg text-gray-900 dark:text-gray-100">{{ '%.2f' | format(status.collapse_ratio) }}</dd>
-            <dd class="text-xs text-gray-500 dark:text-gray-400">files served per lookup -- dedup is a small lever, not a big one</dd>
+            <dd class="text-xs text-muted ">files served per lookup -- dedup is a small lever, not a big one</dd>
         </div>
     </dl>
 
-    <div class="mt-4 border-t border-gray-200 pt-3 text-xs text-gray-600 dark:border-phaze-border dark:text-gray-400">
+    <div class="mt-4 border-t border-gray-200 pt-3 text-xs text-muted dark:border-phaze-border ">
         <p><strong class="text-gray-900 dark:text-gray-100">Drain:</strong> the resumable queue that derives, searches, scores, renders, parses, and stores one unique set per lookup.</p>
         <p class="mt-1"><strong class="text-gray-900 dark:text-gray-100">Parked:</strong> cached sets whose retries are exhausted; they remain visible but do not consume the active lookup queue.</p>
         <p class="mt-1"><strong class="text-gray-900 dark:text-gray-100">Collapse ratio:</strong> files represented by each unique-set lookup. {{ '%.2f' | format(status.collapse_ratio) }} means about {{ '%.2f' | format(status.collapse_ratio) }} files per request, not {{ '%.0f' | format((1 - (1 / status.collapse_ratio if status.collapse_ratio else 1)) * 100) }}% completion.</p>

@@ -57,22 +57,22 @@
         <li id="tracklist-lookup" class="min-w-0 rounded-xl border border-blue-200 bg-blue-50/40 p-4 dark:border-blue-900 dark:bg-blue-950/20">
             <div class="flex flex-wrap items-start justify-between gap-2">
                 <div>
-                    <p class="font-jura text-xs font-medium uppercase tracking-[0.18em] text-blue-700 dark:text-blue-300">1 · Lookup</p>
+                    <p class="font-jura text-xs font-medium uppercase tracking-[0.18em] text-info ">1 · Lookup</p>
                     <h2 class="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">Find source tracklists</h2>
                 </div>
                 {{ ui.status_badge("Lookup", tracklist_steps.tracklist.done ~ " found", "accent", "●") }}
             </div>
             <dl class="mt-4 grid gap-3 text-sm sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
                 <div>
-                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Prerequisite</dt>
+                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">Prerequisite</dt>
                     <dd class="mt-1 text-gray-700 dark:text-gray-300">Audio or video classified as a live set from duration first, then repaired filename and track-number evidence. Files already answered by embedded tags, a .cue companion, or a pending/approved lookup are excluded.</dd>
                 </div>
                 <div>
-                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Current state</dt>
+                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">Current state</dt>
                     <dd class="mt-1 text-gray-700 dark:text-gray-300">{{ tracklist_steps.tracklist.done }} files have a tracklist. Eligibility is derived, so no stored denominator exists.</dd>
                 </div>
                 <div>
-                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Next action</dt>
+                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">Next action</dt>
                     <dd class="mt-1 text-gray-700 dark:text-gray-300">Run one bounded batch using lookup queries derived from the repaired filename, or arm continuous host-budgeted slices.</dd>
                 </div>
             </dl>
@@ -81,7 +81,7 @@
                  hx-get="/pipeline/tracklist-drain-status"
                  hx-trigger="load, drain-refresh from:body"
                  hx-swap="innerHTML">
-                <p class="py-6 text-center text-sm text-gray-500 dark:text-gray-400">Loading lookup state…</p>
+                <p class="py-6 text-center text-sm text-muted ">Loading lookup state…</p>
             </div>
         </li>
 
@@ -101,15 +101,15 @@
             </div>
             <dl class="mt-4 grid gap-3 text-sm sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
                 <div>
-                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Prerequisite</dt>
+                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">Prerequisite</dt>
                     <dd class="mt-1 text-gray-700 dark:text-gray-300">A stored tracklist is pending only while no Discogs link exists for any track on any version; one link of any status removes it from pending. Matching checks only latest-version tracks with both artist and title, so ineligible tracks and searches returning no links cannot remove it from pending.</dd>
                 </div>
                 <div>
-                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Current state</dt>
+                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">Current state</dt>
                     <dd class="mt-1 font-mono text-gray-700 dark:text-gray-300">{{ tracklist_steps.match.done }} / {{ tracklist_steps.match.total }} matched</dd>
                 </div>
                 <div>
-                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Next action</dt>
+                    <dt class="font-jura text-[10px] uppercase tracking-[0.18em] text-muted ">Next action</dt>
                     <dd class="mt-1 text-gray-700 dark:text-gray-300">Match pending tracklists, inspect coverage below, then continue to Propose.</dd>
                 </div>
             </dl>
@@ -121,7 +121,7 @@
                         aria-label="Match all pending tracklists"
                         class="{{ _btn }}">MATCH ALL</button>
             </div>
-            <div x-show="$store.pipeline.matchBusy > 0" class="mt-2 text-xs text-blue-600 dark:text-blue-300" role="status">Matching is running…</div>
+            <div x-show="$store.pipeline.matchBusy > 0" class="mt-2 text-xs text-info " role="status">Matching is running…</div>
             <div id="match-trigger-response" class="mt-3 text-xs empty:hidden"></div>
         </li>
     </ol>
@@ -133,15 +133,15 @@
         <div class="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
             <div>
                 <h2 class="font-jura text-xs font-medium uppercase tracking-[0.18em] text-gray-700 dark:text-gray-300">Matched-set coverage</h2>
-                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Inspect lookup and match results before generating candidate changes.</p>
+                <p class="mt-1 text-xs text-muted ">Inspect lookup and match results before generating candidate changes.</p>
             </div>
-            <a href="/s/propose" hx-get="/s/propose" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="text-sm font-semibold text-blue-700 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-blue-400">Continue to Propose →</a>
+            <a href="/s/propose" hx-get="/s/propose" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true" class="text-sm font-semibold text-link hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ">Continue to Propose →</a>
         </div>
         <div id="tracklist-sets-view"
              hx-get="/pipeline/tracklist-sets"
              hx-trigger="load"
              hx-swap="innerHTML">
-            <p class="px-6 py-12 text-center text-sm text-gray-500 dark:text-gray-400">Loading sets…</p>
+            <p class="px-6 py-12 text-center text-sm text-muted ">Loading sets…</p>
         </div>
     </div>
 {% endcall %}

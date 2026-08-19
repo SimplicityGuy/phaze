@@ -1,6 +1,6 @@
 <div class="min-w-0 max-w-full px-4 pb-4">
     {% if group.truncated %}
-    <p class="mb-2 text-xs font-medium text-amber-600 dark:text-amber-400">
+    <p class="mb-2 text-xs font-medium text-warn ">
         This group has more than {{ group.count }} copies -- only the first {{ group.count }} are shown below.
     </p>
     {% endif %}
@@ -15,7 +15,7 @@
             <div class="relative max-w-full overflow-x-auto">
                 <table class="w-full text-sm">
                     <thead>
-                        <tr class="bg-gray-50 dark:bg-phaze-panel text-left text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">
+                        <tr class="bg-gray-50 dark:bg-phaze-panel text-left text-xs font-semibold text-muted uppercase">
                             <th class="w-8 px-3 py-3"></th>
                             <th class="px-3 py-3">Original Path</th>
                             <th class="px-3 py-3">Size</th>
@@ -43,25 +43,25 @@
                             <td class="px-3 py-3 max-w-64 truncate" title="{{ file.original_path }}">
                                 {{ file.original_path }}
                             </td>
-                            <td class="px-3 py-3 {% if best_values.get('file_size') == file.id %}text-green-700 dark:text-green-400 font-semibold{% endif %}">
+                            <td class="px-3 py-3 {% if best_values.get('file_size') == file.id %}text-ok font-semibold{% endif %}">
                                 {{ file.file_size | filesizeformat }}
                             </td>
                             <td class="px-3 py-3">
                                 {{ file.file_type }}
                             </td>
-                            <td class="px-3 py-3 {% if best_values.get('bitrate') == file.id %}text-green-700 dark:text-green-400 font-semibold{% endif %}">
+                            <td class="px-3 py-3 {% if best_values.get('bitrate') == file.id %}text-ok font-semibold{% endif %}">
                                 {% if file.bitrate %}{{ file.bitrate // 1000 }}kbps{% else %}-{% endif %}
                             </td>
-                            <td class="px-3 py-3 {% if best_values.get('duration') == file.id %}text-green-700 dark:text-green-400 font-semibold{% endif %}">
+                            <td class="px-3 py-3 {% if best_values.get('duration') == file.id %}text-ok font-semibold{% endif %}">
                                 {% if file.duration %}{{ "%.1f" | format(file.duration) }}s{% else %}-{% endif %}
                             </td>
                             <td class="px-3 py-3">
                                 {% if file.tag_label == 'Full' %}
-                                    <span class="text-xs font-semibold px-2 py-1 rounded-full bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400">Full</span>
+                                    <span class="text-xs font-semibold px-2 py-1 rounded-full bg-green-100 dark:bg-green-950 text-ok ">Full</span>
                                 {% elif file.tag_label == 'Partial' %}
                                     <span class="text-xs font-semibold px-2 py-1 rounded-full bg-yellow-100 dark:bg-yellow-950 text-yellow-700 dark:text-yellow-400">Partial</span>
                                 {% else %}
-                                    <span class="text-xs font-semibold px-2 py-1 rounded-full bg-gray-100 dark:bg-phaze-panel text-gray-400 dark:text-gray-400">None</span>
+                                    <span class="text-xs font-semibold px-2 py-1 rounded-full bg-gray-100 dark:bg-phaze-panel text-muted ">None</span>
                                 {% endif %}
                             </td>
                             <td class="px-3 py-3">{{ file.artist or '-' }}</td>

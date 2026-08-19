@@ -18,11 +18,11 @@
    card binds to $store.pipeline (refreshed by the single chrome poll's OOB seeds). NO
    self-poll trigger and NO JS timer are added here — no second loop.
 #}
-{% set _scan_btn = 'inline-flex items-center justify-center h-9 px-4 rounded-lg bg-blue-600 dark:bg-blue-700 text-white hover:bg-blue-700 dark:hover:bg-blue-600 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-phaze-bg disabled:opacity-50 disabled:cursor-not-allowed' %}
+{% set _scan_btn = 'inline-flex items-center justify-center h-9 px-4 rounded-lg bg-action-brand text-white hover:bg-action-brand-hover font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-phaze-bg disabled:opacity-50 disabled:cursor-not-allowed' %}
 <div data-empty-state class="grid place-items-center p-6" x-data>
     <div class="w-[560px] flex flex-col items-center text-center gap-6">
         {# Wave logo (64×64, brand blue) — the brand mark. Static inline SVG, no external fetch. #}
-        <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" class="text-blue-500">
+        <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" class="text-info">
             <path d="M4 32c6-16 12-16 18 0s12 16 18 0 12-16 18 0" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
         </svg>
 
@@ -32,7 +32,7 @@
         </h1>
 
         {# Body copy (Inter 14px, muted). #}
-        <p class="text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
+        <p class="text-sm text-muted leading-relaxed">
             No files yet. Scan a directory one of your agents already watches — discovery unlocks
             metadata, analysis, and the rest of the pipeline.
         </p>
@@ -46,7 +46,7 @@
                 <div class="flex items-center justify-between gap-3 mb-2">
                     <span class="font-jura text-xs uppercase tracking-wider text-gray-700 dark:text-gray-300">{{ agent.name }}</span>
                     <a href="/s/agents?agent={{ agent.id }}"
-                       class="text-xs text-blue-600 dark:text-blue-400 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500 rounded">
+                       class="text-xs text-link hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500 rounded">
                         Configure roots →
                     </a>
                 </div>
@@ -54,7 +54,7 @@
                 <ul class="flex flex-col gap-2">
                     {% for root in agent.scan_roots %}
                     <li class="flex items-center justify-between gap-3">
-                        <code class="font-mono text-xs text-gray-600 dark:text-gray-400 truncate" title="{{ root }}">{{ root }}</code>
+                        <code class="font-mono text-xs text-muted truncate" title="{{ root }}">{{ root }}</code>
                         {# Reused DISCOVERY-scan form shape (discover_workspace.html): POST /pipeline/scans
                            with hidden agent_id + scan_root. The endpoint validates scan_root against
                            agent.scan_roots (prefix + `..` check). Result swaps in place (progress card). #}
@@ -73,14 +73,14 @@
                     {% endfor %}
                 </ul>
                 {% else %}
-                <p class="text-xs text-gray-400 dark:text-gray-400">
-                    No scan roots configured. <a href="/s/agents?agent={{ agent.id }}" class="text-blue-600 dark:text-blue-400 hover:underline">Configure roots →</a>
+                <p class="text-xs text-muted ">
+                    No scan roots configured. <a href="/s/agents?agent={{ agent.id }}" class="text-link hover:underline">Configure roots →</a>
                 </p>
                 {% endif %}
             </div>
             {% else %}
-            <div class="rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-4 text-sm text-gray-500 dark:text-gray-400">
-                No agents registered yet. <a href="/s/agents" class="text-blue-600 dark:text-blue-400 hover:underline">Register an agent →</a>
+            <div class="rounded-xl border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel p-4 text-sm text-muted ">
+                No agents registered yet. <a href="/s/agents" class="text-link hover:underline">Register an agent →</a>
             </div>
             {% endfor %}
         </div>

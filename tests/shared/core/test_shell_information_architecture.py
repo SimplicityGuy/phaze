@@ -60,11 +60,11 @@ def test_review_current_page_uses_cyan_location_inside_the_amber_domain() -> Non
     assert isinstance(review_heading, Tag)
     assert isinstance(current, Tag)
     assert isinstance(unselected, Tag)
-    assert "text-amber-600" in review_heading.get("class", [])
-    assert "text-amber-700" in unselected.get("class", [])
+    assert "text-warn" in review_heading.get("class", [])
+    assert "text-warn" in unselected.get("class", [])
     classes = set(current.get("class", []))
     assert "aria-[current=page]:bg-blue-500/10" in classes
-    assert "aria-[current=page]:text-blue-700" in classes
+    assert "aria-[current=page]:text-info" in classes
     assert "aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)]" in classes
     assert not any("aria-[current=page]" in one and "amber" in one for one in classes)
 
