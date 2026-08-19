@@ -72,13 +72,10 @@ class LaneCompletion:
       stamped synchronously by the ``/api/internal/agent/analysis/{file_id}`` callback at the instant
       analysis actually finished. For a kueue lane this is NOT the same instant as the previous
       ``CloudJob.updated_at`` this code used to render: ``cloud_job.status`` only flips to ``succeeded``
-      the NEXT time ``reconcile_cloud_jobs`` runs, and that cron is registered
-      ``CronJob(reconcile_cloud_jobs, cron="*/5 * * * *")`` (``tasks/controller.py``) -- a fixed-minute
-      schedule, not an interval since the triggering event. So every kueue completion's ``updated_at``
-      lands on the tick that happened to notice it, which is always exactly :00/:05/:10/.../:55 past the
-      hour (confirmed against the live archive: rows read e.g. completed_at 20:05:21 but
-      cloud_job.updated_at 20:10:00.03 -- the very next 5-minute tick) -- explaining the reported
-      clustering. ``completed_at`` falls back to ``CloudJob.updated_at`` only in the defensive case where
+      the NEXT time ``reconcile_cloud_jobs`` runs. That periodic observation timestamp can lag and
+      cluster independently of the true completion instant (historically by up to five minutes before
+      phaze-i3pkb.1 shortened reconciliation to every minute). ``completed_at`` falls back to
+      ``CloudJob.updated_at`` only in the defensive case where
       no ``AnalysisResult`` row is found (should not happen for a row this code selects as succeeded).
     """
 
