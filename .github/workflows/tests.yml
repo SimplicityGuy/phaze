@@ -333,6 +333,20 @@ jobs:
       - name: 🧮 Combine coverage and enforce gate
         run: just coverage-combine
 
+      # CI never ingests into repowise: its runner-local .repowise index would be discarded.
+      # Export both halves instead so a report downloaded at this exact commit remains usable:
+      # .coverage carries per-test contexts; Cobertura carries per-file line totals. The durable
+      # local index is refreshed directly with `just repowise-coverage <isolated-seat-name>`.
+      - name: 📤 Upload combined coverage reports
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: coverage-combined
+          path: |
+            .coverage
+            coverage.xml
+          include-hidden-files: true
+          if-no-files-found: error
+
       - name: 📊 Upload coverage to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
