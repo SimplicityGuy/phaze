@@ -92,7 +92,12 @@ _NON_TEMPLATE_HTML: frozenset[str] = frozenset()
 def _entry_templates() -> set[str]:
     """Templates rendered directly by a router (any quoted "...html" literal)."""
     names: set[str] = set()
-    for py in sorted(_ROUTERS.glob("*.py")):
+    # phaze-oau1o: rglob, not glob. `routers/pipeline.py` became the `routers/pipeline/` PACKAGE,
+    # and a non-recursive glob stops seeing router source the moment one is a package -- which here
+    # would have reported 14 live partials as orphans and, in the mirror-image case (a template
+    # deleted while still rendered from a subpackage), would have gone green on a real orphan.
+    # Every future router package is covered by this too.
+    for py in sorted(_ROUTERS.rglob("*.py")):
         names |= set(_HTML_LITERAL.findall(py.read_text()))
     return names
 

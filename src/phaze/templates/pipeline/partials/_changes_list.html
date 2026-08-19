@@ -25,7 +25,7 @@
     {% if changes_toast is defined and changes_toast %}
     <div role="status" aria-live="polite" class="mb-4 rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-sm text-blue-900 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200">{{ changes_toast }}</div>
     {% endif %}
-    <nav class="-mx-1 mb-4 flex gap-1 overflow-x-auto border-b border-gray-200 px-1 dark:border-phaze-border" aria-label="Changes Review filters">
+    <nav class="relative -mx-1 mb-4 flex gap-1 overflow-x-auto border-b border-gray-200 px-1 dark:border-phaze-border" aria-label="Changes Review filters">
         {% set tabs = [
             ("all", "All", changes_stats.all),
             ("needs_review", "Needs Review", changes_stats.needs_review),

@@ -7,7 +7,7 @@ connectivity was restored (the reported bug) and never fired at all for an outag
 boot (the silent, more dangerous half). See the bead's DESIGN and
 ``services/backends.py::derive_localqueue_unreachable``. The alert is now derived purely from the SAME
 live lane snapshot (``get_backend_lane_snapshot``) both render paths already fetch on every poll, so
-every test here drives state by patching ``phaze.routers.pipeline.get_backend_lane_snapshot`` with a
+every test here drives state by patching ``phaze.routers.pipeline.dashboard_stats.get_backend_lane_snapshot`` with a
 fake lane list instead of touching Redis at all.
 
 Acceptance criterion 3 (phaze-6r39) is the one that matters most and is easy to get wrong: a cluster
@@ -62,7 +62,7 @@ def _patch_snapshot(monkeypatch: pytest.MonkeyPatch, lanes: list[dict[str, Any]]
     identically -- and ``derive_localqueue_unreachable`` (a pure function) recomputes the flag from
     whatever ``lanes`` this returns on every call, with no cross-request state at all.
     """
-    monkeypatch.setattr("phaze.routers.pipeline.get_backend_lane_snapshot", AsyncMock(return_value=lanes))
+    monkeypatch.setattr("phaze.routers.pipeline.dashboard_stats.get_backend_lane_snapshot", AsyncMock(return_value=lanes))
 
 
 @pytest.mark.asyncio
@@ -98,7 +98,7 @@ async def test_localqueue_alert_clears_on_next_poll_when_probe_recovers(client: 
     second poll's lane snapshot reports the kueue lane reachable again, and the banner must be gone.
     """
     snapshot = AsyncMock(side_effect=[[_local_lane(), _kueue_lane(available=False)], [_local_lane(), _kueue_lane(available=True)]])
-    monkeypatch.setattr("phaze.routers.pipeline.get_backend_lane_snapshot", snapshot)
+    monkeypatch.setattr("phaze.routers.pipeline.dashboard_stats.get_backend_lane_snapshot", snapshot)
 
     first = await client.get("/pipeline/stats", headers={"HX-Request": "true"})
     second = await client.get("/pipeline/stats", headers={"HX-Request": "true"})
@@ -129,7 +129,7 @@ async def test_localqueue_alert_appears_after_boot_without_restart(client: Async
     snapshot, which the old code path never even consults.
     """
     snapshot = AsyncMock(side_effect=[[_local_lane(), _kueue_lane(available=True)], [_local_lane(), _kueue_lane(available=False)]])
-    monkeypatch.setattr("phaze.routers.pipeline.get_backend_lane_snapshot", snapshot)
+    monkeypatch.setattr("phaze.routers.pipeline.dashboard_stats.get_backend_lane_snapshot", snapshot)
 
     first = await client.get("/pipeline/stats", headers={"HX-Request": "true"})
     second = await client.get("/pipeline/stats", headers={"HX-Request": "true"})

@@ -22,6 +22,28 @@ the templates never touch an ORM object and the hot render/poll path can NEVER 5
 * :func:`get_cue_review_cards`      -- eligible + gated cue cards with an IN-MEMORY ``.cue`` preview
   (Cue, Plan 60-04; ``generate_cue_content`` only -- NO ``write_cue_file``, the render never mutates disk).
 
+phaze-b4u3p: this module's DECOMPOSITION SEAM. Every public function above stays defined here with
+its signature and degrade-safe contract unchanged (every ``routers/*`` caller keeps importing the
+same names) -- what moved out is the query/computation surface each one leaned on:
+
+* The tag-comparison predicate + row-building helpers this module used to reach into
+  ``routers/tags.py``'s private (underscore-prefixed) surface for now live in
+  ``services/tag_comparison.py``, and ``routers/tags.py`` imports them right back -- see that
+  module's docstring for the full layering rationale. This resolves the SERVICE ->
+  ROUTER-private-helper inversion repowise flagged: both modules now depend on one shared service
+  module instead of one reaching into the other.
+* Likewise the cue-eligibility query surface previously reached into ``routers/cue.py``'s private
+  helpers now lives in ``services/cue_review.py``, alongside a NEW batched
+  ``build_cue_tracks_for_versions`` that fixes the ``get_cue_review_cards`` cross-function N+1 (see
+  that function's docstring) and a shared ``_approved_applied_tracklist_base`` that removes the
+  14-line clone this module's old ``_gated_tracklist_stmt`` shared with ``routers/cue.py``'s
+  eligible-set predicate.
+* Within each brain method (``get_changes_review_page``, ``get_tagwrite_review_page``,
+  ``get_cue_review_cards``), the per-row/per-batch dict-building logic is factored into private
+  helpers defined IN THIS MODULE (not relocated) so the public function's own body stays a short,
+  low-CCN orchestration of "fetch, then build rows" -- and so the existing
+  ``patch("phaze.services.review.generate_cue_content", ...)``-style tests keep working: that name
+  is resolved out of THIS module's globals at call time, wherever the calling function is defined.
 """
 
 from __future__ import annotations
@@ -29,27 +51,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from sqlalchemy import Select, case, func, or_, select, tuple_
+from sqlalchemy import case, func, select, tuple_
 from sqlalchemy.orm import selectinload
 import structlog
 
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
-from phaze.models.tracklist import Tracklist, TracklistTrack
-from phaze.routers.cue import _build_cue_tracks, _eligible_tracklist_stmt, _get_eligible_tracklist_query
-from phaze.routers.tags import (
-    _build_comparison,
-    _count_changes,
-    _encode_tag_review_token,
-    _get_accepted_discogs_links_for_files,
-    _get_tracklists_for_files,
-    _summarize_tags,
-    _tag_review_payload,
-    _terminal_tagwrite_subq,
-)
+from phaze.models.tracklist import Tracklist
 from phaze.services.collision import get_review_collision_ids
 from phaze.services.cue_generator import generate_cue_content
+from phaze.services.cue_review import build_cue_tracks_for_versions, eligible_tracklist_stmt, gated_tracklist_stmt, get_eligible_tracklist_query
 from phaze.services.dedup import find_duplicate_groups_with_metadata, score_group
 from phaze.services.proposal_queries import (
     Pagination,
@@ -60,13 +72,28 @@ from phaze.services.proposal_queries import (
     proposal_review_digest,
 )
 from phaze.services.stage_status import applied_clause
+from phaze.services.tag_comparison import (
+    _build_comparison,
+    _count_changes,
+    _encode_tag_review_token,
+    _get_accepted_discogs_links_for_files,
+    _get_tracklists_for_files,
+    _summarize_tags,
+    _tag_review_payload,
+    _terminal_tagwrite_subq,
+)
 from phaze.services.tag_proposal import compute_proposed_tags
 
 
 if TYPE_CHECKING:
+    import uuid
+
+    from sqlalchemy import Select
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from phaze.models.discogs_link import DiscogsLink
     from phaze.routers.column_sort import SortState
+    from phaze.services.cue_generator import CueTrackData
 
 
 logger = structlog.get_logger(__name__)
@@ -171,6 +198,65 @@ _CHANGES_STATUS_MAP: dict[str, tuple[ProposalStatus, ...]] = {
 }
 
 
+async def _changes_review_stats(session: AsyncSession) -> ChangesReviewStats:
+    """Run the ONE aggregate query behind both the filter-tab counts and the filtered-page total."""
+    count_stmt = select(
+        func.count().label("all"),
+        func.count(case((RenameProposal.status == ProposalStatus.PENDING.value, 1))).label("needs_review"),
+        func.count(case((RenameProposal.status.in_((ProposalStatus.APPROVED.value, ProposalStatus.EXECUTED.value)), 1))).label("approved"),
+        func.count(case((RenameProposal.status == ProposalStatus.FAILED.value, 1))).label("blocked"),
+        func.count(case((RenameProposal.status == ProposalStatus.REJECTED.value, 1))).label("rejected"),
+    ).select_from(RenameProposal)
+    aggregate = (await session.execute(count_stmt)).one()
+    return ChangesReviewStats(
+        all=aggregate.all,
+        needs_review=aggregate.needs_review,
+        approved=aggregate.approved,
+        blocked=aggregate.blocked,
+        rejected=aggregate.rejected,
+    )
+
+
+def _changes_review_warnings(proposal: RenameProposal) -> list[str]:
+    """Per-proposal operator-facing caveats -- low/absent confidence, no destination change, a stored reason."""
+    warnings: list[str] = []
+    if proposal.confidence is None:
+        warnings.append("Confidence unavailable; individual review required.")
+    elif proposal.confidence < 0.9:
+        warnings.append("Below the 90% bulk-approval threshold; individual review required.")
+    if proposal.proposed_path is None:
+        warnings.append("No destination change; the file will be renamed in its current directory.")
+    if proposal.reason:
+        warnings.append(proposal.reason)
+    return warnings
+
+
+def _build_changes_review_row(proposal: RenameProposal, collision_ids: set[str]) -> dict[str, Any]:
+    """Map one ``RenameProposal`` (+ its eagerly-loaded ``file``) to the ``_diff_row.html`` row dict."""
+    raw_status = ProposalStatus(proposal.status)
+    review_status = next(
+        (label for label, values in _CHANGES_STATUS_MAP.items() if raw_status in values),
+        "blocked",
+    )
+    conflicts = ["Destination collides with another pending or approved operation; approval is blocked."] if str(proposal.id) in collision_ids else []
+    return {
+        "id": proposal.id,
+        "file_id": proposal.file_id,
+        "filename": proposal.file.original_filename,
+        "original_path": proposal.file.current_path,
+        "proposed_filename": proposal.proposed_filename,
+        "proposed_path": proposal.proposed_path,
+        "confidence": proposal.confidence,
+        "status": review_status,
+        "raw_status": proposal.status,
+        "warnings": _changes_review_warnings(proposal),
+        "conflicts": conflicts,
+        "bulk_eligible": (raw_status == ProposalStatus.PENDING and proposal.confidence is not None and proposal.confidence >= 0.9 and not conflicts),
+        "updated_at": proposal.updated_at,
+        "review_token": f"{proposal.id}|{proposal.updated_at.isoformat()}|{proposal_review_digest(proposal)}",
+    }
+
+
 async def get_changes_review_page(
     session: AsyncSession,
     *,
@@ -187,21 +273,7 @@ async def get_changes_review_page(
     active_status = status if status in {"all", *_CHANGES_STATUS_MAP} else "needs_review"
     try:
         async with session.begin_nested():
-            count_stmt = select(
-                func.count().label("all"),
-                func.count(case((RenameProposal.status == ProposalStatus.PENDING.value, 1))).label("needs_review"),
-                func.count(case((RenameProposal.status.in_((ProposalStatus.APPROVED.value, ProposalStatus.EXECUTED.value)), 1))).label("approved"),
-                func.count(case((RenameProposal.status == ProposalStatus.FAILED.value, 1))).label("blocked"),
-                func.count(case((RenameProposal.status == ProposalStatus.REJECTED.value, 1))).label("rejected"),
-            ).select_from(RenameProposal)
-            aggregate = (await session.execute(count_stmt)).one()
-            stats = ChangesReviewStats(
-                all=aggregate.all,
-                needs_review=aggregate.needs_review,
-                approved=aggregate.approved,
-                blocked=aggregate.blocked,
-                rejected=aggregate.rejected,
-            )
+            stats = await _changes_review_stats(session)
 
             query = select(RenameProposal).options(selectinload(RenameProposal.file))
             if active_status != "all":
@@ -216,59 +288,49 @@ async def get_changes_review_page(
             )
             proposals = (await session.execute(query)).scalars().all()
             collision_ids = await get_review_collision_ids(session)
-            rows = []
-            for proposal in proposals:
-                raw_status = ProposalStatus(proposal.status)
-                review_status = next(
-                    (label for label, values in _CHANGES_STATUS_MAP.items() if raw_status in values),
-                    "blocked",
-                )
-                warnings: list[str] = []
-                if proposal.confidence is None:
-                    warnings.append("Confidence unavailable; individual review required.")
-                elif proposal.confidence < 0.9:
-                    warnings.append("Below the 90% bulk-approval threshold; individual review required.")
-                if proposal.proposed_path is None:
-                    warnings.append("No destination change; the file will be renamed in its current directory.")
-                if proposal.reason:
-                    warnings.append(proposal.reason)
-                conflicts = (
-                    ["Destination collides with another pending or approved operation; approval is blocked."]
-                    if str(proposal.id) in collision_ids
-                    else []
-                )
-                rows.append(
-                    {
-                        "id": proposal.id,
-                        "file_id": proposal.file_id,
-                        "filename": proposal.file.original_filename,
-                        "original_path": proposal.file.current_path,
-                        "proposed_filename": proposal.proposed_filename,
-                        "proposed_path": proposal.proposed_path,
-                        "confidence": proposal.confidence,
-                        "status": review_status,
-                        "raw_status": proposal.status,
-                        "warnings": warnings,
-                        "conflicts": conflicts,
-                        "bulk_eligible": (
-                            raw_status == ProposalStatus.PENDING and proposal.confidence is not None and proposal.confidence >= 0.9 and not conflicts
-                        ),
-                        "updated_at": proposal.updated_at,
-                        "review_token": f"{proposal.id}|{proposal.updated_at.isoformat()}|{proposal_review_digest(proposal)}",
-                    }
-                )
+            rows = [_build_changes_review_row(proposal, collision_ids) for proposal in proposals]
             return ChangesReviewPage(
                 rows=rows,
                 pagination=Pagination(page=current_page, page_size=page_size, total=filtered_total),
                 stats=stats,
             )
     except Exception:
+        # Degrade-safe contract (module docstring): ANY failure inside this SAVEPOINT -- a bad
+        # filter value slipping past the `active_status` guard, a transient connection error, an
+        # unexpected ORM exception -- degrades this render to an empty first page with zeroed
+        # stats rather than 500ing the Changes Review poll/render path. The router has no
+        # exception handling of its own for this call, by design.
         logger.warning("changes_review_page_degraded", exc_info=True)
         return ChangesReviewPage(
             rows=[],
             pagination=Pagination(page=1, page_size=page_size, total=0),
             stats=ChangesReviewStats(all=0, needs_review=0, approved=0, blocked=0, rejected=0),
         )
+
+
+def _proposal_row_base(proposal: RenameProposal) -> dict[str, Any]:
+    """The ``id``/``filename``/paths/``confidence``/``status`` shape both proposal-row builders below
+    share -- factored out because :func:`get_pending_proposal_rows` and
+    :func:`get_proposal_workspace_page` used to build it via two independently-maintained dict
+    literals differing only in :func:`_pending_proposal_row`'s one extra ``updated_at`` field (a
+    clone repowise flagged; the two MUST agree, since both feed the same ``_file_table.html``).
+    """
+    return {
+        "id": proposal.id,
+        "filename": proposal.file.original_filename,
+        "original_path": proposal.file.current_path,
+        "proposed_filename": proposal.proposed_filename,
+        "proposed_path": proposal.proposed_path,
+        "confidence": proposal.confidence,
+        "status": proposal.status,
+    }
+
+
+def _pending_proposal_row(proposal: RenameProposal) -> dict[str, Any]:
+    """:func:`_proposal_row_base` plus the APPROVE button's optimistic-concurrency token (phaze-exivg)."""
+    row = _proposal_row_base(proposal)
+    row["updated_at"] = proposal.updated_at
+    return row
 
 
 async def get_pending_proposal_rows(session: AsyncSession, *, confidence_threshold: float = 0.9) -> PendingProposalRows:
@@ -286,31 +348,21 @@ async def get_pending_proposal_rows(session: AsyncSession, *, confidence_thresho
     on every call -- that total used to be fetched and immediately discarded (bound to ``_pagination``
     and dropped). Returning it here is free: no new query, just no longer throwing away the one this
     function already ran. ``high_confidence_pending`` is one additional lightweight COUNT
-    (:func:`count_pending_above_confidence`) using the SAME predicate
-    :func:`approve_pending_above_confidence` bulk-approves, so the confirm dialog can name what the
-    action actually does instead of the rendered page's row count.
+    (:func:`count_pending_above_confidence`) over the >= threshold PENDING set, so a confirm dialog
+    can name what a bulk action actually covers instead of the rendered page's row count. It used
+    to be described as mirroring ``approve_pending_above_confidence``; phaze-7tiqp retired that
+    function along with the routeless bulk-approve-high-confidence chain.
     """
     try:
         async with session.begin_nested():
             proposals, pagination = await get_proposals_page(session, status="pending", page_size=200)
             high_confidence_pending = await count_pending_above_confidence(session, threshold=confidence_threshold)
-            rows = [
-                {
-                    "id": proposal.id,
-                    "filename": proposal.file.original_filename,
-                    "original_path": proposal.file.current_path,
-                    "proposed_filename": proposal.proposed_filename,
-                    "proposed_path": proposal.proposed_path,
-                    "confidence": proposal.confidence,
-                    "status": proposal.status,
-                    # phaze-exivg: the optimistic-concurrency token the Rename/Move workspaces'
-                    # APPROVE button round-trips back to /proposals/{id}/approve.
-                    "updated_at": proposal.updated_at,
-                }
-                for proposal in proposals
-            ]
+            rows = [_pending_proposal_row(proposal) for proposal in proposals]
             return PendingProposalRows(rows=rows, total_pending=pagination.total, high_confidence_pending=high_confidence_pending)
     except Exception:
+        # Degrade-safe contract (module docstring): a corpus-wide COUNT (via get_proposals_page /
+        # count_pending_above_confidence) failing here degrades the Rename/Move diff workspace to
+        # an all-empty/zero bundle rather than 500ing the render/poll path.
         logger.warning("pending_proposal_rows_degraded", exc_info=True)
         return PendingProposalRows(rows=[], total_pending=0, high_confidence_pending=0)
 
@@ -391,26 +443,126 @@ async def get_proposal_workspace_page(
                 sort=sort,
             )
             stats = await get_proposal_stats(session)
-            rows = [
-                {
-                    "id": proposal.id,
-                    "filename": proposal.file.original_filename,
-                    "original_path": proposal.file.current_path,
-                    "proposed_filename": proposal.proposed_filename,
-                    "proposed_path": proposal.proposed_path,
-                    "confidence": proposal.confidence,
-                    "status": proposal.status,
-                }
-                for proposal in proposals
-            ]
+            rows = [_proposal_row_base(proposal) for proposal in proposals]
             return ProposalWorkspacePage(rows=rows, pagination=pagination, stats=stats)
     except Exception:
+        # Degrade-safe contract (module docstring): a filter/search/sort combination reaching an
+        # unexpected DB error degrades the Propose workspace to an empty first page with zeroed
+        # tab stats, rather than 500ing -- the SAME contract as every sibling reader in this module.
         logger.warning("proposal_workspace_page_degraded", exc_info=True)
         return ProposalWorkspacePage(
             rows=[],
             pagination=Pagination(page=1, page_size=page_size, total=0),
-            stats=ProposalStats(total=0, pending=0, approved=0, rejected=0, avg_confidence=None),
+            stats=ProposalStats(total=0, pending=0, approved=0, executed=0, rejected=0, failed=0, avg_confidence=None),
         )
+
+
+async def _fetch_tagwrite_batch(
+    session: AsyncSession,
+    terminal_subq: Select[tuple[uuid.UUID]],
+    last_key: tuple[str, Any] | None,
+) -> list[FileRecord]:
+    """One WR-01 keyset-paged scan batch: up to ``_REVIEW_SCAN_BATCH`` applied, non-terminal candidates.
+
+    Ordered + ranged on the ``(original_filename, id)`` btree (migration 048); ``last_key`` is the
+    previous batch's last row, or ``None`` for the first page.
+    """
+    stmt = (
+        select(FileRecord)
+        .options(selectinload(FileRecord.file_metadata))
+        .where(applied_clause(), FileRecord.id.not_in(terminal_subq))
+        .order_by(FileRecord.original_filename, FileRecord.id)
+        .limit(_REVIEW_SCAN_BATCH)
+    )
+    if last_key is not None:
+        stmt = stmt.where(tuple_(FileRecord.original_filename, FileRecord.id) > last_key)
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def _fetch_tagwrite_batch_logs(session: AsyncSession, batch_ids: list[uuid.UUID]) -> dict[uuid.UUID, TagWriteLog]:
+    """phaze-o5rf: batch-fetch which of THIS scan batch's files already carry a ``TagWriteLog``.
+
+    One round-trip per scan batch rather than per row -- can only resolve to a QUEUED/DISCREPANCY/
+    FAILED entry, since ``terminal_subq`` already excluded every COMPLETED/NO_OP file upstream.
+    """
+    log_rows = (
+        (
+            await session.execute(
+                select(TagWriteLog)
+                .where(TagWriteLog.file_id.in_(batch_ids))
+                .distinct(TagWriteLog.file_id)
+                .order_by(TagWriteLog.file_id, TagWriteLog.written_at.desc(), TagWriteLog.id.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {entry.file_id: entry for entry in log_rows}
+
+
+def _build_tagwrite_row(
+    fr: FileRecord,
+    tracklist: Tracklist | None,
+    discogs_link: DiscogsLink | None,
+    latest_logs: dict[uuid.UUID, TagWriteLog],
+) -> dict[str, Any] | None:
+    """Build ONE tag-write queue row, or ``None`` if the file's server-computed comparison has zero changes.
+
+    Mirrors ``tags.write_file_tags``: ``compute_proposed_tags`` over the file's metadata +
+    tracklist + accepted Discogs link, then ``_build_comparison`` / ``_count_changes``.
+    ``has_prior_write`` (phaze-o5rf) is True iff ``latest_logs`` already carries an entry for this
+    file -- since the caller's ``terminal_subq`` already evicted every COMPLETED/NO_OP file, that
+    entry can only be QUEUED/DISCREPANCY/FAILED.
+    """
+    proposed = compute_proposed_tags(fr.file_metadata, tracklist, fr.original_filename, discogs_link=discogs_link)
+    comparison = _build_comparison(fr.file_metadata, proposed)
+    changed_count = _count_changes(comparison)
+    if changed_count < 1:
+        return None
+    latest = latest_logs.get(fr.id)
+    has_blanking = any(c["current"] is not None and c["proposed"] is None for c in comparison)
+    return {
+        "file_id": fr.id,
+        "filename": fr.original_filename,
+        "before_summary": _summarize_tags(comparison, "current"),
+        "after_summary": _summarize_tags(comparison, "proposed"),
+        "review_token": _encode_tag_review_token(_tag_review_payload(fr, tracklist, discogs_link, proposed)),
+        "changed_count": changed_count,
+        "has_blanking": has_blanking,
+        "has_prior_write": latest is not None,
+        "latest_status": latest.status if latest is not None else None,
+        "bulk_eligible": not has_blanking and (latest is None or (latest.source == "undo" and latest.status == TagWriteStatus.COMPLETED.value)),
+        "status": ("blocked" if latest is not None and latest.status in {"failed", "discrepancy", "verify_failed"} else "needs_review"),
+        "discrepancies": latest.discrepancies if latest is not None else None,
+        "error_message": latest.error_message if latest is not None else None,
+    }
+
+
+def _rows_from_tagwrite_batch(
+    batch: list[FileRecord],
+    tracklists: dict[uuid.UUID, Tracklist],
+    discogs_links: dict[uuid.UUID, DiscogsLink],
+    latest_logs: dict[uuid.UUID, TagWriteLog],
+    remaining_capacity: int,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Build up to ``remaining_capacity`` qualifying rows from ONE scan batch.
+
+    Factored out of :func:`get_tagwrite_review_page`'s while-loop body so that function's own
+    nesting stays ``try -> async with -> while`` (3 deep) instead of running the per-row build and
+    its mid-batch cap check a level further in (the ``nested_complexity`` finding this bead is
+    closing). Returns ``(rows, row_cap_hit_mid_batch)`` -- the second element is phaze-a2ytu's
+    mid-batch cap signal: True iff the cap landed with unexamined candidates still in THIS batch
+    (an unexamined tail means the render is a bounded prefix, not the whole queue).
+    """
+    rows: list[dict[str, Any]] = []
+    for i, fr in enumerate(batch):
+        row = _build_tagwrite_row(fr, tracklists.get(fr.id), discogs_links.get(fr.id), latest_logs)
+        if row is None:
+            continue
+        rows.append(row)
+        if len(rows) >= remaining_capacity:
+            return rows, i < len(batch) - 1
+    return rows, False
 
 
 async def get_tagwrite_review_page(session: AsyncSession) -> TagwriteReviewPage:
@@ -468,86 +620,24 @@ async def get_tagwrite_review_page(session: AsyncSession) -> TagwriteReviewPage:
                     # a SAVEPOINT for the rest of the applied backlog and rendering nothing at all.
                     partial = True
                     break
-                stmt = (
-                    select(FileRecord)
-                    .options(selectinload(FileRecord.file_metadata))
-                    .where(applied_clause(), FileRecord.id.not_in(terminal_subq))
-                    .order_by(FileRecord.original_filename, FileRecord.id)
-                    .limit(_REVIEW_SCAN_BATCH)
-                )
-                if last_key is not None:
-                    stmt = stmt.where(tuple_(FileRecord.original_filename, FileRecord.id) > last_key)
-                batch = list((await session.execute(stmt)).scalars().all())
+                batch = await _fetch_tagwrite_batch(session, terminal_subq, last_key)
                 if not batch:
                     break
                 batches += 1
                 last_key = (batch[-1].original_filename, batch[-1].id)
                 batch_ids = [fr.id for fr in batch]
-                # phaze-o5rf: batch-fetch which of THIS page's files already carry a TagWriteLog (can
-                # only be QUEUED/DISCREPANCY/FAILED here -- COMPLETED/NO_OP were excluded by
-                # terminal_subq above), one round-trip per scan batch rather than per row.
-                log_rows = (
-                    (
-                        await session.execute(
-                            select(TagWriteLog)
-                            .where(TagWriteLog.file_id.in_(batch_ids))
-                            .distinct(TagWriteLog.file_id)
-                            .order_by(TagWriteLog.file_id, TagWriteLog.written_at.desc(), TagWriteLog.id.desc())
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                latest_logs = {entry.file_id: entry for entry in log_rows}
+                latest_logs = await _fetch_tagwrite_batch_logs(session, batch_ids)
                 # phaze-bto9: the same batching, extended to the two lookups that were still per-row.
                 tracklists = await _get_tracklists_for_files(session, batch_ids)
                 discogs_links = await _get_accepted_discogs_links_for_files(session, tracklists)
-                row_cap_hit_mid_batch = False
-                for i, fr in enumerate(batch):
-                    proposed = compute_proposed_tags(
-                        fr.file_metadata,
-                        (tracklist := tracklists.get(fr.id)),
-                        fr.original_filename,
-                        discogs_link=(discogs_link := discogs_links.get(fr.id)),
-                    )
-                    comparison = _build_comparison(fr.file_metadata, proposed)
-                    changed_count = _count_changes(comparison)
-                    if changed_count < 1:
-                        continue
-                    rows.append(
-                        {
-                            "file_id": fr.id,
-                            "filename": fr.original_filename,
-                            "before_summary": _summarize_tags(comparison, "current"),
-                            "after_summary": _summarize_tags(comparison, "proposed"),
-                            "review_token": _encode_tag_review_token(_tag_review_payload(fr, tracklist, discogs_link, proposed)),
-                            "changed_count": changed_count,
-                            "has_blanking": any(c["current"] is not None and c["proposed"] is None for c in comparison),
-                            "has_prior_write": fr.id in latest_logs,
-                            "latest_status": latest_logs[fr.id].status if fr.id in latest_logs else None,
-                            "bulk_eligible": not any(c["current"] is not None and c["proposed"] is None for c in comparison)
-                            and (
-                                (latest := latest_logs.get(fr.id)) is None
-                                or (latest.source == "undo" and latest.status == TagWriteStatus.COMPLETED.value)
-                            ),
-                            "status": (
-                                "blocked"
-                                if (latest := latest_logs.get(fr.id)) is not None and latest.status in {"failed", "discrepancy", "verify_failed"}
-                                else "needs_review"
-                            ),
-                            "discrepancies": latest_logs[fr.id].discrepancies if fr.id in latest_logs else None,
-                            "error_message": latest_logs[fr.id].error_message if fr.id in latest_logs else None,
-                        }
-                    )
-                    if len(rows) >= _MAX_REVIEW_ROWS:
-                        # phaze-a2ytu: hitting the row cap mid-scan means candidates may remain --
-                        # unless this batch was BOTH fully consumed (no unexamined tail, i.e. the cap
-                        # landed on the batch's last member) AND short (< _REVIEW_SCAN_BATCH, so the
-                        # candidate set itself just ran out here). Any other shape -- an unexamined
-                        # tail in this batch, or a full-sized batch that a later keyset page might
-                        # follow -- means the render is a bounded prefix, not the whole queue.
-                        row_cap_hit_mid_batch = i < len(batch) - 1
-                        break
+                # phaze-a2ytu: hitting the row cap mid-scan means candidates may remain -- unless
+                # this batch was BOTH fully consumed (no unexamined tail) AND short (< the batch
+                # size, so the candidate set itself just ran out here). See
+                # :func:`_rows_from_tagwrite_batch` for the mid-batch signal itself.
+                new_rows, row_cap_hit_mid_batch = _rows_from_tagwrite_batch(
+                    batch, tracklists, discogs_links, latest_logs, _MAX_REVIEW_ROWS - len(rows)
+                )
+                rows.extend(new_rows)
                 if len(rows) >= _MAX_REVIEW_ROWS:
                     if row_cap_hit_mid_batch or len(batch) == _REVIEW_SCAN_BATCH:
                         partial = True
@@ -556,6 +646,11 @@ async def get_tagwrite_review_page(session: AsyncSession) -> TagwriteReviewPage:
                     break  # candidate set exhausted
             return TagwriteReviewPage(rows=rows, partial=partial)
     except Exception:
+        # Degrade-safe contract (module docstring): a failure ANYWHERE in the scan -- the keyset
+        # page, the batched log/tracklist/Discogs lookups, or the per-row comparison build --
+        # degrades the Tag-write workspace to an empty, non-partial page rather than 500ing the
+        # render/poll path. Deliberately broad: this is the router's ONLY seam onto this data, by
+        # design (see the module docstring), so there is no narrower boundary to catch at.
         logger.warning("tagwrite_review_rows_degraded", exc_info=True)
         return TagwriteReviewPage(rows=[], partial=False)
 
@@ -652,37 +747,18 @@ async def get_dedupe_groups(session: AsyncSession) -> list[dict[str, Any]]:
                 cards.append(build_dupe_group_card(group))
             return cards
     except Exception:
+        # Degrade-safe contract (module docstring): a failure in either
+        # find_duplicate_groups_with_metadata or score_group degrades the Dedupe workspace to an
+        # empty list rather than 500ing the render/poll path.
         logger.warning("dedupe_groups_degraded", exc_info=True)
         return []
 
 
-def _gated_tracklist_stmt() -> Select[Any]:
-    """Build the base (UNORDERED, UNBOUNDED) SELECT for GATED cue sets -- approved + applied, no timestamped track.
-
-    The sibling of ``cue._eligible_tracklist_stmt`` and, like it, deliberately carries no ``ORDER BY``
-    and no ``LIMIT`` so each caller composes exactly the ones it needs: the card reader adds a display
-    sort plus ``_MAX_REVIEW_ROWS``, the counter adds neither.
-
-    phaze-tzy6s.17 extracted this from :func:`get_cue_review_cards`, where it was inline. The
-    extraction is the point rather than tidiness: :func:`count_cue_review_candidates` has to count the
-    SAME population the cards render, and a second copy of a four-predicate join is exactly how a
-    count and its list drift apart (``latest_version_id`` scoping in particular -- see phaze-dboy on
-    ``_eligible_tracklist_stmt`` for the defect that predicate already fixed once).
-    """
-    # phaze-dboy: scoped to latest_version_id -- the version generation actually reads -- not "any
-    # version ever". Mirrors cue._eligible_tracklist_stmt's subquery exactly; the two are complements.
-    has_timestamp_subq = select(TracklistTrack.version_id).where(TracklistTrack.timestamp.is_not(None)).distinct()
-
-    return (
-        select(Tracklist, FileRecord)
-        .join(FileRecord, Tracklist.file_id == FileRecord.id)
-        .where(
-            Tracklist.status == "approved",
-            Tracklist.file_id.is_not(None),
-            applied_clause(),
-            or_(Tracklist.latest_version_id.is_(None), Tracklist.latest_version_id.not_in(has_timestamp_subq)),
-        )
-    )
+# phaze-b4u3p: the gated-tracklist predicate (formerly ``_gated_tracklist_stmt``) moved to
+# ``services/cue_review.py`` as ``gated_tracklist_stmt`` (imported above), built on the SAME shared
+# join+filter core ``eligible_tracklist_stmt`` uses -- see that module's docstring. It previously
+# duplicated ``routers/cue.py``'s eligible-set predicate almost verbatim (differing only in the one
+# ``latest_version_id`` clause), which was the 14-line clone repowise flagged between the two files.
 
 
 async def count_cue_review_candidates(session: AsyncSession) -> int:
@@ -703,12 +779,90 @@ async def count_cue_review_candidates(session: AsyncSession) -> int:
     """
     try:
         async with session.begin_nested():
-            eligible = await session.execute(select(func.count()).select_from(_eligible_tracklist_stmt().subquery()))
-            gated = await session.execute(select(func.count()).select_from(_gated_tracklist_stmt().subquery()))
+            eligible = await session.execute(select(func.count()).select_from(eligible_tracklist_stmt().subquery()))
+            gated = await session.execute(select(func.count()).select_from(gated_tracklist_stmt().subquery()))
             return int(eligible.scalar_one()) + int(gated.scalar_one())
     except Exception:
+        # Degrade-safe contract (module docstring): a failure in either aggregate degrades the
+        # exclusion-row count to 0 rather than 500ing -- dropping the row is safer than rendering a
+        # number this read did not actually measure.
         logger.warning("cue_review_count_degraded", exc_info=True)
         return 0
+
+
+def _build_eligible_cue_card(
+    tracklist: Tracklist,
+    file_record: FileRecord,
+    cue_tracks_by_version: dict[uuid.UUID, list[CueTrackData]],
+) -> dict[str, Any]:
+    """Build one ELIGIBLE (or per-card-degraded) preview card from an ALREADY-FETCHED cue-track list.
+
+    phaze-b4u3p: ``cue_tracks_by_version`` is built ONCE, upfront, for the whole eligible half by
+    :func:`phaze.services.cue_review.build_cue_tracks_for_versions` -- this is the fix for the
+    cross-function N+1 this function used to have (one ``_build_cue_tracks`` DB round-trip PER
+    card; see that function's docstring for the measured shape). Only ``generate_cue_content``
+    (the in-memory ``.cue`` text render, T-60-CUE -- no disk write) can still raise per card here,
+    so it alone is isolated with its own try/except (phaze-hcsb): ONE bad card degrades to the
+    gated shape instead of blanking the whole workspace, exactly as before. A failure in the
+    UPFRONT batched fetch itself (now a single query pair for the whole page, not one per card) is
+    caught by the OUTER ``session.begin_nested()`` handler instead, same as every other batched
+    read in this module -- consistent with, not a regression from, the rest of the degrade
+    contract.
+    """
+    try:
+        cue_text: str | None = None
+        if tracklist.latest_version_id:
+            cue_tracks = cue_tracks_by_version.get(tracklist.latest_version_id, [])
+            audio_name = Path(file_record.current_path).name
+            cue_text = generate_cue_content(audio_name, file_record.file_type, cue_tracks)
+    except Exception:
+        logger.warning("cue_review_card_build_failed", tracklist_id=str(tracklist.id), exc_info=True)
+        # Degrade this ONE card to the gated shape (no approve control, no stale/partial preview)
+        # instead of dropping the whole render.
+        return {
+            "tracklist_id": tracklist.id,
+            "file_id": file_record.id,
+            "set_name": Path(file_record.current_path).stem,
+            "eligible": False,
+            "build_error": True,
+            "cue_text": None,
+            "version_id": None,
+        }
+    return {
+        "tracklist_id": tracklist.id,
+        "file_id": file_record.id,
+        "set_name": Path(file_record.current_path).stem,
+        "eligible": True,
+        "build_error": False,
+        "cue_text": cue_text,
+        # phaze-ce65s: the version THIS preview's cue_text was actually built from -- carried back
+        # on APPROVE (hx-vals) so the route can refuse a write if `latest_version_id` moved before
+        # the click.
+        "version_id": tracklist.latest_version_id,
+    }
+
+
+async def _gated_cue_cards(session: AsyncSession) -> list[dict[str, Any]]:
+    """The GATED half of the Cue workspace: approved + applied() file, no timestamped track on the LATEST version.
+
+    Mirrors the eligibility gate's ``latest_version_id`` scoping (phaze-dboy) via the shared
+    :func:`phaze.services.cue_review.gated_tracklist_stmt`. WR-04: its own per-set cap, independent
+    of the eligible half's (the intentional total ceiling is ``2 * _MAX_REVIEW_ROWS``, both halves
+    SQL-bounded).
+    """
+    gated_stmt = gated_tracklist_stmt().order_by(Tracklist.artist, Tracklist.event).limit(_MAX_REVIEW_ROWS)
+    return [
+        {
+            "tracklist_id": tracklist.id,
+            "file_id": file_record.id,
+            "set_name": Path(file_record.current_path).stem,
+            "eligible": False,
+            "build_error": False,
+            "cue_text": None,
+            "version_id": None,
+        }
+        for tracklist, file_record in (await session.execute(gated_stmt)).tuples().all()
+    ]
 
 
 async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
@@ -720,10 +874,12 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
     halves are each independently bounded by it, so the returned list holds up to ``2 *
     _MAX_REVIEW_ROWS`` cards (the intentional total ceiling, both halves SQL-bounded per WR-03):
 
-    * **eligible** -- ``>= 1`` timestamped track (``_get_eligible_tracklist_query``). For each, the ``.cue``
-      preview text is built ENTIRELY IN MEMORY via ``_build_cue_tracks`` + ``generate_cue_content`` -- the
-      render NEVER calls ``write_cue_file`` and NEVER touches disk (T-60-CUE; the write happens only on an
-       explicit Generate -> ``POST /cue/{id}/generate``, which queues the write -- there is no /approve route).
+    * **eligible** -- ``>= 1`` timestamped track (``get_eligible_tracklist_query``). phaze-b4u3p: the
+      ``.cue`` preview text for the WHOLE eligible half is built from ONE upfront batched fetch
+      (:func:`phaze.services.cue_review.build_cue_tracks_for_versions`) -- fixing what used to be a
+      cross-function N+1 (one DB round-trip pair PER eligible tracklist). It stays ENTIRELY IN
+      MEMORY (T-60-CUE; the write happens only on an explicit Generate ->
+      ``POST /cue/{id}/generate``, which queues the write -- there is no /approve route).
     * **gated** -- approved + applied but NO timestamped track (the "awaiting tracklist match…" ineligible
       card, rendered ``opacity-60`` with no approve control).
 
@@ -737,78 +893,21 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
     """
     try:
         async with session.begin_nested():
-            cards: list[dict[str, Any]] = []
-
             # WR-03: bound the eligible half at the SQL level so the DB never returns more than the
-            # render cap (the loop-break below no longer sits on top of a fully-materialized result).
-            for tracklist, file_record in await _get_eligible_tracklist_query(session, limit=_MAX_REVIEW_ROWS):
-                if len(cards) >= _MAX_REVIEW_ROWS:  # D-03: cap the eligible half at the same bound.
-                    break
-                # phaze-hcsb: isolate THIS tracklist's build -- the outer except below is for
-                # genuine DB errors (session.begin_nested() failures) and was never meant to be a
-                # catch-all for one malformed row. Without this, a single bad card raising here
-                # (e.g. a future _build_cue_tracks/generate_cue_content defect) would abort the
-                # loop and blank EVERY other eligible + gated card in the whole workspace, with
-                # only a log-level warning -- the operator reads that as "no cue work to review".
-                try:
-                    cue_text: str | None = None
-                    if tracklist.latest_version_id:
-                        cue_tracks = await _build_cue_tracks(session, tracklist.latest_version_id)
-                        audio_name = Path(file_record.current_path).name
-                        cue_text = generate_cue_content(audio_name, file_record.file_type, cue_tracks)
-                except Exception:
-                    logger.warning("cue_review_card_build_failed", tracklist_id=str(tracklist.id), exc_info=True)
-                    # Degrade this ONE card to the gated shape (no approve control, no stale/partial
-                    # preview) instead of dropping the whole render.
-                    cards.append(
-                        {
-                            "tracklist_id": tracklist.id,
-                            "file_id": file_record.id,
-                            "set_name": Path(file_record.current_path).stem,
-                            "eligible": False,
-                            "build_error": True,
-                            "cue_text": None,
-                            "version_id": None,
-                        }
-                    )
-                    continue
-                cards.append(
-                    {
-                        "tracklist_id": tracklist.id,
-                        "file_id": file_record.id,
-                        "set_name": Path(file_record.current_path).stem,
-                        "eligible": True,
-                        "build_error": False,
-                        "cue_text": cue_text,
-                        # phaze-ce65s: the version THIS preview's cue_text was actually built
-                        # from -- carried back on APPROVE (hx-vals) so the route can refuse a
-                        # write if `latest_version_id` moved before the click.
-                        "version_id": tracklist.latest_version_id,
-                    }
-                )
+            # render cap; the slice below is the same defensive D-03 double-cap the original
+            # loop-break carried, now a no-op in the ordinary case since the SQL LIMIT already holds.
+            eligible_pairs = (await get_eligible_tracklist_query(session, limit=_MAX_REVIEW_ROWS))[:_MAX_REVIEW_ROWS]
+            version_ids = [tracklist.latest_version_id for tracklist, _ in eligible_pairs if tracklist.latest_version_id]
+            cue_tracks_by_version = await build_cue_tracks_for_versions(session, version_ids)
+            cards = [_build_eligible_cue_card(tracklist, file_record, cue_tracks_by_version) for tracklist, file_record in eligible_pairs]
 
-            # Gated: approved + applied() file but NO timestamped track on the LATEST version
-            # (mirrors cue._get_cue_stats missing set -- phaze-dboy: scoped to latest_version_id,
-            # the same version generation reads, not "any version ever").
-            gated_stmt = (
-                _gated_tracklist_stmt()
-                .order_by(Tracklist.artist, Tracklist.event)
-                .limit(_MAX_REVIEW_ROWS)  # WR-04: the gated half's own per-set cap (total ceiling = 2 * _MAX_REVIEW_ROWS)
-            )
-            for tracklist, file_record in (await session.execute(gated_stmt)).tuples().all():
-                cards.append(
-                    {
-                        "tracklist_id": tracklist.id,
-                        "file_id": file_record.id,
-                        "set_name": Path(file_record.current_path).stem,
-                        "eligible": False,
-                        "build_error": False,
-                        "cue_text": None,
-                        "version_id": None,
-                    }
-                )
-
+            cards.extend(await _gated_cue_cards(session))
             return cards
     except Exception:
+        # Degrade-safe contract (module docstring): a failure ANYWHERE in the two upfront batched
+        # fetches (eligible tracklists, their cue tracks) or the gated-set query degrades the whole
+        # Cue workspace to an empty list rather than 500ing the render/poll path. A single bad
+        # CARD's ``generate_cue_content`` failure never reaches here -- see
+        # :func:`_build_eligible_cue_card`.
         logger.warning("cue_review_cards_degraded", exc_info=True)
         return []

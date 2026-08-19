@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -32,10 +32,7 @@ import pytest
 from phaze.constants import AGENT_BROKER_EXIT_BEATS, AGENT_BROKER_UNHEALTHY_BEATS
 from phaze.schemas.agent_identity import AgentIdentity
 from phaze.tasks.heartbeat import _heartbeat_loop, send_heartbeat
-
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
+from tests._async_settle import wait_until
 
 
 def _make_ctx() -> dict[str, Any]:
@@ -52,15 +49,6 @@ def _make_ctx() -> dict[str, Any]:
     queue.info = AsyncMock(side_effect=RuntimeError("connection to server ... failed: Network is unreachable"))
     worker.queue = queue
     return {"api_client": client, "agent_identity": identity, "worker": worker, "job": MagicMock()}
-
-
-async def _wait_until(predicate: Callable[[], bool], *, timeout: float = 2.0) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while not predicate():
-        if loop.time() > deadline:
-            return
-        await asyncio.sleep(0)
 
 
 async def test_single_and_double_probe_failures_still_post(caplog: pytest.LogCaptureFixture) -> None:
@@ -157,7 +145,11 @@ async def test_loop_reproduces_unreachable_then_reachable_shape(caplog: pytest.L
         # The first AGENT_BROKER_UNHEALTHY_BEATS - 1 beats still post (pre-threshold
         # tolerance); a POST beyond that count can only be a genuine post-recovery beat.
         recovery_target = AGENT_BROKER_UNHEALTHY_BEATS
-        await _wait_until(lambda: ctx["api_client"].heartbeat.await_count >= recovery_target, timeout=5.0)
+        await wait_until(
+            lambda: ctx["api_client"].heartbeat.await_count >= recovery_target,
+            timeout=5.0,
+            description="a post-recovery beat was POSTed",
+        )
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task

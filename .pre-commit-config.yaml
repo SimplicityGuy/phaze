@@ -42,7 +42,7 @@ repos:
         exclude: ^(\.planning/|graphify-out/)
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: 7c55798a78262d14b2074abf623d8a992ebb70d4  # frozen: v0.16.2
+    rev: 65dbdb59d2f2d9c3bdc343c566821ad3319ddaa3  # frozen: v0.16.3
     hooks:
       - id: ruff
         args: [--fix]
@@ -55,7 +55,7 @@ repos:
         args: [-x, "tests,services", -s, B608]
 
   - repo: https://github.com/python-jsonschema/check-jsonschema
-    rev: 1a4bb160cab6417b3045e1b37b6b72449243e658  # frozen: 0.37.4
+    rev: c4654a7e007c9619a5eb63c39a456572a0fa1851  # frozen: 0.38.0
     hooks:
       - id: check-github-workflows
       - id: check-github-actions

@@ -454,12 +454,11 @@ async def test_batched_lookups_pick_the_same_rows_as_the_per_file_helpers(sessio
     silently change which tracklist (and therefore which proposed tags) a file is reviewed against.
     Seeded with a deliberate confidence TIE so the ``id`` tiebreak is what decides.
     """
-    from phaze.routers.tags import (
-        _get_accepted_discogs_link,
-        _get_accepted_discogs_links_for_files,
-        _get_tracklist_for_file,
-        _get_tracklists_for_files,
-    )
+    # phaze-b4u3p: the per-file helpers stay importable from routers.tags (still used by its own
+    # routes); the batch forms moved to services.tag_comparison, their only remaining caller being
+    # services.review -- see that module's docstring for the layering rationale.
+    from phaze.routers.tags import _get_accepted_discogs_link, _get_tracklist_for_file
+    from phaze.services.tag_comparison import _get_accepted_discogs_links_for_files, _get_tracklists_for_files
 
     file_id = await _seed_qualifying_applied_file(session, filename="Tie Artist - Tie Title.mp3")
     version_ids = []

@@ -20,12 +20,23 @@ on ``sys.path[0]`` under ``python -m``; driver tests pass the repo root cwd expl
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import time
 from typing import TYPE_CHECKING, Any
 
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+
+# The gate seam (phaze-2mz81). ``PHAZE_STUB_GATE_AFTER`` beats in, ``crawling_analyze`` parks
+# until ``PHAZE_STUB_GATE_FILE`` appears, then finishes its run as normal. Unset (the default)
+# leaves every stub exactly as it was.
+_GATE_FILE_ENV = "PHAZE_STUB_GATE_FILE"
+_GATE_AFTER_ENV = "PHAZE_STUB_GATE_AFTER"
+# Safety bound only: a test that never opens its gate gets a slow failure, not a wedged child.
+_GATE_MAX_WAIT_SEC = 30.0
+_GATE_POLL_SEC = 0.005
 
 
 def _result(file_path: str, models_dir: str, **windowing: Any) -> dict[str, Any]:
@@ -87,6 +98,31 @@ def _beat(heartbeat_cb: Callable[[str, int, int], None] | None, stage: str, done
     """Emit one liveness heartbeat if the caller wired the channel."""
     if heartbeat_cb is not None:
         heartbeat_cb(stage, done, total)
+
+
+def _wait_at_gate() -> None:
+    """Park until the parent creates ``PHAZE_STUB_GATE_FILE`` (phaze-2mz81).
+
+    What this buys a test is QUIESCENCE AT A KNOWN INSTANT. Every protocol line the child
+    writes is flushed as it is written (``analysis_child._emit``), so while the child sits
+    here it has emitted exactly the beats the parent has already been handed and nothing
+    more: the pipe is empty, the parent's stdout pump is parked in ``_wait_for_data``, and
+    no callback is queued behind it. A parent that has counted those beats can then take a
+    synchronous snapshot that is EXACT rather than racing a beat already travelling through
+    the pipe -- which is the whole of phaze-2mz81.
+
+    Reopening the gate is equally a probe: whatever the parent does at the instant it
+    touches the file, everything the child emits afterwards is attributable to work the
+    parent did AFTER that instant. The cancellation test opens the gate from ``proc.kill``
+    so "beats after the gate" means precisely "a pump that outlived the reap".
+    """
+    path = os.environ.get(_GATE_FILE_ENV)
+    if not path:
+        return
+    gate = Path(path)
+    deadline = time.monotonic() + _GATE_MAX_WAIT_SEC
+    while not gate.exists() and time.monotonic() < deadline:
+        time.sleep(_GATE_POLL_SEC)
 
 
 def hang_analyze(
@@ -159,12 +195,18 @@ def crawling_analyze(
     (default 40), so total runtime is many multiples of the stall threshold a test arms while
     no single gap between beats ever reaches it. This is a 6-hour concert set in miniature: the
     property under test is that elapsed time alone never kills it.
+
+    ``PHAZE_STUB_GATE_AFTER`` (default 0 = never) parks the run at :func:`_wait_at_gate` once
+    that many beats have been emitted, handing the parent a moment of guaranteed silence.
     """
     beat_sec = float(os.environ.get("PHAZE_STUB_BEAT_SEC", "0.05"))
     beats = int(os.environ.get("PHAZE_STUB_BEATS", "40"))
+    gate_after = int(os.environ.get(_GATE_AFTER_ENV, "0"))
     for i in range(beats):
         time.sleep(beat_sec)
         _beat(heartbeat_cb, "fine", i + 1, beats)
+        if gate_after and i + 1 == gate_after:
+            _wait_at_gate()
     if progress_cb is not None:
         progress_cb(beats, beats)
     return _result(file_path, models_dir, **windowing)

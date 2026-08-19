@@ -252,6 +252,7 @@ phaze/
 │   ├── classify-changed-files.sh # Classify changed files as docs-only vs code (CI doc-only skip gate)
 │   ├── derive-seat-name.sh     #   Derive the safe, collision-free Postgres/Redis identifier for a `test-db-for` seat
 │   ├── ensure-pg-database.sh   #   Idempotently ensure Postgres databases exist on the test harness (TOCTOU-safe)
+│   ├── redis-seat-registry.sh  #   Allocate/release/sweep the per-worktree Redis logical DBs behind `test-db-for`
 │   ├── coverage_floor.py       #   Enforce per-module coverage floor from `coverage json` output
 │   ├── normalize_schema_dump.py #  Normalize a pg_dump schema-only file for migration-chain equivalence
 │   ├── seed_perf_corpus.py     #   Seed a synthetic ~200K-file corpus for perf measurement

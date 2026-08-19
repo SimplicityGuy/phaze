@@ -76,7 +76,10 @@ async def test_per_file_retry_enqueue_failure_restores_the_failure_marker(
     await make_agent_live(session)
     install_fake_queues(client)
 
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package. `enqueue_process_file` is bound in the
+    # `analysis` submodule's namespace, so the patch must name that module -- patching the
+    # facade would set an attribute nothing reads and silently no-op this test.
+    import phaze.routers.pipeline.analysis as pipeline_mod
 
     async def _flaky_enqueue(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("simulated transient queue-pool error")

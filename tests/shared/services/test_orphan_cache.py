@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from phaze.services import pipeline
+from phaze.services.pipeline import orphans as pipeline
 
 
 if TYPE_CHECKING:

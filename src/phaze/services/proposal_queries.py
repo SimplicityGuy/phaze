@@ -131,12 +131,38 @@ class Pagination:
 
 @dataclass
 class ProposalStats:
-    """Aggregate statistics for proposals."""
+    """Aggregate statistics for proposals.
+
+    ``executed`` is its OWN count, not folded into ``approved`` (phaze-te2g3, ADR-0008 amendment).
+
+    ADR-0008 maps the operator state *Approved* onto persisted ``approved`` OR ``executed``, and
+    the obvious reading of that table is that ``approved`` here should be the union. It is
+    deliberately not, and the reason is that this dataclass feeds the Execute stage, where the
+    number an operator wants is "still to dispatch" -- persisted ``approved`` alone. Folding
+    ``executed`` in would make the Execute card count work it has already done as work it is about
+    to do, on the one screen that moves bytes.
+
+    The defect that opened the bead was not the split, it was that ``executed`` was counted by
+    ``total`` and by nothing else, so the per-status counts silently did not account for every row
+    in ``total``. Carrying ``executed`` as a separate field is the presentation-only fix: no
+    consumer's existing number changes, and every surface can show a set of counts that adds up.
+
+    ``failed`` (operator vocabulary: *Blocked*) rides the SAME aggregate as its siblings
+    (phaze-5uh4u), closing the accounting identity this type exists to support:
+    ``pending + approved + executed + rejected + failed == total``. It was the last missing term --
+    a ``failed`` proposal used to inflate ``total`` while appearing under no visible status, the same
+    shape of gap ``executed`` had before phaze-te2g3.
+
+    This is a presentation contract only. ADR-0008's requirement that ``approved`` and ``executed``
+    stay DISTINCT in the persisted data is untouched -- nothing here migrates or collapses a status.
+    """
 
     total: int
     pending: int
     approved: int
+    executed: int
     rejected: int
+    failed: int
     avg_confidence: float | None
 
 
@@ -164,8 +190,12 @@ def proposal_review_digest(proposal: RenameProposal) -> str:
 
 
 async def count_pending_above_confidence(session: AsyncSession, threshold: float = 0.9) -> int:
-    """Count PENDING proposals with confidence >= threshold -- read-only, mirrors the EXACT
-    predicate :func:`approve_pending_above_confidence` bulk-approves (phaze-rw14).
+    """Count PENDING proposals with confidence >= threshold -- read-only (phaze-rw14).
+
+    phaze-7tiqp: this used to mirror the predicate of ``approve_pending_above_confidence``, the
+    server-evaluated bulk approve behind ``PATCH /proposals/bulk-approve-high-confidence``. That
+    route lost its last UI caller at ADR-0008 and was retired with its service function, so the
+    predicate below is now stated in its own right rather than as a mirror of a sibling's.
 
     The Rename/Move workspaces' bulk-approve confirm dialog used to quote the RENDERED row count
     (``rename_proposals | length``, capped at 200 and unfiltered by confidence) as the number of
@@ -258,12 +288,25 @@ async def bulk_approve_selected_above_confidence(
 
 
 async def get_proposal_stats(session: AsyncSession) -> ProposalStats:
-    """Get aggregate proposal statistics in a single query."""
+    """Get aggregate proposal statistics in a single query.
+
+    ``executed`` and ``failed`` ride the SAME aggregate as their siblings (phaze-te2g3,
+    phaze-5uh4u). Each is one more ``count(case(...))`` term over the scan this function already
+    performs, so the new numbers cost no extra round trip and -- more importantly -- cannot
+    disagree with ``total``. Reading either separately would reintroduce, between two reads, exactly
+    the arithmetic the fields exist to fix.
+
+    Every existing term is unchanged, deliberately: ``approved`` still counts persisted ``approved``
+    ONLY. See :class:`ProposalStats` for why the ADR-0008 union is a presentation choice made per
+    surface rather than baked in here.
+    """
     stmt = select(
         func.count().label("total"),
         func.count(case((RenameProposal.status == ProposalStatus.PENDING, 1))).label("pending"),
         func.count(case((RenameProposal.status == ProposalStatus.APPROVED, 1))).label("approved"),
+        func.count(case((RenameProposal.status == ProposalStatus.EXECUTED, 1))).label("executed"),
         func.count(case((RenameProposal.status == ProposalStatus.REJECTED, 1))).label("rejected"),
+        func.count(case((RenameProposal.status == ProposalStatus.FAILED, 1))).label("failed"),
         func.avg(RenameProposal.confidence).label("avg_confidence"),
     ).select_from(RenameProposal)
 
@@ -273,7 +316,9 @@ async def get_proposal_stats(session: AsyncSession) -> ProposalStats:
         total=row.total,
         pending=row.pending,
         approved=row.approved,
+        executed=row.executed,
         rejected=row.rejected,
+        failed=row.failed,
         avg_confidence=float(row.avg_confidence) if row.avg_confidence is not None else None,
     )
 
@@ -458,53 +503,6 @@ async def bulk_update_status(
     cursor_result: Any = await session.execute(stmt)
     await session.commit()
     return int(cursor_result.rowcount)
-
-
-async def approve_pending_above_confidence(session: AsyncSession, threshold: float = 0.9) -> list[uuid_mod.UUID]:
-    """Approve every PENDING proposal whose confidence >= threshold in ONE atomic UPDATE.
-
-    REVIEW-02 / D-02: the caller passes NO id-list; the server re-evaluates the fixed confidence
-    predicate at submit. Rows whose ``confidence`` IS NULL are excluded by the SQL comparison
-    (Pitfall 2 -- the conservative-correct behavior for an irreplaceable archive; do NOT COALESCE),
-    leaving them for per-file review. Returns the ids actually transitioned to APPROVED.
-
-    phaze-0ew3 / phaze-p35v: this used to SELECT the matching ids, then hand them to
-    :func:`bulk_update_status` as an expanding ``id IN (...)`` -- one bind parameter per id. Two
-    defects followed from that snapshot-then-write shape, and both are closed by folding the WHOLE
-    predicate (status AND confidence) into a SINGLE ``UPDATE ... WHERE ... RETURNING id``:
-
-    * (phaze-0ew3) asyncpg caps a statement at 32,767 bind parameters. D-04 keeps one PENDING
-      proposal per file and the product is designed for a ~200K-file archive, so the pending set
-      with confidence >= 0.9 can organically exceed that cap -- the id-list UPDATE then 500s
-      deterministically, every retry, at exactly the scale the feature exists for. A predicate-only
-      UPDATE binds ``threshold`` once regardless of how many rows match.
-    * (phaze-p35v) the id SELECT and the UPDATE were two statements: the from-state guard
-      (``allowed_from=[PENDING]``) landed inside the UPDATE's WHERE (phaze-bg4w), but the
-      CONFIDENCE half of the predicate did not, so a proposal a concurrent ``store_proposals``
-      upsert overwrote between the SELECT and the UPDATE -- keeping the same id and PENDING status
-      but replacing ``proposed_filename`` / ``proposed_path`` / ``confidence`` -- could be approved
-      with content nobody ever saw at >= threshold. Evaluating BOTH predicates inside the one
-      UPDATE means the write only ever approves a row whose confidence is >= threshold AT THE
-      MOMENT it commits, closing this TOCTOU the same way phaze-bg4w closed the status half.
-
-    ``RETURNING id`` also lets ``routers.proposals.bulk_approve_high_confidence`` build its v7 OOB
-    row fragments from the rows THIS call actually approved, instead of a separate pre-update
-    id-snapshot select (the second unbounded ``id IN (...)`` the phaze-0ew3 review found at
-    ``routers/proposals.py``).
-    """
-    stmt = (
-        update(RenameProposal)
-        .where(
-            RenameProposal.status == ProposalStatus.PENDING.value,
-            RenameProposal.confidence >= threshold,
-        )
-        .values(status=ProposalStatus.APPROVED.value)
-        .returning(RenameProposal.id)
-    )
-    cursor_result: Any = await session.execute(stmt)
-    ids = list(cursor_result.scalars().all())
-    await session.commit()
-    return ids
 
 
 async def update_proposal_fields(

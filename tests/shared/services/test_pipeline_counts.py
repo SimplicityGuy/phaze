@@ -20,8 +20,12 @@ import pytest
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord
 from phaze.models.route_control import RouteControl
-from phaze.services import backends as backends_mod
-from phaze.services.backends import ComputeAgentBackend, LocalBackend, derive_cloud_hold_reason
+
+# phaze-dr9df: ``derive_cloud_hold_reason`` moved into ``services.backends.lane_snapshot`` with
+# the rest of the lane grid, and resolves ``get_settings`` / ``resolve_backends`` /
+# ``_probe_availability`` out of THAT module's globals -- patching the package facade would be a
+# silent no-op against the real settings.
+from phaze.services.backends import ComputeAgentBackend, LocalBackend, derive_cloud_hold_reason, lane_snapshot as backends_mod
 from phaze.services.pipeline import get_cloud_phase_counts, get_inadmissible_count
 from tests._queue_fakes import seed_active_agent
 

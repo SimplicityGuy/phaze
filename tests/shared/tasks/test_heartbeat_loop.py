@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,10 +28,7 @@ import pytest
 from phaze.schemas.agent_heartbeat import HeartbeatRequest
 from phaze.schemas.agent_identity import AgentIdentity
 from phaze.tasks.heartbeat import _heartbeat_loop, send_heartbeat
-
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
+from tests._async_settle import wait_until
 
 
 def _make_ctx(*, queued: int = 5, raise_info: bool = False) -> dict[str, Any]:
@@ -67,16 +64,6 @@ def _make_ctx(*, queued: int = 5, raise_info: bool = False) -> dict[str, Any]:
     }
 
 
-async def _wait_until(predicate: Callable[[], bool], *, timeout: float = 2.0) -> None:
-    """Cooperatively yield until ``predicate()`` is true or ``timeout`` elapses."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while not predicate():
-        if loop.time() > deadline:
-            return
-        await asyncio.sleep(0)
-
-
 async def test_send_heartbeat_degrades_to_zero_without_worker_key() -> None:
     """No ctx['worker'] (not yet attached) -> queue_depth=0 through the SAME try/except, still POSTs."""
     ctx = _make_ctx()
@@ -106,7 +93,7 @@ async def test_heartbeat_loop_fires_repeatedly_without_dispatch_slot() -> None:
 
     with patch("phaze.tasks.heartbeat.AGENT_HEARTBEAT_INTERVAL_SECONDS", 0):
         task = asyncio.create_task(_heartbeat_loop(ctx))
-        await _wait_until(lambda: client.heartbeat.await_count >= target)
+        await wait_until(lambda: client.heartbeat.await_count >= target, description=f"{target} beats POSTed while every job slot stayed busy")
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -131,7 +118,7 @@ async def test_heartbeat_loop_survives_iteration_exception(caplog: pytest.LogCap
         patch("phaze.tasks.heartbeat.AGENT_HEARTBEAT_INTERVAL_SECONDS", 0),
     ):
         task = asyncio.create_task(_heartbeat_loop(ctx))
-        await _wait_until(lambda: calls["n"] >= 3)
+        await wait_until(lambda: calls["n"] >= 3, description="the loop kept ticking after an iteration raised (calls >= 3)")
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -147,7 +134,10 @@ async def test_heartbeat_loop_reraises_cancelled() -> None:
 
     with patch("phaze.tasks.heartbeat.AGENT_HEARTBEAT_INTERVAL_SECONDS", 0):
         task = asyncio.create_task(_heartbeat_loop(ctx))
-        await _wait_until(lambda: ctx["api_client"].heartbeat.await_count >= 1)
+        # This is the ONE call site whose wait is not re-asserted below (the assertion is
+        # `task.cancelled()`), so a silent give-up here could cancel a loop that had never beaten
+        # and still pass. `wait_until` raising is what closes that (phaze-5lq8a).
+        await wait_until(lambda: ctx["api_client"].heartbeat.await_count >= 1, description="the loop beat at least once before being cancelled")
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task

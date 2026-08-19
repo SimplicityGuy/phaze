@@ -20,7 +20,6 @@ harness (tests/_queue_fakes.py), mirroring the retry_analysis_failed tests. The 
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 import uuid
@@ -32,6 +31,7 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
 from phaze.services.pipeline import get_metadata_failed_files
+from tests._background_drain import drain_router_background_tasks
 from tests._queue_fakes import install_fake_queues, make_agent_live, wire_fakes
 
 
@@ -41,21 +41,6 @@ if TYPE_CHECKING:
 
 
 pytestmark = pytest.mark.integration
-
-
-async def _drain_background() -> None:
-    """Yield until the router's background enqueue tasks have drained (phaze-zecg).
-
-    ``retry_metadata_failed`` now backgrounds its enqueue loop via ``asyncio.create_task`` +
-    ``_background_tasks`` (matching every other caller of ``_enqueue_extraction_jobs``), so the
-    HTTP response returns before the loop necessarily finishes.
-    """
-    import phaze.routers.pipeline as pipeline_mod
-
-    for _ in range(500):
-        if not pipeline_mod._background_tasks:
-            return
-        await asyncio.sleep(0)
 
 
 def _make_file() -> FileRecord:
@@ -108,7 +93,7 @@ async def test_retry_reenqueues_all_failed_metadata(client: AsyncClient, session
     assert "re-queued 3 failed file(s) for metadata extraction" in response.text.lower()
     assert "for analysis" not in response.text.lower()
 
-    await _drain_background()  # phaze-zecg: the enqueue loop now runs as a background task
+    await drain_router_background_tasks()  # phaze-zecg: the enqueue loop now runs as a background task
     queue = task_router.queues["test-fileserver-meta"]
     assert queue.name == "phaze-agent-test-fileserver-meta"
     assert queue.name != "default"

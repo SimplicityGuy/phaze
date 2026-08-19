@@ -18,7 +18,6 @@ The fix scopes the restore with ``AnalysisResult.analysis_completed_at.is_(None)
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 import uuid
@@ -28,6 +27,7 @@ from sqlalchemy import select, update
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
+from tests._background_drain import drain_router_background_tasks
 from tests._queue_fakes import install_fake_queues, make_agent_live
 
 
@@ -37,15 +37,6 @@ if TYPE_CHECKING:
 
 
 pytestmark = pytest.mark.integration
-
-
-async def _drain_background() -> None:
-    import phaze.routers.pipeline as pipeline_mod
-
-    for _ in range(500):
-        if not pipeline_mod._background_tasks:
-            return
-        await asyncio.sleep(0)
 
 
 def _make_file() -> FileRecord:
@@ -94,7 +85,11 @@ async def test_a_raced_completed_file_does_not_void_the_restore_for_the_rest_of_
     install_fake_queues(client)
 
     from phaze.database import async_session
-    import phaze.routers.pipeline as pipeline_mod
+
+    # phaze-oau1o: `routers/pipeline.py` is now a package. `enqueue_process_file` is bound in the
+    # `analysis` submodule's namespace, so the patch must name that module -- patching the
+    # facade would set an attribute nothing reads and silently no-op this test.
+    import phaze.routers.pipeline.analysis as pipeline_mod
 
     real_enqueue = pipeline_mod.enqueue_process_file
 
@@ -119,7 +114,7 @@ async def test_a_raced_completed_file_does_not_void_the_restore_for_the_rest_of_
     response = await client.post("/pipeline/analysis-failed/retry")
     assert response.status_code == 200
 
-    await _drain_background()
+    await drain_router_background_tasks()
 
     # The genuinely-failed file (no race) MUST get its failure marker restored -- this is the id the
     # unguarded restore would have lost as collateral damage from the raced row's CHECK violation.

@@ -42,11 +42,13 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 import uuid
 
+import pytest
 from sqlalchemy import select
 
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.services.pipeline import get_stage_progress
+from tests.conftest import _finalize_shared_connection_session
 
 
 if TYPE_CHECKING:
@@ -105,3 +107,93 @@ async def test_production_fanout_sees_in_test_seeded_row(session: AsyncSession, 
     assert progress["analyze"]["done"] == 1, "routed production fan-out did not see the per-test seeded row (reads zero?)"
     assert progress["analyze"]["total"] == 1, "music/video denominator did not reflect the seeded file"
     assert progress["metadata"]["done"] == 0, "no metadata row was seeded, yet metadata.done is non-zero"
+
+
+# --------------------------------------------------------------------------------------------------
+# Property 4 (phaze-5lq8a): the teardown ORDERING that keeps property 2 true when the close FAILS.
+#
+# `session`'s finalizer used to be two sequential awaits -- `await s.close()` then
+# `await outer.rollback()`. `s.close()` is precisely what raises when another session on the shared
+# connection released a savepoint out of order (`InvalidSavepointSpecificationError`), and a raising
+# close skipped the rollback entirely: the per-test outer transaction was left OPEN on a connection
+# about to be handed back, i.e. rollback isolation silently stopped holding in exactly the situation
+# that most needs it. `_finalize_shared_connection_session` puts the rollback in a `finally`.
+#
+# Driven against doubles rather than a live fixture because the failure needs `close()` to RAISE, and
+# there is no way to make the real session do that on demand without also destroying the connection
+# the assertion would have to read back through.
+# --------------------------------------------------------------------------------------------------
+class _ExplodingSession:
+    """Stands in for the `AsyncSession` whose `close()` hits an already-discarded savepoint."""
+
+    def __init__(self, error: Exception | None) -> None:
+        self._error = error
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+        if self._error is not None:
+            raise self._error
+
+
+class _RecordingRollback:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def __call__(self) -> None:
+        self.calls += 1
+
+
+async def test_the_outer_rollback_runs_even_when_the_close_raises() -> None:
+    """The regression this pins: a raising `close()` must not be able to skip rollback isolation."""
+    boom = RuntimeError('savepoint "sa_savepoint_7" does not exist')
+    s = _ExplodingSession(boom)
+    rollback = _RecordingRollback()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await _finalize_shared_connection_session(s, leaked=[], violations=[], rollback=rollback)  # type: ignore[arg-type]
+
+    assert exc_info.value is boom, "the close's own failure must still reach the report, not be swallowed"
+    assert rollback.calls == 1, "the outer transaction was left OPEN when close() raised -- hermeticity lost (phaze-5lq8a)"
+
+
+async def test_the_outer_rollback_runs_exactly_once_on_the_clean_path() -> None:
+    """And the fix must not double-roll-back, or rollback the wrong number of times, when nothing fails."""
+    s = _ExplodingSession(None)
+    rollback = _RecordingRollback()
+
+    await _finalize_shared_connection_session(s, leaked=[], violations=[], rollback=rollback)  # type: ignore[arg-type]
+
+    assert s.closed and rollback.calls == 1
+
+
+async def test_a_savepoint_violation_is_reported_without_discarding_the_close_failure() -> None:
+    """The diagnosis replaces the HEADLINE, never the evidence: asyncpg's error stays as __context__.
+
+    A finalizer that hid a genuinely broken session state would trade a visible failure for an
+    invisible one -- the thing phaze-5lq8a exists to stop, not to reintroduce one layer up.
+    """
+    boom = RuntimeError('savepoint "sa_savepoint_7" does not exist')
+    s = _ExplodingSession(boom)
+    rollback = _RecordingRollback()
+
+    with pytest.raises(AssertionError) as exc_info:
+        await _finalize_shared_connection_session(
+            s,
+            leaked=[],
+            violations=["sa_savepoint_5 was released with sa_savepoint_6 still established above it"],
+            rollback=rollback,
+        )  # type: ignore[arg-type]
+
+    assert "released OUT OF ORDER" in str(exc_info.value)
+    assert exc_info.value.__context__ is boom, "the underlying asyncpg failure was discarded instead of chained"
+    assert rollback.calls == 1, "the rollback must still run on the violation path"
+
+
+async def test_the_read_session_finalizer_takes_no_rollback() -> None:
+    """`verify` owns no outer transaction, so it must close without attempting one."""
+    s = _ExplodingSession(None)
+
+    await _finalize_shared_connection_session(s, leaked=[], violations=[])  # type: ignore[arg-type]
+
+    assert s.closed

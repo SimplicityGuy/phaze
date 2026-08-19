@@ -30,7 +30,6 @@ from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.schemas.wire_bounds import INT64_MAX
-from phaze.services import pipeline as pipeline_mod
 from phaze.services.execution_queries import get_execution_logs_page, get_execution_stats
 from phaze.services.pagination import (
     DEFAULT_PAGE_SIZE,
@@ -43,9 +42,12 @@ from phaze.services.pagination import (
     paged_stmt,
     split_sentinel,
 )
-from phaze.services.pipeline import get_analyze_files_page, get_analyze_working_set, get_pending_files_page
+from phaze.services.pipeline import analyze as pipeline_analyze_mod, get_analyze_files_page, get_analyze_working_set, get_pending_files_page
 
-from .test_pipeline import _backend_settings, _make_pipeline_file, _seed_process_file_ledger
+# phaze-7l8jh: tests/shared/services/test_pipeline.py was split into the
+# tests/shared/services/pipeline/ package (mirroring services/pipeline/); these helpers moved
+# verbatim into that package's _shared.py.
+from .pipeline._shared import _backend_settings, _make_pipeline_file, _seed_process_file_ledger
 
 
 if TYPE_CHECKING:
@@ -154,7 +156,7 @@ async def test_analyze_working_set_bounded_regardless_of_backlog_size(session: A
     failure/stall backlog. Before the fix this branch had NO LIMIT and returned all 40 (and 10,132 in
     prod). Now it returns at most one page, and reports ``has_next`` so the operator can reach the rest.
     """
-    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings())
+    monkeypatch.setattr(pipeline_analyze_mod, "get_settings", lambda: _backend_settings())
 
     backlog = [_make_pipeline_file() for _ in range(40)]
     session.add_all(backlog)
@@ -252,6 +254,19 @@ def test_shell_router_does_not_read_the_unbounded_identify_sets() -> None:
     assert "get_tracklist_set_rows(" not in shell_src, "the shell render path must use the bounded get_tracklist_sets_page"
 
 
+def _pipeline_router_src() -> str:
+    """Concatenated source of the whole ``routers/pipeline`` package.
+
+    phaze-oau1o: this used to be ``Path("src/phaze/routers/pipeline.py").read_text()``. That file is
+    now a PACKAGE, and the two triggers guarded below live in different submodules
+    (``tracklists.py`` and ``extraction.py``). Reading the package as one blob keeps these
+    "the bulk trigger still reads the UNBOUNDED set" guards indifferent to which submodule owns a
+    trigger, so a later re-seam cannot quietly move an endpoint out from under its own guard.
+    """
+    root = pathlib.Path("src/phaze/routers/pipeline")
+    return "\n".join(f.read_text() for f in sorted(root.rglob("*.py")))
+
+
 def test_tracklist_bulk_triggers_still_use_the_unbounded_sets() -> None:
     """Contract rule 7 for the Identify surface: bounding the table must not bound the buttons.
 
@@ -264,7 +279,7 @@ def test_tracklist_bulk_triggers_still_use_the_unbounded_sets() -> None:
     (host requests), never in rows -- and it rebuilds its queue from the corpus every slice, so it
     cannot under-cover a backlog the way a paged enqueue reader would.
     """
-    router_src = pathlib.Path("src/phaze/routers/pipeline.py").read_text()
+    router_src = _pipeline_router_src()
     assert "get_match_pending_tracklists(session)" in router_src, "MATCH ALL must enqueue the UNBOUNDED pending set"
 
 
@@ -275,7 +290,7 @@ def test_bulk_enqueue_still_uses_the_unbounded_pending_set() -> None:
     A future "consistency" refactor that points EXTRACT ALL at the paged reader would quietly stop
     enqueuing everything past page 1, which is far worse than a long table.
     """
-    router_src = pathlib.Path("src/phaze/routers/pipeline.py").read_text()
+    router_src = _pipeline_router_src()
     assert "get_metadata_pending_files(session)" in router_src, "EXTRACT ALL must enqueue the UNBOUNDED pending set"
 
 
@@ -309,7 +324,7 @@ async def test_analyze_paging_is_stable_when_the_sort_key_ties(session: AsyncSes
     This is the test shape the sibling beads should copy: phaze-39ss (ts_rank), phaze-mft5
     (executed_at) and phaze-hdho (non-deterministic ORDER BY) all have the same degenerate-key defect.
     """
-    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings())
+    monkeypatch.setattr(pipeline_analyze_mod, "get_settings", lambda: _backend_settings())
 
     files = [_make_pipeline_file() for _ in range(25)]
     session.add_all(files)
@@ -347,7 +362,7 @@ async def test_analyze_completions_window_excludes_a_deepen_in_flight_completed_
     """
     from datetime import datetime, timedelta
 
-    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings())
+    monkeypatch.setattr(pipeline_analyze_mod, "get_settings", lambda: _backend_settings())
 
     backlog = [_make_pipeline_file() for _ in range(14)]
     session.add_all(backlog)
@@ -376,7 +391,7 @@ async def test_analyze_completions_window_excludes_a_deepen_in_flight_completed_
 @pytest.mark.asyncio
 async def test_analyze_files_page_is_stable_when_the_sort_key_ties(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """The same degenerate-sort-key walk over the filtered/paged lens (``get_analyze_files_page``)."""
-    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings())
+    monkeypatch.setattr(pipeline_analyze_mod, "get_settings", lambda: _backend_settings())
 
     files = [_make_pipeline_file() for _ in range(25)]
     session.add_all(files)
@@ -562,7 +577,7 @@ async def test_audit_log_page_degrades_on_db_error() -> None:
 @pytest.mark.asyncio
 async def test_out_of_range_page_yields_an_empty_page_not_an_error(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """Contract rule 5: a page past the end is a normal EMPTY page, never an exception or a 500."""
-    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings())
+    monkeypatch.setattr(pipeline_analyze_mod, "get_settings", lambda: _backend_settings())
 
     page = await get_analyze_working_set(session, page=9999, page_size=DEFAULT_PAGE_SIZE)
     assert page.rows == []

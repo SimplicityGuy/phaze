@@ -15,7 +15,8 @@
                       re-emits the whole state, clicking a tab preserves the search text, the page
                       size and the sort -- the caller does not have to remember to thread them, and
                       phaze-a6hm.10's sort params ride along with no edit to this file.
-     * stats       -- ProposalStats; the .total/.pending/.approved/.rejected counts in the badges.
+     * stats       -- ProposalStats; the .total/.pending/.approved/.executed/.rejected/.failed
+                      counts in the badges.
      * tabs_url    -- the path tabs navigate to (e.g. "/s/propose").
      * tabs_target -- css selector of the swap target (e.g. "#propose-workspace-list").
 
@@ -33,12 +34,31 @@
            status, because it is the query parameter the server filters on and the ADR is explicit
            that the UI mapping "does not migrate or collapse persisted statuses". Renaming the value
            would be a behavioural change to a bookmarkable URL; renaming the label is the
-           conformance fix. There is deliberately no "Blocked" tab here: adding one would change
-           what this filter returns, so it is filed as bead phaze-5uh4u rather than absorbed. #}
+           conformance fix.
+
+           phaze-te2g3 adds the "Executed" tab. Its absence was not a filter decision, it was an
+           accounting hole: `All` is `stats.total`, which counts executed rows, so before this the
+           badges beneath All did not add up to it and an executed proposal was reachable through no
+           tab at all. The label is the persisted status verbatim rather than an ADR operator state
+           because it is NOT one -- ADR-0008 folds `executed` into Approved, and this workspace
+           deliberately does not (see ProposalStats): Approved here means "authorized, not yet
+           dispatched", which is the distinction the Propose queue is for.
+
+           phaze-5uh4u adds the "Blocked" tab, value `failed` (the persisted status, same
+           value-vs-label split as every other tab here). ADR-0008's amendment is explicit that "a
+           surface that shows this count set must show every term of it" -- this bar already shows
+           total/pending/approved/executed/rejected, so a `failed` proposal was previously reachable
+           through All only, with no tab, no badge and no way to filter down to it. Filtering to a
+           blocked proposal to see why it failed is inspection, not approval action, so it stays
+           inside what ADR-0008 restricts Propose to (generation and inspection) -- this tab does
+           not add an authorization control, only a read-only filter, exactly like its four
+           siblings. #}
         {% set tabs = [
             ("all", "All", stats.total),
             ("pending", "Needs Review", stats.pending),
             ("approved", "Approved", stats.approved),
+            ("executed", "Executed", stats.executed),
+            ("failed", "Blocked", stats.failed),
             ("rejected", "Rejected", stats.rejected),
         ] %}
         {% for value, label, count in tabs %}

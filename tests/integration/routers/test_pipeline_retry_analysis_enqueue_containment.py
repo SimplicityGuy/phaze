@@ -20,7 +20,6 @@ unaffected, including ones queued in the same group after the failure.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 import uuid
@@ -30,6 +29,7 @@ from sqlalchemy import select
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
+from tests._background_drain import drain_router_background_tasks
 from tests._queue_fakes import install_fake_queues, make_agent_live
 
 
@@ -39,21 +39,6 @@ if TYPE_CHECKING:
 
 
 pytestmark = pytest.mark.integration
-
-
-async def _drain_background() -> None:
-    """Yield until the router's background enqueue tasks have drained (phaze-zecg / phaze-4ter).
-
-    Mirrors ``tests/analyze/test_retry_affordances.py::_drain_background`` -- the retry endpoint's
-    response returns before its background task (now ``_retry_analysis_group``, which also performs
-    the marker-restore write) necessarily finishes.
-    """
-    import phaze.routers.pipeline as pipeline_mod
-
-    for _ in range(500):
-        if not pipeline_mod._background_tasks:
-            return
-        await asyncio.sleep(0)
 
 
 def _make_file() -> FileRecord:
@@ -97,7 +82,10 @@ async def test_one_enqueue_failure_does_not_abandon_the_rest_of_the_group(
     await make_agent_live(session)
     _, task_router = install_fake_queues(client)
 
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package. `enqueue_process_file` is bound in the
+    # `analysis` submodule's namespace, so the patch must name that module -- patching the
+    # facade would set an attribute nothing reads and silently no-op this test.
+    import phaze.routers.pipeline.analysis as pipeline_mod
 
     real_enqueue = pipeline_mod.enqueue_process_file
 
@@ -113,7 +101,7 @@ async def test_one_enqueue_failure_does_not_abandon_the_rest_of_the_group(
     # The ack reflects the routed count, taken before any enqueue outcome is known.
     assert "re-queued 3 failed file(s) for analysis" in response.text.lower()
 
-    await _drain_background()
+    await drain_router_background_tasks()
 
     queue = task_router.queues["test-fileserver-analyze"]
     enqueued_ids = {p["file_id"] for _t, p in queue.captured}
@@ -134,7 +122,10 @@ async def test_failed_enqueue_restores_the_failure_marker(
     await make_agent_live(session)
     install_fake_queues(client)
 
-    import phaze.routers.pipeline as pipeline_mod
+    # phaze-oau1o: `routers/pipeline.py` is now a package. `enqueue_process_file` is bound in the
+    # `analysis` submodule's namespace, so the patch must name that module -- patching the
+    # facade would set an attribute nothing reads and silently no-op this test.
+    import phaze.routers.pipeline.analysis as pipeline_mod
 
     real_enqueue = pipeline_mod.enqueue_process_file
 
@@ -148,7 +139,7 @@ async def test_failed_enqueue_restores_the_failure_marker(
     response = await client.post("/pipeline/analysis-failed/retry")
     assert response.status_code == 200
 
-    await _drain_background()
+    await drain_router_background_tasks()
 
     # Independent-session read (the ``verify`` fixture, 92-04 CLEAN-02): the restore write happens
     # in a background task's OWN ``async_session``, never the request's, so a same-session read on
@@ -176,7 +167,7 @@ async def test_all_enqueues_succeeding_leaves_no_trace_of_the_restore_path(
     response = await client.post("/pipeline/analysis-failed/retry")
     assert response.status_code == 200
 
-    await _drain_background()
+    await drain_router_background_tasks()
 
     rows = (await verify.execute(select(AnalysisResult).where(AnalysisResult.file_id.in_([f.id for f in files])))).scalars().all()
     assert len(rows) == 3

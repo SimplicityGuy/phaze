@@ -314,6 +314,77 @@ coverage-combine:
     uv run coverage report --fail-under=95
     uv run python scripts/coverage_floor.py
 
+# phaze-2rgq2: refreshing the coverage repowise folds into its health scores is a FIVE-command
+# path, and two of those commands are invisible from the tools' own output. Encoding it here is
+# the point of the recipe. Verifying it end to end turned up two more, so there are now THREE
+# silent-partial shapes and one command whose green output means nothing. Read all of it before
+# changing any of it -- every claim below was measured on this repo, not inferred.
+#
+# WHY BOTH INGESTS. `repowise coverage add .coverage` and
+# `coverage xml && repowise coverage add coverage.xml` are NOT alternatives -- they populate two
+# DIFFERENT tables, and doing only the first is a silent partial success. The .coverage report
+# carries per-test CONTEXTS but no per-file line totals, so that ingest builds the test-to-code map
+# (29317 test->file records when this was measured) and nothing else. It prints "Built the
+# test-to-code map: N test->file record(s)" and `repowise coverage status` then renders a populated
+# map, so every surface says success -- while `line_coverage_pct` stays NULL, `get_health` reports
+# coverage {file_count: 0}, and the `untested_hotspot` biomarker keeps firing on files that are
+# 96-100% covered. Only the Cobertura coverage.xml populates the per-file table (249 files, 98.4%).
+# Conversely coverage.xml carries no contexts, so it can never build the map -- and an empty map
+# makes `get_risk`'s tests_to_run and the impacted-tests skill return nothing, which reads as "no
+# tests" when it means "unknown". Hence: both, always, and the run FAILS if the second one does
+# not land. Exiting 0 with only the map is precisely the state that looks correct while leaving
+# every health score wrong.
+#
+# WHY THE COMMIT PAIRING. Health findings carry line numbers. An index built at commit A paired
+# with coverage measured at commit B maps coverage onto lines that have moved. The suite takes ~21
+# minutes -- long enough that `main` advanced twice within an hour during the session that filed
+# this bead -- so the script pins HEAD before the run, refuses on modified tracked files, warns on
+# untracked ones, and fails if HEAD moved by the end.
+#
+# `ingested_commit_sha` is NOT the field that settles this, however much it looks like it.
+# repowise stamps it from `repositories.head_commit`, which `repowise init` sets and
+# `repowise update` never refreshes -- it advances `churn_anchor_sha` and state.json's
+# `last_sync_commit` instead. Measured here: an update to 85111c59, with git HEAD and
+# last_sync_commit BOTH at 85111c59, still stamped a days-old 1c85e2ec on a correct 249-of-249
+# ingest. The first version of this gate failed on that and was wrong to -- it would red every
+# incrementally-updated repo. The gate now pairs on evidence repowise does maintain
+# (`last_sync_commit` == HEAD) plus INGEST FRESHNESS (both `ingested_at` newer than the run's
+# start), and treats a stale sha as a note. A MISSING sha still fails: that shape is a broken
+# repository registration, and it is how the first verification run got caught.
+#
+# TRAP 3, AND IT IS WORSE THAN TRAP 1. `repowise coverage add` maps the report's paths onto the
+# files it has INDEXED, keeps whatever maps, prints "N report file(s) did not map to the repo tree"
+# as a NOTE, and exits 0. Measured: a run that mapped 1 of 249 files and 26 of 29,334 test->file
+# pairs reported success on every surface. Trap 1 leaves `line_coverage_pct` NULL, which reads as
+# missing; trap 3 fills it in with a plausible number computed from almost nothing, which reads as
+# FINE. A reader who only knows traps 1 and 2 will believe a wrong percentage. Hence the gate takes
+# `--coverage-xml` and fails when fewer files mapped than the report contains. (Cause, if you hit
+# it: repowise keys its index on the repo's ABSOLUTE path. A checkout at a new path gets a NEW,
+# EMPTY repository row from `repowise update`, and coverage then maps against that.)
+#
+# `repowise status` IS NOT A VALIDITY CHECK, and this is the one to remember when wiring CI
+# (phaze-6it9k). During the 1-of-249 run it reported `indexed: true`, the CORRECT
+# `last_sync_commit`, and `file_count: 2251` -- every signal green while the ingest could map 9
+# files. `repowise health --format json` is no better: it re-parses the working tree and reported
+# `file_count: 2251` against a repository row holding nothing. `repowise context` on a known file
+# also still succeeds. Nothing available fails early, which is why this recipe fails LATE, after
+# the suite, by deliberate design rather than omission -- and why the gate reads the stored state
+# back instead of trusting an exit code.
+#
+# THE EXIT CODE OF THE INGEST CARRIES NO INFORMATION. `repowise coverage add` exits 0 even when it
+# ingests NOTHING and prints "No indexed files found -- run `repowise init` first" -- verified
+# directly, and it exits 0 on the partial mappings above too. Checking `$?` after it therefore
+# proves precisely nothing; the ONLY way to know a refresh worked is to read the stored state back,
+# which is what the gate does. Anyone automating this later will otherwise check `$?` and believe it.
+#
+# Per-file health is `repowise health --file <path> --format json` (or the MCP `get_health`). The
+# positional argument to `repowise health` is a REPO PATH, so `repowise health src/phaze/foo.py`
+# fails with `Not a directory: .../foo.py/.repowise` and then prints a misleading "Healthy 10.0/10".
+[doc('Refresh repowise: reindex, run the suite with per-test coverage contexts, ingest BOTH coverage artifacts, fold into health. ~21 min. Pass a seat name to auto-provision an isolated test DB.')]
+[group('test')]
+repowise-coverage seat="":
+    @bash scripts/repowise-coverage.sh "{{seat}}"
+
 [doc('Classify changed files (newline-delimited on stdin) as code-changed=true|false for the CI doc-only skip gate (CI-04)')]
 [group('test')]
 detect-code-changes:
@@ -444,7 +515,11 @@ test-db:
                     echo "   DB-index allocation registry out from under those runs -- the same false-red" >&2
                     echo "   signature test-db-down's guard exists to prevent (phaze-ieqg / phaze-1t4gc)." >&2
                     echo "" >&2
-                    echo "   Wait for those runs to finish, or PHAZE_TEST_DB_FORCE_DOWN=1 just test-db-for ..." >&2
+                    echo "   If you are here because allocation ran out of indices, you almost certainly do not" >&2
+                    echo "   need this resize at all -- \`just test-db-reclaim\` frees the seats that are no longer" >&2
+                    echo "   in use with no teardown, and \`just test-db-seats\` shows what it would free (phaze-68wky)." >&2
+                    echo "" >&2
+                    echo "   Otherwise wait for those runs to finish, or PHAZE_TEST_DB_FORCE_DOWN=1 just test-db-for ..." >&2
                     echo "   if you know the connections are stale." >&2
                     exit 1
                 fi
@@ -540,38 +615,81 @@ test-db-for name:
     redis_container="{{test_redis_container}}"
     redis_port="{{test_redis_port}}"
     redis_databases="{{test_redis_databases}}"
-    registry_key="phaze:test:redis-db-index"
-    counter_key="phaze:test:redis-db-counter"
-    # INCR reserves a candidate, HSETNX publishes it. Two shells racing on the same name both read
-    # back the single winner; the loser's candidate is merely skipped. Re-running for an already
-    # allocated name is therefore idempotent and returns the same index. Keyed on the DERIVED
-    # `name` (not `raw_name`), so it stays consistent with the Postgres pair above.
-    redis_db="$(docker exec "$redis_container" redis-cli -n 0 HGET "$registry_key" "$name")"
-    if [ -z "$redis_db" ]; then
-        candidate="$(docker exec "$redis_container" redis-cli -n 0 INCR "$counter_key")"
-        docker exec "$redis_container" redis-cli -n 0 HSETNX "$registry_key" "$name" "$candidate" >/dev/null
-        redis_db="$(docker exec "$redis_container" redis-cli -n 0 HGET "$registry_key" "$name")"
-        echo "✅ allocated Redis logical DB ${redis_db} to '${name}'"
-    else
-        echo "🟥 '${name}' already holds Redis logical DB ${redis_db}"
-    fi
-    # Fail loudly rather than wrapping back onto a shared index: a silent wrap restores exactly the
-    # cross-seat interference this recipe exists to prevent.
-    if [ "$redis_db" -ge "$redis_databases" ]; then
-        echo "" >&2
-        echo "❌ Redis DB index ${redis_db} exceeds the ${redis_databases} logical DBs on ${redis_container}." >&2
-        echo "   Refusing to wrap onto a shared index -- that would silently reintroduce cross-worktree" >&2
-        echo "   Redis interference. Either raise the space:" >&2
-        echo "     PHAZE_TEST_REDIS_DATABASES=$((redis_databases * 2)) just test-db-down && just test-db-for ${raw_name}" >&2
-        echo "   or reclaim the exhausted allocations (clears the test Redis):" >&2
-        echo "     just test-db-down && just test-db-for ${raw_name}" >&2
-        exit 1
-    fi
+    # phaze-68wky: allocation lives in `scripts/redis-seat-registry.sh` (one atomic server-side
+    # script; see its header for the liveness rules). It used to be an `INCR` counter inline here,
+    # which never reclaimed: every seat that ever ran this recipe burned an index forever, so the
+    # counter walked past the cap (68/73/74/80 seen in the wild) and refused every new seat, with
+    # `just test-db-down` -- the one thing CLAUDE.md forbids mid-round -- as the only remedy on
+    # offer. Allocation now takes the LOWEST FREE index, and `just test-db-release` /
+    # `just test-db-reclaim` hand indices back without touching the shared containers.
+    #
+    # Keyed on the DERIVED `name` (not `raw_name`), so the registry, the Postgres pair above and
+    # the exports below can never disagree about what this seat is called. Stdout is the index and
+    # nothing else; the script's human-readable lines go to stderr and reach the terminal directly.
+    redis_db="$(bash scripts/redis-seat-registry.sh allocate \
+        --redis-container "$redis_container" \
+        --seat "$name" \
+        --capacity "$redis_databases" \
+        --origin "$PWD")"
     echo ""
     echo "Export these before running pytest in this worktree:"
     echo "  export TEST_DATABASE_URL=\"postgresql+asyncpg://phaze:phaze@localhost:${port}/${main_db}\""
     echo "  export MIGRATIONS_TEST_DATABASE_URL=\"postgresql+asyncpg://phaze:phaze@localhost:${port}/${migrations_db}\""
     echo "  export PHAZE_REDIS_URL=\"redis://localhost:${redis_port}/${redis_db}\""
+    echo ""
+    echo "When this worktree is finished: just test-db-release {{name}}  (frees its Redis index; no teardown)"
+
+[doc('Show who holds each Redis logical DB on the shared test harness, and which allocations look stale (read-only)')]
+[group('test')]
+test-db-seats:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # phaze-68wky: the registry was invisible before this recipe -- the only way to see it was
+    # `docker exec phaze-test-redis redis-cli HGETALL ...`, so an exhausted cap looked like a dead
+    # end rather than a list of seats to hand back. Read-only: allocates nothing, frees nothing.
+    bash scripts/redis-seat-registry.sh list \
+        --redis-container "{{test_redis_container}}" \
+        --pg-container "{{test_db_container}}" \
+        --capacity "{{test_redis_databases}}"
+
+[doc('Hand ONE seats Redis logical DB back to the shared test harness -- non-destructive, never touches the containers or any other seat')]
+[group('test')]
+test-db-release name *flags:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # phaze-68wky: the non-destructive counterpart to `test-db-for`. Run it when a worktree is
+    # finished. It clears that seat's OWN Redis keys and frees its index for the next seat; every
+    # other seat, both containers, and every Postgres database are untouched. This is the remedy
+    # `test-db-down` was being misused for. Refuses while a client is connected to the seat's Redis
+    # DB or a backend is on its Postgres database (i.e. a suite is running in it) -- pass --force
+    # after `just test-db-seats` shows you why, if you know better.
+    name="$(bash scripts/derive-seat-name.sh "{{name}}")"
+    echo "Seat '{{name}}' -> identifier '${name}'."
+    bash scripts/redis-seat-registry.sh release \
+        --redis-container "{{test_redis_container}}" \
+        --pg-container "{{test_db_container}}" \
+        --seat "$name" \
+        --capacity "{{test_redis_databases}}" \
+        {{flags}}
+    echo ""
+    echo "The Postgres databases for this seat were left in place (they hold no index and block nobody);"
+    echo "re-running \`just test-db-for {{name}}\` reuses them and takes a fresh Redis index."
+
+[doc('Sweep every Redis logical DB whose seat is no longer in use back into the pool -- dry run by default, --apply to free them; never touches the containers')]
+[group('test')]
+test-db-reclaim *flags:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # phaze-68wky: this is the fix for "the registry is full and the only way out is test-db-down".
+    # A seat is left alone if a Redis client is connected to its DB, if a Postgres backend is on its
+    # database (pytest holds one for its whole session), or if its lease is still live; everything
+    # else is freed. See scripts/redis-seat-registry.sh for the full rule set, and run
+    # `just test-db-seats` first to see the evidence behind each verdict.
+    bash scripts/redis-seat-registry.sh reclaim \
+        --redis-container "{{test_redis_container}}" \
+        --pg-container "{{test_db_container}}" \
+        --capacity "{{test_redis_databases}}" \
+        {{flags}}
 
 [doc('Stop and remove the SHARED test-harness Postgres + Redis (phaze-test-db/phaze-test-redis) -- affects every concurrent worktree/session using them')]
 [group('test')]
@@ -609,7 +727,11 @@ test-db-down:
             echo "   would report branch-unrelated failures that pass on isolated re-run, which reads" >&2
             echo "   as a code regression and costs a review round to disprove (phaze-ieqg)." >&2
             echo "" >&2
-            echo "   Wait for those runs to finish, or PHAZE_TEST_DB_FORCE_DOWN=1 just test-db-down" >&2
+            echo "   If you came here to free Redis logical DBs, stop: \`just test-db-reclaim\` hands back" >&2
+            echo "   every seat that is no longer in use without removing anything, and \`just test-db-release\`" >&2
+            echo "   <name> frees a single one. Removing the harness for that was the phaze-68wky defect." >&2
+            echo "" >&2
+            echo "   Otherwise wait for those runs to finish, or PHAZE_TEST_DB_FORCE_DOWN=1 just test-db-down" >&2
             echo "   if you know the connections are stale." >&2
             exit 1
         fi

@@ -143,6 +143,71 @@ def test_cmdk_listbox_and_dialog_present() -> None:
     assert 'aria-label="Command palette"' in html, "cmdk_modal.html dialog is missing its aria-label"
 
 
+# --- phaze-jng72: the ⌘K command live region must outlive a search swap -------------
+
+# The live region rendered INSIDE palette_results.html, i.e. inside #cmdk-results, which is the
+# debounced search's hx-swap="innerHTML" target. That is the same trap as CONSOLE-03 below
+# (a fixed element parked inside a swap target), plus an ARIA one: a listbox may own only
+# option/group children, so a role="status" child made #cmdk-results structurally invalid and axe
+# rated it critical. The behavioural half is the one that actually hurt — a swapped-away node
+# cannot be announced, so ⌘K commands gave a screen-reader user no feedback at all.
+#
+# The browser suite proves the node's identity survives a keystroke; these guards are the blocking
+# lane's copy, because the browser job is non-blocking and cannot stop the hoist being undone.
+_PALETTE_RESULTS = _TEMPLATES / "search" / "partials" / "palette_results.html"
+# The live region's own opening tag (no `>` inside any attribute value, so `[^>]*` bounds it).
+_CMDK_LIVE_REGION = re.compile(r'<div\b[^>]*\bid="cmdk-command-result"[^>]*>', re.DOTALL)
+
+
+def test_cmdk_live_region_is_a_sibling_of_the_results_listbox() -> None:
+    """#cmdk-command-result must live OUTSIDE #cmdk-results — an innerHTML swap destroys anything inside it."""
+    html = _strip_comments(_CMDK.read_text())
+    start = html.find('id="cmdk-results"')
+    assert start != -1, "expected the #cmdk-results swap target in cmdk_modal.html"
+    # #cmdk-results is an EMPTY element in source (the fragment is swapped in), so the first
+    # `</div>` after it is its own closing tag.
+    close = html.find("</div>", start)
+    inner = html[html.find(">", start) + 1 : close]
+    assert "cmdk-command-result" not in inner, (
+        "the ⌘K command live region must live OUTSIDE the #cmdk-results swap target — the debounced "
+        "search swaps innerHTML on every keystroke, which destroys the node before the announcement "
+        "is read, and a role=status child also makes the listbox invalid (axe: critical)"
+    )
+    region = _CMDK_LIVE_REGION.search(html)
+    assert region, "cmdk_modal.html must render the #cmdk-command-result live region itself"
+    assert html.find('id="cmdk-command-result"') > close, "the live region must be a SIBLING that follows #cmdk-results, not an ancestor-nested node"
+
+
+def test_cmdk_live_region_keeps_its_status_semantics_and_stays_rendered() -> None:
+    """The region announces only if it is a rendered live region BEFORE the content lands in it."""
+    html = _strip_comments(_CMDK.read_text())
+    region = _CMDK_LIVE_REGION.search(html)
+    assert region, "cmdk_modal.html must render the #cmdk-command-result live region"
+    tag = region.group(0)
+    assert 'role="status"' in tag, "the ⌘K command live region is missing role=status"
+    assert 'aria-live="polite"' in tag, "the ⌘K command live region is missing aria-live=polite"
+    assert 'aria-atomic="true"' in tag, "the ⌘K command live region is missing aria-atomic=true"
+    # Hiding it while empty reintroduces the defect in a different costume: a live region that is
+    # created or revealed at announce time is not being observed when the mutation happens.
+    for hidden in ("x-show=", "x-if=", "display:none", "display: none", "empty:hidden", " hidden"):
+        assert hidden not in tag, f"the ⌘K command live region must stay rendered while empty — found {hidden!r} on it"
+
+
+def test_the_palette_results_fragment_references_the_live_region_without_owning_it() -> None:
+    """The swapped fragment keeps targeting the region by id; htmx and ARIA resolve it document-wide."""
+    results = _strip_comments(_PALETTE_RESULTS.read_text())
+    assert 'id="cmdk-command-result"' not in results, (
+        "palette_results.html must not RENDER #cmdk-command-result — this fragment is the innerHTML "
+        "of #cmdk-results, so a live region declared here is both an invalid listbox child and "
+        "destroyed by the next keystroke (phaze-jng72)"
+    )
+    targeting = results.count('hx-target="#cmdk-command-result"')
+    assert targeting >= 1, "the ⌘K command rows must still post their outcome into #cmdk-command-result"
+    assert results.count('aria-describedby="cmdk-command-result"') == targeting, (
+        "every command row that targets the live region must also name it via aria-describedby"
+    )
+
+
 # --- Record slide-in (record_host.html) -------------------------------------------
 
 
@@ -156,6 +221,45 @@ def test_record_slide_in_is_a_trapped_modal_dialog() -> None:
     assert 'aria-modal="true"' in tag, "record panel is missing aria-modal=true"
     assert re.search(r"\baria-label=\"[^\"]+\"", tag), "record panel is missing an aria-label"
     assert "x-trap" in tag, "record panel is missing the x-trap focus-trap directive"
+
+
+def _record_body_after_swap() -> str:
+    """The ``hx-on::after-swap`` expression on ``#record-body`` (the host's only one)."""
+    m = _AFTER_SWAP.search(_strip_comments(_RECORD.read_text()))
+    assert m, "expected an hx-on::after-swap handler on #record-body in record_host.html"
+    return m.group(1)
+
+
+def test_record_after_swap_waits_for_the_reveal_before_focusing_the_heading() -> None:
+    """phaze-f65nu: the heading focus must be gated on #record-body being VISIBLE.
+
+    The dialog is ``aria-modal`` and inert-s the shell behind it, so an open that does not move
+    focus leaves the keyboard operator stranded in the inert half (WCAG 2.4.3 / 4.1.2). The
+    original handler read correctly and did nothing: it flipped ``loaded = true`` and called
+    ``h.focus()`` on the very next statement, but ``loaded`` is what reveals ``#record-body``
+    through ``x-show`` and Alpine defers that reveal onto a later task — so ``focus()`` ran against
+    a ``display:none`` element, where it is a silent no-op.
+
+    Guarded here rather than only in ``tests/browser`` because the browser suite is a separate,
+    non-blocking job: this is the lane that keeps a "simplification" back to a straight-line
+    ``focus()`` from shipping. Asserted structurally (the call is not a top-level statement, and
+    the handler consults a visibility primitive) so the guard survives the wait being reshaped.
+    """
+    expr = _record_body_after_swap()
+    focus = re.search(r"\.focus\(\)", expr)
+    assert focus, "the #record-body after-swap handler no longer focuses the record heading at all"
+
+    depth = expr[: focus.start()].count("{") - expr[: focus.start()].count("}")
+    assert depth > 0, (
+        "the heading focus is a TOP-LEVEL statement in the after-swap handler, so it runs on the "
+        "same task as the `loaded` flip — while x-show still has #record-body at display:none, "
+        "where focus() silently no-ops and the dialog opens with focus outside it (phaze-f65nu)"
+    )
+    assert "getClientRects" in expr or "checkVisibility" in expr, (
+        "the after-swap handler no longer checks that #record-body is actually visible before "
+        "focusing its heading — deferring by a tick is NOT enough, because Alpine's x-show reveal "
+        "lands on a later task than anything the handler can queue (phaze-f65nu)"
+    )
 
 
 # --- Dead detail-pane removal (shell.html) ----------------------------------------
@@ -434,24 +538,321 @@ def test_detail_pane_own_tick_does_not_resteal_focus() -> None:
 # where a duplicate is unambiguously wrong.
 _DARK_TEXT_COLOUR = re.compile(r"dark:text-(?:[a-z-]+)-\d{2,3}\b")
 
+# phaze-4yrle REDRIVE: the first version of this guard read the markup LINE BY LINE and skipped
+# any class attribute containing `{{` or `{%`. Both shortcuts made it blind exactly where
+# duplicates accumulate, and it passed on main with two live offenders present:
+#
+#   1. `class="([^"]*)"` per line never matches a class attribute wrapped across lines, and a long
+#      wrapped attribute is precisely where a stray extra utility hides (cue/partials/cue_row.html).
+#   2. Skipping the WHOLE attribute when it contains Jinja is right about the alternatives
+#      ({{ 'dark:text-gray-100' if x else 'dark:text-gray-400' }} emits one colour, not two) but
+#      wrong about everything else in the attribute -- including two colours sitting together
+#      INSIDE one branch (execution/partials/filter_tabs.html).
+#
+# So the guard now reads each class attribute as authored (whole-file scan, `[^"]` spans newlines)
+# and models what the attribute can actually EMIT: static text is always emitted, each
+# `{% if %}/{% elif %}/{% else %}` branch is an alternative, and a `{{ ... }}` expression (or an
+# Alpine `:class` ternary) contributes at most one of its quoted literals. A duplicate is a
+# duplicate iff some single emitted class string carries two `dark:text-<colour>` utilities.
+#
+# Which of a duplicate pair actually renders was MEASURED off the built stylesheet, not assumed --
+# `src/phaze/static/css/app.css` emits the gray text colours in ascending scale order
+# (`.dark\:text-gray-300` < `-400` < `-500`), all as `:where(.dark, .dark *)`, which contributes
+# zero specificity. Equal specificity means the LAST rule emitted wins, so the higher scale number
+# always renders regardless of class-attribute order. Both offenders this redrive fixed were
+# therefore rendering `dark:text-gray-500`, and both KEPT `dark:text-gray-400` -- because on this
+# theme's dark surfaces gray-500 fails WCAG 2.1 AA for normal text and gray-400 passes:
+#   gray-500 on `--color-phaze-panel` #10141c = 3.81:1   gray-400 = 7.09:1   (cue_row.html pill)
+#   gray-500 on `--color-phaze-bg`    #0a0c12 = 4.04:1   gray-400 = 7.51:1   (filter_tabs.html tab)
+# Dropping the duplicate is thus not cosmetic here: it changes the rendered colour, and it is the
+# 4.5:1 threshold that decides which one goes. `proposals/partials/filter_tabs.html` -- the same
+# component without the strays -- independently agrees on `text-gray-500 dark:text-gray-400`.
+#
+# phaze-o8voj RESOLVED the `{% set %}` half of this limit: a same-file `{% set NAME = '...' %}`
+# (single or double quoted) bare-string-literal assignment now resolves into every attribute that
+# references `{{ NAME }}`, so a class string assembled across a `{% set %}` and the attribute that
+# uses it is no longer opaque -- see `_extract_set_vars` below.
+#
+# KNOWN LIMIT (still open): a class string passed INTO a macro -- i.e. bound to a macro parameter
+# by the call site, not assigned via `{% set %}` -- stays opaque, because that requires following
+# the call site into the macro body across (possibly) file boundaries, which is a materially larger
+# analysis than resolving a same-file literal. Also opaque, deliberately: a `{% set %}` built from
+# something other than a bare string literal -- concatenation (`~`), a filter, or another variable
+# -- because guessing its value would risk a false positive, which is worse than staying blind (see
+# module docstring's guiding principle at the top of this file). Swept manually at redrive time and
+# clean on both counts: no macro-parameter class string and no non-literal `{% set %}` carries two
+# `dark:text-*` colours in the tree today. Also swept at redrive time, also clean: `dark:bg-*` and
+# `dark:border-*`, which have the same duplicate-is-always-a-defect property and would be the
+# natural widening if either ever grows an offender.
+
+# `{% ... %}` / `{{ ... }}`; DOTALL because a wrapped attribute puts newlines inside both.
+_JINJA_BRANCH_TAG = re.compile(r"\{%-?\s*(if|elif|else|endif)\b.*?-?%\}", re.DOTALL)
+_JINJA_ANY_TAG = re.compile(r"\{%-?.*?-?%\}", re.DOTALL)
+_JINJA_EXPR = re.compile(r"(\{\{.*?\}\})", re.DOTALL)
+_SINGLE_QUOTED = re.compile(r"'([^']*)'")
+# Comments are prose, not markup: shell.html documents a superseded `:class="..."` binding in one,
+# and a guard that reads comments would flag the documentation instead of the code.
+_COMMENTS = re.compile(r"<!--.*?-->|\{#.*?#\}", re.DOTALL)
+# Both the plain attribute and Alpine's `:class` binding, which are parsed differently: a `class`
+# value is Jinja-templated markup, a `:class` value is one JS expression. A value can never contain
+# a `"` (that is what closes it), so `[^"]*` bounds the attribute exactly even across newlines.
+_CLASS_ATTR = re.compile(r'(?P<alpine>:)?class="(?P<value>[^"]*)"')
+
+# A same-file `{% set NAME = '...' %}` / `{% set NAME = "..." %}` bare-string-literal assignment.
+# Deliberately narrow: `NAME = other_var`, `NAME = a ~ b`, `NAME = a|filter`, and multi-target
+# `{% set a, b = ... %}` all fail to match and stay opaque (see the KNOWN LIMIT comment above) --
+# guessing a value here would risk manufacturing a false positive, which this guard must not do.
+_SET_STRING = re.compile(r"\{%-?\s*set\s+(\w+)\s*=\s*(?:'([^']*)'|\"([^\"]*)\")\s*-?%\}")
+# A `{{ ... }}` expression that is nothing but a bare variable reference -- no filter, no ternary,
+# no attribute/index access -- is the only shape resolved against `{% set %}` literals below.
+_BARE_VAR = re.compile(r"^\{\{\s*(\w+)\s*\}\}$")
+
+
+def _extract_set_vars(source: str) -> dict[str, list[str]]:
+    """Same-file `{% set NAME = '...' %}` string literals this template defines, by name.
+
+    A name `{% set %}` more than once (e.g. once per branch of an `{% if %}`/`{% elif %}` chain,
+    like ``lane_color`` in ``_lane_card.html``) collects every distinct literal it was ever
+    assigned, mirroring how this guard already treats `{% if %}` branches as alternatives: each
+    literal is one possible render, and a duplicate is flagged if ANY of them collides.
+    """
+    resolved: dict[str, list[str]] = {}
+    for match in _SET_STRING.finditer(source):
+        name = match.group(1)
+        value = match.group(2) if match.group(2) is not None else match.group(3)
+        values = resolved.setdefault(name, [])
+        if value not in values:
+            values.append(value)
+    return resolved
+
+
+def _expression_alternatives(expr: str, set_vars: dict[str, list[str]] | None = None) -> list[str]:
+    """Class strings a `{{ ... }}` (or Alpine ternary) can contribute -- at most ONE quoted literal.
+
+    A bare `{{ NAME }}` reference to a same-file `{% set %}` string literal resolves to that
+    literal's alternatives (phaze-o8voj); anything else stays opaque, the "" no-contribution
+    alternative, exactly as before.
+    """
+    literals = _SINGLE_QUOTED.findall(expr)
+    if literals:
+        # "" covers the falsy/no-literal branch, so an expression never fabricates a duplicate on
+        # its own.
+        return [*literals, ""]
+    bare = _BARE_VAR.match(expr)
+    if bare and set_vars and bare.group(1) in set_vars:
+        return list(set_vars[bare.group(1)])
+    return [""]
+
+
+def _alpine_class_alternatives(expr: str) -> list[str]:
+    """Class strings an Alpine `:class` value can apply.
+
+    A `cond ? 'a' : 'b'` ternary applies exactly ONE side, so its literals are alternatives -- reading
+    them as one concatenated string is a false positive, and the shape is common enough in this tree
+    (rail.html, header.html, comparison_table.html) to matter. The object/array forms
+    (`{'a': x, 'b': y}`) can apply several literals at once, so there they stay concatenated.
+    """
+    return _expression_alternatives(expr) if "?" in expr else [expr]
+
+
+def _expand_expressions(text: str, set_vars: dict[str, list[str]] | None = None) -> list[str]:
+    """Expand a branch-free fragment into every class string it can emit."""
+    emitted = [""]
+    for part in _JINJA_EXPR.split(text):
+        alternatives = _expression_alternatives(part, set_vars) if part.startswith("{{") else [_JINJA_ANY_TAG.sub(" ", part)]
+        emitted = [f"{done} {alternative}" for done in emitted for alternative in alternatives]
+    return list(dict.fromkeys(emitted))
+
+
+def _split_top_level_if(text: str) -> tuple[str, list[str], str] | None:
+    """Split on the FIRST top-level `{% if %}`: (always-emitted prefix, branches, remaining suffix)."""
+    depth = 0
+    opened: re.Match[str] | None = None
+    separators: list[re.Match[str]] = []
+    for tag in _JINJA_BRANCH_TAG.finditer(text):
+        keyword = tag.group(1)
+        if keyword == "if":
+            depth += 1
+            if depth == 1:
+                opened, separators = tag, []
+        elif keyword == "endif":
+            depth -= 1
+            if depth == 0 and opened is not None:
+                branches, cut = [], opened.end()
+                for separator in separators:
+                    branches.append(text[cut : separator.start()])
+                    cut = separator.end()
+                branches.append(text[cut : tag.start()])
+                if not any(separator.group(1) == "else" for separator in separators):
+                    branches.append("")  # an `{% if %}` with no `{% else %}` can also emit nothing
+                return text[: opened.start()], branches, text[tag.end() :]
+        elif depth == 1:
+            separators.append(tag)
+    return None
+
+
+def _emitted_class_strings(attr: str, set_vars: dict[str, list[str]] | None = None) -> list[str]:
+    """Every class string this attribute can render as -- one per combination of branches taken."""
+    split = _split_top_level_if(attr)
+    if split is None:
+        return _expand_expressions(attr, set_vars)
+    prefix, branches, suffix = split
+    emitted = [
+        f"{before} {inside} {after}"
+        for before in _expand_expressions(prefix, set_vars)
+        for branch in branches
+        for inside in _emitted_class_strings(branch, set_vars)
+        for after in _emitted_class_strings(suffix, set_vars)
+    ]
+    return list(dict.fromkeys(emitted))
+
 
 def test_no_element_carries_two_dark_text_colours() -> None:
     offenders: list[str] = []
     for template in sorted(_TEMPLATES.rglob("*.html")):
-        for line_no, line in enumerate(template.read_text().splitlines(), start=1):
-            for attr in re.findall(r'class="([^"]*)"', line):
-                # Jinja conditionals legitimately offer alternative colours on one element
-                # ({{ 'dark:text-gray-100' if x else 'dark:text-gray-400' }}) -- only ONE is ever
-                # emitted, so they are not duplicates.
-                if "{{" in attr or "{%" in attr:
-                    continue
-                hits = _DARK_TEXT_COLOUR.findall(attr)
+        source = template.read_text()
+        # Blank comments out rather than deleting them, so offsets (and line numbers) stay true.
+        scannable = _COMMENTS.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), source)
+        # Same-file `{% set %}` string literals this template defines (phaze-o8voj) -- resolved
+        # into any `{{ NAME }}` reference below, so a class string assembled across a `{% set %}`
+        # and the attribute that uses it is no longer invisible to this scan.
+        set_vars = _extract_set_vars(scannable)
+        for match in _CLASS_ATTR.finditer(scannable):
+            line_no = scannable.count("\n", 0, match.start()) + 1
+            value = match.group("value")
+            renders = _alpine_class_alternatives(value) if match.group("alpine") else _emitted_class_strings(value, set_vars)
+            for emitted in renders:
+                hits = _DARK_TEXT_COLOUR.findall(emitted)
                 if len(hits) > 1:
                     rel = template.relative_to(_TEMPLATES)
-                    offenders.append(f"{rel}:{line_no} carries {len(hits)} dark: text colours -> {' '.join(hits)}")
+                    offenders.append(f"{rel}:{line_no} emits {len(hits)} dark: text colours together -> {' '.join(hits)}")
+                    break  # one report per attribute; the first offending branch is enough to locate it
 
     assert not offenders, (
         "an element carries two competing `dark:` text colours; the winner is decided by Tailwind's "
         "emit order, not by class-attribute order, so one is dead and the rendered colour may not be "
         "the intended one:\n  " + "\n  ".join(offenders)
     )
+
+
+# The guard above is only worth its line count if it can SEE the shapes duplicates actually take.
+# Its first version could not, and shipped green over two live offenders for exactly that reason, so
+# these fix the two blind spots as executable cases rather than as a comment nobody re-checks. Each
+# `_carries` case is a real shape lifted from this tree; each `_permits` case is the false positive
+# the narrowing must not produce.
+def _worst_case(attr: str, *, alpine: bool = False, set_vars: dict[str, list[str]] | None = None) -> int:
+    """Most `dark:` text colours any single render of this attribute puts on one element."""
+    renders = _alpine_class_alternatives(attr) if alpine else _emitted_class_strings(attr, set_vars)
+    return max(len(_DARK_TEXT_COLOUR.findall(emitted)) for emitted in renders)
+
+
+def test_the_duplicate_dark_utility_guard_sees_a_wrapped_class_attribute() -> None:
+    # Blind spot 1: a per-LINE `class="([^"]*)"` never matches this at all, and long wrapped
+    # attributes are precisely where a stray extra utility survives review (cue_row.html).
+    assert _worst_case("text-xs rounded-full\n            bg-gray-100 text-gray-500 dark:text-gray-400 dark:text-gray-500") == 2
+
+
+def test_the_duplicate_dark_utility_guard_sees_a_duplicate_inside_one_jinja_branch() -> None:
+    # Blind spot 2: skipping the whole attribute because it contains `{%` also skips both colours
+    # when they sit together in ONE branch and are therefore emitted together (filter_tabs.html).
+    attr = "px-3 {% if active %} dark:text-blue-400 {% else %} dark:text-gray-400 dark:text-gray-500 {% endif %}"
+    assert _worst_case(attr) == 2
+
+
+def test_the_duplicate_dark_utility_guard_sees_a_branch_colliding_with_the_static_part() -> None:
+    # An always-emitted colour plus a conditional one is a real collision whenever the branch is taken.
+    assert _worst_case("dark:text-gray-400 {{ 'dark:text-gray-500' if muted }}") == 2
+
+
+def test_the_duplicate_dark_utility_guard_sees_two_independent_ifs_that_can_both_fire() -> None:
+    # Sequential `{% if %}`s are NOT alternatives -- nothing stops both conditions holding, so both
+    # colours land on the element together. The branch model has to keep them independent; collapsing
+    # sequential branches into one choice would silently exempt this.
+    assert _worst_case("{% if a %}dark:text-gray-400{% endif %} {% if b %}dark:text-gray-500{% endif %}") == 2
+
+
+def test_the_duplicate_dark_utility_guard_sees_through_a_nested_if() -> None:
+    # A duplicate does not become invisible by sitting one level deeper; the split recurses.
+    assert _worst_case("{% if a %}{% if b %}dark:text-gray-100 dark:text-gray-200{% endif %}{% endif %}") == 2
+
+
+def test_the_duplicate_dark_utility_guard_permits_genuine_jinja_alternatives() -> None:
+    # The exemption the original guard was reaching for, kept exactly: a ternary and an if/else emit
+    # ONE colour each, so they are alternatives, not duplicates. Narrowing must not break this.
+    assert _worst_case("{{ 'dark:text-gray-100' if selected else 'dark:text-gray-400' }}") == 1
+    assert _worst_case("{% if selected %} dark:text-gray-100 {% else %} dark:text-gray-400 {% endif %}") == 1
+    # An `{% elif %}` chain is the same thing with more arms -- the shape of _cue_preview.html and
+    # rail.html, which are the tree's real three-way alternatives and must stay exempt.
+    assert _worst_case("{% if a %}dark:text-red-400{% elif b %}dark:text-gray-300{% else %}dark:text-amber-300{% endif %}") == 1
+
+
+def test_the_duplicate_dark_utility_guard_permits_an_alpine_class_ternary() -> None:
+    # `:class="cond ? 'a' : 'b'"` is Alpine's alternatives form; only one side is ever applied.
+    assert _worst_case("$store.theme.dim ? 'dark:text-gray-500' : 'dark:text-gray-300'", alpine=True) == 1
+
+
+def test_the_duplicate_dark_utility_guard_sees_a_duplicate_in_one_alpine_ternary_arm() -> None:
+    # ...but the narrowing must stay narrow: two colours in ONE arm are still applied together.
+    assert _worst_case("$store.theme.dim ? 'dark:text-gray-400 dark:text-gray-500' : ''", alpine=True) == 2
+
+
+def test_the_duplicate_dark_utility_guard_permits_a_hover_variant_alongside_a_base_colour() -> None:
+    # `dark:hover:text-*` is a different variant, not a competing declaration for the same state.
+    assert _worst_case("text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300") == 1
+
+
+# --- phaze-o8voj: same-file `{% set %}` class strings are no longer opaque to the guard -----------
+#
+# The bead's own example: `{% set _btn = 'text-gray-700 dark:text-gray-300' %}` followed by
+# `class="{{ _btn }} dark:text-gray-400"` puts two competing `dark:` text colours on one element,
+# but only through a variable, not a literal in the attribute itself.
+
+_SET_BTN_SOURCE = "{% set _btn = 'text-gray-700 dark:text-gray-300' %}"
+
+
+def test_the_pre_o8voj_guard_could_not_see_a_set_composed_duplicate_at_all() -> None:
+    """Proves the gap: with NO `{% set %}` resolution (the guard as it stood before this bead),
+    `{{ _btn }}` is fully opaque -- its "" no-contribution alternative is all `_expression_alternatives`
+    could ever return for a bare variable reference -- so the composed duplicate below was invisible.
+    """
+    assert _worst_case("{{ _btn }} dark:text-gray-400") == 1
+
+
+def test_the_duplicate_dark_utility_guard_sees_a_set_variable_composed_with_a_colliding_literal() -> None:
+    # Same fixture, now WITH `{% set %}` resolution: `_btn` resolves to its literal, so the guard
+    # sees both `dark:text-gray-300` (from the variable) and `dark:text-gray-400` (from the
+    # attribute) landing on the same element.
+    set_vars = _extract_set_vars(_SET_BTN_SOURCE)
+    assert _worst_case("{{ _btn }} dark:text-gray-400", set_vars=set_vars) == 2
+
+
+def test_the_duplicate_dark_utility_guard_permits_a_set_variable_that_does_not_collide() -> None:
+    # The narrowing must not manufacture a false positive: `_btn` still contributes its ONE colour,
+    # and nothing else in the attribute collides with it.
+    set_vars = _extract_set_vars(_SET_BTN_SOURCE)
+    assert _worst_case("{{ _btn }} font-semibold", set_vars=set_vars) == 1
+
+
+def test_the_duplicate_dark_utility_guard_sees_a_set_variable_defined_per_if_branch() -> None:
+    # A name `{% set %}` once per branch (the real shape of `lane_color` in `_lane_card.html`) --
+    # each literal is an alternative, and a duplicate is flagged if the attribute pairs ANY of them
+    # with a colliding literal.
+    source = "{% if a %}{% set c = 'dark:text-emerald-300' %}{% else %}{% set c = 'dark:text-blue-300' %}{% endif %}"
+    set_vars = _extract_set_vars(source)
+    assert set_vars["c"] == ["dark:text-emerald-300", "dark:text-blue-300"]
+    assert _worst_case("{{ c }} dark:text-blue-300", set_vars=set_vars) == 2
+
+
+def test_set_variable_extraction_ignores_non_literal_assignments() -> None:
+    # `{% set %}` built from another variable, a filter, or concatenation is not a bare string
+    # literal -- stays opaque rather than guessed, so it cannot manufacture a false positive.
+    assert _extract_set_vars("{% set _cls = other_var %}") == {}
+    assert _extract_set_vars("{% set _cls = 'a' ~ suffix %}") == {}
+    assert _extract_set_vars("{% set _cls = raw_cls|trim %}") == {}
+
+
+def test_set_variable_extraction_reads_double_quoted_literals_too() -> None:
+    # `{% set %}` in this tree uses both quote styles (e.g. `heading_class` in rail.html uses
+    # double quotes) -- both must resolve.
+    set_vars = _extract_set_vars('{% set c = "dark:text-gray-300" %}')
+    assert set_vars == {"c": ["dark:text-gray-300"]}

@@ -21,6 +21,9 @@ configured so most happy-path tests need no extra setup.
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+import shutil
 from typing import TYPE_CHECKING
 import unicodedata
 from unittest.mock import AsyncMock
@@ -39,6 +42,9 @@ from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers import pipeline, pipeline_scans, shell
 from phaze.routers.response_shape import RENDERABLE_ALERT_STATUS
 from phaze.services.agent_task_router import AmbiguousEnqueueError
+
+
+_ROUTERS_DIR = Path(__file__).parent.parent.parent.parent / "src" / "phaze" / "routers"
 
 
 if TYPE_CHECKING:
@@ -132,6 +138,41 @@ def test_elapsed_seconds_handles_tz_aware_created_at() -> None:
     assert 40 <= elapsed <= 60, f"expected elapsed near 42s, got {elapsed}"
 
 
+def _naive_now_offenders(routers_dir: Path) -> list[str]:
+    """Find every `<expr>.replace(tzinfo=None)` call site under ``routers_dir``.
+
+    Shared by the real guard test below and its seeded-mutation proofs, so the
+    detection logic under test is the SAME code the proofs exercise -- a copy
+    pasted into the mutation tests could silently drift from what actually
+    runs in CI.
+
+    Matches ANY ``.replace(tzinfo=None)`` call, not only the directly-chained
+    ``datetime.now(UTC).replace(tzinfo=None)`` shape. An earlier version of
+    this helper required the receiver to itself be a `.now(...)` call
+    expression, which caught the chained form but FAILED OPEN on the
+    assign-then-strip form (`dt = datetime.now(UTC); dt = dt.replace(tzinfo=None)`)
+    -- confirmed absent from today's tree only by `grep`, not by this check,
+    which is exactly the "reads as coverage but silently misses it" failure
+    mode a guard with branching logic must not have (phaze-7l8jh). Stripping
+    tzinfo via `.replace(tzinfo=None)` is the antipattern regardless of how
+    the datetime it strips was produced, so the receiver's shape is no longer
+    part of the match.
+    """
+    offenders: list[str] = []
+    for py in routers_dir.rglob("*.py"):
+        text = py.read_text()
+        tree = ast.parse(text)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "replace"
+                and any(kw.arg == "tzinfo" and isinstance(kw.value, ast.Constant) and kw.value.value is None for kw in node.keywords)
+            ):
+                offenders.append(f"{py.relative_to(routers_dir)}:{node.lineno}")
+    return offenders
+
+
 def test_no_router_uses_tz_naive_now_antipattern() -> None:
     """Phase 27 UAT gap-14: no router file may strip tzinfo from `datetime.now(UTC)`.
 
@@ -142,41 +183,73 @@ def test_no_router_uses_tz_naive_now_antipattern() -> None:
     aware-to-aware. This test forbids the regression antipattern across the
     entire router package so a third sibling cannot reappear silently.
     """
-    from pathlib import Path
-
-    routers_dir = Path(__file__).parent.parent.parent.parent / "src" / "phaze" / "routers"
-    offenders: list[str] = []
-    for py in routers_dir.rglob("*.py"):
-        text = py.read_text()
-        # Strip the docstrings/comments to keep the test from flagging the
-        # very explanation lines that ARE supposed to call out the antipattern.
-        # We only care about call sites in executable code, not narrative prose.
-        # A simple line-by-line filter: ignore lines whose first non-whitespace
-        # char is `#` or that sit inside triple-quoted strings. The latter is
-        # too coarse to parse precisely without an AST walk, so we just scan
-        # the AST for matching Call expressions instead.
-        import ast
-
-        tree = ast.parse(text)
-        for node in ast.walk(tree):
-            # Match `<expr>.replace(tzinfo=None)` where `<expr>` is a
-            # `datetime.now(...)` call.
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "replace"
-                and any(kw.arg == "tzinfo" and isinstance(kw.value, ast.Constant) and kw.value.value is None for kw in node.keywords)
-                and isinstance(node.func.value, ast.Call)
-                and isinstance(node.func.value.func, ast.Attribute)
-                and node.func.value.func.attr == "now"
-            ):
-                offenders.append(f"{py.relative_to(routers_dir.parent.parent.parent)}:{node.lineno}")
-
+    offenders = _naive_now_offenders(_ROUTERS_DIR)
     assert not offenders, (
         "Routers must not strip tzinfo from datetime.now() -- production "
         "`created_at` is TIMESTAMP WITH TIME ZONE (tz-aware). Use "
         "phaze.routers.pipeline_scans.elapsed_seconds instead. Offenders: " + ", ".join(offenders)
     )
+
+
+# ---------------------------------------------------------------------------
+# Seeded-mutation proof (phaze-7l8jh): a guard with branching logic that
+# cannot be shown to fail is worse than no guard, because it reads as
+# coverage. Both tests mutate a COPY of the routers tree -- the real one is
+# never touched -- following the same pattern as
+# tests/shared/core/test_route_reachability.py's seeded-mutation tests.
+# ---------------------------------------------------------------------------
+
+
+def _copy_routers(tmp_path: Path) -> Path:
+    destination = tmp_path / "routers"
+    shutil.copytree(_ROUTERS_DIR, destination)
+    return destination
+
+
+def test_copied_routers_tree_is_clean(tmp_path: Path) -> None:
+    """Control for the two mutation tests below: an unmutated copy is clean."""
+    assert _naive_now_offenders(_copy_routers(tmp_path)) == []
+
+
+def test_seeded_chained_naive_now_is_caught(tmp_path: Path) -> None:
+    """Mutation 1 -- reseed the original gap-14 shape: `datetime.now(UTC).replace(tzinfo=None)`.
+
+    This is the shape the original test always caught. Kept as a control so a
+    future edit to `_naive_now_offenders` cannot silently stop catching the
+    incident this test exists to prevent, even while the broader mutation
+    below keeps passing.
+    """
+    root = _copy_routers(tmp_path)
+    victim = root / "pipeline_scans.py"
+    victim.write_text(
+        victim.read_text()
+        + "\n\ndef _seeded_offender() -> None:\n    from datetime import UTC, datetime\n\n    datetime.now(UTC).replace(tzinfo=None)\n",
+    )
+
+    offenders = _naive_now_offenders(root)
+    assert any("pipeline_scans.py" in offender for offender in offenders), "the guard missed the directly-chained antipattern it was written for"
+
+
+def test_seeded_assign_then_strip_naive_now_is_caught(tmp_path: Path) -> None:
+    """Mutation 2 -- the fail-open gap: `dt = datetime.now(UTC); dt = dt.replace(tzinfo=None)`.
+
+    Splitting the call across two statements produces the exact same runtime
+    bug (an aware `datetime.now(UTC)` stripped back to naive) but the
+    receiver of `.replace(tzinfo=None)` is a `Name`, not a `.now(...)` call
+    expression. Before phaze-7l8jh this mutation passed `_naive_now_offenders`
+    with an EMPTY offenders list -- the guard failed open on it. This test
+    pins the fix; if the receiver-shape check is ever reintroduced, this is
+    the test that goes red.
+    """
+    root = _copy_routers(tmp_path)
+    victim = root / "pipeline_scans.py"
+    victim.write_text(
+        victim.read_text()
+        + "\n\ndef _seeded_split_offender() -> None:\n    from datetime import UTC, datetime\n\n    now = datetime.now(UTC)\n    now = now.replace(tzinfo=None)\n",
+    )
+
+    offenders = _naive_now_offenders(root)
+    assert any("pipeline_scans.py" in offender for offender in offenders), "the guard failed open on the assign-then-strip shape (phaze-7l8jh)"
 
 
 def test_elapsed_seconds_handles_tz_naive_created_at_as_utc() -> None:

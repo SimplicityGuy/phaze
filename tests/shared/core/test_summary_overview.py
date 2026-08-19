@@ -16,7 +16,7 @@ from sqlalchemy import text
 from phaze.models.analysis import AnalysisResult
 from phaze.models.metadata import FileMetadata
 from phaze.routers import shell as shell_mod
-from phaze.routers.shell import _derive_summary_overview, _get_summary_aggregates
+from phaze.routers.shell import SummaryOverviewInputs, _derive_summary_overview, _get_summary_aggregates
 from phaze.services.backends import get_analysis_activity_counts
 from phaze.services.proposal_queries import ProposalStats
 
@@ -42,6 +42,9 @@ def _progress(*, total: int = 4, metadata: dict[str, int] | None = None, analyze
 
 
 def _derive(progress: dict[str, dict[str, int | None]], **overrides: object) -> dict[str, object]:
+    # phaze-w84zt: _derive_summary_overview now takes a SummaryOverviewInputs struct rather
+    # than 14 keyword args -- this helper still exposes the flat kwarg shape to every test
+    # below (so none of them change) and just repackages it at the one call site.
     args: dict[str, object] = {
         "proposal_pending": 0,
         "proposal_approved": 0,
@@ -59,7 +62,7 @@ def _derive(progress: dict[str, dict[str, int | None]], **overrides: object) -> 
         "analyses_lifetime": 0,
     }
     args.update(overrides)
-    return _derive_summary_overview(progress, **args)  # type: ignore[arg-type]
+    return _derive_summary_overview(progress, SummaryOverviewInputs(**args))  # type: ignore[arg-type]
 
 
 def test_empty_and_partially_configured_states_recommend_real_destinations() -> None:
@@ -240,7 +243,7 @@ async def test_summary_independent_reads_run_in_parallel_under_the_shared_bound(
         return _progress(total=0)
 
     async def proposal_stats(_session: object) -> ProposalStats:
-        return ProposalStats(total=0, pending=0, approved=0, rejected=0, avg_confidence=None)
+        return ProposalStats(total=0, pending=0, approved=0, executed=0, rejected=0, failed=0, avg_confidence=None)
 
     async def zero(_session: object) -> int:
         return 0
