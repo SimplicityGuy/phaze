@@ -42,23 +42,23 @@
     </section>
 
     <section class="{{ group_class }}" aria-labelledby="nav-pipeline">
-        <h2 id="nav-pipeline" class="{{ heading_class }}">Pipeline</h2>
+        <h2 id="nav-pipeline" class="{{ heading_class }} dark:text-gray-400">Pipeline</h2>
         {% call nav_link('discover', 'Discover', 'M3.75 9.75h16.5l-.9 8.1a2.25 2.25 0 0 1-2.24 2H6.89a2.25 2.25 0 0 1-2.24-2l-.9-8.1Zm2.25 0V5.25h4.5l1.5 1.5h6v3') %}
-            <span class="{{ count_class }}" x-text="$store.pipeline.discovered" :title="$store.pipeline.discovered + ' files discovered'" :aria-label="$store.pipeline.discovered + ' files discovered'">0</span>
+            <span class="{{ count_class }} dark:text-gray-400" x-text="$store.pipeline.discovered" :title="$store.pipeline.discovered + ' files discovered'" :aria-label="$store.pipeline.discovered + ' files discovered'">0</span>
         {% endcall %}
         {% call nav_link('metadata', 'Metadata', 'M6 3.75h7.5l4.5 4.5v12H6v-16.5Zm7.5 0v4.5H18M9 13.5h6M9 16.5h4.5') %}
-            <span class="{{ count_class }}" x-text="$store.pipeline.metadataStatusKnown ? `${$store.pipeline.metadataStatusDone} / ${$store.pipeline.metadataStatusTotal}` : '— / —'" :title="$store.pipeline.metadataStatusKnown ? $store.pipeline.metadataStatusDone + ' of ' + $store.pipeline.metadataStatusTotal + ' metadata files done' : 'Metadata status unavailable'" :aria-label="$store.pipeline.metadataStatusKnown ? $store.pipeline.metadataStatusDone + ' of ' + $store.pipeline.metadataStatusTotal + ' metadata files done' : 'Metadata status unavailable'">— / —</span>
+            <span class="{{ count_class }} dark:text-gray-400" x-text="$store.pipeline.metadataStatusKnown ? `${$store.pipeline.metadataStatusDone} / ${$store.pipeline.metadataStatusTotal}` : '— / —'" :title="$store.pipeline.metadataStatusKnown ? $store.pipeline.metadataStatusDone + ' of ' + $store.pipeline.metadataStatusTotal + ' metadata files done' : 'Metadata status unavailable'" :aria-label="$store.pipeline.metadataStatusKnown ? $store.pipeline.metadataStatusDone + ' of ' + $store.pipeline.metadataStatusTotal + ' metadata files done' : 'Metadata status unavailable'">— / —</span>
             <span x-show="$store.pipeline.metadataOrphan > 0" x-cloak role="status" :title="$store.pipeline.metadataOrphan + ' orphaned metadata file(s) awaiting recovery'" :aria-label="$store.pipeline.metadataOrphan + ' orphaned metadata file(s) awaiting recovery'" class="{{ count_class }} font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400" x-text="$store.pipeline.metadataOrphan">0</span>
         {% endcall %}
         {% call nav_link('analyze', 'Analyze', 'M9.75 3v6l-4.5 7.5h13.5L14.25 9V3M8.25 3h7.5') %}
-            <span class="{{ count_class }}" x-text="`${$store.pipeline.analyzeDone} / ${$store.pipeline.analyzeTotal}`" :title="$store.pipeline.analyzeDone + ' of ' + $store.pipeline.analyzeTotal + ' analyze files done'" :aria-label="$store.pipeline.analyzeDone + ' of ' + $store.pipeline.analyzeTotal + ' analyze files done'">0 / 0</span>
+            <span class="{{ count_class }} dark:text-gray-400" x-text="`${$store.pipeline.analyzeDone} / ${$store.pipeline.analyzeTotal}`" :title="$store.pipeline.analyzeDone + ' of ' + $store.pipeline.analyzeTotal + ' analyze files done'" :aria-label="$store.pipeline.analyzeDone + ' of ' + $store.pipeline.analyzeTotal + ' analyze files done'">0 / 0</span>
             <span x-show="$store.pipeline.analyzeOrphan > 0" x-cloak role="status" :title="$store.pipeline.analyzeOrphan + ' orphaned analyze file(s) awaiting recovery'" :aria-label="$store.pipeline.analyzeOrphan + ' orphaned analyze file(s) awaiting recovery'" class="{{ count_class }} font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400" x-text="$store.pipeline.analyzeOrphan">0</span>
         {% endcall %}
         {% call nav_link('tracklist', 'Tracklists', 'M8.25 6.75h12M8.25 12h12M8.25 17.25h12M3.75 6.75h.01M3.75 12h.01M3.75 17.25h.01') %}
-            <span class="{{ count_class }}" x-text="$store.pipeline.tracklistDone" :title="$store.pipeline.tracklistDone + ' tracklist files done'" :aria-label="$store.pipeline.tracklistDone + ' tracklist files done'">0</span>
+            <span class="{{ count_class }} dark:text-gray-400" x-text="$store.pipeline.tracklistDone" :title="$store.pipeline.tracklistDone + ' tracklist files done'" :aria-label="$store.pipeline.tracklistDone + ' tracklist files done'">0</span>
         {% endcall %}
         {% call nav_link('propose', 'Propose changes', 'M12 3v18M3 12h18M5.5 5.5l13 13M18.5 5.5l-13 13') %}
-            <span class="{{ count_class }}" x-text="`${$store.pipeline.proposalsDone} / ${$store.pipeline.proposalsTotal}`" :title="$store.pipeline.proposalsDone + ' of ' + $store.pipeline.proposalsTotal + ' proposals done'" :aria-label="$store.pipeline.proposalsDone + ' of ' + $store.pipeline.proposalsTotal + ' proposals done'">0 / 0</span>
+            <span class="{{ count_class }} dark:text-gray-400" x-text="`${$store.pipeline.proposalsDone} / ${$store.pipeline.proposalsTotal}`" :title="$store.pipeline.proposalsDone + ' of ' + $store.pipeline.proposalsTotal + ' proposals done'" :aria-label="$store.pipeline.proposalsDone + ' of ' + $store.pipeline.proposalsTotal + ' proposals done'">0 / 0</span>
         {% endcall %}
     </section>
 
@@ -71,7 +71,7 @@
     </section>
 
     <section class="{{ group_class }}" aria-labelledby="nav-operations">
-        <h2 id="nav-operations" class="{{ heading_class }}">Operations</h2>
+        <h2 id="nav-operations" class="{{ heading_class }} dark:text-gray-400">Operations</h2>
         {% call nav_link('operations', 'Routing', 'M4.5 6.75h10.75m0 0-3-3m3 3-3 3m7.25 7.5H8.75m0 0 3 3m-3-3 3-3', 'operations') %}{% endcall %}
         {% call nav_link('audit', 'Audit log', 'M8.25 3.75h7.5M9 7.5h6M6 3.75h12v16.5H6V3.75Zm3 8.25h6m-6 3h6', 'operations') %}{% endcall %}
         {% call nav_link('agents', 'Agents & compute lanes', 'M8.25 3v1.5M12 3v1.5M15.75 3v1.5M4.5 8.25H3m18 0h-1.5M6.75 4.5h10.5a2.25 2.25 0 0 1 2.25 2.25v10.5a2.25 2.25 0 0 1-2.25 2.25H6.75a2.25 2.25 0 0 1-2.25-2.25V6.75A2.25 2.25 0 0 1 6.75 4.5Z', 'operations') %}{% endcall %}

@@ -17,15 +17,32 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
-    /* Phaze accent palette — replaces default blue */
+    /* WCAG AA contrast ramp — deliberately overrides Tailwind's stock values.
+     * Text rungs target at least 5.5:1 against #f3f4f6; see ADR-0010.
+     * Hues remain distinct so status is never conveyed by text/glyph alone. */
+    --color-gray-400: #5b6370;
+    --color-gray-500: #5b6272;
+    --color-amber-600: #9c4c01;
+    --color-red-600: #c7080d;
+    --color-green-600: #027229;
+    --color-green-700: #00722f;
+    --color-emerald-600: #00714a;
+    --color-rose-600: #c40b35;
+    --color-yellow-600: #895800;
+    --color-yellow-700: #925300;
+    --color-orange-600: #b43506;
+    --color-violet-500: #7935e5;
+
+    /* Phaze accent palette — replaces default blue; 500-700 also meet the
+     * ADR-0010 contrast target for both text and white-on-fill controls. */
     --color-blue-50: #e6f7fb;
     --color-blue-100: #b3e8f3;
     --color-blue-200: #80d9eb;
     --color-blue-300: #4dcae3;
     --color-blue-400: #1abbdb;
-    --color-blue-500: #00b0d8;
-    --color-blue-600: #00b0d8;
-    --color-blue-700: #008caf;
+    --color-blue-500: #036b85;
+    --color-blue-600: #036b85;
+    --color-blue-700: #006b87;
     --color-blue-800: #006882;
     --color-blue-900: #004455;
     --color-blue-950: #002233;
@@ -34,6 +51,14 @@
     --color-phaze-bg: #0a0c12;
     --color-phaze-panel: #10141c;
     --color-phaze-border: #232832;
+}
+
+/* Dark text intentionally uses the brighter stock 400 rungs. The light-theme
+ * repaint above cannot serve both backgrounds, so restore those values within
+ * the theme scope; this asymmetry is the load-bearing part of ADR-0010. */
+.dark {
+    --color-gray-400: #99a1af;
+    --color-violet-400: #a684ff;
 }
 
 body { font-family: 'Inter', sans-serif; }

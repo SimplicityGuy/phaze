@@ -76,7 +76,7 @@
        becomes unusable on touch. Scoping the scroll to the table keeps the page itself fixed. #}
     <div class="relative overflow-x-auto">
     <table class="w-full text-left text-sm"{% if table_id %} id="{{ table_id }}"{% endif %}>
-        <thead class="border-b border-gray-200 bg-gray-50 font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-500">
+        <thead class="border-b border-gray-200 bg-gray-50 font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-400">
             <tr>
                 {% if row_select_ids %}
                 {# Select-all toggles only the checkboxes it is ALLOWED to: `:not(:disabled)` skips

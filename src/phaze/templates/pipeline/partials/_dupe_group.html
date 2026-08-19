@@ -34,7 +34,7 @@
                 <span class="col-start-2 flex flex-wrap items-start gap-2 sm:col-start-3 sm:row-start-1">
                     {% if f.keeper %}{{ ui.status_badge("Recommendation", "highest quality", "success", "✓") }}{% endif %}
                     <span x-show="selected === '{{ f.id }}'" class="font-jura text-[10px] uppercase tracking-wider text-emerald-700 dark:text-emerald-300">pending keeper</span>
-                    <span x-show="selected !== '{{ f.id }}'" class="font-jura text-[10px] uppercase tracking-wider text-gray-500">will archive</span>
+                    <span x-show="selected !== '{{ f.id }}'" class="font-jura text-[10px] uppercase tracking-wider text-gray-500 dark:text-gray-400">will archive</span>
                 </span>
             </label>
             {% endfor %}

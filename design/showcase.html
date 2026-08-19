@@ -14,9 +14,9 @@
       --border-subtle: #1a1f28;
       --text-primary: #f0f1f5;
       --text-secondary: #a0a8b8;
-      --text-muted: #667c8a;
+      --text-muted: #99a1af;
       --accent: #1abbdb;
-      --accent-dim: #008caf;
+      --accent-dim: #006b87;
       --accent-bright: #4dcae3;
       --status-active: #22c55e;
       --status-warning: #eab308;
@@ -94,7 +94,7 @@
     .badge-running { background: #1abbdb14; color: var(--accent); }
     .badge-warning { background: #eab30814; color: var(--status-warning); }
     .badge-error { background: #ef444414; color: var(--status-error); }
-    .badge-disabled { background: #6b728014; color: #6b7280; }
+    .badge-disabled { background: #99a1af14; color: #99a1af; }
 
     .btn {
       display: inline-flex;
@@ -107,7 +107,7 @@
       cursor: pointer;
       font-family: 'Inter', sans-serif;
     }
-    .btn-primary { background: #00b0d8; color: white; }
+    .btn-primary { background: #036b85; color: white; }
     .btn-ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
     .btn-danger { background: #ef444420; color: var(--status-error); border: 1px solid #ef444440; }
 
@@ -204,14 +204,19 @@
     <span class="swatch-hex">#1abbdb</span>
   </div>
   <div class="swatch">
-    <div class="swatch-color" style="background:#00b0d8"></div>
+    <div class="swatch-color" style="background:#036b85"></div>
     <span class="swatch-label">blue-500</span>
-    <span class="swatch-hex">#00b0d8</span>
+    <span class="swatch-hex">#036b85</span>
   </div>
   <div class="swatch">
-    <div class="swatch-color" style="background:#008caf"></div>
+    <div class="swatch-color" style="background:#036b85"></div>
+    <span class="swatch-label">blue-600</span>
+    <span class="swatch-hex">#036b85</span>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background:#006b87"></div>
     <span class="swatch-label">blue-700 ★</span>
-    <span class="swatch-hex">#008caf</span>
+    <span class="swatch-hex">#006b87</span>
   </div>
   <div class="swatch">
     <div class="swatch-color" style="background:#006882"></div>
@@ -228,6 +233,23 @@
     <span class="swatch-label">blue-950</span>
     <span class="swatch-hex">#002233</span>
   </div>
+</div>
+
+<h2>Color — WCAG AA Text Ramp</h2>
+<p style="color:var(--text-secondary);margin-bottom:20px">These light-theme text rungs preserve their hues while targeting at least 5.5:1 on <span class="code-inline">#f3f4f6</span>. Dark text uses the brighter 400 rungs.</p>
+<div class="grid grid-auto">
+  <div class="swatch"><div class="swatch-color" style="background:#5b6370"></div><span class="swatch-label">gray-400</span><span class="swatch-hex">#5b6370 · 5.51:1</span></div>
+  <div class="swatch"><div class="swatch-color" style="background:#5b6272"></div><span class="swatch-label">gray-500</span><span class="swatch-hex">#5b6272 · 5.56:1</span></div>
+  <div class="swatch"><div class="swatch-color" style="background:#9c4c01"></div><span class="swatch-label">amber-600</span><span class="swatch-hex">#9c4c01 · 5.53:1</span></div>
+  <div class="swatch"><div class="swatch-color" style="background:#c7080d"></div><span class="swatch-label">red-600</span><span class="swatch-hex">#c7080d · 5.50:1</span></div>
+  <div class="swatch"><div class="swatch-color" style="background:#027229"></div><span class="swatch-label">green-600</span><span class="swatch-hex">#027229 · 5.54:1</span></div>
+  <div class="swatch"><div class="swatch-color" style="background:#00722f"></div><span class="swatch-label">green-700</span><span class="swatch-hex">#00722f · 5.53:1</span></div>
+  <div class="swatch"><div class="swatch-color" style="background:#00714a"></div><span class="swatch-label">emerald-600</span><span class="swatch-hex">#00714a · 5.51:1</span></div>
+  <div class="swatch"><div class="swatch-color" style="background:#c40b35"></div><span class="swatch-label">rose-600</span><span class="swatch-hex">#c40b35 · 5.54:1</span></div>
+  <div class="swatch"><div class="swatch-color" style="background:#895800"></div><span class="swatch-label">yellow-600</span><span class="swatch-hex">#895800 · 5.52:1</span></div>
+  <div class="swatch"><div class="swatch-color" style="background:#925300"></div><span class="swatch-label">yellow-700</span><span class="swatch-hex">#925300 · 5.52:1</span></div>
+  <div class="swatch"><div class="swatch-color" style="background:#b43506"></div><span class="swatch-label">orange-600</span><span class="swatch-hex">#b43506 · 5.53:1</span></div>
+  <div class="swatch"><div class="swatch-color" style="background:#7935e5"></div><span class="swatch-label">violet-500</span><span class="swatch-hex">#7935e5 · 5.53:1</span></div>
 </div>
 
 <h2>Color — Surfaces</h2>

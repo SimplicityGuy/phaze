@@ -31,7 +31,7 @@
         <button type="button" hx-post="/cue/{{ card.tracklist_id }}/generate" hx-target="#cue-card-{{ card.tracklist_id }}"
                 hx-vals='{"version_id":"{{ card.version_id }}"}' hx-swap="outerHTML" hx-disabled-elt="this"
                 aria-label="Generate the reviewed cue sheet for {{ card.set_name }}"
-                class="inline-flex h-9 items-center justify-center rounded-lg bg-emerald-700 px-3 font-jura text-xs font-medium uppercase tracking-wider text-white hover:bg-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50">Generate cue sheet</button>
+                class="inline-flex h-9 items-center justify-center rounded-lg bg-emerald-700 px-3 font-jura text-xs font-medium uppercase tracking-wider text-white hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50">Generate cue sheet</button>
         {% endif %}
         {% if card.file_id %}<button type="button" hx-get="/record/{{ card.file_id }}" hx-target="#record-body" hx-swap="innerHTML"
                 @click="$dispatch('record:open', { el: $el })"

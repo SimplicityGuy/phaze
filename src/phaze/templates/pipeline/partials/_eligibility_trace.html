@@ -14,7 +14,7 @@
 <div role="status" aria-live="polite"
      class="mt-2 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm dark:border-phaze-border dark:bg-phaze-panel">
 {% if unavailable %}
-    <p class="text-gray-400 dark:text-gray-500">Trace unavailable this tick.</p>
+    <p class="text-gray-400 dark:text-gray-400">Trace unavailable this tick.</p>
 {% else %}
     <p class="font-semibold {{ 'text-green-700 dark:text-green-400' if eligible else 'text-amber-700 dark:text-amber-300' }}">{{ verdict }}</p>
     <ul class="mt-2 space-y-1 font-mono text-[13px]">

@@ -2,7 +2,7 @@
 
 **Project:** Phaze — Align Your Music
 **Movement:** Resonant Precision
-**Version:** 1.0
+**Version:** 1.1
 
 ---
 
@@ -27,16 +27,16 @@ Sound is invisible architecture. Every visual mark is a waveform — each line, 
 | `blue-200` | `#80d9eb` | Secondary highlights |
 | `blue-300` | `#4dcae3` | Active borders |
 | `blue-400` | `#1abbdb` | **Primary accent (dark mode)** |
-| `blue-500` | `#00b0d8` | Primary accent alternate |
-| `blue-600` | `#00b0d8` | Links |
-| `blue-700` | `#008caf` | **Primary accent (light mode)** |
+| `blue-500` | `#036b85` | Accessible accent and focus treatment |
+| `blue-600` | `#036b85` | Links and primary fills |
+| `blue-700` | `#006b87` | **Primary accent (light mode)** |
 | `blue-800` | `#006882` | Pressed states |
 | `blue-900` | `#004455` | Deep accents |
 | `blue-950` | `#002233` | Darkest accent |
 
 ### Surface, Border & Text Colors (as implemented)
 
-The build defines exactly **three** surface/border tokens in the Tailwind v4 `@theme` block (`assets/src/app.css`). There are no separate `--bg-*`, `--border-*`, or `--text-*` custom properties — light/dark is handled by Tailwind's `dark:` variant (a `.dark` class flip on the root, see `@custom-variant dark` in `app.css`), **not** by swapping CSS-variable values.
+The build defines three Phaze-specific surface/border tokens and deliberately repaints selected Tailwind colour rungs in the Tailwind v4 `@theme` block (`assets/src/app.css`). There are no separate `--bg-*`, `--border-*`, or `--text-*` custom properties. Light/dark is normally handled by Tailwind's `dark:` variant (a `.dark` class flip on the root, see `@custom-variant dark` in `app.css`). The one scoped variable adjustment restores the brighter stock `gray-400` and `violet-400` values under `.dark`, because the darker light-theme text ramp cannot serve both backgrounds.
 
 | Token | Value | Tailwind utilities | Usage |
 |-------|-------|--------------------|-------|
@@ -44,7 +44,28 @@ The build defines exactly **three** surface/border tokens in the Tailwind v4 `@t
 | `--color-phaze-panel` | `#10141c` | `bg-phaze-panel` | Cards, panels |
 | `--color-phaze-border` | `#232832` | `border-phaze-border` | Borders, dividers |
 
-Everything else — text, muted captions, hover states, light-mode surfaces — is expressed with **stock Tailwind gray/blue utilities plus `dark:` variants**, e.g.:
+Text, muted captions, hover states, and light-mode surfaces remain expressed with Tailwind utility names plus `dark:` variants, but the rungs listed below are **not stock Tailwind values**. ADR-0010 repaints them to preserve hue while reaching at least **5.5:1 against `#f3f4f6`**, giving the WCAG AA 4.5:1 gate a full point of headroom.
+
+| Repainted utility token | Value | Ratio on `#f3f4f6` |
+|-------------------------|-------|------------------------|
+| `gray-400` | `#5b6370` | 5.51:1 |
+| `gray-500` | `#5b6272` | 5.56:1 |
+| `amber-600` | `#9c4c01` | 5.53:1 |
+| `red-600` | `#c7080d` | 5.50:1 |
+| `green-600` | `#027229` | 5.54:1 |
+| `green-700` | `#00722f` | 5.53:1 |
+| `emerald-600` | `#00714a` | 5.51:1 |
+| `rose-600` | `#c40b35` | 5.54:1 |
+| `yellow-600` | `#895800` | 5.52:1 |
+| `yellow-700` | `#925300` | 5.52:1 |
+| `orange-600` | `#b43506` | 5.53:1 |
+| `violet-500` | `#7935e5` | 5.53:1 |
+| `blue-500`, `blue-600` | `#036b85` | 5.54:1 |
+| `blue-700` | `#006b87` | 5.53:1 |
+
+The dark theme uses `dark:text-gray-400` (`#99a1af`, 7.09:1 on `#10141c`) and `dark:text-violet-400` (`#a684ff`, 6.47:1 on `#10141c`). White-on-fill actions use `blue-600`/`blue-700` or stock `emerald-700` (`#007a55`), measuring 6.09:1, 6.08:1, and 5.36:1 respectively. See ADR-0010 for the derivation and rejected alternatives.
+
+Common pairings:
 
 - Primary text: `text-gray-900 dark:text-gray-100`
 - Secondary / muted text: `text-gray-500 dark:text-gray-400`
@@ -61,7 +82,7 @@ Everything else — text, muted captions, hover states, light-mode surfaces — 
 | Running | `#1abbdb` | `#1abbdb14` | In-progress, processing |
 | Warning | `#eab308` | `#eab30814` | Needs attention |
 | Error | `#ef4444` | `#ef444414` | Failed, critical |
-| Disabled | `#6b7280` | `#6b728014` | Inactive |
+| Disabled | `#5b6370` light / `#99a1af` dark | Gray tint | Inactive |
 
 ### CSS Custom Properties
 
@@ -75,17 +96,36 @@ These live in the Tailwind v4 `@theme { }` block in `assets/src/app.css` (not `:
   --color-blue-200: #80d9eb;
   --color-blue-300: #4dcae3;
   --color-blue-400: #1abbdb;
-  --color-blue-500: #00b0d8;
-  --color-blue-600: #00b0d8;
-  --color-blue-700: #008caf;
+  --color-blue-500: #036b85;
+  --color-blue-600: #036b85;
+  --color-blue-700: #006b87;
   --color-blue-800: #006882;
   --color-blue-900: #004455;
   --color-blue-950: #002233;
+
+  /* WCAG AA light-theme text ramp; target >= 5.5:1 on #f3f4f6 */
+  --color-gray-400: #5b6370;
+  --color-gray-500: #5b6272;
+  --color-amber-600: #9c4c01;
+  --color-red-600: #c7080d;
+  --color-green-600: #027229;
+  --color-green-700: #00722f;
+  --color-emerald-600: #00714a;
+  --color-rose-600: #c40b35;
+  --color-yellow-600: #895800;
+  --color-yellow-700: #925300;
+  --color-orange-600: #b43506;
+  --color-violet-500: #7935e5;
 
   /* Surfaces */
   --color-phaze-bg: #0a0c12;
   --color-phaze-panel: #10141c;
   --color-phaze-border: #232832;
+}
+
+.dark {
+  --color-gray-400: #99a1af;
+  --color-violet-400: #a684ff;
 }
 ```
 
@@ -171,8 +211,8 @@ Use status colors with `/10` (10% opacity) background tints.
 
 **Primary:**
 ```html
-<button class="rounded bg-blue-500 px-4 py-2 text-sm font-semibold text-white
-  hover:bg-blue-400 transition-colors">
+<button class="rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white
+  hover:bg-blue-700 transition-colors">
   Approve
 </button>
 ```
@@ -221,12 +261,12 @@ Use status colors with `/10` (10% opacity) background tints.
 ## Quick Reference
 
 ```
-Background:  #0a0c12 (dark)  |  #eef0f5 (light)
+Background:  #0a0c12 (dark)  |  #f3f4f6 (light gray-100)
 Surface:     #10141c (dark)  |  #ffffff (light)
 Border:      #232832 (dark)  |  #d1d5db (light)
-Accent:      #1abbdb (dark)  |  #008caf (light)
+Accent:      #1abbdb (dark)  |  #006b87 (light blue-700)
 Text:        #f0f1f5 (dark)  |  #1a1f2e (light)
-Muted:       #667c8a (dark)  |  #6b7280 (light)
+Muted:       #99a1af (dark)  |  #5b6272 (light gray-500)
 
 Font display: Jura 300/500
 Font body:    Inter 400/600

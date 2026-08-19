@@ -41,7 +41,7 @@
 {% call ui.filter_toolbar('status-filter-bar', '/s/files', '#files-table-view', true, 'change', 'File status filters') %}
     <input type="hidden" name="page_size" value="{{ files_page.page_size }}">
     {% if sort %}<input type="hidden" name="sort" value="{{ sort.key }}"><input type="hidden" name="order" value="{{ sort.order }}">{% endif %}
-    <span class="font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:text-gray-500">Show files where</span>
+    <span class="font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:text-gray-400">Show files where</span>
     <label class="sr-only" for="filter-stage">Stage</label>
     <select id="filter-stage" name="stage" aria-label="Filter by stage" class="{{ _select }}">
         <option value=""{% if not active_stage %} selected{% endif %}>any stage</option>
@@ -49,7 +49,7 @@
         <option value="{{ val }}"{% if active_stage == val %} selected{% endif %}>{{ label }}</option>
         {% endfor %}
     </select>
-    <span class="text-sm text-gray-400 dark:text-gray-500" aria-hidden="true">=</span>
+    <span class="text-sm text-gray-400 dark:text-gray-400" aria-hidden="true">=</span>
     <label class="sr-only" for="filter-bucket">Status</label>
     <select id="filter-bucket" name="bucket" aria-label="Filter by status" class="{{ _select }}">
         <option value=""{% if not active_bucket %} selected{% endif %}>any status</option>
