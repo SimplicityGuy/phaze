@@ -316,7 +316,7 @@ vulture:
 [doc('Run a single CI shard (one or more test paths), writing coverage data to .coverage.<name>. XDIST="" keeps DB shards serial; DB-free shards pass XDIST="-n auto".')]
 [group('test')]
 test-bucket NAME PATHS XDIST="":
-    COVERAGE_FILE=.coverage.{{NAME}} uv run pytest {{PATHS}} {{XDIST}} --cov=phaze --cov-context=test --cov-report= --cov-fail-under=0 -q
+    COVERAGE_FILE=.coverage.{{NAME}} uv run pytest {{PATHS}} {{XDIST}} --cov=phaze --cov-context=test --cov-report= --cov-fail-under=0 --junitxml=junit.xml -o junit_family=legacy -q
 
 [doc('Combine per-bucket .coverage.* shards into coverage.xml and enforce the gate')]
 [group('test')]
