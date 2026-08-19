@@ -29,11 +29,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import redis.asyncio as aioredis
-from saq.queue.postgres import PostgresQueue
+from saq.queue.postgres import PostgresQueue  # noqa: TC002 -- resolved by runtime type-hint consumers
 import structlog
 
 from phaze.tasks._shared.deterministic_key import apply_deterministic_key
 from phaze.tasks._shared.queue_defaults import apply_project_job_defaults
+from phaze.tasks._shared.resilient_queue import ResilientPostgresQueue
 from phaze.tasks._shared.stage_control import apply_stage_control
 
 
@@ -78,7 +79,7 @@ def build_pipeline_queue(
         ``before_enqueue`` callbacks and a ``cache_redis`` attribute set. No connection is
         opened at construction.
     """
-    q = PostgresQueue.from_url(url, name=name, min_size=min_size, max_size=max_size)
+    q = ResilientPostgresQueue.from_url(url, name=name, min_size=min_size, max_size=max_size)
     q.register_before_enqueue(apply_project_job_defaults)
     q.register_before_enqueue(apply_deterministic_key)
     # Phase 37: stamp per-stage priority + park paused stage jobs. Registered THIRD, AFTER
