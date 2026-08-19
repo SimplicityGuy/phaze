@@ -202,7 +202,7 @@
             <ul class="space-y-1 font-mono text-xs text-gray-500 dark:text-gray-400">
                 {% for h in history %}
                 <li class="flex items-center gap-2">
-                    <span class="shrink-0 text-gray-400 dark:text-gray-500">{{ h.when.strftime('%Y-%m-%d %H:%M') if h.when else '' }}</span>
+                    <span class="shrink-0 text-gray-400 dark:text-gray-400">{{ h.when.strftime('%Y-%m-%d %H:%M') if h.when else '' }}</span>
                     <span class="text-gray-700 dark:text-gray-300">{{ h.label }}</span>
                     <span>· {{ h.status }}</span>
                     {% if h.detail %}<span class="truncate" title="{{ h.detail }}">· {{ h.detail }}</span>{% endif %}
@@ -210,7 +210,7 @@
                 {% endfor %}
             </ul>
             {% else %}
-            <p class="text-sm text-gray-400 dark:text-gray-500">No recorded events yet.</p>
+            <p class="text-sm text-gray-400 dark:text-gray-400">No recorded events yet.</p>
             {% endif %}
         </div>
     </div>

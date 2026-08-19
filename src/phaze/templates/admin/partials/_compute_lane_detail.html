@@ -55,7 +55,7 @@
                 <span aria-label="Compute lane {{ lane.backend_id }}: waiting on quota">WAITING · quota</span>
             </span>
             {% else %}
-            <span class="inline-flex items-center gap-2 text-sm font-semibold text-gray-500 dark:text-gray-500">
+            <span class="inline-flex items-center gap-2 text-sm font-semibold text-gray-500 dark:text-gray-400">
                 <span class="w-2.5 h-2.5 rounded-full bg-gray-400 dark:bg-gray-600" aria-hidden="true"></span>
                 <span aria-label="Compute lane {{ lane.backend_id }}: idle">IDLE</span>
             </span>
@@ -93,7 +93,7 @@
         </div>
 
         {# Liveness caption — re-rendered every 5s by the own-tick below (server-rendered, no setInterval). #}
-        <p class="text-xs text-gray-400 dark:text-gray-500">Updated {{ refreshed_at.strftime('%H:%M:%S') if refreshed_at else '—' }}</p>
+        <p class="text-xs text-gray-400 dark:text-gray-400">Updated {{ refreshed_at.strftime('%H:%M:%S') if refreshed_at else '—' }}</p>
 
         {# D-03 own-tick: the loaded body carries its OWN bounded 5s self-refresh scoped to this lane,
            re-swapping itself into its EXPANDED ROW's per-lane slot (phaze-rdxfu retargets this from the

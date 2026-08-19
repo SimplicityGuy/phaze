@@ -90,7 +90,7 @@
 
 {% macro data_table_button(label, url='', target='', disabled=false, push_url=false) %}
 {% if disabled %}
-<span aria-disabled="true" class="cursor-not-allowed rounded-md border border-gray-200 px-3 py-1.5 text-sm text-gray-400 dark:border-phaze-border dark:text-gray-500">{{ label }}</span>
+<span aria-disabled="true" class="cursor-not-allowed rounded-md border border-gray-200 px-3 py-1.5 text-sm text-gray-400 dark:border-phaze-border dark:text-gray-400">{{ label }}</span>
 {% else %}
 <button type="button" hx-get="{{ url }}"{% if target %} hx-target="{{ target }}"{% endif %} hx-swap="innerHTML"{% if push_url %} hx-push-url="true"{% endif %} class="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-300 dark:hover:bg-white/5 {{ _focus }}">{{ label }}</button>
 {% endif %}

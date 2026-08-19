@@ -53,7 +53,7 @@
    second poll and is never an out-of-band swap target (R-2 counts-only -- the chrome poll must never
    re-render this subtree, so an in-progress inline edit is never clobbered).
 #}
-{% set _primary = 'inline-flex items-center justify-center h-7 px-2.5 rounded-md bg-emerald-600/90 hover:bg-emerald-500 text-white font-jura text-[11px] font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-emerald-500' %}
+{% set _primary = 'inline-flex items-center justify-center h-7 px-2.5 rounded-md bg-emerald-700/90 hover:bg-emerald-700 text-white font-jura text-[11px] font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-emerald-500' %}
 {% set _sec = 'inline-flex items-center justify-center h-7 px-2.5 rounded-md border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-[11px] font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500' %}
 <div id="{{ row_id_prefix }}-{{ pid }}"
      class="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5{% if row_state and row_state != 'pending' %} opacity-70{% endif %}"
@@ -126,7 +126,7 @@
     <div class="{% if not diff_label %}mt-2 {% endif %}grid grid-cols-1 gap-2 text-xs sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:gap-3 sm:items-center">
         {# BEFORE -- current value, struck rose (removed/old = rose status tint + line-through, WCAG 1.4.1). #}
         <code class="block whitespace-pre-wrap break-all rounded px-2 py-1 font-mono bg-rose-50 text-rose-600 line-through dark:bg-rose-500/10 dark:text-rose-300">{{ before }}</code>
-        <span class="text-gray-400 dark:text-gray-600" aria-hidden="true">&rarr;</span>
+        <span class="text-gray-400 dark:text-gray-400" aria-hidden="true">&rarr;</span>
         {# AFTER -- proposed value (emerald); swapped for the inline edit input while editing. #}
         <template x-if="!editing"><code class="block whitespace-pre-wrap break-all rounded px-2 py-1 font-mono bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-300">{{ after }}</code></template>
         {% if show_edit|default(true) %}
@@ -141,7 +141,7 @@
         <p class="font-jura text-[10px] uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">{{ secondary_label }}</p>
         <div class="grid grid-cols-1 gap-2 text-xs sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:items-center sm:gap-3">
             <code class="block whitespace-pre-wrap break-all rounded bg-rose-50 px-2 py-1 font-mono text-rose-600 line-through dark:bg-rose-500/10 dark:text-rose-300">{{ secondary_before }}</code>
-            <span class="text-gray-400 dark:text-gray-600">&rarr;</span>
+            <span class="text-gray-400 dark:text-gray-400">&rarr;</span>
             <code class="block whitespace-pre-wrap break-all rounded bg-emerald-50 px-2 py-1 font-mono text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-300">{{ secondary_after }}</code>
         </div>
     </div>

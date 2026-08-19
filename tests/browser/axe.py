@@ -32,10 +32,6 @@ two properties: each rule is machine-decidable with essentially no false positiv
 maps to a defect that makes the product unusable rather than merely imperfect. Widen it
 deliberately, one rule at a time, with the fixes in the same change.
 
-:data:`CONTRAST_RULES` is held apart from that gate for the same reason, stated honestly: it is
-already failing. Read its comment before moving it -- the split is a measurement, not an opinion,
-and the rule still runs on every invocation.
-
 Loading
 =======
 
@@ -116,6 +112,7 @@ RULES = (
     "aria-required-children",
     "aria-valid-attr-value",
     "button-name",
+    "color-contrast",
     "document-title",
     "duplicate-id-active",
     "frame-title",
@@ -125,24 +122,6 @@ RULES = (
     "label",
     "link-name",
 )
-
-# The computed-contrast check ADR-0009 asked for, kept SEPARATE from the blocking gate above.
-#
-# It is separate because it is red, and it was red before this bead: measured 2026-08-17 on this
-# branch, every workspace violates WCAG AA 4.5:1 somewhere, in BOTH themes -- 7-8 nodes per
-# workspace, mostly the muted greys (#99a1af and #6a7282 on #f3f4f6 / #10141c, 2.36:1 to 4.39:1)
-# used for badge counts and status pills, plus the cyan link colour (#008caf, 3.54-3.91:1) and
-# white-on-emerald action buttons (3.24:1).
-#
-# Contrast is a design-token decision, not a test decision. Repainting the palette is out of scope
-# for a test bead and would collide head-on with the concurrent multi-viewport/dark-theme work on
-# this same branch; the findings above are handed to it rather than half-fixed here. The rule still
-# RUNS on every browser-suite invocation (see test_accessibility.py) -- it is recorded as a known
-# failure, not disabled, so it cannot be forgotten and cannot silently stay broken once fixed.
-#
-# Only a real browser can evaluate this at all: it needs resolved colours, which means the whole
-# cascade, the theme class, and any Alpine-applied state.
-CONTRAST_RULES = ("color-contrast",)
 
 
 async def run_axe(page: Any, *, rules: tuple[str, ...] = RULES, include: str | None = None) -> list[dict[str, Any]]:
