@@ -317,6 +317,7 @@ async def _route_candidate_page(
     task_router: Any,
     tally: dict[str, int],
     hold_reasons: Counter[str],
+    select_backend_with_reason: Any,
 ) -> bool:
     """Route ONE page of FIFO candidates to ``select_backend``'s rank-first choice (SCHED-01).
 
@@ -328,12 +329,17 @@ async def _route_candidate_page(
     function NEVER commits (a mid-loop commit would release the advisory lock + row locks and re-open
     the over-stage class, Landmine L1). A truthy ``dispatch`` return is a genuine stage; False is a
     deterministic-key dedup no-op; either way the cloud_job slot was claimed, so the local remaining is
-    decremented. ``select_backend_with_reason`` is imported function-locally for the same reason
-    ``stage_cloud_window`` does it -- ``backend_selection`` imports ``backends``, which imports THIS
-    module, so a module-top import would close that cycle.
-    """
-    from phaze.services.backend_selection import select_backend_with_reason  # noqa: PLC0415 -- deferred to break the import cycle
+    decremented.
 
+    phaze-vu88k.7: ``select_backend_with_reason`` is THREADED IN rather than imported here, and that
+    is load-bearing rather than stylistic. Its deferral is CIRCULAR-DEPENDENCY AVOIDANCE, not lazy
+    loading: ``backend_selection`` imports ``backends``, and ``backends.admission`` /
+    ``backends.compute_agent`` / ``backends.kueue`` each import THIS module at their module top, so
+    the cycle is real. An import performed HERE would sit inside ``_walk_candidate_pages``'s CR-02
+    safety net, which turns any raise into a clean hold -- so a genuine ImportError would degrade the
+    whole routing lane SILENTLY instead of failing loudly. The caller therefore keeps the import at
+    the top of the tick, outside every ``try``, exactly where it sat before this decomposition.
+    """
     # SCHED-01: route each FIFO candidate to select_backend's rank-first choice across N backends.
     # dispatch owns the FileState -> PUSHING flip AND the cloud_job write in THIS session (D-03),
     # before its enqueue, so the SINGLE post-loop commit stays the atomic boundary -- dispatch NEVER
@@ -410,6 +416,7 @@ async def _walk_candidate_pages(
     candidates: list[Any],
     limit: int,
     task_router: Any,
+    select_backend_with_reason: Any,
 ) -> _DrainWalk:
     """Walk the paged FIFO candidate set to its end, then commit the tick's single transaction.
 
@@ -452,7 +459,9 @@ async def _walk_candidate_pages(
         # rollback -- pagination only widens WHICH rows a tick may consider, never when it commits.
         while True:
             scanned += len(page)
-            fileserver_vanished = await _route_candidate_page(session, page, snapshot, cfg, task_router, tally, hold_reasons)
+            fileserver_vanished = await _route_candidate_page(
+                session, page, snapshot, cfg, task_router, tally, hold_reasons, select_backend_with_reason
+            )
             next_page = None if fileserver_vanished else await _next_candidate_page(session, snapshot, page, page_limit, scanned)
             if next_page is None:
                 break
@@ -551,6 +560,7 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
     # Deferred imports (Pitfall: keep the module graph acyclic): backends.py re-homes this module's
     # push-job key + compute enqueue leg (it imports this module), and backend_selection imports
     # backends -- importing either at module top would close the backends<->drain import cycle.
+    from phaze.services.backend_selection import select_backend_with_reason  # noqa: PLC0415 -- deferred to break the import cycle
     from phaze.services.backends import resolve_backends  # noqa: PLC0415 -- deferred to break the import cycle
 
     # Phase 69 (SCHED-01): resolve ALL backends (resolve_backends no longer raises on >1 non-local).
@@ -595,7 +605,7 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
             logger.info("stage_cloud_window hold: no fileserver agent online", candidates=len(candidates))
             return {"staged": 0, "skipped": len(candidates)}
 
-        walk = await _walk_candidate_pages(session, cfg, snapshot, candidates, limit, ctx["task_router"])
+        walk = await _walk_candidate_pages(session, cfg, snapshot, candidates, limit, ctx["task_router"], select_backend_with_reason)
     if walk.aborted:
         return walk.tally
 
