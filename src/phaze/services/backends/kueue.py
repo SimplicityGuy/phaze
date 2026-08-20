@@ -227,6 +227,20 @@ class KueueBackend(_BaseBackend):
         # is made against that fresh read, never a stale snapshot.
         cloud_job_ids = [row.id for row in rows]
 
+        # phaze-vu88k.2: batch-prefetch every candidate row's FileRecord in ONE query, keyed by the
+        # file_id captured from THIS snapshot. Unlike ``cloud_job`` above, this is safe to prefetch
+        # rather than re-read per row: ``file_id`` is an immutable FK on ``cloud_job`` (never
+        # re-pointed after creation) and ``hold_awaiting_cloud`` reads nothing off ``file`` except
+        # ``file.id`` (verified against its body) -- so this carries none of the per-row freshness
+        # requirement the ``cloud_job`` re-read exists for. Replaces N per-row
+        # ``SELECT FileRecord WHERE id = :file_id`` calls with 1 (0 if the sweep found nothing).
+        file_ids = {row.file_id for row in rows}
+        files_by_id: dict[Any, FileRecord] = (
+            {file.id: file for file in (await session.execute(select(FileRecord).where(FileRecord.id.in_(file_ids)))).scalars().all()}
+            if file_ids
+            else {}
+        )
+
         # phaze-31q3: snapshot the live-broker key set ONCE per sweep (degrade-safe: an empty set on any
         # read failure falls the reaper back to age-only, never raising). A row whose ``s3_upload:<file_id>``
         # key is queued/active is live work the callback path still owns -- reaping it would abort a live
@@ -280,7 +294,8 @@ class KueueBackend(_BaseBackend):
                 staging_bucket = cloud_job.staging_bucket
                 # Bounded re-drive: each reap spends one attempt; at the cap select_backend routes local.
                 attempts = min(cloud_job.attempts + 1, cfg.cloud_submit_max_attempts)
-                file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
+                # phaze-vu88k.2: dict lookup against the batch prefetch above, not a per-row SELECT.
+                file = files_by_id.get(file_id)
                 spilled = file is not None and await hold_awaiting_cloud(
                     session,
                     file,
