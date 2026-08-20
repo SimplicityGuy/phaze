@@ -107,7 +107,16 @@
             </div>
             <form hx-post="/tags/bulk-write-no-discrepancies" hx-target="#changes-bulk-result" hx-swap="innerHTML" hx-confirm="Approve the eligible tag changes visible on this reviewed page?" hx-disabled-elt="find button">
                 {% for f in changes_tag_rows if f.bulk_eligible %}<input type="hidden" name="review_tokens" value="{{ f.review_token }}">{% endfor %}
-                <button type="submit" {% if not (changes_tag_rows | selectattr('bulk_eligible') | list) %}disabled{% endif %} class="h-9 rounded-md border border-amber-500/40 px-3 font-jura text-xs uppercase tracking-wider text-warn focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50 ">Approve visible eligible tag writes</button>
+                <!-- phaze-5i74w: no method/action here either, and this button ALSO carries the
+                     form's hx-confirm -- htmx does not attach either the POST interception or the
+                     confirm prompt until its settle-phase processing reaches this node. A premature
+                     click therefore both skips the confirmation dialog AND falls through to a
+                     native GET that silently drops the bulk tag-write approval, the worse of this
+                     bead's two failures since it is a destructive action with no prompt at all.
+                     `disabled` + `data-hx-guard` close the window the same way as the dedupe
+                     confirm form (shell.html's htmx:load listener); `data-hx-guard-keep` preserves
+                     the existing "no eligible rows" business-disable independently of the guard. -->
+                <button type="submit" disabled data-hx-guard {% if not (changes_tag_rows | selectattr('bulk_eligible') | list) %}data-hx-guard-keep{% endif %} class="h-9 rounded-md border border-amber-500/40 px-3 font-jura text-xs uppercase tracking-wider text-warn focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50 ">Approve visible eligible tag writes</button>
             </form>
         </div>
         <p class="px-4 pt-3 text-xs text-muted ">Bulk eligibility: at least one server-computed change, no existing tag blanked, no terminal prior write, and no queued write. Every condition is rechecked under the server lock. Exclusions remain listed for individual review.</p>

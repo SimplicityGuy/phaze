@@ -478,6 +478,53 @@ class Seeder:
         await self.session.refresh(record)
         return record
 
+    # --- tag writes -------------------------------------------------------------------------
+
+    async def bulk_eligible_tag_change(
+        self,
+        *,
+        filename: str = "Artist - Original Track.mp3",
+        agent_id: str = DEFAULT_AGENT_ID,
+    ) -> FileRecord:
+        """Seed one applied file whose stored tags disagree with what its filename implies.
+
+        The precondition for a row in the Tag Changes bulk-write form (phaze-5i74w): an ``applied``
+        file (:func:`~phaze.services.stage_status.applied_clause` -- an ``executed`` proposal exists;
+        mirrors ``tests/review/routers/test_tags.py``'s ``_create_executed_file``) whose
+        ``compute_proposed_tags`` comparison against the stored :class:`FileMetadata` yields at least
+        one change, no existing tag blanked, and no prior :class:`~phaze.models.tag_write_log.TagWriteLog`
+        entry -- exactly ``_build_tagwrite_row``'s ``bulk_eligible`` predicate in
+        ``phaze/services/review.py``.
+
+        ``artist``/``title`` are left ``None`` deliberately, NOT set to some other seed value:
+        ``compute_proposed_tags``'s priority cascade is FileMetadata > filename per field, so any
+        *non-null* stored value would win over ``filename``'s parse and produce zero changes --
+        the mistake this method's first draft made (it looked eligible in isolation and was silently
+        empty through the real read path; ``file_metadata.artist``/``title`` NULL is what makes the
+        filename's "Artist - Original Track.mp3" -> ``{artist, title}`` parse the ONLY source, which
+        is guaranteed non-empty and is a current-None -> proposed-value change, never a blank).
+        """
+        file_record = await self.file(filename=filename, agent_id=agent_id)
+        self.session.add(
+            FileMetadata(
+                id=uuid.uuid4(),
+                file_id=file_record.id,
+            )
+        )
+        self.session.add(
+            RenameProposal(
+                id=uuid.uuid4(),
+                file_id=file_record.id,
+                proposed_filename=filename,
+                proposed_path=None,
+                confidence=0.95,
+                status=ProposalStatus.EXECUTED.value,
+            )
+        )
+        await self.session.commit()
+        await self.session.refresh(file_record)
+        return file_record
+
     # --- duplicates -----------------------------------------------------------------------
 
     async def duplicate_group(self, *, count: int = 2, bitrates: Sequence[int] | None = None) -> list[FileRecord]:
