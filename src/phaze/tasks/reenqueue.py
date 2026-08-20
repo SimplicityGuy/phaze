@@ -70,7 +70,7 @@ incident). Deriving "done" directly inverts the set-size characteristic (the pen
 the done set is most of a 200K corpus), which the ledger scope keeps at O(|ledger|).
 
 Routing carries forward the Phase-32 pitfalls: agent rows route to EACH row's OWNING fileserver
-agent (``payload["agent_id"]``, phaze-fjii) via ``select_agent_by_id`` +
+agent (``payload["agent_id"]``, phaze-fjii) via ``select_agents_by_ids`` +
 ``ctx["task_router"].queue_for(agent.id, lane)`` -- NEVER the consumer-less controller queue
 (Pitfall 1), and never a single "most-recently-seen" fileserver that would misroute other owners'
 rows; controller rows route to ``ctx["queue"]``. An offline / non-fileserver owner (common right
@@ -135,7 +135,7 @@ from phaze.models.metadata import FileMetadata
 from phaze.services import cloud_staging
 from phaze.services.backends import IN_FLIGHT
 from phaze.services.cloud_staging import NoCloudJobToRedriveError
-from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_agent_by_id
+from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_agents_by_ids
 from phaze.services.pipeline import count_inflight_jobs, get_live_job_keys
 from phaze.services.s3_staging import S3StagingError
 from phaze.services.scheduling_ledger import get_ledger_rows, insert_ledger_rows_if_absent
@@ -151,6 +151,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.config import ControlSettings
+    from phaze.models.agent import Agent
     from phaze.models.scheduling_ledger import SchedulingLedger
 
 
@@ -514,6 +515,71 @@ def is_domain_completed(row: SchedulingLedger, done_sets: _DoneSets) -> bool:
     return enqueued_at <= failed_at
 
 
+# --- The orphan predicate, spelled as three named tests (phaze-1i0h6.2) ------------------
+#
+# These three functions ARE the ``orphaned = ledger MINUS live MINUS domain-completed`` set builder
+# that :func:`recover_orphaned_work` used to carry as one four-clause comprehension condition. They
+# are pure and side-effect-free by construction: every input is an already-materialized in-memory set
+# read ONCE per run, so naming them changes nothing about WHEN the reads happen -- only about whether
+# the next reader can tell the three independent exclusions apart.
+
+
+def _has_live_job(row: SchedulingLedger, live: set[str]) -> bool:
+    """True when this row's deterministic key is still a queued/active ``saq_jobs`` key.
+
+    The PRIMARY exclusion: the work is in flight, not lost. (T-45-09: even a false negative here is
+    harmless -- the deterministic-key dedup collapses a redundant replay to a ``skipped`` no-op, so a
+    stale read can never double the queue.)
+    """
+    return row.key in live
+
+
+def _is_owned_by_the_cloud_lane(row: SchedulingLedger, in_flight: set[str], awaiting_cloud: set[str]) -> bool:
+    """True when this row's re-drive belongs to a CLOUD owner rather than to ledger recovery.
+
+    SCHED-05 (in-flight ``cloud_job``, owner = the backend reconcile / ``/pushed`` callback) and 83-06
+    (``awaiting`` ``cloud_job``, owner = the ``stage_cloud_window`` drain) each exist to keep exactly
+    ONE recovery owner per file, so recovery must stand down for a file either set names. The two sets
+    are DISJOINT (``'awaiting'`` is deliberately outside :data:`IN_FLIGHT`) and each is read once per run.
+
+    phaze-fc2l -- THE SCOPE IS LOAD-BEARING, do not drop the ``_CLOUD_OWNED_FUNCTIONS`` test.
+    :func:`_natural_id` is function-AGNOSTIC (it returns ``payload['file_id']`` for EVERY file-keyed
+    row, ``extract_file_metadata`` / ``search_tracklist`` included), so an UNSCOPED cloud exclusion
+    silently dropped those unrelated stages' recovery for any file that merely ALSO happened to have a
+    cloud_job -- skipping recovery the cloud callback/drain will never perform. The callback/drain
+    re-drive ONLY the four members of :data:`_CLOUD_OWNED_FUNCTIONS`; metadata/tracklist have no cloud
+    second owner, so their orphaned rows must recover normally even for a cloud-busy file.
+    """
+    if row.function not in _CLOUD_OWNED_FUNCTIONS:
+        return False
+    # A row with no natural id matches neither set (``None not in ...``) -- it is NOT cloud-owned and
+    # keeps its recovery path, the same as the two separate membership tests this replaces.
+    natural_id = _natural_id(row)
+    return natural_id in in_flight or natural_id in awaiting_cloud
+
+
+def _is_orphaned(
+    row: SchedulingLedger,
+    *,
+    live: set[str],
+    done_sets: _DoneSets,
+    in_flight: set[str],
+    awaiting_cloud: set[str],
+) -> bool:
+    """True for a ledger row that recovery OWNS the re-drive of: ``ledger MINUS live MINUS done MINUS cloud-owned``.
+
+    Three independent reasons to stand down, in the order they are cheapest to evaluate:
+
+    1. :func:`_has_live_job` -- the work is already running (the PRIMARY live-key filter);
+    2. :func:`is_domain_completed` -- the work is finished for its stage (the SECONDARY per-stage
+       domain predicate, which is ALWAYS False for the four live-keys-only controller functions);
+    3. :func:`_is_owned_by_the_cloud_lane` -- some OTHER component owns the re-drive (phaze-fc2l).
+    """
+    return (
+        not _has_live_job(row, live) and not is_domain_completed(row, done_sets) and not _is_owned_by_the_cloud_lane(row, in_flight, awaiting_cloud)
+    )
+
+
 async def _replay_row(queue: Any, row: SchedulingLedger, tally: dict[str, int]) -> None:
     """Replay one orphaned ledger row through its keyed producer, updating ``tally``.
 
@@ -827,10 +893,149 @@ async def _regenerate_row_isolated(
         tally["errored"] += 1
 
 
+# --- The pure replay planner: classify first, THEN act (phaze-1i0h6.2) -------------------
+#
+# Everything in this section is deterministic and side-effect-free: no session, no queue, no router,
+# no logging. It decides WHAT the run will replay and in WHICH order; the coroutines below decide
+# nothing and only carry it out. The split exists so the ordering rules -- which are the part with
+# the incident history attached -- can be read, and tested, without standing a broker up.
+
+
+@dataclass(frozen=True)
+class _OwnerGroup:
+    """One owning agent's orphaned agent-routed rows, in FIRST-ENCOUNTER order (phaze-fjii).
+
+    ``owner_id`` is the row's STORED ``payload["agent_id"]`` -- the file's real owner, never a
+    liveness pick. It is deliberately NOT resolved to an :class:`~phaze.models.agent.Agent` here:
+    resolution is an effect, and the whole point of the planner is that it has none.
+    """
+
+    owner_id: str
+    rows: tuple[SchedulingLedger, ...]
+
+
+@dataclass(frozen=True)
+class _OwnerPlan:
+    """The owner partition of one agent-routed row set: resolvable groups + the un-ownable remainder."""
+
+    groups: tuple[_OwnerGroup, ...]
+    """Owner groups in the order each owner was FIRST encountered; rows within a group in encounter order."""
+
+    ownerless: tuple[SchedulingLedger, ...]
+    """Rows whose payload carries no ``agent_id`` -- their true owner is unknowable (phaze-fjii)."""
+
+
+def _plan_owner_groups(rows: Sequence[SchedulingLedger]) -> _OwnerPlan:
+    """Group agent-routed rows by their stored owning ``agent_id``, preserving encounter order.
+
+    TWO orderings are preserved, and both are load-bearing for the replay being reproducible run to
+    run: groups appear in the order their owner was FIRST seen in ``rows``, and each group's rows stay
+    in the order they appeared. ``dict`` insertion order gives the first, ``list.append`` the second --
+    this function exists to make that a stated contract with a test on it rather than an accident of
+    the loop that happened to build the dict.
+
+    A row whose payload carries no ``agent_id`` (malformed / legacy) goes to :attr:`_OwnerPlan.ownerless`
+    rather than into a ``None`` group: its true owner is unknowable, so it must be skipped rather than
+    blind-routed onto whichever agent happens to be live (the exact misroute phaze-fjii fixed).
+    """
+    grouped: dict[str, list[SchedulingLedger]] = {}
+    ownerless: list[SchedulingLedger] = []
+    for row in rows:
+        owner_id = (row.payload or {}).get("agent_id")
+        if owner_id is None:
+            ownerless.append(row)
+            continue
+        grouped.setdefault(str(owner_id), []).append(row)
+    return _OwnerPlan(
+        groups=tuple(_OwnerGroup(owner_id=owner_id, rows=tuple(owned)) for owner_id, owned in grouped.items()),
+        ownerless=tuple(ownerless),
+    )
+
+
+@dataclass(frozen=True)
+class _ReplayPlan:
+    """The four disjoint partitions of one run's orphaned rows, each with its own replay protocol."""
+
+    regenerated: tuple[_RegenTarget, ...]
+    """phaze-71nz: rows whose payload must NEVER be replayed verbatim -- re-derived from durable inputs."""
+
+    controller_rows: tuple[SchedulingLedger, ...]
+    """``routing == "controller"`` -- replayed on ``ctx["queue"]``, regardless of agent presence (D-05)."""
+
+    push_rows: tuple[SchedulingLedger, ...]
+    """``push_file`` -- agent-routed, but the owner MUST be a live FILESERVER (Phase 50 / D-10)."""
+
+    other_agent_rows: tuple[SchedulingLedger, ...]
+    """Every other agent row -- routed to its stored owner whatever live kind it is (phaze-5dkgp)."""
+
+
+def _plan_replay(orphaned: Sequence[SchedulingLedger]) -> _ReplayPlan:
+    """Partition the orphaned rows into the four replay protocols, preserving encounter order in each.
+
+    phaze-71nz: the REGENERATED functions are peeled off FIRST, so their stored payload can never be
+    replayed verbatim by either agent/controller partition below. They are SNAPSHOT here into
+    :class:`_RegenTarget` because a regenerator commits/rolls back, which EXPIRES every ORM instance on
+    the shared session -- see the dataclass docstring for the ``MissingGreenlet`` this avoids by
+    construction. Snapshotting during PLANNING (before any effect has run) is what makes that
+    guarantee structural rather than a rule to remember.
+
+    83-06 (CONSCIOUSLY REVERSES D-09): the former compute-only ``held_agent_rows`` partition is GONE.
+    It caught a ``process_file`` ledger row whose file was HELD in AWAITING_CLOUD and routed it to a
+    COMPUTE agent only (CLOUDROUTE-02: never a fileserver -> never local analysis). That partition was
+    reachable ONLY because the D-09 held-file backfill SEEDED a ``process_file:<id>`` ledger row for
+    every held compute file. 83-06 removed that seed (backfill now DELETES the orphaned row and keeps
+    only the awaiting ``cloud_job`` row as the sole registry), so no held file carries a process_file
+    ledger row any more -- the partition was provably empty. The CLOUDROUTE-02 invariant is now held
+    ROBUSTLY (even for a LEGACY pre-83-06 row) by the ``awaiting_cloud`` orphan-set exclusion
+    (:func:`_is_owned_by_the_cloud_lane`): a held awaiting-cloud file never reaches ANY agent partition
+    here, so it can never be analyzed locally.
+
+    Phase 50 (D-10): a re-driven ``push_file`` reads the media mount, so it MUST route to a FILESERVER
+    agent (the rsync initiator), never the compute agent -- hence its own partition, replayed with
+    ``required_kind="fileserver"`` while every other agent row accepts its owner's actual live kind.
+    """
+    regenerated = tuple(
+        _RegenTarget(key=r.key, function=r.function, payload=dict(r.payload or {})) for r in orphaned if r.function in _REPLAY_REGENERATORS
+    )
+    replayable = [r for r in orphaned if r.function not in _REPLAY_REGENERATORS]
+    agent_rows = [r for r in replayable if r.routing == "agent"]
+    return _ReplayPlan(
+        regenerated=regenerated,
+        controller_rows=tuple(r for r in replayable if r.routing == "controller"),
+        push_rows=tuple(r for r in agent_rows if r.function == "push_file"),
+        other_agent_rows=tuple(r for r in agent_rows if r.function != "push_file"),
+    )
+
+
+async def _replay_owner_group(task_router: Any, agent: Agent, group: _OwnerGroup, stages: dict[str, dict[str, int]]) -> None:
+    """Replay ONE already-resolved owner's rows onto THAT owner's per-function lane queues.
+
+    Split out of :func:`_replay_agent_rows_by_owner` (phaze-1i0h6.2) so neither body exceeds three
+    levels of nesting; the per-row protocol below is unchanged, including which failures are isolated.
+    """
+    for row in group.rows:
+        try:
+            # quick-260707-dh1: derive the LANE per row via lane_for_task(row.function) (push_file -> io;
+            # process_file -> analyze; ...). An unmapped function raises loudly (never a bad queue).
+            agent_queue = task_router.queue_for(agent.id, lane_for_task(row.function))
+        except Exception:
+            # phaze-o1xx: routing itself (an unmapped legacy function) must not abort the whole
+            # replay -- isolate it exactly like a failed _replay_row and move to the next row.
+            logger.exception(
+                "recover_orphaned_work: agent row lane routing failed -- row skipped this run, ledger entry remains for the next pass",
+                key=row.key,
+                function=row.function,
+                agent_id=group.owner_id,
+            )
+            stages.setdefault(row.function, _zero())["errored"] += 1
+            continue
+        await _replay_row_isolated(agent_queue, row, stages)
+
+
 async def _replay_agent_rows_by_owner(
     session: AsyncSession,
     task_router: Any,
-    rows: list[SchedulingLedger],
+    rows: Sequence[SchedulingLedger],
     stages: dict[str, dict[str, int]],
     *,
     required_kind: str | None,
@@ -847,13 +1052,23 @@ async def _replay_agent_rows_by_owner(
     meta lane wedges on a consumer-less key -- a silent misroute of everyone else's work.
 
     This mirrors phaze-c9w9's contract for the recovery path: group ``rows`` by their stored
-    ``payload["agent_id"]`` (encounter order preserved within each group), resolve each owner
-    independently via :func:`select_agent_by_id`, and replay each row onto that owner's per-function
-    lane queue. An owner that is offline / revoked / never-seen / wrong-kind is SKIPPED with a
-    WARNING -- its rows are NEVER rerouted onto another agent (the exact misroute this fixes); a later
-    recovery re-drives them once the owner is back. A row whose payload carries no ``agent_id``
-    (malformed / legacy) is likewise skipped rather than blind-routed, since its true owner is
-    unknowable.
+    ``payload["agent_id"]`` (:func:`_plan_owner_groups` -- first-encounter order across groups AND
+    within each group), resolve every owner INDEPENDENTLY, and replay each row onto that owner's
+    per-function lane queue. An owner that is offline / revoked / never-seen / wrong-kind is SKIPPED
+    with a WARNING -- its rows are NEVER rerouted onto another agent (the exact misroute this fixes);
+    a later recovery re-drives them once the owner is back. A row whose payload carries no
+    ``agent_id`` (malformed / legacy) is likewise skipped rather than blind-routed, since its true
+    owner is unknowable.
+
+    phaze-1i0h6.2: "independently" is a statement about the ROUTING VERDICT, not about the number of
+    round trips, and the two were conflated. Resolution now runs as ONE bounded
+    :func:`select_agents_by_ids` batch query for the whole partition instead of one
+    :func:`select_agent_by_id` per distinct owner -- a per-owner N+1 against ``agents`` on every
+    recovery pass, over a ledger that reached ~44.5K rows in the 2026-06-18 incident. The batch form
+    shares :func:`select_agent_by_id`'s liveness filter and ``kind`` scope verbatim and reports a
+    non-live owner by OMISSION where the per-owner form raised ``NoActiveAgentError``, so the verdict
+    for every individual owner is unchanged: still resolved by its own stored id, still skipped rather
+    than reassigned, still never satisfied by another agent's row.
 
     ``required_kind`` pins the accepted ``Agent.kind`` -- ``"fileserver"`` for ``push_file`` rows
     (Phase 50 / D-10: a re-driven push reads the media mount, so it MUST route to the rsync
@@ -866,60 +1081,50 @@ async def _replay_agent_rows_by_owner(
     route on the resolved agent's own id (kind-agnostic) fixes that without weakening the push_file
     guarantee, which still passes its own ``required_kind="fileserver"``.
     """
-    if not rows:
+    plan = _plan_owner_groups(rows)
+
+    if plan.ownerless:
+        logger.warning(
+            "recover_orphaned_work: agent-routed ledger row has no owning agent_id -- skipped, never rerouted (phaze-fjii)",
+            functions=sorted({r.function for r in plan.ownerless}),
+            rows=len(plan.ownerless),
+        )
+
+    if not plan.groups:
+        # No resolvable owner in this partition -- return BEFORE touching the session, so a call
+        # carrying nothing but ownerless (or no) rows performs no I/O at all.
         return
 
-    owners: dict[str | None, list[SchedulingLedger]] = {}
-    for row in rows:
-        owner_id = (row.payload or {}).get("agent_id")
-        owners.setdefault(owner_id, []).append(row)
+    # phaze-1i0h6.2 (mirrors phaze-c9w9 / enqueue_router.resolve_queue_for_task's per-file ``agent_id``
+    # form): ONE bounded batch lookup for every owner this partition collected, in place of the former
+    # ``select_agent_by_id`` call PER OWNER. The routing contract is unchanged -- the destination is
+    # still THIS row's own owner iff it is live (and, when pinned, of ``required_kind``), never "some
+    # other live fileserver" whose mount lacks the path (phaze-fjii). An owner that is offline /
+    # revoked / never-seen / wrong-kind is simply ABSENT from the mapping, which is exactly what the
+    # ``NoActiveAgentError`` it replaces meant: skip that owner's rows, never reassign them.
+    owners = await select_agents_by_ids(session, [group.owner_id for group in plan.groups], kind=required_kind)
+    # phaze-266lc: the lookup above autobegins a new transaction on this shared session; commit it
+    # here, BEFORE the per-owner enqueue loops below, so no group's network-dependent replay calls run
+    # with the session idle-in-transaction (same class + same fix shape as the read-phase commit in
+    # recover_orphaned_work and agent_analysis.py phaze-7jfgi). Batching the lookup makes this commit
+    # STRICTLY earlier than it was -- it now closes the read before the FIRST owner replays rather
+    # than before each one, and nothing below reopens a transaction. The resolved ``agent`` objects
+    # stay usable after the commit (``expire_on_commit=False``) and only their plain ``.id`` column is
+    # read, never a lazy-loaded relationship.
+    await session.commit()
 
-    for owner_id, owned in owners.items():
-        if owner_id is None:
-            logger.warning(
-                "recover_orphaned_work: agent-routed ledger row has no owning agent_id -- skipped, never rerouted (phaze-fjii)",
-                functions=sorted({r.function for r in owned}),
-                rows=len(owned),
-            )
-            continue
-        try:
-            # phaze-fjii (mirrors phaze-c9w9 / enqueue_router.resolve_queue_for_task's per-file
-            # ``agent_id`` form): the destination is THIS owner iff it is live (and, when pinned, of
-            # ``required_kind``) -- never "some other live fileserver" whose mount lacks the path.
-            agent = await select_agent_by_id(session, owner_id, kind=required_kind)
-        except NoActiveAgentError:
+    for group in plan.groups:
+        agent = owners.get(group.owner_id)
+        if agent is None:
             logger.warning(
                 "recover_orphaned_work: owning agent offline -- rows skipped, not rerouted (phaze-fjii)",
-                agent_id=owner_id,
+                agent_id=group.owner_id,
                 required_kind=required_kind,
-                functions=sorted({r.function for r in owned}),
-                rows=len(owned),
+                functions=sorted({r.function for r in group.rows}),
+                rows=len(group.rows),
             )
             continue
-        # phaze-266lc: ``select_agent_by_id`` above autobegins a new transaction on this shared
-        # session; commit it here, before the per-row enqueue loop below, so THIS owner's group of
-        # network-dependent replay calls does not run with the session idle-in-transaction (same
-        # class + same fix shape as the read-phase commit above and agent_analysis.py phaze-7jfgi).
-        # ``agent`` stays usable after the commit -- ``expire_on_commit=False`` -- and only its
-        # plain ``.id`` column is read below, never a lazy-loaded relationship.
-        await session.commit()
-        # quick-260707-dh1: derive the LANE per row via lane_for_task(row.function) (push_file -> io;
-        # process_file -> analyze; ...). An unmapped function raises loudly (never a bad queue).
-        for row in owned:
-            try:
-                agent_queue = task_router.queue_for(agent.id, lane_for_task(row.function))
-            except Exception:
-                # phaze-o1xx: routing itself (an unmapped legacy function) must not abort the whole
-                # replay -- isolate it exactly like a failed _replay_row and move to the next row.
-                logger.exception(
-                    "recover_orphaned_work: agent row lane routing failed -- row skipped this run, ledger entry remains for the next pass",
-                    key=row.key,
-                    function=row.function,
-                    agent_id=owner_id,
-                )
-                stages.setdefault(row.function, _zero())["errored"] += 1
-                continue
-            await _replay_row_isolated(agent_queue, row, stages)
+        await _replay_owner_group(task_router, agent, group, stages)
 
 
 async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
@@ -940,7 +1145,9 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
        is_domain_completed(r, done_sets)]``. Partition by ``r.routing``: controller rows replay on
        ``ctx["queue"]``; agent rows replay onto EACH row's OWNING agent (``payload["agent_id"]``,
        phaze-fjii -- mirroring phaze-c9w9's live-path per-owner routing), resolved via
-       :func:`select_agent_by_id`. ``push_file`` rows require the owner to be a live FILESERVER
+       ONE batched :func:`select_agents_by_ids` lookup per partition (phaze-1i0h6.2 -- the per-owner
+       ``select_agent_by_id`` N+1 it replaces resolved the SAME owners to the SAME verdicts).
+       ``push_file`` rows require the owner to be a live FILESERVER
        (Phase 50, D-10 -- the re-drive reads the media mount); every other agent function accepts
        whatever live kind the stored owner actually is (phaze-5dkgp -- a compute-lane
        ``process_file`` row is owned by a COMPUTE agent, and pinning ``kind="fileserver"`` there
@@ -1005,19 +1212,13 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
         # ledger seed. Read ONCE, alongside in_flight (the two sets are disjoint -- 'awaiting' ∉ IN_FLIGHT).
         awaiting_cloud = await _awaiting_cloud_job_ids(session)
 
-        # phaze-fc2l: SCOPE the two cloud exclusions to the functions the cloud_job actually owns
-        # (_CLOUD_OWNED_FUNCTIONS). _natural_id is function-agnostic, so an unscoped exclusion dropped an
-        # orphaned extract_file_metadata / search_tracklist row for
-        # ANY file that merely also had an in-flight/awaiting cloud_job -- silently skipping recovery the
-        # cloud callback/drain will never perform. A non-cloud-owned row for a cloud-busy file recovers
-        # normally; process_file/push_file/s3_upload/submit_cloud_job still defer to their single owner.
-        orphaned = [
-            r
-            for r in rows
-            if r.key not in live
-            and not is_domain_completed(r, done_sets)
-            and (r.function not in _CLOUD_OWNED_FUNCTIONS or (_natural_id(r) not in in_flight and _natural_id(r) not in awaiting_cloud))
-        ]
+        # The orphan set, spelled as the three named exclusions :func:`_is_orphaned` composes:
+        # live-key (the work is running), domain-completed (the work is finished), and cloud-lane
+        # ownership (phaze-fc2l -- SCOPED to _CLOUD_OWNED_FUNCTIONS; read that predicate's docstring
+        # before touching the scope, it is the whole reason unrelated stages still recover for a
+        # cloud-busy file). Every set it reads was materialized ONCE above; the predicate itself
+        # issues no queries.
+        orphaned = [r for r in rows if _is_orphaned(r, live=live, done_sets=done_sets, in_flight=in_flight, awaiting_cloud=awaiting_cloud)]
 
         # phaze-266lc: the read phase above (get_ledger_rows / get_live_job_keys / _build_done_sets /
         # _in_flight_cloud_job_ids / _awaiting_cloud_job_ids) is done -- ``orphaned`` is materialized
@@ -1028,61 +1229,41 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
         # connection sat idle-in-transaction across the whole replay -- the same phaze-1v37 pool-drain
         # class fixed at the other request/task-scoped session sites (agent_analysis.py phaze-7jfgi,
         # tags.py phaze-7bjjj). ``ctx["async_session"]`` is ``expire_on_commit=False`` (controller.py),
-        # so ``rows``/``orphaned``'s ORM instances stay usable after the commit; ``select_agent_by_id``
-        # and the regenerators below reopen a transaction on demand exactly as they already did on
-        # every subsequent call.
+        # so ``rows``/``orphaned``'s ORM instances stay usable after the commit; the batched owner
+        # lookup and the regenerators below reopen a transaction on demand exactly as they already did
+        # on every subsequent call.
         await session.commit()
 
         # Initialize every keyed function to zero so the return shape is TOTAL (and a stage with no
         # orphaned rows reads as an explicit zero, not a missing key the startup-log/UI must guess at).
         stages: dict[str, dict[str, int]] = {fn: _zero() for fn in _ALL_KEYED_FUNCTIONS}
 
-        # phaze-71nz: peel the REGENERATED functions off FIRST -- their stored payload carries
-        # time-limited material and must never be replayed verbatim by either partition below. They
-        # are SNAPSHOT here (:class:`_RegenTarget`) because a regenerator commits/rolls back, which
-        # expires every ORM instance on this session -- see the dataclass docstring.
-        regenerated_targets = [
-            _RegenTarget(key=r.key, function=r.function, payload=dict(r.payload or {})) for r in orphaned if r.function in _REPLAY_REGENERATORS
-        ]
-        replayable = [r for r in orphaned if r.function not in _REPLAY_REGENERATORS]
-
-        controller_rows = [r for r in replayable if r.routing == "controller"]
-        agent_rows = [r for r in replayable if r.routing == "agent"]
-
-        # 83-06 (CONSCIOUSLY REVERSES D-09): the former compute-only ``held_agent_rows`` partition is GONE.
-        # It caught a ``process_file`` ledger row whose file was HELD in AWAITING_CLOUD and routed it to a
-        # COMPUTE agent only (CLOUDROUTE-02: never a fileserver -> never local analysis). That partition was
-        # reachable ONLY because the D-09 held-file backfill SEEDED a ``process_file:<id>`` ledger row for
-        # every held compute file. 83-06 removed that seed (backfill now DELETES the orphaned row and keeps
-        # only the awaiting ``cloud_job`` row as the sole registry), so no held file carries a process_file
-        # ledger row any more -- the partition was provably empty. The CLOUDROUTE-02 invariant is now held
-        # ROBUSTLY (even for a LEGACY pre-83-06 row) by the ``awaiting_cloud`` orphan-set exclusion above:
-        # a held awaiting-cloud file never reaches ANY agent partition, so it can never be analyzed locally.
-        # Phase 50 (D-10): a re-driven push_file reads the media mount, so it MUST route to a FILESERVER
-        # agent (the rsync initiator), never the compute agent -- partition push rows onto their own path.
-        push_rows = [r for r in agent_rows if r.function == "push_file"]
-        other_agent_rows = [r for r in agent_rows if r.function != "push_file"]
+        # PLAN, then act. :func:`_plan_replay` is pure -- it decides the four partitions and the order
+        # within each (including the phaze-71nz regeneration snapshot, taken while nothing has yet
+        # committed); everything below only carries that decision out. Its docstring holds the 83-06 /
+        # Phase-50 rationale for WHY the partitions are shaped this way.
+        plan = _plan_replay(orphaned)
 
         # Controller rows replay regardless of agent presence (D-05). phaze-o1xx: each row is
         # isolated -- one row's failure (transient enqueue error) is tallied under "errored" and the
         # loop continues, instead of the whole replay aborting after an arbitrary prefix.
-        for row in controller_rows:
+        for row in plan.controller_rows:
             await _replay_row_isolated(ctx["queue"], row, stages)
 
         # Phase 50 (D-10): push_file re-drives route to a FILESERVER (the media-mount owner that runs
         # the rsync); an offline owner skips with a WARNING (the next staging-cron tick / a later
         # recovery re-drives the still-PUSHING file -- never enqueue it onto a compute agent).
-        await _replay_agent_rows_by_owner(session, ctx["task_router"], push_rows, stages, required_kind="fileserver")
+        await _replay_agent_rows_by_owner(session, ctx["task_router"], plan.push_rows, stages, required_kind="fileserver")
 
         # Remaining agent rows re-drive onto their OWNING agent, whatever kind it actually is
         # (phaze-5dkgp: e.g. a compute-lane process_file row owned by a compute agent) -- cold
         # boot / offline owner -> skip, never raise.
-        await _replay_agent_rows_by_owner(session, ctx["task_router"], other_agent_rows, stages, required_kind=None)
+        await _replay_agent_rows_by_owner(session, ctx["task_router"], plan.other_agent_rows, stages, required_kind=None)
 
         # phaze-71nz: the time-limited rows, re-derived from durable inputs rather than replayed.
         # Run LAST so a regenerator's commit boundary (it owns one, unlike every replay above) can
         # never interleave with the read-only replay partitions.
-        for target in regenerated_targets:
+        for target in plan.regenerated:
             await _regenerate_row_isolated(session, ctx["task_router"], target, stages)
 
     unreplayable = sum(tally["unreplayable"] for tally in stages.values())

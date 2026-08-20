@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 import uuid
 
 import pytest
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.analysis import AnalysisResult
@@ -51,6 +52,7 @@ from phaze.tasks.reenqueue import (
     _build_done_sets,
     _DoneSets,
     _ledger_fids,
+    _plan_owner_groups,
     _regenerate_row_isolated,
     _RegenTarget,
     _replay_agent_rows_by_owner,
@@ -2422,3 +2424,268 @@ async def test_replay_agent_rows_by_owner_skips_rows_with_no_owning_agent_id(
 
     assert stages == {}
     assert "no owning agent_id" in caplog.text
+
+
+# --- phaze-1i0h6.2: ONE batched owner lookup, same per-owner verdicts ---------------------------
+#
+# Recovery resolved the owning agent with ONE ``select_agent_by_id`` round trip PER DISTINCT OWNER,
+# inside the replay loop -- an N+1 against ``agents`` on every recovery pass, over a ledger that
+# reached ~44.5K rows in the 2026-06-18 incident. The lookup is now a single bounded
+# ``select_agents_by_ids`` batch per partition. The ROUTING CONTRACT is what must not move: each row
+# still resolves against its OWN stored ``payload["agent_id"]``, and a missing / offline / revoked /
+# wrong-kind owner is still SKIPPED rather than reassigned -- the batch form reports that by omitting
+# the id from its mapping where the per-owner form raised ``NoActiveAgentError``.
+
+
+def _agents_selects(statements: list[str]) -> list[str]:
+    """The subset of captured SQL that READS the ``agents`` table (the N+1 under measurement)."""
+    return [s for s in statements if s.lstrip().lower().startswith("select") and "from agents" in s.lower()]
+
+
+@pytest.mark.asyncio
+async def test_owner_resolution_is_one_query_for_many_owners_not_one_per_owner(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THREE owners with TWO orphaned rows each resolve in exactly ONE ``agents`` SELECT for the whole run.
+
+    This is the acceptance criterion measured directly rather than inferred: count the SELECTs against
+    ``agents`` that ``recover_orphaned_work`` itself issues (the agents are seeded before the listener
+    attaches, and ``count_inflight_jobs`` / ``get_live_job_keys`` are stubbed, so every captured
+    ``agents`` read belongs to owner resolution).
+    MUTATION: reverting to a ``select_agent_by_id`` call per distinct owner issues THREE -> RED.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    owner_ids = ["fs-a", "fs-b", "fs-c"]
+    for owner_id in owner_ids:
+        await seed_active_agent(session, agent_id=owner_id, kind="fileserver")
+
+    files: dict[str, list[FileRecord]] = {}
+    for owner_id in owner_ids:
+        owned = [_make_file(), _make_file()]
+        session.add_all(owned)
+        await session.commit()
+        files[owner_id] = owned
+        for f in owned:
+            await _seed_ledger(
+                session, function="process_file", file_id=f.id, payload=_agent_payload_owned_by("process_file", f.id, agent_id=owner_id)
+            )
+
+    captured: list[str] = []
+
+    def _capture(conn, cursor, statement, parameters, context, executemany) -> None:  # type: ignore[no-untyped-def]
+        captured.append(statement)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    event.listen(async_engine.sync_engine, "before_cursor_execute", _capture)
+    try:
+        result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+    finally:
+        event.remove(async_engine.sync_engine, "before_cursor_execute", _capture)
+
+    # ONE batched lookup for all three owners -- not one per owner, and not one per row.
+    assert len(_agents_selects(captured)) == 1, f"expected a single batched agents lookup, saw: {_agents_selects(captured)}"
+    # ...and every row still landed on ITS OWN owner's lane, six replays across three lanes.
+    assert result["stages"]["process_file"]["reenqueued"] == 6
+    for owner_id in owner_ids:
+        lane = f"{owner_id}-analyze"
+        assert [payload["file_id"] for _, payload in router.queues[lane].captured] == [str(f.id) for f in files[owner_id]]
+
+
+def test_plan_owner_groups_preserves_first_encounter_order() -> None:
+    """Groups appear in FIRST-ENCOUNTER order and each group's rows keep their own encounter order.
+
+    Both orderings are what makes a replay reproducible run to run, and both are easy to lose to an
+    innocent-looking ``sorted()``. The input interleaves owners (b, a, b, c, a) so a sort by owner id
+    and a sort by row key are each distinguishable from the contract.
+    MUTATION: sorting the owner ids yields ``["a", "b", "c"]`` -> RED; sorting each group's rows yields
+    ``["b1", "b2"]`` for the b group instead of the encounter order asserted below -> RED.
+    """
+    rows = [
+        SchedulingLedger(key="process_file:b2", function="process_file", routing="agent", payload={"agent_id": "b"}),
+        SchedulingLedger(key="process_file:a1", function="process_file", routing="agent", payload={"agent_id": "a"}),
+        SchedulingLedger(key="process_file:b1", function="process_file", routing="agent", payload={"agent_id": "b"}),
+        SchedulingLedger(key="process_file:orphan", function="process_file", routing="agent", payload={"file_id": "x"}),
+        SchedulingLedger(key="process_file:c1", function="process_file", routing="agent", payload={"agent_id": "c"}),
+        SchedulingLedger(key="process_file:a2", function="process_file", routing="agent", payload={"agent_id": "a"}),
+    ]
+
+    plan = _plan_owner_groups(rows)
+
+    assert [group.owner_id for group in plan.groups] == ["b", "a", "c"]
+    assert [[r.key for r in group.rows] for group in plan.groups] == [
+        ["process_file:b2", "process_file:b1"],
+        ["process_file:a1", "process_file:a2"],
+        ["process_file:c1"],
+    ]
+    # The owner-less row is partitioned out entirely -- never a ``None`` group that could be routed.
+    assert [r.key for r in plan.ownerless] == ["process_file:orphan"]
+
+
+@pytest.mark.asyncio
+async def test_batched_replay_visits_owners_and_rows_in_encounter_order(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The batched lookup does not reorder the replay: enqueues follow the rows' encounter order exactly.
+
+    Driven through :func:`_replay_agent_rows_by_owner` with an explicitly-ordered row list, because
+    ``get_ledger_rows`` issues no ``ORDER BY`` and therefore cannot pin an order end-to-end. The rows
+    interleave two owners so "grouped by owner, groups in first-encounter order" is distinguishable
+    from both "row order" and "sorted owner order".
+    MUTATION: resolving owners from a set (or sorting the batch result) reorders the shared capture
+    list to fs-a-first -> RED.
+    """
+    _patch_settings(monkeypatch)
+    await seed_active_agent(session, agent_id="fs-a", kind="fileserver")
+    await seed_active_agent(session, agent_id="fs-b", kind="fileserver")
+
+    def _row(owner: str, tag: str) -> SchedulingLedger:
+        return SchedulingLedger(
+            key=f"process_file:{tag}",
+            function="process_file",
+            routing="agent",
+            payload={"file_id": tag, "agent_id": owner},
+        )
+
+    rows = [_row("fs-b", "b1"), _row("fs-a", "a1"), _row("fs-b", "b2"), _row("fs-a", "a2")]
+    router = DedupFakeTaskRouter()
+    stages: dict[str, dict[str, int]] = {}
+
+    await _replay_agent_rows_by_owner(session, router, rows, stages, required_kind=None)
+
+    # fs-b was encountered first, so its whole group replays first -- each group in row order.
+    assert [(queue_name, payload["file_id"]) for queue_name, _, payload in router.captures] == [
+        ("phaze-agent-fs-b-analyze", "b1"),
+        ("phaze-agent-fs-b-analyze", "b2"),
+        ("phaze-agent-fs-a-analyze", "a1"),
+        ("phaze-agent-fs-a-analyze", "a2"),
+    ]
+    assert stages["process_file"]["reenqueued"] == 4
+
+
+@pytest.mark.asyncio
+async def test_revoked_owner_is_skipped_and_never_reassigned(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A REVOKED owner's rows are skipped with a WARNING -- never rerouted onto the live fileserver.
+
+    ``revoked_at IS NULL`` is half of the liveness filter the batch lookup shares with
+    ``select_agent_by_id``; a revoked agent is registered and recently-seen, so it is precisely the case
+    an id-only batch lookup would wrongly resolve.
+    MUTATION: dropping ``revoked_at IS NULL`` from ``select_agents_by_ids`` routes fs-b's row onto
+    ``fs-b-analyze`` (a revoked agent's consumer-less lane) instead of skipping -> RED.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="fs-a", kind="fileserver")
+    revoked = await seed_active_agent(session, agent_id="fs-b", kind="fileserver")
+    revoked.revoked_at = datetime.now(UTC)
+    session.add(revoked)
+    await session.commit()
+
+    file_a = _make_file()
+    file_b = _make_file()
+    session.add_all([file_a, file_b])
+    await session.commit()
+    await _seed_ledger(
+        session, function="process_file", file_id=file_a.id, payload=_agent_payload_owned_by("process_file", file_a.id, agent_id="fs-a")
+    )
+    await _seed_ledger(
+        session, function="process_file", file_id=file_b.id, payload=_agent_payload_owned_by("process_file", file_b.id, agent_id="fs-b")
+    )
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    with caplog.at_level("WARNING", logger="phaze.tasks.reenqueue"):
+        result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert "fs-b-analyze" not in router.queues  # the revoked owner's lane is never created
+    assert [payload["file_id"] for _, payload in router.queues["fs-a-analyze"].captured] == [str(file_a.id)]
+    assert result["stages"]["process_file"]["reenqueued"] == 1
+    assert "owning agent offline" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_push_file_row_owned_by_a_live_compute_agent_is_skipped_not_reassigned(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``push_file`` row whose stored owner is a live COMPUTE agent is skipped -- the WRONG-KIND refusal.
+
+    Phase 50 / D-10: a re-driven push reads the media mount, so it MUST land on the rsync-initiating
+    FILESERVER. The owner here is online and healthy, so ONLY the ``kind`` scope on the batched lookup
+    stands between the row and a compute lane that would never serve it. A second push row owned by the
+    live fileserver proves the partition still recovers what it should.
+    MUTATION: dropping ``kind`` from ``select_agents_by_ids`` (or passing ``required_kind=None`` for the
+    push partition) enqueues onto ``cloud-io`` -> RED.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="fs-a", kind="fileserver")
+    await seed_active_agent(session, agent_id="cloud", kind="compute")  # live, but the WRONG kind for push_file
+
+    file_fs = _make_file()
+    file_compute = _make_file()
+    session.add_all([file_fs, file_compute])
+    await session.commit()
+    await _seed_ledger(session, function="push_file", file_id=file_fs.id, payload=_agent_payload_owned_by("push_file", file_fs.id, agent_id="fs-a"))
+    await _seed_ledger(
+        session, function="push_file", file_id=file_compute.id, payload=_agent_payload_owned_by("push_file", file_compute.id, agent_id="cloud")
+    )
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert "cloud-io" not in router.queues  # the compute owner never receives a push_file re-drive
+    assert [payload["file_id"] for _, payload in router.queues["fs-a-io"].captured] == [str(file_fs.id)]
+    assert result["stages"]["push_file"]["reenqueued"] == 1
+
+
+@pytest.mark.asyncio
+async def test_batched_owner_lookup_holds_no_transaction_across_the_enqueue_loops(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-266lc: the owner lookup's transaction is committed BEFORE the first row replays.
+
+    Batching moved the commit earlier (once for the whole partition, not once per owner), so the
+    invariant it protects is asserted directly: at the moment ANY enqueue happens, this session must
+    not be in a transaction. Left open, the control-engine connection sits idle-in-transaction across
+    a replay that spans minutes of network calls on a large orphaned set -- the phaze-1v37 pool-drain
+    class.
+    MUTATION: deleting the ``await session.commit()`` after the batched lookup leaves the session
+    in-transaction on the first enqueue -> RED.
+    """
+    _patch_settings(monkeypatch)
+    await seed_active_agent(session, agent_id="fs-a", kind="fileserver")
+    await seed_active_agent(session, agent_id="fs-b", kind="fileserver")
+
+    in_transaction_at_enqueue: list[bool] = []
+
+    class _TxProbeRouter(DedupFakeTaskRouter):
+        def queue_for(self, agent_id: str, lane: str | None = None) -> DedupFakeQueue:
+            in_transaction_at_enqueue.append(session.in_transaction())
+            return super().queue_for(agent_id, lane)
+
+    rows = [
+        SchedulingLedger(key="process_file:a", function="process_file", routing="agent", payload={"file_id": "a", "agent_id": "fs-a"}),
+        SchedulingLedger(key="process_file:b", function="process_file", routing="agent", payload={"file_id": "b", "agent_id": "fs-b"}),
+    ]
+    stages: dict[str, dict[str, int]] = {}
+
+    await _replay_agent_rows_by_owner(session, _TxProbeRouter(), rows, stages, required_kind=None)
+
+    assert in_transaction_at_enqueue == [False, False]
+    assert stages["process_file"]["reenqueued"] == 2
