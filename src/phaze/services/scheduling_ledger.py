@@ -7,7 +7,7 @@ The ``before_enqueue`` WRITE hook reaches these helpers via a function-LOCAL laz
 gated on ``getattr(job.queue, "ledger_sessionmaker", None)`` so the import only ever runs
 control-side.
 
-Five helpers:
+Six helpers:
 
 - :func:`upsert_ledger_entry`     -- ``INSERT ... ON CONFLICT (key) DO UPDATE`` (idempotent;
   used by the WRITE hook). A repeat enqueue of a still-scheduled key refreshes
@@ -15,6 +15,10 @@ Five helpers:
 - :func:`insert_ledger_if_absent` -- ``INSERT ... ON CONFLICT (key) DO NOTHING`` (the Plan-04
   backfill primitive; never overwrites a fresher hook-written row). Owned here so Plan 04
   adds no new contract and edits no Plan-01 test.
+- :func:`insert_ledger_rows_if_absent` -- the same ``ON CONFLICT (key) DO NOTHING`` primitive,
+  batched: one (or a bounded few, chunked) multi-row INSERT for many rows instead of one
+  round trip per row (phaze-xemza). DO NOTHING is per-row within a multi-row INSERT, so the
+  non-clobbering semantics are identical to the single-row form.
 - :func:`clear_ledger_entry`      -- ``DELETE`` by key, GUARDED against a same-key re-enqueue
   race (phaze-3yln; see the function docstring) -- no-op if the row is absent OR currently owned
   by a live re-enqueue.
@@ -139,6 +143,45 @@ async def insert_ledger_if_absent(
     await session.execute(stmt)
 
 
+# phaze-xemza: chunk size for insert_ledger_rows_if_absent. One multi-row INSERT is bounded by one
+# statement's worth of parameters (5 columns/row here), so a live broker depth that ever got large
+# enough to matter still issues a small, fixed number of round trips rather than one unbounded
+# statement.
+_LEDGER_BATCH_INSERT_CHUNK_SIZE = 500
+
+
+async def insert_ledger_rows_if_absent(session: AsyncSession, rows: Sequence[dict[str, Any]]) -> None:
+    """Insert many ledger rows via a bounded number of multi-row ``INSERT ... ON CONFLICT DO
+    NOTHING`` statements -- the batched Plan-04 backfill primitive (phaze-xemza).
+
+    Each element of ``rows`` is a ``{"key", "function", "kwargs", "timeout", "retries"}`` mapping,
+    the same fields :func:`insert_ledger_if_absent` takes per call. ``ON CONFLICT DO NOTHING`` is
+    evaluated PER ROW within a multi-row INSERT, so batching preserves the single-row primitive's
+    semantics exactly: a key already present (including one written by a concurrent before_enqueue
+    WRITE hook) is left UNTOUCHED, never clobbered (T-45-13). Rows are chunked at
+    :data:`_LEDGER_BATCH_INSERT_CHUNK_SIZE` so an unusually deep broker still issues a small,
+    bounded number of statements rather than one with an unbounded parameter list. The caller
+    commits. A no-op on an empty ``rows``.
+    """
+    if not rows:
+        return
+    values = [
+        {
+            "key": row["key"],
+            "function": row["function"],
+            "routing": routing_for_function(row["function"]),
+            "payload": row["kwargs"],
+            "timeout": row.get("timeout"),
+            "retries": row.get("retries"),
+        }
+        for row in rows
+    ]
+    for start in range(0, len(values), _LEDGER_BATCH_INSERT_CHUNK_SIZE):
+        chunk = values[start : start + _LEDGER_BATCH_INSERT_CHUNK_SIZE]
+        stmt = pg_insert(SchedulingLedger).values(chunk).on_conflict_do_nothing(index_elements=["key"])
+        await session.execute(stmt)
+
+
 # Guarded CLEAR (phaze-3yln). A bare ``DELETE ... WHERE key = :key`` cannot tell "my own row" apart
 # from a FRESHER row a same-key re-enqueue upserted after I (the finishing job) went terminal but
 # before my after_process/callback clear ran -- SAQ's ``_enqueue`` re-queues a terminal key via
@@ -215,6 +258,7 @@ __all__ = [
     "clear_ledger_entry",
     "get_ledger_rows",
     "insert_ledger_if_absent",
+    "insert_ledger_rows_if_absent",
     "routing_for_function",
     "upsert_ledger_entry",
 ]

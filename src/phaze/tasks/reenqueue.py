@@ -138,7 +138,7 @@ from phaze.services.cloud_staging import NoCloudJobToRedriveError
 from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_agent_by_id
 from phaze.services.pipeline import count_inflight_jobs, get_live_job_keys
 from phaze.services.s3_staging import S3StagingError
-from phaze.services.scheduling_ledger import get_ledger_rows, insert_ledger_if_absent
+from phaze.services.scheduling_ledger import get_ledger_rows, insert_ledger_rows_if_absent
 from phaze.services.stage_status import CLOUD_LANE_FUNCTIONS, cloud_lane_completed_clause, domain_completed_clause, skipped_clause
 from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS
 from phaze.tasks._shared.replay_safety import LEDGER_REPLAY_REGENERATED, find_time_limited_paths
@@ -1117,7 +1117,7 @@ _ALL_KEYED_FUNCTIONS: tuple[str, ...] = tuple(_KEY_BUILDERS)
 # ledger row, so recovery could not see them. ``backfill_ledger_from_saq_jobs`` closes that gap ONCE
 # by seeding the ledger from the live queued/active ``saq_jobs`` rows. It is a CONTROL-SIDE runtime
 # reconcile -- NEVER an Alembic data step (Alembic must never read/write the SAQ-owned saq_jobs
-# table; T-45-15). It is idempotent (``insert_ledger_if_absent`` == ON CONFLICT DO NOTHING) so it is
+# table; T-45-15). It is idempotent (``insert_ledger_rows_if_absent`` == ON CONFLICT DO NOTHING) so it is
 # safe to run on every boot and becomes a cheap no-op once the transition cohort drains.
 #
 # Read-only probe of the SAQ-owned table: SELECT only ``job`` (the serialized blob) + ``key``. The
@@ -1148,9 +1148,13 @@ async def backfill_ledger_from_saq_jobs(session: AsyncSession) -> dict[str, int]
 
     For each ``saq_jobs`` row with status in ``('queued', 'active')``: deserialize its job blob to
     recover ``function`` / ``kwargs`` / ``key``; if the function is a KEYED pipeline function
-    (in :data:`deterministic_key._KEY_BUILDERS`) insert a ledger row with ON CONFLICT (key) DO
-    NOTHING (via the Plan-01-owned :func:`insert_ledger_if_absent`, routing stamped via
-    :func:`routing_for_function`). A non-keyed / random-key row is SKIPPED (no ledger row).
+    (in :data:`deterministic_key._KEY_BUILDERS`) accumulate a ledger row to insert with ON CONFLICT
+    (key) DO NOTHING. A non-keyed / random-key row is SKIPPED (no ledger row). Once the loop is
+    done, every accumulated row is written in ONE (or a bounded few, chunked) multi-row INSERT via
+    :func:`insert_ledger_rows_if_absent` (phaze-xemza) instead of one INSERT round trip per row --
+    ON CONFLICT DO NOTHING is evaluated per row within a multi-row INSERT, so this is not a
+    semantic change, only a batching of the same statement shape :func:`insert_ledger_if_absent`
+    issues one row at a time (routing stamped via :func:`routing_for_function` either way).
 
     The DO NOTHING conflict clause makes this:
 
@@ -1162,11 +1166,11 @@ async def backfill_ledger_from_saq_jobs(session: AsyncSession) -> dict[str, int]
     ``saq_jobs`` table (a pre-migration env) rolls the nested scope back ALONE and returns an empty
     tally. The caller commits. NEVER raises -- a backfill failure must not abort controller boot.
 
-    Returns ``{"inserted": N, "skipped": M}`` where ``inserted`` counts ledger ``insert_if_absent``
-    calls issued for keyed rows and ``skipped`` counts rows that were not keyed or whose blob/key
-    could not be parsed. (DO NOTHING makes ``inserted`` an UPPER bound on rows actually written --
-    a row already present is a no-op INSERT; the integration test asserts the row count, not this
-    tally, for the no-overwrite case.)
+    Returns ``{"inserted": N, "skipped": M}`` where ``inserted`` counts keyed rows accumulated and
+    included in the batched insert and ``skipped`` counts rows that were not keyed or whose
+    blob/key could not be parsed. (DO NOTHING makes ``inserted`` an UPPER bound on rows actually
+    written -- a row already present is a no-op INSERT; the integration test asserts the row count,
+    not this tally, for the no-overwrite case.)
     """
     tally = {"inserted": 0, "skipped": 0}
 
@@ -1177,6 +1181,7 @@ async def backfill_ledger_from_saq_jobs(session: AsyncSession) -> dict[str, int]
         logger.warning("ledger_backfill_degraded: saq_jobs read failed (pre-migration env?)", exc_info=True)
         return tally
 
+    pending_inserts: list[dict[str, Any]] = []
     for row in rows:
         blob, key = row[0], row[1]
         data = _parse_job_blob(blob)
@@ -1200,7 +1205,14 @@ async def backfill_ledger_from_saq_jobs(session: AsyncSession) -> dict[str, int]
         # phaze-w55w1: apply_project_job_defaults pins its timeout=0 + heartbeat regardless.)
         timeout = data.get("timeout") if isinstance(data.get("timeout"), int) else None
         retries = data.get("retries") if isinstance(data.get("retries"), int) else None
-        await insert_ledger_if_absent(session, key=key, function=function, kwargs=dict(kwargs), timeout=timeout, retries=retries)
-        tally["inserted"] += 1
+        pending_inserts.append({"key": key, "function": function, "kwargs": dict(kwargs), "timeout": timeout, "retries": retries})
+
+    # phaze-xemza: one (or a bounded few, chunked) multi-row INSERT instead of one round trip per
+    # keyed row. Deliberately OUTSIDE the read's SAVEPOINT/try-except above -- a write failure here
+    # is not the pre-migration degrade case T-45-14 covers, and the caller (controller startup, via
+    # ``_run_boot_reconcile_with_retry``) already owns retrying/logging a genuine write failure, the
+    # same as it did for the per-row form this replaces.
+    await insert_ledger_rows_if_absent(session, pending_inserts)
+    tally["inserted"] = len(pending_inserts)
 
     return tally

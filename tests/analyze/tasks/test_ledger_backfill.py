@@ -110,9 +110,10 @@ def test_parse_job_blob_tolerates_garbage(blob: object, expected: dict[str, Any]
 class _SeededSession:
     """AsyncSession stand-in whose SAVEPOINT read returns canned ``(job, key)`` rows.
 
-    The SELECT (a ``TextClause``) yields the seeded rows; any other execute (the
-    ``insert_ledger_if_absent`` INSERT) records the row's key into ``inserted_keys`` and is a no-op.
-    Lets the backfill loop's keyed/skip/bad-blob/missing-function branches run with NO real DB.
+    The SELECT (a ``TextClause``) yields the seeded rows; any other execute (the batched
+    ``insert_ledger_rows_if_absent`` multi-row INSERT, phaze-xemza) records every row's key into
+    ``inserted_keys`` and is a no-op. Lets the backfill loop's keyed/skip/bad-blob/missing-function
+    branches run with NO real DB.
     """
 
     def __init__(self, rows: list[tuple[object, object]]) -> None:
@@ -141,10 +142,15 @@ class _SeededSession:
                     return rows
 
             return _Result()
-        # The insert_ledger_if_absent INSERT: capture the bound key, no-op the write.
+        # The batched insert_ledger_rows_if_absent INSERT (phaze-xemza): ONE execute() call carries
+        # every row of its chunk, each column bound as ``<col>_m<row-index>`` (multi-values compile),
+        # so capture EVERY row's key here -- not just ``key_m0`` -- to keep this fake session's
+        # observed-inserts view accurate now that a chunk can hold more than one row.
         with contextlib.suppress(Exception):
             params = statement.compile().params
-            self.inserted_keys.append(params["key_m0"])
+            row_indices = sorted({int(name.rsplit("_m", 1)[1]) for name in params if name.startswith("key_m")})
+            for i in row_indices:
+                self.inserted_keys.append(params[f"key_m{i}"])
             self.inserted_params.append(params)
         return None
 
