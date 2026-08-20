@@ -8,7 +8,7 @@ import json
 import math
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import ARRAY, bindparam, case, func, or_, select, update
+from sqlalchemy import ARRAY, DateTime, bindparam, case, column, func, or_, select, update, values
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
@@ -256,33 +256,48 @@ async def bulk_approve_selected_above_confidence(
         and proposal.updated_at == token_by_id[proposal.id].updated_at
         and proposal_review_digest(proposal) == token_by_id[proposal.id].content_digest
     ]
-    applied = 0
-    for proposal in reviewed:
-        token = token_by_id[proposal.id]
-        result = await session.execute(
-            update(RenameProposal)
-            .where(
-                RenameProposal.id == proposal.id,
-                RenameProposal.status == ProposalStatus.PENDING.value,
-                RenameProposal.confidence >= threshold,
-                RenameProposal.updated_at == token.updated_at,
-            )
-            .values(status=ProposalStatus.APPROVED.value)
-            .returning(RenameProposal.id)
+    if not reviewed:
+        await session.commit()
+        return 0
+    # ONE round trip regardless of selection size (phaze-r4am1). This used to be a
+    # `for proposal in reviewed:` loop issuing one UPDATE ... RETURNING per row, which cost up to
+    # ~50 sequential round trips inside a single web request (Changes Review paginates at 50).
+    #
+    # It could NOT be collapsed to `WHERE id = ANY(:ids)`: `updated_at` is the row's OWN
+    # optimistic-concurrency token, so a shared-id predicate would silently drop the per-row check
+    # that is the entire point of this function. Joining a VALUES list keeps every predicate
+    # per-row -- each candidate id is matched against its own token -- so a stale token neither
+    # fails the batch nor rides along inside it; it simply matches no row and is reported through
+    # the returned transition count, exactly as when each row had its own statement.
+    review_tokens_values = values(
+        column("id", PGUUID(as_uuid=True)),
+        column("updated_at", DateTime(timezone=True)),
+        name="review_token",
+    ).data([(proposal.id, token_by_id[proposal.id].updated_at) for proposal in reviewed])
+    result = await session.execute(
+        update(RenameProposal)
+        .where(
+            RenameProposal.id == review_tokens_values.c.id,
+            RenameProposal.status == ProposalStatus.PENDING.value,
+            RenameProposal.confidence >= threshold,
+            RenameProposal.updated_at == review_tokens_values.c.updated_at,
         )
-        # The len-all-count rule has misread this. It rewrites `len(QUERY.all())` into
-        # `QUERY.count()` to keep the count server-side, which assumes a SELECT. This is an
-        # UPDATE ... RETURNING: the rows are the proposals this statement actually transitioned
-        # under the optimistic-concurrency predicate, so there is no query object to call .count()
-        # on and no second round trip to save -- RETURNING is already how the affected-row set
-        # comes back. Rewriting it to satisfy the rule would mean dropping RETURNING for
-        # `result.rowcount`, which is a behavioural change, not a cleanup.
-        #
-        # The marker below must stay on the line IMMEDIATELY above the statement: semgrep reads
-        # nosemgrep from the preceding line only, so folding it into the paragraph above silently
-        # stops suppressing.
-        # nosemgrep: python.sqlalchemy.performance.performance-improvements.len-all-count
-        applied += len(result.scalars().all())
+        .values(status=ProposalStatus.APPROVED.value)
+        .returning(RenameProposal.id)
+    )
+    # The len-all-count rule has misread this. It rewrites `len(QUERY.all())` into
+    # `QUERY.count()` to keep the count server-side, which assumes a SELECT. This is an
+    # UPDATE ... RETURNING: the rows are the proposals this statement actually transitioned
+    # under the optimistic-concurrency predicate, so there is no query object to call .count()
+    # on and no second round trip to save -- RETURNING is already how the affected-row set
+    # comes back. Rewriting it to satisfy the rule would mean dropping RETURNING for
+    # `result.rowcount`, which is a behavioural change, not a cleanup.
+    #
+    # The marker below must stay on the line IMMEDIATELY above the statement: semgrep reads
+    # nosemgrep from the preceding line only, so folding it into the paragraph above silently
+    # stops suppressing.
+    # nosemgrep: python.sqlalchemy.performance.performance-improvements.len-all-count
+    applied = len(result.scalars().all())
     await session.commit()
     return applied
 

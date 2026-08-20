@@ -7,22 +7,27 @@ from typing import TYPE_CHECKING
 import uuid
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, text, update
+from sqlalchemy.orm import selectinload
 
 from phaze.models.file import FileRecord
 from phaze.models.proposal import APPROVE_REJECT_FROM, UNDO_FROM, ProposalStatus, RenameProposal
 from phaze.routers.proposal_sort import PROPOSE_SORT
+from phaze.services import proposal_queries
 from phaze.services.proposal_queries import (
     Pagination,
     ProposalEditRefusedError,
+    ProposalReviewToken,
     ProposalStaleWriteError,
     ProposalStats,
     ProposalTransitionError,
+    bulk_approve_selected_above_confidence,
     bulk_update_status,
     count_pending_above_confidence,
     get_proposal_stats,
     get_proposal_with_file,
     get_proposals_page,
+    proposal_review_digest,
     update_proposal_fields,
     update_proposal_status,
 )
@@ -691,3 +696,118 @@ async def test_update_proposal_fields_allows_pending_row(session: AsyncSession) 
 async def test_update_proposal_fields_not_found_returns_none(session: AsyncSession) -> None:
     result = await update_proposal_fields(session, uuid.uuid4(), proposed_filename="X.mp3", allowed_from=APPROVE_REJECT_FROM)
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# bulk_approve_selected_above_confidence -- the batched per-row token predicate (phaze-r4am1)
+#
+# The per-proposal UPDATE loop collapsed into ONE `UPDATE ... FROM (VALUES ...)` round trip. The
+# predicate it carries is genuinely per-row -- each id is matched against its OWN optimistic-
+# concurrency token -- so the failure mode a batch invites is a naive `WHERE id = ANY(:ids)`, which
+# looks identical from the outside until a token goes stale. These pin that down from both sides:
+# a stale token must neither fail the batch nor ride along inside it.
+# ---------------------------------------------------------------------------
+
+
+async def _review_token_for(session: AsyncSession, proposal: RenameProposal) -> ProposalReviewToken:
+    """Mint the exact token the rendered Changes Review row would carry for ``proposal``."""
+    loaded = (
+        await session.execute(select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal.id))
+    ).scalar_one()
+    return ProposalReviewToken(
+        proposal_id=loaded.id,
+        updated_at=loaded.updated_at,
+        content_digest=proposal_review_digest(loaded),
+    )
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_batch_transitions_every_valid_row(session: AsyncSession) -> None:
+    """The happy path: a multi-row selection all still valid transitions in full, in one statement."""
+    p1 = await _create_proposal(session, original_filename="ba1.mp3", proposed_filename="Artist - One.mp3", confidence=0.95)
+    p2 = await _create_proposal(session, original_filename="ba2.mp3", proposed_filename="Artist - Two.mp3", confidence=0.95)
+    tokens = [await _review_token_for(session, p1), await _review_token_for(session, p2)]
+
+    assert await bulk_approve_selected_above_confidence(session, tokens) == 2
+
+    for proposal in (p1, p2):
+        refetched = await session.get(RenameProposal, proposal.id)
+        assert refetched is not None
+        assert refetched.status == ProposalStatus.APPROVED
+
+    # A replay of the identical selection matches nothing -- the rows are no longer PENDING.
+    assert await bulk_approve_selected_above_confidence(session, tokens) == 0
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_batch_drops_a_client_supplied_stale_token(session: AsyncSession) -> None:
+    """A token minted before a content swap is rejected while its batch-mates still approve."""
+    fresh = await _create_proposal(session, original_filename="ba3.mp3", proposed_filename="Artist - Three.mp3", confidence=0.95)
+    swapped = await _create_proposal(session, original_filename="ba4.mp3", proposed_filename="Artist - Four.mp3", confidence=0.95)
+    fresh_token = await _review_token_for(session, fresh)
+    stale_token = await _review_token_for(session, swapped)
+
+    # Mirrors store_proposals' in-place upsert of a still-PENDING row: same id, same status, new
+    # content, bumped updated_at. The token the operator holds now describes a row that is gone.
+    await session.execute(
+        update(RenameProposal)
+        .where(RenameProposal.id == swapped.id)
+        .values(proposed_filename="Artist - Four (unreviewed).mp3", updated_at=stale_token.updated_at + timedelta(seconds=5))
+    )
+    await session.commit()
+
+    assert await bulk_approve_selected_above_confidence(session, [fresh_token, stale_token]) == 1
+
+    approved = await session.get(RenameProposal, fresh.id)
+    assert approved is not None
+    assert approved.status == ProposalStatus.APPROVED
+    refused = await session.get(RenameProposal, swapped.id)
+    assert refused is not None
+    assert refused.status == ProposalStatus.PENDING
+    assert refused.proposed_filename == "Artist - Four (unreviewed).mp3"
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_batch_keeps_the_token_predicate_inside_the_statement(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The per-row token check survives batching AT THE SQL LEVEL, not just in the Python pre-filter.
+
+    The pre-filter compares the token against the values it read a moment earlier, so a token that
+    is already stale when the function starts never reaches the UPDATE at all -- and a batch that
+    had dropped the predicate (``WHERE id = ANY(:ids)``) would still pass a test built that way.
+    What distinguishes the two is a write that lands INSIDE the read-to-write window, which is the
+    TOCTOU case the in-statement predicate exists for.
+
+    So the swap is injected at the one awaited call between the SELECT and the UPDATE. The ORM
+    objects the pre-filter reads keep the values they were loaded with (raw ``text()`` does not
+    synchronize the identity map), so the pre-filter admits BOTH rows and the batched statement is
+    the only thing left standing between the stale token and an unreviewed approval.
+    """
+    fresh = await _create_proposal(session, original_filename="ba5.mp3", proposed_filename="Artist - Five.mp3", confidence=0.95)
+    raced = await _create_proposal(session, original_filename="ba6.mp3", proposed_filename="Artist - Six.mp3", confidence=0.95)
+    fresh_token = await _review_token_for(session, fresh)
+    raced_token = await _review_token_for(session, raced)
+
+    real_get_review_collision_ids = proposal_queries.get_review_collision_ids
+
+    async def _swap_then_delegate(inner_session: AsyncSession) -> set[str]:
+        await inner_session.execute(
+            text("UPDATE proposals SET updated_at = updated_at + interval '5 seconds' WHERE id = :id"),
+            {"id": raced.id},
+        )
+        return await real_get_review_collision_ids(inner_session)
+
+    monkeypatch.setattr(proposal_queries, "get_review_collision_ids", _swap_then_delegate)
+
+    applied = await bulk_approve_selected_above_confidence(session, [fresh_token, raced_token])
+
+    # One bad token neither fails the batch nor sneaks through it.
+    assert applied == 1
+    approved = await session.get(RenameProposal, fresh.id)
+    assert approved is not None
+    assert approved.status == ProposalStatus.APPROVED
+    refused = await session.get(RenameProposal, raced.id)
+    assert refused is not None
+    assert refused.status == ProposalStatus.PENDING
