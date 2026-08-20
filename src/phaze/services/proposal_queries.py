@@ -8,7 +8,7 @@ import json
 import math
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import ARRAY, DateTime, bindparam, case, column, func, or_, select, update, values
+from sqlalchemy import ARRAY, DateTime, Update, bindparam, case, column, func, or_, select, update, values
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
@@ -216,6 +216,29 @@ async def count_pending_above_confidence(session: AsyncSession, threshold: float
     return result.scalar_one()
 
 
+def _still_approvable(proposal: RenameProposal, token: ProposalReviewToken, collision_ids: set[str], threshold: float) -> bool:
+    """Every precondition a selected row must STILL satisfy to be bulk-approved.
+
+    Extracted verbatim from :func:`bulk_approve_selected_above_confidence`'s filter so the six
+    predicates read as a named rule rather than a six-clause comprehension. All six must hold, so
+    their order carries no meaning; it is kept as written to keep a diff against the shipped filter
+    trivial to check.
+
+    This is only the PYTHON-side pre-filter over rows already read. It does NOT replace the
+    status / confidence / updated_at predicates carried inside the UPDATE itself -- those are what
+    make the write safe under concurrency (see that function's own comment on why the statement
+    cannot be collapsed to ``WHERE id = ANY(:ids)``). This filter is a cheap pre-pass, not the guard.
+    """
+    return (
+        str(proposal.id) not in collision_ids
+        and proposal.status == ProposalStatus.PENDING.value
+        and proposal.confidence is not None
+        and proposal.confidence >= threshold
+        and proposal.updated_at == token.updated_at
+        and proposal_review_digest(proposal) == token.content_digest
+    )
+
+
 async def bulk_approve_selected_above_confidence(
     session: AsyncSession,
     review_tokens: Iterable[ProposalReviewToken],
@@ -246,16 +269,7 @@ async def bulk_approve_selected_above_confidence(
         .all()
     )
     collision_ids = await get_review_collision_ids(session)
-    reviewed = [
-        proposal
-        for proposal in proposals
-        if str(proposal.id) not in collision_ids
-        and proposal.status == ProposalStatus.PENDING.value
-        and proposal.confidence is not None
-        and proposal.confidence >= threshold
-        and proposal.updated_at == token_by_id[proposal.id].updated_at
-        and proposal_review_digest(proposal) == token_by_id[proposal.id].content_digest
-    ]
+    reviewed = [p for p in proposals if _still_approvable(p, token_by_id[p.id], collision_ids, threshold)]
     if not reviewed:
         await session.commit()
         return 0
@@ -420,6 +434,58 @@ async def get_proposals_page(
     return proposals, pagination
 
 
+def _guarded_status_update(
+    proposal_id: uuid_mod.UUID,
+    new_status: ProposalStatus,
+    allowed_from: Iterable[ProposalStatus] | None,
+    expected_updated_at: datetime_mod.datetime | None,
+) -> Update:
+    """Build :func:`update_proposal_status`'s conditional UPDATE, guards folded into the WHERE.
+
+    Both guards are OPTIONAL and independent: ``None`` omits that predicate entirely, preserving
+    the unconditional write for callers that pre-filter. Keeping them in the statement rather than
+    as a Python check on a prior unlocked SELECT is the whole point (phaze-upnj / phaze-exivg) --
+    see the caller's docstring for the two TOCTOUs that shape closes.
+    """
+    stmt = update(RenameProposal).where(RenameProposal.id == proposal_id)
+    if allowed_from is not None:
+        stmt = stmt.where(RenameProposal.status.in_([s.value for s in allowed_from]))
+    if expected_updated_at is not None:
+        stmt = stmt.where(RenameProposal.updated_at == expected_updated_at)
+    return stmt.values(status=new_status.value)
+
+
+async def _explain_unmatched_status_update(
+    session: AsyncSession,
+    proposal_id: uuid_mod.UUID,
+    new_status: ProposalStatus,
+    allowed_from: Iterable[ProposalStatus] | None,
+    expected_updated_at: datetime_mod.datetime | None,
+) -> RenameProposal | None:
+    """Diagnose a conditional status UPDATE that matched ZERO rows, and raise the right error.
+
+    The UPDATE matching nothing is ambiguous: the proposal may not exist, its current status may be
+    outside ``allowed_from``, or its ``updated_at`` may no longer match the caller's token. Re-read
+    to distinguish -- returning ``None`` for a genuinely absent row, and otherwise raising the
+    specific error the router maps to a 409.
+    """
+    current = await session.execute(select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id))
+    proposal = current.scalar_one_or_none()
+    if proposal is None:
+        return None
+    if allowed_from is not None and proposal.status not in {s.value for s in allowed_from}:
+        raise ProposalTransitionError(proposal.status, new_status.value)
+    if expected_updated_at is not None and proposal.updated_at != expected_updated_at:
+        raise ProposalStaleWriteError(str(proposal_id))
+    if allowed_from is not None:
+        # allowed_from was satisfied and (if checked) the token matched, yet the guarded
+        # UPDATE still matched nothing -- a fresh row swap between the UPDATE and this
+        # re-SELECT. Keep refusing rather than silently reporting success on a re-read that
+        # is already stale itself.
+        raise ProposalTransitionError(proposal.status, new_status.value)
+    return proposal
+
+
 async def update_proposal_status(
     session: AsyncSession,
     proposal_id: uuid_mod.UUID,
@@ -456,12 +522,7 @@ async def update_proposal_status(
     ``None`` (the default) skips the check entirely, preserving the pre-phaze-exivg behavior for
     every caller that does not carry a render-time token.
     """
-    stmt = update(RenameProposal).where(RenameProposal.id == proposal_id)
-    if allowed_from is not None:
-        stmt = stmt.where(RenameProposal.status.in_([s.value for s in allowed_from]))
-    if expected_updated_at is not None:
-        stmt = stmt.where(RenameProposal.updated_at == expected_updated_at)
-    stmt = stmt.values(status=new_status.value)
+    stmt = _guarded_status_update(proposal_id, new_status, allowed_from, expected_updated_at)
     try:
         cursor_result: Any = await session.execute(stmt)
         await session.commit()
@@ -472,24 +533,7 @@ async def update_proposal_status(
         raise ProposalPendingConflictError(str(proposal_id)) from exc
 
     if int(cursor_result.rowcount) == 0:
-        # The conditional UPDATE matched nothing: either the proposal does not exist, its current
-        # status is outside the allowed set (when allowed_from is set), or its updated_at no longer
-        # matches the caller's token (when expected_updated_at is set). Re-read to distinguish which.
-        current = await session.execute(select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id))
-        proposal = current.scalar_one_or_none()
-        if proposal is None:
-            return None
-        if allowed_from is not None and proposal.status not in {s.value for s in allowed_from}:
-            raise ProposalTransitionError(proposal.status, new_status.value)
-        if expected_updated_at is not None and proposal.updated_at != expected_updated_at:
-            raise ProposalStaleWriteError(str(proposal_id))
-        if allowed_from is not None:
-            # allowed_from was satisfied and (if checked) the token matched, yet the guarded
-            # UPDATE still matched nothing -- a fresh row swap between the UPDATE and this
-            # re-SELECT. Keep refusing rather than silently reporting success on a re-read that
-            # is already stale itself.
-            raise ProposalTransitionError(proposal.status, new_status.value)
-        return proposal
+        return await _explain_unmatched_status_update(session, proposal_id, new_status, allowed_from, expected_updated_at)
 
     # Re-fetch with selectinload to ensure file relationship is available
     # (session.refresh does not honor selectinload on lazy='raise' relationships)

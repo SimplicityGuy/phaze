@@ -56,7 +56,7 @@ from phaze.enums.tracklist_candidate import CacheDecision, CandidateClass
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.metadata import FileMetadata
-from phaze.models.tracklist import Tracklist, TracklistTrack
+from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.models.tracklist_priority_flag import TracklistPriorityFlag
 from phaze.services.tracklist_candidate_queue import CUE_FILE_TYPE
 from phaze.services.tracklist_candidates import CandidateSignals, classify, detect_embedded_tracklist, group_unique_sets
@@ -86,6 +86,32 @@ async def flag_file_for_lookup(session: AsyncSession, file_id: uuid.UUID, *, now
     """
     moment = now or datetime.now(UTC)
     statement = pg_insert(TracklistPriorityFlag).values(file_id=file_id, created_at=moment, updated_at=moment)
+    upsert = statement.on_conflict_do_update(index_elements=[TracklistPriorityFlag.file_id], set_={"updated_at": moment})
+    await session.execute(upsert)
+
+
+async def flag_files_for_lookup(session: AsyncSession, file_ids: Collection[uuid.UUID], *, now: datetime | None = None) -> None:
+    """Upsert the priority flag for a whole set at once -- the bulk twin of :func:`flag_file_for_lookup`.
+
+    phaze-vu88k.4: added for :func:`phaze.tasks.tracklist.refresh_tracklists`, which flagged every
+    file a refreshed page serves one round trip at a time. Bulk for exactly the reason
+    :func:`clear_flags` gives directly below: a page can serve many files and this runs inside the
+    caller's transaction, where a round trip per file is pure cost.
+
+    Semantically identical to calling :func:`flag_file_for_lookup` per id -- the same
+    ``ON CONFLICT DO UPDATE`` on the same index, so a double-flag still re-confirms rather than
+    raising. Empty input is a no-op, not an unfiltered INSERT.
+
+    ONE deliberate difference: every row in the set is stamped with ONE ``moment`` rather than each
+    getting its own ``datetime.now(UTC)`` microseconds apart. Nothing can rely on that ordering --
+    the per-file caller this replaces iterated a ``set``, so the relative stamps were already in
+    arbitrary hash order rather than any meaningful sequence.
+    """
+    ids = list(file_ids)
+    if not ids:
+        return
+    moment = now or datetime.now(UTC)
+    statement = pg_insert(TracklistPriorityFlag).values([{"file_id": fid, "created_at": moment, "updated_at": moment} for fid in ids])
     upsert = statement.on_conflict_do_update(index_elements=[TracklistPriorityFlag.file_id], set_={"updated_at": moment})
     await session.execute(upsert)
 
@@ -165,6 +191,7 @@ class FileTracklistReview:
     file_id: uuid.UUID
     flagged: bool
     tracklist: Tracklist | None
+    latest_version: TracklistVersion | None
     tracks: tuple[TracklistTrack, ...]
     is_propagated: bool
     cache_entry: TracklistLookupCache | None
@@ -248,8 +275,10 @@ async def get_file_tracklist_review(session: AsyncSession, file_id: uuid.UUID) -
     tracklist = tracklist_result.scalar_one_or_none()
 
     if tracklist is not None:
+        latest_version: TracklistVersion | None = None
         tracks: tuple[TracklistTrack, ...] = ()
         if tracklist.latest_version_id is not None:
+            latest_version = await session.get(TracklistVersion, tracklist.latest_version_id)
             track_result = await session.execute(
                 select(TracklistTrack).where(TracklistTrack.version_id == tracklist.latest_version_id).order_by(TracklistTrack.position)
             )
@@ -258,6 +287,7 @@ async def get_file_tracklist_review(session: AsyncSession, file_id: uuid.UUID) -
             file_id=file_id,
             flagged=flagged,
             tracklist=tracklist,
+            latest_version=latest_version,
             tracks=tracks,
             is_propagated=tracklist.propagated_from_set_key is not None,
             cache_entry=None,
@@ -269,6 +299,7 @@ async def get_file_tracklist_review(session: AsyncSession, file_id: uuid.UUID) -
         file_id=file_id,
         flagged=flagged,
         tracklist=None,
+        latest_version=None,
         tracks=(),
         is_propagated=False,
         cache_entry=cache_entry,

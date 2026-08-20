@@ -84,6 +84,7 @@ async def drain_tracklists(
     agent_id: str | None = None,
     include_unknown: bool = False,
     flagged_file_ids: Sequence[str] | None = None,
+    target_file_ids: Sequence[str] | None = None,
     propagation_min_confidence: str | None = None,
 ) -> dict[str, Any]:
     """Run one bounded slice of the drain and report what it spent and what it wrote.
@@ -97,6 +98,9 @@ async def drain_tracklists(
             a wrong guess costs a request that cannot be reclaimed, and the undecided tail is
             precisely the population where the classifier has no evidence.
         flagged_file_ids: files the operator wants answered first; their sets sort to the front.
+        target_file_ids: restrict this slice to the unique set containing one of these files.
+            Used by the per-file record action so a race can result only in that set or no work,
+            never an unrelated lookup.
         propagation_min_confidence: a ``DuplicateConfidence`` value. Defaults to ``exact``.
 
     Returns:
@@ -114,6 +118,7 @@ async def drain_tracklists(
             agent_id=agent_id,
             include_unknown=include_unknown,
             flagged_file_ids=_parse_file_ids(flagged_file_ids),
+            target_file_ids=_parse_file_ids(target_file_ids),
             propagation_min=gate,
         )
     finally:

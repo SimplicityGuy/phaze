@@ -139,39 +139,51 @@ class BaseSettings(PydanticBaseSettings):
         present_upper = {str(key).upper() for key in data}
 
         for field_name in cls.SECRET_FILE_FIELDS:
-            field_info = cls.model_fields.get(field_name)
-            if field_info is None:
-                continue
-
-            env_names = _direct_env_names(field_name, field_info)
-            # Precedence: an explicitly-set direct env var (or a value already
-            # merged from another source into `data`) always wins over `_FILE`.
-            if any(name.upper() in present_upper or name.upper() in env_upper for name in env_names):
-                continue
-
-            for env_name in env_names:
-                file_var = f"{env_name.upper()}_FILE"
-                if file_var not in env_upper:
-                    continue
-                path = env_upper[file_var]
-                # Inject under the field name; every in-scope field is matched
-                # either by name (no alias) or by an AliasChoices that includes
-                # the bare field name, so this key always resolves. The shared
-                # `_read_secret_file` helper (config_backends) applies the single
-                # strip-vs-verbatim rule both this env-`_FILE` path and the inline
-                # TOML `*_file` reader adopt (D-06: one rule, two call sites). Key
-                # material (SECRET_FILE_PRESERVE_WHITESPACE) is kept verbatim so its
-                # required trailing newline survives (WR-01); everything else is stripped.
-                try:
-                    data[field_name] = _read_secret_file(path, preserve_whitespace=field_name in cls.SECRET_FILE_PRESERVE_WHITESPACE)
-                except ValueError as exc:
-                    # Re-raise with the `<VAR>_FILE` name so the operator-facing message
-                    # still names the variable that pointed at the unreadable path.
-                    msg = f"{file_var} points to {path!r} which could not be read: {exc}"
-                    raise ValueError(msg) from exc
-                break
+            cls._resolve_one_secret_file(data, field_name, env_upper, present_upper)
 
         return data
+
+    @classmethod
+    def _resolve_one_secret_file(cls, data: dict[str, Any], field_name: str, env_upper: dict[str, str], present_upper: set[str]) -> None:
+        """Resolve ONE `SECRET_FILE_FIELDS` entry's `<ALIAS>_FILE` sibling into ``data``, in place.
+
+        Called once per field by :meth:`_resolve_secret_files`; carries that validator's precedence
+        rule verbatim. A no-op (leaving ``data`` untouched) when the field is not on the model, when
+        a direct env var / already-merged value is present, or when no `<ALIAS>_FILE` sibling is set.
+        The FIRST alias with a readable `_FILE` sibling wins and stops the search, exactly as the
+        inlined ``break`` did.
+        """
+        field_info = cls.model_fields.get(field_name)
+        if field_info is None:
+            return
+
+        env_names = _direct_env_names(field_name, field_info)
+        # Precedence: an explicitly-set direct env var (or a value already
+        # merged from another source into `data`) always wins over `_FILE`.
+        if any(name.upper() in present_upper or name.upper() in env_upper for name in env_names):
+            return
+
+        for env_name in env_names:
+            file_var = f"{env_name.upper()}_FILE"
+            if file_var not in env_upper:
+                continue
+            path = env_upper[file_var]
+            # Inject under the field name; every in-scope field is matched
+            # either by name (no alias) or by an AliasChoices that includes
+            # the bare field name, so this key always resolves. The shared
+            # `_read_secret_file` helper (config_backends) applies the single
+            # strip-vs-verbatim rule both this env-`_FILE` path and the inline
+            # TOML `*_file` reader adopt (D-06: one rule, two call sites). Key
+            # material (SECRET_FILE_PRESERVE_WHITESPACE) is kept verbatim so its
+            # required trailing newline survives (WR-01); everything else is stripped.
+            try:
+                data[field_name] = _read_secret_file(path, preserve_whitespace=field_name in cls.SECRET_FILE_PRESERVE_WHITESPACE)
+            except ValueError as exc:
+                # Re-raise with the `<VAR>_FILE` name so the operator-facing message
+                # still names the variable that pointed at the unreadable path.
+                msg = f"{file_var} points to {path!r} which could not be read: {exc}"
+                raise ValueError(msg) from exc
+            return
 
     # Database
     # Phase 29 CR-02: bind PHAZE_DATABASE_URL via validation_alias so the operator-
@@ -723,39 +735,68 @@ class ControlSettings(BaseSettings):
           * A `scope="cluster-specific"` bucket referenced by >1 kueue backend fails fast, naming the
             bucket id — the sharing-cardinality invariant (D-09). `scope="shared"` may be referenced
             by many.
+
+        Each bullet is one ``_reject_*`` helper below, called in the SAME order the list states.
+        The order is load-bearing, not cosmetic: the empty-registry check must precede every
+        cross-entry check (they all iterate ``self.backends``), and the D-09 cardinality check must
+        follow the whole D-08 resolution pass because it consumes that pass's accumulated
+        bucket -> backends map. Do not reorder these calls to group them differently.
         """
+        self._reject_empty_registry()
+        self._reject_duplicate_bucket_ids()
+        self._reject_duplicate_backend_ids()
+        self._reject_duplicate_compute_agent_refs()
+        self._reject_oversubscribed_cluster_specific_buckets(self._resolve_kueue_bucket_refs())
+        return self
+
+    def _reject_empty_registry(self) -> None:
+        """REG-04 / Pitfall 2: a present-but-empty ``backends = []`` refuses to boot."""
         if not self.backends:
             raise ValueError("backend registry resolved to empty — refusing to start (REG-04)")
-        # WR-03: fail fast on duplicate [[buckets]] ids. `bucket_by_id` (and s3_staging.resolve_bucket_config)
-        # build a `{b.id: b}` dict that silently collapses duplicates to whichever entry appears LAST in the
-        # TOML list — with distinct endpoint_url/creds per entry, a copy-paste id typo would then non-
-        # deterministically redirect every presign/cleanup for that id to the wrong bucket. Surface it at boot
-        # like every other registry invariant here (REG-05).
+
+    def _reject_duplicate_bucket_ids(self) -> None:
+        """WR-03 / REG-05: fail fast on duplicate ``[[buckets]]`` ids.
+
+        ``bucket_by_id`` (and s3_staging.resolve_bucket_config) build a ``{b.id: b}`` dict that
+        silently collapses duplicates to whichever entry appears LAST in the TOML list — with
+        distinct endpoint_url/creds per entry, a copy-paste id typo would then non-deterministically
+        redirect every presign/cleanup for that id to the wrong bucket. Surface it at boot like every
+        other registry invariant here.
+        """
         dupes = sorted(bid for bid, count in Counter(b.id for b in self.buckets).items() if count > 1)
         if dupes:
             raise ValueError(f"duplicate bucket ids in registry: {dupes} — each [[buckets]] id must be unique (REG-05)")
-        # phaze-1sgee: fail fast on a duplicate [[backends]] id, mirroring the WR-03 bucket-id Counter
-        # above. `resolve_compute_backend` (services/backends.py) builds a `{backend.id: backend}` dict
-        # over self.backends — the exact silently-collapses-to-LAST shape WR-03 guards against for
-        # buckets — and every backend's cap accounting scopes `COUNT(cloud_job WHERE backend_id ==
-        # self.id)`, so two entries sharing an id double-count each other's in-flight rows. Deliberately
-        # KIND-AGNOSTIC: a compute and a kueue entry sharing an id is the nastiest variant, because
-        # resolve_compute_backend (kind=="compute" filter) and the drain snapshot / non_local_backend_kinds
-        # (whichever came last) would then resolve genuinely inconsistent views of "the backend named
-        # <id>". Report both the offending ids and their kinds so the operator can find the copy-paste.
-        backend_id_counts = Counter(be.id for be in self.backends)
-        backend_dupes = sorted(bid for bid, count in backend_id_counts.items() if count > 1)
+
+    def _reject_duplicate_backend_ids(self) -> None:
+        """phaze-1sgee: fail fast on a duplicate ``[[backends]]`` id, mirroring the WR-03 bucket-id Counter.
+
+        ``resolve_compute_backend`` (services/backends.py) builds a ``{backend.id: backend}`` dict
+        over self.backends — the exact silently-collapses-to-LAST shape WR-03 guards against for
+        buckets — and every backend's cap accounting scopes ``COUNT(cloud_job WHERE backend_id ==
+        self.id)``, so two entries sharing an id double-count each other's in-flight rows.
+        Deliberately KIND-AGNOSTIC: a compute and a kueue entry sharing an id is the nastiest
+        variant, because resolve_compute_backend (kind=="compute" filter) and the drain snapshot /
+        non_local_backend_kinds (whichever came last) would then resolve genuinely inconsistent views
+        of "the backend named <id>". Report both the offending ids and their kinds so the operator
+        can find the copy-paste.
+        """
+        backend_dupes = sorted(bid for bid, count in Counter(be.id for be in self.backends).items() if count > 1)
         if backend_dupes:
             id_kinds = {bid: sorted(be.kind for be in self.backends if be.id == bid) for bid in backend_dupes}
             raise ValueError(f"duplicate backend ids in registry: {backend_dupes} (kinds: {id_kinds}) — each [[backends]] id must be unique")
-        # D-04: fail fast on a duplicate compute agent_ref. Plan 02 retired the ≤1-compute blanket
-        # fail-fast so N distinct compute agents dispatch in parallel; without this guard two compute
-        # backends naming the SAME agent_ref would silently double-bind (a copy-paste id typo routing two
-        # entries at one node). STATIC check only — a Counter over config values, mirroring the bucket-id
-        # idiom above. Per D-05 an agent_ref naming a not-yet-checked-in agent is LEGAL at boot (agents
-        # register dynamically via check-in), so this opens NO DB session; that path degrades to a runtime
-        # hold (Plan 03). Skip ``agent_ref is None`` so the per-variant ``_require_dispatch_fields``
-        # "requires an agent_ref" message is never masked by this container-level guard.
+
+    def _reject_duplicate_compute_agent_refs(self) -> None:
+        """D-04: fail fast on a duplicate compute ``agent_ref``.
+
+        Plan 02 retired the ≤1-compute blanket fail-fast so N distinct compute agents dispatch in
+        parallel; without this guard two compute backends naming the SAME agent_ref would silently
+        double-bind (a copy-paste id typo routing two entries at one node). STATIC check only — a
+        Counter over config values, mirroring the bucket-id idiom above. Per D-05 an agent_ref naming
+        a not-yet-checked-in agent is LEGAL at boot (agents register dynamically via check-in), so
+        this opens NO DB session; that path degrades to a runtime hold (Plan 03). Skip
+        ``agent_ref is None`` so the per-variant ``_require_dispatch_fields`` "requires an agent_ref"
+        message is never masked by this container-level guard.
+        """
         compute_agent_refs = [be.agent_ref for be in self.backends if isinstance(be, ComputeBackend) and be.agent_ref is not None]
         agent_dupes = sorted(ref for ref, count in Counter(compute_agent_refs).items() if count > 1)
         if agent_dupes:
@@ -763,39 +804,57 @@ class ControlSettings(BaseSettings):
             raise ValueError(
                 f"duplicate compute agent_ref(s) {agent_dupes} bound by backends {collisions} — each compute backend must bind a distinct agent_ref (D-04)"
             )
+
+    def _resolve_kueue_bucket_refs(self) -> dict[str, list[str]]:
+        """D-08: resolve every KueueBackend's ``buckets`` id-list, returning the D-09 reference map.
+
+        Raises on an unknown bucket id, a within-backend duplicate id, or an empty resolved set.
+        Returns ``{cluster-specific bucket id: [referencing backend id, ...]}`` for
+        :meth:`_reject_oversubscribed_cluster_specific_buckets` to apply the D-09 cardinality rule
+        to; a bucket referenced by no kueue backend is simply absent from the map.
+        """
         bucket_by_id = {b.id: b for b in self.buckets}
         cluster_specific_refs: dict[str, list[str]] = {}
         for be in self.backends:
             if not isinstance(be, KueueBackend):
                 continue
-            missing = [bid for bid in be.buckets if bid not in bucket_by_id]
-            if missing:
-                raise ValueError(f"backend {be.id!r} references unknown bucket ids {missing} (D-08)")
-            # phaze-ru9oe: fail fast on a duplicate bucket id WITHIN one backend's own `buckets`
-            # list (a copy-paste duplicate, not a cross-backend share). Left unchecked, resolving
-            # `be.buckets` positionally below appends `be.id` once per LIST ENTRY into
-            # `cluster_specific_refs`, so a single backend listing the same cluster-specific bucket
-            # twice falsely trips the D-09 cross-backend cardinality guard below — it reports the
-            # SAME backend id twice as if two distinct backends shared the bucket. For scope=shared
-            # the same duplicate silently double-weights the bucket in pick_bucket's candidates.
-            # Mirror the existing duplicate-id idiom (Counter over entries) used at 612/624.
-            within_backend_dupes = sorted(bid for bid, count in Counter(be.buckets).items() if count > 1)
-            if within_backend_dupes:
-                raise ValueError(
-                    f"backend {be.id!r} lists duplicate bucket ids {within_backend_dupes} in its own buckets list — each id must appear once"
-                )
-            resolved = [bucket_by_id[bid] for bid in be.buckets]
-            if not resolved:
-                raise ValueError(f"backend {be.id!r} (kueue) resolves to an empty bucket set (D-08)")
-            for bucket in resolved:
+            for bucket in self._resolved_buckets_for(be, bucket_by_id):
                 if bucket.scope == "cluster-specific":
                     cluster_specific_refs.setdefault(bucket.id, []).append(be.id)
+        return cluster_specific_refs
+
+    def _resolved_buckets_for(self, be: KueueBackend, bucket_by_id: dict[str, BucketConfig]) -> list[BucketConfig]:
+        """D-08: resolve ONE kueue backend's ``buckets`` id-list against the registry's buckets.
+
+        phaze-ru9oe: fail fast on a duplicate bucket id WITHIN one backend's own ``buckets`` list (a
+        copy-paste duplicate, not a cross-backend share). Left unchecked, resolving ``be.buckets``
+        positionally appends ``be.id`` once per LIST ENTRY into the caller's
+        ``cluster_specific_refs``, so a single backend listing the same cluster-specific bucket twice
+        falsely trips the D-09 cross-backend cardinality guard — it reports the SAME backend id twice
+        as if two distinct backends shared the bucket. For scope=shared the same duplicate silently
+        double-weights the bucket in pick_bucket's candidates. Mirrors the duplicate-id idiom
+        (Counter over entries) used by the sibling ``_reject_duplicate_*`` helpers.
+        """
+        missing = [bid for bid in be.buckets if bid not in bucket_by_id]
+        if missing:
+            raise ValueError(f"backend {be.id!r} references unknown bucket ids {missing} (D-08)")
+        within_backend_dupes = sorted(bid for bid, count in Counter(be.buckets).items() if count > 1)
+        if within_backend_dupes:
+            raise ValueError(
+                f"backend {be.id!r} lists duplicate bucket ids {within_backend_dupes} in its own buckets list — each id must appear once"
+            )
+        resolved = [bucket_by_id[bid] for bid in be.buckets]
+        if not resolved:
+            raise ValueError(f"backend {be.id!r} (kueue) resolves to an empty bucket set (D-08)")
+        return resolved
+
+    def _reject_oversubscribed_cluster_specific_buckets(self, cluster_specific_refs: dict[str, list[str]]) -> None:
+        """D-09: a ``scope="cluster-specific"`` bucket may be referenced by at most one kueue backend."""
         for bid, refs in cluster_specific_refs.items():
             if len(refs) > 1:
                 raise ValueError(
                     f"bucket {bid!r} is scope=cluster-specific but referenced by {len(refs)} kueue backends {refs} — at most one allowed (D-09)"
                 )
-        return self
 
     @model_validator(mode="after")
     def _enforce_redis_password_in_production(self) -> "ControlSettings":

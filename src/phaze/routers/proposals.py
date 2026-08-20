@@ -1,9 +1,8 @@
 """Proposal review UI router -- serves the approval workflow pages."""
 
-from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, NamedTuple
+from typing import Annotated
 import uuid
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -22,6 +21,7 @@ from phaze.models.proposal import APPROVE_REJECT_FROM, UNDO_FROM, ProposalStatus
 # the SAME builder its GET uses. The edge is one-way -- routers/shell.py does not import this
 # module -- so there is no cycle.
 from phaze.routers.shell import build_changes_review_context
+from phaze.services.analysis_timeline import build_analysis_timeline_context
 from phaze.services.collision import get_review_collision_ids
 from phaze.services.proposal_queries import (
     ProposalEditRefusedError,
@@ -270,79 +270,8 @@ TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(prefix="/proposals", tags=["proposals"])
 
-# Numeric coordinate spaces for server-rendered SVG. CSS scales these to fit;
-# coordinate attributes stay numeric-only so no essentia-derived string ever
-# reaches an SVG geometry attribute (XSS hardening, RESEARCH V5 / T-31-06-01).
-TIMELINE_W = 1000.0
-TIMELINE_H = 120.0
 SPARK_W = 80.0
 SPARK_H = 24.0
-
-
-class BpmSpark(NamedTuple):
-    """A rendered BPM spark: the numeric SVG ``points`` plus the min/max it spans.
-
-    ``lo``/``hi`` are numeric ``float``s taken straight from ``w.bpm`` (never
-    essentia strings) and are used ONLY as HTML label text -- they are deliberately
-    NOT written into any SVG geometry attribute, preserving the coordinate-numeric-only
-    XSS hardening invariant above. ``window_count`` is the number of bpm-bearing windows.
-    """
-
-    points: str
-    lo: float | None
-    hi: float | None
-    window_count: int
-
-
-def _bpm_spark(windows: Sequence[AnalysisWindow], total_sec: float, width: float, height: float) -> BpmSpark:
-    """Map fine-window BPM values onto a numeric ``x,y`` polyline path string.
-
-    Windows lacking a ``bpm`` are skipped. Coordinates are rounded floats only,
-    so the rendered ``points`` attribute can never carry injected markup. The
-    surfaced ``lo``/``hi`` (the min/max BPM) feed HTML gutter labels only.
-    """
-    pairs = [(w.start_sec, w.end_sec, b) for w in windows if (b := w.bpm) is not None]
-    if not pairs or total_sec <= 0:
-        return BpmSpark("", None, None, 0)
-    bpms = [b for _, _, b in pairs]
-    lo, hi = min(bpms), max(bpms)
-    span = hi - lo
-    coords: list[str] = []
-    for start_sec, end_sec, bpm in pairs:
-        midpoint = (start_sec + end_sec) / 2.0
-        x = midpoint / total_sec * width
-        # Higher BPM sits higher on the chart (smaller y in SVG's top-left origin).
-        y = height / 2.0 if span <= 0 else height - ((bpm - lo) / span) * height
-        coords.append(f"{x:.2f},{y:.2f}")
-    return BpmSpark(" ".join(coords), lo, hi, len(pairs))
-
-
-def _hue_for(label: str) -> int:
-    """Deterministically derive an integer HSL hue (0-359) from a label string.
-
-    Integer-only output keeps the ribbon colour a safe numeric CSS value while
-    giving each distinct key/mood/style a stable, distinguishable colour.
-    """
-    return sum(ord(c) for c in label) % 360
-
-
-def _ribbons(windows: Sequence[AnalysisWindow], attr: str, total_sec: float) -> list[dict[str, object]]:
-    """Build width-proportional ribbon descriptors for one lane (key/mood/style).
-
-    Each ribbon carries the raw ``label`` (rendered through Jinja2 autoescaping
-    by the template -- never ``| safe``), a numeric ``width_pct`` proportional to
-    the window's duration, and a numeric ``hue``.
-    """
-    if total_sec <= 0:
-        return []
-    ribbons: list[dict[str, object]] = []
-    for w in windows:
-        label = getattr(w, attr)
-        if label is None:
-            continue
-        width_pct = round((w.end_sec - w.start_sec) / total_sec * 100.0, 4)
-        ribbons.append({"label": label, "width_pct": width_pct, "hue": _hue_for(str(label))})
-    return ribbons
 
 
 @router.get("/", response_class=RedirectResponse)
@@ -463,15 +392,10 @@ async def proposal_timeline(
     result = await session.execute(stmt)
     windows = list(result.scalars().all())
 
-    fine = [w for w in windows if w.tier == "fine"]
-    coarse = [w for w in windows if w.tier == "coarse"]
-    total_sec = max((w.end_sec for w in windows), default=0.0)
-
     # phaze-w55w1: the Phase 44 AnalysisResult fetch that fed the "Sampled" badge and the
     # "Deepen analysis" button is gone with them (ADR-0007 §7) -- the timeline renders from
     # AnalysisWindow rows alone, which is the full coverage now that nothing is sampled.
 
-    spark = _bpm_spark(fine, total_sec, TIMELINE_W, TIMELINE_H)
     return templates.TemplateResponse(
         request=request,
         name="proposals/partials/analysis_timeline.html",
@@ -479,15 +403,7 @@ async def proposal_timeline(
             "request": request,
             "proposal": proposal,
             "file_id": file_id,
-            "has_windows": bool(windows),
-            "timeline_w": TIMELINE_W,
-            "timeline_h": TIMELINE_H,
-            "bpm_points": spark.points,
-            "bpm_lo": spark.lo,
-            "bpm_hi": spark.hi,
-            "key_ribbons": _ribbons(fine, "musical_key", total_sec),
-            "mood_ribbons": _ribbons(coarse, "mood", total_sec),
-            "style_ribbons": _ribbons(coarse, "style", total_sec),
+            **build_analysis_timeline_context(windows),
         },
     )
 
@@ -614,12 +530,18 @@ async def bulk_action(
         except (TypeError, ValueError):
             continue
     uuids = [token.proposal_id for token in reviewed]
+    # phaze-vu88k.4: the dedup test used to be `parsed not in uuids` against a LIST that grows as
+    # the loop runs -- O(n*m) over the submitted set. `seen` mirrors `uuids` for the membership
+    # test ONLY; `uuids` stays a list because the order it is built in is the order handed to
+    # bulk_update_status, and the same ids are appended in the same sequence as before.
+    seen = set(uuids)
     for pid in proposal_ids:
         try:
             parsed = uuid.UUID(pid)
         except ValueError:
             continue
-        if parsed not in uuids:
+        if parsed not in seen:
+            seen.add(parsed)
             uuids.append(parsed)
     # phaze-uu17: only PENDING rows may be bulk approved/rejected; terminal EXECUTED/FAILED
     # rows selected via the "All" tab are skipped, and count reflects only real transitions.

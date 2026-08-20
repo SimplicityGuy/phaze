@@ -45,7 +45,7 @@ This task spends ZERO host requests itself. It re-arms the drain and stops:
 
 1. It DROPS the ``tracklist_lookup_cache`` rows for the targeted pages, so the cache stops
    answering "found, never ask again" for those unique sets.
-2. It FLAGS the affected files (:func:`phaze.services.tracklist_priority.flag_file_for_lookup`).
+2. It FLAGS the affected files (:func:`phaze.services.tracklist_priority.flag_files_for_lookup`).
    A flag on an already-tracklisted file is the refresh signal itself: ``build_drain_queue`` lets
    it back past the already-tracklisted filter, and sorts it to the front.
 
@@ -69,11 +69,11 @@ import structlog
 from phaze.enums.tracklist_candidate import LookupOutcome
 from phaze.models.tracklist import Tracklist
 from phaze.models.tracklist_lookup_cache import TracklistLookupCache
-from phaze.services.tracklist_priority import flag_file_for_lookup
+from phaze.services.tracklist_priority import flag_files_for_lookup
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Collection, Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -147,15 +147,22 @@ async def _resolve_targets(session: AsyncSession, tracklist_ids: list[uuid.UUID]
     return list(by_id.values())
 
 
-async def _affected_file_ids(session: AsyncSession, external_id: str) -> set[uuid.UUID]:
-    """Every file this page currently serves -- the canonical row's file plus its projections.
+async def _affected_file_ids(session: AsyncSession, external_ids: Collection[str]) -> set[uuid.UUID]:
+    """Every file these pages currently serve -- each canonical row's file plus its projections.
 
     All of them are flagged, not just the canonical one, because propagation is re-derived from the
     unique set on the next lookup: flagging only the canonical file would refresh the page but
     leave the duplicates pointing at whatever the previous pass wrote if the set's membership has
     since changed.
+
+    phaze-vu88k.4: takes the whole set of pages rather than one page at a time. The caller flags
+    the UNION across every refreshed page, so asking per page cost one round trip each to build a
+    set that is then unioned anyway. Empty input is a no-op, not an unfiltered scan.
     """
-    result = await session.execute(select(Tracklist.file_id).where(Tracklist.external_id == external_id, Tracklist.file_id.is_not(None)))
+    ids = list(external_ids)
+    if not ids:
+        return set()
+    result = await session.execute(select(Tracklist.file_id).where(Tracklist.external_id.in_(ids), Tracklist.file_id.is_not(None)))
     return {file_id for file_id in result.scalars().all() if file_id is not None}
 
 
@@ -194,6 +201,12 @@ async def refresh_tracklists(
 
     async with ctx["async_session"]() as session:
         tracklists = await _resolve_targets(session, targets, files)
+        # phaze-vu88k.4: partition FIRST, then do each DB step ONCE for the whole refreshable set.
+        # The old shape ran a cache DELETE, an affected-files SELECT and one flag upsert PER FILE
+        # inside this loop, so refreshing K pages serving F files cost 2K + F round trips. The skip
+        # branch, its log line and every tally below are unchanged -- only the work for the
+        # refreshable remainder moved out of the loop.
+        refreshable: list[Tracklist] = []
         for tracklist in tracklists:
             if tracklist.source != REFRESHABLE_SOURCE or not tracklist.source_url:
                 logger.info(
@@ -203,25 +216,31 @@ async def refresh_tracklists(
                 )
                 skipped += 1
                 continue
+            refreshable.append(tracklist)
 
-            # Drop the cache's answer for this page. `record_outcome` keys on set_key, but the
+        if refreshable:
+            # Drop the cache's answer for these pages. `record_outcome` keys on set_key, but the
             # external_id is what a caller holding a Tracklist row actually knows, and the positive
             # rows carry it -- so this deletes exactly the entries that would otherwise keep saying
             # "found, never ask again". Anything else (a negative, a transient backoff) is left
             # alone: it is not what is being refreshed.
+            #
+            # One DELETE over every refreshed external_id reports the same total in `rowcount` as
+            # the per-page DELETEs summed to: a page whose entries an earlier iteration had already
+            # removed contributed 0 to that sum.
             deleted = await session.execute(
                 delete(TracklistLookupCache).where(
-                    TracklistLookupCache.external_id == tracklist.external_id,
+                    TracklistLookupCache.external_id.in_([tracklist.external_id for tracklist in refreshable]),
                     TracklistLookupCache.outcome == LookupOutcome.FOUND.value,
                 )
             )
-            cleared += cast("CursorResult[Any]", deleted).rowcount or 0
+            cleared = cast("CursorResult[Any]", deleted).rowcount or 0
 
-            page_files = await _affected_file_ids(session, tracklist.external_id)
-            for file_id in page_files:
-                await flag_file_for_lookup(session, file_id)
-            flagged |= page_files
-            refreshed += 1
+            # `flagged` was built by unioning each page's files, so asking for the union directly is
+            # the same set -- and one bulk upsert replaces one round trip per file.
+            flagged = await _affected_file_ids(session, [tracklist.external_id for tracklist in refreshable])
+            await flag_files_for_lookup(session, flagged)
+            refreshed = len(refreshable)
 
         await session.commit()
 

@@ -33,6 +33,7 @@ from phaze.services.tracklist_lookup_cache import record_outcome
 from phaze.services.tracklist_priority import (
     clear_flags,
     flag_file_for_lookup,
+    flag_files_for_lookup,
     get_file_tracklist_review,
     is_flagged,
     load_flagged_file_ids,
@@ -109,6 +110,49 @@ class TestFlagPersistence:
 
         assert await is_flagged(session, file.id) is False
 
+    async def test_flag_files_for_lookup_flags_a_whole_set_at_once(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """phaze-vu88k.4: the bulk twin of flag_file_for_lookup, used by refresh_tracklists.
+
+        One upsert must produce exactly what a per-id loop produced -- the point of the bulk form
+        is the round trips it saves, not a different result.
+        """
+        first = await make_file(original_filename=LIVE_SET_FILENAME)
+        second = await make_file(original_filename="Another Artist - Live @ Somewhere 2024-05-01.mp3")
+
+        await flag_files_for_lookup(session, [first.id, second.id], now=NOW)
+        await session.commit()
+
+        assert await load_flagged_file_ids(session) == {first.id, second.id}
+        assert await is_flagged(session, first.id) is True
+        assert await is_flagged(session, second.id) is True
+
+    async def test_flag_files_for_lookup_is_idempotent_over_an_already_flagged_file(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """ON CONFLICT DO UPDATE, exactly as the per-id form: re-flagging re-confirms, never raises.
+
+        Mixed input is the real refresh case -- a page whose files were flagged by an earlier
+        refresh and a newly-affected one arrive in the same set.
+        """
+        already = await make_file(original_filename=LIVE_SET_FILENAME)
+        fresh = await make_file(original_filename="Another Artist - Live @ Somewhere 2024-05-01.mp3")
+        await flag_file_for_lookup(session, already.id, now=NOW)
+        await session.commit()
+
+        await flag_files_for_lookup(session, [already.id, fresh.id], now=NOW)
+        await session.commit()
+
+        assert await load_flagged_file_ids(session) == {already.id, fresh.id}
+
+    async def test_flag_files_for_lookup_with_no_ids_is_a_noop_not_an_unfiltered_insert(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """Empty input must issue nothing -- an empty VALUES list would be a SQL error, not a no-op."""
+        file = await make_file(original_filename=LIVE_SET_FILENAME)
+        await flag_file_for_lookup(session, file.id, now=NOW)
+        await session.commit()
+
+        await flag_files_for_lookup(session, [])  # must not raise
+        await session.commit()
+
+        assert await load_flagged_file_ids(session) == {file.id}
+
     async def test_clear_flags_retires_a_whole_set_at_once(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
         """phaze-2akf: the drain's post-answer sweep, bulk over a unique set's members.
 
@@ -163,6 +207,7 @@ class TestFileTracklistReview:
 
         assert review is not None
         assert review.tracklist is None
+        assert review.latest_version is None
         assert review.cache_entry is None
         assert review.flagged is True
         assert review.eligible is True
@@ -316,6 +361,8 @@ class TestFileTracklistReview:
 
         assert review is not None
         assert review.tracklist is not None
+        assert review.latest_version is not None
+        assert review.latest_version.id == version.id
         assert review.is_propagated is propagated
         assert len(review.tracks) == 1
         assert review.tracks[0].title == "Opener"
