@@ -135,10 +135,19 @@ class TestTaskShell:
 
         monkeypatch.setattr(task_module, "drain_once", capture)
         flagged = uuid.uuid4()
-        await drain_tracklists(ctx_for(session), limit=7, flagged_file_ids=[str(flagged)], propagation_min_confidence="high", agent_id="a1")
+        target = uuid.uuid4()
+        await drain_tracklists(
+            ctx_for(session),
+            limit=7,
+            flagged_file_ids=[str(flagged)],
+            target_file_ids=[str(target)],
+            propagation_min_confidence="high",
+            agent_id="a1",
+        )
 
         assert seen["propagation_min"] is DuplicateConfidence.HIGH
         assert seen["flagged_file_ids"] == [flagged]
+        assert seen["target_file_ids"] == [target]
         assert (seen["limit"], seen["agent_id"]) == (7, "a1")
 
 
