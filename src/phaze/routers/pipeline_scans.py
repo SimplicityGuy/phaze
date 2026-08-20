@@ -23,6 +23,7 @@ The agent-roots swap (`GET /pipeline/scans/agent-roots`) re-renders the
 populated; missing/revoked/empty agents render the yellow-surface empty state.
 """
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Annotated
@@ -415,6 +416,169 @@ async def delete_scan(
     )
 
 
+async def _mark_scan_batch_failed(session: AsyncSession, batch: ScanBatch) -> None:
+    """Best-effort flip of a just-created batch to FAILED after its enqueue failed (WR-06).
+
+    WR-06: this path used to ``session.delete(batch)`` + commit, and when THAT also raised --
+    the same network fault that broke the enqueue could equally have taken Postgres out, or the
+    session was already tainted -- the exception escaped :func:`trigger_scan`. FastAPI then
+    returned a generic 500 (losing the documented alert copy) and the orphan RUNNING ScanBatch
+    stayed visible in Recent Scans forever, because nothing was ever enqueued to PATCH it.
+
+    Marking FAILED instead of deleting keeps the operator's evidence of the attempt, with a
+    clear ``error_message``. The secondary commit keeps its own ``try``/``except`` for the same
+    WR-06 reason: a Postgres-down scenario must still let the caller render its alert envelope,
+    and the original cause has already been logged by the caller.
+    """
+    batch.status = ScanStatus.FAILED.value
+    batch.error_message = "controller could not enqueue scan to agent worker"
+    try:
+        await session.commit()
+    except Exception:
+        logger.exception("scan trigger: secondary commit failed for batch=%s", batch.id)
+        await session.rollback()
+
+
+def _scan_root_violation(agent: Agent, form: TriggerScanForm, joined: str) -> str | None:
+    """The layer-5 refusal message, or None when ``joined`` sits inside a configured scan root.
+
+    Answers ONE question -- "is this agent configured to scan this path?" -- so the membership
+    gate (WR-05) and the containment gate (D-06) cannot drift onto different normalization
+    axes, which is exactly the phaze-g0if / phaze-0wme defect recorded below.
+    """
+    # phaze-g0if: `joined` is NFC-normalized (above), but `agent.scan_roots` is stored verbatim --
+    # nothing upstream (TriggerScanForm, the CLI's `add_agent`, or the JSONB column itself)
+    # normalizes it. A root configured in a non-NFC form (NFD is the norm for paths sourced from an
+    # HFS+/macOS agent, e.g. "Café" decomposed as "Cafe" + combining acute) then byte-differs from
+    # its own NFC-normalized self, so a raw-vs-raw membership check can pass while the
+    # NFC-vs-raw prefix check below it fails for the SAME root -- rejecting a legitimately
+    # configured, un-traversed scan. Normalize every `r` (and the membership check's left side) to
+    # NFC so the membership gate, the prefix gate, and the persisted `scan_path` (`joined`, already
+    # NFC) all agree on one normalization form.
+    # phaze-0wme: canonicalize `agent.scan_roots` (and the submitted `scan_root`) the same way
+    # `joined` was collapsed above, so a root stored with a trailing slash (e.g. "/archive/")
+    # byte-agrees with its own collapsed self instead of spuriously failing the membership /
+    # prefix checks below -- the same normalization-axis bug phaze-g0if already fixed for NFC.
+    scan_root_nfc = str(PurePosixPath(unicodedata.normalize("NFC", form.scan_root)))
+    scan_roots_nfc = [str(PurePosixPath(unicodedata.normalize("NFC", r))) for r in agent.scan_roots]
+
+    # WR-05: the form-submitted ``scan_root`` MUST itself be one of the agent's
+    # configured ``scan_roots``. Previously only the joined ``scan_root + '/' +
+    # subpath`` was validated against the prefix list, which allowed a partial
+    # match like ``scan_root="/data"`` + ``subpath="music/foo"`` to authorize
+    # ``/data/music/foo`` even though ``/data`` itself was never configured. The
+    # planning invariant documents ``scan_root rejected when not in selected
+    # agent's scan_roots``; tighten the check to require literal membership.
+    if scan_root_nfc not in scan_roots_nfc:
+        return "Selected scan root is not configured for this agent."
+
+    # D-06 prefix validation: joined path must match (or descend from) one of
+    # the agent's configured scan_roots. Strip trailing slash on roots so
+    # `"/data/music"` matches both `"/data/music"` and `"/data/music/2026"`.
+    if not any(joined == r or joined.startswith(r.rstrip("/") + "/") for r in scan_roots_nfc):
+        return "Resolved path is outside the selected scan root."
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class _ScanTarget:
+    """A validated scan target: the resolved agent plus the canonical path to walk.
+
+    ``scan_path`` is the collapsed, NFC-normalized string -- the ONE spelling that feeds
+    ``ScanBatch.scan_path`` and therefore ``uq_scan_batches_agent_id_scan_path_running``
+    (migration 044, phaze-1a71). See :func:`_resolve_scan_target` for why that matters.
+    """
+
+    agent: Agent
+    scan_path: str
+
+
+async def _resolve_scan_target(request: Request, session: AsyncSession, form: TriggerScanForm) -> _ScanTarget | HTMLResponse:
+    """Run :func:`trigger_scan`'s five validation layers (T-27-03).
+
+    Returns the resolved :class:`_ScanTarget` on success, or the rendered
+    ``scan_submit_error.html`` alert card on refusal -- every layer refuses through
+    :func:`_scan_submit_error`, so the handler's STATUS CONTRACT holds for all of them.
+
+    The layers are ORDER-DEPENDENT and each inline comment below records the incident that
+    fixed its position; do not reorder them:
+
+    1. NFC-normalize the joined ``scan_root + '/' + subpath`` (Pitfall 3).
+    2. Reject NUL / lone surrogates (phaze-jpji).
+    3. Reject a literal ``..`` path component (WR-01), BEFORE any canonicalization (phaze-0wme).
+    4. Look up the agent; reject if missing or revoked.
+    5. Enforce literal scan_root membership (WR-05) and prefix containment (D-06), both on the
+       same normalization axis (phaze-g0if, phaze-0wme).
+    """
+    # Phase 27 D-06 + T-27-03: join, NFC-normalize, reject ".." traversal.
+    #
+    # WR-01: check ".." as a path *component*, not a substring. The simple
+    # ``".." in joined`` rejected any legitimate filename containing the literal
+    # substring ``..`` (e.g., ``"...thinking.mp3"``, ``"Album...Live"``,
+    # ``"..notes/file.mp3"``). Splitting on path separators and asserting that
+    # no component is exactly ``..`` blocks the intended traversal pattern
+    # (``../../etc/passwd``) without false-positives on triple-dot filenames.
+    joined_raw = f"{form.scan_root.rstrip('/')}/{form.subpath.lstrip('/')}" if form.subpath else form.scan_root
+    joined = unicodedata.normalize("NFC", joined_raw)
+
+    # phaze-jpji: NUL (U+0000) survives NFC normalization, is not a ".." component, and does
+    # not break the scan_root membership/prefix checks below -- so a NUL-bearing subpath sailed
+    # through every other layer and 500'd at `session.commit()` (asyncpg
+    # CharacterNotInRepertoireError; PostgreSQL cannot store NUL in a UTF8 text column),
+    # violating this handler's documented contract that EVERY failure branch renders
+    # scan_submit_error.html. Reject explicitly rather than sanitize: silently stripping the
+    # NUL (services.pg_text.sanitize_pg_text) would point the scan at a DIFFERENT filesystem
+    # path than the operator typed, which is worse than refusing the request outright. A NUL
+    # -- or a lone surrogate, which PostgreSQL equally cannot store -- is never legitimate in a
+    # filesystem path.
+    if contains_pg_invalid_chars(joined):
+        return _scan_submit_error(request, "Subpath must not contain NUL bytes or invalid Unicode.")
+
+    if ".." in PurePosixPath(joined).parts:
+        return _scan_submit_error(request, "Subpath must not contain '..' path traversal.")
+
+    # phaze-0wme: collapse to a canonical form AFTER the ".." rejection above, never before --
+    # PurePosixPath would silently resolve ".." components if it ran first, making traversal
+    # invisible. `str(PurePosixPath(joined))` drops a trailing slash, duplicate internal
+    # slashes, and "." components, so every spelling of the same directory
+    # (`"2026"`, `"2026/"`, `"/2026//"`, `"./2026"`) collapses to one string. This value --
+    # not `joined_raw` -- is what feeds the prefix check below, `ScanBatch.scan_path`, and
+    # therefore `uq_scan_batches_agent_id_scan_path_running` (migration 044, phaze-1a71): all
+    # three must agree on one canonical string or the partial-unique duplicate-dispatch guard
+    # can be bypassed by a differently-spelled resubmit of the same path.
+    joined = str(PurePosixPath(joined))
+
+    # Lookup agent; reject unknown/revoked. Server-side authoritative gate even
+    # though the dropdown filters revoked agents client-side (defensive per
+    # threat model "Revoked agent attempting to be selected via direct POST").
+    agent = await session.get(Agent, form.agent_id)
+    if agent is None or agent.revoked_at is not None:
+        return _scan_submit_error(request, "Unknown or revoked agent.")
+
+    violation = _scan_root_violation(agent, form, joined)
+    if violation is not None:
+        return _scan_submit_error(request, violation)
+
+    return _ScanTarget(agent=agent, scan_path=joined)
+
+
+def _scan_submit_error(request: Request, error_message: str) -> HTMLResponse:
+    """Render the shared scan-submit alert card.
+
+    EVERY failure branch of :func:`trigger_scan` renders THIS card with
+    :data:`~phaze.routers.response_shape.RENDERABLE_ALERT_STATUS` (200) -- see that handler's
+    STATUS CONTRACT docstring (phaze-u1gf, ``routers/response_shape.py`` rule 3) for why a
+    renderable alert is a 200 and not the 400/503 it used to be. Centralized so the contract
+    has exactly one render site rather than seven copies to keep in agreement.
+    """
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/scan_submit_error.html",
+        context={"request": request, "error_message": error_message},
+        status_code=RENDERABLE_ALERT_STATUS,
+    )
+
+
 @router.post("", response_class=HTMLResponse)
 async def trigger_scan(
     request: Request,
@@ -435,15 +599,16 @@ async def trigger_scan(
 ) -> HTMLResponse:
     """Form submit: validate, create ScanBatch, enqueue `scan_directory`.
 
-    Validation layers (T-27-03):
+    Validation layers (T-27-03) all live in :func:`_resolve_scan_target`, whose inline
+    comments record the incident behind each one:
+
     1. NFC-normalize the joined `scan_root + '/' + subpath` (Pitfall 3).
-    2. Reject NUL (U+0000) / lone surrogates in the joined path (phaze-jpji) -- see the
-       inline comment below; PostgreSQL cannot store these in a UTF8 text column and none
-       of the other three layers happen to catch them.
-    3. Reject literal `..` as a path component (WR-01, see the inline comment below --
-       not a bare substring check, to avoid false-positives on triple-dot filenames).
+    2. Reject NUL (U+0000) / lone surrogates in the joined path (phaze-jpji); PostgreSQL
+       cannot store these in a UTF8 text column and none of the other layers catch them.
+    3. Reject literal `..` as a path component (WR-01 -- not a bare substring check, to
+       avoid false-positives on triple-dot filenames).
     4. Look up the agent; reject if missing or revoked.
-    5. Enforce prefix-against `agent.scan_roots` (D-06).
+    5. Enforce prefix-against `agent.scan_roots` (D-06), in :func:`_scan_root_violation`.
 
     On success: create a RUNNING ScanBatch, enqueue `scan_directory`, return
     the in-progress `scan_progress_card.html` for HTMX swap.
@@ -474,107 +639,11 @@ async def trigger_scan(
     """
     form = TriggerScanForm(agent_id=agent_id, scan_root=scan_root, subpath=subpath)
 
-    # Phase 27 D-06 + T-27-03: join, NFC-normalize, reject ".." traversal.
-    #
-    # WR-01: check ".." as a path *component*, not a substring. The simple
-    # ``".." in joined`` rejected any legitimate filename containing the literal
-    # substring ``..`` (e.g., ``"...thinking.mp3"``, ``"Album...Live"``,
-    # ``"..notes/file.mp3"``). Splitting on path separators and asserting that
-    # no component is exactly ``..`` blocks the intended traversal pattern
-    # (``../../etc/passwd``) without false-positives on triple-dot filenames.
-    joined_raw = f"{form.scan_root.rstrip('/')}/{form.subpath.lstrip('/')}" if form.subpath else form.scan_root
-    joined = unicodedata.normalize("NFC", joined_raw)
-
-    # phaze-jpji: NUL (U+0000) survives NFC normalization, is not a ".." component, and does
-    # not break the scan_root membership/prefix checks below -- so a NUL-bearing subpath sailed
-    # through every other layer and 500'd at `session.commit()` (asyncpg
-    # CharacterNotInRepertoireError; PostgreSQL cannot store NUL in a UTF8 text column),
-    # violating this handler's documented contract that EVERY failure branch renders
-    # scan_submit_error.html. Reject explicitly rather than sanitize: silently stripping the
-    # NUL (services.pg_text.sanitize_pg_text) would point the scan at a DIFFERENT filesystem
-    # path than the operator typed, which is worse than refusing the request outright. A NUL
-    # -- or a lone surrogate, which PostgreSQL equally cannot store -- is never legitimate in a
-    # filesystem path.
-    if contains_pg_invalid_chars(joined):
-        return templates.TemplateResponse(
-            request=request,
-            name="pipeline/partials/scan_submit_error.html",
-            context={"request": request, "error_message": "Subpath must not contain NUL bytes or invalid Unicode."},
-            status_code=RENDERABLE_ALERT_STATUS,
-        )
-
-    if ".." in PurePosixPath(joined).parts:
-        return templates.TemplateResponse(
-            request=request,
-            name="pipeline/partials/scan_submit_error.html",
-            context={"request": request, "error_message": "Subpath must not contain '..' path traversal."},
-            status_code=RENDERABLE_ALERT_STATUS,
-        )
-
-    # phaze-0wme: collapse to a canonical form AFTER the ".." rejection above, never before --
-    # PurePosixPath would silently resolve ".." components if it ran first, making traversal
-    # invisible. `str(PurePosixPath(joined))` drops a trailing slash, duplicate internal
-    # slashes, and "." components, so every spelling of the same directory
-    # (`"2026"`, `"2026/"`, `"/2026//"`, `"./2026"`) collapses to one string. This value --
-    # not `joined_raw` -- is what feeds the prefix check below, `ScanBatch.scan_path`, and
-    # therefore `uq_scan_batches_agent_id_scan_path_running` (migration 044, phaze-1a71): all
-    # three must agree on one canonical string or the partial-unique duplicate-dispatch guard
-    # can be bypassed by a differently-spelled resubmit of the same path.
-    joined = str(PurePosixPath(joined))
-
-    # Lookup agent; reject unknown/revoked. Server-side authoritative gate even
-    # though the dropdown filters revoked agents client-side (defensive per
-    # threat model "Revoked agent attempting to be selected via direct POST").
-    agent = await session.get(Agent, form.agent_id)
-    if agent is None or agent.revoked_at is not None:
-        return templates.TemplateResponse(
-            request=request,
-            name="pipeline/partials/scan_submit_error.html",
-            context={"request": request, "error_message": "Unknown or revoked agent."},
-            status_code=RENDERABLE_ALERT_STATUS,
-        )
-
-    # phaze-g0if: `joined` is NFC-normalized (above), but `agent.scan_roots` is stored verbatim --
-    # nothing upstream (TriggerScanForm, the CLI's `add_agent`, or the JSONB column itself)
-    # normalizes it. A root configured in a non-NFC form (NFD is the norm for paths sourced from an
-    # HFS+/macOS agent, e.g. "Café" decomposed as "Cafe" + combining acute) then byte-differs from
-    # its own NFC-normalized self, so a raw-vs-raw membership check can pass while the
-    # NFC-vs-raw prefix check below it fails for the SAME root -- rejecting a legitimately
-    # configured, un-traversed scan. Normalize every `r` (and the membership check's left side) to
-    # NFC so the membership gate, the prefix gate, and the persisted `scan_path` (`joined`, already
-    # NFC) all agree on one normalization form.
-    # phaze-0wme: canonicalize `agent.scan_roots` (and the submitted `scan_root`) the same way
-    # `joined` was collapsed above, so a root stored with a trailing slash (e.g. "/archive/")
-    # byte-agrees with its own collapsed self instead of spuriously failing the membership /
-    # prefix checks below -- the same normalization-axis bug phaze-g0if already fixed for NFC.
-    scan_root_nfc = str(PurePosixPath(unicodedata.normalize("NFC", form.scan_root)))
-    scan_roots_nfc = [str(PurePosixPath(unicodedata.normalize("NFC", r))) for r in agent.scan_roots]
-
-    # WR-05: the form-submitted ``scan_root`` MUST itself be one of the agent's
-    # configured ``scan_roots``. Previously only the joined ``scan_root + '/' +
-    # subpath`` was validated against the prefix list, which allowed a partial
-    # match like ``scan_root="/data"`` + ``subpath="music/foo"`` to authorize
-    # ``/data/music/foo`` even though ``/data`` itself was never configured. The
-    # planning invariant documents ``scan_root rejected when not in selected
-    # agent's scan_roots``; tighten the check to require literal membership.
-    if scan_root_nfc not in scan_roots_nfc:
-        return templates.TemplateResponse(
-            request=request,
-            name="pipeline/partials/scan_submit_error.html",
-            context={"request": request, "error_message": "Selected scan root is not configured for this agent."},
-            status_code=RENDERABLE_ALERT_STATUS,
-        )
-
-    # D-06 prefix validation: joined path must match (or descend from) one of
-    # the agent's configured scan_roots. Strip trailing slash on roots so
-    # `"/data/music"` matches both `"/data/music"` and `"/data/music/2026"`.
-    if not any(joined == r or joined.startswith(r.rstrip("/") + "/") for r in scan_roots_nfc):
-        return templates.TemplateResponse(
-            request=request,
-            name="pipeline/partials/scan_submit_error.html",
-            context={"request": request, "error_message": "Resolved path is outside the selected scan root."},
-            status_code=RENDERABLE_ALERT_STATUS,
-        )
+    resolved = await _resolve_scan_target(request, session, form)
+    if isinstance(resolved, HTMLResponse):
+        return resolved
+    agent = resolved.agent
+    joined = resolved.scan_path
 
     # Create RUNNING ScanBatch (D-08 + D-14).
     batch = ScanBatch(
@@ -600,12 +669,7 @@ async def trigger_scan(
         await session.commit()
     except IntegrityError:
         await session.rollback()
-        return templates.TemplateResponse(
-            request=request,
-            name="pipeline/partials/scan_submit_error.html",
-            context={"request": request, "error_message": "A scan is already running for this path."},
-            status_code=RENDERABLE_ALERT_STATUS,
-        )
+        return _scan_submit_error(request, "A scan is already running for this path.")
     # phaze-266lc: no ``session.refresh(batch)`` here. The sessionmaker is
     # ``expire_on_commit=False`` (database.py), so ``batch``'s attributes already survive the
     # commit above without a refresh -- the refresh was redundant and its sole effect was to
@@ -669,22 +733,8 @@ async def trigger_scan(
         )
     except Exception:
         logger.exception("scan trigger: enqueue failed for batch=%s; marking FAILED", batch.id)
-        batch.status = ScanStatus.FAILED.value
-        batch.error_message = "controller could not enqueue scan to agent worker"
-        try:
-            await session.commit()
-        except Exception:
-            # Don't let a rollback-commit failure escape the handler; the
-            # operator's 503 envelope is more important than the orphan-row
-            # cleanup, and we already logged the original cause above.
-            logger.exception("scan trigger: secondary commit failed for batch=%s", batch.id)
-            await session.rollback()
-        return templates.TemplateResponse(
-            request=request,
-            name="pipeline/partials/scan_submit_error.html",
-            context={"request": request, "error_message": "The application server could not enqueue the scan. Try again in a moment."},
-            status_code=RENDERABLE_ALERT_STATUS,
-        )
+        await _mark_scan_batch_failed(session, batch)
+        return _scan_submit_error(request, "The application server could not enqueue the scan. Try again in a moment.")
 
     # Render scan_progress_card.html in RUNNING state for HTMX swap.
     return templates.TemplateResponse(

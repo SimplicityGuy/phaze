@@ -50,6 +50,32 @@ templates.env.filters["filesizeformat"] = _filesizeformat
 router = APIRouter(prefix="/duplicates", tags=["duplicates"])
 
 
+# (column, prefer, positive_only) -- the four numeric columns the duplicate table marks a
+# "best" value for, in render order. ``prefer`` is the selector applied to the surviving
+# (file_id, value) pairs: ``min`` for file_size (smallest wins), ``max`` for the rest.
+# ``positive_only`` additionally drops non-positive values, which bitrate and duration treat
+# as "absent" rather than as a genuine low reading.
+_BEST_VALUE_COLUMNS: tuple[tuple[str, Any, bool], ...] = (
+    ("file_size", min, False),
+    ("bitrate", max, True),
+    ("duration", max, True),
+    ("tag_filled", max, False),
+)
+
+
+def _best_file_for_column(files: list[dict[str, Any]], column: str, prefer: Any, positive_only: bool) -> Any:
+    """The id of the file holding the best value for ``column``, or None when there is no best.
+
+    "No best" covers both degenerate cases the table must not mark a winner for: nothing has a
+    usable value, and everything that does shares the SAME value (a highlight would then be
+    arbitrary among ties).
+    """
+    valid = [(f["id"], f[column]) for f in files if f.get(column) is not None and (not positive_only or f[column] > 0)]
+    if not valid or len({value for _, value in valid}) < 2:
+        return None
+    return prefer(valid, key=lambda pair: pair[1])[0]
+
+
 def _compute_best_values(group: dict[str, Any]) -> dict[str, str]:
     """Compute which file has the best value for each numeric column.
 
@@ -61,27 +87,10 @@ def _compute_best_values(group: dict[str, Any]) -> dict[str, str]:
     """
     files = group["files"]
     best: dict[str, str] = {}
-
-    # file_size: smallest is best
-    valid = [(f["id"], f["file_size"]) for f in files if f.get("file_size") is not None]
-    if valid and len({v for _, v in valid}) > 1:
-        best["file_size"] = min(valid, key=lambda x: x[1])[0]
-
-    # bitrate: highest is best
-    valid = [(f["id"], f["bitrate"]) for f in files if f.get("bitrate") is not None and f["bitrate"] > 0]
-    if valid and len({v for _, v in valid}) > 1:
-        best["bitrate"] = max(valid, key=lambda x: x[1])[0]
-
-    # duration: longest is best
-    valid = [(f["id"], f["duration"]) for f in files if f.get("duration") is not None and f["duration"] > 0]
-    if valid and len({v for _, v in valid}) > 1:
-        best["duration"] = max(valid, key=lambda x: x[1])[0]
-
-    # tag_filled: most is best
-    valid = [(f["id"], f["tag_filled"]) for f in files if f.get("tag_filled") is not None]
-    if valid and len({v for _, v in valid}) > 1:
-        best["tag_filled"] = max(valid, key=lambda x: x[1])[0]
-
+    for column, prefer, positive_only in _BEST_VALUE_COLUMNS:
+        winner = _best_file_for_column(files, column, prefer, positive_only)
+        if winner is not None:
+            best[column] = winner
     return best
 
 
