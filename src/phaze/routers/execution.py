@@ -30,13 +30,11 @@ rather than via ``SortState.order_by()`` + ``paged_stmt``.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 import json
-import math
 from operator import itemgetter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-import uuid
+import uuid  # noqa: TC003 -- FastAPI resolves ``batch_id: uuid.UUID`` path params at app-build time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -52,20 +50,22 @@ from phaze.models.execution import ExecutionLog
 from phaze.routers.agent_exec_batches import (
     ACTIVE_DISPATCH_KEY,
     BATCH_KEY_PREFIX,
-    DISPATCH_CLAIM_TTL_SECONDS,
     _get_claim_dispatch_script,
     _get_promote_status_script,
     _get_release_dispatch_script,
 )
 from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract
 from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_fragment
-from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
-from phaze.services.agent_task_router import AmbiguousEnqueueError
 from phaze.services.collision import detect_collisions
 from phaze.services.execution_dispatch import (
-    chunk_proposals,
     count_revoked_skipped_proposals,
     get_approved_proposals_grouped_by_agent,
+)
+from phaze.services.execution_dispatch_protocol import (
+    DispatchOutcome,
+    DispatchOutcomeKind,
+    DispatchScripts,
+    dispatch_approved_batch,
 )
 from phaze.services.execution_queries import get_execution_log_detail, get_execution_logs_page, get_execution_stats
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE
@@ -81,6 +81,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.routers.column_sort import SortState
+    from phaze.schemas.agent_tasks import ExecuteBatchProposalItem
 
 
 logger = structlog.get_logger(__name__)
@@ -223,63 +224,80 @@ def _build_agents_view(
     ]
 
 
-async def _reconcile_undispatched(
-    redis_client: Redis,
-    batch_id: uuid.UUID,
-    enqueued_ok: int,
-    undispatched_by_agent: dict[str, int],
-) -> str:
-    """Reconcile ``subjobs_expected`` with what ACTUALLY landed, and settle the sentinel. Returns the render status.
+def _dispatch_scripts() -> DispatchScripts:
+    """Bundle the three Lua registration helpers for :func:`dispatch_approved_batch`.
 
-    phaze-kxsb: the hash is seeded with the PLANNED ``subjobs_expected`` before the enqueue loop.
-    A chunk that never landed will never POST its terminal event, so the promotion could never
-    fire and the batch would spin at 'running' until the 24h TTL reaped it. Lower
-    ``subjobs_expected`` to the count that landed and count the undispatched proposals as failed so
-    the operator sees them, then either promote to terminal directly (nothing landed -> no sub-job
-    will ever POST) or re-run the promote check (a landed sub-job may already have reported
-    terminal against the stale, higher expected count -- close that race here).
-
-    phaze-0t2c: extracted from ``start_execution`` so the FAILURE path can run the identical
-    settle. A crash mid-enqueue is the same situation as an enqueue exception -- some chunks
-    landed, some never will -- and it previously left the batch and the sentinel wedged precisely
-    because only the exception path knew how to reconcile.
+    Resolved HERE, per call, rather than imported by the service: this module stays the single
+    place that names the ``agent_exec_batches`` script helpers, and the protocol underneath stays
+    drivable (and mutation-checkable) without a Redis server or an HTTP client.
     """
-    key = f"{BATCH_KEY_PREFIX}{batch_id}"
-    undispatched_proposals = sum(undispatched_by_agent.values())
-    async with redis_client.pipeline(transaction=True) as pipe:
-        pipe.hset(key, "subjobs_expected", str(enqueued_ok))
-        # phaze-1h6j: roll each affected agent's undispatched proposals into that agent's
-        # per-agent failed counter (seeded at dispatch, still 0) so completed+failed reaches the
-        # agent's total and the row renders a terminal ERRORS/COMPLETE pill instead of freezing
-        # on RUNNING. Applied BEFORE the batch-level "failed" hincrby so the batch counter stays
-        # the last hincrby for callers that read it positionally.
-        for affected_agent_id, agent_undispatched in undispatched_by_agent.items():
-            pipe.hincrby(key, f"agent:{affected_agent_id}:failed", agent_undispatched)
-        pipe.hincrby(key, "failed", undispatched_proposals)
-        if enqueued_ok == 0:
-            pipe.hset(key, "status", "complete_with_errors")
-        await pipe.execute()
+    return DispatchScripts(
+        claim=_get_claim_dispatch_script,
+        release=_get_release_dispatch_script,
+        promote=_get_promote_status_script,
+    )
 
-    if enqueued_ok == 0:
-        # phaze-fa2p: nothing landed -> this batch is terminal right here and no sub-job will ever
-        # POST to release the sentinel via the promote script, so release the claim now.
-        # phaze-0t2c: via the CAS release, NOT an unconditional DEL. On the crash path this can run
-        # long after the claim was taken, and an unconditional delete would happily drop a LATER
-        # dispatch's claim -- re-opening the double-move hazard the sentinel exists to close.
-        release = _get_release_dispatch_script(redis_client)
-        await release(keys=[ACTIVE_DISPATCH_KEY], args=[str(batch_id)], client=redis_client)
-        return "complete_with_errors"
 
-    promote_status = _get_promote_status_script(redis_client)
-    # phaze-fa2p: pass the sentinel key + batch_id so, if a landed sub-job already reported
-    # terminal, the promotion also releases the single-dispatch claim atomically.
-    await promote_status(keys=[key, ACTIVE_DISPATCH_KEY], args=[str(batch_id)], client=redis_client)
-    return "running"
+def _render_dispatch_refused(request: Request) -> HTMLResponse:
+    """The static "already in progress" alert -- the FALLBACK refusal shape, not the first choice.
+
+    phaze-2tsw9: a refused dispatch used to render this straight into ``#apply-execute-response``
+    -- the same ``hx-swap="innerHTML"`` sink the LIVE progress card already occupies -- evicting
+    the running batch's only ``sse-connect`` mount, with its ``batch_id`` unrecoverable from the UI
+    afterwards. The caller therefore tries ``_reattach_active_progress`` FIRST and only falls back
+    here when there is no live batch to re-attach to, in which case this card is still correct.
+    """
+    return templates.TemplateResponse(
+        request=request,
+        name="execution/partials/dispatch_in_progress.html",
+        context={"request": request},
+    )
+
+
+def _render_dispatch_progress(
+    request: Request,
+    outcome: DispatchOutcome,
+    *,
+    groups: dict[str, list[ExecuteBatchProposalItem]],
+    agent_names: dict[str, str],
+    skipped_revoked: int,
+) -> HTMLResponse:
+    """First-render context for progress.html, projected from the dispatch outcome.
+
+    phaze-a6hm.8: a fresh dispatch has no operator sort choice yet, so resolve() with
+    sort=None/order=None -- degrades to the contract's default (rule 3), exactly like every other
+    table's unvisited state.
+    """
+    sort_state = EXEC_AGENTS_SORT.resolve(view_state={"batch_id": str(outcome.batch_id)})
+    return templates.TemplateResponse(
+        request=request,
+        name="execution/partials/progress.html",
+        context={
+            "request": request,
+            "batch_id": str(outcome.batch_id),
+            "skipped_revoked": skipped_revoked,
+            "total": outcome.total,
+            "completed": 0,
+            # phaze-kxsb: undispatched proposals (chunks that failed to enqueue) are surfaced as
+            # failed at first render, and the status is already terminal when NOTHING landed.
+            "failed": outcome.undispatched,
+            "subjobs_expected": outcome.subjobs_expected,
+            "agents": _sort_agents_view(_build_agents_view(groups, agent_names=agent_names), sort_state),
+            "sort": sort_state,
+            "status": outcome.status,
+        },
+    )
 
 
 @router.post("/execution/start", response_class=HTMLResponse)
 async def start_execution(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     """Dispatch approved proposals as per-agent SAQ sub-jobs (Phase 28 D-09).
+
+    This handler owns the DATABASE and TRANSPORT halves only: the collision pre-check, the
+    grouping + revoked-agent reads, the per-agent display-name query, the explicit pre-dispatch
+    commit, and the response selection. The stateful Redis/enqueue protocol that follows the
+    commit lives in :mod:`phaze.services.execution_dispatch_protocol` (phaze-1i0h6.5) -- seed,
+    claim, enqueue, reconcile, in that order, for the incident reasons documented there.
 
     Sequence:
       1. Pre-check collisions -- fires before any grouping, but (phaze-p46n4) the
@@ -288,14 +306,12 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
          excludes revoked-agent proposals, matching step 2's population exactly.
       2. SELECT + GROUP BY ``FileRecord.agent_id``, filter revoked agents
          (services/execution_dispatch.py).
-      3. Generate parent ``batch_id``; compute ``subjobs_expected`` from
-         ``ceil(N/500)`` per agent.
-      4. Atomic ``HSET`` + ``EXPIRE`` on ``exec:{batch_id}`` via
-         ``redis.pipeline(transaction=True)`` (D-04 + RESEARCH Pitfall 4).
-      5. Per-(agent, chunk) enqueue loop, best-effort log-and-continue on
-         failures (PATTERNS S5).
-      6. INFO log line per D-11.
-      7. Return the progress card with first-render context.
+      3. Resolve per-agent display names (so the table + dispatch_summary render the
+         human-readable name, not just the slug). We re-query Agent rows because the
+         grouping service returns wire-format items only.
+      4. Commit, releasing the read-only transaction before any Redis/broker I/O.
+      5. Run the dispatch protocol (which emits the D-11 dispatch log); render from its
+         typed outcome.
     """
     # 1. Pre-check collision -- collision_block short-circuits dispatch. Revoked-agent proposals
     # are excluded here too (phaze-p46n4), so this gate's population matches step 2's exactly.
@@ -311,278 +327,44 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
     groups = await get_approved_proposals_grouped_by_agent(session)
     skipped_revoked = await count_revoked_skipped_proposals(session)
 
-    # 3. Parent batch_id + totals.
-    batch_id = uuid.uuid4()
-    total = sum(len(items) for items in groups.values())
-    subjobs_expected = sum(math.ceil(len(items) / 500) for items in groups.values())
-
-    # 4. Resolve per-agent display names (so the table + dispatch_summary
-    # render the human-readable name, not just the slug). We re-query Agent
-    # rows because the grouping service returns wire-format items only.
+    # 3. Per-agent display names.
     agent_names: dict[str, str] = {}
     if groups:
         result = await session.execute(select(Agent.id, Agent.name).where(Agent.id.in_(groups.keys())))
         agent_names = {row.id: row.name for row in result.all()}
 
-    # phaze-266lc: nothing below this point reads or writes ``session`` again -- the rest of the
-    # handler is Redis (seed/claim) and the per-(agent, chunk) SAQ enqueue loop, which the code's
-    # own comment (below, phaze-0t2c) says "spans many suspension points and real wall time on a
-    # large approved set". Commit here to release the read-only transaction the reads above
-    # autobegan (READ COMMITTED, no row locks, nothing written) BEFORE that loop, rather than
-    # sitting idle-in-transaction across it -- the same phaze-1v37 pool-drain class fixed at the
-    # other request-scoped-session sites (agent_analysis.py phaze-7jfgi, tags.py phaze-7bjjj).
+    # 4. phaze-266lc: nothing below this point reads or writes ``session`` again -- the rest of the
+    # handler is Redis (seed/claim) and the per-(agent, chunk) SAQ enqueue loop, which spans many
+    # suspension points and real wall time on a large approved set. Commit here to release the
+    # read-only transaction the reads above autobegan (READ COMMITTED, no row locks, nothing
+    # written) BEFORE that loop, rather than sitting idle-in-transaction across it -- the same
+    # phaze-1v37 pool-drain class fixed at the other request-scoped-session sites (agent_analysis.py
+    # phaze-7jfgi, tags.py phaze-7bjjj). The dispatch protocol below takes no session at all, which
+    # is what keeps this property structural rather than a comment.
     await session.commit()
 
-    # 5. Seed exec:{batch_id} Redis hash (D-04). HSET + EXPIRE atomic via pipeline.
-    dispatch_summary = [
-        {
-            "agent_id": agent_id,
-            "name": agent_names.get(agent_id, agent_id),
-            "chunks": math.ceil(len(items) / 500),
-            "total": len(items),
-        }
-        for agent_id, items in groups.items()
-    ]
-
-    init_fields: dict[str, str] = {
-        "total": str(total),
-        "completed": "0",
-        "failed": "0",
-        "copied": "0",
-        "verified": "0",
-        "deleted": "0",
-        "subjobs_completed": "0",
-        "subjobs_expected": str(subjobs_expected),
-        "status": "running",
-        "started_at": datetime.now(UTC).isoformat(),
-        "dispatch_summary": json.dumps(dispatch_summary),
-    }
-    for agent_id, items in groups.items():
-        init_fields[f"agent:{agent_id}:total"] = str(len(items))
-        init_fields[f"agent:{agent_id}:completed"] = "0"
-        init_fields[f"agent:{agent_id}:failed"] = "0"
-
+    # 5. Seed -> claim -> enqueue -> reconcile, then pick the response shape from the outcome.
     redis_client = request.app.state.redis
-    key = f"exec:{batch_id}"
-
-    # 5b. phaze-0t2c: SEED FIRST, THEN CLAIM. The original order took the claim at the top and
-    # seeded immediately after, and those two commands are not one transaction: a transient Redis
-    # fault on the seed left the sentinel claimed against a batch whose hash never existed, so
-    # nothing could ever release it and every Execute Approved for the next 24h was refused. The
-    # asymmetry was that the claim was taken BEFORE the only two things that can make it releasable
-    # (the hash, and at least one landed sub-job). Seeding first removes that window entirely: a
-    # failed seed raises with no claim outstanding, and the orphaned hash is harmless -- its
-    # batch_id was never handed to anyone and it carries the same 24h TTL.
-    if groups:
-        # Only seed when there is at least one (agent, chunk) to dispatch. An
-        # empty hash with status="running" and TTL would mislead the SSE reader.
-        async with redis_client.pipeline(transaction=True) as pipe:
-            pipe.hset(key, mapping=init_fields)
-            pipe.expire(key, DISPATCH_CLAIM_TTL_SECONDS)
-            await pipe.execute()
-
-    # phaze-fa2p: single-dispatch guard. Approved proposals stay APPROVED throughout dispatch --
-    # they are only flipped to 'executed' asynchronously by the SAQ worker much later -- so a
-    # second concurrent or repeated POST re-selects the SAME still-APPROVED rows and enqueues a
-    # duplicate move job for every one of them (each dispatch mints its own batch_id, so SAQ never
-    # dedups). Atomically claim the ``exec:active`` sentinel before enqueuing; a competing dispatch
-    # loses the claim and is refused until the active batch reaches a terminal status (the promote
-    # script releases the sentinel) or the 24h safety TTL elapses. Only guard when there is actually
-    # something to dispatch -- an empty dispatch enqueues nothing.
-    #
-    # phaze-j7u8: the claim goes through ``_CLAIM_DISPATCH_LUA`` rather than a bare SET NX, so the
-    # same call that claims also RECONCILES a sentinel left behind by a dispatch that can no longer
-    # release it (batch hash reaped, already terminal, or fully reported but never promoted). That
-    # is the shared net under all three exec:active wedges -- without it, one lost terminal event
-    # or one crash in the claim window costs the operator the whole execute stage for 24h.
-    if groups:
-        claim_dispatch = _get_claim_dispatch_script(redis_client)
-        try:
-            claim_result = int(
-                await claim_dispatch(
-                    keys=[ACTIVE_DISPATCH_KEY],
-                    args=[str(batch_id), str(DISPATCH_CLAIM_TTL_SECONDS), BATCH_KEY_PREFIX],
-                    client=redis_client,
-                ),
-            )
-        except BaseException:
-            # phaze-tnp06: unlike the enqueue loop below, this await was NOT inside the
-            # BaseException-settled span (phaze-0t2c) -- a redis client TimeoutError after the
-            # EVALSHA already landed server-side, or Starlette cancelling the handler on client
-            # disconnect while suspended here, left ``execdispatch:active`` durably claimed with
-            # NO way to release it: no chunk was ever enqueued, so no sub-job will ever POST a
-            # terminal event to promote/release it, and the hash this claim would reconcile
-            # against (``key``, seeded just above per phaze-0t2c's seed-first order) makes the
-            # NEXT dispatch's claim-reconcile see a live-looking hash and refuse for the full 24h
-            # TTL -- the exact wedge phaze-j7u8 was built to close, reopened through this one
-            # await. Delete our own just-seeded hash before re-raising: if the claim actually
-            # landed server-side, the sentinel now names a hash-less batch and the next click's
-            # claim-reconcile (shape 1, ``EXISTS(held_key) == 0``) takes it over outright; if it
-            # never landed, deleting a hash nobody was ever handed is a no-op. Shielded so a
-            # cancellation already in flight cannot abort the cleanup half-done.
-            await asyncio.shield(redis_client.delete(key))
-            raise
-        if claim_result == 0:
-            # Refused. Drop the hash seeded above -- this batch_id is never returned to anyone, so
-            # the hash would otherwise sit unread for 24h and, worse, look like a live 'running'
-            # batch to anything that enumerates the namespace.
-            await redis_client.delete(key)
-            # phaze-2tsw9: re-attach to the batch that's ACTUALLY running instead of a dead-end
-            # alert -- both land in the same #apply-execute-response sink (hx-swap="innerHTML"), so
-            # the refusal would otherwise evict the live progress card and its only sse-connect
-            # mount, with the running batch_id unrecoverable from the UI afterwards.
-            reattached = await _reattach_active_progress(request, redis_client)
-            if reattached is not None:
-                return reattached
-            return templates.TemplateResponse(
-                request=request,
-                name="execution/partials/dispatch_in_progress.html",
-                context={"request": request},
-            )
-        if claim_result == 2:
-            # Not routine. A previous dispatch leaked its claim, so surface it: the reconcile keeps
-            # the operator working, but the leak itself is a defect worth seeing in the logs.
-            logger.warning(
-                "dispatch: reconciled a stale exec:active sentinel before claiming batch_id=%s",
-                batch_id,
-            )
-
-    # 6. Per-(agent, chunk) enqueue. Log-and-continue on individual failures
-    # (PATTERNS S5) so a single bad enqueue does not kill the whole dispatch.
-    task_router = request.app.state.task_router
-    enqueued_ok = 0
-    # phaze-1h6j: track undispatched proposals PER AGENT (not just a batch-wide scalar) so the
-    # reconcile below can roll them into each affected agent's per-agent failed counter -- otherwise
-    # that agent's row never reaches completed+failed == total and stays stuck on a RUNNING pill in
-    # the final render even though the batch is terminal.
-    undispatched_by_agent: dict[str, int] = {}
-    # phaze-0t2c: materialize the whole (agent, chunk) plan up front so a crash PART-WAY through the
-    # loop can still name the chunks that never landed. Without it the finally below could not tell
-    # "9 chunks planned, 3 landed" from "3 chunks planned, 3 landed", and would leave
-    # subjobs_expected at the planned figure -- a target the surviving sub-jobs can never reach.
-    pending = [(agent_id, chunk_index, chunk) for agent_id, items in groups.items() for chunk_index, chunk in enumerate(chunk_proposals(items))]
-    attempted = 0
-    try:
-        for agent_id, chunk_index, chunk in pending:
-            try:
-                await task_router.enqueue_for_agent(
-                    agent_id=agent_id,
-                    task_name="execute_approved_batch",
-                    payload=ExecuteApprovedBatchPayload(
-                        batch_id=batch_id,
-                        agent_id=agent_id,
-                        proposals=chunk,
-                        sub_batch_index=chunk_index,
-                    ),
-                )
-                enqueued_ok += 1
-            except AmbiguousEnqueueError:
-                # phaze-19u7g: ``enqueue_for_agent`` raised AFTER the broker connection was
-                # already live (see ``AmbiguousEnqueueError``'s docstring) -- the ``saq_jobs``
-                # INSERT may already be durably committed even though this call never got its
-                # ack. Counting it into ``undispatched_by_agent`` (as a plain ``Exception`` does,
-                # below) would roll it into the batch's ``failed`` counters AND lower
-                # ``subjobs_expected`` past what actually landed, so ``sc >= se`` could promote
-                # the batch terminal and release the ``execdispatch:active`` sentinel WHILE the
-                # phantom sub-job is still executing -- an operator retry then double-dispatches
-                # the same proposals (phaze-19u7g's failure scenario). Count it as landed instead:
-                # a genuinely-lost enqueue then just leaves the batch running until the 24h TTL
-                # reaps it, the same non-terminal fate a dispatched-but-never-reported sub-job
-                # already has -- the same trade-off phaze-9f82r made for tag-write enqueues.
-                logger.error(
-                    "dispatch: enqueue ambiguous for agent=%s chunk=%s batch_id=%s -- broker "
-                    "connection was live, chunk may have landed; keeping it inside "
-                    "subjobs_expected rather than risking a duplicate dispatch",
-                    agent_id,
-                    chunk_index,
-                    batch_id,
-                    exc_info=True,
-                )
-                enqueued_ok += 1
-            except Exception:
-                logger.exception(
-                    "dispatch: enqueue failed for agent=%s chunk=%s batch_id=%s",
-                    agent_id,
-                    chunk_index,
-                    batch_id,
-                )
-                undispatched_by_agent[agent_id] = undispatched_by_agent.get(agent_id, 0) + len(chunk)
-            attempted += 1
-    except BaseException:
-        # phaze-0t2c: the loop spans many suspension points and real wall time on a large approved
-        # set, so a hard failure (or a cancellation) can land mid-way with the hash seeded for the
-        # PLANNED subjobs_expected and only some chunks enqueued. subjobs_completed could then never
-        # reach subjobs_expected, the promote would never fire, and the sentinel would be held for
-        # the full 24h. Settle it on the way out: the chunks we never reached are counted as
-        # undispatched, exactly as an enqueue exception would have counted them, and the same
-        # reconcile runs. BaseException (not Exception) so a CancelledError settles too; the settle
-        # itself is shielded so a cancellation already in flight cannot abort it half-done.
-        #
-        # phaze-19u7g: ``attempted`` is only incremented AFTER a chunk's inner try/except finishes
-        # (line ~453 above), so a BaseException escaping the ``await enqueue_for_agent(...)`` itself
-        # -- a CancelledError landing between the broker commit and this coroutine's resume, e.g. a
-        # client disconnect cancelling the handler mid-await -- lands here with ``pending[attempted]``
-        # naming THAT in-flight chunk, not one that was never started. Its enqueue may have already
-        # committed on the Postgres broker, so it is ambiguous in exactly the same sense as
-        # ``AmbiguousEnqueueError`` above: count it as landed (kept inside ``subjobs_expected``)
-        # rather than rolling it into ``undispatched_by_agent``, which would let the batch promote
-        # terminal and release the sentinel while that phantom sub-job is still executing. Only the
-        # chunks strictly AFTER it were genuinely never attempted at all.
-        if attempted < len(pending):
-            in_flight_agent_id, in_flight_chunk_index, _in_flight_chunk = pending[attempted]
-            logger.error(
-                "dispatch: enqueue ambiguous (interrupted mid-await) for agent=%s chunk=%s "
-                "batch_id=%s -- keeping it inside subjobs_expected rather than risking a "
-                "duplicate dispatch",
-                in_flight_agent_id,
-                in_flight_chunk_index,
-                batch_id,
-            )
-            enqueued_ok += 1
-            attempted += 1
-        for agent_id, _chunk_index, chunk in pending[attempted:]:
-            undispatched_by_agent[agent_id] = undispatched_by_agent.get(agent_id, 0) + len(chunk)
-        if groups:
-            await asyncio.shield(_reconcile_undispatched(redis_client, batch_id, enqueued_ok, undispatched_by_agent))
-        raise
-    undispatched_proposals = sum(undispatched_by_agent.values())
-
-    render_status = "running"
-    if groups and undispatched_proposals:
-        render_status = await _reconcile_undispatched(redis_client, batch_id, enqueued_ok, undispatched_by_agent)
-        subjobs_expected = enqueued_ok
-
-    # 7. D-11 dispatch INFO log.
-    logger.info(
-        "dispatch batch_id=%s total=%d n_agents=%d subjobs_expected=%d undispatched=%d",
-        batch_id,
-        total,
-        len(groups),
-        subjobs_expected,
-        undispatched_proposals,
+    outcome = await dispatch_approved_batch(
+        redis_client=redis_client,
+        task_router=request.app.state.task_router,
+        groups=groups,
+        agent_names=agent_names,
+        scripts=_dispatch_scripts(),
     )
+    if outcome.kind is DispatchOutcomeKind.REFUSED:
+        reattached = await _reattach_active_progress(request, redis_client)
+        return reattached if reattached is not None else _render_dispatch_refused(request)
 
-    # 8. First-render context for progress.html. phaze-a6hm.8: a fresh dispatch has no operator
-    # sort choice yet, so resolve() with sort=None/order=None -- degrades to the contract's default
-    # (rule 3), exactly like every other table's unvisited state.
-    sort_state = EXEC_AGENTS_SORT.resolve(view_state={"batch_id": str(batch_id)})
-    return templates.TemplateResponse(
-        request=request,
-        name="execution/partials/progress.html",
-        context={
-            "request": request,
-            "batch_id": str(batch_id),
-            "skipped_revoked": skipped_revoked,
-            "total": total,
-            "completed": 0,
-            # phaze-kxsb: undispatched proposals (chunks that failed to enqueue) are surfaced as
-            # failed at first render, and the status is already terminal when NOTHING landed.
-            "failed": undispatched_proposals,
-            "subjobs_expected": subjobs_expected,
-            "agents": _sort_agents_view(_build_agents_view(groups, agent_names=agent_names), sort_state),
-            "sort": sort_state,
-            "status": render_status,
-        },
+    # The D-11 dispatch INFO line is NOT emitted here: dispatch logging moved with the protocol
+    # (phaze-1i0h6.5), so it comes from ``phaze.services.execution_dispatch_protocol`` and fires
+    # for every non-HTTP caller too. See ``_dispatched`` there before reaching for it in this file.
+    return _render_dispatch_progress(
+        request,
+        outcome,
+        groups=groups,
+        agent_names=agent_names,
+        skipped_revoked=skipped_revoked,
     )
 
 
