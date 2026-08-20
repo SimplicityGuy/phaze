@@ -120,8 +120,8 @@ async def get_tracklist_sets_page(
 ) -> Page[dict[str, Any]]:
     """Return ONE BOUNDED page of the per-set Tracklist rows (IDENT-02 / D-07/D-08), degrade-safe.
 
-    One row per ``Tracklist`` (a "set"), carrying the set name + path, the match-state +
-    ``matched_to_file`` flag, and the D-07 per-set track coverage: ``tracks_confident`` of
+    One row per ``Tracklist`` (a "set"), carrying the set name + path, the match-state, the exact
+    matched ``file_id`` (or ``None``), and the D-07 per-set track coverage: ``tracks_confident`` of
     ``tracks_total`` derived from ``TracklistTrack.confidence`` over the tracklist's versioned tracks
     (``COUNT(confidence)`` counts only non-NULL confidences -> the confident N; ``COUNT(id)`` -> the
     total M). Membership and row shape are UNCHANGED from Phase 59; phaze-1wvb only added the bound.
@@ -163,6 +163,7 @@ async def get_tracklist_sets_page(
                 "set_name": set_name,
                 "path": path,
                 "tracklist_state": "matched" if matched else "candidate",
+                "file_id": file_id,
                 "tracks_confident": int(confident or 0),
                 "tracks_total": int(total or 0),
                 "matched_to_file": matched,

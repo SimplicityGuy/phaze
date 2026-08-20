@@ -35,7 +35,7 @@ def _make_file(path: str = "/music/example.mp3") -> FileRecord:
 
 
 @pytest.mark.asyncio
-async def test_rows_use_explicit_details_controls_instead_of_row_button_semantics(client: AsyncClient, session: AsyncSession) -> None:
+async def test_rows_and_details_controls_share_one_guarded_record_activation_contract(client: AsyncClient, session: AsyncSession) -> None:
     file = _make_file()
     session.add(file)
     await session.commit()
@@ -43,12 +43,17 @@ async def test_rows_use_explicit_details_controls_instead_of_row_button_semantic
     body = (await client.get("/pipeline/files", headers={"HX-Request": "true"})).text
     row_start = body[body.index('<tr id="files-row-1"') : body.index(">", body.index('<tr id="files-row-1"'))]
 
-    assert "hx-get" not in row_start
-    assert "tabindex" not in row_start
-    assert "cursor-pointer" not in row_start
-    assert body.count(f'hx-get="/record/{file.id}"') == 2
-    assert body.count('aria-label="Open details for example.mp3"') == 2
-    assert "@click=\"$dispatch('record:open', { el: $el })\"" in body
+    assert f'hx-get="/record/{file.id}"' in row_start
+    assert 'hx-target="#record-body"' in row_start
+    assert "data-record-row" in row_start
+    assert 'tabindex="0"' in row_start
+    assert "cursor-pointer" in row_start
+    assert "event.target.closest" in row_start
+    assert "event.target===this" in row_start
+    # Desktop row + its Details button + compact card + its Details button all use the same URL.
+    assert body.count(f'hx-get="/record/{file.id}"') == 4
+    assert body.count('aria-label="Open details for example.mp3"') == 4
+    assert "$dispatch(&#39;record:open&#39;, { el: $el })" in body or "$dispatch('record:open', { el: $el })" in body
 
 
 @pytest.mark.asyncio
@@ -60,7 +65,7 @@ async def test_compact_layout_uses_cards_and_progressive_stage_disclosure(client
 
     assert 'class="hidden md:block"' in body
     assert 'class="grid gap-3 px-4 py-3 md:hidden"' in body
-    assert 'class="min-w-0 rounded-lg border' in body
+    assert 'class="min-w-0 cursor-pointer rounded-lg border' in body
     assert "Stage details</summary>" in body
     assert "hidden whitespace-nowrap px-3 py-2 xl:table-cell" in body
     for label in ("Metadata", "Analyze", "Propose", "Review", "Execute"):

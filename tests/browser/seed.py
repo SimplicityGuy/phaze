@@ -71,8 +71,8 @@ Both surviving entry points keep their original shapes deliberately:
   in every workspace rather than one behaviour under test. It takes a raw DSN rather than a session
   because its callers seed *between page navigations* against the live app's database from outside
   any fixture-held session, and it is not rebuilt on top of ``Seeder`` because it needs models
-  (``AnalysisResult``, ``Tracklist``, ``TracklistVersion``, ``TracklistTrack``) ``Seeder`` has no
-  factories for -- states no single-behaviour test in this suite currently needs one row at a time.
+  (``TracklistVersion``, ``TracklistTrack``) ``Seeder`` has no factories for -- states no
+  single-behaviour test in this suite currently needs one row at a time.
 """
 
 from __future__ import annotations
@@ -348,6 +348,47 @@ class Seeder:
         self.session.add_all([result, *windows])
         await self.session.commit()
         return windows
+
+    async def analysis(self, file: FileRecord, *, completed: bool = True) -> AnalysisResult:
+        """Attach one reachable Analyze-row marker to ``file``."""
+        record = AnalysisResult(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            bpm=128.0,
+            musical_key="Am",
+            mood="energetic",
+            style="techno",
+            fine_windows_analyzed=10,
+            fine_windows_total=10,
+            coarse_windows_analyzed=5,
+            coarse_windows_total=5,
+            analysis_completed_at=datetime.now(UTC) if completed else None,
+        )
+        self.session.add(record)
+        await self.session.commit()
+        return record
+
+    async def tracklist(
+        self,
+        *,
+        file: FileRecord | None = None,
+        artist: str = "Example Artist",
+        external_id: str | None = None,
+    ) -> Tracklist:
+        """Insert one matched set or unmatched 1001Tracklists candidate for a browser journey."""
+        record = Tracklist(
+            id=uuid.uuid4(),
+            external_id=external_id or f"ext-{uuid.uuid4().hex[:12]}",
+            source_url="https://example.test/tracklist",
+            file_id=file.id if file is not None else None,
+            artist=artist,
+            match_confidence=95 if file is not None else None,
+            status="approved",
+        )
+        self.session.add(record)
+        await self.session.commit()
+        await self.session.refresh(record)
+        return record
 
     # --- proposals ------------------------------------------------------------------------
 
