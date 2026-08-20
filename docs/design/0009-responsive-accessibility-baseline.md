@@ -547,6 +547,195 @@ test attempt (boot + browser launch + the test body + teardown), not boot alone,
 directly comparable to the ~1.7-12.9s boot-only figures above; boot is a plausible major
 contributor to that number on a cold machine, not confirmed as the sole one.
 
+### 2026-08-20 — first-hit compile cost: mechanism confirmed, /health corrected, Jinja2 duplication closed (phaze-hqhjr)
+
+**Status: complete.**
+
+`phaze-doku9`'s entry above named a hypothesis and declined to prove it: "the pattern is what
+names the mechanism... that is the signature of a compile-on-first-use cache... rather than of
+network or database variance" — plausible from the shape of the data, not yet confirmed by looking
+at what actually runs. It filed the follow-on as `phaze-hqhjr` rather than absorb it. This entry is
+that follow-on: it instruments the mechanism directly, corrects a claim the earlier entry made about
+its own control route, quantifies (and closes) a duplication question raised while reviewing the
+draft, and answers AC2/AC3 with reasoning rather than a fix.
+
+#### Mechanism, confirmed by instrumentation, not shape-matching (AC1)
+
+The earlier entry inferred the mechanism from ratios: templated routes moved, the bare-SQL control
+barely did. This pass instruments the two candidate caches directly — `phaze.database.engine
+.sync_engine._compiled_cache` (SQLAlchemy's compiled-statement LRU) and, per router module,
+`Jinja2Templates.env.cache` (Jinja2's compiled-template LRU) — and diffs each one immediately before
+and after every route's first hit, in a real FastAPI lifespan against a real Postgres database
+(`starlette.testclient.TestClient`, which runs the app's actual `lifespan` on `__enter__`). The
+result is a direct count of newly-compiled artifacts per first hit, not an inference from timing
+alone:
+
+| route | new SQL statements compiled | new templates compiled |
+| --- | --- | --- |
+| `/health` | 3 | 0 |
+| `/s/summary` | 23 | 10 |
+| `/s/files` | 1 | 5 |
+| `/s/analyze` | 20 | 1 |
+| `/pipeline/stats` | 0 | 13 |
+| `/s/rename` | 4 | 2 |
+| `/s/apply` | 6 | 1 |
+| `/s/audit` | 3 | 4 |
+
+This is why the earlier ratio table looks the way it does: `/s/summary`'s 23 newly-compiled
+statements plus 10 newly-compiled templates is why it carries both the largest ratio (4.7-5.2x
+across two independent measurement passes) and the largest absolute delta; `/s/files`'s 1+5 sits
+much lower on both. **Verdict: CONFIRMED by instrumentation.** The compile-count table is the answer
+AC1 asked for — it shows *why* the timing table's pattern exists, not merely that it exists.
+
+#### The /health control needed a correction
+
+The earlier entry describes `/health` as having "nothing to warm." That claim is not literally
+true, and the instrumentation above is what catches it: `/health` still compiles 3 new SQL
+statements on its own first hit, not 0. The reason is a path mismatch that has nothing to do with
+warm-up per se — the lifespan's own connectivity check (`src/phaze/main.py`, "Verify connectivity")
+runs `async with engine.begin() as conn: await conn.execute(text("SELECT 1"))`, the Core
+`Connection.execute` path, while the `/health` route handler (`src/phaze/routers/health.py`) takes
+`session: AsyncSession = Depends(get_session)` and calls `session.execute(text("SELECT 1"))`, the
+ORM `Session.execute` path. Identical SQL text, but SQLAlchemy's compiled-statement cache keys on
+more than the literal string, and the ORM execution path constructs a different cache key than the
+Core path — so the boot-time connectivity check's own compile does not pre-warm the route handler's.
+
+This corrects the earlier entry's framing without weakening its conclusion: the difference between
+`/health` and the templated routes is **degree, not kind**. 3 newly-compiled statements against
+`/s/summary`'s 23 is still an order-of-magnitude-clean signal — `/health` remains the right control
+to reason from, it just is not literally warm-free. A reader relying on "the control does zero
+compilation" as a load-bearing fact would be relying on something false; a reader relying on "the
+control compiles far less than any templated route" is on solid ground, instrumented ground now
+rather than inferred.
+
+#### Methodological trap: `TestClient`'s async-portal start-up cost
+
+Worth recording plainly, because it produces a specific, wrong, plausible-looking number: the first
+run of the in-process instrumentation above measured `/health`'s own first-hit-to-steady-state ratio
+at **9-11x** — an order of magnitude worse than the timing table below, and worse than every
+templated route except `/s/summary`. That number is an artifact, not a finding.
+`starlette.testclient.TestClient` runs the ASGI app through a background anyio "portal" thread that
+is lazily started on the client's first request, not at `TestClient.__enter__()` — so whichever
+route happens to be hit first inside the `with TestClient(app) as client:` block pays a one-time
+portal/event-loop start-up cost that has nothing to do with the application, and in the naive
+version of this pass that cost landed squarely on `/health`, the route being used as the control.
+It was caught only by cross-checking against a real-subprocess measurement (below), where `/health`
+comes back flat (0.95x) as expected — not by anything internal to the in-process pass itself. The
+fix used here was a throwaway warm-up request to a nonexistent path (`client.get("/__warmup_probe__")`,
+a 404 that touches neither the Jinja2 nor the SQLAlchemy caches) before the timed loop starts, so
+the portal cost lands there instead of on a measured route. Anyone reaching for `TestClient` to
+instrument this application's first-hit behavior again will hit the same trap; this paragraph is
+here so they recognize the number rather than report it.
+
+#### Real-subprocess cross-check, on a machine verified to have zero other agent activity
+
+The compile-count table above establishes mechanism; it does not by itself validate absolute
+timing, both because of the `TestClient` artifact just described and because in-process ASGI calls
+skip the real TCP round trip a browser or `httpx`-over-the-network pays. So the original
+real-uvicorn-subprocess method — same shape as `tests/browser/conftest.py::live_server` (fresh
+database, real uvicorn, real Alembic, `--host 127.0.0.1`), first hit vs. mean of nine steady-state
+hits — was re-run, this time on a machine the dispatcher held genuinely idle for the duration (no
+other agent's test runs, verified before and after), which the original 2026-08-20 pass above could
+not claim about its own machine state:
+
+| route | first hit | steady-state mean | ratio (this pass) | ratio (original `doku9` pass, above) |
+| --- | --- | --- | --- | --- |
+| `/health` | 6.5ms | 6.8ms | 0.95x | 1.3x |
+| `/s/summary` | 219.1ms | 42.0ms | 5.21x | 4.7x |
+| `/s/files` | 34.0ms | 8.7ms | 3.91x | 3.8x |
+| `/s/analyze` | 147.3ms | 112.4ms | 1.31x | 1.6x |
+| `/pipeline/stats` | 128.7ms | 66.3ms | 1.94x | 1.9x |
+| `/s/rename` | 34.9ms | 15.2ms | 2.30x | 2.3x |
+| `/s/apply` | 40.6ms | 20.7ms | 1.96x | 1.7x |
+| `/s/audit` | 23.9ms | 11.3ms | 2.11x | 2.0x |
+
+Every route reproduces within noise, on a machine that this time can genuinely rule out "another
+agent's load leaked into the numbers" — a caveat the original pass could not close. `/health`'s
+ratio here (0.95x, i.e. flat-to-negative) confirms it as a clean timing control despite the
+statement-cache correction above: the 3-statement compile cost measured directly is real but too
+small to surface over run-to-run noise at the wall-clock level, which is exactly what "degree, not
+kind" predicts.
+
+#### The Jinja2-duplication question, quantified and closed
+
+Reviewing this bead's draft findings raised a sharper question than "first hits are slow": since
+`Jinja2Templates(directory=...)` is instantiated as a separate module-level global in each of 11
+router files (`src/phaze/routers/{shell,tags,duplicates,execution,record,search,pipeline_scans,
+routing,proposals,admin_agents,cue}.py`, plus `pipeline/_common.py`), each gets its own `Environment`
+and its own independent template-bytecode cache — even though **all 11 point at the same source
+directory**, `src/phaze/templates/`. If the same partial file is rendered by more than one of these
+routers, it is compiled once per environment that renders it rather than once for the whole process,
+which would mean some of the first-hit cost is duplicated work, not merely unavoidable work — a
+different problem with a different fix (consolidating to one shared `Environment` rather than a
+warm-up).
+
+A static closure analysis (`{% extends %}` / `{% include %}`, regex-parsed, walked from every
+router's `TemplateResponse(name=...)` call to its full transitive template set) over all 121
+template files under `src/phaze/templates/` found **6 files (~5%) compiled by more than one
+router's `Environment`**: `pipeline/partials/_diff_row.html` (proposals, shell, tags — 3
+environments), `proposals/partials/analysis_timeline.html` and `proposals/partials/row_detail.html`
+(proposals, record), `pipeline/partials/_changes_list.html` (proposals, shell),
+`pipeline/partials/_stage_pill.html` (record, shell), and
+`shell/partials/_routing_override_warning.html` (routing, shell). The runtime compile-count table
+above corroborates one of these directly: `shell/partials/_routing_override_warning.html` shows up
+as newly compiled in `shell`'s own environment on `/s/summary`'s first hit, and it is separately
+reachable from `routing.py`'s own `TemplateResponse` calls — a real, observed duplication, not just
+a statically-possible one.
+
+**This is a lower bound, stated as one rather than left implicit.** The regex closure misses one
+known dynamic include — `shell/_stage_fragment.html` contains `{% include stage_partial %}`, a
+Jinja2 variable rather than a literal string, which the static graph cannot resolve. `stage_partial`
+cycles through several `pipeline/partials/*_workspace.html` files that already appear in more than
+one router's `TemplateResponse` set, so the true shared-template count is plausibly a little higher
+than 6; chasing the exact figure was out of scope for the time available.
+
+**Verdict: real, but negligible — not worth a separate bead.** 6 of 121 files is 5% of the template
+corpus, all of them small partials rather than page-level templates, and the compile-count table
+shows each route's first-hit cost is dominated by its own non-shared templates (`/s/summary`'s 10
+newly-compiled templates include only one or two members of the shared set). Consolidating 11
+independent `Environment` instances that share a directory into one shared `Environment` is a real
+refactor with real blast radius — every router's module-level `templates` global is used at every
+render call site in that file — and the evidence here does not support that cost for a
+low-single-digit-millisecond saving repeated across two or three environments. The question is
+closed with a number rather than left as an open suspicion for someone to re-discover.
+
+#### AC3 — decided: document only, no start-up warm-up
+
+Weighed explicitly against AC4's constraint (the lifespan already gates `/health`'s 200 behind
+migrations and connectivity — see "Harness artifact, or product characteristic?" above — so anything
+added there extends the window before the app answers *at all*). A warm-up cheap enough to be worth
+that trade does not exist here: the mechanism confirmed above is not one lazy singleton but eleven
+independent Jinja2 environments (each would need every template it will ever render walked through
+`env.get_template()` once) plus the ORM-vs-Core SQLAlchemy cache-key split identified above (meaning
+a warm-up would need to exercise the same `Depends(get_session)` path every route actually uses, not
+just the lifespan's own Core-path connectivity check, to be effective). That is real engineering
+surface purchased for a benefit only the first click after a restart ever pays, on a single-operator
+home-server tool where restarts are infrequent. **Decision: document as a known characteristic; do
+not add a warm-up.** Anyone re-proposing a warm-up should engage this argument specifically rather
+than re-derive it.
+
+#### AC2 — the genuinely cold machine question remains open, by design
+
+Not measured, and deliberately not faked. Simulating a cold OS page cache locally (e.g. macOS
+`purge`, which needs elevated privileges on this machine and would not be a faithful analog to a
+fresh Linux `ubuntu-latest` VM's page cache regardless) would produce a number that looked like the
+gap was closed without actually closing it — worse than leaving it open, per this bead's own
+"measure, do not extrapolate" instruction. The only faithful way to answer this is a timing capture
+added to an actual `ubuntu-latest` CI run, which is deliberately **not** folded into this P3 bead —
+if that answer is wanted, it should be its own scoped piece of work rather than smuggled into a
+browser CI job change here. `phaze-doku9`'s own caveat stands unchanged: the closest available
+analog remains its measured 12.89s cold-disk-cache boot against 1.68-1.85s warm, and every first-hit
+ratio in both tables above should be read as a warm-machine floor, not an upper bound.
+
+#### What changed between this entry and the one above it
+
+No production code changed (AC6). The instrumentation used to produce the compile-count table and
+the two timing tables was throwaway (ad hoc scripts run against an isolated `test-db-for` seat, not
+committed) — this document is the durable artifact. Net effect of this bead: the mechanism is now
+confirmed rather than inferred, the control route's own claim is corrected, a duplication question
+is answered with a number instead of left open, and the tempting warm-up fix is argued against
+explicitly rather than defaulted away from.
+
 ## Consequences
 
 - Desktop behaviour is unchanged; the expanded rail and full-density tables are preserved.
