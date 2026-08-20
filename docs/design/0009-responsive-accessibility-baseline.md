@@ -297,6 +297,256 @@ the entries have to be deleted with the fix instead of surviving as stale text.
 - The seeded data is synthetic and deliberately smaller than the real archive. Real filenames are
   longer than the ones used here, so phaze-mrg1c is worse in production, not better.
 
+### 2026-08-20 — cold vs warm boot timing audit (phaze-doku9)
+
+**Status: complete.** Audit, measurement, and the AC4 harness-vs-product verdict are all below.
+
+`phaze-39eiy` measured a variable nobody had tested: a fresh pytest process per attempt (fresh
+uvicorn boot, fresh Alembic migration from an empty database, fresh browser launch) reproduced a
+focus-timing flake once in 14 attempts, at roughly 8.5s per iteration, where ~88 attempts across
+four *warm* shapes (single process, repeats, CPU-throttled, whole-file loop) came up clean. This
+entry is the general follow-up `phaze-doku9` asked for: which OTHER browser tests carry timing
+assumptions that a warm app satisfies and a cold one may not, and what the cold/warm gap actually
+is. It does not fix any one test — see the sibling bead for that — and it does not re-run the
+cold-boot measurement; it audits `tests/browser/` for the shape of exposure and records what the
+code says about where the gap comes from.
+
+**Correction to the framing `phaze-39eiy` shipped with.** `tests/browser/conftest.py`'s
+`live_server` fixture is `scope="session"` — one uvicorn boot, one migration run, per pytest
+*session*, not per test. CI's `Browser contract (non-blocking)` job runs the whole suite as one
+session, so it pays the true boot+migration cost once, for its first test(s), and runs *warm*
+against an already-booted server for the remaining ~170. The fresh-process-per-attempt shape that
+found the flake is a **more extreme cold reproduction than CI's own steady state** — a good
+instrument for finding this class of bug (it forces the server-boot and per-code-path
+cache-warming variables to their worst case on every attempt), but its 1-in-14 rate is not a valid
+estimate of how often CI itself hits the same race. Read the finding below as "this class of
+assumption is real and present in N other tests," not as "CI fails at 1-in-14."
+
+#### Audit method
+
+Every file in `tests/browser/` (21 test modules, plus `conftest.py`, `helpers.py`, `axe.py`) was
+read for: fixed sleeps and fixed-timeout waits, `wait_for_function` calls with an implicit
+assumption about response latency, any assertion that something did **not** happen within a
+window, and settle helpers whose stability window could be satisfied by the wrong state. The
+`FLAKE_RECORD.md` section "What to watch when the CI runs start" was the starting list, not the
+whole one — it was written as speculation before this bead had evidence, and three of the six
+findings below are not in it.
+
+#### The dangerous shape: asserting a negative inside a fixed window
+
+A test that waits a fixed duration and then asserts something did **not** happen is only sound if
+the window is longer than the *slowest* correct run could ever take. A cold app that is slower for
+reasons unrelated to the property under test (server boot amortization, a not-yet-warm
+SQLAlchemy statement cache, a not-yet-warm Jinja2 template cache — see "harness or product?"
+below) can push the real event past the window, and the test then reports "confirmed absent"
+for an event that was actually still coming. This is a silent wrong-pass, not a red build, which
+is what makes it worth an audit rather than waiting for it to fail.
+
+Three tests carry this shape:
+
+1. **`test_execute_dispatch.py::test_the_progress_stream_opens_once_and_stops_reconnecting_after_close`**
+   — `await asyncio.sleep(_RECONNECT_WINDOW_SEC)` (6.0s, "Chromium's ~3s reconnect delay with
+   generous margin") then `assert len(stream_requests) == 1`. Already named in `FLAKE_RECORD.md`.
+2. **`test_execute_dispatch.py::test_an_execution_that_finishes_with_failures_reports_them_and_still_closes`**
+   — the same 6.0s pattern, for the `complete_with_errors` terminal status. Also already named.
+3. **`test_analyze_lane_detail.py::test_dismissing_the_lane_detail_stops_its_poll_and_returns_focus`**
+   — **not previously recorded anywhere.** `await page.wait_for_timeout(7000)` (one 5s own-tick
+   poll interval plus slack) then `assert after_dismiss == []`, to prove the lane detail pane's
+   self-poll was cancelled by its own dismissal. Same shape as the two SSE tests above, found by
+   reading the suite rather than by a red build — which is the case for running this audit at all
+   rather than waiting for the next flake to name the next instance.
+
+#### The milder shape: asserting a positive inside a fixed window
+
+Cold slowness here produces a visible failure, not a wrong pass — annoying, but not the dangerous
+kind. Two instances:
+
+4. **`test_analyze_lane_detail.py::test_the_open_lane_detail_refreshes_itself_without_stealing_focus_back`**
+   — the same 7s wait as #3, but asserting the poll's fetch list is non-empty (the tick DID fire).
+5. **`test_metadata_actions.py::test_dismissing_the_extract_confirm_enqueues_nothing`** —
+   `wait_for_timeout(1000)` then `assert posted == []`, guarding a *dismissed* `hx-confirm` never
+   enqueuing. The docstring already names the tradeoff ("short, and only ever paid by this one
+   test"). Lower actual cold-boot exposure than it looks: whether a broken confirm boundary fires a
+   request is decided by browser-side dialog handling, not a server round trip, so backend latency
+   does not change when a broken implementation would have issued the request.
+
+#### Bounded-polling helpers: a fixed ceiling, not a bare sleep
+
+These retry on a predicate rather than sleeping blind, so they are far safer than #1-5, but they
+still have a ceiling, and one of them has already produced a CI-only failure that never reproduced
+locally — direct evidence, not conjecture, that this class of race is CI-sensitive.
+
+6. **`tests/browser/helpers.py::settled_focus`** (5000ms ceiling, 100ms poll) — used across
+   record/drawer dismiss-focus-restore assertions.
+7. **`test_keyboard_screen_reader.py::_settle`** (2000ms default ceiling) — used for drawer and
+   command-palette focus-restore. Its own comment records the precedent directly: "Failed exactly
+   that way on phone/dark in CI while passing locally (phaze-bdeih is the same race in the
+   drawer)."
+8. **`tests/browser/conftest.py::_wait_until_serving`** (180s ceiling) — already named in
+   `FLAKE_RECORD.md`; this is the boot-latency ceiling the measurement gap below is meant to fill
+   with real numbers.
+
+#### Infrastructure and session shape
+
+9. **`tests/browser/axe.py`'s CDN fetch** is cached per Python *process* (`_SOURCE_CACHE`, a module
+   dict), not per test. A fresh-process-per-attempt shape — like the one that found the
+   `phaze-39eiy` flake — pays the network round trip on every attempt; a normal CI session pays it
+   once.
+10. **`conftest.py::live_server` is session-scoped** — see "Correction to the framing" above. This
+    is the load-bearing fact for reading every other finding in this entry correctly.
+
+#### Ruled out
+
+- **`test_responsive_matrix.py::test_the_shell_survives_a_slow_workspace_fetch`** — its 900ms delay
+  is injected client-side via `page.route`, independent of real server speed. Not cold-boot
+  sensitive.
+- **`test_command_palette_search.py::test_a_query_that_matches_nothing_still_offers_the_navigation_rows`**
+  — has a `wait_for_timeout(1200)`, but the actual negative assertion downstream is a proper
+  `wait_for_function` with a 15s timeout, not the fixed window. Not the dangerous shape.
+
+#### Harness artifact, or product characteristic? (settled, with numbers)
+
+`run_migrations()`, the `SELECT 1` connectivity check, and the queue/task-router/redis wiring all
+run inside FastAPI's `lifespan`, in `src/phaze/main.py`, **before** `/health` returns 200. So the
+literal migration-and-boot cost is front-loaded and gated behind `_wait_until_serving` — a real
+operator restarting phaze would wait slightly longer before the app answers *at all*, but would not
+see it as "requests are slow" once it does. That reads as a harness/deploy-timing fact, not a
+per-request product defect, and needed no measurement to state.
+
+The narrower question — whether specific request paths are measurably slower on their *first* hit
+after boot than on later ones — is now measured, and the answer is **yes, there is a real,
+consistent effect, and it is a product characteristic, not a harness artifact.**
+
+**[CI-like shape: one session, boot paid once]** One `live_server`-shaped boot (paid once, matching CI's own session scope — see the correction
+above), then every page route the browser suite actually exercises was hit once ("first hit") and
+then nine more times on the same warm process ("steady state", mean of the last nine):
+
+| Route | First hit | Steady-state mean | Ratio |
+| --- | --- | --- | --- |
+| `/health` (bare `SELECT 1`, nothing to warm) | 5.1ms | 3.9ms | 1.3x |
+| `/s/summary` | 199.3ms | 42.2ms | **4.7x** |
+| `/s/files` | 39.0ms | 10.3ms | **3.8x** |
+| `/s/analyze` | 182.8ms | 112.0ms | 1.6x |
+| `/s/rename` | 41.5ms | 18.0ms | 2.3x |
+| `/s/apply` | 43.7ms | 26.3ms | 1.7x |
+| `/s/audit` | 27.8ms | 14.0ms | 2.0x |
+| `/pipeline/stats` | 132.4ms | 67.9ms | 1.9x |
+| `/search/?q=test` (302 redirect; no real search work done) | 6.3ms | 0.7ms | 9x, but sub-10ms absolute |
+
+The pattern is what names the mechanism: **every genuinely templated route is 1.6-4.7x slower on
+its first hit; `/health`, which does nothing but a bare `SELECT 1`, barely moves at all.** That is
+the signature of a compile-on-first-use cache — SQLAlchemy caching a query's compiled statement
+object, Jinja2 caching a template's compiled bytecode, or both — rather than of network or database
+variance, which would not spare `/health` and would not track "how much does this route render."
+
+**Verdict: real effect, product characteristic, not absorbed here.** An operator's first click on
+each distinct phaze page after a restart is measurably slower than their next click on the same
+page — not dramatically (absolute deltas run 10-160ms, well under anything a person would
+consciously notice, let alone report), but it is real, reproducible, and traceable to a named
+mechanism rather than measurement noise. Per this bead's own scope rule, it gets its own bead
+rather than a fix folded into this one; filed as **`phaze-2wxmg`** (P3, informational-with-evidence
+given the modest absolute size), which carries this measurement's disk-cache caveat forward
+explicitly and adds its own criterion against the tempting wrong fix: migrations already run inside
+the lifespan before `/health` returns 200 (see above), so trading a ~200ms first click for a longer
+restart needs arguing, not assuming. See `phaze-2wxmg` for the full finding rather than duplicating
+it here.
+
+#### Should the suite exercise the cold path deliberately? (recommendation, not adopted)
+
+Given the session-scope correction above, the existing browser CI job already pays the true cold
+cost once per run, which is representative of "CI is the cold shape" as originally stated. Adding a
+second always-on cold-path lane would duplicate that rather than add coverage. What is arguably
+missing is a **periodic fresh-process-per-test stress run** — the shape that actually reproduced
+the `phaze-39eiy` flake — run on the `ADR-0011` bug-hunt cadence rather than on every PR, since that
+is the instrument that forces the worst-case boot/cache-warming variables rather than the CI job's
+steady state. This is a recommendation only; no CI change was made as part of this entry.
+
+#### Measurement (2026-08-20, `doku9` seat, macOS/arm64)
+
+Run once `phaze-39eiy`'s own cold-boot measurement had cleared the machine, so the two did not
+corrupt each other. Standalone scripts against `TEST_DATABASE_URL`'s seat, not the pytest suite
+itself, so a run could be timed and printed rather than asserted on. Boots use the same subprocess shape as
+`tests/browser/conftest.py::live_server` (fresh-database-per-attempt, real uvicorn, real Alembic,
+`--host 127.0.0.1`), polling `/health` exactly as `_wait_until_serving` does.
+
+**Read this caveat before any number below — it is not a footnote.** Every "steady" figure in this
+section was measured on a dev machine that had just run this app repeatedly in the same session
+(`uv sync`, the full browser suite, several other measurements) — genuinely warm OS disk cache. The
+first cold-boot attempt in the EXTREME-shape run below took **12.89s**; the next nine, on the same
+now-warm machine, took **1.68-1.85s**. That ~7x gap is not the app behaving differently — it is
+OS-level disk cache warmth for the venv and its native dependencies (essentia-tensorflow's compiled
+extension among them), and discarding that first sample as noise would have been the natural thing
+to do and would have been wrong. The browser CI job (`.github/workflows/tests.yml`, `browser:`)
+runs on `runs-on: ubuntu-latest`: a **fresh VM every run**, with the Python venv and its native
+deps installed fresh by that run's own `just install` step (only the Chromium binary is cached
+across runs, via `actions/cache`). So **CI's own first boot of a run is the closer analog to this
+measurement's 12.89s outlier, not to its 1.7-1.8s steady figure** — every steady-state number below
+should be read as a floor (what boot costs once the OS has already paid for everything once), not
+as an estimate of a fresh CI runner's first job. The exact CI number was not measured here (that
+would mean running on an actual fresh `ubuntu-latest` runner, out of scope for this pass) and is
+worth a follow-up if boot latency ever becomes a suspect on its own, rather than a contributor
+among several.
+
+**[Isolated component, neither shape — no uvicorn, no queue/router wiring] Migration only**
+(fresh db, just `await run_migrations()`), 3 runs: **0.666s / 0.715s / 0.785s, mean ~0.72s.**
+
+**[EXTREME shape: fresh process + fresh db every attempt] Cold boot** (the full lifespan gated
+behind `/health` — migration, connectivity check, dev-agent seed, queue/task-router/redis wiring),
+10 runs back to back: **12.89s** on the first (cold disk cache), **1.68-1.85s (mean ~1.74s)** on
+the other nine (warm disk cache) — see the caveat above for which of those two numbers CI actually
+pays, and note this is the same shape that reproduced the `phaze-39eiy` flake, not the shape CI
+runs every job.
+
+**[CI-like shape: one boot, same warm process] First-request latency, per route, first-hit vs
+steady-state**: see the table in "Harness artifact, or product characteristic?" above — same
+measurement run, same boot as the CI-like figure two paragraphs up.
+
+**[process-cold vs process-warm, independent of app-boot shape] Browser launch time**: 5 runs each,
+Chromium via Playwright. Cold (fresh Python process per launch): **0.272-0.303s, mean 0.279s.**
+Warm (same process, five sequential launches): **0.269-0.296s, mean 0.279s.** No measurable
+difference between either shape — confirms what `tests/browser/conftest.py`'s own docstring already
+implies ("Playwright is launched per test" regardless of whether the app boot itself is cold or
+warm), so browser launch is **ruled out** as a cold/warm differentiator; it was never one.
+
+**Every fixed window this entry's audit named (6s / 7s / 1s / 5s / 2s / 180s) — now measured
+against, not merely assumed.** This list replaces the earlier "design assumption, not a validated
+bound" placeholder: each entry below is now a measured statement, not an unvalidated one, but read
+the qualifier on each — this is a warm-machine result.
+
+- **6s** (`test_execute_dispatch.py`'s two SSE reconnect windows, finding #1/#2) and **7s**
+  (`test_analyze_lane_detail.py`'s own-tick poll windows, finding #3/#4) are both far larger than
+  anything measured here: the largest single first-hit delta recorded was 199ms (`/s/summary`), and
+  the slowest steady-state boot was 1.85s. **On a warm machine, none of these four fixed windows
+  looks threatened** by the effects this pass measured.
+- **1s** (`test_metadata_actions.py`'s dismissed-confirm window, finding #5) is closer to the
+  measured deltas in absolute terms, but that finding was already downgraded in the audit above —
+  it guards browser-side dialog handling, not a server round trip, so these latency numbers do not
+  bear on it either way.
+- **5s / 2s** (`helpers.py::settled_focus` and `test_keyboard_screen_reader.py::_settle`, findings
+  #6/#7) are focus-restore polling ceilings, not server-latency windows; nothing measured here
+  times focus-restore JavaScript, so this pass neither confirms nor threatens them directly — they
+  stay exactly as risky as the audit already said, with #7's real CI-only failure precedent unchanged.
+- **180s** (`conftest.py::_wait_until_serving`, finding #8) is the one this pass measured most
+  directly: the slowest boot observed, cold-disk-cache included, was 12.89s — **14x margin even on
+  the single worst sample seen**, cold or warm.
+
+**None of the above is a cold-VM result, and that is the caveat that matters most.** Every number in
+this list — including the 12.89s outlier — was still measured on a machine that had a filesystem
+warm enough for uv, Postgres, and the Python interpreter itself to already be resident before the
+measurement began. A genuinely fresh `ubuntu-latest` CI runner, with the OS, uv, and every system
+library also cold, is unmeasured territory. So the honest statement is: **these fixed windows look
+safe, measured warm; the cold-VM case remains unmeasured** — not that they are safe.
+
+**What this measurement does NOT establish.** It characterizes boot and first-request latency in
+isolation, on one machine, outside the actual pytest/Playwright harness and its concurrency with a
+real test body, a real assertion sequence, or CPU contention from other agents. It is not a
+reproduction of the `phaze-39eiy` failure and does not attempt to be — it answers "what differs,
+and by how much," which is what this bead asked for; `phaze-39eiy` answers "does that difference
+break this specific test." The original measurement's ~8.5s-per-iteration figure covers a full
+test attempt (boot + browser launch + the test body + teardown), not boot alone, so it is not
+directly comparable to the ~1.7-12.9s boot-only figures above; boot is a plausible major
+contributor to that number on a cold machine, not confirmed as the sole one.
+
 ## Consequences
 
 - Desktop behaviour is unchanged; the expanded rail and full-density tables are preserved.
