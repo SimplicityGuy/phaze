@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     import datetime as datetime_mod
     import uuid as uuid_mod
 
+    from sqlalchemy import Executable
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.routers.column_sort import SortState
@@ -216,6 +217,131 @@ async def count_pending_above_confidence(session: AsyncSession, threshold: float
     return result.scalar_one()
 
 
+def _dedupe_review_tokens(tokens: list[ProposalReviewToken]) -> dict[uuid_mod.UUID, ProposalReviewToken]:
+    """Collapse a submitted selection to ONE token per proposal id, last submitted wins.
+
+    The browser posts one token per rendered checkbox, and Changes Review keeps selection in
+    browser/history state, so a re-render or a back-button replay can legitimately put the same id
+    on the wire twice -- with DIFFERENT snapshots. Keying by ``proposal_id`` makes the LAST
+    occurrence the authoritative one, which is the snapshot the operator saw most recently. It also
+    guarantees the ``(proposal_id, expected_updated_at)`` relation built below holds at most one row
+    per id: two rows for one id would let a single proposal match the join twice and be counted
+    twice in ``RETURNING``, inflating the applied count the operator is shown.
+    """
+    return {token.proposal_id: token for token in tokens}
+
+
+def _is_still_bulk_approvable(proposal: RenameProposal, *, threshold: float) -> bool:
+    """The row's own state still qualifies it for bulk approval: PENDING, and at/above ``threshold``.
+
+    ``confidence`` is nullable, so the None check is not defensive noise -- a NULL confidence must
+    fail the threshold rather than raise, and it must fail CLOSED (not approvable). Both halves are
+    restated inside the UPDATE's WHERE clause; see :func:`_bulk_approve_statement`.
+    """
+    if proposal.status != ProposalStatus.PENDING.value:
+        return False
+    if proposal.confidence is None:
+        return False
+    return proposal.confidence >= threshold
+
+
+def _matches_review_token(proposal: RenameProposal, token: ProposalReviewToken) -> bool:
+    """The row still IS the snapshot the operator authorized (phaze-exivg).
+
+    Two independent staleness axes and both are load-bearing. ``updated_at`` is the row's
+    optimistic-concurrency token and catches ANY write to the row; the content digest catches the
+    values the operator actually read and approved, so a rewrite that reproduced the same timestamp
+    still fails. ``store_proposals`` is an idempotent upsert that overwrites a still-PENDING row's
+    content in place on a replayed ``generate_proposals``, so this is a real, reachable case, not a
+    theoretical one.
+
+    This is the PYTHON half of the check. The ``updated_at`` axis is repeated INSIDE the UPDATE's
+    WHERE clause, and that repetition is what actually closes the read-to-write window -- see
+    :func:`_bulk_approve_statement`. Neither half is redundant with the other: the digest can only
+    be computed in Python (it hashes the rendered file/proposal pair), and only the in-statement
+    copy is evaluated atomically with the write.
+    """
+    if proposal.updated_at != token.updated_at:
+        return False
+    return proposal_review_digest(proposal) == token.content_digest
+
+
+def _is_eligible_for_bulk_approval(
+    proposal: RenameProposal,
+    token: ProposalReviewToken,
+    *,
+    collision_ids: set[str],
+    threshold: float,
+) -> bool:
+    """Whether ``proposal`` may be bulk-approved against the snapshot ``token`` describes.
+
+    Stated as three sequential refusals rather than one chained ``and``: each clause names the
+    reason a row is skipped, and none of them is a candidate for "simplification" into the SQL
+    predicate. Collision exclusion needs the whole approved corpus (:func:`get_review_collision_ids`
+    groups by resolved destination across agents and scan_roots) and the digest needs the RENDERED
+    file/proposal pair, so both are Python-side by necessity -- which is exactly why the status,
+    confidence and ``updated_at`` guards are ALSO restated in the write, where the database gets the
+    final word.
+    """
+    if str(proposal.id) in collision_ids:
+        return False
+    if not _is_still_bulk_approvable(proposal, threshold=threshold):
+        return False
+    return _matches_review_token(proposal, token)
+
+
+def _bulk_approve_statement(
+    reviewed: list[RenameProposal],
+    token_by_id: dict[uuid_mod.UUID, ProposalReviewToken],
+    *,
+    threshold: float,
+) -> Executable:
+    """Build the ONE guarded ``UPDATE ... RETURNING id`` that transitions every reviewed row.
+
+    ONE round trip regardless of selection size (phaze-r4am1). This used to be a
+    ``for proposal in reviewed:`` loop issuing one UPDATE ... RETURNING per row, which cost up to
+    ~50 sequential round trips inside a single web request (Changes Review paginates at 50).
+
+    It could NOT be collapsed to ``WHERE id = ANY(:ids)``: ``updated_at`` is the row's OWN
+    optimistic-concurrency token, so a shared-id predicate would silently drop the per-row check
+    that is the entire point of this function. Joining a VALUES relation of
+    ``(proposal_id, expected_updated_at)`` pairs keeps every predicate per-row -- each candidate id
+    is matched against its own token -- so a stale token neither fails the batch nor rides along
+    inside it; it simply matches no row and is reported through the returned transition count,
+    exactly as when each row had its own statement.
+
+    EVERY guard here is a WRITE predicate, evaluated by the database at the instant the row is
+    locked, NOT a Python re-check of the earlier SELECT. The status, confidence and ``updated_at``
+    clauses are deliberate duplicates of :func:`_is_eligible_for_bulk_approval`'s Python-side
+    checks; removing them because "the pre-filter already did that" reintroduces the exact
+    select/check/write TOCTOU this shape exists to close, and the failure is silent -- an approval
+    of content the operator never saw. The Python pre-filter is a classifier; this is the arbiter.
+
+    Parameter budget: the relation binds 2 parameters per row against PostgreSQL's 65535-parameter
+    protocol ceiling, so a single statement covers ~32k rows. A selection is bounded by what the
+    operator can render and tick (Changes Review paginates at 50), so the ceiling is roughly three
+    orders of magnitude out of reach and the statement is deliberately NOT chunked. If a future
+    caller ever feeds this an unbounded id list, chunk it there or here -- do not silently exceed
+    the ceiling, which fails the whole batch rather than degrading.
+    """
+    review_token_pairs = values(
+        column("id", PGUUID(as_uuid=True)),
+        column("updated_at", DateTime(timezone=True)),
+        name="review_token",
+    ).data([(proposal.id, token_by_id[proposal.id].updated_at) for proposal in reviewed])
+    return (
+        update(RenameProposal)
+        .where(
+            RenameProposal.id == review_token_pairs.c.id,
+            RenameProposal.status == ProposalStatus.PENDING.value,
+            RenameProposal.confidence >= threshold,
+            RenameProposal.updated_at == review_token_pairs.c.updated_at,
+        )
+        .values(status=ProposalStatus.APPROVED.value)
+        .returning(RenameProposal.id)
+    )
+
+
 async def bulk_approve_selected_above_confidence(
     session: AsyncSession,
     review_tokens: Iterable[ProposalReviewToken],
@@ -228,18 +354,37 @@ async def bulk_approve_selected_above_confidence(
     definition. The status and confidence predicates therefore live in the UPDATE itself. A replay,
     concurrent action, confidence rewrite, malformed selection, or forged low-confidence id simply
     does not match and is reported through the returned transition count.
+
+    Shape (phaze-1i0h6.4): classify in Python, transition in ONE set-based statement. Eligibility
+    stays here because it needs values SQL cannot see -- the rendered content digest and the
+    cross-corpus collision set -- while the guarded transition is a single
+    ``UPDATE ... FROM (VALUES ...) RETURNING id``. The database remains the final arbiter of every
+    race: see :func:`_bulk_approve_statement` for why its predicates duplicate the Python ones on
+    purpose. This function owns the transaction and commits exactly ONCE on every path that touched
+    the session -- after the single UPDATE, or after the reads when nothing turned out to be
+    eligible. (The empty-selection return above is the one path that commits nothing, because it
+    has issued no statement to commit.) One commit is what makes the batch all-or-nothing: a
+    failing statement leaves the transaction uncommitted, so no row transitions rather than a
+    prefix of them.
+
+    It deliberately does NOT reuse :func:`update_proposal_status`'s conditional-update path. That
+    function's contract is a diagnostic one: on a zero-rowcount write it re-reads the row to tell
+    "gone" from "wrong state" from "stale token" and raises the matching error, and it returns the
+    hydrated row. Bulk approval has no per-row error to raise -- a non-matching row is REPORTED
+    through the count, which is what makes the action idempotent under replay -- so folding the two
+    together would mean either N diagnostic re-reads (the round trips this bead removed) or a
+    weakened single-row contract. They stay separate.
     """
     tokens = list(review_tokens)
     if not tokens:
         return 0
-    token_by_id = {token.proposal_id: token for token in tokens}
-    ids = list(token_by_id)
+    token_by_id = _dedupe_review_tokens(tokens)
     proposals = (
         (
             await session.execute(
                 select(RenameProposal)
                 .options(selectinload(RenameProposal.file))
-                .where(RenameProposal.id == func.any(bindparam("reviewed_proposal_ids", value=ids, type_=ARRAY(PGUUID(as_uuid=True)))))
+                .where(RenameProposal.id == func.any(bindparam("reviewed_proposal_ids", value=list(token_by_id), type_=ARRAY(PGUUID(as_uuid=True)))))
             )
         )
         .scalars()
@@ -249,42 +394,12 @@ async def bulk_approve_selected_above_confidence(
     reviewed = [
         proposal
         for proposal in proposals
-        if str(proposal.id) not in collision_ids
-        and proposal.status == ProposalStatus.PENDING.value
-        and proposal.confidence is not None
-        and proposal.confidence >= threshold
-        and proposal.updated_at == token_by_id[proposal.id].updated_at
-        and proposal_review_digest(proposal) == token_by_id[proposal.id].content_digest
+        if _is_eligible_for_bulk_approval(proposal, token_by_id[proposal.id], collision_ids=collision_ids, threshold=threshold)
     ]
     if not reviewed:
         await session.commit()
         return 0
-    # ONE round trip regardless of selection size (phaze-r4am1). This used to be a
-    # `for proposal in reviewed:` loop issuing one UPDATE ... RETURNING per row, which cost up to
-    # ~50 sequential round trips inside a single web request (Changes Review paginates at 50).
-    #
-    # It could NOT be collapsed to `WHERE id = ANY(:ids)`: `updated_at` is the row's OWN
-    # optimistic-concurrency token, so a shared-id predicate would silently drop the per-row check
-    # that is the entire point of this function. Joining a VALUES list keeps every predicate
-    # per-row -- each candidate id is matched against its own token -- so a stale token neither
-    # fails the batch nor rides along inside it; it simply matches no row and is reported through
-    # the returned transition count, exactly as when each row had its own statement.
-    review_tokens_values = values(
-        column("id", PGUUID(as_uuid=True)),
-        column("updated_at", DateTime(timezone=True)),
-        name="review_token",
-    ).data([(proposal.id, token_by_id[proposal.id].updated_at) for proposal in reviewed])
-    result = await session.execute(
-        update(RenameProposal)
-        .where(
-            RenameProposal.id == review_tokens_values.c.id,
-            RenameProposal.status == ProposalStatus.PENDING.value,
-            RenameProposal.confidence >= threshold,
-            RenameProposal.updated_at == review_tokens_values.c.updated_at,
-        )
-        .values(status=ProposalStatus.APPROVED.value)
-        .returning(RenameProposal.id)
-    )
+    result = await session.execute(_bulk_approve_statement(reviewed, token_by_id, threshold=threshold))
     # The len-all-count rule has misread this. It rewrites `len(QUERY.all())` into
     # `QUERY.count()` to keep the count server-side, which assumes a SELECT. This is an
     # UPDATE ... RETURNING: the rows are the proposals this statement actually transitioned
