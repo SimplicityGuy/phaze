@@ -4,7 +4,7 @@ from pathlib import PurePosixPath
 from typing import Any, cast
 import uuid
 
-from sqlalchemy import CursorResult, select
+from sqlalchemy import CursorResult, and_, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -98,21 +98,33 @@ async def associate_companions(session: AsyncSession, *, batch_size: int = DEFAU
             parent = str(PurePosixPath(comp.original_path).parent)
             dir_groups.setdefault((comp.agent_id, parent), []).append(comp)
 
-        rows: list[dict[str, uuid.UUID]] = []
-        for (agent_id, directory), companions in dir_groups.items():
-            # Find media files in the same directory (not subdirs) on the same agent.
-            # Escape LIKE metacharacters in the directory so '_'/'%'/'\' in a real
-            # path (e.g. "Coachella_2024") are matched literally rather than as wildcards.
-            escaped_directory = _escape_like(directory)
-            media_stmt = select(FileRecord).where(
+        # phaze-vu88k.3: ONE query for every (agent, directory) group in this page, instead of one
+        # per group. A page holds at most `batch_size` companions, so at most that many distinct
+        # groups -- 4 bind params per OR'd clause, well under asyncpg's 32767 cap. Media rows are
+        # re-bucketed below by their OWN (agent_id, parent directory), computed the same way
+        # `dir_groups` was, rather than by which OR clause matched them: the LIKE/NOT-LIKE pair
+        # only matches rows whose parent IS that literal directory, so recomputing the parent from
+        # each returned row reconstructs the exact same grouping the one-query-per-group form did.
+        media_conditions = [
+            and_(
                 FileRecord.agent_id == agent_id,
                 FileRecord.file_type.in_(MEDIA_TYPES),
-                FileRecord.original_path.like(f"{escaped_directory}/%", escape=_LIKE_ESCAPE_CHAR),
-                ~FileRecord.original_path.like(f"{escaped_directory}/%/%", escape=_LIKE_ESCAPE_CHAR),
+                # Escape LIKE metacharacters in the directory so '_'/'%'/'\' in a real
+                # path (e.g. "Coachella_2024") are matched literally rather than as wildcards.
+                FileRecord.original_path.like(f"{_escape_like(directory)}/%", escape=_LIKE_ESCAPE_CHAR),
+                ~FileRecord.original_path.like(f"{_escape_like(directory)}/%/%", escape=_LIKE_ESCAPE_CHAR),
             )
-            media_result = await session.execute(media_stmt)
-            media_files = media_result.scalars().all()
+            for agent_id, directory in dir_groups
+        ]
+        media_result = await session.execute(select(FileRecord).where(or_(*media_conditions)))
+        media_by_group: dict[tuple[str, str], list[FileRecord]] = {}
+        for media in media_result.scalars().all():
+            parent = str(PurePosixPath(media.original_path).parent)
+            media_by_group.setdefault((media.agent_id, parent), []).append(media)
 
+        rows: list[dict[str, uuid.UUID]] = []
+        for (agent_id, directory), companions in dir_groups.items():
+            media_files = media_by_group.get((agent_id, directory))
             if not media_files:
                 continue
 
