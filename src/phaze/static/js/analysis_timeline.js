@@ -93,9 +93,18 @@
 
         function updateOverflow() {
             const tolerance = 2;
-            const overflow = viewport.scrollWidth > viewport.clientWidth + tolerance;
+            // `scrollWidth - clientWidth` is NOT the maximum scroll offset when the scroller reserves a
+            // scrollbar gutter: the gutter is excluded from clientWidth yet cannot be scrolled into, so
+            // the difference overstates the maximum by the gutter width wherever scrollbars are classic
+            // (Linux, Windows) while reading 0 on macOS overlay scrollbars. Scrolled fully right, the
+            // naive form therefore left `canRight` true forever -- the right-edge fade lit and the hint
+            // reading "<->" instead of "<-". The viewport is border-less by design, so the difference
+            // between its border box and its content box is exactly that reserved gutter.
+            const gutter = Math.max(0, viewport.offsetWidth - viewport.clientWidth);
+            const maxScroll = viewport.scrollWidth - viewport.clientWidth - gutter;
+            const overflow = maxScroll > tolerance;
             const canLeft = overflow && viewport.scrollLeft > tolerance;
-            const canRight = overflow && viewport.scrollLeft + viewport.clientWidth < viewport.scrollWidth - tolerance;
+            const canRight = overflow && viewport.scrollLeft < maxScroll - tolerance;
             frame.classList.toggle("timeline-can-scroll-left", canLeft);
             frame.classList.toggle("timeline-can-scroll-right", canRight);
             hint.hidden = !overflow;

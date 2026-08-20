@@ -10,7 +10,7 @@ A brand-new browser suite has no flake record, and gating merges on an unproven 
 everyone to re-run CI on red — which is exactly how a real failure gets waved through. The bar is a
 **clean run of 10 consecutive post-merge CI runs**.
 
-## Status: NOT MET — 0 of 10 CI runs
+## Status: NOT MET — 0 of 10 CI runs (count reset 2026-08-20)
 
 Epic `phaze-tzy6s` merged to main and the `browser:` job has been running post-merge since
 2026-08-18. The gate has been measured, reset, and re-measured since; see "Counting convention"
@@ -21,7 +21,13 @@ twice by an infrastructure failure (the "Install the Chromium build" step failin
 2026-08-19, runs `32227865905` and `32274358220`), then by a real product regression (three
 consecutive failures of `test_analysis_timeline.py::test_timeline_inspects_with_pointer_touch_and_keyboard_and_cues_overflow`,
 traced to `3e2557bd`). That regression's fix merged as `e0b72d43`; the count restarts at the first
-post-fix run, `32404559677` on `827052af`.
+post-fix run, `32404559677` on `827052af`, which was **green**.
+
+That regression is the argument for this whole record, and it is worth stating plainly: the suite
+found a **real product defect on the platform CI runs and developers do not**. It reproduced 3/3 in
+CI and never once locally, and it was fixed rather than re-run. That is exactly the outcome the
+"do not promote on local evidence alone" bar was written for — the local 5/5 below could not have
+found it, because macOS overlay scrollbars are precisely what hid it.
 
 **Do not flip `continue-on-error` on the strength of the local runs below.** They are evidence that
 the suite is not flaky *on a developer machine*, which is the easy half. CI is where the timing is
@@ -126,4 +132,53 @@ they are listed because local timing is the wrong instrument for all of them.
 
 | # | SHA | Result | Duration | Notes |
 |---|-----|--------|----------|-------|
-| — | — | — | — | Count restarts at run `32404559677` on `827052af`, the first post-merge run after the `phaze-0oquj` timeline-regression fix (`e0b72d43`). Full per-run history through 2026-08-20, including the 28-run window that met and lost the gate, is in `phaze-8p1uq`'s comment thread; this table is the live log going forward and should be kept current rather than reconstructed from bead comments each time. |
+| — | `6ca6bbb3` | 1 failed, 161 passed, 1 skipped | 304.2 s | run 32337835166 — scrollbar-gutter defect (below) |
+| — | `393b15d8` | 1 failed, 161 passed, 1 skipped | 363.1 s | run 32387112841 — same |
+| — | `98446be3` | 1 failed, 161 passed, 1 skipped | 259.9 s | run 32389611422 — same |
+| 1 | `827052af` | 162 passed, 2 skipped | 273 s | run 32404559677 — first post-fix run, **green**. Count restarts here. |
+
+The count restarts at run `32404559677`. Full per-run history through 2026-08-20 — including the
+28-run window that met and then lost the gate unobserved — is in `phaze-8p1uq`'s comment thread;
+this table is the live log going forward and should be kept current rather than reconstructed
+from bead comments each time.
+
+### Diagnosis of the first three failures — a real defect, not a flake
+
+All three failed identically, in
+`test_analysis_timeline.py::test_timeline_inspects_with_pointer_touch_and_keyboard_and_cues_overflow`:
+
+```
+AssertionError: assert '←' in 'SCROLL TIMELINE ↔'
+```
+
+Scrolled fully right, the timeline still advertised room to the right. **Cause:**
+`.analysis-timeline-viewport` carried `scrollbar-gutter: stable`, which reserves inline-end space
+for a vertical scrollbar — space `overflow-y: hidden` guarantees will never be used. A reserved
+gutter is excluded from `clientWidth` but cannot be scrolled into, so `analysis_timeline.js`'s
+`scrollWidth - clientWidth` **overstated the maximum scroll offset by the gutter width** and
+`canRight` could never reach false.
+
+Measured on Ubuntu/Chromium 151 (the CI browser), 1440×900, on the page the test builds:
+
+| | `scrollWidth` | `clientWidth` | `scrollWidth - clientWidth` | offset `scrollLeft` actually clamps to |
+|---|---|---|---|---|
+| Linux (classic scrollbars) | 1344 | 1077 | 267 | **252** |
+| macOS (overlay scrollbars) | 1344 | 1092 | 252 | 252 |
+
+macOS reserves a 0px gutter, so the arithmetic is accidentally right there and the suite stayed
+green on every developer machine. **Fix:** drop the gutter (it was pure cost), and compute the
+maximum from the padding box so a reserved gutter can never make the affordance lie again.
+
+Note what this says about the "what to watch" list above: all five entries are about *timing*, and
+none of them could have predicted this. CI differs from a developer machine in **what it renders**,
+not only in how fast it does so — classic vs overlay scrollbars, font metrics, form controls. A
+CI-only browser failure is not presumptively a flake; check the rendering axis first, because that
+class of failure reproduces 10/10 and is a real defect every time.
+
+**Reproducing a Linux-only browser failure without a Linux box.** The job uploads a Playwright
+trace on failure (artifact `browser-test-results`); its DOM snapshots carry the recorded
+`__playwright_scroll_left_` and class list, which is what localised this to the scroll arithmetic.
+From there, serving the captured page to `mcr.microsoft.com/playwright/python:v1.62.0-noble`
+reproduces the geometry exactly, in seconds, with no app boot. Reach for that before assuming a
+timing flake — none of the five suspects listed above was involved, and CPU throttling to 20×
+never reproduced it, because it was never a race.

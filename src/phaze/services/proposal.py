@@ -412,6 +412,26 @@ async def store_proposals(
     Returns:
         Number of proposals upserted.
     """
+    # phaze-p2p6u: this loop's `await session.execute(stmt)` (below) is flagged by the health
+    # index as io_in_loop + serial_await_in_loop. Left AS SEQUENTIAL, deliberately, for two
+    # reasons rather than one:
+    #   1. `session` is a single AsyncSession. SQLAlchemy's async session is not safe for
+    #      concurrent use -- awaiting N of its `.execute()` calls via `asyncio.gather` (rather
+    #      than sequentially) is a correctness bug, not a performance win, so gather is not an
+    #      option here at all.
+    #   2. Collapsing the N per-proposal upserts into a single multi-row
+    #      `INSERT ... ON CONFLICT DO UPDATE` (the pattern used elsewhere in this molecule) is
+    #      not behavior-preserving here: `file_index` is "an unbounded int the LLM emits" (WR-01,
+    #      below) with no dedup guard, so a batch containing two proposals for the same file_index
+    #      is a reachable state. Today that resolves silently -- two sequential upserts, last one
+    #      wins, because the partial index only conflicts with the ALREADY-COMMITTED first row.
+    #      Folded into one multi-row statement, the SAME scenario raises Postgres error 21000
+    #      ("ON CONFLICT DO UPDATE command cannot affect row a second time") and the whole batch
+    #      write fails where today it silently degrades. Batching would trade a tolerated
+    #      malformed-LLM-output case for a hard failure -- a behavior change AC4 rules out.
+    #      N is also small and bounded (`settings.llm_batch_size`, default 10 -- see
+    #      config.py:849), so the round-trip cost this loop pays is a handful of statements per
+    #      call, not an unbounded fan-out.
     count = 0
     for proposal in batch_response.proposals:
         # WR-01: file_index is an unbounded int the LLM emits. An index >= len(file_ids) would
@@ -538,10 +558,20 @@ async def load_companion_targets(
     # Group by OWNING agent (phaze-c9w9 affinity): a companion path only means anything on the
     # mount it was reported from, so each owner reads its own files. In practice a media file and
     # its sidecars share one agent, so this is normally a single group.
+    #
+    # phaze-p2p6u: batched into ONE query instead of one SELECT per companion (N+1 / io_in_loop).
+    # `companions` and its iteration order are unchanged -- the loop below still walks it in the
+    # same order and applies the same "skip if the FileRecord is gone" behavior; only the per-row
+    # DB round trip is removed, by resolving every FileRecord up front (a single `IN` query,
+    # deduplicated for free by ``uq_file_companions_pair``) and looking each one up from an
+    # in-memory dict.
+    companion_ids = [comp.companion_id for comp in companions]
+    records_result = await session.execute(select(FileRecord).where(FileRecord.id.in_(companion_ids)))
+    records_by_id = {rec.id: rec for rec in records_result.scalars().all()}
+
     by_agent: dict[str, list[CompanionReadItem]] = {}
     for comp in companions:
-        rec_result = await session.execute(select(FileRecord).where(FileRecord.id == comp.companion_id))
-        rec = rec_result.scalar_one_or_none()
+        rec = records_by_id.get(comp.companion_id)
         if rec is None:
             continue
         by_agent.setdefault(rec.agent_id, []).append(CompanionReadItem(filename=rec.original_filename, path=rec.current_path))
