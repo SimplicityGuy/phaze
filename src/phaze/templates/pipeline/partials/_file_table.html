@@ -53,18 +53,23 @@
                         The two must agree, and when they disagree the SERVER wins silently and the
                         reported count, not the selection size, is what the operator is told.
 
-   D-06 / R-1: rows always carry `cursor-pointer` + a stable id + hover; the row→record click is
-   bound ONLY when `row_file_ids` is provided (Phase 61) — otherwise the row is inert. A selection
-   checkbox therefore carries `@click.stop` so ticking a box in a record-bound table cannot also
-   open the slide-in.
+   D-06 / R-1: only a row carrying a REAL file id receives pointer/focus affordance and the
+   row→record binding. A parallel ``None`` (the Tracklists unmatched-candidate case) is completely
+   inert: no URL, dispatch, tabindex, pointer, or hover lie. The canonical attributes live in
+   ``_record_row.html`` and suppress nested controls before either htmx or Alpine handles the event.
+
+   * row_record_section — OPTIONAL stable anchor in the shared record body. Tracklists supplies
+                          ``tracklist``; ordinary file tables omit it and open at the top.
 #}
+{% import "pipeline/partials/_record_row.html" as record_row %}
 {% if not rows %}
 <div class="px-6 py-12 text-center">
     <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">{{ empty_heading }}</p>
     <p class="text-sm text-muted ">{{ empty_body }}</p>
 </div>
 {% else %}
-<div class="relative overflow-x-auto"{% if row_file_ids %} x-data{% endif %}>
+{% set _record_file_ids = row_file_ids | select | list if row_file_ids else [] %}
+<div class="relative overflow-x-auto"{% if _record_file_ids %} x-data{% endif %}>
     {# row_file_ids ⇒ each row carries @click="$dispatch('record:open')"; the bare x-data gives
        those rows an Alpine scope so the click actually wires. The shell root has NO x-data
        (see shell.html — x-data on <html> is inert), so without this the record slide-in never
@@ -118,7 +123,8 @@
         </thead>
         <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
             {% for row in rows %}
-            <tr {% if row_id_prefix %}id="{{ row_id_prefix }}-{{ loop.index }}" {% endif %}class="cursor-pointer hover:bg-gray-50 dark:hover:bg-white/5"{% if row_file_ids and row_file_ids | length > loop.index0 %} hx-get="/record/{{ row_file_ids[loop.index0] }}" hx-target="#record-body" hx-swap="innerHTML" hx-trigger="click, keyup[key=='Enter']" tabindex="0" @click="$dispatch('record:open', { el: $el })" @keydown.enter="$dispatch('record:open', { el: $el })"{% endif %}>
+            {% set _file_id = row_file_ids[loop.index0] if row_file_ids and row_file_ids | length > loop.index0 else none %}
+            <tr {% if row_id_prefix %}id="{{ row_id_prefix }}-{{ loop.index }}" {% endif %}class="{% if _file_id %}cursor-pointer hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 dark:hover:bg-white/5{% endif %}"{% if _file_id %} {{ record_row.attrs(_file_id, row[0].text, row_record_section or '') }}{% endif %}>
                 {% if row_select_ids and row_select_ids | length > loop.index0 %}
                 {% set _locked = row_select_locked and row_select_locked | length > loop.index0 and row_select_locked[loop.index0] %}
                 <td class="w-10 px-6 py-3">
