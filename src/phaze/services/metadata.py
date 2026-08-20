@@ -172,6 +172,37 @@ def _bounded_track(n: int) -> int | None:
     return n if 0 <= n <= 9999 else None
 
 
+def _track_from_text(val: Any) -> int | None:
+    """Parse the STRING form of a track tag -- ``"3"`` or ``"3/12"`` -- into the wire domain.
+
+    :func:`_parse_track`'s final arm, reached once the MP4 tuple/list shapes have been peeled off.
+    Only the leading component is kept; the "/total" suffix is discarded (:func:`_raw_track_text` is
+    what preserves it for an undo snapshot). An empty or non-numeric value degrades to None.
+    """
+    text = str(val).strip()
+    if "/" in text:
+        text = text.split("/")[0].strip()
+    try:
+        return _bounded_track(int(text)) if text else None
+    except ValueError:
+        return None
+
+
+def _track_from_tuple(val: tuple[Any, ...]) -> int | None:
+    """Clamp the leading element of an MP4 ``trkn``-shaped tuple to the wire domain.
+
+    Shared by :func:`_parse_track`'s two tuple arms (a bare ``(3, 12)`` and the ``[(3, 12)]``
+    list-wrapped form), which had this identical body twice. ``val[0] is not None`` is checked with
+    identity, not truthiness, so an in-domain track 0 parses as 0 rather than None (phaze-6p7fz);
+    a non-numeric element degrades to None rather than raising, matching the defensive-parse
+    convention every helper in this module follows. Callers guarantee ``len(val) >= 1``.
+    """
+    try:
+        return _bounded_track(int(val[0])) if val[0] is not None else None
+    except (ValueError, TypeError):
+        return None
+
+
 def _parse_track(val: Any) -> int | None:
     """Parse a track number from various formats.
 
@@ -189,27 +220,15 @@ def _parse_track(val: Any) -> int | None:
             return None
         first = val[0]
         if isinstance(first, tuple) and len(first) >= 1:
-            try:
-                return _bounded_track(int(first[0])) if first[0] is not None else None
-            except (ValueError, TypeError):
-                return None
+            return _track_from_tuple(first)
         val = first
 
     # Handle tuple directly
     if isinstance(val, tuple) and len(val) >= 1:
-        try:
-            return _bounded_track(int(val[0])) if val[0] is not None else None
-        except (ValueError, TypeError):
-            return None
+        return _track_from_tuple(val)
 
     # Handle string: "3" or "3/12"
-    text = str(val).strip()
-    if "/" in text:
-        text = text.split("/")[0].strip()
-    try:
-        return _bounded_track(int(text)) if text else None
-    except ValueError:
-        return None
+    return _track_from_text(val)
 
 
 def normalize_year_text(value: Any) -> int | None:
@@ -277,13 +296,30 @@ def _raw_track_text(val: Any) -> str | None:
             return None
         val = val[0]
     if isinstance(val, tuple):
-        if len(val) >= 2 and val[1]:
-            return f"{val[0]}/{val[1]}"
-        if len(val) >= 1 and val[0] is not None:
-            return str(val[0])
-        return None
+        return _raw_track_from_tuple(val)
     text = _sanitize_pg_text(str(val)).strip()
     return text or None
+
+
+def _raw_track_from_tuple(val: tuple[Any, ...]) -> str | None:
+    """Render an MP4 ``trkn`` tuple as raw ``"N"`` / ``"N/total"`` text (phaze-2zl7).
+
+    The raw-text sibling of :func:`_track_from_tuple`, which keeps only the leading number. The two
+    components are checked DIFFERENTLY and deliberately (phaze-6p7fz):
+
+    - ``val[0]`` (the track) uses ``is not None``, so an in-domain track 0 round-trips to "0/12"
+      the same way :func:`_parse_track` parses it as 0 -- preserving the "raw is None iff normalized
+      is None" contract.
+    - ``val[1]`` (the total) keeps its TRUTHINESS check, because MP4 rippers write a total of 0 to
+      mean "no total" (e.g. ``(3, 0)``), so a 0 total is correctly omitted from the suffix.
+
+    Do not "make these consistent" -- the asymmetry is the fix.
+    """
+    if len(val) >= 2 and val[1]:
+        return f"{val[0]}/{val[1]}"
+    if len(val) >= 1 and val[0] is not None:
+        return str(val[0])
+    return None
 
 
 def _serialize_tags(tags: Any) -> dict[str, Any]:
@@ -307,23 +343,159 @@ def _serialize_tags(tags: Any) -> dict[str, Any]:
         if str_key.startswith("APIC"):
             continue
         try:
-            if isinstance(val, bytes):
-                continue
-            if isinstance(val, list):
-                serialized = []
-                for item in val:
-                    if isinstance(item, bytes):
-                        continue
-                    serialized.append(_sanitize_pg_text(str(item)))
-                if serialized:
-                    result[str_key] = serialized
-            else:
-                result[str_key] = _sanitize_pg_text(str(val))
+            serialized = _serialize_tag_value(val)
         except Exception:
             logger.debug("Failed to serialize tag %s", str_key)
             continue
+        if serialized is not None:
+            result[str_key] = serialized
 
     return result
+
+
+def _serialize_tag_value(val: Any) -> str | list[str] | None:
+    """Serialize ONE tag value to a JSON-safe form, or ``None`` for a value that is dropped.
+
+    ``None`` -- the SKIP signal -- is returned for exactly the two cases :func:`_serialize_tags`
+    already dropped inline: a ``bytes`` value (binary payload, e.g. an unnamed cover-art blob), and a
+    list whose every element was ``bytes`` (nothing survived the filter). This is unambiguous because
+    no live tag value can serialize TO ``None``: both surviving branches return a ``str`` or a
+    non-empty ``list[str]``, never ``None``.
+
+    Raising is also part of the contract: a value whose ``str()`` blows up propagates to the caller,
+    which logs it and drops that one key rather than losing the whole tag dict.
+    """
+    if isinstance(val, bytes):
+        return None
+    if isinstance(val, list):
+        serialized = [_sanitize_pg_text(str(item)) for item in val if not isinstance(item, bytes)]
+        return serialized or None
+    return _sanitize_pg_text(str(val))
+
+
+# phaze-2zl7: the two fields whose RAW pre-normalization value must be captured alongside the
+# normalized one, for the undo snapshot. Shared by the three per-format collectors below so the
+# set cannot drift between them.
+_RAW_CAPTURED_FIELDS = ("genre", "track_number")
+
+
+def _open_for_tags(file_path: str, *, strict: bool) -> Any:
+    """Open *file_path* with mutagen, or return ``None`` for "no tags, successfully".
+
+    Splits :func:`extract_tags`'s open leg out whole; every raise below is that function's
+    documented contract, unchanged:
+
+    - ``strict`` turns ANY open/parse failure -- and an unrecognized file -- into
+      :class:`TagReadError`, so a verify-path re-read failure is distinguishable from genuinely
+      absent tags (phaze-vq3g).
+    - A direct ``OSError``, or one mutagen wrapped in a ``MutagenError`` (which does NOT subclass
+      OSError), PROPAGATES in non-strict mode: a read failure is NOT "no tags", and swallowing it
+      here is what once let the metadata stage record a successful all-``None`` extraction for a
+      file it never read (phaze-todn).
+    - Everything else -- readable file, unparseable or unrecognized tag data -- returns ``None``,
+      which the caller turns into an empty successful extraction.
+    """
+    try:
+        audio = mutagen.File(file_path)
+    except Exception as exc:
+        if strict:
+            msg = f"failed to read tags from {file_path}: {exc}"
+            raise TagReadError(msg) from exc
+        if isinstance(exc, OSError):
+            # phaze-todn: a read failure is NOT 'no tags' -- let the caller's failure/retry
+            # machinery run instead of recording an empty successful extraction.
+            raise
+        io_error = _io_cause(exc)
+        if io_error is not None:
+            # mutagen wraps open/read OSErrors in MutagenError (which does NOT subclass
+            # OSError), so unwrap and re-raise the underlying I/O failure -- same
+            # phaze-todn rule as the direct-OSError branch above.
+            raise io_error from exc
+        # The file was readable but mutagen could not parse it (corrupt/exotic tag data):
+        # a genuinely-unparseable-tags case, kept as an empty successful extraction.
+        logger.debug("Failed to parse tags with mutagen: %s", file_path)
+        return None
+
+    if audio is None:
+        if strict:
+            msg = f"{file_path} is not a recognized audio file on re-read"
+            raise TagReadError(msg)
+        return None
+    return audio
+
+
+def _stream_info(audio: Any) -> tuple[float | None, int | None]:
+    """Read ``(duration, bitrate)`` off ``audio.info``, tolerating every absent attribute.
+
+    A zero/negative length is treated as absent (``None``) rather than recorded as a real duration:
+    it is what a container reports when it does not know, not a zero-length stream.
+    """
+    duration: float | None = None
+    bitrate: int | None = None
+    info = getattr(audio, "info", None)
+    if info is not None:
+        length = getattr(info, "length", None)
+        if length is not None and length > 0:
+            duration = float(length)
+        br = getattr(info, "bitrate", None)
+        if br is not None:
+            bitrate = int(br)
+    return duration, bitrate
+
+
+def _collect_normalized_fields(audio: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Dispatch to the per-format collector, returning ``(fields, raw_sources)``.
+
+    The three tag formats are genuinely different shapes, not three spellings of one loop, so each
+    keeps its own collector below. NOTE the discriminators, which are deliberately asymmetric and
+    must stay that way: ID3 is selected on ``audio.tags``, MP4 on ``audio`` ITSELF, and Vorbis-style
+    comments are the fallthrough. Callers guarantee ``audio.tags is not None``.
+    """
+    if isinstance(audio.tags, ID3):
+        return _collect_id3_fields(audio.tags)
+    if isinstance(audio, MP4):
+        return _collect_mp4_fields(audio.tags)
+    return _collect_vorbis_fields(audio.tags)
+
+
+def _collect_id3_fields(tags: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """ID3-tagged files (MP3, AIFF, etc.): read each mapped frame's ``.text`` list."""
+    fields: dict[str, Any] = {}
+    raw_sources: dict[str, Any] = {}
+    for id3_key, field_name in _ID3_MAP.items():
+        frame = tags.get(id3_key)
+        if frame is not None:
+            raw_val = getattr(frame, "text", [frame])
+            fields[field_name] = _first_str(raw_val)
+            if field_name in _RAW_CAPTURED_FIELDS:
+                raw_sources[field_name] = raw_val
+    return fields, raw_sources
+
+
+def _collect_mp4_fields(tags: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """MP4/M4A atoms: ``track_number`` is kept AS-IS (the ``trkn`` tuple) for :func:`_parse_track`."""
+    fields: dict[str, Any] = {}
+    raw_sources: dict[str, Any] = {}
+    for mp4_key, field_name in _MP4_MAP.items():
+        val = tags.get(mp4_key)
+        if val is not None:
+            fields[field_name] = val if field_name == "track_number" else _first_str(val)
+            if field_name in _RAW_CAPTURED_FIELDS:
+                raw_sources[field_name] = val
+    return fields, raw_sources
+
+
+def _collect_vorbis_fields(tags: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Vorbis-style comments (OGG, FLAC, OPUS): every mapped key collapses to its first value."""
+    fields: dict[str, Any] = {}
+    raw_sources: dict[str, Any] = {}
+    for vorbis_key, field_name in _VORBIS_MAP.items():
+        val = tags.get(vorbis_key)
+        if val is not None:
+            fields[field_name] = _first_str(val)
+            if field_name in _RAW_CAPTURED_FIELDS:
+                raw_sources[field_name] = val
+    return fields, raw_sources
 
 
 def extract_tags(file_path: str, *, strict: bool = False) -> ExtractedTags:
@@ -353,50 +525,16 @@ def extract_tags(file_path: str, *, strict: bool = False) -> ExtractedTags:
             no tags", which stays a successful empty extraction.
         TagReadError: Any open/parse failure in ``strict`` mode (phaze-vq3g).
     """
-    try:
-        audio = mutagen.File(file_path)
-    except Exception as exc:
-        if strict:
-            msg = f"failed to read tags from {file_path}: {exc}"
-            raise TagReadError(msg) from exc
-        if isinstance(exc, OSError):
-            # phaze-todn: a read failure is NOT 'no tags' -- let the caller's failure/retry
-            # machinery run instead of recording an empty successful extraction.
-            raise
-        io_error = _io_cause(exc)
-        if io_error is not None:
-            # mutagen wraps open/read OSErrors in MutagenError (which does NOT subclass
-            # OSError), so unwrap and re-raise the underlying I/O failure -- same
-            # phaze-todn rule as the direct-OSError branch above.
-            raise io_error from exc
-        # The file was readable but mutagen could not parse it (corrupt/exotic tag data):
-        # a genuinely-unparseable-tags case, kept as an empty successful extraction.
-        logger.debug("Failed to parse tags with mutagen: %s", file_path)
-        return ExtractedTags()
-
+    audio = _open_for_tags(file_path, strict=strict)
     if audio is None:
-        if strict:
-            msg = f"{file_path} is not a recognized audio file on re-read"
-            raise TagReadError(msg)
+        # Unrecognized/unparseable in NON-strict mode (strict already raised inside the helper):
+        # a successful, empty extraction -- distinct from a read failure, which propagates.
         return ExtractedTags()
 
-    # Extract duration and bitrate from audio.info
-    duration: float | None = None
-    bitrate: int | None = None
-    info = getattr(audio, "info", None)
-    if info is not None:
-        length = getattr(info, "length", None)
-        if length is not None and length > 0:
-            duration = float(length)
-        br = getattr(info, "bitrate", None)
-        if br is not None:
-            bitrate = int(br)
+    duration, bitrate = _stream_info(audio)
 
     # Extract raw tags
     raw_tags = _serialize_tags(audio.tags)
-
-    # Extract normalized fields based on tag type
-    fields: dict[str, Any] = {}
 
     if audio.tags is None:
         # File has no tags
@@ -407,36 +545,7 @@ def extract_tags(file_path: str, *, strict: bool = False) -> ExtractedTags:
     # these two need a separate capture: _first_str already collapses a multi-value genre to its
     # first entry, and the MP4 branch keeps track_number as the raw tuple/list "as-is for
     # _parse_track", neither of which is directly usable as raw TEXT for an undo snapshot.
-    raw_sources: dict[str, Any] = {}
-
-    if isinstance(audio.tags, ID3):
-        # ID3-tagged files (MP3, AIFF, etc.)
-        for id3_key, field_name in _ID3_MAP.items():
-            frame = audio.tags.get(id3_key)
-            if frame is not None:
-                raw_val = getattr(frame, "text", [frame])
-                fields[field_name] = _first_str(raw_val)
-                if field_name in ("genre", "track_number"):
-                    raw_sources[field_name] = raw_val
-    elif isinstance(audio, MP4):
-        # MP4/M4A atoms
-        for mp4_key, field_name in _MP4_MAP.items():
-            val = audio.tags.get(mp4_key)
-            if val is not None:
-                if field_name == "track_number":
-                    fields[field_name] = val  # Keep as-is for _parse_track
-                else:
-                    fields[field_name] = _first_str(val)
-                if field_name in ("genre", "track_number"):
-                    raw_sources[field_name] = val
-    else:
-        # Vorbis-style comments (OGG, FLAC, OPUS)
-        for vorbis_key, field_name in _VORBIS_MAP.items():
-            val = audio.tags.get(vorbis_key)
-            if val is not None:
-                fields[field_name] = _first_str(val)
-                if field_name in ("genre", "track_number"):
-                    raw_sources[field_name] = val
+    fields, raw_sources = _collect_normalized_fields(audio)
 
     return ExtractedTags(
         artist=fields.get("artist"),
