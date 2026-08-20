@@ -518,5 +518,44 @@
     })();
     </script>
 
+    <!-- phaze-5i74w: release [data-hx-guard] submit buttons once htmx has actually processed them.
+         Approval-commit <form>s (the dedupe "Confirm resolution" step and the bulk tag-write
+         approval) declare neither `method` nor `action` and rely entirely on htmx intercepting
+         their submit -- that interception (and, for the tag-write form, its `hx-confirm` prompt)
+         is wired up by htmx's `processNode` inside its deferred SETTLE task, not synchronously on
+         swap. A click that lands before that settle task runs falls through to the browser's own
+         native submission: no method -> GET, no action -> the current URL, hidden fields -> query
+         params -- a silent no-op that looks like an ordinary reload. Measured via Playwright
+         network trace at 4/40 (10%) for a click fired the instant the form attaches to the DOM.
+
+         Those buttons render `disabled` + `data-hx-guard` server-side so a premature click cannot
+         fall through at all (a permanently-disabled button if htmx never loads is a LOUD failure,
+         not a silent one -- `disabled:opacity-50` already visibly grays it out). `htmx:load` is
+         the settle-task event fired immediately after `processNode` finishes wiring an element up
+         (htmx.js's `makeAjaxLoadTask`: `processNode(child)` then `triggerEvent(child,
+         'htmx:load')`), so by the time this listener sees it, the guarded button's own hx-post /
+         hx-confirm are already attached -- releasing the guard never races the very behavior it is
+         guarding. Hosted here for the same reason as the Agents-pane listener above: shell.html
+         loads once per tab and survives every #stage-workspace swap, including the very first
+         `htmx:load` htmx fires for `document.body` on initial page load. `data-hx-guard-keep` lets
+         a button stay disabled for its own business reason (e.g. "no eligible rows") independent
+         of this guard. -->
+    <script>
+    (function () {
+        function releaseGuards(root) {
+            if (!root || typeof root.querySelectorAll !== 'function') return;
+            var guarded = (root.matches && root.matches('[data-hx-guard]')) ? [root] : [];
+            guarded = guarded.concat(Array.prototype.slice.call(root.querySelectorAll('[data-hx-guard]')));
+            guarded.forEach(function (btn) {
+                btn.removeAttribute('data-hx-guard');
+                if (!btn.hasAttribute('data-hx-guard-keep')) btn.disabled = false;
+            });
+        }
+        document.body.addEventListener('htmx:load', function (evt) {
+            releaseGuards(evt.detail && evt.detail.elt);
+        });
+    })();
+    </script>
+
 </body>
 </html>

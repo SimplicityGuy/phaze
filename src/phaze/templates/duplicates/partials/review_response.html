@@ -5,6 +5,14 @@
     <form class="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end" hx-post="/duplicates/{{ group.sha256_hash }}/resolve" hx-target="#dupe-group-{{ group.sha256_hash }}" hx-swap="outerHTML">
         <input type="hidden" name="plan_id" value="{{ plan_id }}">
         <button type="button" hx-get="/s/dedupe" hx-target="#stage-workspace" hx-swap="innerHTML" class="h-9 rounded-lg border border-gray-300 px-3 text-sm dark:border-phaze-border">Cancel</button>
-        <button type="submit" hx-disabled-elt="this" class="h-9 rounded-lg bg-amber-700 px-3 font-jura text-xs font-medium uppercase tracking-wider text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50">Confirm resolution</button>
+        <!-- phaze-5i74w: this form declares no method/action and relies entirely on htmx
+             intercepting the submit -- htmx wires that interception up during its SETTLE phase,
+             not synchronously on swap, so a click that lands in the gap between "attached to the
+             DOM" and "processed by htmx" falls through to a native GET (hidden plan_id promoted
+             to a query param) instead of the intended POST, and this confirm step silently never
+             commits. `disabled` + `data-hx-guard` close that window: the button starts unusable
+             and shell.html's one htmx:load listener (see the comment there) enables it only once
+             htmx has actually finished wiring this element up. -->
+        <button type="submit" disabled data-hx-guard hx-disabled-elt="this" class="h-9 rounded-lg bg-amber-700 px-3 font-jura text-xs font-medium uppercase tracking-wider text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50">Confirm resolution</button>
     </form>
 </section>
