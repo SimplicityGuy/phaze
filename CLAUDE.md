@@ -277,8 +277,21 @@ Use frozen SHAs (not just tags) for all hooks. Required hooks:
 ## Workflow: Features and PRs
 
 - **Every feature gets its own git worktree** — no cross-contamination between features
-- **Every feature gets its own PR** — one PR per feature, no mixing unrelated changes
-- Never push directly to main
+- **Code changes may go straight to main.** An agent that has taken a change through the beadhive
+  lifecycle — validated, resolved at the bead's review gate, merged `--no-ff` — may push `main` to
+  origin directly. No PR is required for a code bead, and none should be opened for one.
+- **Docs changes require a PR.** Anything under `docs/**`, any root-level `*.md` (`CLAUDE.md` and
+  `README.md` included), and any other prose-only change gets its own branch and a PR for human
+  review before it lands. Prose is where decisions and rationale are recorded, and a wrong line in
+  it reads as authoritative to every future agent for as long as it stands — that is what the
+  review is for, and CI cannot supply it.
+- **A change touching both is a docs change** for this purpose: open the PR.
+- **One PR per feature**, wherever a PR is opened at all — no mixing unrelated changes.
+- **On a direct push, CI runs after the fact — nothing gates `main`.** The bead's own validation is
+  therefore the real gate, and it must be a genuine one: run the full `just check` on an isolated
+  seat, not merely `bh work check` (which this hive resolves to `just lint && just typecheck` and
+  which runs no tests at all). Treat a red post-merge CI run as a fix-forward P0, not a routine
+  failure to triage later.
 
 ## CI (GitHub Actions)
 
@@ -545,7 +558,7 @@ All work in this repo flows through beadhive. Do not make direct repo edits outs
 4. **Before starting execution on a bead**, if there is any ambiguity about what must be delivered, keep asking clarifying questions until the work is clear.
 5. **Once work starts, the dispatching session occupies the dispatcher seat itself** — load the `bh:dispatcher` skill and drive the molecule from that session; do NOT spawn a `bh:dispatcher` sub-agent (a sub-agent surrenders mid-flight visibility and leaves the session inferring state from git, which misreads both uncommitted work and evidence-only spike beads). From that seat, **dispatch a team of developer sub-agents**, each working in its own worktree (`wt/bead/issue/<id>`) branched off the bead's integration branch. Never share a worktree or a test database between concurrent agents.
 6. **Fix pushes get the adversarial treatment.** Before a `fixgroup:*` integration branch merges — a molecule whose children are bug beads from a bug hunt — run a **diff-scoped adversarial verification pass over the fix diff**: the same different-model, default-to-refuted verifier the hunt used to confirm its findings, with the fix itself as the claim under refutation. Findings become new beads, never silent edits. Rationale, the measurements behind it, and an explicit list of what the pass does **not** catch: [ADR-0011](docs/design/0011-bug-hunt-cadence.md). The same ADR sets the hunting cadence — routine lens passes are scoped to the diff since the last hunt; whole-tree passes are reduced in frequency, **not** retired.
-7. **When all children of the bead are done:** open a PR, invoke a code review, and wait for green CI. If anything fails, investigate and fix — do not bypass. Once CI is green, merge to main (merge commit, never squash), then close the bead(s) with comments explaining the outcome.
+7. **When all children of the bead are done:** land the molecule (merge commit, never squash), then close the bead(s) with comments explaining the outcome. **A code molecule needs no PR** — `bh work finish <epic>` onto local main, then push `main` to origin directly; CI runs after the fact, so the full `just check` on an isolated seat is what actually gated it. **A docs molecule does**: open a PR, invoke a code review, and wait for green CI. If anything fails, investigate and fix — do not bypass. See "Workflow: Features and PRs" for which changes count as docs.
 8. **Periodically push the beads DB** to the Dolt remote: `bd dolt push`.
 
 <!-- GSD:profile-start -->
