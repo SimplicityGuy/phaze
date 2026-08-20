@@ -535,6 +535,38 @@ async def get_proposals_page(
     return proposals, pagination
 
 
+async def _diagnose_zero_rowcount_status_update(
+    session: AsyncSession,
+    proposal_id: uuid_mod.UUID,
+    new_status: ProposalStatus,
+    allowed_from: Iterable[ProposalStatus] | None,
+    expected_updated_at: datetime_mod.datetime | None,
+) -> RenameProposal | None:
+    """Re-read and classify why the guarded UPDATE in `update_proposal_status` matched nothing.
+
+    Split out of `update_proposal_status`'s ``rowcount == 0`` branch so the "which cause" dispatch
+    is legible on its own; same re-read, same precedence, same exceptions -- no behavior change.
+    """
+    # The conditional UPDATE matched nothing: either the proposal does not exist, its current
+    # status is outside the allowed set (when allowed_from is set), or its updated_at no longer
+    # matches the caller's token (when expected_updated_at is set). Re-read to distinguish which.
+    current = await session.execute(select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id))
+    proposal = current.scalar_one_or_none()
+    if proposal is None:
+        return None
+    if allowed_from is not None and proposal.status not in {s.value for s in allowed_from}:
+        raise ProposalTransitionError(proposal.status, new_status.value)
+    if expected_updated_at is not None and proposal.updated_at != expected_updated_at:
+        raise ProposalStaleWriteError(str(proposal_id))
+    if allowed_from is not None:
+        # allowed_from was satisfied and (if checked) the token matched, yet the guarded
+        # UPDATE still matched nothing -- a fresh row swap between the UPDATE and this
+        # re-SELECT. Keep refusing rather than silently reporting success on a re-read that
+        # is already stale itself.
+        raise ProposalTransitionError(proposal.status, new_status.value)
+    return proposal
+
+
 async def update_proposal_status(
     session: AsyncSession,
     proposal_id: uuid_mod.UUID,
@@ -587,24 +619,7 @@ async def update_proposal_status(
         raise ProposalPendingConflictError(str(proposal_id)) from exc
 
     if int(cursor_result.rowcount) == 0:
-        # The conditional UPDATE matched nothing: either the proposal does not exist, its current
-        # status is outside the allowed set (when allowed_from is set), or its updated_at no longer
-        # matches the caller's token (when expected_updated_at is set). Re-read to distinguish which.
-        current = await session.execute(select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id))
-        proposal = current.scalar_one_or_none()
-        if proposal is None:
-            return None
-        if allowed_from is not None and proposal.status not in {s.value for s in allowed_from}:
-            raise ProposalTransitionError(proposal.status, new_status.value)
-        if expected_updated_at is not None and proposal.updated_at != expected_updated_at:
-            raise ProposalStaleWriteError(str(proposal_id))
-        if allowed_from is not None:
-            # allowed_from was satisfied and (if checked) the token matched, yet the guarded
-            # UPDATE still matched nothing -- a fresh row swap between the UPDATE and this
-            # re-SELECT. Keep refusing rather than silently reporting success on a re-read that
-            # is already stale itself.
-            raise ProposalTransitionError(proposal.status, new_status.value)
-        return proposal
+        return await _diagnose_zero_rowcount_status_update(session, proposal_id, new_status, allowed_from, expected_updated_at)
 
     # Re-fetch with selectinload to ensure file relationship is available
     # (session.refresh does not honor selectinload on lazy='raise' relationships)
