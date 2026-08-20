@@ -959,21 +959,29 @@ class TestLoadCompanionContents:
 
     @staticmethod
     def _session(companion_records: list[MagicMock]) -> AsyncMock:
-        """A session double: one FileCompanion query, then one FileRecord query per companion."""
+        """A session double: one FileCompanion query, then ONE batched FileRecord query.
+
+        phaze-p2p6u: load_companion_targets now resolves every companion's FileRecord with a
+        single ``IN`` query instead of one SELECT per companion (io_in_loop fix), so this double
+        mirrors two ``session.execute`` calls, not one-plus-N. Each companion mock's
+        ``companion_id`` is wired to the matching record's ``id`` so the implementation's
+        dict-by-id lookup finds it, same as the real FK relationship would.
+        """
         session = AsyncMock()
-        companions_result = MagicMock()
-        companions_result.scalars.return_value.all.return_value = [MagicMock(companion_id=uuid.uuid4()) for _ in companion_records]
-        file_results = []
+        companions = []
         for rec in companion_records:
-            r = MagicMock()
-            r.scalar_one_or_none.return_value = rec
-            file_results.append(r)
-        session.execute.side_effect = [companions_result, *file_results]
+            companions.append(MagicMock(companion_id=rec.id))
+        companions_result = MagicMock()
+        companions_result.scalars.return_value.all.return_value = companions
+        records_result = MagicMock()
+        records_result.scalars.return_value.all.return_value = companion_records
+        session.execute.side_effect = [companions_result, records_result]
         return session
 
     @staticmethod
     def _companion_record(filename: str, path: str, agent_id: str = "test-agent") -> MagicMock:
         rec = MagicMock()
+        rec.id = uuid.uuid4()
         rec.original_filename = filename
         rec.current_path = path
         rec.agent_id = agent_id
