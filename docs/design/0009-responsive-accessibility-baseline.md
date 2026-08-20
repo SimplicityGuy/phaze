@@ -417,7 +417,7 @@ The narrower question — whether specific request paths are measurably slower o
 after boot than on later ones — is now measured, and the answer is **yes, there is a real,
 consistent effect, and it is a product characteristic, not a harness artifact.**
 
-One `live_server`-shaped boot (paid once, matching CI's own session scope — see the correction
+**[CI-like shape: one session, boot paid once]** One `live_server`-shaped boot (paid once, matching CI's own session scope — see the correction
 above), then every page route the browser suite actually exercises was hit once ("first hit") and
 then nine more times on the same warm process ("steady state", mean of the last nine):
 
@@ -444,8 +444,12 @@ each distinct phaze page after a restart is measurably slower than their next cl
 page — not dramatically (absolute deltas run 10-160ms, well under anything a person would
 consciously notice, let alone report), but it is real, reproducible, and traceable to a named
 mechanism rather than measurement noise. Per this bead's own scope rule, it gets its own bead
-rather than a fix folded into this one; given the modest absolute size, that bead is informational/
-low-priority rather than urgent.
+rather than a fix folded into this one; filed as **`phaze-2wxmg`** (P3, informational-with-evidence
+given the modest absolute size), which carries this measurement's disk-cache caveat forward
+explicitly and adds its own criterion against the tempting wrong fix: migrations already run inside
+the lifespan before `/health` returns 200 (see above), so trading a ~200ms first click for a longer
+restart needs arguing, not assuming. See `phaze-2wxmg` for the full finding rather than duplicating
+it here.
 
 #### Should the suite exercise the cold path deliberately? (recommendation, not adopted)
 
@@ -465,38 +469,73 @@ itself, so a run could be timed and printed rather than asserted on. Boots use t
 `tests/browser/conftest.py::live_server` (fresh-database-per-attempt, real uvicorn, real Alembic,
 `--host 127.0.0.1`), polling `/health` exactly as `_wait_until_serving` does.
 
-**Migration only** (fresh db, no uvicorn, no queue/router wiring — just `await run_migrations()`),
-3 runs: **0.666s / 0.715s / 0.785s, mean ~0.72s.**
+**Read this caveat before any number below — it is not a footnote.** Every "steady" figure in this
+section was measured on a dev machine that had just run this app repeatedly in the same session
+(`uv sync`, the full browser suite, several other measurements) — genuinely warm OS disk cache. The
+first cold-boot attempt in the EXTREME-shape run below took **12.89s**; the next nine, on the same
+now-warm machine, took **1.68-1.85s**. That ~7x gap is not the app behaving differently — it is
+OS-level disk cache warmth for the venv and its native dependencies (essentia-tensorflow's compiled
+extension among them), and discarding that first sample as noise would have been the natural thing
+to do and would have been wrong. The browser CI job (`.github/workflows/tests.yml`, `browser:`)
+runs on `runs-on: ubuntu-latest`: a **fresh VM every run**, with the Python venv and its native
+deps installed fresh by that run's own `just install` step (only the Chromium binary is cached
+across runs, via `actions/cache`). So **CI's own first boot of a run is the closer analog to this
+measurement's 12.89s outlier, not to its 1.7-1.8s steady figure** — every steady-state number below
+should be read as a floor (what boot costs once the OS has already paid for everything once), not
+as an estimate of a fresh CI runner's first job. The exact CI number was not measured here (that
+would mean running on an actual fresh `ubuntu-latest` runner, out of scope for this pass) and is
+worth a follow-up if boot latency ever becomes a suspect on its own, rather than a contributor
+among several.
 
-**Cold boot, EXTREME shape** (fresh process + fresh db per attempt, the full lifespan gated behind
-`/health` — migration, connectivity check, dev-agent seed, queue/task-router/redis wiring), 10 runs
-back to back: the **first** attempt took **12.89s**; the other **nine** were **1.68-1.85s (mean
-~1.74s)**. That ~7x gap is not the app doing anything different between runs — it is OS-level disk
-cache warmth for the venv and its native dependencies (essentia-tensorflow's compiled extension
-among them), and it only shows up once per machine session, not once per attempt.
+**[Isolated component, neither shape — no uvicorn, no queue/router wiring] Migration only**
+(fresh db, just `await run_migrations()`), 3 runs: **0.666s / 0.715s / 0.785s, mean ~0.72s.**
 
-**This matters for how to read the 1.7-1.8s "steady" figure.** It was measured on a dev machine
-that had just run this app repeatedly in the same session (`uv sync`, the full browser suite,
-several other measurements) — genuinely warm disk cache. The browser CI job
-(`.github/workflows/tests.yml`, `browser:`) runs on `runs-on: ubuntu-latest`: a fresh VM every
-run, with dependencies installed by that run's own `just install` step (Chromium itself is cached
-across runs via `actions/cache`, but the Python venv and its native deps are not). So **CI's own
-first boot of a run is closer to this measurement's 12.89s outlier than to its 1.7-1.8s steady
-figure**, and the 1.7-1.8s number should be read as a floor — what boot costs once the OS has
-already paid for everything once — not as an estimate of what a fresh CI runner pays on its first
-job. The exact CI number was not measured here (that would mean running on an actual fresh
-`ubuntu-latest` runner, out of scope for this pass) and is worth a follow-up if boot latency ever
-becomes a suspect on its own, rather than a contributor among several.
+**[EXTREME shape: fresh process + fresh db every attempt] Cold boot** (the full lifespan gated
+behind `/health` — migration, connectivity check, dev-agent seed, queue/task-router/redis wiring),
+10 runs back to back: **12.89s** on the first (cold disk cache), **1.68-1.85s (mean ~1.74s)** on
+the other nine (warm disk cache) — see the caveat above for which of those two numbers CI actually
+pays, and note this is the same shape that reproduced the `phaze-39eiy` flake, not the shape CI
+runs every job.
 
-**First-request latency, per route, first-hit vs steady-state**: see the table in "Harness
-artifact, or product characteristic?" above — same measurement run, same boot.
+**[CI-like shape: one boot, same warm process] First-request latency, per route, first-hit vs
+steady-state**: see the table in "Harness artifact, or product characteristic?" above — same
+measurement run, same boot as the CI-like figure two paragraphs up.
 
-**Browser launch time, cold vs warm**: 5 runs each, Chromium via Playwright. Cold (fresh Python
-process per launch): **0.272-0.303s, mean 0.279s.** Warm (same process, five sequential launches):
-**0.269-0.296s, mean 0.279s.** No measurable difference — confirms what
-`tests/browser/conftest.py`'s own docstring already implies ("Playwright is launched per test"
-in every shape, cold and warm alike), so browser launch is **ruled out** as a cold/warm
-differentiator; it was never one.
+**[process-cold vs process-warm, independent of app-boot shape] Browser launch time**: 5 runs each,
+Chromium via Playwright. Cold (fresh Python process per launch): **0.272-0.303s, mean 0.279s.**
+Warm (same process, five sequential launches): **0.269-0.296s, mean 0.279s.** No measurable
+difference between either shape — confirms what `tests/browser/conftest.py`'s own docstring already
+implies ("Playwright is launched per test" regardless of whether the app boot itself is cold or
+warm), so browser launch is **ruled out** as a cold/warm differentiator; it was never one.
+
+**Every fixed window this entry's audit named (6s / 7s / 1s / 5s / 2s / 180s) — now measured
+against, not merely assumed.** This list replaces the earlier "design assumption, not a validated
+bound" placeholder: each entry below is now a measured statement, not an unvalidated one, but read
+the qualifier on each — this is a warm-machine result.
+
+- **6s** (`test_execute_dispatch.py`'s two SSE reconnect windows, finding #1/#2) and **7s**
+  (`test_analyze_lane_detail.py`'s own-tick poll windows, finding #3/#4) are both far larger than
+  anything measured here: the largest single first-hit delta recorded was 199ms (`/s/summary`), and
+  the slowest steady-state boot was 1.85s. **On a warm machine, none of these four fixed windows
+  looks threatened** by the effects this pass measured.
+- **1s** (`test_metadata_actions.py`'s dismissed-confirm window, finding #5) is closer to the
+  measured deltas in absolute terms, but that finding was already downgraded in the audit above —
+  it guards browser-side dialog handling, not a server round trip, so these latency numbers do not
+  bear on it either way.
+- **5s / 2s** (`helpers.py::settled_focus` and `test_keyboard_screen_reader.py::_settle`, findings
+  #6/#7) are focus-restore polling ceilings, not server-latency windows; nothing measured here
+  times focus-restore JavaScript, so this pass neither confirms nor threatens them directly — they
+  stay exactly as risky as the audit already said, with #7's real CI-only failure precedent unchanged.
+- **180s** (`conftest.py::_wait_until_serving`, finding #8) is the one this pass measured most
+  directly: the slowest boot observed, cold-disk-cache included, was 12.89s — **14x margin even on
+  the single worst sample seen**, cold or warm.
+
+**None of the above is a cold-VM result, and that is the caveat that matters most.** Every number in
+this list — including the 12.89s outlier — was still measured on a machine that had a filesystem
+warm enough for uv, Postgres, and the Python interpreter itself to already be resident before the
+measurement began. A genuinely fresh `ubuntu-latest` CI runner, with the OS, uv, and every system
+library also cold, is unmeasured territory. So the honest statement is: **these fixed windows look
+safe, measured warm; the cold-VM case remains unmeasured** — not that they are safe.
 
 **What this measurement does NOT establish.** It characterizes boot and first-request latency in
 isolation, on one machine, outside the actual pytest/Playwright harness and its concurrency with a
