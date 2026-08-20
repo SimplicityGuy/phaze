@@ -204,7 +204,15 @@ body { font-family: 'Inter', sans-serif; }
     overscroll-behavior-inline: contain;
     padding-bottom: 0.25rem;
     scrollbar-color: var(--phaze-text-muted) transparent;
-    scrollbar-gutter: stable;
+    /* Deliberately NO `scrollbar-gutter: stable`. It reserves inline-end space for a VERTICAL
+       scrollbar, and `overflow-y: hidden` above means one can never appear -- so the gutter was
+       pure cost. Worse, a reserved gutter is excluded from clientWidth but is not scrollable, so
+       `scrollWidth - clientWidth` overstated the maximum scroll offset by the gutter width on
+       every classic-scrollbar platform (Linux, Windows). analysis_timeline.js reads exactly that
+       to decide the scroll affordances, so the right-edge fade and the "Scroll timeline <->" hint
+       stayed lit at the far right for real users there. Measured on Ubuntu/Chromium 151: scrollWidth
+       1344, clientWidth 1077, but scrollLeft clamps at 252 -- a 15px lie. macOS overlay scrollbars
+       reserve 0, which is why it was invisible locally and only surfaced on CI. */
 }
 .analysis-timeline-inspector {
     position: relative;

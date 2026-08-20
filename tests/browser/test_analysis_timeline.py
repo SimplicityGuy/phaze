@@ -107,6 +107,44 @@ async def test_short_timeline_has_no_false_overflow_cue(page: Any, seed: Seeder)
     assert await hint.is_hidden()
 
 
+async def test_reserved_scrollbar_gutter_does_not_fake_room_to_the_right(page: Any, seed: Seeder) -> None:
+    """A reserved gutter is not scrollable, so it must not keep the right-hand affordance lit.
+
+    ``scrollWidth - clientWidth`` overstates the maximum scroll offset by the width of any reserved
+    scrollbar gutter: the gutter is excluded from ``clientWidth`` yet cannot be scrolled into. macOS
+    reports 0 for it because its scrollbars are overlays, so the naive form reads correct locally and
+    lies by ~15px on Linux and Windows -- which is how the affordance shipped stuck-on for every user
+    on those platforms while the suite stayed green on a developer machine.
+
+    Two assertions, because the fix has two halves. The first -- that the shipped scrollport reserves
+    no gutter at all -- runs everywhere and guards the CSS. The second re-reserves one and checks the
+    affordance still reads "end", which guards the arithmetic in ``analysis_timeline.js``; it can only
+    run where scrollbars are classic, so it skips on macOS rather than passing vacuously.
+    """
+    _file, timeline = await _open_record_page(page, seed, fine_count=24)
+    frame = timeline.locator("[data-timeline-frame]")
+    viewport = timeline.locator("[data-timeline-viewport]")
+    hint = timeline.locator("[data-timeline-scroll-hint]")
+
+    # The shipped stylesheet reserves no gutter, which is what keeps the naive form honest. Assert
+    # that first: it is the CSS half of the fix, and it fails loudly if the declaration comes back.
+    assert await viewport.evaluate("el => el.offsetWidth - el.clientWidth === 0"), (
+        "the timeline scrollport must not reserve a scrollbar gutter (see app.css)"
+    )
+
+    await page.add_style_tag(content="[data-timeline-viewport] { scrollbar-gutter: stable; }")
+    if await viewport.evaluate("el => el.offsetWidth - el.clientWidth") == 0:
+        pytest.skip("overlay scrollbars reserve no gutter here (macOS); the defect is only reachable where scrollbars are classic, i.e. CI Linux")
+
+    await viewport.evaluate("el => { el.scrollLeft = el.scrollWidth; el.dispatchEvent(new Event('scroll')); }")
+    assert await viewport.evaluate("el => el.scrollLeft < el.scrollWidth - el.clientWidth"), (
+        "a reserved gutter must shorten the reachable maximum below scrollWidth - clientWidth"
+    )
+
+    assert "←" in await hint.inner_text()
+    assert not await frame.evaluate("el => el.classList.contains('timeline-can-scroll-right')")
+
+
 async def test_drawer_swap_initializes_once_and_escape_still_closes_from_timeline(page: Any, seed: Seeder) -> None:
     """HTMX drawer swaps initialize the same control without consuming the host's Escape key."""
     file = await seed.file(filename="<set-01>.mp3")
