@@ -29,14 +29,14 @@ Phase 35 (D-06) update:
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
 import pytest_asyncio
-from sqlalchemy import func as sa_func, select, text, update
+from sqlalchemy import event, func as sa_func, select, update
 
 from phaze.database import get_session
 from phaze.models.file import FileRecord
@@ -338,17 +338,77 @@ async def test_upsert_files_locks_in_original_path_order_not_request_order(
     ``(agent_id, original_path)``). If this statement's VALUES rows are NOT sorted the same way,
     the two multi-row lockers can acquire locks over an overlapping row set in different orders
     -- the classic ABBA deadlock. The request below is deliberately reverse-alphabetical to
-    prove the handler sorts rather than passing chunk order straight to Postgres: for a
-    same-table INSERT with no parallel workers, physical (``ctid``) insertion order follows
-    VALUES processing order, so it stands in for lock-acquisition order here.
-    """
-    reverse_alpha_paths = ["/test/music/z.mp3", "/test/music/m.mp3", "/test/music/b.mp3", "/test/music/a.mp3"]
-    records = [_make_record(path=p) for p in reverse_alpha_paths]
-    response = await authenticated_client.post("/api/internal/agent/files", json={"files": records})
-    assert response.status_code == 200, response.text
+    prove the handler sorts rather than passing chunk order straight to Postgres.
 
-    physical_order = (await session.execute(text("SELECT original_path FROM files ORDER BY ctid"))).scalars().all()
-    assert physical_order == sorted(reverse_alpha_paths)
+    phaze-ldu8l: this used to assert ``SELECT original_path FROM files ORDER BY ctid`` --
+    physical tuple placement -- as a proxy for VALUES processing order, on the premise that "for
+    a same-table INSERT with no parallel workers, physical (ctid) insertion order follows VALUES
+    processing order". That premise only holds on a heap with no reusable free space. Every test
+    in this suite runs inside an outer transaction + SAVEPOINT rolled back at teardown
+    (tests/conftest.py), and 153 test files write to ``files``, so across a long session the
+    free-space map accumulates reusable slots and a later multi-row INSERT can land in reused
+    space instead of strictly appending -- ctid order then no longer reflects VALUES order.
+    Measured: this assertion failed ~30% into a full-suite run while passing standalone and
+    passing for its whole module, on an otherwise-unmodified tree. Worse, the failure is
+    symmetric: an UNSORTED handler could also happen to produce a ctid order that looks sorted
+    on a fresh, low-churn table, so a PASS never actually proved the handler sorts either. ctid
+    is a storage detail, not the lock-acquisition order, and standing in for either was unsound.
+
+    The direct, heap-state-independent replacement: capture the compiled bind parameters of the
+    actual ``INSERT ... VALUES (...), (...), ...`` statement sent to Postgres (a
+    ``before_cursor_execute`` listener on the test's own connection -- ``session.bind`` is the
+    single per-test connection every fixture and the app share, see tests/conftest.py's D-07
+    wiring) and read the ``original_path`` value out of each VALUES row in the order those rows
+    appear IN THE STATEMENT. SQLAlchemy names each row's compiled bind params
+    ``<column>_m<row-index>`` (``original_path_m0``, ``original_path_m1``, ...) when a statement
+    is built from a list of value dicts -- that row-index is literally the VALUES-clause order,
+    independent of anything Postgres does with the data afterwards. This is what the handler
+    actually sends: it fails the instant ``agent_files.py`` stops sorting (verified by
+    temporarily deleting the ``sorted(...)`` call: this assertion goes red), and it cannot pass
+    for the wrong reason the way the ctid proxy could.
+
+    The cascade side already carries an equivalent statement-text guard --
+    ``test_cascade_locks_file_rows_in_original_path_order`` in
+    tests/discovery/services/test_scan_deletion.py asserts ``"ORDER BY files.original_path" in``
+    the compiled ``FOR UPDATE`` statement via a spy on ``session.execute`` -- so both halves of
+    this ABBA pair are now pinned by a direct assertion on the issued SQL, not a storage proxy.
+    """
+    captured_params: list[dict[str, object]] = []
+    sync_conn = session.bind.sync_connection
+
+    def _capture_insert_params(
+        conn: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: Any,
+        executemany: bool,
+    ) -> None:
+        if "INSERT INTO files" in statement:
+            captured_params.extend(context.compiled_parameters)
+
+    event.listen(sync_conn, "before_cursor_execute", _capture_insert_params)
+    try:
+        reverse_alpha_paths = ["/test/music/z.mp3", "/test/music/m.mp3", "/test/music/b.mp3", "/test/music/a.mp3"]
+        records = [_make_record(path=p) for p in reverse_alpha_paths]
+        response = await authenticated_client.post("/api/internal/agent/files", json={"files": records})
+        assert response.status_code == 200, response.text
+    finally:
+        event.remove(sync_conn, "before_cursor_execute", _capture_insert_params)
+
+    assert len(captured_params) == 1, f"expected exactly one multi-row INSERT INTO files, captured {len(captured_params)}"
+    (params,) = captured_params
+    row_keys = sorted(
+        (k for k in params if k.startswith("original_path_m")),
+        key=lambda k: int(k.removeprefix("original_path_m")),
+    )
+    assert len(row_keys) == len(reverse_alpha_paths), f"expected {len(reverse_alpha_paths)} VALUES rows, found {row_keys}"
+
+    values_clause_order = [params[k] for k in row_keys]
+    assert values_clause_order == sorted(reverse_alpha_paths), (
+        f"the INSERT's VALUES rows must be original_path-sorted for lock-order parity with "
+        f"delete_scan_cascade's FOR UPDATE sweep; got {values_clause_order}"
+    )
 
 
 @pytest.mark.asyncio
