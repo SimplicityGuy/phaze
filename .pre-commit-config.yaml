@@ -105,3 +105,12 @@ repos:
         language: system
         pass_filenames: false
         types: [python]
+      - id: template-attr-quotes
+        name: template attribute-quote lint (phaze-e1zby)
+        description: >-
+          Catches a literal `"` that would silently truncate a double-quoted Alpine/htmx
+          directive attribute (x-data, x-on:*, @*, :*, x-show, x-if, hx-on:*, hx-vals, ...) --
+          see scripts/lint_template_attr_quotes.py for the full mechanism and its limits.
+        entry: uv run python scripts/lint_template_attr_quotes.py
+        language: system
+        files: ^src/phaze/templates/.*\.html$
