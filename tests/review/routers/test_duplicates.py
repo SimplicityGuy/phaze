@@ -1442,3 +1442,105 @@ async def test_bulk_undo_does_not_resurrect_a_single_member_group_card(session: 
     assert f'id="dupe-group-{HASH_A}"' not in undo_all.text, (
         "A has only ONE unresolved member (its surviving canonical) -- it must not get a bogus keeper-select card"
     )
+
+
+# ---------------------------------------------------------------------------
+# phaze-4iq5t: the Dedupe workspace's group-cap MUST always be visible/escapable. Before this,
+# services/review.get_dedupe_groups called find_duplicate_groups_with_metadata with no offset
+# override, so a corpus with more than GROUP_PAGE_SIZE (100) duplicate-hash groups silently
+# rendered only the first 100 (by, previously, arbitrary hash order) with no "showing N of M" and
+# no way to reach the rest -- permanently and undetectably, since sha256 hash order gives no
+# observable signal that anything was cut.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_n_duplicate_groups(session: AsyncSession, n: int) -> list[str]:
+    """Insert ``n`` distinct 2-member duplicate-hash groups; return their hashes in insertion order."""
+    hashes = [f"{i:064x}" for i in range(n)]
+    files = []
+    for i, h in enumerate(hashes):
+        files.append(_make_file(f"/dir/{i:08d}-1.mp3", "mp3", h))
+        files.append(_make_file(f"/dir/{i:08d}-2.mp3", "mp3", h))
+    session.add_all(files)
+    await session.flush()
+    return hashes
+
+
+@pytest.mark.asyncio
+async def test_dedupe_workspace_signals_a_bounded_render_past_the_group_cap(session: AsyncSession, client: AsyncClient) -> None:
+    """AC5 regression: a corpus with MORE than GROUP_PAGE_SIZE groups must never render a bounded
+    subset silently. GET /s/dedupe must show a bounded number of cards (never an unbounded render,
+    AC3) AND an explicit, textual indication that more groups exist (AC1(b)/(a) minimum bar) -- a
+    plain group count with no "showing X of Y" and no way to reach the rest is exactly the bug.
+    """
+    from phaze.services.dedup import GROUP_PAGE_SIZE
+
+    total = GROUP_PAGE_SIZE + 1
+    await _seed_n_duplicate_groups(session, total)
+
+    workspace = await client.get("/s/dedupe")
+    assert workspace.status_code == 200
+
+    rendered_cards = workspace.text.count('id="dupe-group-')
+    assert rendered_cards == GROUP_PAGE_SIZE, "first render must stay bounded to GROUP_PAGE_SIZE (AC3)"
+    assert f"Showing {GROUP_PAGE_SIZE} of {total} duplicate groups" in workspace.text, (
+        "operator must be told groups exist beyond what is rendered (AC1(b) minimum bar) -- a bare "
+        "count with no 'showing X of Y' is silent truncation, the exact bug this regresses"
+    )
+    assert f'hx-get="/duplicates/groups?offset={GROUP_PAGE_SIZE}"' in workspace.text, (
+        "a real 'Load more' affordance must be reachable, not just a total count (AC1(a))"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dedupe_workspace_omits_load_more_when_everything_fits(session: AsyncSession, client: AsyncClient) -> None:
+    """The inverse: at or under the cap, no 'Load more' button and the plain (non-"Showing") count."""
+    await _seed_n_duplicate_groups(session, 3)
+
+    workspace = await client.get("/s/dedupe")
+
+    assert workspace.status_code == 200
+    assert "3 duplicate groups" in workspace.text
+    assert "Showing" not in workspace.text
+    assert "/duplicates/groups?offset=" not in workspace.text
+
+
+@pytest.mark.asyncio
+async def test_load_more_groups_returns_the_next_page_and_updates_the_subcount(session: AsyncSession, client: AsyncClient) -> None:
+    """GET /duplicates/groups?offset=N returns the remaining groups, updates the header subcount to
+    the true total (no longer "Showing X of Y" once everything is loaded), OOB-appends the new
+    cards' hidden group_hashes inputs (bulk review must cover load-more'd groups too), and removes
+    the 'Load more' button once exhausted.
+    """
+    from phaze.services.dedup import GROUP_PAGE_SIZE
+
+    total = GROUP_PAGE_SIZE + 5
+    hashes = await _seed_n_duplicate_groups(session, total)
+
+    more = await client.get(f"/duplicates/groups?offset={GROUP_PAGE_SIZE}")
+    assert more.status_code == 200
+
+    rendered_cards = more.text.count('id="dupe-group-')
+    assert rendered_cards == 5, "the remaining 5 groups, not another full page"
+    for h in hashes[GROUP_PAGE_SIZE:]:
+        assert f'value="{h}"' in more.text, f"hash {h} must OOB-append into #dedupe-group-hash-inputs for bulk review"
+    assert f"{total} duplicate groups" in more.text, "once every group has loaded, the count is the honest, un-truncated total"
+    assert "Showing" not in more.text, "nothing left to load -- the subcount must not still claim a partial view"
+    assert "/duplicates/groups?offset=" not in more.text, "exhausted -- no further 'Load more' button"
+    assert 'id="stage-workspace-subcount"' in more.text and 'hx-swap-oob="true"' in more.text
+
+
+@pytest.mark.asyncio
+async def test_load_more_groups_stays_paginated_when_more_remain(session: AsyncSession, client: AsyncClient) -> None:
+    """A second page that ITSELF does not reach the total still offers its own 'Load more'."""
+    from phaze.services.dedup import GROUP_PAGE_SIZE
+
+    total = 2 * GROUP_PAGE_SIZE + 1
+    await _seed_n_duplicate_groups(session, total)
+
+    more = await client.get(f"/duplicates/groups?offset={GROUP_PAGE_SIZE}")
+
+    assert more.status_code == 200
+    assert more.text.count('id="dupe-group-') == GROUP_PAGE_SIZE
+    assert f"Showing {2 * GROUP_PAGE_SIZE} of {total} duplicate groups" in more.text
+    assert f'hx-get="/duplicates/groups?offset={2 * GROUP_PAGE_SIZE}"' in more.text

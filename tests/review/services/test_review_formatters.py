@@ -25,7 +25,7 @@ fallback) fail at their own call site instead of as a confusing diff in a render
 
 import pytest
 
-from phaze.services.review import _format_quality, _format_size, build_dupe_group_card
+from phaze.services.review import _format_quality, _format_size, build_dupe_group_card, dedupe_subcount_text
 
 
 @pytest.mark.parametrize(
@@ -106,3 +106,29 @@ def test_build_dupe_group_card_degrades_a_missing_truncated_key_to_false() -> No
 
     assert card["truncated"] is False
     assert card["files"][0]["quality"] == "unknown size"
+
+
+# ---------------------------------------------------------------------------
+# phaze-4iq5t: dedupe_subcount_text is the single source the Dedupe workspace's initial render
+# (routers/shell.py) and its "Load more" fragment (routers/duplicates.py) both use, so the two
+# can never independently drift on wording -- pinning the pure function here covers both call sites.
+# ---------------------------------------------------------------------------
+
+
+def test_dedupe_subcount_text_reports_a_plain_count_when_nothing_is_truncated() -> None:
+    """rendered == total: no "Showing X of Y" hedge, just the honest count."""
+    assert dedupe_subcount_text(3, 3) == "3 duplicate groups · pick the keeper, others archived"
+
+
+def test_dedupe_subcount_text_singularizes_one_group() -> None:
+    assert dedupe_subcount_text(1, 1) == "1 duplicate group · pick the keeper, others archived"
+
+
+def test_dedupe_subcount_text_reports_zero_groups() -> None:
+    assert dedupe_subcount_text(0, 0) == "0 duplicate groups · pick the keeper, others archived"
+
+
+def test_dedupe_subcount_text_flags_a_bounded_render() -> None:
+    """phaze-4iq5t AC1(b): rendered < total must say so explicitly -- the minimum bar an operator
+    needs to know groups exist beyond what's on screen."""
+    assert dedupe_subcount_text(100, 220) == "Showing 100 of 220 duplicate groups · pick the keeper, others archived"

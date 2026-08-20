@@ -5,13 +5,14 @@ from pathlib import Path
 from typing import Any
 import uuid
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
 from phaze.routers.request_guards import parse_json_array_payload
+from phaze.schemas.wire_bounds import INT32_MAX
 
 # phaze-nt8f: `get_duplicate_stats` is deliberately NOT imported here any more. Every resolve /
 # undo / bulk-resolve used to call it purely to populate the `#stats-header` OOB fragment, whose
@@ -20,7 +21,13 @@ from phaze.routers.request_guards import parse_json_array_payload
 # the SUM(MAX(file_size)) GROUP BY subquery) for a fragment the browser discarded. The service
 # itself is kept (services/dedup.py, covered by tests/discovery/services/test_dedup.py): it is the
 # read a future Dedupe stats surface would use. Re-import it only alongside a LIVE host for it.
+#
+# `count_duplicate_groups` (a DIFFERENT function -- the plain corpus-wide GROUP count, not the
+# three-query stats bundle above) IS imported: phaze-4iq5t's "Load more" fragment is exactly the
+# live host this note asks for before re-adding a whole-corpus scan here.
 from phaze.services.dedup import (
+    GROUP_PAGE_SIZE,
+    count_duplicate_groups,
     find_duplicate_group_by_hash,
     find_duplicate_groups_by_hashes,
     score_group,
@@ -28,7 +35,7 @@ from phaze.services.dedup import (
 )
 from phaze.services.dedup_review import InvalidDedupReviewPlanError, commit_review_plans, create_review_plan
 from phaze.services.pg_text import contains_pg_invalid_chars
-from phaze.services.review import build_dupe_group_card
+from phaze.services.review import build_dupe_group_card, dedupe_subcount_text, get_dedupe_groups
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -104,8 +111,57 @@ async def list_duplicates() -> RedirectResponse:
     ``dupe_group`` cards inline via ``services/review.get_dedupe_groups`` with no pagination and
     never hx-gets this bare path -- there was no live caller left to preserve an HX-filter branch
     for. The dead list/pagination templates were deleted outright.
+
+    phaze-4iq5t: that "no pagination" description is STILL accurate for this exact bare path (it
+    still 302s straight through, unconditionally) but stopped being true of the Dedupe workspace as
+    a whole -- ``get_dedupe_groups`` silently rendered only the first ``GROUP_PAGE_SIZE`` groups by
+    hash order forever, with no way to see the rest and no signal that more existed. See
+    ``load_more_groups`` below, the new live caller pagination was reinstated for.
     """
     return RedirectResponse(url="/s/dedupe", status_code=302)
+
+
+@router.get("/groups", response_class=HTMLResponse)
+async def load_more_groups(
+    request: Request,
+    # phaze-4iq5t: mirrors companion.py's list_duplicates() bounds -- find_duplicate_groups(_with_metadata)
+    # takes a raw limit/offset (not phaze.services.pagination's page/page_size), so this route owns its
+    # own ge=/le= guard per wire_bounds rule 8; a negative OFFSET 500s in Postgres rather than clamping.
+    offset: int = Query(0, ge=0, le=INT32_MAX),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX "Load more" fragment for the Dedupe workspace: the next GROUP_PAGE_SIZE duplicate groups.
+
+    phaze-4iq5t: reinstates paging for ``services/review.get_dedupe_groups`` -- the offset machinery
+    in ``services/dedup.py`` survived the phaze-y4s6/Phase-62 cutover documented in
+    ``list_duplicates`` above (that cutover deleted the OLD ``/duplicates/`` list page's pagination
+    templates, correctly, because nothing called them any more) but nothing ever called
+    ``get_dedupe_groups`` with an offset override afterwards either, so the Dedupe workspace stayed
+    silently pinned to page 1 forever. THIS endpoint is the live caller now -- do not delete the
+    offset plumbing again on the "no live caller" reasoning without checking for this one first.
+
+    Bounded per request to ``GROUP_PAGE_SIZE`` groups (never an unbounded render, AC3): the primary
+    response replaces ``#dedupe-load-more-wrap`` with either the next "Load more" button or nothing
+    (exhausted); the new cards, their bulk-review hidden inputs, and the workspace subcount all land
+    via the SAME ``hx-swap-oob="beforeend:#<id>"`` / ``hx-swap-oob="true"`` techniques
+    ``pipeline/partials/dedupe_workspace.html`` already documents for the bulk-undo response.
+    """
+    groups = await get_dedupe_groups(session, offset=offset)
+    total = await count_duplicate_groups(session)
+    rendered_through = offset + len(groups)
+    return templates.TemplateResponse(
+        request=request,
+        name="duplicates/partials/_dedupe_group_page.html",
+        context={
+            "request": request,
+            "groups": groups,
+            "rendered_through": rendered_through,
+            "total_groups": total,
+            "page_size": GROUP_PAGE_SIZE,
+            "has_more": rendered_through < total,
+            "subcount_text": dedupe_subcount_text(rendered_through, total),
+        },
+    )
 
 
 @router.get("/{group_hash}/compare", response_class=HTMLResponse)

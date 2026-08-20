@@ -62,7 +62,7 @@ from phaze.models.tracklist import Tracklist
 from phaze.services.collision import get_review_collision_ids
 from phaze.services.cue_generator import generate_cue_content
 from phaze.services.cue_review import build_cue_tracks_for_versions, eligible_tracklist_stmt, gated_tracklist_stmt, get_eligible_tracklist_query
-from phaze.services.dedup import find_duplicate_groups_with_metadata, score_group
+from phaze.services.dedup import GROUP_PAGE_SIZE, find_duplicate_groups_with_metadata, score_group
 from phaze.services.proposal_queries import (
     Pagination,
     ProposalStats,
@@ -729,7 +729,7 @@ def build_dupe_group_card(group: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def get_dedupe_groups(session: AsyncSession) -> list[dict[str, Any]]:
+async def get_dedupe_groups(session: AsyncSession, *, limit: int = GROUP_PAGE_SIZE, offset: int = 0) -> list[dict[str, Any]]:
     """Return scored duplicate groups as plain dicts for the Dedupe keeper-select workspace (degrade-safe).
 
     Reuses ``find_duplicate_groups_with_metadata`` + ``score_group`` (which sets ``group["canonical_id"]``
@@ -737,10 +737,17 @@ async def get_dedupe_groups(session: AsyncSession) -> list[dict[str, Any]]:
     :func:`build_dupe_group_card` to the plain dict the ``_dupe_group.html`` card consumes. Returns ``[]``
     on any DB error so the render/poll path degrades instead of 500ing (no router try/except needed). No
     enqueue, no commit, no write.
+
+    phaze-4iq5t: ``limit``/``offset`` now forward straight through to
+    ``find_duplicate_groups_with_metadata`` -- this used to call it with NO override at all, so the
+    Dedupe workspace was permanently pinned to the first :data:`~phaze.services.dedup.GROUP_PAGE_SIZE`
+    groups by ``sha256_hash`` order with no way to see the rest. ``routers/shell.py``'s initial stage
+    render still calls this with the defaults (page 1); ``GET /duplicates/groups``
+    (``routers/duplicates.py``) is the new "Load more" caller that passes ``offset``.
     """
     try:
         async with session.begin_nested():
-            groups = await find_duplicate_groups_with_metadata(session)
+            groups = await find_duplicate_groups_with_metadata(session, limit=limit, offset=offset)
             cards: list[dict[str, Any]] = []
             for group in groups:
                 score_group(group)  # sets group["canonical_id"] + sorts files keeper-first
@@ -752,6 +759,24 @@ async def get_dedupe_groups(session: AsyncSession) -> list[dict[str, Any]]:
         # empty list rather than 500ing the render/poll path.
         logger.warning("dedupe_groups_degraded", exc_info=True)
         return []
+
+
+def dedupe_subcount_text(rendered: int, total: int) -> str:
+    """Render the Dedupe workspace header's subcount line, honest about a partially-loaded list.
+
+    phaze-4iq5t: before this, the subcount was always ``len(dedupe_groups)`` -- indistinguishable
+    from a corpus total even though ``dedupe_groups`` was capped at
+    :data:`~phaze.services.dedup.GROUP_PAGE_SIZE`. When ``rendered`` and ``total`` diverge this says
+    so explicitly ("Showing X of Y"), which is the minimum bar phaze-4iq5t's acceptance criteria set:
+    an operator must never be unable to tell that groups exist beyond what is rendered. Shared by the
+    initial stage render (``routers/shell.py``) and the "Load more" fragment
+    (``GET /duplicates/groups``, ``routers/duplicates.py``) so the two can never independently drift
+    on wording.
+    """
+    if rendered >= total:
+        noun = "group" if total == 1 else "groups"
+        return f"{total} duplicate {noun} · pick the keeper, others archived"
+    return f"Showing {rendered} of {total} duplicate groups · pick the keeper, others archived"
 
 
 # phaze-b4u3p: the gated-tracklist predicate (formerly ``_gated_tracklist_stmt``) moved to
