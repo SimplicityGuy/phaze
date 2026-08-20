@@ -1324,6 +1324,45 @@ def _parse_job_blob(blob: object) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _classify_saq_job_row(row: Any) -> dict[str, Any] | None:
+    """Classify one ``saq_jobs`` row for `backfill_ledger_from_saq_jobs`.
+
+    Returns the pending-insert dict for a KEYED pipeline function, or None to skip (unparseable
+    blob, or not keyed). Split out of that function's per-row loop body so the row-classification
+    logic is legible on its own; same parse order, same fallback, same fields carried through --
+    no behavior change.
+
+    JUSTIFIED FINDING (phaze-as6xh): this still trips ``complex_method`` (ccn 10) after the split
+    -- the branching is inherent to the row shape, not tangled control flow, so isolating it here
+    only relocated the finding rather than resolving it. Cognitive complexity is 9 (< ccn) at
+    nesting 1: a flat sequence of independent parse/validate guards, the same
+    low-cognitive/shallow-nesting signature ``is_domain_completed`` (below) is justified on.
+    Splitting further would fragment one small, cohesive, already-isolated function for the
+    metric alone -- exactly what the epic's own decision-table guidance says not to do.
+    """
+    blob, key = row[0], row[1]
+    data = _parse_job_blob(blob)
+    if data is None:
+        return None
+    function = data.get("function")
+    # Belt-and-suspenders: trust the blob's function, but fall back to the saq_jobs key prefix
+    # (``<function>:<natural_id>``) so a row missing the field is still classified correctly.
+    if not isinstance(function, str) and isinstance(key, str):
+        function = key.split(":", 1)[0]
+    if not isinstance(function, str) or function not in _KEY_BUILDERS or not isinstance(key, str):
+        return None
+    kwargs = data.get("kwargs")
+    if not isinstance(kwargs, dict):
+        kwargs = {}
+    # The SAQ default json.dumps serializer writes timeout/retries (Job dataclass fields) at the
+    # blob top level. Carry them through so an in-flight transition cohort recovers with its
+    # real bound, not the 600s default. (For process_file this is belt-and-braces since
+    # phaze-w55w1: apply_project_job_defaults pins its timeout=0 + heartbeat regardless.)
+    timeout = data.get("timeout") if isinstance(data.get("timeout"), int) else None
+    retries = data.get("retries") if isinstance(data.get("retries"), int) else None
+    return {"key": key, "function": function, "kwargs": dict(kwargs), "timeout": timeout, "retries": retries}
+
+
 async def backfill_ledger_from_saq_jobs(session: AsyncSession) -> dict[str, int]:
     """Seed the scheduling ledger from the live queued/active ``saq_jobs`` rows (idempotent).
 
@@ -1364,29 +1403,11 @@ async def backfill_ledger_from_saq_jobs(session: AsyncSession) -> dict[str, int]
 
     pending_inserts: list[dict[str, Any]] = []
     for row in rows:
-        blob, key = row[0], row[1]
-        data = _parse_job_blob(blob)
-        if data is None:
+        classified = _classify_saq_job_row(row)
+        if classified is None:
             tally["skipped"] += 1
             continue
-        function = data.get("function")
-        # Belt-and-suspenders: trust the blob's function, but fall back to the saq_jobs key prefix
-        # (``<function>:<natural_id>``) so a row missing the field is still classified correctly.
-        if not isinstance(function, str) and isinstance(key, str):
-            function = key.split(":", 1)[0]
-        if not isinstance(function, str) or function not in _KEY_BUILDERS or not isinstance(key, str):
-            tally["skipped"] += 1
-            continue
-        kwargs = data.get("kwargs")
-        if not isinstance(kwargs, dict):
-            kwargs = {}
-        # The SAQ default json.dumps serializer writes timeout/retries (Job dataclass fields) at the
-        # blob top level. Carry them through so an in-flight transition cohort recovers with its
-        # real bound, not the 600s default. (For process_file this is belt-and-braces since
-        # phaze-w55w1: apply_project_job_defaults pins its timeout=0 + heartbeat regardless.)
-        timeout = data.get("timeout") if isinstance(data.get("timeout"), int) else None
-        retries = data.get("retries") if isinstance(data.get("retries"), int) else None
-        pending_inserts.append({"key": key, "function": function, "kwargs": dict(kwargs), "timeout": timeout, "retries": retries})
+        pending_inserts.append(classified)
 
     # phaze-xemza: one (or a bounded few, chunked) multi-row INSERT instead of one round trip per
     # keyed row. Deliberately OUTSIDE the read's SAVEPOINT/try-except above -- a write failure here

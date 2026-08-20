@@ -113,6 +113,53 @@ class BaseSettings(PydanticBaseSettings):
     # `_resolve_secret_files` validator consults it to decide strip-vs-verbatim per field.
     SECRET_FILE_PRESERVE_WHITESPACE: ClassVar[frozenset[str]] = frozenset()
 
+    @classmethod
+    def _resolve_secret_file_for_field(
+        cls,
+        data: dict[str, Any],
+        field_name: str,
+        env_upper: dict[str, str],
+        present_upper: set[str],
+    ) -> None:
+        """Resolve one `SECRET_FILE_FIELDS` entry's `<ALIAS>_FILE` sibling into `data`, in place.
+
+        Split out of `_resolve_secret_files` (one field per call, from the same per-field loop)
+        so the field/alias search is legible on its own. Pure extraction: same precedence, same
+        env-name search order, same early-outs (`return` here where the loop body used
+        `continue`/`break`) -- no behavior change.
+        """
+        field_info = cls.model_fields.get(field_name)
+        if field_info is None:
+            return
+
+        env_names = _direct_env_names(field_name, field_info)
+        # Precedence: an explicitly-set direct env var (or a value already
+        # merged from another source into `data`) always wins over `_FILE`.
+        if any(name.upper() in present_upper or name.upper() in env_upper for name in env_names):
+            return
+
+        for env_name in env_names:
+            file_var = f"{env_name.upper()}_FILE"
+            if file_var not in env_upper:
+                continue
+            path = env_upper[file_var]
+            # Inject under the field name; every in-scope field is matched
+            # either by name (no alias) or by an AliasChoices that includes
+            # the bare field name, so this key always resolves. The shared
+            # `_read_secret_file` helper (config_backends) applies the single
+            # strip-vs-verbatim rule both this env-`_FILE` path and the inline
+            # TOML `*_file` reader adopt (D-06: one rule, two call sites). Key
+            # material (SECRET_FILE_PRESERVE_WHITESPACE) is kept verbatim so its
+            # required trailing newline survives (WR-01); everything else is stripped.
+            try:
+                data[field_name] = _read_secret_file(path, preserve_whitespace=field_name in cls.SECRET_FILE_PRESERVE_WHITESPACE)
+            except ValueError as exc:
+                # Re-raise with the `<VAR>_FILE` name so the operator-facing message
+                # still names the variable that pointed at the unreadable path.
+                msg = f"{file_var} points to {path!r} which could not be read: {exc}"
+                raise ValueError(msg) from exc
+            break
+
     @model_validator(mode="before")
     @classmethod
     def _resolve_secret_files(cls, data: Any) -> Any:
@@ -134,7 +181,8 @@ class BaseSettings(PydanticBaseSettings):
         The `<ALIAS>_FILE` vars are read from the process env and the configured
         `.env` file (they are not model fields, so `extra="ignore"` never sees
         them) and matched case-insensitively to mirror pydantic-settings' default
-        env handling; the process env wins over `.env`.
+        env handling; the process env wins over `.env`. The per-field search itself is
+        `_resolve_secret_file_for_field`; this method just owns the field iteration order.
         """
         if not isinstance(data, dict):
             return data
@@ -143,37 +191,7 @@ class BaseSettings(PydanticBaseSettings):
         present_upper = {str(key).upper() for key in data}
 
         for field_name in cls.SECRET_FILE_FIELDS:
-            field_info = cls.model_fields.get(field_name)
-            if field_info is None:
-                continue
-
-            env_names = _direct_env_names(field_name, field_info)
-            # Precedence: an explicitly-set direct env var (or a value already
-            # merged from another source into `data`) always wins over `_FILE`.
-            if any(name.upper() in present_upper or name.upper() in env_upper for name in env_names):
-                continue
-
-            for env_name in env_names:
-                file_var = f"{env_name.upper()}_FILE"
-                if file_var not in env_upper:
-                    continue
-                path = env_upper[file_var]
-                # Inject under the field name; every in-scope field is matched
-                # either by name (no alias) or by an AliasChoices that includes
-                # the bare field name, so this key always resolves. The shared
-                # `_read_secret_file` helper (config_backends) applies the single
-                # strip-vs-verbatim rule both this env-`_FILE` path and the inline
-                # TOML `*_file` reader adopt (D-06: one rule, two call sites). Key
-                # material (SECRET_FILE_PRESERVE_WHITESPACE) is kept verbatim so its
-                # required trailing newline survives (WR-01); everything else is stripped.
-                try:
-                    data[field_name] = _read_secret_file(path, preserve_whitespace=field_name in cls.SECRET_FILE_PRESERVE_WHITESPACE)
-                except ValueError as exc:
-                    # Re-raise with the `<VAR>_FILE` name so the operator-facing message
-                    # still names the variable that pointed at the unreadable path.
-                    msg = f"{file_var} points to {path!r} which could not be read: {exc}"
-                    raise ValueError(msg) from exc
-                break
+            cls._resolve_secret_file_for_field(data, field_name, env_upper, present_upper)
 
         return data
 

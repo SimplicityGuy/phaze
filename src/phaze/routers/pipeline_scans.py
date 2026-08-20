@@ -572,6 +572,27 @@ async def _insert_running_scan_batch(request: Request, session: AsyncSession, fo
     return batch
 
 
+async def _mark_scan_batch_failed_and_alert(request: Request, session: AsyncSession, batch: ScanBatch) -> HTMLResponse:
+    """Mark `batch` FAILED after a definite (non-ambiguous) enqueue failure and render the alert.
+
+    Split out of `_enqueue_scan_or_mark_failed`'s `except Exception` arm (WR-06): the batch write
+    is wrapped in its own try/except so a secondary commit failure (e.g. Postgres also down) still
+    produces the alert envelope instead of escaping the handler -- see that function's docstring
+    for the full "definite failure" rationale. Pure extraction, no behavior change.
+    """
+    batch.status = ScanStatus.FAILED.value
+    batch.error_message = "controller could not enqueue scan to agent worker"
+    try:
+        await session.commit()
+    except Exception:
+        # Don't let a rollback-commit failure escape the handler; the
+        # operator's alert envelope is more important than the orphan-row
+        # cleanup, and we already logged the original cause above.
+        logger.exception("scan trigger: secondary commit failed for batch=%s", batch.id)
+        await session.rollback()
+    return _render_scan_alert(request, "The application server could not enqueue the scan. Try again in a moment.")
+
+
 async def _enqueue_scan_or_mark_failed(
     request: Request,
     session: AsyncSession,
@@ -640,17 +661,7 @@ async def _enqueue_scan_or_mark_failed(
         return None
     except Exception:
         logger.exception("scan trigger: enqueue failed for batch=%s; marking FAILED", batch.id)
-        batch.status = ScanStatus.FAILED.value
-        batch.error_message = "controller could not enqueue scan to agent worker"
-        try:
-            await session.commit()
-        except Exception:
-            # Don't let a rollback-commit failure escape the handler; the
-            # operator's alert envelope is more important than the orphan-row
-            # cleanup, and we already logged the original cause above.
-            logger.exception("scan trigger: secondary commit failed for batch=%s", batch.id)
-            await session.rollback()
-        return _render_scan_alert(request, "The application server could not enqueue the scan. Try again in a moment.")
+        return await _mark_scan_batch_failed_and_alert(request, session, batch)
     return None
 
 
