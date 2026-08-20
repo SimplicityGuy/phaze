@@ -39,6 +39,7 @@ from phaze.services.enqueue_router import (
     resolve_queue_for_task,
     resolve_queues_for_owned_files,
     select_active_agent,
+    select_agents_by_ids,
 )
 from tests._queue_fakes import seed_active_agent, stub_app_state
 
@@ -504,3 +505,63 @@ def test_controller_tasks_stay_in_sync_with_controller_functions() -> None:
     # submit_cloud_job specifically is both routable AND a registered controller function (not a cron).
     assert "submit_cloud_job" in fn_names
     assert "submit_cloud_job" not in cron_names  # Phase 55 owns the trigger; no cron here
+
+
+# ---------------------------------------------------------------------------
+# select_agents_by_ids — the batched sibling (phaze-1i0h6.2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_select_agents_by_ids_resolves_the_live_subset_and_omits_the_rest(session: AsyncSession) -> None:
+    """One query returns only the LIVE ids; absent / revoked / never-seen ones are omitted, not raised.
+
+    Omission is the batch form's whole contract: ``select_agent_by_id`` reports a non-live agent by
+    raising, which an all-or-nothing batch cannot do without losing the per-id verdict its caller
+    (``reenqueue._replay_agent_rows_by_owner``) needs to skip exactly one owner's rows.
+    """
+    now = datetime.now(UTC)
+    await _seed_agent(session, agent_id="fs-live-a", last_seen_at=now)
+    await _seed_agent(session, agent_id="fs-live-b", last_seen_at=now)
+    await _seed_agent(session, agent_id="fs-revoked", last_seen_at=now, revoked=True)
+    await _seed_agent(session, agent_id="fs-never-seen", last_seen_at=None)
+
+    resolved = await select_agents_by_ids(session, ["fs-live-a", "fs-revoked", "fs-never-seen", "fs-absent", "fs-live-b"])
+
+    assert sorted(resolved) == ["fs-live-a", "fs-live-b"]
+    assert resolved["fs-live-a"].id == "fs-live-a"
+
+
+@pytest.mark.asyncio
+async def test_select_agents_by_ids_scopes_to_kind_when_pinned(session: AsyncSession) -> None:
+    """``kind`` scopes the batch exactly as it scopes ``select_agent_by_id`` — a live wrong-kind agent is omitted."""
+    now = datetime.now(UTC)
+    await _seed_agent(session, agent_id="fs-one", last_seen_at=now, kind="fileserver")
+    await _seed_agent(session, agent_id="compute-one", last_seen_at=now, kind="compute")
+
+    assert sorted(await select_agents_by_ids(session, ["fs-one", "compute-one"], kind="fileserver")) == ["fs-one"]
+    assert sorted(await select_agents_by_ids(session, ["fs-one", "compute-one"], kind="compute")) == ["compute-one"]
+    assert sorted(await select_agents_by_ids(session, ["fs-one", "compute-one"])) == ["compute-one", "fs-one"]
+
+
+@pytest.mark.asyncio
+async def test_select_agents_by_ids_short_circuits_on_an_empty_id_list(session: AsyncSession) -> None:
+    """An empty ``agent_ids`` returns ``{}`` without issuing a query at all.
+
+    Proven by passing ``None`` for the session: any round trip would raise ``AttributeError``.
+    """
+    assert await select_agents_by_ids(None, []) == {}  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_select_agents_by_ids_tolerates_duplicate_ids(session: AsyncSession) -> None:
+    """``= ANY(array)`` is a membership test, so a repeated owner id yields ONE mapping entry, not a raise.
+
+    A ledger's owner ids come from stored payloads and are collected per group, so duplicates are
+    possible for a caller that does not pre-deduplicate; this pins that they are harmless.
+    """
+    await _seed_agent(session, agent_id="fs-dup", last_seen_at=datetime.now(UTC))
+
+    resolved = await select_agents_by_ids(session, ["fs-dup", "fs-dup", "fs-dup"])
+
+    assert list(resolved) == ["fs-dup"]
