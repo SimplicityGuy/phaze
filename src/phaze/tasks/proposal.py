@@ -65,18 +65,33 @@ async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_
     valid_file_ids: list[str] = []
     companion_targets: list[dict[str, list[CompanionReadItem]]] = []
     async with ctx["async_session"]() as session:
-        for fid in file_ids:
-            uid = uuid.UUID(fid)
-            result = await session.execute(select(FileRecord).where(FileRecord.id == uid))
-            file_record = result.scalar_one_or_none()
+        # phaze-vu88k.4: the three reads below used to be three round trips PER FILE inside the loop
+        # (3N for a batch of N). They are now three `IN (...)` reads for the WHOLE batch, keyed back
+        # to each file by id. This is a query-SHAPE change only: same session, same read transaction,
+        # same resulting `files_context` order, and the phaze-6fvu / phaze-potg5 rule that no session
+        # is held across network I/O is untouched (the LLM call, the rate-limit backoff and the
+        # companion CONTENT fetch all still happen after this block closes).
+        #
+        # `scalar_one_or_none()` could never have been a multi-row case here, so a dict keyed on
+        # file_id is exactly equivalent: `analysis.file_id` and `metadata.file_id` are both
+        # `unique=True` at the DB level (models/analysis.py, models/metadata.py). A file with no
+        # analysis/metadata row still yields None, and a file_id with no `files` row is still
+        # skipped. The loop iterates `file_ids` (NOT the dicts), so a repeated id still produces one
+        # context per occurrence, as before.
+        uids = [uuid.UUID(fid) for fid in file_ids]
+        files_by_id = {row.id: row for row in (await session.execute(select(FileRecord).where(FileRecord.id.in_(uids)))).scalars()}
+        analysis_by_id = {
+            row.file_id: row for row in (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id.in_(uids)))).scalars()
+        }
+        metadata_by_id = {row.file_id: row for row in (await session.execute(select(FileMetadata).where(FileMetadata.file_id.in_(uids)))).scalars()}
+
+        for fid, uid in zip(file_ids, uids, strict=True):
+            file_record = files_by_id.get(uid)
             if file_record is None:
                 continue
 
-            analysis_result_row = await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == uid))
-            analysis = analysis_result_row.scalar_one_or_none()
-
-            metadata_row = await session.execute(select(FileMetadata).where(FileMetadata.file_id == uid))
-            metadata = metadata_row.scalar_one_or_none()
+            analysis = analysis_by_id.get(uid)
+            metadata = metadata_by_id.get(uid)
 
             # phaze-6bkk: the controller is fileless (DIST-01), so the companion read is dispatched
             # to the owning agent through the shared task router the controller already holds.

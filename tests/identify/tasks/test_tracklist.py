@@ -71,7 +71,7 @@ from phaze.models.tracklist_priority_flag import TracklistPriorityFlag
 from phaze.services.tracklist_lookup_cache import record_outcome
 from phaze.tasks import tracklist as task_module
 from phaze.tasks.controller import settings as controller_settings
-from phaze.tasks.tracklist import _parse_uuids, _resolve_targets, refresh_tracklists
+from phaze.tasks.tracklist import _affected_file_ids, _parse_uuids, _resolve_targets, refresh_tracklists
 
 
 if TYPE_CHECKING:
@@ -161,6 +161,21 @@ class TestResolveTargets:
         """
         await _seed_tracklist(session, external_id="not-a-target")
         assert await _resolve_targets(session, [], []) == []
+
+
+class TestAffectedFileIds:
+    async def test_no_external_ids_selects_nothing_rather_than_everything(self, session: AsyncSession) -> None:
+        """phaze-vu88k.4: the same unbounded-sweep guard as ``_resolve_targets``, one layer down.
+
+        This helper now takes the WHOLE set of refreshed pages rather than one page at a time, so
+        it inherits the empty-collection hazard: ``external_id.in_([])`` is not an error, it just
+        matches nothing today -- but the guard makes "the caller named no pages" mean "no files"
+        explicitly rather than by accident, and it costs one round trip less. Asserted directly
+        because ``refresh_tracklists`` only calls this with a non-empty set, which would otherwise
+        leave the branch untested forever.
+        """
+        await _seed_tracklist(session, external_id="serves-a-file")
+        assert await _affected_file_ids(session, []) == set()
 
 
 class TestRefusesAnUnboundedSweep:

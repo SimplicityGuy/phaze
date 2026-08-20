@@ -90,6 +90,32 @@ async def flag_file_for_lookup(session: AsyncSession, file_id: uuid.UUID, *, now
     await session.execute(upsert)
 
 
+async def flag_files_for_lookup(session: AsyncSession, file_ids: Collection[uuid.UUID], *, now: datetime | None = None) -> None:
+    """Upsert the priority flag for a whole set at once -- the bulk twin of :func:`flag_file_for_lookup`.
+
+    phaze-vu88k.4: added for :func:`phaze.tasks.tracklist.refresh_tracklists`, which flagged every
+    file a refreshed page serves one round trip at a time. Bulk for exactly the reason
+    :func:`clear_flags` gives directly below: a page can serve many files and this runs inside the
+    caller's transaction, where a round trip per file is pure cost.
+
+    Semantically identical to calling :func:`flag_file_for_lookup` per id -- the same
+    ``ON CONFLICT DO UPDATE`` on the same index, so a double-flag still re-confirms rather than
+    raising. Empty input is a no-op, not an unfiltered INSERT.
+
+    ONE deliberate difference: every row in the set is stamped with ONE ``moment`` rather than each
+    getting its own ``datetime.now(UTC)`` microseconds apart. Nothing can rely on that ordering --
+    the per-file caller this replaces iterated a ``set``, so the relative stamps were already in
+    arbitrary hash order rather than any meaningful sequence.
+    """
+    ids = list(file_ids)
+    if not ids:
+        return
+    moment = now or datetime.now(UTC)
+    statement = pg_insert(TracklistPriorityFlag).values([{"file_id": fid, "created_at": moment, "updated_at": moment} for fid in ids])
+    upsert = statement.on_conflict_do_update(index_elements=[TracklistPriorityFlag.file_id], set_={"updated_at": moment})
+    await session.execute(upsert)
+
+
 async def unflag_file(session: AsyncSession, file_id: uuid.UUID) -> None:
     """Clear ``file_id``'s priority flag, if any. A no-op (not an error) when none exists."""
     await session.execute(delete(TracklistPriorityFlag).where(TracklistPriorityFlag.file_id == file_id))
