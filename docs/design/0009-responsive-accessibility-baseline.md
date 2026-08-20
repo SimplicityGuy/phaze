@@ -299,7 +299,7 @@ the entries have to be deleted with the fix instead of surviving as stale text.
 
 ### 2026-08-20 — cold vs warm boot timing audit (phaze-doku9)
 
-**Status: audit complete (below); the measurement table is a known gap, tracked in the same bead.**
+**Status: complete.** Audit, measurement, and the AC4 harness-vs-product verdict are all below.
 
 `phaze-39eiy` measured a variable nobody had tested: a fresh pytest process per attempt (fresh
 uvicorn boot, fresh Alembic migration from an empty database, fresh browser launch) reproduced a
@@ -404,24 +404,48 @@ locally — direct evidence, not conjecture, that this class of race is CI-sensi
   — has a `wait_for_timeout(1200)`, but the actual negative assertion downstream is a proper
   `wait_for_function` with a 15s timeout, not the fixed window. Not the dangerous shape.
 
-#### Harness artifact, or product characteristic? (partial answer)
+#### Harness artifact, or product characteristic? (settled, with numbers)
 
 `run_migrations()`, the `SELECT 1` connectivity check, and the queue/task-router/redis wiring all
 run inside FastAPI's `lifespan`, in `src/phaze/main.py`, **before** `/health` returns 200. So the
 literal migration-and-boot cost is front-loaded and gated behind `_wait_until_serving` — a real
 operator restarting phaze would wait slightly longer before the app answers *at all*, but would not
-see it as "requests are slow" once it does. That much reads as a harness/deploy-timing fact, not a
-per-request product defect, and needs no further measurement to state.
+see it as "requests are slow" once it does. That reads as a harness/deploy-timing fact, not a
+per-request product defect, and needed no measurement to state.
 
-The open question is narrower and still needs Phase 2's numbers: whether specific request paths
-are measurably slower on their *first* hit after boot than on later ones — a SQLAlchemy
-statement-cache miss, a Jinja2 template-compile miss, or some other lazy singleton initialized on
-first use. Nothing in the routers this audit read does an obviously heavy first-call lazy
-initialization on the request path these browser tests exercise (essentia-tensorflow model loading
-is SAQ-worker-side, not touched here), so this audit could not confirm or refute the effect from
-static reading alone. **If it is real, it is a product finding, not a harness one** — an operator's
-first few clicks after every phaze restart would be measurably slower — and it belongs in its own
-bead, not folded into this one.
+The narrower question — whether specific request paths are measurably slower on their *first* hit
+after boot than on later ones — is now measured, and the answer is **yes, there is a real,
+consistent effect, and it is a product characteristic, not a harness artifact.**
+
+One `live_server`-shaped boot (paid once, matching CI's own session scope — see the correction
+above), then every page route the browser suite actually exercises was hit once ("first hit") and
+then nine more times on the same warm process ("steady state", mean of the last nine):
+
+| Route | First hit | Steady-state mean | Ratio |
+| --- | --- | --- | --- |
+| `/health` (bare `SELECT 1`, nothing to warm) | 5.1ms | 3.9ms | 1.3x |
+| `/s/summary` | 199.3ms | 42.2ms | **4.7x** |
+| `/s/files` | 39.0ms | 10.3ms | **3.8x** |
+| `/s/analyze` | 182.8ms | 112.0ms | 1.6x |
+| `/s/rename` | 41.5ms | 18.0ms | 2.3x |
+| `/s/apply` | 43.7ms | 26.3ms | 1.7x |
+| `/s/audit` | 27.8ms | 14.0ms | 2.0x |
+| `/pipeline/stats` | 132.4ms | 67.9ms | 1.9x |
+| `/search/?q=test` (302 redirect; no real search work done) | 6.3ms | 0.7ms | 9x, but sub-10ms absolute |
+
+The pattern is what names the mechanism: **every genuinely templated route is 1.6-4.7x slower on
+its first hit; `/health`, which does nothing but a bare `SELECT 1`, barely moves at all.** That is
+the signature of a compile-on-first-use cache — SQLAlchemy caching a query's compiled statement
+object, Jinja2 caching a template's compiled bytecode, or both — rather than of network or database
+variance, which would not spare `/health` and would not track "how much does this route render."
+
+**Verdict: real effect, product characteristic, not absorbed here.** An operator's first click on
+each distinct phaze page after a restart is measurably slower than their next click on the same
+page — not dramatically (absolute deltas run 10-160ms, well under anything a person would
+consciously notice, let alone report), but it is real, reproducible, and traceable to a named
+mechanism rather than measurement noise. Per this bead's own scope rule, it gets its own bead
+rather than a fix folded into this one; given the modest absolute size, that bead is informational/
+low-priority rather than urgent.
 
 #### Should the suite exercise the cold path deliberately? (recommendation, not adopted)
 
@@ -433,15 +457,56 @@ the `phaze-39eiy` flake — run on the `ADR-0011` bug-hunt cadence rather than o
 is the instrument that forces the worst-case boot/cache-warming variables rather than the CI job's
 steady state. This is a recommendation only; no CI change was made as part of this entry.
 
-#### Measurement gap (tracked, not yet filled)
+#### Measurement (2026-08-20, `doku9` seat, macOS/arm64)
 
-`_wait_until_serving` duration, first-request latency, migration time, and browser-launch time,
-cold versus warm, with real numbers — the direct ask of this bead's first acceptance criterion —
-are **not yet measured**. Measurement was deliberately deferred: `phaze-39eiy` was running its own
-cold-boot failure-rate measurement on this machine at the time of this audit, and a second cold-boot
-loop running concurrently would have added load and corrupted both processes' numbers. This section
-is the place that measurement lands once it runs; until then, treat every duration named above
-(6s, 7s, 1s, 5s, 2s, 180s) as a design assumption, not a validated bound.
+Run once `phaze-39eiy`'s own cold-boot measurement had cleared the machine, so the two did not
+corrupt each other. Standalone scripts against `TEST_DATABASE_URL`'s seat, not the pytest suite
+itself, so a run could be timed and printed rather than asserted on. Boots use the same subprocess shape as
+`tests/browser/conftest.py::live_server` (fresh-database-per-attempt, real uvicorn, real Alembic,
+`--host 127.0.0.1`), polling `/health` exactly as `_wait_until_serving` does.
+
+**Migration only** (fresh db, no uvicorn, no queue/router wiring — just `await run_migrations()`),
+3 runs: **0.666s / 0.715s / 0.785s, mean ~0.72s.**
+
+**Cold boot, EXTREME shape** (fresh process + fresh db per attempt, the full lifespan gated behind
+`/health` — migration, connectivity check, dev-agent seed, queue/task-router/redis wiring), 10 runs
+back to back: the **first** attempt took **12.89s**; the other **nine** were **1.68-1.85s (mean
+~1.74s)**. That ~7x gap is not the app doing anything different between runs — it is OS-level disk
+cache warmth for the venv and its native dependencies (essentia-tensorflow's compiled extension
+among them), and it only shows up once per machine session, not once per attempt.
+
+**This matters for how to read the 1.7-1.8s "steady" figure.** It was measured on a dev machine
+that had just run this app repeatedly in the same session (`uv sync`, the full browser suite,
+several other measurements) — genuinely warm disk cache. The browser CI job
+(`.github/workflows/tests.yml`, `browser:`) runs on `runs-on: ubuntu-latest`: a fresh VM every
+run, with dependencies installed by that run's own `just install` step (Chromium itself is cached
+across runs via `actions/cache`, but the Python venv and its native deps are not). So **CI's own
+first boot of a run is closer to this measurement's 12.89s outlier than to its 1.7-1.8s steady
+figure**, and the 1.7-1.8s number should be read as a floor — what boot costs once the OS has
+already paid for everything once — not as an estimate of what a fresh CI runner pays on its first
+job. The exact CI number was not measured here (that would mean running on an actual fresh
+`ubuntu-latest` runner, out of scope for this pass) and is worth a follow-up if boot latency ever
+becomes a suspect on its own, rather than a contributor among several.
+
+**First-request latency, per route, first-hit vs steady-state**: see the table in "Harness
+artifact, or product characteristic?" above — same measurement run, same boot.
+
+**Browser launch time, cold vs warm**: 5 runs each, Chromium via Playwright. Cold (fresh Python
+process per launch): **0.272-0.303s, mean 0.279s.** Warm (same process, five sequential launches):
+**0.269-0.296s, mean 0.279s.** No measurable difference — confirms what
+`tests/browser/conftest.py`'s own docstring already implies ("Playwright is launched per test"
+in every shape, cold and warm alike), so browser launch is **ruled out** as a cold/warm
+differentiator; it was never one.
+
+**What this measurement does NOT establish.** It characterizes boot and first-request latency in
+isolation, on one machine, outside the actual pytest/Playwright harness and its concurrency with a
+real test body, a real assertion sequence, or CPU contention from other agents. It is not a
+reproduction of the `phaze-39eiy` failure and does not attempt to be — it answers "what differs,
+and by how much," which is what this bead asked for; `phaze-39eiy` answers "does that difference
+break this specific test." The original measurement's ~8.5s-per-iteration figure covers a full
+test attempt (boot + browser launch + the test body + teardown), not boot alone, so it is not
+directly comparable to the ~1.7-12.9s boot-only figures above; boot is a plausible major
+contributor to that number on a cold machine, not confirmed as the sole one.
 
 ## Consequences
 
