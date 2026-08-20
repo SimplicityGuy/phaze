@@ -485,6 +485,25 @@ class TestExtractTagsReadFailure:
             extract_tags("/mnt/media/track.mp3")
 
     @patch("phaze.services.metadata.mutagen.File")
+    def test_direct_os_error_is_not_its_own_cause(self, mock_file):
+        """A direct OSError must propagate via a bare `raise`, not `raise exc from exc`.
+
+        The latter sets `exc.__cause__ is exc` -- a self-referential chain that any
+        `__cause__` walker without a cycle guard (e.g. an external error reporter) loops
+        on forever. `_io_cause`'s own seen-set and CPython's traceback formatter both
+        happen to tolerate the cycle, which is exactly why this regressed silently once
+        before.
+        """
+        original = OSError("Input/output error")
+        mock_file.side_effect = original
+
+        with pytest.raises(OSError) as exc_info:
+            extract_tags("/mnt/media/track.mp3")
+
+        assert exc_info.value is original
+        assert exc_info.value.__cause__ is None
+
+    @patch("phaze.services.metadata.mutagen.File")
     def test_mutagen_wrapped_io_error_raises_the_underlying_os_error(self, mock_file):
         """mutagen wraps open failures in MutagenError (not an OSError subclass); the
         underlying OSError must be unwrapped and re-raised, not treated as a parse error."""
