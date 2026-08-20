@@ -297,6 +297,152 @@ the entries have to be deleted with the fix instead of surviving as stale text.
 - The seeded data is synthetic and deliberately smaller than the real archive. Real filenames are
   longer than the ones used here, so phaze-mrg1c is worse in production, not better.
 
+### 2026-08-20 — cold vs warm boot timing audit (phaze-doku9)
+
+**Status: audit complete (below); the measurement table is a known gap, tracked in the same bead.**
+
+`phaze-39eiy` measured a variable nobody had tested: a fresh pytest process per attempt (fresh
+uvicorn boot, fresh Alembic migration from an empty database, fresh browser launch) reproduced a
+focus-timing flake once in 14 attempts, at roughly 8.5s per iteration, where ~88 attempts across
+four *warm* shapes (single process, repeats, CPU-throttled, whole-file loop) came up clean. This
+entry is the general follow-up `phaze-doku9` asked for: which OTHER browser tests carry timing
+assumptions that a warm app satisfies and a cold one may not, and what the cold/warm gap actually
+is. It does not fix any one test — see the sibling bead for that — and it does not re-run the
+cold-boot measurement; it audits `tests/browser/` for the shape of exposure and records what the
+code says about where the gap comes from.
+
+**Correction to the framing `phaze-39eiy` shipped with.** `tests/browser/conftest.py`'s
+`live_server` fixture is `scope="session"` — one uvicorn boot, one migration run, per pytest
+*session*, not per test. CI's `Browser contract (non-blocking)` job runs the whole suite as one
+session, so it pays the true boot+migration cost once, for its first test(s), and runs *warm*
+against an already-booted server for the remaining ~170. The fresh-process-per-attempt shape that
+found the flake is a **more extreme cold reproduction than CI's own steady state** — a good
+instrument for finding this class of bug (it forces the server-boot and per-code-path
+cache-warming variables to their worst case on every attempt), but its 1-in-14 rate is not a valid
+estimate of how often CI itself hits the same race. Read the finding below as "this class of
+assumption is real and present in N other tests," not as "CI fails at 1-in-14."
+
+#### Audit method
+
+Every file in `tests/browser/` (21 test modules, plus `conftest.py`, `helpers.py`, `axe.py`) was
+read for: fixed sleeps and fixed-timeout waits, `wait_for_function` calls with an implicit
+assumption about response latency, any assertion that something did **not** happen within a
+window, and settle helpers whose stability window could be satisfied by the wrong state. The
+`FLAKE_RECORD.md` section "What to watch when the CI runs start" was the starting list, not the
+whole one — it was written as speculation before this bead had evidence, and three of the six
+findings below are not in it.
+
+#### The dangerous shape: asserting a negative inside a fixed window
+
+A test that waits a fixed duration and then asserts something did **not** happen is only sound if
+the window is longer than the *slowest* correct run could ever take. A cold app that is slower for
+reasons unrelated to the property under test (server boot amortization, a not-yet-warm
+SQLAlchemy statement cache, a not-yet-warm Jinja2 template cache — see "harness or product?"
+below) can push the real event past the window, and the test then reports "confirmed absent"
+for an event that was actually still coming. This is a silent wrong-pass, not a red build, which
+is what makes it worth an audit rather than waiting for it to fail.
+
+Three tests carry this shape:
+
+1. **`test_execute_dispatch.py::test_the_progress_stream_opens_once_and_stops_reconnecting_after_close`**
+   — `await asyncio.sleep(_RECONNECT_WINDOW_SEC)` (6.0s, "Chromium's ~3s reconnect delay with
+   generous margin") then `assert len(stream_requests) == 1`. Already named in `FLAKE_RECORD.md`.
+2. **`test_execute_dispatch.py::test_an_execution_that_finishes_with_failures_reports_them_and_still_closes`**
+   — the same 6.0s pattern, for the `complete_with_errors` terminal status. Also already named.
+3. **`test_analyze_lane_detail.py::test_dismissing_the_lane_detail_stops_its_poll_and_returns_focus`**
+   — **not previously recorded anywhere.** `await page.wait_for_timeout(7000)` (one 5s own-tick
+   poll interval plus slack) then `assert after_dismiss == []`, to prove the lane detail pane's
+   self-poll was cancelled by its own dismissal. Same shape as the two SSE tests above, found by
+   reading the suite rather than by a red build — which is the case for running this audit at all
+   rather than waiting for the next flake to name the next instance.
+
+#### The milder shape: asserting a positive inside a fixed window
+
+Cold slowness here produces a visible failure, not a wrong pass — annoying, but not the dangerous
+kind. Two instances:
+
+4. **`test_analyze_lane_detail.py::test_the_open_lane_detail_refreshes_itself_without_stealing_focus_back`**
+   — the same 7s wait as #3, but asserting the poll's fetch list is non-empty (the tick DID fire).
+5. **`test_metadata_actions.py::test_dismissing_the_extract_confirm_enqueues_nothing`** —
+   `wait_for_timeout(1000)` then `assert posted == []`, guarding a *dismissed* `hx-confirm` never
+   enqueuing. The docstring already names the tradeoff ("short, and only ever paid by this one
+   test"). Lower actual cold-boot exposure than it looks: whether a broken confirm boundary fires a
+   request is decided by browser-side dialog handling, not a server round trip, so backend latency
+   does not change when a broken implementation would have issued the request.
+
+#### Bounded-polling helpers: a fixed ceiling, not a bare sleep
+
+These retry on a predicate rather than sleeping blind, so they are far safer than #1-5, but they
+still have a ceiling, and one of them has already produced a CI-only failure that never reproduced
+locally — direct evidence, not conjecture, that this class of race is CI-sensitive.
+
+6. **`tests/browser/helpers.py::settled_focus`** (5000ms ceiling, 100ms poll) — used across
+   record/drawer dismiss-focus-restore assertions.
+7. **`test_keyboard_screen_reader.py::_settle`** (2000ms default ceiling) — used for drawer and
+   command-palette focus-restore. Its own comment records the precedent directly: "Failed exactly
+   that way on phone/dark in CI while passing locally (phaze-bdeih is the same race in the
+   drawer)."
+8. **`tests/browser/conftest.py::_wait_until_serving`** (180s ceiling) — already named in
+   `FLAKE_RECORD.md`; this is the boot-latency ceiling the measurement gap below is meant to fill
+   with real numbers.
+
+#### Infrastructure and session shape
+
+9. **`tests/browser/axe.py`'s CDN fetch** is cached per Python *process* (`_SOURCE_CACHE`, a module
+   dict), not per test. A fresh-process-per-attempt shape — like the one that found the
+   `phaze-39eiy` flake — pays the network round trip on every attempt; a normal CI session pays it
+   once.
+10. **`conftest.py::live_server` is session-scoped** — see "Correction to the framing" above. This
+    is the load-bearing fact for reading every other finding in this entry correctly.
+
+#### Ruled out
+
+- **`test_responsive_matrix.py::test_the_shell_survives_a_slow_workspace_fetch`** — its 900ms delay
+  is injected client-side via `page.route`, independent of real server speed. Not cold-boot
+  sensitive.
+- **`test_command_palette_search.py::test_a_query_that_matches_nothing_still_offers_the_navigation_rows`**
+  — has a `wait_for_timeout(1200)`, but the actual negative assertion downstream is a proper
+  `wait_for_function` with a 15s timeout, not the fixed window. Not the dangerous shape.
+
+#### Harness artifact, or product characteristic? (partial answer)
+
+`run_migrations()`, the `SELECT 1` connectivity check, and the queue/task-router/redis wiring all
+run inside FastAPI's `lifespan`, in `src/phaze/main.py`, **before** `/health` returns 200. So the
+literal migration-and-boot cost is front-loaded and gated behind `_wait_until_serving` — a real
+operator restarting phaze would wait slightly longer before the app answers *at all*, but would not
+see it as "requests are slow" once it does. That much reads as a harness/deploy-timing fact, not a
+per-request product defect, and needs no further measurement to state.
+
+The open question is narrower and still needs Phase 2's numbers: whether specific request paths
+are measurably slower on their *first* hit after boot than on later ones — a SQLAlchemy
+statement-cache miss, a Jinja2 template-compile miss, or some other lazy singleton initialized on
+first use. Nothing in the routers this audit read does an obviously heavy first-call lazy
+initialization on the request path these browser tests exercise (essentia-tensorflow model loading
+is SAQ-worker-side, not touched here), so this audit could not confirm or refute the effect from
+static reading alone. **If it is real, it is a product finding, not a harness one** — an operator's
+first few clicks after every phaze restart would be measurably slower — and it belongs in its own
+bead, not folded into this one.
+
+#### Should the suite exercise the cold path deliberately? (recommendation, not adopted)
+
+Given the session-scope correction above, the existing browser CI job already pays the true cold
+cost once per run, which is representative of "CI is the cold shape" as originally stated. Adding a
+second always-on cold-path lane would duplicate that rather than add coverage. What is arguably
+missing is a **periodic fresh-process-per-test stress run** — the shape that actually reproduced
+the `phaze-39eiy` flake — run on the `ADR-0011` bug-hunt cadence rather than on every PR, since that
+is the instrument that forces the worst-case boot/cache-warming variables rather than the CI job's
+steady state. This is a recommendation only; no CI change was made as part of this entry.
+
+#### Measurement gap (tracked, not yet filled)
+
+`_wait_until_serving` duration, first-request latency, migration time, and browser-launch time,
+cold versus warm, with real numbers — the direct ask of this bead's first acceptance criterion —
+are **not yet measured**. Measurement was deliberately deferred: `phaze-39eiy` was running its own
+cold-boot failure-rate measurement on this machine at the time of this audit, and a second cold-boot
+loop running concurrently would have added load and corrupted both processes' numbers. This section
+is the place that measurement lands once it runs; until then, treat every duration named above
+(6s, 7s, 1s, 5s, 2s, 180s) as a design assumption, not a validated bound.
+
 ## Consequences
 
 - Desktop behaviour is unchanged; the expanded rail and full-density tables are preserved.
