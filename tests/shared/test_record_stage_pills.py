@@ -99,13 +99,16 @@ async def test_record_pills_render_every_stage_status(client: AsyncClient, sessi
 def test_record_pills_reuse_single_status_source() -> None:
     """One status source (D-00a): the pane renders the SHARED _stage_pill partial fed by stage_status_case.
 
-    Source-level guard against a divergent second derivation: record_body.html must include the
-    same ``_stage_pill.html`` partial the Files matrix renders, and the record router must obtain
-    its buckets from the shared services derivation (``get_file_stage_buckets``), never re-derive.
+    Source-level guard against a divergent second derivation: the drawer must include the shared
+    record content, which must include the same ``_stage_pill.html`` partial the Files matrix
+    renders. The record router must obtain its buckets from the shared services derivation
+    (``get_file_stage_buckets``), never re-derive.
     """
     template = (_SRC / "templates" / "record" / "record_body.html").read_text()
-    assert 'include "pipeline/partials/_stage_pill.html"' in template, (
-        "record_body.html must render the SHARED _stage_pill.html token partial — a bespoke pill markup here is a divergent second status rendering"
+    shared_content = (_SRC / "templates" / "record" / "_record_content.html").read_text()
+    assert 'include "record/_record_content.html"' in template
+    assert 'include "pipeline/partials/_stage_pill.html"' in shared_content, (
+        "the shared record content must render the SHARED _stage_pill.html token partial — a bespoke pill markup here is a divergent second status rendering"
     )
     router = (_SRC / "routers" / "record.py").read_text()
     assert "get_file_stage_buckets" in router, (

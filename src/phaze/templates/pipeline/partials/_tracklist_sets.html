@@ -13,8 +13,10 @@
 
    The per-row presentation is UNCHANGED: the Tracks cell is the D-07 N/M track-level coverage
    (confident/total) from TracklistTrack.confidence, emerald at full coverage and blue otherwise.
-   Rows are inert-but-present (D-06 / R-1). Every DB-sourced `text` crosses the DB->render trust
-   boundary through _file_table.html autoescape -- never the raw passthrough filter (T-59-XSS).
+   A matched row opens its exact FileRecord at the Tracklist section. An unmatched candidate is
+   deliberately inert — it has no FileRecord to open and therefore receives no pointer/focus/URL
+   affordance. Every DB-sourced `text` crosses the DB->render trust boundary through
+   _file_table.html autoescape -- never the raw passthrough filter (T-59-XSS).
 
    Context contract:
      * sets_page -- phaze.services.pagination.Page[dict] (rows/page/page_size/has_next).
@@ -26,7 +28,7 @@
 } %}
 <div>
     {% set columns = ["Set", "Tracklist", "Tracks", "Matched to file"] %}
-    {% set ns = namespace(rows=[]) %}
+    {% set ns = namespace(rows=[], file_ids=[]) %}
     {% for s in sets_page.rows %}
         {% if s.tracks_total == 0 %}
             {% set coverage_text = "—" %}
@@ -52,8 +54,11 @@
             {'text': coverage_text, 'mono': True, 'color': coverage_color},
             {'text': matched_text, 'color': matched_color},
         ]) %}
+        {% set _ = ns.file_ids.append(s.file_id) %}
     {% endfor %}
 {% set rows = ns.rows %}
+{% set row_file_ids = ns.file_ids %}
+{% set row_record_section = "tracklist" %}
 {% set row_id_prefix = "tracklist-row" %}
 {% set table_id = "tracklist-set-table" %}
 {% if rows %}

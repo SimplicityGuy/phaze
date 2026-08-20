@@ -207,6 +207,7 @@ class TestFileTracklistReview:
 
         assert review is not None
         assert review.tracklist is None
+        assert review.latest_version is None
         assert review.cache_entry is None
         assert review.flagged is True
         assert review.eligible is True
@@ -360,6 +361,8 @@ class TestFileTracklistReview:
 
         assert review is not None
         assert review.tracklist is not None
+        assert review.latest_version is not None
+        assert review.latest_version.id == version.id
         assert review.is_propagated is propagated
         assert len(review.tracks) == 1
         assert review.tracks[0].title == "Opener"

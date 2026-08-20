@@ -249,6 +249,7 @@ async def build_drain_queue(
     agent_id: str | None = None,
     include_unknown: bool = False,
     flagged_file_ids: Iterable[uuid.UUID] = (),
+    target_file_ids: Iterable[uuid.UUID] = (),
     now: datetime | None = None,
 ) -> DrainQueue:
     """Load the corpus, derive queries, dedup, cache-filter and ORDER it. Writes nothing.
@@ -279,6 +280,13 @@ async def build_drain_queue(
     :func:`phaze.tasks.tracklist.refresh_tracklists` clears the positive cache row in the same
     transaction as it sets the flag, and a flag whose cache row still says FOUND leaves the set in
     ``cached`` where it costs nothing.
+
+    ``target_file_ids`` makes an operator-triggered lookup an EXACT-SET request. When non-empty,
+    only the unique set containing one of those files survives into ``entries``. This filter is
+    applied after the normal classification, deduplication and cache policy, so it grants no new
+    eligibility and bypasses no suppression. Its safety property is the negative case: if the
+    requested file disappears or becomes ineligible before the worker starts, the slice spends
+    zero requests instead of silently looking up an unrelated flagged set.
     """
     moment = now or datetime.now(UTC)
     raw_signals = await load_candidate_signals(session, agent_id=agent_id)
@@ -311,8 +319,14 @@ async def build_drain_queue(
         )
         for entry in queue.entries
     ]
+    targets = set(target_file_ids)
+    if targets:
+        candidates = [candidate for candidate in candidates if any(member.file_id in targets for member in candidate.unique_set.members)]
     candidates.sort(key=lambda candidate: candidate.priority)
-    return DrainQueue(entries=tuple(candidates), stats=queue.stats, cached=queue.cached)
+    cached = queue.cached
+    if targets:
+        cached = tuple(entry for entry in cached if any(member.file_id in targets for member in entry.unique_set.members))
+    return DrainQueue(entries=tuple(candidates), stats=queue.stats, cached=cached)
 
 
 async def _load_added_at(session: AsyncSession, file_ids: set[uuid.UUID]) -> dict[uuid.UUID, datetime]:
@@ -887,6 +901,7 @@ async def drain_once(
     agent_id: str | None = None,
     include_unknown: bool = False,
     flagged_file_ids: Iterable[uuid.UUID] = (),
+    target_file_ids: Iterable[uuid.UUID] = (),
     propagation_min: DuplicateConfidence = DEFAULT_PROPAGATION_MIN_CONFIDENCE,
     should_stop: Callable[[], bool] | None = None,
     now: datetime | None = None,
@@ -909,6 +924,7 @@ async def drain_once(
             agent_id=agent_id,
             include_unknown=include_unknown,
             flagged_file_ids=flagged_file_ids,
+            target_file_ids=target_file_ids,
             now=moment,
         )
 
