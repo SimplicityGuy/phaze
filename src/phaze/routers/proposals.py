@@ -600,12 +600,18 @@ async def bulk_action(
         except (TypeError, ValueError):
             continue
     uuids = [token.proposal_id for token in reviewed]
+    # phaze-vu88k.4: the dedup test used to be `parsed not in uuids` against a LIST that grows as
+    # the loop runs -- O(n*m) over the submitted set. `seen` mirrors `uuids` for the membership
+    # test ONLY; `uuids` stays a list because the order it is built in is the order handed to
+    # bulk_update_status, and the same ids are appended in the same sequence as before.
+    seen = set(uuids)
     for pid in proposal_ids:
         try:
             parsed = uuid.UUID(pid)
         except ValueError:
             continue
-        if parsed not in uuids:
+        if parsed not in seen:
+            seen.add(parsed)
             uuids.append(parsed)
     # phaze-uu17: only PENDING rows may be bulk approved/rejected; terminal EXECUTED/FAILED
     # rows selected via the "All" tab are skipped, and count reflects only real transitions.
