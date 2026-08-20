@@ -35,6 +35,7 @@
    NO self-poll: no hx-trigger / setInterval here. Pagination clicks are user-initiated navigation.
 #}
 {% import "ui/primitives.html" as ui %}
+{% import "pipeline/partials/_record_row.html" as record_row %}
 {% set _stage_cols = [
     ('Metadata', 'metadata'),
     ('Analyze', 'analyze'),
@@ -235,7 +236,9 @@
             </thead>
             <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
                 {% for row in files_page.rows %}
-                <tr id="files-row-{{ loop.index }}" class="hover:bg-gray-50 dark:hover:bg-white/5">
+                <tr id="files-row-{{ loop.index }}"
+                    class="cursor-pointer hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 dark:hover:bg-white/5"
+                    {{ record_row.attrs(row.file.id, row.file.original_filename) }}>
                     {# phaze-cvn6.3: `max-w-md` retired -- the FILE column's width now comes from the
                        `<colgroup>` above (the resizable one), so a fixed Tailwind cap would fight the
                        operator's drag instead of enabling it. `truncate` stays: it is what turns
@@ -266,7 +269,8 @@
         </div>
         <div class="grid gap-3 px-4 py-3 md:hidden" role="list" aria-label="Files and pipeline stage status">
             {% for row in files_page.rows %}
-            <article class="min-w-0 rounded-lg border border-gray-200 bg-white p-3 dark:border-phaze-border dark:bg-phaze-panel" role="listitem">
+            <article class="min-w-0 cursor-pointer rounded-lg border border-gray-200 bg-white p-3 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border dark:bg-phaze-panel dark:hover:bg-white/5"
+                     role="listitem" {{ record_row.attrs(row.file.id, row.file.original_filename) }}>
                 <div class="flex items-start justify-between gap-3">
                     <div class="min-w-0">
                         <h2 class="truncate font-mono text-xs font-semibold text-gray-900 dark:text-gray-100" title="{{ row.file.current_path }}">{{ row.file.current_path }}</h2>

@@ -140,8 +140,9 @@ async def prioritize_tracklist_lookup_ui(
        ``models.tracklist_priority_flag``'s module docstring). ``build_drain_queue`` reads it on
        every future call, whether that call comes from this endpoint, a scheduled slice, or a
        worker restart.
-    2. A single ``drain_tracklists`` job is enqueued with ``limit=1`` so the operator sees a real
-       lookup start now rather than only ever affecting some later, unscheduled run.
+    2. A single ``drain_tracklists`` job is enqueued with ``limit=1`` and this exact file as its
+       target, so the operator sees this set start now rather than only ever affecting some later,
+       unscheduled run.
        ``drain_tracklists`` is deliberately UNKEYED (phaze-fq9h.7's ``_UNKEYED_TASKS`` entry), so
        this can never silently dedup onto an unrelated in-flight slice.
 
@@ -187,7 +188,7 @@ async def prioritize_tracklist_lookup_ui(
         await flag_file_for_lookup(session, file_id)
         await session.commit()
         routed = await enqueue_router.resolve_queue_for_task("drain_tracklists", request.app.state, session)
-        await routed.queue.enqueue("drain_tracklists", limit=1)
+        await routed.queue.enqueue("drain_tracklists", limit=1, target_file_ids=[str(file_id)])
         review = await get_file_tracklist_review(session, file_id)
         queued = True
 
@@ -245,7 +246,7 @@ async def refresh_tracklist_lookup_ui(
         refreshed = bool(outcome["refreshed"])
         if refreshed:
             routed = await enqueue_router.resolve_queue_for_task("drain_tracklists", request.app.state, session)
-            await routed.queue.enqueue("drain_tracklists", limit=1)
+            await routed.queue.enqueue("drain_tracklists", limit=1, target_file_ids=[str(file_id)])
         review = await get_file_tracklist_review(session, file_id)
 
     return templates.TemplateResponse(

@@ -950,9 +950,11 @@ async def test_analyze_file_table_lane_and_windows(client: AsyncClient, session:
 
     # Completed LOCAL file (no cloud_job): full window coverage from the aggregate.
     done = await _seed_file(session, original_filename="done.mp3")
+    done_id = done.id
     await _seed_analysis(session, done.id, fine_done=41, fine_total=41, completed=True)
     # IN-FLIGHT file: a partial 57.1 analysis row (fine_done < fine_total), NOT yet ANALYZED.
     inflight = await _seed_file(session, original_filename="inflight.mp3")
+    inflight_id = inflight.id
     await _seed_analysis(session, inflight.id, fine_done=14, fine_total=41)
     # kueue-stamped lane: cloud_job with backend_id='vox' (registered kind=kueue) + cloud_phase set.
     kueue_file = await _seed_file(session, original_filename="kueued.mp3")
@@ -1004,7 +1006,11 @@ async def test_analyze_file_table_lane_and_windows(client: AsyncClient, session:
     # hx-get="/record/{file_id}" into #record-body + a record:open dispatch. (The Phase-58
     # click-unbound invariant is intentionally superseded; no selected-state is introduced.)
     assert 'hx-get="/record/' in tbl
+    assert f'hx-get="/record/{done_id}"' in tbl
+    assert f'hx-get="/record/{inflight_id}"' in tbl
     assert 'hx-target="#record-body"' in tbl
+    assert "event.target.closest" in tbl, "nested controls must not bubble into a record open"
+    assert "event.target===this" in tbl, "Enter on a nested control must not activate the row"
     assert "record:open" in tbl
     assert "aria-selected" not in tbl
 
@@ -1019,7 +1025,7 @@ async def test_analyze_file_table_lane_and_windows(client: AsyncClient, session:
     # and the htmx load (keyup[key=='Enter']). Verified live in Phase 61 UAT.
     assert 'tabindex="0"' in tbl
     assert "@keydown.enter" in tbl
-    assert "keyup[key==&#39;Enter&#39;]" in tbl or "keyup[key=='Enter']" in tbl
+    assert "keyup[key==&#39;Enter&#39;&amp;&amp;event.target===this]" in tbl or "keyup[key=='Enter'&&event.target===this]" in tbl
 
     # WORK-05 / R-2: no second poll loop in the fragment.
     assert 'hx-trigger="every' not in body

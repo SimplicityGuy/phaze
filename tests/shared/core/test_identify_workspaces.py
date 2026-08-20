@@ -34,6 +34,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 import uuid
 
+from bs4 import BeautifulSoup, Tag
 import pytest
 from sqlalchemy import update
 from sqlalchemy.dialects import postgresql
@@ -315,13 +316,14 @@ async def test_tracklist_drain_status_refreshes_after_running_a_slice(client: As
 
 @pytest.mark.asyncio
 async def test_tracklist_per_set_coverage(client: AsyncClient, session: AsyncSession) -> None:
-    """IDENT-02 / D-07 / D-08 -- per-set table renders N/M track coverage; inert rows.
+    """IDENT-02 / D-07 / D-08 -- per-set coverage rows open the exact linked FileRecord.
 
     Seed a linked tracklist with a version + N confident / M total tracks, then assert the per-set
     table below the aggregate cards renders the ``N/M`` coverage from ``TracklistTrack.confidence``
-    with inert (no ``hx-get``) rows.
+    and carries the linked file id into the canonical record drawer.
     """
     file = await _seed_file(session, original_filename="set.mp3")
+    file_id = file.id
     tl = await _seed_tracklist(session, file_id=file.id, match_confidence=88)
     version = await _seed_tracklist_version(session, tl.id)
     await _seed_tracklist_track(session, version.id, position=1, confidence=0.9)
@@ -343,10 +345,10 @@ async def test_tracklist_per_set_coverage(client: AsyncClient, session: AsyncSes
     assert "1/2" in tbl
     # D-04/D-08: a linked tracklist reads "matched" to its file.
     assert "matched" in tbl
-    # R-1 / D-06: ROWS are inert -- scoped to <tbody> because phaze-a6hm.1 gave the <thead> its own
-    # hx-get sort buttons (the sortable-column contract). An unscoped "hx-get" not in tbl would now
-    # be asserting that the table is UNSORTABLE, which is the opposite of what this test means.
-    assert "hx-get" not in tbl[tbl.index("<tbody") :]
+    # R-1 / D-06: this linked row opens only its exact FileRecord at the Tracklist section.
+    tbody = tbl[tbl.index("<tbody") :]
+    assert f'hx-get="/record/{file_id}"' in tbody
+    assert 'data-record-section="tracklist"' in tbody
 
 
 # ---------------------------------------------------------------------------
@@ -401,6 +403,7 @@ async def test_get_tracklist_sets_page_shape(session: AsyncSession) -> None:
     assert row["path"] == "/test/music/set.mp3"
     assert row["tracklist_state"] == "matched"
     assert row["matched_to_file"] is True
+    assert row["file_id"] == file.id
     assert row["tracks_confident"] == 1
     assert row["tracks_total"] == 2
 
@@ -437,9 +440,36 @@ async def test_get_tracklist_sets_page_candidate(session: AsyncSession) -> None:
     row = rows[0]
     assert row["tracklist_state"] == "candidate"
     assert row["matched_to_file"] is False
+    assert row["file_id"] is None
     assert row["path"] is None
     assert row["tracks_confident"] == 0
     assert row["tracks_total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_tracklist_rows_activate_only_the_exact_matched_file(client: AsyncClient, session: AsyncSession) -> None:
+    """Matched sets open their own FileRecord at #tracklist; candidates never masquerade as files."""
+    matched_file = await _seed_file(session, original_filename="<set-01>.mp3")
+    await _seed_tracklist(session, file_id=matched_file.id, artist="Example Artist", external_id="matched-set")
+    await _seed_tracklist(session, file_id=None, artist="Example Candidate", external_id="candidate-set")
+
+    response = await client.get("/pipeline/tracklist-sets")
+    assert response.status_code == 200
+    soup = BeautifulSoup(response.text, "html.parser")
+    rows = [row for row in soup.select("#tracklist-set-table tbody tr") if isinstance(row, Tag)]
+    matched = next(row for row in rows if "<set-01>.mp3" in row.get_text())
+    candidate = next(row for row in rows if "Example Candidate" in row.get_text())
+
+    assert matched.get("hx-get") == f"/record/{matched_file.id}"
+    assert matched.get("hx-target") == "#record-body"
+    assert matched.get("data-record-section") == "tracklist"
+    assert matched.get("tabindex") == "0"
+    assert "cursor-pointer" in (matched.get("class") or [])
+    assert "record:open" in str(matched.get("@click"))
+
+    for attribute in ("hx-get", "hx-target", "hx-trigger", "tabindex", "data-record-row", "data-record-section", "@click", "@keydown.enter"):
+        assert candidate.get(attribute) is None, f"unmatched candidate falsely carries {attribute}"
+    assert "cursor-pointer" not in (candidate.get("class") or [])
 
 
 @pytest.mark.asyncio

@@ -15,7 +15,7 @@ Must pass in the ``shared`` bucket in isolation (consumes the DB fixtures -> aut
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
 import pytest
@@ -59,9 +59,10 @@ async def test_never_looked_up_renders_plainly(client: AsyncClient, session: Asy
 
     body = (await client.get(f"/record/{file_rec.id}")).text
 
+    assert "No matched 1001Tracklists tracklist yet." in body
     assert "Not yet looked up." in body
     assert f"/pipeline/tracklists/{file_rec.id}/prioritize" in body
-    assert "Prioritize lookup" in body
+    assert "Look up now" in body
 
 
 @pytest.mark.asyncio
@@ -88,6 +89,8 @@ async def test_a_transient_block_reads_distinctly_from_not_found(client: AsyncCl
 
     assert "Blocked by a Turnstile challenge" in body
     assert "No confident match on 1001Tracklists" not in body
+    assert "Look up again" in body
+    assert f"/pipeline/tracklists/{file_rec.id}/prioritize" in body
 
 
 @pytest.mark.asyncio
@@ -132,8 +135,7 @@ async def test_a_cache_suppressed_negative_hides_prioritize_and_says_so(client: 
 
     assert "No confident match on 1001Tracklists" in body
     assert "Suppressed until" in body
-    assert "will not queue a lookup" in body
-    assert "Prioritize lookup" not in body
+    assert "Look up again becomes available" in body
     assert f"/pipeline/tracklists/{file_rec.id}/prioritize" not in body
 
 
@@ -141,7 +143,13 @@ async def test_a_cache_suppressed_negative_hides_prioritize_and_says_so(client: 
 async def test_a_scraped_tracklist_reads_as_scraped(client: AsyncClient, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
     file_rec = await _seed_live_set(make_file, session)
     tracklist = Tracklist(
-        external_id="ext-10", source_url="https://www.1001tracklists.com/tracklist/ext-10", file_id=file_rec.id, match_confidence=95
+        external_id="ext-10",
+        source_url="https://www.1001tracklists.com/tracklist/ext-10",
+        file_id=file_rec.id,
+        match_confidence=95,
+        artist="Nightwave",
+        event="Signal Festival",
+        date=date(2026, 8, 1),
     )
     session.add(tracklist)
     await session.flush()
@@ -149,10 +157,34 @@ async def test_a_scraped_tracklist_reads_as_scraped(client: AsyncClient, session
     session.add(version)
     await session.flush()
     tracklist.latest_version_id = version.id
-    session.add(TracklistTrack(version_id=version.id, position=1, artist="Coldwave", title="Opener"))
+    session.add(
+        TracklistTrack(
+            version_id=version.id,
+            position=1,
+            artist="Coldwave",
+            title="Opener",
+            timestamp="00:00",
+            label="Example Label",
+            is_mashup=True,
+            remix_info="Signal Remix",
+        )
+    )
     await session.commit()
 
-    body = (await client.get(f"/record/{file_rec.id}")).text
+    drawer = (await client.get(f"/record/{file_rec.id}")).text
+    page = (await client.get(f"/files/{file_rec.id}")).text
 
-    assert "Scraped from 1001Tracklists" in body
-    assert "Propagated from a duplicate" not in body
+    for body in (drawer, page):
+        assert "Scraped from 1001Tracklists" in body
+        assert "Propagated from a duplicate" not in body
+        assert "match confidence 95" in body
+        assert "Nightwave" in body
+        assert "Signal Festival" in body
+        assert "2026-08-01" in body
+        assert "1 track" in body
+        assert "00:00" in body
+        assert "Coldwave" in body
+        assert "Opener" in body
+        assert "mashup" in body
+        assert "Signal Remix" in body
+        assert "Example Label" in body

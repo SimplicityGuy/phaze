@@ -1,11 +1,12 @@
-"""Phase 61 (61-02, RECORD-01 / D-01/D-02): the per-file full-record read-only fragment route.
+"""The canonical per-file record context, drawer fragment, and full-page view.
 
-``GET /record/{file_id}`` composes the file's EXISTING read-only per-file reads -- the windowed
-multi-lane timeline (mirrors :func:`phaze.routers.proposals.proposal_timeline`), the metadata diff +
-identity, this file's pending approvals (inline-approvable through the Phase 60 approve/edit/undo
-routes), and history -- into ONE bare HTMX fragment swapped into the persistent ``record_host.html``
-panel (D-01). The body is a SNAPSHOT: it renders once, carries no self-poll / ``setInterval`` /
-``hx-swap-oob`` on the approval subtree (D-02), and never re-renders the operator's in-progress edit.
+``GET /record/{file_id}`` and ``GET /files/{file_id}`` compose the file's existing read-only
+per-file reads -- the windowed multi-lane timeline (mirrors
+:func:`phaze.routers.proposals.proposal_timeline`), metadata and identity, this file's review
+state, tracklist, and history -- through one context builder and one content partial. The drawer
+remains a bare HTMX fragment swapped into the persistent ``record_host.html`` panel (D-01). It is
+a SNAPSHOT: it renders once, carries no self-poll / ``setInterval`` / ``hx-swap-oob`` on the
+approval subtree (D-02), and never re-renders the operator's in-progress edit.
 
 Security: the ``file_id`` path param is a typed ``uuid.UUID`` (FastAPI-validated -- closes the
 template-path/BAC surface, T-61-03) and EVERY read is scoped strictly by that ``file_id`` (mirrors
@@ -34,10 +35,11 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog
-from phaze.routers.proposals import TIMELINE_H, TIMELINE_W, _bpm_spark, _ribbons
 from phaze.services.agent_liveness import non_local_backend_kinds
+from phaze.services.analysis_timeline import build_analysis_timeline_context
 from phaze.services.pipeline import derive_file_lane, get_file_orphan_details, get_file_stage_buckets
 from phaze.services.tracklist_priority import get_file_tracklist_review
+from phaze.web.static import static_asset_url
 
 
 if TYPE_CHECKING:
@@ -46,7 +48,8 @@ if TYPE_CHECKING:
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-router = APIRouter(prefix="/record", tags=["record"])
+templates.env.globals["static_url"] = static_asset_url
+router = APIRouter(tags=["record"])
 
 
 def _history_sort_key(when: datetime | None) -> tuple[bool, datetime]:
@@ -66,34 +69,24 @@ def _history_sort_key(when: datetime | None) -> tuple[bool, datetime]:
     return (True, when)
 
 
-@router.get("/{file_id}", response_class=HTMLResponse)
-async def file_record(
-    request: Request,
+async def build_file_record_context(
     file_id: uuid.UUID,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """Return the composed, read-only full-record fragment for ``file_id`` (RECORD-01).
+    session: AsyncSession,
+) -> dict[str, Any] | None:
+    """Build the one strictly file-scoped context shared by both record presentations.
 
     Resolves the ``FileRecord`` by id; a missing / de-duplicated file renders the friendly 404
-    fragment (``record_not_found.html``) with a 404 status (T-61-05). Otherwise every read below is
-    scoped strictly by ``file_id`` (T-31-06-02) and the composed ``record_body.html`` snapshot is
-    returned. No logic changes anywhere -- pure read + compose.
+    response in the caller. Otherwise every read below is scoped strictly by ``file_id``
+    (T-31-06-02). Keeping this assembly request- and presentation-agnostic prevents the drawer and
+    canonical page from diverging on facts, eligibility, tracklists, proposals, or history.
     """
     file = await session.get(FileRecord, file_id)
     if file is None:
-        return templates.TemplateResponse(
-            request=request,
-            name="record/record_not_found.html",
-            context={"request": request},
-            status_code=404,
-        )
+        return None
 
     # Windowed timeline -- mirror proposals.proposal_timeline (T-31-06-02 file_id scoping).
     windows_stmt = select(AnalysisWindow).where(AnalysisWindow.file_id == file_id).order_by(AnalysisWindow.tier, AnalysisWindow.window_index)
     windows = list((await session.execute(windows_stmt)).scalars().all())
-    fine = [w for w in windows if w.tier == "fine"]
-    coarse = [w for w in windows if w.tier == "coarse"]
-    total_sec = max((w.end_sec for w in windows), default=0.0)
     analysis = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
 
     # Pending approvals for THIS file -- reuse the Phase 60 approve/edit/undo routes verbatim.
@@ -183,23 +176,12 @@ async def file_record(
     kinds = non_local_backend_kinds(type_cast("ControlSettings", get_settings()))
     lane, lane_kind = derive_file_lane(cloud_job.id if cloud_job else None, cloud_job.backend_id if cloud_job else None, kinds)
 
-    spark = _bpm_spark(fine, total_sec, TIMELINE_W, TIMELINE_H)
-    context: dict[str, Any] = {
-        "request": request,
+    return {
         "file": file,
         "stage_buckets": stage_buckets,
         "analysis": analysis,
         "file_id": file_id,
-        "has_windows": bool(windows),
-        "total_sec": total_sec,
-        "timeline_w": TIMELINE_W,
-        "timeline_h": TIMELINE_H,
-        "bpm_points": spark.points,
-        "bpm_lo": spark.lo,
-        "bpm_hi": spark.hi,
-        "key_ribbons": _ribbons(fine, "musical_key", total_sec),
-        "mood_ribbons": _ribbons(coarse, "mood", total_sec),
-        "style_ribbons": _ribbons(coarse, "style", total_sec),
+        **build_analysis_timeline_context(windows),
         "pending_rows": pending_rows,
         "identity": identity,
         "history": history,
@@ -210,4 +192,47 @@ async def file_record(
         "orphan_details": orphan_details,
         "analyze_started": analyze_started,
     }
-    return templates.TemplateResponse(request=request, name="record/record_body.html", context=context)
+
+
+@router.get("/record/{file_id}", response_class=HTMLResponse)
+async def file_record(
+    request: Request,
+    file_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Return the existing bare, no-self-poll drawer fragment for ``file_id``."""
+    context = await build_file_record_context(file_id, session)
+    if context is None:
+        return templates.TemplateResponse(
+            request=request,
+            name="record/record_not_found.html",
+            context={"request": request},
+            status_code=404,
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="record/record_body.html",
+        context={**context, "request": request, "record_presentation": "drawer"},
+    )
+
+
+@router.get("/files/{file_id}", response_class=HTMLResponse)
+async def file_record_page(
+    request: Request,
+    file_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Return an addressable full document backed by the canonical record context."""
+    context = await build_file_record_context(file_id, session)
+    if context is None:
+        return templates.TemplateResponse(
+            request=request,
+            name="record/record_page.html",
+            context={"request": request, "file": None, "record_presentation": "page"},
+            status_code=404,
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="record/record_page.html",
+        context={**context, "request": request, "record_presentation": "page"},
+    )

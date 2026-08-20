@@ -1,70 +1,108 @@
-<td colspan="7" class="bg-gray-50 dark:bg-phaze-panel px-6 py-4">
-    {# phaze-w55w1: the Phase 44 "Sampled -- more data available" badge and the "Deepen analysis"
-       button that sat beside it are GONE, with the window caps that made them meaningful
-       (ADR-0007 §7). Every file is analyzed exhaustively, so there is no sampled state to flag and
-       nothing to deepen -- the timeline below IS the full coverage. #}
+<td colspan="7" class="min-w-0 bg-gray-50 px-4 py-4 dark:bg-phaze-panel sm:px-6">
+    {# phaze-w55w1 / ADR-0007 §7: this is exhaustive stored coverage. There is no sampled
+       state, cap, stride, deepen path, or client-side thinning step. #}
     {% if not has_windows %}
-    <p class="text-sm text-muted ">No analysis windows for this file.</p>
+    <p class="text-sm text-muted">No analysis windows for this file.</p>
     {% else %}
-    <div class="space-y-3">
-        <div>
-            <h4 class="text-xs font-semibold text-muted uppercase mb-1">BPM (fine windows)</h4>
-            {% if bpm_points %}
-            {# Labels live OUTSIDE the preserveAspectRatio="none" SVG (text inside it would stretch).
-               bpm_lo/bpm_hi are numeric floats (never essentia strings) rendered as autoescaped HTML
-               only -- they are NOT written into any SVG geometry attribute (XSS hardening invariant). #}
-            <div class="flex items-stretch gap-2">
-                {% if bpm_lo is not none and bpm_hi is not none and bpm_lo != bpm_hi %}
-                <div class="flex flex-col justify-between h-16 text-right text-xs text-muted tabular-nums"
-                     aria-label="BPM range {{ bpm_lo | round | int }} to {{ bpm_hi | round | int }}">
-                    <span>{{ bpm_hi | round | int }}</span>
-                    <span>{{ bpm_lo | round | int }}</span>
-                </div>
-                {% elif bpm_hi is not none %}
-                <div class="flex flex-col justify-center h-16 text-right text-xs text-muted tabular-nums"
-                     aria-label="BPM {{ bpm_hi | round | int }}">
-                    <span>{{ bpm_hi | round | int }}</span>
-                </div>
-                {% endif %}
-                <svg viewBox="0 0 {{ timeline_w }} {{ timeline_h }}" preserveAspectRatio="none"
-                     class="flex-1 h-16 text-info" role="img" aria-label="BPM over time">
-                    <polyline points="{{ bpm_points }}" fill="none" stroke="currentColor" stroke-width="2" />
-                </svg>
+    <section data-analysis-timeline data-duration="{{ total_sec }}" class="analysis-timeline" aria-labelledby="timeline-title-{{ file_id }}">
+        <div class="mb-3 flex flex-wrap items-start justify-between gap-2">
+            <div>
+                <h4 id="timeline-title-{{ file_id }}" class="text-xs font-semibold uppercase text-muted">BPM (fine windows)</h4>
+                <p data-timeline-readout class="mt-1 min-h-5 text-xs text-gray-700 dark:text-gray-300">
+                    Focus the timeline or move a pointer over it to inspect time and values.
+                </p>
             </div>
-            {% else %}
-            <p class="text-xs text-muted ">No BPM data.</p>
-            {% endif %}
+            <span data-timeline-scroll-hint hidden class="rounded-full border border-gray-300 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted dark:border-phaze-border dark:bg-phaze-bg">
+                Scroll timeline →
+            </span>
         </div>
 
-        {% for lane in [("Key", key_ribbons), ("Mood", mood_ribbons), ("Style", style_ribbons)] %}
-        <div>
-            <h4 class="text-xs font-semibold text-muted uppercase mb-1">{{ lane[0] }}</h4>
-            {% if lane[1] %}
-            <div class="flex w-full h-6 rounded overflow-hidden border border-gray-200 dark:border-phaze-border">
-                {% for ribbon in lane[1] %}
-                <div class="flex items-center justify-center text-[10px] text-white truncate px-1"
-                     style="width: {{ ribbon.width_pct }}%; background-color: hsl({{ ribbon.hue }}, 60%, 45%);"
-                     title="{{ ribbon.label }}">
-                    {{ ribbon.label }}
+        <div class="analysis-timeline-layout">
+            <div class="analysis-timeline-gutter" aria-hidden="true">
+                <div class="analysis-timeline-bpm-scale tabular-nums text-muted">
+                    {% if bpm_lo is not none and bpm_hi is not none %}
+                    <span>{{ bpm_hi | round | int }}</span>
+                    <span>{{ bpm_lo | round | int }}</span>
+                    {% else %}
+                    <span>—</span>
+                    <span>—</span>
+                    {% endif %}
                 </div>
-                {% endfor %}
+                <div class="analysis-timeline-axis-label" title="Elapsed time">Elapsed</div>
+                <div class="analysis-timeline-lane-label">Key</div>
+                <div class="analysis-timeline-lane-label">Mood</div>
+                <div class="analysis-timeline-lane-label">Style</div>
             </div>
-            {% else %}
-            <p class="text-xs text-muted ">No {{ lane[0]|lower }} data.</p>
-            {% endif %}
+
+            <div data-timeline-frame class="analysis-timeline-frame">
+                <div data-timeline-viewport class="analysis-timeline-viewport">
+                    <div data-timeline-inspector
+                         class="analysis-timeline-inspector"
+                         style="width: {{ timeline_w | round | int }}px;"
+                         role="slider"
+                         tabindex="0"
+                         aria-label="Analysis over elapsed time. Use Left and Right Arrow keys to inspect windows."
+                         aria-valuemin="0"
+                         aria-valuemax="{{ total_sec }}"
+                         aria-valuenow="0"
+                         aria-valuetext="0:00. No measured window selected.">
+                        <div class="analysis-timeline-bpm-plot">
+                            {% if bpm_segments %}
+                            <svg viewBox="0 0 {{ timeline_w }} {{ timeline_h }}" preserveAspectRatio="none"
+                                 width="{{ timeline_w | round | int }}" height="80" class="block h-20 w-full text-info"
+                                 role="img" aria-label="BPM over elapsed time, displayed from {{ bpm_lo | round | int }} to {{ bpm_hi | round | int }} BPM">
+                                {% for segment in bpm_segments %}
+                                {% if segment.single_x is not none %}
+                                <line x1="{{ segment.single_x }}" y1="{{ segment.single_y }}" x2="{{ segment.single_x }}" y2="{{ segment.single_y }}"
+                                      stroke="currentColor" stroke-width="4" stroke-linecap="round" vector-effect="non-scaling-stroke" />
+                                {% else %}
+                                <polyline points="{{ segment.points }}" fill="none" stroke="currentColor" stroke-width="2"
+                                          stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />
+                                {% endif %}
+                                {% endfor %}
+                            </svg>
+                            {% else %}
+                            <p class="flex h-20 items-center px-2 text-xs text-muted">No BPM data.</p>
+                            {% endif %}
+                            <div data-timeline-cursor class="analysis-timeline-cursor" hidden></div>
+                            <div data-timeline-tooltip class="analysis-timeline-tooltip" hidden aria-hidden="true"></div>
+                        </div>
+
+                        <div class="analysis-timeline-time-axis" aria-hidden="true">
+                            {% for tick in time_ticks %}
+                            <span class="analysis-timeline-tick{% if loop.first %} is-first{% elif loop.last %} is-last{% endif %}"
+                                  style="left: {{ tick.left_pct }}%;" data-time-sec="{{ tick.sec }}">{{ tick.label }}</span>
+                            {% endfor %}
+                        </div>
+
+                        {% for lane in [("key", key_ribbons), ("mood", mood_ribbons), ("style", style_ribbons)] %}
+                        <div class="analysis-timeline-lane" data-timeline-lane="{{ lane[0] }}">
+                            {% if lane[1] %}
+                            {% for ribbon in lane[1] %}
+                            <div class="analysis-timeline-ribbon"
+                                 style="left: {{ ribbon.left_pct }}%; width: {{ ribbon.width_pct }}%; background-color: hsl({{ ribbon.hue }}, 60%, 40%);"
+                                 title="{{ ribbon.label }}">{{ ribbon.label }}</div>
+                            {% endfor %}
+                            {% else %}
+                            <span class="analysis-timeline-no-data">No {{ lane[0] }} data.</span>
+                            {% endif %}
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
         </div>
-        {% endfor %}
-    </div>
+
+        <script type="application/json" data-timeline-inspection>{{ timeline_inspection | tojson }}</script>
+    </section>
     {% endif %}
 </td>
 <script>
-    // Reveal the parent timeline row once the fragment content is loaded.
+    // Legacy proposal rows start hidden until their lazily fetched <td> arrives. Record pages
+    // include this partial directly and are already visible.
     (function() {
-        var timelineRows = document.querySelectorAll('tr[id^="timeline-"]');
-        timelineRows.forEach(function(row) {
-            if (row.children.length > 0 && row.children[0].tagName === 'TD') {
-                row.classList.remove('hidden');
-            }
+        document.querySelectorAll('tr[id^="timeline-"]').forEach(function(row) {
+            if (row.children.length > 0 && row.children[0].tagName === 'TD') row.classList.remove('hidden');
         });
     })();
 </script>

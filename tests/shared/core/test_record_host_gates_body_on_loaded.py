@@ -72,6 +72,20 @@ def test_x_data_declares_a_loaded_flag() -> None:
     assert "loaded" in x_data, "record_host.html's x-data no longer declares a `loaded` flag"
 
 
+def test_show_captures_an_optional_record_section_from_the_actual_opener() -> None:
+    """A Tracklists row can request #tracklist without changing the canonical record URL."""
+    root = _record_host_root()
+    x_data = root.get("x-data") or ""
+    assert isinstance(x_data, str)
+    assert "requestedSection" in x_data
+    assert "el.dataset.recordSection" in x_data
+
+    soup = BeautifulSoup(_render_record_host(), "html.parser")
+    after_swap = _attr(_record_body(soup), "after-swap")
+    assert "CSS.escape(requested)" in after_swap
+    assert "section.scrollIntoView" in after_swap
+
+
 def test_show_resets_loaded_before_revealing_the_panel() -> None:
     """`show()` must reset `loaded` so a re-open never inherits the previous open's `loaded: true`."""
     root = _record_host_root()

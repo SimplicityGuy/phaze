@@ -717,6 +717,32 @@ class TestDrainPass:
         assert queue.entries[0].flagged is True
         assert wanted.id in {m.file_id for m in queue.entries[0].unique_set.members}
 
+    async def test_target_file_ids_restrict_the_slice_to_that_exact_set(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """A per-file action may spend its slice only on the named file's unique set.
+
+        Priority alone is insufficient when another persisted/operator flag exists: both candidates
+        share the first sort tier, so a generic ``limit=1`` slice could honestly prioritize work
+        while still answering the wrong file. Targeting filters after the normal funnel, preserving
+        classification and cache policy while making the negative case safe (no target means no
+        unrelated request).
+        """
+        other = await self._seed(make_file, session, "Alpha - Live @ Early Event 2024-01-01.mp3")
+        wanted = await self._seed(make_file, session, "Zed - Live @ Late Event 2024-09-09.mp3")
+
+        queue = await build_drain_queue(
+            session,
+            flagged_file_ids=[other.id, wanted.id],
+            target_file_ids=[wanted.id],
+            now=NOW,
+        )
+
+        assert len(queue.entries) == 1
+        assert wanted.id in {member.file_id for member in queue.entries[0].unique_set.members}
+        assert other.id not in {member.file_id for member in queue.entries[0].unique_set.members}
+
+        missing_target = await build_drain_queue(session, target_file_ids=[uuid.uuid4()], now=NOW)
+        assert missing_target.entries == ()
+
     async def test_a_pass_spends_at_most_its_budget(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
         for index in range(3):
             await self._seed(make_file, session, f"Artist{index} - Live @ Event 2024-04-1{index}.mp3")
