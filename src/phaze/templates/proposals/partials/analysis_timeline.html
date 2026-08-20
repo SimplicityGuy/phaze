@@ -11,8 +11,8 @@
             <h4 class="text-xs font-semibold text-muted uppercase mb-1">BPM (fine windows)</h4>
             {% if bpm_points %}
             {# Labels live OUTSIDE the preserveAspectRatio="none" SVG (text inside it would stretch).
-               bpm_lo/bpm_hi are numeric floats (never essentia strings) rendered as autoescaped HTML
-               only -- they are NOT written into any SVG geometry attribute (XSS hardening invariant). #}
+               bpm_lo/bpm_hi are outward-rounded numeric bounds rendered as autoescaped HTML only;
+               no essentia-derived string enters an SVG geometry attribute. #}
             <div class="flex items-stretch gap-2">
                 {% if bpm_lo is not none and bpm_hi is not none and bpm_lo != bpm_hi %}
                 <div class="flex flex-col justify-between h-16 text-right text-xs text-muted tabular-nums"
@@ -36,14 +36,24 @@
             {% endif %}
         </div>
 
+        <div aria-label="Elapsed time axis">
+            <h4 class="text-xs font-semibold text-muted uppercase mb-1">Elapsed time</h4>
+            <div class="relative h-5 border-t border-gray-300 dark:border-phaze-border">
+                {% for tick in time_ticks %}
+                <span class="absolute top-0 -translate-x-1/2 border-l border-gray-300 pt-1 text-[10px] tabular-nums text-muted dark:border-phaze-border"
+                      style="left: {{ tick.left_pct }}%;" data-time-sec="{{ tick.sec }}">{{ tick.label }}</span>
+                {% endfor %}
+            </div>
+        </div>
+
         {% for lane in [("Key", key_ribbons), ("Mood", mood_ribbons), ("Style", style_ribbons)] %}
         <div>
             <h4 class="text-xs font-semibold text-muted uppercase mb-1">{{ lane[0] }}</h4>
             {% if lane[1] %}
-            <div class="flex w-full h-6 rounded overflow-hidden border border-gray-200 dark:border-phaze-border">
+            <div class="relative w-full h-6 rounded overflow-hidden border border-gray-200 dark:border-phaze-border">
                 {% for ribbon in lane[1] %}
-                <div class="flex items-center justify-center text-[10px] text-white truncate px-1"
-                     style="width: {{ ribbon.width_pct }}%; background-color: hsl({{ ribbon.hue }}, 60%, 45%);"
+                <div class="absolute inset-y-0 flex items-center justify-center text-[10px] text-white truncate px-1"
+                     style="left: {{ ribbon.left_pct }}%; width: {{ ribbon.width_pct }}%; background-color: hsl({{ ribbon.hue }}, 60%, 45%);"
                      title="{{ ribbon.label }}">
                     {{ ribbon.label }}
                 </div>
@@ -54,6 +64,7 @@
             {% endif %}
         </div>
         {% endfor %}
+        <script type="application/json" data-timeline-inspection>{{ timeline_inspection | tojson }}</script>
     </div>
     {% endif %}
 </td>

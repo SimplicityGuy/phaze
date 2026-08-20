@@ -15,7 +15,7 @@ import phaze
 from phaze.models.analysis import AnalysisWindow
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
-from phaze.routers.proposals import BpmSpark, _bpm_spark
+from phaze.services.analysis_timeline import BpmSpark, bpm_spark
 from phaze.services.proposal_queries import proposal_review_digest
 
 
@@ -514,11 +514,13 @@ async def test_timeline_with_windows(client: AsyncClient, session: AsyncSession)
     response = await client.get(f"/proposals/{proposal.id}/timeline")
     assert response.status_code == 200
     assert "<polyline" in response.text
-    # quick 260707-c9o: max (top) + min (bottom) BPM labels render as HTML gutter text.
-    # Seeded fine windows carry bpm 120.0 / 128.0 (add_analysis_windows).
-    assert "128" in response.text
+    # The display and geometry use containing outward-rounded bounds.
+    # Seeded fine windows carry bpm 120.0 / 128.0 (add_analysis_windows) -> 120..130.
+    assert "130" in response.text
     assert "120" in response.text
-    assert 'aria-label="BPM range 120 to 128"' in response.text
+    assert 'aria-label="BPM range 120 to 130"' in response.text
+    assert "Elapsed time" in response.text
+    assert "1:00" in response.text
     # Escaped ribbon labels rendered via Jinja2 autoescaping.
     assert "techno" in response.text
     assert "happy" in response.text
@@ -632,25 +634,25 @@ def _fine_window(index: int, start: float, end: float, bpm: float | None) -> Ana
 
 
 def test_bpm_spark_normal_range() -> None:
-    """A range of distinct BPMs yields a non-empty points string plus lo/hi/count."""
+    """A range of distinct BPMs yields a non-empty points string plus rounded lo/hi/count."""
     windows = [_fine_window(0, 0.0, 30.0, 120.0), _fine_window(1, 30.0, 60.0, 128.0)]
-    result = _bpm_spark(windows, 60.0, 1000.0, 120.0)
+    result = bpm_spark(windows, 60.0, 1000.0, 120.0)
     assert isinstance(result, BpmSpark)
     assert result.points
     assert "," in result.points
     assert result.lo == 120.0
-    assert result.hi == 128.0
+    assert result.hi == 130.0
     assert result.window_count == 2
 
 
 def test_bpm_spark_flat_line() -> None:
-    """All-equal BPMs surface the single value (lo == hi) and land the line at height/2."""
+    """An exact constant gets a symmetric containing range and lands at height/2."""
     windows = [_fine_window(0, 0.0, 30.0, 120.0), _fine_window(1, 30.0, 60.0, 120.0)]
     height = 120.0
-    result = _bpm_spark(windows, 60.0, 1000.0, height)
-    assert result.lo == result.hi == 120.0
+    result = bpm_spark(windows, 60.0, 1000.0, height)
+    assert (result.lo, result.hi) == (110.0, 130.0)
     assert result.points
-    # span <= 0 => every y coordinate is height/2 (unchanged flat-line behavior).
+    # The symmetric containing range puts an exact-multiple constant at height/2.
     y_values = {pair.split(",")[1] for pair in result.points.split(" ")}
     assert y_values == {f"{height / 2.0:.2f}"}
     assert result.window_count == 2
@@ -658,7 +660,7 @@ def test_bpm_spark_flat_line() -> None:
 
 def test_bpm_spark_empty() -> None:
     """No bpm-bearing windows (or total_sec <= 0) yields empty points and None lo/hi."""
-    result = _bpm_spark([_fine_window(0, 0.0, 30.0, None)], 60.0, 1000.0, 120.0)
+    result = bpm_spark([_fine_window(0, 0.0, 30.0, None)], 60.0, 1000.0, 120.0)
     assert result.points == ""
     assert result.lo is None
     assert result.hi is None

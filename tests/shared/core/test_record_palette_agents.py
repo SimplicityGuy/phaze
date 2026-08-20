@@ -55,9 +55,9 @@ async def test_record_fragment_bare_and_scoped(client: AsyncClient, seed_file_wi
 
 @pytest.mark.asyncio
 async def test_record_renders_bpm_scale_labels(client: AsyncClient, seed_file_with_windows) -> None:  # type: ignore[no-untyped-def]
-    """quick 260707-c9o: the record view renders max/min BPM gutter labels (record.py passes bpm_lo/bpm_hi).
+    """The record view renders the timeline's containing rounded BPM bounds.
 
-    seed_file_with_windows seeds fine windows with bpm 128/129/130 → min 128 (bottom), max 130 (top).
+    seed_file_with_windows seeds fine windows with bpm 128/129/130 -> display bounds 120..130.
     """
     file, _result, _windows = await seed_file_with_windows()
     r = await client.get(f"/record/{file.id}", headers={"HX-Request": "true"})
@@ -65,8 +65,8 @@ async def test_record_renders_bpm_scale_labels(client: AsyncClient, seed_file_wi
     body = r.text
     assert "<polyline" in body
     assert "130" in body  # max BPM (top of the gutter)
-    assert "128" in body  # min BPM (bottom of the gutter)
-    assert 'aria-label="BPM range 128 to 130"' in body
+    assert "120" in body  # rounded minimum (bottom of the gutter)
+    assert 'aria-label="BPM range 120 to 130"' in body
 
 
 @pytest.mark.asyncio
