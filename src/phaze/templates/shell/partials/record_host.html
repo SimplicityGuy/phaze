@@ -25,6 +25,7 @@
 <div x-data="{
         open: false,
         opener: null,
+        requestedSection: null,
         // phaze-7yet: show() flips the panel visible synchronously (the Alpine `record:open`
         // dispatch always wins the race against the async htmx GET /record/{id}), so the target
         // #record-body still held whatever the PREVIOUS open left behind -- including live
@@ -35,6 +36,7 @@
         loaded: false,
         show(el) {
             this.opener = el || null;
+            this.requestedSection = el && el.dataset ? (el.dataset.recordSection || null) : null;
             this.loaded = false;
             this.open = true;
         },
@@ -75,6 +77,7 @@
         hide() {
             this.open = false;
             this.loaded = false;
+            this.requestedSection = null;
             const target = this.opener || document.getElementById('stage-workspace');
             this.opener = null;
             // Defer to after Alpine tears the panel down (see cmdk_modal.html): a
@@ -157,7 +160,13 @@
                                     let framesLeft = 120;
                                     const focusHeadingWhenShown = () => {
                                         if (!h || !h.isConnected) return;
-                                        if (body.getClientRects().length > 0) { h.focus(); return; }
+                                        if (body.getClientRects().length > 0) {
+                                            const requested = window.Alpine ? Alpine.$data(body).requestedSection : null;
+                                            const section = requested ? body.querySelector('#' + CSS.escape(requested)) : null;
+                                            h.focus({ preventScroll: !!section });
+                                            if (section) section.scrollIntoView({ block: 'start' });
+                                            return;
+                                        }
                                         if (framesLeft-- > 0) requestAnimationFrame(focusHeadingWhenShown);
                                     };
                                     focusHeadingWhenShown();"></div>

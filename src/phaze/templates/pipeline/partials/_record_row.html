@@ -1,0 +1,27 @@
+{# Canonical file-record activation attributes for table rows and compact file cards.
+
+   The opener owns the GET as well as the ``record:open`` dispatch: htmx fills the persistent
+   ``#record-body`` while Alpine makes its host visible and records the exact opener for Esc focus
+   return.  Keep the two halves together by using this macro instead of spelling either one alone.
+
+   A row may contain real controls (Details, retry, selection, disclosure, links).  Clicks from
+   those controls must remain theirs, so both htmx and Alpine apply the same interactive-descendant
+   guard.  Keyboard activation is deliberately ``event.target === this``: Enter on the row opens
+   the record; Enter on a nested control activates only that control.
+
+   ``section`` is a stable anchor in the shared file-record content.  It is carried as inert opener
+   data and consumed by record_host.html after the fragment is visible; it never changes the GET or
+   becomes a selector until the host escapes it with CSS.escape().
+#}
+{% macro attrs(file_id, label='', section='') -%}
+data-record-row
+hx-get="/record/{{ file_id }}"
+hx-target="#record-body"
+hx-swap="innerHTML"
+hx-trigger="click[!event.target.closest('a,button,input,select,textarea,summary,details,[role=button],[role=separator]')], keyup[key=='Enter'&&event.target===this]"
+tabindex="0"
+{% if label %}aria-label="Open details for {{ label }}"{% endif %}
+{% if section %}data-record-section="{{ section }}"{% endif %}
+@click="if (!$event.target.closest('a, button, input, select, textarea, summary, details, [role=button], [role=separator]')) $dispatch('record:open', { el: $el })"
+@keydown.enter="if ($event.target === $el) $dispatch('record:open', { el: $el })"
+{%- endmacro %}

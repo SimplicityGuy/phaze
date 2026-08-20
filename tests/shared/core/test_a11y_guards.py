@@ -246,7 +246,9 @@ def test_record_after_swap_waits_for_the_reveal_before_focusing_the_heading() ->
     the handler consults a visibility primitive) so the guard survives the wait being reshaped.
     """
     expr = _record_body_after_swap()
-    focus = re.search(r"\.focus\(\)", expr)
+    # The heading may suppress the browser's implicit scroll when the opener requested a stable
+    # in-record section; that lets the handler focus first and then scroll the requested anchor.
+    focus = re.search(r"\.focus\(", expr)
     assert focus, "the #record-body after-swap handler no longer focuses the record heading at all"
 
     depth = expr[: focus.start()].count("{") - expr[: focus.start()].count("}")

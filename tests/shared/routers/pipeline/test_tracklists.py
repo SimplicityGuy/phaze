@@ -117,11 +117,13 @@ async def test_prioritize_persists_flag_and_enqueues_one_bounded_slice(client: A
 
     response = await client.post(f"/pipeline/tracklists/{file_rec.id}/prioritize")
     assert response.status_code == 200
-    assert "Prioritize" not in response.text or "cancel" in response.text.lower()
+    assert "Lookup queued for this exact set" in response.text
+    assert "Look up now" not in response.text or "cancel" in response.text.lower()
 
     assert await load_flagged_file_ids(session) == {file_rec.id}
     assert {(q, t) for q, t, _ in capture} == {("controller", "drain_tracklists")}
     assert capture[0][2].get("limit") == 1
+    assert capture[0][2].get("target_file_ids") == [str(file_rec.id)]
 
 
 @pytest.mark.asyncio
@@ -221,7 +223,7 @@ async def test_prioritize_a_cache_suppressed_negative_flags_nothing_and_enqueues
     response = await client.post(f"/pipeline/tracklists/{file_rec.id}/prioritize")
     assert response.status_code == 200
     assert "Prioritized and queued" not in response.text
-    assert "will not queue a lookup" in response.text
+    assert "Look up again becomes available" in response.text
 
     assert await load_flagged_file_ids(session) == set()
     await drain_router_background_tasks()
@@ -253,6 +255,7 @@ async def test_refresh_rearms_the_drain_for_an_already_tracklisted_file(client: 
     await drain_router_background_tasks()
     assert {(q, t) for q, t, _ in capture} == {("controller", "drain_tracklists")}
     assert [c[2].get("limit") for c in capture] == [1]
+    assert [c[2].get("target_file_ids") for c in capture] == [[str(file_rec.id)]]
 
 
 @pytest.mark.asyncio
@@ -307,6 +310,7 @@ async def test_refresh_rearms_the_drain_for_a_propagated_files_button(client: As
     await drain_router_background_tasks()
     assert {(q, t) for q, t, _ in capture} == {("controller", "drain_tracklists")}
     assert [c[2].get("limit") for c in capture] == [1]
+    assert [c[2].get("target_file_ids") for c in capture] == [[str(duplicate_file.id)]]
 
 
 @pytest.mark.asyncio
@@ -359,7 +363,7 @@ async def test_unprioritize_clears_a_flag(client: AsyncClient, session: AsyncSes
 
     response = await client.post(f"/pipeline/tracklists/{file_rec.id}/unprioritize")
     assert response.status_code == 200
-    assert "Prioritize lookup" in response.text
+    assert "Look up now" in response.text
 
     assert await load_flagged_file_ids(session) == set()
 

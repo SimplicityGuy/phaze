@@ -300,8 +300,8 @@ def test_render_per_row_retry_only_on_failed_enrich_cell() -> None:
     assert "metadata-failed/retry" not in healthy
 
 
-def test_render_per_row_retry_is_isolated_by_inert_table_row() -> None:
-    """Retry is a native button inside a row with no competing click or keyboard activation."""
+def test_render_per_row_retry_is_isolated_from_record_row_activation() -> None:
+    """Retry remains native while the surrounding record row guards nested controls."""
     failed = _render_files_table(bucket="failed", active_stage="analyze", active_bucket="failed")
     row_start = failed.index('<tr id="files-row-1"')
     row_tag = failed[row_start : failed.index(">", row_start) + 1]
@@ -311,9 +311,12 @@ def test_render_per_row_retry_is_isolated_by_inert_table_row() -> None:
     button_tag = failed[tag_start : tag_end + 1]
 
     assert 'type="button"' in button_tag
-    assert "hx-trigger" not in row_tag
-    assert "@keydown" not in row_tag
-    assert "@click" not in row_tag
+    assert "hx-trigger" in row_tag
+    assert "event.target.closest" in row_tag
+    assert "event.target===this" in row_tag
+    assert "@keydown.enter" in row_tag
+    assert "$event.target === $el" in row_tag
+    assert "@click" in row_tag
 
 
 def test_render_per_row_retry_ack_target_survives_stage_oob_swap() -> None:
