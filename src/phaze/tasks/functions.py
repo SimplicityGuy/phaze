@@ -514,6 +514,56 @@ def _cleanup_process_file_scratch(payload: ProcessFilePayload, *, cleanup_scratc
         Path(extracted_audio_path).unlink(missing_ok=True)
 
 
+async def _analyze_and_publish(
+    api: PhazeAgentClient,
+    cfg: AgentSettings,
+    ctx: dict[str, Any],
+    payload: ProcessFilePayload,
+    read_path: str,
+    scratch_state: dict[str, str | None],
+) -> dict[str, Any]:
+    """The analyze -> validate -> PUT sequence, i.e. everything ``process_file``'s try block guards.
+
+    Split out of ``process_file`` (phaze-vu88k.7) with its steps in the same order and its early
+    returns intact: this is the happy path only. Every exception it raises -- ``CancelledError``
+    included -- propagates to ``process_file``, which owns the retry classification, the
+    ``cleanup_scratch`` decision and the terminal-failure ack. Nothing about the SAQ job's timeout,
+    heartbeat or retry semantics is visible from here, and none of it changed.
+    """
+    # CLOUDPIPE-03 integrity gate; see _verify_scratch_integrity's docstring. A push-mismatch
+    # short-circuit returns immediately; ``None`` means the bytes are trusted (or there is no
+    # pushed copy at all) and analysis proceeds.
+    early_return = await _verify_scratch_integrity(api, payload)
+    if early_return is not None:
+        return early_return
+
+    # Phase 101 (OBS-03): run extraction + analysis in the exec'd child via the shared driver,
+    # with the parent-side throttled progress bridge posting
+    # ctx["api_client"].post_analysis_progress mid-analysis (best-effort). See
+    # _extract_and_analyze's docstring for the concurrency-semaphore and terminal-error mapping.
+    outcome = await _extract_and_analyze(api, cfg, ctx, payload, read_path, scratch_state)
+    if outcome.terminal_response is not None:
+        return outcome.terminal_response
+    analysis = outcome.analysis
+
+    # phaze-by30: see _analysis_reports_zero_natural_windows's docstring. That leaves
+    # analyze_file free to return a false "success" (windows=[], all-None aggregates) which
+    # the completion PUT below would otherwise stamp as ``analysis_completed_at`` forever.
+    fine_total = analysis.get("fine_windows_total") if isinstance(analysis, dict) else None
+    coarse_total = analysis.get("coarse_windows_total") if isinstance(analysis, dict) else None
+    if _analysis_reports_zero_natural_windows(fine_total, coarse_total):
+        await _report_terminal_failure(
+            api,
+            payload.file_id,
+            AnalysisFailurePayload(reason="crashed", error="zero natural analysis windows (undecodable or zero-length audio)"),
+        )
+        return {"file_id": str(payload.file_id), "status": "analysis_failed"}
+
+    # PUT result via HTTP (D-26 idempotent upsert; CR-01 partial-PUT semantics preserved by exclude_unset)
+    await api.put_analysis(payload.file_id, _build_analysis_write_payload(analysis))
+    return {"file_id": str(payload.file_id), "status": "analyzed"}
+
+
 async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     """Run essentia analysis on a local file and post results via HTTP."""
     payload = ProcessFilePayload.model_validate(kwargs)
@@ -565,38 +615,7 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     # is an out-parameter rather than a field read only off its return value).
     scratch_state: dict[str, str | None] = {"extracted_audio_path": None}
     try:
-        # CLOUDPIPE-03 integrity gate; see _verify_scratch_integrity's docstring. A push-mismatch
-        # short-circuit returns immediately; ``None`` means the bytes are trusted (or there is no
-        # pushed copy at all) and analysis proceeds.
-        early_return = await _verify_scratch_integrity(api, payload)
-        if early_return is not None:
-            return early_return
-
-        # Phase 101 (OBS-03): run extraction + analysis in the exec'd child via the shared driver,
-        # with the parent-side throttled progress bridge posting
-        # ctx["api_client"].post_analysis_progress mid-analysis (best-effort). See
-        # _extract_and_analyze's docstring for the concurrency-semaphore and terminal-error mapping.
-        outcome = await _extract_and_analyze(api, cfg, ctx, payload, read_path, scratch_state)
-        if outcome.terminal_response is not None:
-            return outcome.terminal_response
-        analysis = outcome.analysis
-
-        # phaze-by30: see _analysis_reports_zero_natural_windows's docstring. That leaves
-        # analyze_file free to return a false "success" (windows=[], all-None aggregates) which
-        # the completion PUT below would otherwise stamp as ``analysis_completed_at`` forever.
-        fine_total = analysis.get("fine_windows_total") if isinstance(analysis, dict) else None
-        coarse_total = analysis.get("coarse_windows_total") if isinstance(analysis, dict) else None
-        if _analysis_reports_zero_natural_windows(fine_total, coarse_total):
-            await _report_terminal_failure(
-                api,
-                payload.file_id,
-                AnalysisFailurePayload(reason="crashed", error="zero natural analysis windows (undecodable or zero-length audio)"),
-            )
-            return {"file_id": str(payload.file_id), "status": "analysis_failed"}
-
-        # PUT result via HTTP (D-26 idempotent upsert; CR-01 partial-PUT semantics preserved by exclude_unset)
-        await api.put_analysis(payload.file_id, _build_analysis_write_payload(analysis))
-        return {"file_id": str(payload.file_id), "status": "analyzed"}
+        return await _analyze_and_publish(api, cfg, ctx, payload, read_path, scratch_state)
     except asyncio.CancelledError:
         # See _job_should_preserve_scratch_on_cancel's docstring (phaze-2cqx). ``ctx["job"]`` is
         # always present under a real worker; absent only in a bare test ctx, where the
