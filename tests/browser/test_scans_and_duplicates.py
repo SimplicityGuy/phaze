@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from phaze.models.scan_batch import ScanStatus
-from tests.browser.helpers import open_shell, settled
+from tests.browser.helpers import click_swap, open_shell, settled
 
 
 pytestmark = pytest.mark.browser
@@ -114,14 +114,25 @@ async def test_resolving_a_duplicate_group_oob_swaps_its_undo_toast_into_the_she
         "#toast-container is inside #stage-workspace, so the resolve response would not need an out-of-band swap to reach it"
     )
 
-    # Two-step: review stages the plan, confirm commits it.
-    await page.click(f"#dupe-group-{group_hash} button[type=submit]")
-    await page.wait_for_selector(f"#dupe-group-{group_hash} form[hx-post*='resolve']")
+    # Two-step: review stages the plan, confirm commits it. Each click goes through click_swap
+    # rather than a bare click + wait_for_selector/settled (phaze-boyl9): the confirm button below
+    # lives in a <form hx-post="...resolve"> that htmx has JUST swapped in, and DOM presence
+    # (what wait_for_selector proves) is not the same as htmx having finished PROCESSING that node
+    # -- attaching the hx-post interception happens in htmx's deferred settle phase, not the
+    # synchronous swap. A click that wins that race falls through to the browser's own native form
+    # submission (the <form> carries no method/action, so that's a plain GET back to the current
+    # URL with the hidden plan_id as a query param) instead of the intended POST, and the resolve
+    # never happens -- the toast this test waits for next then times out at 30s. Measured: this
+    # reproduced in 4/40 attempts (2/25 warm-shape repeats in one process, 2/15 cold-shape separate
+    # processes), every one with the identical signature (a stray `GET /s/dedupe?plan_id=...`
+    # where `POST .../resolve` should have been). click_swap waits for htmx:afterSettle -- the
+    # event that fires once htmx has actually finished processing the swapped-in content -- closing
+    # the window instead of racing it.
+    await click_swap(page, f"#dupe-group-{group_hash} button[type=submit]")
     plan = await page.locator(f"#dupe-group-{group_hash}").inner_text()
     assert "Archive 2 reviewed copies" in plan, f"the review step did not describe the plan it staged: {plan[:200]!r}"
 
-    await page.click(f"#dupe-group-{group_hash} button[type=submit]")
-    await settled(page)
+    await click_swap(page, f"#dupe-group-{group_hash} button[type=submit]")
 
     toasts = page.locator("#toast-container > *")
     await toasts.first.wait_for()
