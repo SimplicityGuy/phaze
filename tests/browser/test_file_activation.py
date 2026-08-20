@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -82,6 +83,155 @@ async def test_analyze_row_opens_after_a_filtered_htmx_swap_and_returns_focus(pa
         await page.click(f"{row} td:first-child")
     await _wait_for_record(page, target.id)
     await _close_and_expect_opener(page, row)
+
+
+async def test_analyze_files_view_load_trigger_does_not_clobber_a_later_filtered_row(page: Any, seed: Any) -> None:
+    """phaze-yzj7l: force the race the intermittent above only hit ~6% of the time.
+
+    THE DEFECT: analyze_workspace.html:94's ``#analyze-files-view`` carries
+    ``hx-get="/pipeline/analyze-files" hx-trigger="load"`` -- fired ONCE, when the shell first
+    renders the page. ``_analyze_files.html``'s filter form (plus its "Clear filter" link and
+    pager buttons) issues INDEPENDENT ``hx-get``s at the SAME target, with the SAME
+    ``hx-swap="innerHTML"`` and no ``hx-sync``. Nothing constrains DELIVERY order to match ISSUE
+    order: the load-trigger fetch is issued first but is not guaranteed to LAND first. If it is
+    still in flight (a cold DB pool, a slow query -- see the bead for the measured 16.2s vs
+    ~6.0s cold-boot outlier) when a filtered fetch issued later both lands AND is acted on -- the
+    operator sees the filtered row, clicks it, a drawer opens holding that exact ``<tr>`` -- the
+    stale load-trigger response can still arrive afterward. Its ``innerHTML`` swap is
+    unconditional: it replaces ``#analyze-files-view`` with the DEFAULT view regardless of what
+    is currently there, destroying the specific DOM node the drawer's ``opener`` points to (a
+    brand-new node with the same file, same selector, replaces it -- record_host.html's `hide()`
+    is why a mere `document.querySelector` re-check would miss this: it needs the SAME reference,
+    not a matching one).
+
+    Reproducing this naturally needs a genuinely slow cold boot (~6% of attempts, per phaze-39eiy's
+    corroboration batch) -- a clean 40-run sample has a 7.6% chance of happening with NO fix at
+    all, so stochastic evidence cannot carry this (bead AC5). This forces the exact ordering
+    instead: hold the load-trigger's response in flight via network interception, issue a second
+    request at the same target while it is held (mirroring the filter's own change-triggered
+    fetch, which is what races it in the wild), let the operator click the resulting row and open
+    the drawer, THEN release the held response. Verified in both directions on a git-diff-checked
+    template swap (mirrors phaze-39eiy's own verification method): fails at the assertion below
+    against the pre-fix templates (the held response lands and disconnects the opener), passes
+    against the fix (``hx-sync="#analyze-files-view:replace"`` mirrored across every trigger that
+    targets this container aborts whichever request is still in flight once a newer one for the
+    same target is underway, so the container only ever ends up reflecting the LATEST one).
+    """
+    target = await seed.file(filename="<set-01>.mp3")
+    await seed.analysis(target)
+
+    held: dict[str, Any] = {"event": asyncio.Event()}
+
+    async def hold_the_load_trigger_request(route: Any) -> None:
+        # The load-trigger's own fetch carries no query string; every filter/page/clear request
+        # carries at least `status=`. Only the former gets held.
+        if "status=" not in route.request.url:
+            held["route"] = route
+            held["event"].set()
+        else:
+            await route.continue_()
+
+    await page.route("**/pipeline/analyze-files*", hold_the_load_trigger_request)
+    await page.goto("/s/analyze", wait_until="domcontentloaded")
+    await page.wait_for_selector("#stage-workspace", state="attached")
+
+    # The load-trigger fetch is now held -- #analyze-files-view is still showing its "Loading
+    # files..." placeholder, and the filter form does not exist in the DOM yet (it ships as part
+    # of the very response being held). A real racing request at this point cannot come from the
+    # filter form for that reason; it is issued directly at the same target, from a plain,
+    # unrelated source element (document.body carries no hx-sync of its own), which is exactly
+    # what an uncoordinated hx-get from any OTHER element targeting this container looks like.
+    await asyncio.wait_for(held["event"].wait(), timeout=10)
+    row = f'#analyze-files-view tr[hx-get="/record/{target.id}"]'
+    await page.evaluate(
+        """() => new Promise(resolve => {
+            const el = document.getElementById('analyze-files-view');
+            document.body.addEventListener('htmx:afterSettle', function onSettle(evt) {
+                if (evt.detail && evt.detail.target === el) {
+                    document.body.removeEventListener('htmx:afterSettle', onSettle);
+                    resolve();
+                }
+            });
+            window.htmx.ajax('GET', '/pipeline/analyze-files?status=completed', {source: document.body, target: el, swap: 'innerHTML'});
+        })"""
+    )
+    assert await page.locator(row).count() == 1, "the second (filtered) request never rendered the target row"
+
+    # Capture a REFERENCE to this exact node -- not just its selector -- exactly like
+    # record_host.html's opener capture does ($event.detail.el). Re-querying by selector after
+    # the clobber would match a brand-new row for the same file and falsely read as unaffected.
+    await page.evaluate(f"window.__phazeOpener = document.querySelector('{row}')")
+    async with swap_settles(page):
+        await page.click(f"{row} td:first-child")
+    await _wait_for_record(page, target.id)
+
+    # NOW release the load-trigger's held response -- landing well after the filtered one, and
+    # well after the operator has already opened a record from a row it rendered.
+    await held["route"].continue_()
+    await page.wait_for_timeout(1000)
+
+    assert await page.evaluate("window.__phazeOpener.isConnected") is True, (
+        "the delayed load-trigger response disconnected the row the drawer's opener still points to"
+    )
+
+
+async def test_analyze_files_view_sync_favors_the_latest_of_two_real_form_triggers(page: Any, seed: Any) -> None:
+    """phaze-yzj7l: confirm hx-sync="replace" empirically in a SECOND pair -- not load-vs-anything.
+
+    The first test above proves the load-trigger fetch can no longer clobber a later filter
+    change. It exercises only one of the four triggers that now share
+    #analyze-files-view's hx-sync bucket (the div's own load trigger); this test exercises TWO
+    of the other three -- the "Clear filter" link and the filter ``<select>`` -- to confirm the
+    coordination is the general "latest ISSUED request wins" contract the fix claims, not a
+    load-specific special case.
+
+    Sequence: apply a filter (so "Clear filter" exists), then hold ITS response in flight, then
+    change the filter to a DIFFERENT value while it is held. The later action (the filter change)
+    must win even though the earlier one (Clear filter) is released afterward and would, without
+    coordination, be the LAST response to physically land and therefore overwrite it.
+    """
+    target = await seed.file(filename="<set-01>.mp3")
+    await seed.analysis(target)
+
+    await open_shell(page, "/s/analyze")
+    await page.wait_for_selector(f'#analyze-files-view tr[hx-get="/record/{target.id}"]')
+
+    async with swap_settles(page):
+        await page.select_option("#analyze-filter-status", "completed")
+    assert await page.locator('button:has-text("Clear filter")').count() == 1
+
+    held: dict[str, Any] = {"event": asyncio.Event()}
+
+    async def hold_the_clear_filter_request(route: Any) -> None:
+        # Clear filter's own request carries no `status=`; the second select changes below
+        # always do. Only the former gets held.
+        if "status=" not in route.request.url:
+            held["route"] = route
+            held["event"].set()
+        else:
+            await route.continue_()
+
+    await page.route("**/pipeline/analyze-files*", hold_the_clear_filter_request)
+    await page.click('button:has-text("Clear filter")')
+    await asyncio.wait_for(held["event"].wait(), timeout=10)
+
+    # While Clear filter's request is held in flight, issue the LATER action: change the filter
+    # to a different value. Its hx-sync="#analyze-files-view:replace" should abort the held
+    # request and become the one that lands.
+    async with swap_settles(page):
+        await page.select_option("#analyze-filter-status", "failed")
+    assert await page.evaluate("document.getElementById('analyze-filter-status').value") == "failed", (
+        "the later filter change did not win over the earlier, still-in-flight Clear filter request"
+    )
+
+    # NOW release Clear filter's held response -- landing well after the filter change already
+    # settled. Without coordination this is exactly what would revert the view.
+    await held["route"].continue_()
+    await page.wait_for_timeout(1000)
+
+    assert await page.evaluate("document.getElementById('analyze-filter-status').value") == "failed", (
+        "the earlier Clear filter request's delayed response overwrote the later filter change"
+    )
 
 
 async def test_tracklist_rows_distinguish_matched_files_from_candidates_after_paging(page: Any, seed: Any) -> None:
