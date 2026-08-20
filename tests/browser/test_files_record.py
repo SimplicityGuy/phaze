@@ -124,6 +124,27 @@ async def test_opening_a_file_record_names_that_file(page: Any, seed: Any) -> No
     assert target.current_path in await page.locator("#record-body").inner_text(), "the record shows a different file than the row that opened it"
 
 
+async def test_record_drawer_opens_the_same_file_as_a_full_page(page: Any, seed: Any) -> None:
+    """The drawer's ordinary link reaches an addressable page with stable section anchors."""
+    target = await seed.file(filename="<track-01>.mp3")
+
+    await open_shell(page, "/s/files")
+    await settled(page)
+    await page.click(_details_button(target.id))
+    await _wait_for_record(page)
+
+    full_page_link = page.locator(f'#record-body a[href="/files/{target.id}"]')
+    assert await full_page_link.inner_text() == "Open full page"
+    await full_page_link.click()
+    await page.wait_for_url(f"**/files/{target.id}")
+
+    assert await page.locator(f'[data-file-id="{target.id}"]').is_visible()
+    assert target.current_path in await page.locator("main").inner_text()
+    for anchor in ("analysis", "tracklist", "history"):
+        assert await page.locator(f"#{anchor}").count() == 1
+        assert await page.locator(f'a[href="#{anchor}"]').count() == 1
+
+
 async def test_opening_a_record_moves_focus_into_the_dialog(page: Any, seed: Any) -> None:
     """A modal dialog must take the keyboard with it when it opens.
 
