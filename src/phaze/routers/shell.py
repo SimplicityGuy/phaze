@@ -324,13 +324,24 @@ async def _analyze_file_count(session: AsyncSession) -> int:
     return int(result.scalar() or 0)
 
 
+def _stage_count(bucket: dict[str, int | None], key: str) -> int:
+    """One stage-progress bucket count, treating a missing key or a NULL value alike as 0.
+
+    The buckets come straight from the stage-progress aggregates, where a stage with no rows
+    yields NULL rather than 0 and an absent stage yields no key at all. Both mean "none", so the
+    coercion is the same everywhere -- and repeating ``int(bucket.get(k) or 0)`` at every read
+    site is how the two spellings drift apart.
+    """
+    return int(bucket.get(key) or 0)
+
+
 def _summary_stage_status(stage: dict[str, int | None]) -> dict[str, str | bool]:
     """Map an authoritative stage-progress bucket to the shared status vocabulary."""
-    total = int(stage.get("total") or 0)
-    done = int(stage.get("done") or 0)
-    skipped = int(stage.get("skipped") or 0)
-    failed = int(stage.get("failed") or 0)
-    in_flight = int(stage.get("in_flight") or 0)
+    total = _stage_count(stage, "total")
+    done = _stage_count(stage, "done")
+    skipped = _stage_count(stage, "skipped")
+    failed = _stage_count(stage, "failed")
+    in_flight = _stage_count(stage, "in_flight")
     if failed:
         return {"label": "failed", "tone": "danger", "icon": "✕", "pulse": False}
     if in_flight:
@@ -372,12 +383,12 @@ class SummaryOverviewInputs:
 
 def _stage_ready_to_start_work(bucket: dict[str, int | None], paused: bool) -> bool:
     """True when a stage has queued work, is not paused, and nothing is in flight yet."""
-    return bool(int(bucket.get("not_started") or 0) and not paused and not int(bucket.get("in_flight") or 0))
+    return bool(_stage_count(bucket, "not_started") and not paused and not _stage_count(bucket, "in_flight"))
 
 
 def _stage_paused_with_pending_work(bucket: dict[str, int | None], paused: bool) -> bool:
     """True when a paused stage still has not-started or in-flight work waiting behind it."""
-    return bool(paused and (int(bucket.get("not_started") or 0) or int(bucket.get("in_flight") or 0)))
+    return bool(paused and (_stage_count(bucket, "not_started") or _stage_count(bucket, "in_flight")))
 
 
 def _flow_readiness_status(count: int, ready_label: str) -> dict[str, str | bool]:
@@ -459,8 +470,8 @@ def _summary_failure_totals(metadata: dict[str, int | None], analyze: dict[str, 
     """Return ``(metadata_failed, analyze_failed, orphan_total)`` -- shared by the attention
     queue and the ``is_degraded`` flag so neither can drift from the other's count.
     """
-    metadata_failed = int(metadata.get("failed") or 0)
-    analyze_failed = int(analyze.get("failed") or 0)
+    metadata_failed = _stage_count(metadata, "failed")
+    analyze_failed = _stage_count(analyze, "failed")
     orphan_total = int(orphan_counts.get("metadata", 0)) + int(orphan_counts.get("analyze", 0))
     return metadata_failed, analyze_failed, orphan_total
 
@@ -541,7 +552,7 @@ def _capacity_attention_items(
                 _attention_item(
                     priority,
                     f"{stage_label} is paused",
-                    f"{int(stage_bucket.get('not_started') or 0)} not started; {int(stage_bucket.get('in_flight') or 0)} still marked in flight.",
+                    f"{_stage_count(stage_bucket, 'not_started')} not started; {_stage_count(stage_bucket, 'in_flight')} still marked in flight.",
                     f"/s/{stage_name}",
                     f"Open {stage_label}",
                 )
@@ -639,8 +650,8 @@ def _recommended_default(
     """The fallback recommendation chain once nothing above needs attention: in-flight work,
     then propose/review/execute in pipeline order, then the caught-up terminal state.
     """
-    if int(metadata.get("in_flight") or 0) or int(analyze.get("in_flight") or 0):
-        active_stage = "metadata" if int(metadata.get("in_flight") or 0) else "analyze"
+    if _stage_count(metadata, "in_flight") or _stage_count(analyze, "in_flight"):
+        active_stage = "metadata" if _stage_count(metadata, "in_flight") else "analyze"
         return {
             "title": "Enrichment is in progress",
             "detail": "Current work is already running; monitor it before starting the next dependent stage.",
@@ -908,6 +919,24 @@ async def build_propose_list_context(request: Request, session: AsyncSession) ->
     }
 
 
+def _parse_selected_ids(raw_value: str, limit: int = 100) -> list[str]:
+    """The valid UUIDs in a comma-separated ``selected`` query value, capped at ``limit``.
+
+    Unparseable entries are skipped rather than rejected -- the value round-trips through URLs the
+    operator can edit, and one bad id should not discard a whole selection. The cap bounds what a
+    hand-edited URL can push into the downstream IN () clause.
+    """
+    selected: list[str] = []
+    for raw in raw_value.split(","):
+        try:
+            selected.append(str(uuid.UUID(raw)))
+        except ValueError:
+            continue
+        if len(selected) >= limit:
+            break
+    return selected
+
+
 async def build_changes_review_context(request: Request, session: AsyncSession) -> dict[str, Any]:
     """Build the canonical review list from URL-borne filter, page, and selection state."""
     view = ListViewState.from_request(request, status="needs_review", sort="confidence")
@@ -915,14 +944,7 @@ async def build_changes_review_context(request: Request, session: AsyncSession) 
     if view.status not in allowed_statuses:
         view = view.with_(status="needs_review")
 
-    selected: list[str] = []
-    for raw in request.query_params.get("selected", "").split(","):
-        try:
-            selected.append(str(uuid.UUID(raw)))
-        except ValueError:
-            continue
-        if len(selected) >= 100:
-            break
+    selected = _parse_selected_ids(request.query_params.get("selected", ""))
 
     proposals = await get_changes_review_page(
         session,

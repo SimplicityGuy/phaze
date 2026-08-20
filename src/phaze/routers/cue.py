@@ -8,6 +8,7 @@ no bulk-generate control. Both were deleted; ``GET /cue/`` now only resolves the
 into the shell (SHELL-05).
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import uuid
@@ -129,30 +130,12 @@ async def generate_cue(
             return _cue_stale_toast_response(request, "Tracklist not found -- it may have been removed.")
         return HTMLResponse(content="Tracklist not found", status_code=404)
 
-    # Validate the file is applied (READ-05/D-01: an executed proposal exists, NOT files.state).
-    if file_record is None or not await is_applied(session, file_record.id):
-        toast_msg = "File must be executed before generating a CUE sheet. Run the pipeline to move the file to its destination."
-        return await _render_generate_error(request, session, tracklist, file_record, toast_msg)
+    resolved = await _resolve_generate_target(request, session, tracklist, file_record, version_id)
+    if isinstance(resolved, HTMLResponse):
+        return resolved
+    file_record = resolved.file_record
 
-    # Validate tracklist is approved
-    if tracklist.status != "approved":
-        toast_msg = "Tracklist must be approved before generating a CUE sheet."
-        return await _render_generate_error(request, session, tracklist, file_record, toast_msg)
-
-    # Build CUE tracks
-    if not tracklist.latest_version_id:
-        toast_msg = "No tracks have timestamps. CUE sheets require per-track timing data from the tracklist source."
-        return await _render_generate_error(request, session, tracklist, file_record, toast_msg)
-
-    if version_id is not None and version_id != tracklist.latest_version_id:
-        # phaze-ce65s: a background re-scrape (tracklist_drain._append_version) moved
-        # latest_version_id between the workspace render and this click -- the content the
-        # operator reviewed is not the content `_build_cue_tracks` would build now. Refuse the
-        # write (nothing is written without review, the same guarantee phaze-p35v enforced for
-        # proposals) and hand back a FRESH preview of the current version instead.
-        return await _render_stale_version_response(request, session, tracklist, file_record, tracklist.latest_version_id)
-
-    cue_tracks = await _build_cue_tracks(session, tracklist.latest_version_id)
+    cue_tracks = await _build_cue_tracks(session, resolved.version_id)
 
     # Validate at least one track has timestamps
     if not any(t.timestamp_seconds is not None for t in cue_tracks):
@@ -193,6 +176,83 @@ async def generate_cue(
         "The file server writes it next to the audio file, versioning it if one already exists."
     )
 
+    return await _render_generate_success(request, session, tracklist, file_record, audio_path, content, toast_msg)
+
+
+async def _get_track_count(session: AsyncSession, version_id: uuid.UUID | None) -> int:
+    """Count tracks for a tracklist version (0 if there is none)."""
+    if not version_id:
+        return 0
+    count_result = await session.execute(select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == version_id))
+    return count_result.scalar() or 0
+
+
+@dataclass(frozen=True, slots=True)
+class _GenerateTarget:
+    """The validated subject of a ``/generate``: an applied file and the version under review."""
+
+    file_record: FileRecord
+    version_id: uuid.UUID
+
+
+async def _resolve_generate_target(
+    request: Request,
+    session: AsyncSession,
+    tracklist: Tracklist,
+    file_record: FileRecord | None,
+    version_id: uuid.UUID | None,
+) -> _GenerateTarget | HTMLResponse:
+    """The applied file + reviewed version a ``/generate`` may write for, or the refusal response.
+
+    Three data-gap gates (file not executed, tracklist not approved, no version) plus the
+    phaze-ce65s stale-version gate. Each refusal returns the surface the click targeted, carrying
+    the reason as a toast -- never a bare non-2xx, which htmx would not swap.
+
+    Returning the resolved pair rather than a bare None is what keeps ``file_record`` and
+    ``latest_version_id`` NARROWED for the caller: these gates are the only proof either is
+    non-None, so handing back just "no refusal" would silently discard that proof.
+    """
+    # Validate the file is applied (READ-05/D-01: an executed proposal exists, NOT files.state).
+    if file_record is None or not await is_applied(session, file_record.id):
+        toast_msg = "File must be executed before generating a CUE sheet. Run the pipeline to move the file to its destination."
+        return await _render_generate_error(request, session, tracklist, file_record, toast_msg)
+
+    # Validate tracklist is approved
+    if tracklist.status != "approved":
+        toast_msg = "Tracklist must be approved before generating a CUE sheet."
+        return await _render_generate_error(request, session, tracklist, file_record, toast_msg)
+
+    # Build CUE tracks
+    if not tracklist.latest_version_id:
+        toast_msg = "No tracks have timestamps. CUE sheets require per-track timing data from the tracklist source."
+        return await _render_generate_error(request, session, tracklist, file_record, toast_msg)
+
+    if version_id is not None and version_id != tracklist.latest_version_id:
+        # phaze-ce65s: a background re-scrape (tracklist_drain._append_version) moved
+        # latest_version_id between the workspace render and this click -- the content the
+        # operator reviewed is not the content `_build_cue_tracks` would build now. Refuse the
+        # write (nothing is written without review, the same guarantee phaze-p35v enforced for
+        # proposals) and hand back a FRESH preview of the current version instead.
+        return await _render_stale_version_response(request, session, tracklist, file_record, tracklist.latest_version_id)
+
+    return _GenerateTarget(file_record=file_record, version_id=tracklist.latest_version_id)
+
+
+async def _render_generate_success(
+    request: Request,
+    session: AsyncSession,
+    tracklist: Tracklist,
+    file_record: FileRecord,
+    audio_path: Path,
+    content: str,
+    toast_msg: str,
+) -> HTMLResponse:
+    """Render the surface a SUCCESSFUL ``/generate`` targeted, with the confirmation toast.
+
+    Mirrors :func:`_render_generate_error`'s ``cue-card-`` / legacy split (phaze-js16): the v7
+    workspace card re-renders ``_cue_preview.html`` with a fresh in-memory preview of the CUE
+    now on its way to disk, while the legacy row surface keeps ``cue_row.html``.
+    """
     # Return updated row + OOB toast
     track_count = await _get_track_count(session, tracklist.latest_version_id)
 
@@ -246,12 +306,24 @@ async def generate_cue(
     )
 
 
-async def _get_track_count(session: AsyncSession, version_id: uuid.UUID | None) -> int:
-    """Count tracks for a tracklist version (0 if there is none)."""
-    if not version_id:
-        return 0
-    count_result = await session.execute(select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == version_id))
-    return count_result.scalar() or 0
+async def _eligible_cue_text(session: AsyncSession, tracklist: Tracklist, file_record: FileRecord | None) -> str | None:
+    """The rendered CUE text when ``tracklist`` is genuinely eligible right now, else None.
+
+    This is the single-tracklist mirror of the eligibility rule in
+    ``services.review.get_cue_review_cards``: a card is eligible only when the file exists and
+    is applied, the tracklist is approved and versioned, and at least one track carries a
+    timestamp. Returning the TEXT rather than a bool keeps "is it eligible" and "what would we
+    render" from drifting apart -- they are the same computation, and a card that claims
+    eligibility with no text is the stale-APPROVE-button bug phaze-2w49 fixed.
+    """
+    if file_record is None or tracklist.status != "approved" or not tracklist.latest_version_id:
+        return None
+    if not await is_applied(session, file_record.id):
+        return None
+    cue_tracks = await _build_cue_tracks(session, tracklist.latest_version_id)
+    if not any(t.timestamp_seconds is not None for t in cue_tracks):
+        return None
+    return generate_cue_content(Path(file_record.current_path).name, file_record.file_type, cue_tracks)
 
 
 async def _build_generate_error_card(
@@ -267,13 +339,8 @@ async def _build_generate_error_card(
     while a data-gap branch (not applied/approved/timestamped) renders the honest gated state
     instead of a stale APPROVE button.
     """
-    eligible = False
-    cue_text: str | None = None
-    if file_record is not None and tracklist.status == "approved" and tracklist.latest_version_id and await is_applied(session, file_record.id):
-        cue_tracks = await _build_cue_tracks(session, tracklist.latest_version_id)
-        if any(t.timestamp_seconds is not None for t in cue_tracks):
-            eligible = True
-            cue_text = generate_cue_content(Path(file_record.current_path).name, file_record.file_type, cue_tracks)
+    cue_text = await _eligible_cue_text(session, tracklist, file_record)
+    eligible = cue_text is not None
 
     return {
         "tracklist_id": tracklist.id,
