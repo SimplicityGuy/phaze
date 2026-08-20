@@ -89,7 +89,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from phaze.enums.execution import ExecutionStatus
 from phaze.models.agent import Agent
-from phaze.models.analysis import AnalysisResult
+from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
@@ -294,6 +294,60 @@ class Seeder:
         self.session.add(record)
         await self.session.commit()
         return record
+
+    async def analysis_windows(
+        self,
+        file: FileRecord,
+        *,
+        fine_count: int = 24,
+        coarse_count: int = 6,
+        fine_window_sec: float = 30.0,
+    ) -> list[AnalysisWindow]:
+        """Attach exhaustive synthetic fine/coarse windows for timeline browser journeys."""
+        total_sec = fine_count * fine_window_sec
+        result = AnalysisResult(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            bpm=128.0,
+            musical_key="Am",
+            mood="focused",
+            style="electronic",
+            fine_windows_analyzed=fine_count,
+            fine_windows_total=fine_count,
+            coarse_windows_analyzed=coarse_count,
+            coarse_windows_total=coarse_count,
+            analysis_completed_at=datetime.now(UTC),
+        )
+        windows = [
+            AnalysisWindow(
+                id=uuid.uuid4(),
+                file_id=file.id,
+                tier="fine",
+                window_index=index,
+                start_sec=index * fine_window_sec,
+                end_sec=(index + 1) * fine_window_sec,
+                bpm=126.0 + (index % 5),
+                musical_key="Am" if index % 2 == 0 else "C",
+            )
+            for index in range(fine_count)
+        ]
+        coarse_window_sec = total_sec / coarse_count
+        windows.extend(
+            AnalysisWindow(
+                id=uuid.uuid4(),
+                file_id=file.id,
+                tier="coarse",
+                window_index=index,
+                start_sec=index * coarse_window_sec,
+                end_sec=(index + 1) * coarse_window_sec,
+                mood="focused" if index % 2 == 0 else "energetic",
+                style="electronic",
+            )
+            for index in range(coarse_count)
+        )
+        self.session.add_all([result, *windows])
+        await self.session.commit()
+        return windows
 
     # --- proposals ------------------------------------------------------------------------
 

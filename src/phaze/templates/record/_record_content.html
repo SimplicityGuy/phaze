@@ -110,7 +110,7 @@
            is wrapped in a table row whose id its own reveal script keys on). #}
         <section id="analysis" class="scroll-mt-4 rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel" aria-labelledby="analysis-heading">
             <p id="analysis-heading" class="{{ _eyebrow }} mb-3">Windowed analysis · multi-lane timeline</p>
-            <div class="relative overflow-x-auto"><table class="w-full"><tbody><tr id="timeline-{{ file.id }}">
+            <div class="relative min-w-0 overflow-x-auto"><table class="w-full table-fixed"><tbody><tr id="timeline-{{ file.id }}">
                 {% include "proposals/partials/analysis_timeline.html" %}
             </tr></tbody></table></div>
         </section>

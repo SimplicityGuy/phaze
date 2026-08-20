@@ -135,7 +135,9 @@ async def test_record_drawer_opens_the_same_file_as_a_full_page(page: Any, seed:
     await _wait_for_record(page)
 
     full_page_link = page.locator(f'#record-body a[href="/files/{target.id}"]')
-    assert await full_page_link.inner_text() == "Open full page"
+    # ``inner_text`` applies the link's intentional uppercase text-transform; the DOM label is the
+    # stable product copy this assertion owns.
+    assert (await full_page_link.text_content() or "").strip() == "Open full page"
     await full_page_link.click()
     await page.wait_for_url(f"**/files/{target.id}")
 

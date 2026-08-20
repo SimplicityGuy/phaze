@@ -35,8 +35,8 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog
-from phaze.routers.proposals import TIMELINE_H, TIMELINE_W, _bpm_spark, _ribbons
 from phaze.services.agent_liveness import non_local_backend_kinds
+from phaze.services.analysis_timeline import build_analysis_timeline_context
 from phaze.services.pipeline import derive_file_lane, get_file_orphan_details, get_file_stage_buckets
 from phaze.services.tracklist_priority import get_file_tracklist_review
 from phaze.web.static import static_asset_url
@@ -87,9 +87,6 @@ async def build_file_record_context(
     # Windowed timeline -- mirror proposals.proposal_timeline (T-31-06-02 file_id scoping).
     windows_stmt = select(AnalysisWindow).where(AnalysisWindow.file_id == file_id).order_by(AnalysisWindow.tier, AnalysisWindow.window_index)
     windows = list((await session.execute(windows_stmt)).scalars().all())
-    fine = [w for w in windows if w.tier == "fine"]
-    coarse = [w for w in windows if w.tier == "coarse"]
-    total_sec = max((w.end_sec for w in windows), default=0.0)
     analysis = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
 
     # Pending approvals for THIS file -- reuse the Phase 60 approve/edit/undo routes verbatim.
@@ -179,22 +176,12 @@ async def build_file_record_context(
     kinds = non_local_backend_kinds(type_cast("ControlSettings", get_settings()))
     lane, lane_kind = derive_file_lane(cloud_job.id if cloud_job else None, cloud_job.backend_id if cloud_job else None, kinds)
 
-    spark = _bpm_spark(fine, total_sec, TIMELINE_W, TIMELINE_H)
     return {
         "file": file,
         "stage_buckets": stage_buckets,
         "analysis": analysis,
         "file_id": file_id,
-        "has_windows": bool(windows),
-        "total_sec": total_sec,
-        "timeline_w": TIMELINE_W,
-        "timeline_h": TIMELINE_H,
-        "bpm_points": spark.points,
-        "bpm_lo": spark.lo,
-        "bpm_hi": spark.hi,
-        "key_ribbons": _ribbons(fine, "musical_key", total_sec),
-        "mood_ribbons": _ribbons(coarse, "mood", total_sec),
-        "style_ribbons": _ribbons(coarse, "style", total_sec),
+        **build_analysis_timeline_context(windows),
         "pending_rows": pending_rows,
         "identity": identity,
         "history": history,
