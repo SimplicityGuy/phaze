@@ -38,8 +38,12 @@
 
     {% if just_queued %}
     <p class="mb-2 text-sm text-info ">
-        Prioritized and queued -- a lookup has been dispatched, but this file's own attempt has not run yet.
-        Reopen this record after it does to see the result.
+        Lookup queued for this exact set. It will run in the provider-safe background drain; no
+        1001Tracklists request was made by this page.
+    </p>
+    {% elif review.flagged and review.tracklist is none %}
+    <p class="mb-2 text-sm text-info ">
+        Exact-set lookup queued. The last persisted result remains visible below until the background drain records a new outcome.
     </p>
     {% endif %}
 
@@ -76,6 +80,28 @@
         </p>
         {% endif %}
 
+        <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-4">
+            <div>
+                <dt class="text-muted ">Set artist</dt>
+                <dd class="mt-0.5 text-gray-900 dark:text-gray-200">{{ review.tracklist.artist or '—' }}</dd>
+            </div>
+            <div>
+                <dt class="text-muted ">Set / event</dt>
+                <dd class="mt-0.5 text-gray-900 dark:text-gray-200">{{ review.tracklist.event or '—' }}</dd>
+            </div>
+            <div>
+                <dt class="text-muted ">Date</dt>
+                <dd class="mt-0.5 text-gray-900 dark:text-gray-200">{{ review.tracklist.date.isoformat() if review.tracklist.date else '—' }}</dd>
+            </div>
+            <div>
+                <dt class="text-muted ">Latest version</dt>
+                <dd class="mt-0.5 text-gray-900 dark:text-gray-200">
+                    {{ review.tracks | length }} track{% if review.tracks | length != 1 %}s{% endif %}
+                    {% if review.latest_version %} · scraped {{ review.latest_version.scraped_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}
+                </dd>
+            </div>
+        </dl>
+
         {% if review.tracks %}
         <div class="relative mt-3 overflow-x-auto">
             <table class="w-full text-left text-xs">
@@ -110,6 +136,7 @@
 
     {% elif review.cache_entry %}
         {# STATE 2 -- attempted, no tracklist. Definitive vs transient must stay visibly distinct. #}
+        <p class="mb-2 text-sm font-medium text-gray-900 dark:text-gray-200">No matched 1001Tracklists tracklist yet.</p>
         {% set label, color, explain = _outcome_labels.get(review.cache_entry.outcome, (review.cache_entry.outcome, 'text-gray-700 bg-gray-100 dark:text-gray-300 dark:bg-white/5', '')) %}
         <span class="{{ _badge }} {{ color }}">{{ label }}</span>
         {% if review.cache_entry.result_confidence is not none %}
@@ -125,15 +152,15 @@
         {% if not review.actionable %}
             {% if review.cache_decision.value == 'suppressed_negative' %}
         <p class="mt-2 text-xs font-medium text-warn ">
-            Suppressed until {{ review.cache_entry.expires_at.strftime('%Y-%m-%d %H:%M') if review.cache_entry.expires_at else 'unknown' }} (definitive-negative TTL) -- prioritizing this file will not queue a lookup until then.
+            Suppressed until {{ review.cache_entry.expires_at.strftime('%Y-%m-%d %H:%M') if review.cache_entry.expires_at else 'unknown' }} (definitive-negative TTL) -- Look up again becomes available at that time.
         </p>
             {% elif review.cache_decision.value == 'backoff' %}
         <p class="mt-2 text-xs font-medium text-warn ">
-            In backoff until {{ review.cache_entry.expires_at.strftime('%Y-%m-%d %H:%M') if review.cache_entry.expires_at else 'unknown' }} after a transient failure -- it will retry automatically; prioritizing it now would not queue a lookup.
+            In backoff until {{ review.cache_entry.expires_at.strftime('%Y-%m-%d %H:%M') if review.cache_entry.expires_at else 'unknown' }} after a transient failure -- Look up again becomes available at that time.
         </p>
             {% elif review.cache_decision.value == 'transient_exhausted' %}
         <p class="mt-2 text-xs font-medium text-danger ">
-            Parked after repeated transient failures -- needs a human look. Prioritizing this file will not queue a lookup.
+            Parked after repeated transient failures -- needs a human look before it can be retried.
         </p>
             {% endif %}
         {% endif %}
@@ -143,12 +170,14 @@
            scraped tracklists row (embedded tags or a .cue companion). Never "not yet looked up"
            -- this file will never be looked up automatically, and Prioritize would spend a live
            request on an unrelated set while doing nothing for this one. #}
+        <p class="mb-2 text-sm font-medium text-gray-900 dark:text-gray-200">No matched 1001Tracklists tracklist.</p>
         <p class="text-sm text-muted ">
             Already has track data from a {{ review.answered_elsewhere }} -- excluded from the drain queue.
         </p>
     {% else %}
         {# STATE 3b -- never looked up, and nothing else excludes it either. #}
-        <p class="text-sm text-muted ">Not yet looked up.</p>
+        <p class="mb-2 text-sm font-medium text-gray-900 dark:text-gray-200">No matched 1001Tracklists tracklist yet.</p>
+        <p class="text-sm text-muted ">{% if review.flagged %}Queued; no lookup result has been recorded yet.{% else %}Not yet looked up.{% endif %}</p>
         {% if not review.eligible %}
         <p class="mt-1 text-xs text-muted ">
             Not classified as a live set{% if review.classification_class %} (reads as {{ review.classification_class.value }}){% endif %} --
@@ -187,7 +216,7 @@
                 hx-post="/pipeline/tracklists/{{ file_id }}/unprioritize" hx-target="#tracklist-review-{{ file_id }}" hx-swap="innerHTML"
                 aria-label="Cancel prioritized lookup for this file"
                 class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500">
-            Priority queued · cancel
+            Lookup queued · cancel
         </button>
         {% if not review.actionable %}
         {# phaze-z8xq7: an existing flag on a cache-suppressed set is inert -- it will not enter
@@ -200,10 +229,10 @@
         {% elif review.actionable %}
         <button type="button"
                 hx-post="/pipeline/tracklists/{{ file_id }}/prioritize" hx-target="#tracklist-review-{{ file_id }}" hx-swap="innerHTML"
-                hx-confirm="Queue a prioritized 1001Tracklists lookup for this file?"
-                aria-label="Prioritize a 1001Tracklists lookup for this file"
+                hx-confirm="Queue an exact-set 1001Tracklists lookup for this file?"
+                aria-label="{% if review.cache_entry %}Look up this file again on 1001Tracklists{% else %}Look up this file now on 1001Tracklists{% endif %}"
                 class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500">
-            Prioritize lookup
+            {% if review.cache_entry %}Look up again{% else %}Look up now{% endif %}
         </button>
         {% endif %}
     </div>

@@ -14,6 +14,7 @@ focused, and dismissible back to where the operator was.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import pytest
@@ -143,6 +144,61 @@ async def test_record_drawer_opens_the_same_file_as_a_full_page(page: Any, seed:
     for anchor in ("analysis", "tracklist", "history"):
         assert await page.locator(f"#{anchor}").count() == 1
         assert await page.locator(f'a[href="#{anchor}"]').count() == 1
+
+
+async def test_record_drawer_and_full_page_show_the_same_complete_latest_tracklist(page: Any, seed: Any) -> None:
+    """The one shared record partial keeps track order and provenance identical in both views."""
+    from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+
+    target = await seed.file(filename="<set-01>.mp3")
+    tracklist = Tracklist(
+        external_id="synthetic-browser-set",
+        source_url="https://example.test/tracklist",
+        file_id=target.id,
+        match_confidence=94,
+        artist="Synthetic Artist",
+        event="Synthetic Festival",
+        date=date(2026, 8, 1),
+    )
+    seed.session.add(tracklist)
+    await seed.session.flush()
+    version = TracklistVersion(tracklist_id=tracklist.id, version_number=1)
+    seed.session.add(version)
+    await seed.session.flush()
+    seed.session.add_all(
+        [
+            TracklistTrack(version_id=version.id, position=1, timestamp="00:00", artist="First Artist", title="Opening Track", label="First Label"),
+            TracklistTrack(
+                version_id=version.id,
+                position=2,
+                timestamp="04:32",
+                artist="Second Artist",
+                title="Closing Track",
+                label="Second Label",
+                is_mashup=True,
+                remix_info="Synthetic Remix",
+            ),
+        ]
+    )
+    tracklist.latest_version_id = version.id
+    await seed.session.commit()
+
+    await open_shell(page, "/s/files")
+    await settled(page)
+    await page.click(_details_button(target.id))
+    await _wait_for_record(page)
+
+    drawer_text = await page.locator("#record-body #tracklist").inner_text()
+    assert "Scraped from 1001Tracklists" in drawer_text
+    assert "match confidence 94" in drawer_text
+    assert "2 tracks" in drawer_text
+    assert drawer_text.index("Opening Track") < drawer_text.index("Closing Track")
+    assert all(value in drawer_text for value in ("00:00", "04:32", "mashup", "Synthetic Remix", "Second Label"))
+
+    await page.locator(f'#record-body a[href="/files/{target.id}"]').click()
+    await page.wait_for_url(f"**/files/{target.id}")
+    page_text = await page.locator("main #tracklist").inner_text()
+    assert page_text == drawer_text
 
 
 async def test_opening_a_record_moves_focus_into_the_dialog(page: Any, seed: Any) -> None:

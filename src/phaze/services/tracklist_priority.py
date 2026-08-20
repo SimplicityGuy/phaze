@@ -56,7 +56,7 @@ from phaze.enums.tracklist_candidate import CacheDecision, CandidateClass
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.metadata import FileMetadata
-from phaze.models.tracklist import Tracklist, TracklistTrack
+from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.models.tracklist_priority_flag import TracklistPriorityFlag
 from phaze.services.tracklist_candidate_queue import CUE_FILE_TYPE
 from phaze.services.tracklist_candidates import CandidateSignals, classify, detect_embedded_tracklist, group_unique_sets
@@ -165,6 +165,7 @@ class FileTracklistReview:
     file_id: uuid.UUID
     flagged: bool
     tracklist: Tracklist | None
+    latest_version: TracklistVersion | None
     tracks: tuple[TracklistTrack, ...]
     is_propagated: bool
     cache_entry: TracklistLookupCache | None
@@ -248,8 +249,10 @@ async def get_file_tracklist_review(session: AsyncSession, file_id: uuid.UUID) -
     tracklist = tracklist_result.scalar_one_or_none()
 
     if tracklist is not None:
+        latest_version: TracklistVersion | None = None
         tracks: tuple[TracklistTrack, ...] = ()
         if tracklist.latest_version_id is not None:
+            latest_version = await session.get(TracklistVersion, tracklist.latest_version_id)
             track_result = await session.execute(
                 select(TracklistTrack).where(TracklistTrack.version_id == tracklist.latest_version_id).order_by(TracklistTrack.position)
             )
@@ -258,6 +261,7 @@ async def get_file_tracklist_review(session: AsyncSession, file_id: uuid.UUID) -
             file_id=file_id,
             flagged=flagged,
             tracklist=tracklist,
+            latest_version=latest_version,
             tracks=tracks,
             is_propagated=tracklist.propagated_from_set_key is not None,
             cache_entry=None,
@@ -269,6 +273,7 @@ async def get_file_tracklist_review(session: AsyncSession, file_id: uuid.UUID) -
         file_id=file_id,
         flagged=flagged,
         tracklist=None,
+        latest_version=None,
         tracks=(),
         is_propagated=False,
         cache_entry=cache_entry,
