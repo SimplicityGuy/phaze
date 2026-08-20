@@ -37,7 +37,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from phaze.models.scheduling_ledger import SchedulingLedger
-from phaze.services.scheduling_ledger import upsert_ledger_entry
+from phaze.services.scheduling_ledger import _LEDGER_BATCH_INSERT_CHUNK_SIZE, upsert_ledger_entry
 from phaze.tasks.reenqueue import _parse_job_blob, backfill_ledger_from_saq_jobs
 from tests.db_guard import integration_dsns
 
@@ -167,6 +167,15 @@ async def test_backfill_loop_seeds_keyed_skips_everything_else() -> None:
       - random-key (function not keyed) -> skipped,
       - unparseable blob -> skipped,
       - blob with no function AND a non-keyed key prefix -> skipped.
+
+    Also pins the phaze-xemza BATCHING contract itself: ``inserted_params`` records one entry per
+    ``execute()`` call, so ``len(session.inserted_params) == 1`` proves the two keyed rows above
+    landed in a SINGLE multi-row INSERT rather than two round trips. This is deliberately a
+    round-trip-COUNT assertion, not a contents check -- the key-set assertion above already covers
+    contents and would pass identically whether the write batched or not, so it cannot by itself
+    catch a future refactor that quietly reintroduces one INSERT per row. Do not drop this as
+    "redundant" with the key-set assertion; it is the only thing in this file that would fail if
+    that regression happened.
     """
     fid_a, fid_b, fid_c = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     key_a = f"process_file:{fid_a}"
@@ -186,6 +195,30 @@ async def test_backfill_loop_seeds_keyed_skips_everything_else() -> None:
 
     assert tally == {"inserted": 2, "skipped": 3}, tally
     assert set(session.inserted_keys) == {key_a, key_b}
+    assert len(session.inserted_params) == 1, session.inserted_params  # ONE batched INSERT, not two
+
+
+@pytest.mark.asyncio
+async def test_backfill_chunks_at_the_batch_insert_boundary() -> None:
+    """Pins the chunking arithmetic (phaze-xemza): ``_LEDGER_BATCH_INSERT_CHUNK_SIZE + 1`` keyed
+    rows must produce exactly TWO ``execute()`` calls -- one full chunk plus a one-row remainder --
+    never one (an unbounded parameter list) and never three (an off-by-one in the chunk loop). This
+    boundary is currently the only thing that would catch that off-by-one before broker depth
+    crosses the chunk size for real.
+    """
+    row_count = _LEDGER_BATCH_INSERT_CHUNK_SIZE + 1
+    rows: list[tuple[object, object]] = []
+    for _ in range(row_count):
+        fid = uuid.uuid4()
+        key = f"process_file:{fid}"
+        rows.append((json.dumps({"function": "process_file", "key": key, "kwargs": {"file_id": str(fid)}}).encode(), key))
+    session = _SeededSession(rows)
+
+    tally = await backfill_ledger_from_saq_jobs(session)  # type: ignore[arg-type]
+
+    assert tally == {"inserted": row_count, "skipped": 0}, tally
+    assert len(session.inserted_keys) == row_count
+    assert len(session.inserted_params) == 2, session.inserted_params  # one full chunk + a 1-row remainder
 
 
 @pytest.mark.asyncio
