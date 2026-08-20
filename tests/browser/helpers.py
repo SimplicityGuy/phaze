@@ -134,6 +134,15 @@ async def settled_focus(page: Any, describe: str = "id", *, timeout_ms: int = 5_
     # FAILURE this helper exists to report rather than a state to settle on -- so it never counts
     # towards stability. A genuinely broken restore therefore spends the full timeout and returns "",
     # and the caller's assertion says so plainly.
+    #
+    # phaze-39eiy: that "or an element with no such attribute" clause is a real diagnostic hazard,
+    # not a parenthetical. "" is returned both when focus never stabilised (a genuine failure) AND
+    # when it stabilised successfully on an element that simply has no `describe` attribute --
+    # e.g. the default describe="id" mode on an id-less heading with only tabindex="-1". Those are
+    # opposite outcomes sharing one return value. When investigating a "" result, confirm which one
+    # actually happened via a second, independent signal (read document.activeElement directly, or
+    # call with a describe that the landing element DOES carry) before concluding focus was lost --
+    # do not infer failure from "" alone.
     previous = await page.evaluate(script)
     stable = 0
     for _ in range(max(1, timeout_ms // 100)):

@@ -78,13 +78,46 @@
             this.open = false;
             this.loaded = false;
             this.requestedSection = null;
-            const target = this.opener || document.getElementById('stage-workspace');
+            const target = this.opener;
             this.opener = null;
             // Defer to after Alpine tears the panel down (see cmdk_modal.html): a
             // synchronous focus here is undone when the browser resets focus to <body>
             // as the hidden panel's focused child is removed on the same tick.
             this.$nextTick(() => {
-                if (target && typeof target.focus === 'function') target.focus();
+                // phaze-39eiy: `target` can go STALE between show() capturing it and this
+                // callback running -- some other part of the page can swap the opener's
+                // container while the drawer is open (measured: the Analyze workspace's own
+                // filter re-render racing its container's load-trigger fetch, ~6% of
+                // cold-boot attempts, correlated with a slow-boot latency outlier) and
+                // detach the exact row this host is holding onto. `.focus()` on a
+                // DISCONNECTED element is a documented silent no-op (see the reveal-focus
+                // comment on #record-body below) -- not an error -- so a dead opener would
+                // otherwise leave focus stranded on <body> with nothing to signal it.
+                //
+                // NOTE: no literal double-quote characters in this comment block -- x-data is
+                // itself delimited by double quotes (see nestedModalOpen() above), so one here
+                // would silently truncate the whole component. (phaze-39eiy: hit this exact
+                // trap while drafting this fix; caught it via a console-error assertion in
+                // tests/browser/test_shell_contract.py before it ever reached review.)
+                //
+                // The fallback is window._focusStageHeading() (shell.html), NOT a bare
+                // document.getElementById('stage-workspace').focus() call -- that div carries no
+                // tabindex, so calling .focus() on it directly is ALSO a silent no-op and
+                // would have papered over this exact bug with an equally-dead target.
+                // _focusStageHeading() is the same fallback rail.html's closeNav() already
+                // relies on for the identical documented-target-may-not-actually-take-focus
+                // problem (phaze-bdeih), and it self-verifies by reading
+                // document.activeElement back rather than assuming the call landed.
+                //
+                // This treats the SYMPTOM (focus has nowhere correct to land) rather than the
+                // CAUSE (a row can be swapped out from under an open drawer at all, which can
+                // orphan more than focus for an operator mid-click). The underlying swap race
+                // is tracked separately and is deliberately NOT fixed here.
+                if (target && target.isConnected && typeof target.focus === 'function') {
+                    target.focus();
+                } else if (window._focusStageHeading) {
+                    window._focusStageHeading();
+                }
             });
         }
      }"

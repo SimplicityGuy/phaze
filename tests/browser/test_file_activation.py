@@ -142,3 +142,51 @@ async def test_tracklist_rows_distinguish_matched_files_from_candidates_after_pa
     )
     assert positioned, "the matched Tracklists row did not bring #tracklist into the drawer viewport"
     await _close_and_expect_opener(page, matched)
+
+
+async def test_escape_falls_back_to_the_stage_heading_when_the_opener_row_has_gone_stale(page: Any, seed: Any) -> None:
+    """phaze-39eiy: focus must not strand on <body> when the opener is gone by the time Escape runs.
+
+    Measured in the wild (FLAKE_RECORD.md): the Analyze workspace's own filter re-render can race
+    its container's ``hx-trigger="load"`` fetch and replace ``#analyze-files-view``'s rows while the
+    drawer a click just opened is still up -- disconnecting the exact ``<tr>`` record_host.html's
+    ``hide()`` was holding onto as its focus-restore target. ``.focus()`` on a disconnected element
+    is a silent no-op (no error, no event), so without a liveness check the drawer's Escape handler
+    left focus on ``<body>`` with nothing to signal it -- 5/80 cold-boot attempts, all with an
+    identical signature: ``settled_focus`` exhausting its full timeout, ``document.activeElement``
+    left on ``BODY``.
+
+    Rather than wait on that ~6% race, this forces its exact precondition directly -- opener
+    disconnected from the DOM while the drawer is still open -- so the guard is proven
+    deterministically instead of probabilistically. It fails against the pre-fix ``hide()`` (focus
+    stays on ``<body>``) and passes against the fix, which falls back to
+    ``window._focusStageHeading()`` -- the same fallback rail.html's ``closeNav()`` already uses for
+    the identical "documented target may not actually take focus" problem (phaze-bdeih) -- rather
+    than a bare ``#stage-workspace`` ``.focus()`` call, which would itself be a no-op: that div
+    carries no ``tabindex``.
+    """
+    target = await seed.file(filename="<set-01>.mp3")
+    await open_shell(page, "/s/files")
+    await page.wait_for_selector(f'#files-table-view tr[hx-get="/record/{target.id}"]')
+
+    row = f'#files-table-view tr[hx-get="/record/{target.id}"]'
+    await page.locator(row).focus()
+    async with swap_settles(page):
+        await page.keyboard.press("Enter")
+    await _wait_for_record(page, target.id)
+
+    # Force the race's precondition directly: disconnect the opener the drawer is holding onto,
+    # without touching the drawer itself (still open, still showing the record).
+    await page.evaluate("selector => document.querySelector(selector)?.remove()", row)
+    assert await page.evaluate("selector => document.querySelector(selector) === null", row), (
+        "the opener row is still connected -- this test isn't forcing the precondition it claims to"
+    )
+
+    await page.keyboard.press("Escape")
+    await page.wait_for_function("() => !document.getElementById('record-body').checkVisibility()")
+    await settled_focus(page)
+
+    stranded_on_body = await page.evaluate("() => document.activeElement === document.body")
+    assert not stranded_on_body, "focus was stranded on <body> after Escape closed a drawer whose opener had gone stale"
+    landed_in_workspace = await page.evaluate("() => document.getElementById('stage-workspace').contains(document.activeElement)")
+    assert landed_in_workspace, "focus did not fall back into the stage workspace when the opener was gone"
