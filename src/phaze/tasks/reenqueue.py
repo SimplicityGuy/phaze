@@ -875,51 +875,157 @@ async def _replay_agent_rows_by_owner(
         owners.setdefault(owner_id, []).append(row)
 
     for owner_id, owned in owners.items():
-        if owner_id is None:
-            logger.warning(
-                "recover_orphaned_work: agent-routed ledger row has no owning agent_id -- skipped, never rerouted (phaze-fjii)",
-                functions=sorted({r.function for r in owned}),
-                rows=len(owned),
-            )
-            continue
+        await _replay_one_owners_rows(session, task_router, owner_id, owned, stages, required_kind=required_kind)
+
+
+async def _replay_one_owners_rows(
+    session: AsyncSession,
+    task_router: Any,
+    owner_id: str | None,
+    owned: list[SchedulingLedger],
+    stages: dict[str, dict[str, int]],
+    *,
+    required_kind: str | None,
+) -> None:
+    """Replay ONE owning agent's group of ledger rows onto that agent's own lane queues.
+
+    The per-owner body of :func:`_replay_agent_rows_by_owner`; see that function for why routing is
+    per-owner at all. Both SKIP paths return without replaying anything and, critically, without
+    rerouting the group anywhere else -- that reroute IS the phaze-fjii defect:
+
+    - ``owner_id is None`` (malformed / legacy payload): the true owner is unknowable, so blind
+      routing would be a guess.
+    - the owner is offline / revoked / never-seen / the wrong kind: a later recovery pass re-drives
+      these rows once the owner is back.
+    """
+    if owner_id is None:
+        logger.warning(
+            "recover_orphaned_work: agent-routed ledger row has no owning agent_id -- skipped, never rerouted (phaze-fjii)",
+            functions=sorted({r.function for r in owned}),
+            rows=len(owned),
+        )
+        return
+    try:
+        # phaze-fjii (mirrors phaze-c9w9 / enqueue_router.resolve_queue_for_task's per-file
+        # ``agent_id`` form): the destination is THIS owner iff it is live (and, when pinned, of
+        # ``required_kind``) -- never "some other live fileserver" whose mount lacks the path.
+        agent = await select_agent_by_id(session, owner_id, kind=required_kind)
+    except NoActiveAgentError:
+        logger.warning(
+            "recover_orphaned_work: owning agent offline -- rows skipped, not rerouted (phaze-fjii)",
+            agent_id=owner_id,
+            required_kind=required_kind,
+            functions=sorted({r.function for r in owned}),
+            rows=len(owned),
+        )
+        return
+    # phaze-266lc: ``select_agent_by_id`` above autobegins a new transaction on this shared
+    # session; commit it here, before the per-row enqueue loop below, so THIS owner's group of
+    # network-dependent replay calls does not run with the session idle-in-transaction (same
+    # class + same fix shape as the read-phase commit in the caller and agent_analysis.py phaze-7jfgi).
+    # ``agent`` stays usable after the commit -- ``expire_on_commit=False`` -- and only its
+    # plain ``.id`` column is read below, never a lazy-loaded relationship.
+    await session.commit()
+    # quick-260707-dh1: derive the LANE per row via lane_for_task(row.function) (push_file -> io;
+    # process_file -> analyze; ...). An unmapped function raises loudly (never a bad queue).
+    for row in owned:
         try:
-            # phaze-fjii (mirrors phaze-c9w9 / enqueue_router.resolve_queue_for_task's per-file
-            # ``agent_id`` form): the destination is THIS owner iff it is live (and, when pinned, of
-            # ``required_kind``) -- never "some other live fileserver" whose mount lacks the path.
-            agent = await select_agent_by_id(session, owner_id, kind=required_kind)
-        except NoActiveAgentError:
-            logger.warning(
-                "recover_orphaned_work: owning agent offline -- rows skipped, not rerouted (phaze-fjii)",
+            agent_queue = task_router.queue_for(agent.id, lane_for_task(row.function))
+        except Exception:
+            # phaze-o1xx: routing itself (an unmapped legacy function) must not abort the whole
+            # replay -- isolate it exactly like a failed _replay_row and move to the next row.
+            logger.exception(
+                "recover_orphaned_work: agent row lane routing failed -- row skipped this run, ledger entry remains for the next pass",
+                key=row.key,
+                function=row.function,
                 agent_id=owner_id,
-                required_kind=required_kind,
-                functions=sorted({r.function for r in owned}),
-                rows=len(owned),
             )
+            stages.setdefault(row.function, _zero())["errored"] += 1
             continue
-        # phaze-266lc: ``select_agent_by_id`` above autobegins a new transaction on this shared
-        # session; commit it here, before the per-row enqueue loop below, so THIS owner's group of
-        # network-dependent replay calls does not run with the session idle-in-transaction (same
-        # class + same fix shape as the read-phase commit above and agent_analysis.py phaze-7jfgi).
-        # ``agent`` stays usable after the commit -- ``expire_on_commit=False`` -- and only its
-        # plain ``.id`` column is read below, never a lazy-loaded relationship.
-        await session.commit()
-        # quick-260707-dh1: derive the LANE per row via lane_for_task(row.function) (push_file -> io;
-        # process_file -> analyze; ...). An unmapped function raises loudly (never a bad queue).
-        for row in owned:
-            try:
-                agent_queue = task_router.queue_for(agent.id, lane_for_task(row.function))
-            except Exception:
-                # phaze-o1xx: routing itself (an unmapped legacy function) must not abort the whole
-                # replay -- isolate it exactly like a failed _replay_row and move to the next row.
-                logger.exception(
-                    "recover_orphaned_work: agent row lane routing failed -- row skipped this run, ledger entry remains for the next pass",
-                    key=row.key,
-                    function=row.function,
-                    agent_id=owner_id,
-                )
-                stages.setdefault(row.function, _zero())["errored"] += 1
-                continue
-            await _replay_row_isolated(agent_queue, row, stages)
+        await _replay_row_isolated(agent_queue, row, stages)
+
+
+def _is_orphaned(
+    row: SchedulingLedger,
+    live: set[str],
+    done_sets: _DoneSets,
+    in_flight: set[str],
+    awaiting_cloud: set[str],
+) -> bool:
+    """``ledger MINUS live-saq_jobs-keys MINUS domain-completed MINUS cloud-owned`` -- for ONE row.
+
+    phaze-fc2l: the two cloud exclusions are SCOPED to the functions a ``cloud_job`` actually owns
+    (``_CLOUD_OWNED_FUNCTIONS``). :func:`_natural_id` is function-agnostic, so an unscoped exclusion
+    dropped an orphaned ``extract_file_metadata`` / ``search_tracklist`` row for ANY file that merely
+    also had an in-flight/awaiting cloud_job -- silently skipping recovery the cloud callback/drain
+    will never perform. A non-cloud-owned row for a cloud-busy file recovers normally;
+    process_file / push_file / s3_upload / submit_cloud_job still defer to their single owner.
+    """
+    return (
+        row.key not in live
+        and not is_domain_completed(row, done_sets)
+        and (row.function not in _CLOUD_OWNED_FUNCTIONS or (_natural_id(row) not in in_flight and _natural_id(row) not in awaiting_cloud))
+    )
+
+
+def _partition_orphaned(
+    orphaned: list[SchedulingLedger],
+) -> tuple[list[_RegenTarget], list[SchedulingLedger], list[SchedulingLedger], list[SchedulingLedger]]:
+    """Split the orphaned rows into the four groups :func:`recover_orphaned_work` drives separately.
+
+    Returns ``(regenerated_targets, controller_rows, push_rows, other_agent_rows)``.
+
+    phaze-71nz: the REGENERATED functions are peeled off FIRST -- their stored payload carries
+    time-limited material and must never be replayed verbatim by any of the other three groups. They
+    are SNAPSHOT here (:class:`_RegenTarget`) because a regenerator commits/rolls back, which expires
+    every ORM instance on the session -- see that dataclass's docstring.
+
+    83-06 (CONSCIOUSLY REVERSES D-09): the former compute-only ``held_agent_rows`` partition is GONE.
+    It caught a ``process_file`` ledger row whose file was HELD in AWAITING_CLOUD and routed it to a
+    COMPUTE agent only (CLOUDROUTE-02: never a fileserver -> never local analysis). That partition was
+    reachable ONLY because the D-09 held-file backfill SEEDED a ``process_file:<id>`` ledger row for
+    every held compute file. 83-06 removed that seed (backfill now DELETES the orphaned row and keeps
+    only the awaiting ``cloud_job`` row as the sole registry), so no held file carries a process_file
+    ledger row any more -- the partition was provably empty. The CLOUDROUTE-02 invariant is now held
+    ROBUSTLY (even for a LEGACY pre-83-06 row) by the ``awaiting_cloud`` exclusion in
+    :func:`_is_orphaned`: a held awaiting-cloud file never reaches ANY agent partition here, so it can
+    never be analyzed locally.
+
+    Phase 50 (D-10): a re-driven ``push_file`` reads the media mount, so it MUST route to a FILESERVER
+    agent (the rsync initiator), never the compute agent -- push rows get their own partition.
+    """
+    regenerated_targets = [
+        _RegenTarget(key=r.key, function=r.function, payload=dict(r.payload or {})) for r in orphaned if r.function in _REPLAY_REGENERATORS
+    ]
+    replayable = [r for r in orphaned if r.function not in _REPLAY_REGENERATORS]
+
+    controller_rows = [r for r in replayable if r.routing == "controller"]
+    agent_rows = [r for r in replayable if r.routing == "agent"]
+
+    push_rows = [r for r in agent_rows if r.function == "push_file"]
+    other_agent_rows = [r for r in agent_rows if r.function != "push_file"]
+    return regenerated_targets, controller_rows, push_rows, other_agent_rows
+
+
+def _log_unreplayable_summary(stages: dict[str, dict[str, int]]) -> int:
+    """Return the run-wide ``unreplayable`` total, WARNING once when it is non-zero.
+
+    phaze-k95r7: state the COUNT and the STAGES here, never the cause. This summary used to assert
+    "its payload is time-limited and could not be regenerated" for every unreplayable row, which is
+    one of at least two causes (the other being a row that points at work which is not pending at
+    all) -- and stating the wrong one at run level sent the 2026-08-08 investigation after an expiry
+    problem that did not exist. The per-row WARNINGs carry the actual reason for each row; this line
+    only says how much was left uncovered.
+    """
+    unreplayable = sum(tally["unreplayable"] for tally in stages.values())
+    if unreplayable:
+        logger.warning(
+            "recover_orphaned_work: some orphaned work was NOT re-enqueued (phaze-71nz). These stages are NOT covered by "
+            "this run -- see the per-row warnings above for each row's reason.",
+            unreplayable=unreplayable,
+            stages=sorted(fn for fn, tally in stages.items() if tally["unreplayable"]),
+        )
+    return unreplayable
 
 
 async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
@@ -1005,19 +1111,7 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
         # ledger seed. Read ONCE, alongside in_flight (the two sets are disjoint -- 'awaiting' ∉ IN_FLIGHT).
         awaiting_cloud = await _awaiting_cloud_job_ids(session)
 
-        # phaze-fc2l: SCOPE the two cloud exclusions to the functions the cloud_job actually owns
-        # (_CLOUD_OWNED_FUNCTIONS). _natural_id is function-agnostic, so an unscoped exclusion dropped an
-        # orphaned extract_file_metadata / search_tracklist row for
-        # ANY file that merely also had an in-flight/awaiting cloud_job -- silently skipping recovery the
-        # cloud callback/drain will never perform. A non-cloud-owned row for a cloud-busy file recovers
-        # normally; process_file/push_file/s3_upload/submit_cloud_job still defer to their single owner.
-        orphaned = [
-            r
-            for r in rows
-            if r.key not in live
-            and not is_domain_completed(r, done_sets)
-            and (r.function not in _CLOUD_OWNED_FUNCTIONS or (_natural_id(r) not in in_flight and _natural_id(r) not in awaiting_cloud))
-        ]
+        orphaned = [r for r in rows if _is_orphaned(r, live, done_sets, in_flight, awaiting_cloud)]
 
         # phaze-266lc: the read phase above (get_ledger_rows / get_live_job_keys / _build_done_sets /
         # _in_flight_cloud_job_ids / _awaiting_cloud_job_ids) is done -- ``orphaned`` is materialized
@@ -1037,31 +1131,7 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
         # orphaned rows reads as an explicit zero, not a missing key the startup-log/UI must guess at).
         stages: dict[str, dict[str, int]] = {fn: _zero() for fn in _ALL_KEYED_FUNCTIONS}
 
-        # phaze-71nz: peel the REGENERATED functions off FIRST -- their stored payload carries
-        # time-limited material and must never be replayed verbatim by either partition below. They
-        # are SNAPSHOT here (:class:`_RegenTarget`) because a regenerator commits/rolls back, which
-        # expires every ORM instance on this session -- see the dataclass docstring.
-        regenerated_targets = [
-            _RegenTarget(key=r.key, function=r.function, payload=dict(r.payload or {})) for r in orphaned if r.function in _REPLAY_REGENERATORS
-        ]
-        replayable = [r for r in orphaned if r.function not in _REPLAY_REGENERATORS]
-
-        controller_rows = [r for r in replayable if r.routing == "controller"]
-        agent_rows = [r for r in replayable if r.routing == "agent"]
-
-        # 83-06 (CONSCIOUSLY REVERSES D-09): the former compute-only ``held_agent_rows`` partition is GONE.
-        # It caught a ``process_file`` ledger row whose file was HELD in AWAITING_CLOUD and routed it to a
-        # COMPUTE agent only (CLOUDROUTE-02: never a fileserver -> never local analysis). That partition was
-        # reachable ONLY because the D-09 held-file backfill SEEDED a ``process_file:<id>`` ledger row for
-        # every held compute file. 83-06 removed that seed (backfill now DELETES the orphaned row and keeps
-        # only the awaiting ``cloud_job`` row as the sole registry), so no held file carries a process_file
-        # ledger row any more -- the partition was provably empty. The CLOUDROUTE-02 invariant is now held
-        # ROBUSTLY (even for a LEGACY pre-83-06 row) by the ``awaiting_cloud`` orphan-set exclusion above:
-        # a held awaiting-cloud file never reaches ANY agent partition, so it can never be analyzed locally.
-        # Phase 50 (D-10): a re-driven push_file reads the media mount, so it MUST route to a FILESERVER
-        # agent (the rsync initiator), never the compute agent -- partition push rows onto their own path.
-        push_rows = [r for r in agent_rows if r.function == "push_file"]
-        other_agent_rows = [r for r in agent_rows if r.function != "push_file"]
+        regenerated_targets, controller_rows, push_rows, other_agent_rows = _partition_orphaned(orphaned)
 
         # Controller rows replay regardless of agent presence (D-05). phaze-o1xx: each row is
         # isolated -- one row's failure (transient enqueue error) is tallied under "errored" and the
@@ -1085,20 +1155,7 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
         for target in regenerated_targets:
             await _regenerate_row_isolated(session, ctx["task_router"], target, stages)
 
-    unreplayable = sum(tally["unreplayable"] for tally in stages.values())
-    if unreplayable:
-        # phaze-k95r7: state the COUNT and the STAGES here, never the cause. This summary used to
-        # assert "its payload is time-limited and could not be regenerated" for every unreplayable row,
-        # which is one of at least two causes (the other being a row that points at work which is not
-        # pending at all) -- and stating the wrong one at run level sent the 2026-08-08 investigation
-        # after an expiry problem that did not exist. The per-row WARNING above carries the actual
-        # reason for each row; this line only says how much was left uncovered.
-        logger.warning(
-            "recover_orphaned_work: some orphaned work was NOT re-enqueued (phaze-71nz). These stages are NOT covered by "
-            "this run -- see the per-row warnings above for each row's reason.",
-            unreplayable=unreplayable,
-            stages=sorted(fn for fn, tally in stages.items() if tally["unreplayable"]),
-        )
+    unreplayable = _log_unreplayable_summary(stages)
     logger.info("recover_orphaned_work complete", detected_loss=detected_loss, forced=force, unreplayable=unreplayable, stages=stages)
     return {"detected_loss": detected_loss, "forced": force, "unreplayable": unreplayable, "stages": stages}
 
@@ -1143,6 +1200,46 @@ def _parse_job_blob(blob: object) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _keyed_function_of(data: dict[str, Any], key: str) -> str | None:
+    """Classify a deserialized ``saq_jobs`` blob as a KEYED pipeline function, or ``None``.
+
+    Belt-and-suspenders: trust the blob's own ``function`` field, but fall back to the saq_jobs key
+    prefix (``<function>:<natural_id>``) so a row missing the field is still classified correctly.
+    ``None`` for anything not in ``_KEY_BUILDERS`` -- a non-keyed / random-key job has no
+    deterministic identity to seed a ledger row with.
+    """
+    function = data.get("function")
+    if not isinstance(function, str):
+        function = key.split(":", 1)[0]
+    return function if function in _KEY_BUILDERS else None
+
+
+def _ledger_row_from_saq_job(blob: Any, key: Any) -> dict[str, Any] | None:
+    """Build ONE ledger insert dict from a live ``saq_jobs`` row, or ``None`` to SKIP it.
+
+    ``None`` -- the skip signal :func:`backfill_ledger_from_saq_jobs` tallies under ``skipped`` --
+    covers every non-seedable row: an unparseable job blob, a missing/unusable key, and a function
+    that is not a KEYED pipeline function (``_KEY_BUILDERS``). A random-key / non-keyed job has no
+    deterministic identity to seed a ledger row with, so skipping it is correct, not a degrade.
+    """
+    data = _parse_job_blob(blob)
+    if data is None or not isinstance(key, str):
+        return None
+    function = _keyed_function_of(data, key)
+    if function is None:
+        return None
+    kwargs = data.get("kwargs")
+    if not isinstance(kwargs, dict):
+        kwargs = {}
+    # The SAQ default json.dumps serializer writes timeout/retries (Job dataclass fields) at the
+    # blob top level. Carry them through so an in-flight transition cohort recovers with its
+    # real bound, not the 600s default. (For process_file this is belt-and-braces since
+    # phaze-w55w1: apply_project_job_defaults pins its timeout=0 + heartbeat regardless.)
+    timeout = data.get("timeout") if isinstance(data.get("timeout"), int) else None
+    retries = data.get("retries") if isinstance(data.get("retries"), int) else None
+    return {"key": key, "function": function, "kwargs": dict(kwargs), "timeout": timeout, "retries": retries}
+
+
 async def backfill_ledger_from_saq_jobs(session: AsyncSession) -> dict[str, int]:
     """Seed the scheduling ledger from the live queued/active ``saq_jobs`` rows (idempotent).
 
@@ -1183,29 +1280,11 @@ async def backfill_ledger_from_saq_jobs(session: AsyncSession) -> dict[str, int]
 
     pending_inserts: list[dict[str, Any]] = []
     for row in rows:
-        blob, key = row[0], row[1]
-        data = _parse_job_blob(blob)
-        if data is None:
+        ledger_row = _ledger_row_from_saq_job(row[0], row[1])
+        if ledger_row is None:
             tally["skipped"] += 1
             continue
-        function = data.get("function")
-        # Belt-and-suspenders: trust the blob's function, but fall back to the saq_jobs key prefix
-        # (``<function>:<natural_id>``) so a row missing the field is still classified correctly.
-        if not isinstance(function, str) and isinstance(key, str):
-            function = key.split(":", 1)[0]
-        if not isinstance(function, str) or function not in _KEY_BUILDERS or not isinstance(key, str):
-            tally["skipped"] += 1
-            continue
-        kwargs = data.get("kwargs")
-        if not isinstance(kwargs, dict):
-            kwargs = {}
-        # The SAQ default json.dumps serializer writes timeout/retries (Job dataclass fields) at the
-        # blob top level. Carry them through so an in-flight transition cohort recovers with its
-        # real bound, not the 600s default. (For process_file this is belt-and-braces since
-        # phaze-w55w1: apply_project_job_defaults pins its timeout=0 + heartbeat regardless.)
-        timeout = data.get("timeout") if isinstance(data.get("timeout"), int) else None
-        retries = data.get("retries") if isinstance(data.get("retries"), int) else None
-        pending_inserts.append({"key": key, "function": function, "kwargs": dict(kwargs), "timeout": timeout, "retries": retries})
+        pending_inserts.append(ledger_row)
 
     # phaze-xemza: one (or a bounded few, chunked) multi-row INSERT instead of one round trip per
     # keyed row. Deliberately OUTSIDE the read's SAVEPOINT/try-except above -- a write failure here
