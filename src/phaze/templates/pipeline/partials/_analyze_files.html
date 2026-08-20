@@ -45,9 +45,20 @@
    carried the id, each swap nested a second #analyze-files-view inside the first -- duplicate ids
    that grew one level deeper per filter/page click. The host owns the id; the fragment is content. #}
 <div>
+    {# phaze-yzj7l: every hx-get below that targets #analyze-files-view carries
+       hx-sync="#analyze-files-view:replace" -- see that div's own comment in
+       analyze_workspace.html for why. "replace" (not the "drop" default, and not "abort") is the
+       deliberate choice: on a race, it ABORTS whichever request is still in flight against this
+       target and lets the NEWEST one proceed, so the container always ends up showing the result
+       of the LAST thing the operator did -- never a stale response that happens to land later.
+       The operator-visible cost is that a request superseded before it lands is simply
+       discarded: no error, no flash of its content, nothing to indicate it ever went out. That is
+       the right trade here (an abandoned page-turn or filter change was never the operator's
+       final intent), and it is what stops a slow first load from clobbering a since-filtered view
+       -- or a filtered swap from clobbering a row the operator has already opened a record from. #}
     <form id="analyze-filter-bar"
           hx-get="/pipeline/analyze-files" hx-target="#analyze-files-view" hx-swap="innerHTML"
-          hx-trigger="change"
+          hx-trigger="change" hx-sync="#analyze-files-view:replace"
           class="flex flex-wrap items-center gap-2 pb-3">
         <span class="font-jura text-[11px] uppercase tracking-[0.2em] text-muted ">Show</span>
         <label class="sr-only" for="analyze-filter-status">Status</label>
@@ -60,6 +71,7 @@
         {# Clear the lens -- return to the default bounded working-set view (no status param). #}
         <button type="button"
                 hx-get="/pipeline/analyze-files" hx-target="#analyze-files-view" hx-swap="innerHTML"
+                hx-sync="#analyze-files-view:replace"
                 class="text-sm px-2 py-1 rounded text-link hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500">Clear filter</button>
         {% endif %}
         {% if not active_status %}
@@ -136,12 +148,12 @@
         <p class="text-sm text-muted ">Page {{ analyze_page.page }}</p>
         <div class="flex gap-1">
             {% if analyze_page.page > 1 %}
-            <button hx-get="/pipeline/analyze-files?page={{ analyze_page.page - 1 }}{{ _qs }}" hx-target="#analyze-files-view" hx-swap="innerHTML" class="text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">Previous</button>
+            <button hx-get="/pipeline/analyze-files?page={{ analyze_page.page - 1 }}{{ _qs }}" hx-target="#analyze-files-view" hx-swap="innerHTML" hx-sync="#analyze-files-view:replace" class="text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">Previous</button>
             {% else %}
             <span class="text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-muted cursor-not-allowed">Previous</span>
             {% endif %}
             {% if analyze_page.has_next %}
-            <button hx-get="/pipeline/analyze-files?page={{ analyze_page.page + 1 }}{{ _qs }}" hx-target="#analyze-files-view" hx-swap="innerHTML" class="text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">Next</button>
+            <button hx-get="/pipeline/analyze-files?page={{ analyze_page.page + 1 }}{{ _qs }}" hx-target="#analyze-files-view" hx-swap="innerHTML" hx-sync="#analyze-files-view:replace" class="text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">Next</button>
             {% else %}
             <span class="text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-muted cursor-not-allowed">Next</span>
             {% endif %}

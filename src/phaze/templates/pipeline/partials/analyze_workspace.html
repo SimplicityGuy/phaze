@@ -91,7 +91,17 @@
 
     <section aria-labelledby="analyze-files-heading" class="border-t border-gray-200 p-4 dark:border-phaze-border sm:p-6">
         <h2 id="analyze-files-heading" class="font-jura text-xs font-medium uppercase tracking-[0.2em] text-gray-700 dark:text-gray-200">File progress</h2>
-        <div id="analyze-files-view" hx-get="/pipeline/analyze-files" hx-trigger="load" hx-swap="innerHTML">
+        {# phaze-yzj7l: hx-sync="this:replace" makes THIS div the shared coordination bucket for
+           every hx-get that targets #analyze-files-view -- the filter form, the "Clear filter"
+           link, and the pager's Prev/Next buttons in _analyze_files.html all declare
+           hx-sync="#analyze-files-view:replace" against the SAME element. Without it, this
+           load-trigger fetch and any of those had no ordering guarantee at all: whichever
+           response happened to land last won, even if it was the OLDER request answering a
+           STALER question -- see that file's comment for the full race and the "replace" choice.
+           Declaring it here too (rather than relying on it being implicit because this div IS its
+           own default sync target) keeps the invariant visible in the one place an editor is
+           looking when they add a fifth trigger against this id. #}
+        <div id="analyze-files-view" hx-get="/pipeline/analyze-files" hx-trigger="load" hx-swap="innerHTML" hx-sync="this:replace">
             <p class="px-6 py-12 text-center text-sm text-muted ">Loading files…</p>
         </div>
     </section>
