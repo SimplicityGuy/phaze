@@ -56,7 +56,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
-from sqlalchemy import select
+from sqlalchemy import ARRAY, String, bindparam, func, select
 import structlog
 
 from phaze.models.agent import Agent
@@ -262,6 +262,40 @@ async def select_agent_by_id(session: AsyncSession, agent_id: str, *, kind: str 
         msg = f"no active agent {agent_id!r} available (absent, revoked, never checked in, or wrong kind)"
         raise NoActiveAgentError(msg)
     return agent
+
+
+async def select_agents_by_ids(session: AsyncSession, agent_ids: Sequence[str], *, kind: str | None = None) -> dict[str, Agent]:
+    """Return ``{agent_id: Agent}`` for every LIVE agent among ``agent_ids`` — ONE query, never one per id.
+
+    The BATCHED sibling of :func:`select_agent_by_id` (phaze-1i0h6.2), sharing its liveness filter
+    verbatim (``revoked_at IS NULL`` AND ``last_seen_at IS NOT NULL``) and its optional ``kind`` scope,
+    and matching on ``Agent.id`` ONLY — never the free-form, collidable ``Agent.name`` (D-01, no
+    id-or-name fallback) — so a spoof-shaped name can never be selected here either.
+
+    Where :func:`select_agent_by_id` RAISES :class:`NoActiveAgentError` for an absent / unregistered /
+    revoked / never-seen / wrong-kind agent, the batch form reports the SAME fact by OMISSION: an id
+    with no live row is simply missing from the returned mapping. A caller resolving many owners at
+    once (``reenqueue._replay_agent_rows_by_owner``) needs the per-id verdict, not an all-or-nothing
+    raise, and treats a missing key exactly as the per-owner loop it replaces treated the raise —
+    skip that owner's rows, never reroute them onto another agent.
+
+    The ids are bound as a SINGLE Postgres array param rather than a bare ``.in_(...)``, which expands
+    to one bind per element and crashes asyncpg past the 32767-param wire cap (the same Landmine-5
+    shape ``reenqueue._fids_scope`` documents). The owner set a recovery run collects comes from
+    arbitrary STORED ledger payloads, so it is not bounded by the live agent population; one array
+    bind makes the cap irrelevant. Duplicate ids are harmless (``= ANY`` is a membership test), and an
+    empty ``agent_ids`` short-circuits to ``{}`` with no round trip at all.
+    """
+    if not agent_ids:
+        return {}
+    stmt = select(Agent).where(
+        Agent.id == func.any(bindparam("agent_ids", value=list(agent_ids), type_=ARRAY(String))),
+        Agent.revoked_at.is_(None),
+        Agent.last_seen_at.is_not(None),
+    )
+    if kind is not None:
+        stmt = stmt.where(Agent.kind == kind)
+    return {agent.id: agent for agent in (await session.scalars(stmt)).all()}
 
 
 async def resolve_queue_for_task(
