@@ -636,6 +636,116 @@ def test_the_chunk_decode_leaves_no_connected_network_behind(audio: str) -> None
     assert not live, f"the chunk decode returned with {len(live)} connection(s) still live: {live}. See D-09 in services/analysis.py"
 
 
+@pytest.mark.integration
+def test_a_constructor_raising_mid_fan_out_still_disconnects_the_earlier_branches(audio: str) -> None:
+    """A build that dies part-way through the window loop must still tear down what it built.
+
+    This is the D-09 leak from the other side. The RSS and topology guards above both run a
+    decode that COMPLETES; nothing there notices if the teardown can only see a network the
+    build finished handing over. But window ``k``'s constructor -- or either of its ``>>``
+    calls -- can raise under exactly the memory pressure this module exists to survive, with
+    windows ``0..k-1`` already wired. If those algorithms are not reachable from the
+    ``finally``, dropping their Python proxies leaves essentia's C++ edges and the implicit
+    ``PoolStorage`` sink allocated, and the gated retry rung above it then runs the decode
+    again on top of the leak. That is duration-linear peak RSS, i.e. the pod OOMKill.
+
+    So the failure is injected into the REAL network: real ``MonoLoader``, real gate, real
+    ``Scale``/``Trimmer`` branches for the windows before the raise, and the assertion reads
+    live connections off the essentia objects themselves. Only the third ``Scale``
+    construction is replaced, and only to make it raise.
+    """
+    made: list[Any] = []
+    real_scale = analysis_mod.ess.Scale
+    fail_on = 3  # windows 0 and 1 are fully built and wired before this raises
+
+    def _recording(real: Any) -> Any:
+        def _make(**kwargs: Any) -> Any:
+            algo = real(**kwargs)
+            made.append(algo)
+            return algo
+
+        return _make
+
+    scales_built = 0
+
+    def _scale_that_dies_on_the_third_window(**kwargs: Any) -> Any:
+        nonlocal scales_built
+        scales_built += 1
+        if scales_built == fail_on:
+            msg = "essentia could not allocate another branch"
+            raise RuntimeError(msg)
+        algo = real_scale(**kwargs)
+        made.append(algo)
+        return algo
+
+    with (
+        patch.object(analysis_mod.ess, "MonoLoader", _recording(analysis_mod.ess.MonoLoader)),
+        patch.object(analysis_mod.ess, "Trimmer", _recording(analysis_mod.ess.Trimmer)),
+        patch.object(analysis_mod.ess, "Scale", _scale_that_dies_on_the_third_window),
+        pytest.raises(RuntimeError, match="could not allocate another branch"),
+    ):
+        _decode_windows_streaming(audio, _COARSE_SAMPLE_RATE, _WINDOWS, stop_at_sec=20.0)
+
+    # loader + gate + (Scale, Trimmer) for windows 0 and 1, and the Trimmer of the window that
+    # died -- proof the raise landed mid-fan-out rather than before any branch existed.
+    assert len(made) >= 6, f"the injected failure fired too early to prove anything: only {len(made)} algorithm(s) were built"
+    live = [(algo.name(), connector.name, len(targets)) for algo in made for connector, targets in algo.connections.items() if targets]
+    assert not live, (
+        f"a mid-fan-out failure left {len(live)} connection(s) live: {live}. Everything built before the raise must be "
+        f"reachable from the decode's `finally` -- see D-09 in services/analysis.py and `_PartialNetwork` in analysis_decoder.py"
+    )
+
+
+@pytest.mark.integration
+def test_a_gate_that_cannot_be_wired_is_still_handed_to_the_teardown(audio: str) -> None:
+    """The same hazard on the head of the fan-out: the gate exists before it is connected.
+
+    ``_stream_source`` constructs the chunk gate and only then wires ``loader.audio`` into it.
+    A raise on that wiring call used to leave the caller holding no gate at all, so the gate --
+    a real streaming ``Trimmer`` -- leaked with the loader still tied to it.
+
+    The gate here is a real ``ess.Trimmer``; only the loader's ``audio`` source is replaced, and
+    only so that the wiring call is the thing that raises. essentia offers no other way to fail
+    exactly there.
+    """
+
+    class _LoaderWithAnUnreadableAudioSource:
+        """A stand-in MonoLoader whose ``audio`` connector cannot be read."""
+
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        @property
+        def audio(self) -> Any:
+            msg = "essentia refused to expose the loader's audio source"
+            raise RuntimeError(msg)
+
+    torn_down: list[Any] = []
+    real_disconnect = analysis_mod._disconnect_network
+    gates: list[Any] = []
+    real_trimmer = analysis_mod.ess.Trimmer
+
+    def _recording_trimmer(**kwargs: Any) -> Any:
+        algo = real_trimmer(**kwargs)
+        gates.append(algo)
+        return algo
+
+    def _recording_disconnect(algos: Any) -> None:
+        torn_down.extend(algos)
+        real_disconnect(algos)
+
+    with (
+        patch.object(analysis_mod.ess, "MonoLoader", _LoaderWithAnUnreadableAudioSource),
+        patch.object(analysis_mod.ess, "Trimmer", _recording_trimmer),
+        patch.object(analysis_mod, "_disconnect_network", _recording_disconnect),
+        pytest.raises(RuntimeError, match="refused to expose"),
+    ):
+        _decode_windows_streaming(audio, _COARSE_SAMPLE_RATE, _WINDOWS, stop_at_sec=20.0)
+
+    assert len(gates) == 1, f"the gate is the only Trimmer built before the raise; got {len(gates)}"
+    assert gates[0] in torn_down, "the chunk gate was constructed but never handed to the teardown — see D-09 and `_PartialNetwork`"
+
+
 def test_a_stuck_disconnect_never_masks_the_callers_exception() -> None:
     """The teardown runs in a ``finally`` on the failure path, so it must not raise there.
 
@@ -664,9 +774,10 @@ def test_a_stuck_disconnect_never_masks_the_callers_exception() -> None:
 def test_disconnecting_a_partially_built_network_is_inert() -> None:
     """A build that raised mid-loop leaves `None`s and connection-less objects; teardown eats them.
 
-    `_decode_windows_streaming` builds `gate` lazily and appends branches one at a time, so the
-    `finally` can see a list containing `None` and algorithms that were constructed but never
-    connected. That is the ordinary shape of the failure path, not an exotic one.
+    `_decode_windows_streaming` registers each algorithm on its `_PartialNetwork` before wiring
+    it, so the `finally` can see algorithms that were constructed but never connected — and,
+    from older call shapes and the retry rungs above it, `None`s too. That is the ordinary shape
+    of the failure path, not an exotic one; the two tests above drive it end to end.
     """
     analysis_mod._disconnect_network([None, object(), analysis_mod.ess.Scale(factor=1.0)])
 

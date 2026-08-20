@@ -194,10 +194,9 @@ _classifier_cache: dict[str, Any] = {}
 _labels_cache: dict[str, list[str]] = {}
 _essentia_logging_suppressed = False
 
-# phaze-5lop: the streaming decode's sink-key namespace inside its per-tier essentia
-# ``Pool``. Prefixed and numbered by ORIGINAL window index (never renumbered), so a
-# chunk's window set maps back to whole-file window indices without a side table.
-_SINK_KEY_PREFIX = "phaze.window."
+# The streaming decode's sink-key namespace and its chunk-gate margin live with the decoder
+# that uses them, in `analysis_decoder`. They were duplicated here during the extraction; two
+# copies of a load-bearing constant can silently diverge, so this module has none.
 
 
 # ---------------------------------------------------------------------------
@@ -820,12 +819,6 @@ _DEFAULT_FINE_MIN_SEC = 15
 _FINE_CHUNK_WINDOWS = 60
 _COARSE_CHUNK_WINDOWS = 30
 
-# Slack added to a chunk decode's early-stop gate (see `_decode_windows_streaming`). The gate
-# exists to stop the non-seeking loader once a chunk's last window has been read; a second of
-# over-read costs nothing and removes any chance that the stop lands a token early and truncates
-# that last window.
-_CHUNK_GATE_MARGIN_SEC = 1.0
-
 
 # ---------------------------------------------------------------------------
 # D-09 DECISION RECORD -- a streaming network must be DISCONNECTED, not just dropped (phaze-u1n7j)
@@ -1184,7 +1177,7 @@ def _decode_windows_streaming(
     the CHEAPEST chunk of all (§4b, §4d); a fine chunk admitting 11x the audio of chunk 0 cost
     only 1.16x the wall clock. Treat the formula as the volume it is, not the saving it was
     written to claim. It is still an OPTIMISATION only: ``startTime`` stays 0 so every window
-    keeps absolute file time, the margin (:data:`_CHUNK_GATE_MARGIN_SEC`) guarantees the last
+    keeps absolute file time, the margin (``analysis_decoder._CHUNK_GATE_MARGIN_SEC``) guarantees the last
     window of the chunk is complete, and the final chunk is passed ``stop_at_sec=None`` because
     it runs to EOF anyway. If the gated network cannot be built or run, :func:`_decode_windows`
     retries UNGATED before falling back to the per-window loader, so a gate that misbehaves on

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import ctypes
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import platform
 import threading
 from typing import TYPE_CHECKING, Any
@@ -33,8 +33,50 @@ Window = tuple[int, float, float]
 SkipCallback = Callable[[int, float, float, bool], None]
 BeatCallback = Callable[[], None]
 
+# phaze-5lop: the streaming decode's sink-key namespace inside its per-tier essentia
+# ``Pool``. Prefixed and numbered by ORIGINAL window index (never renumbered), so a
+# chunk's window set maps back to whole-file window indices without a side table.
 _SINK_KEY_PREFIX = "phaze.window."
+
+# Slack added to a chunk decode's early-stop gate (see `_decode_windows_streaming`). The gate
+# exists to stop the non-seeking loader once a chunk's last window has been read; a second of
+# over-read costs nothing and removes any chance that the stop lands a token early and truncates
+# that last window.
 _CHUNK_GATE_MARGIN_SEC = 1.0
+
+
+@dataclass
+class _PartialNetwork:
+    """Every streaming algorithm built so far, reachable even if the build raises mid-way.
+
+    Registration is EAGER: an algorithm joins the list the moment it is constructed and
+    BEFORE any edge is wired from or to it.  That ordering is the whole point of the class
+    and is load-bearing (D-09, phaze-u1n7j).  Construction and wiring both run under exactly
+    the memory pressure this module exists to survive, so window ``k``'s constructor -- or
+    either of its ``>>`` calls -- can raise with windows ``0..k-1`` already connected.  If the
+    caller's ``finally`` cannot see those algorithms, dropping their Python proxies leaves
+    essentia's C++ edges and the implicit ``PoolStorage`` sink allocated, which is the
+    duration-linear peak-RSS growth that OOMKilled the pod.
+
+    Teardown reads the list in reverse construction order, so the branches are severed first
+    and the shared head of the fan-out (gate, then loader) last -- the order D-09 documents.
+    Teardown was measured flat in either direction, so this is for readability.
+    """
+
+    algos: list[Any] = field(default_factory=list)
+
+    def register(self, algo: Any) -> Any:
+        """Record ``algo`` as connectable, returning it so callers can wire it in one step."""
+        self.algos.append(algo)
+        return algo
+
+    def connected(self) -> list[Any]:
+        """Everything built so far, newest first -- safe to call from a ``finally``."""
+        return list(reversed(self.algos))
+
+    def clear(self) -> None:
+        """Drop the proxy references once the edges are severed."""
+        self.algos.clear()
 
 
 @dataclass(frozen=True)
@@ -118,13 +160,13 @@ def _chunked(windows: list[Window], size: int) -> list[list[Window]]:
     return [windows[i : i + size] for i in range(0, len(windows), size)]
 
 
-def _stream_source(loader: Any, sample_rate: int, stop_at_sec: float | None, runtime: StreamingRuntime) -> tuple[Any, Any]:
-    """Return the fan-out source and optional early-stop gate."""
+def _stream_source(loader: Any, sample_rate: int, stop_at_sec: float | None, runtime: StreamingRuntime, network: _PartialNetwork) -> Any:
+    """Return the fan-out source, registering the optional early-stop gate before wiring it."""
     if stop_at_sec is None:
-        return loader.audio, None
-    gate = runtime.trimmer(sampleRate=sample_rate, startTime=0.0, endTime=stop_at_sec + _CHUNK_GATE_MARGIN_SEC)
+        return loader.audio
+    gate = network.register(runtime.trimmer(sampleRate=sample_rate, startTime=0.0, endTime=stop_at_sec + _CHUNK_GATE_MARGIN_SEC))
     loader.audio >> gate.signal
-    return gate.signal, gate
+    return gate.signal
 
 
 def _build_window_branches(
@@ -133,17 +175,20 @@ def _build_window_branches(
     windows: Sequence[Window],
     pool: Any,
     runtime: StreamingRuntime,
-) -> list[tuple[Any, Any]]:
-    """Connect one isolated Scale/Trimmer branch per requested window."""
-    branches: list[tuple[Any, Any]] = []
+    network: _PartialNetwork,
+) -> None:
+    """Connect one isolated Scale/Trimmer branch per requested window.
+
+    Each algorithm is registered on ``network`` before it is wired, so a raise anywhere in this
+    loop still leaves every branch built so far -- including the half-wired one -- visible to
+    the caller's teardown.  Nothing is returned: the network IS the accumulator.
+    """
     for idx, start, end in windows:
-        scale = runtime.scale(factor=1.0)
-        trimmer = runtime.trimmer(sampleRate=sample_rate, startTime=start, endTime=end)
+        scale = network.register(runtime.scale(factor=1.0))
+        trimmer = network.register(runtime.trimmer(sampleRate=sample_rate, startTime=start, endTime=end))
         source >> scale.signal
         scale.signal >> trimmer.signal
         trimmer.signal >> (pool, f"{_SINK_KEY_PREFIX}{idx}")
-        branches.append((scale, trimmer))
-    return branches
 
 
 def _extract_window_buffers(pool: Any, windows: Sequence[Window]) -> dict[int, Any]:
@@ -175,20 +220,23 @@ def _decode_windows_streaming(
     windows.  A separate head Trimmer supplies the optional chunk gate.  Every graph edge is
     disconnected in ``finally`` because dropping Python proxies does not release Essentia's
     C++ buffers or the implicit ``PoolStorage`` sink.
+
+    The build writes into :class:`_PartialNetwork` as it goes rather than returning a finished
+    list, so a raise part-way through the fan-out -- the ordinary failure path, not an exotic
+    one -- still hands the ``finally`` everything that was constructed (D-09, phaze-u1n7j).
     """
     pool = runtime.pool()
-    loader = runtime.mono_loader(filename=file_path, sampleRate=sample_rate)
-    branches: list[tuple[Any, Any]] = []
-    gate: Any = None
+    network = _PartialNetwork()
+    loader = network.register(runtime.mono_loader(filename=file_path, sampleRate=sample_rate))
     try:
-        source, gate = _stream_source(loader, sample_rate, stop_at_sec, runtime)
-        branches = _build_window_branches(source, sample_rate, windows, pool, runtime)
+        source = _stream_source(loader, sample_rate, stop_at_sec, runtime, network)
+        _build_window_branches(source, sample_rate, windows, pool, runtime, network)
         runtime.run(loader)
         return _extract_window_buffers(pool, windows)
     finally:
-        runtime.disconnect_network([*(algo for branch in branches for algo in branch), gate, loader])
-        branches.clear()
-        del loader, pool, gate
+        runtime.disconnect_network(network.connected())
+        network.clear()
+        del loader, pool
 
 
 def _call_streaming(
