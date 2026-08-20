@@ -1,9 +1,22 @@
-"""Agent S3-staging callback HTTP boundary.
+"""POST /api/internal/agent/s3/{file_id}/{uploaded,failed} -- control-side S3-staging callbacks (Phase 53, Plan 04).
 
-The file-server agent is Postgres- and SDK-free, so it reports multipart upload success or failure
-through these token-authenticated callbacks. The stateful transaction/S3 protocols live in
-``services.agent_s3_reports``; this router deliberately retains authentication, request/response
-schemas, logging context, and exact HTTP compatibility.
+The file-server agent is Postgres- and SDK-free, so it reports its multipart-upload outcome through
+these token-authed internal callbacks and the control plane -- the only side holding the S3
+credentials and the ORM -- completes the upload itself (KSTAGE-01/DIST-01, never the agent). The
+stateful transaction/S3 protocols live in ``services.agent_s3_reports``, which documents the
+incidents behind each ordering; this router deliberately retains ONLY authentication,
+request/response schemas, logging context, and exact HTTP compatibility.
+
+Mirrors ``agent_push.py`` (report_pushed / report_push_mismatch). Both routes are 200-by-default:
+a duplicate/late callback is an idempotent no-op that still returns 200 (T-53-15), and a re-drive
+with no fileserver online -- or against a wedged S3 -- is a clean 200 hold, never a 500 (T-53-19).
+The only non-200 exits are the two the service raises for: an unresolvable recorded staging bucket
+(409, MKUE-02) and an unknown ``file_id`` on an under-cap re-drive (404, mirroring the
+presign-download load, 53-02). Response FIELDS are additive-compatible and unchanged --
+``/failed`` still reports ``cleared`` exactly when the terminal spill ran.
+
+AUTH-01 discipline: ``file_id`` always travels on the URL PATH; the agent identity comes from the
+token dependency. The request bodies carry NO identity (``extra="forbid"`` on the schemas).
 """
 
 from typing import TYPE_CHECKING, Annotated, cast
@@ -149,7 +162,14 @@ async def report_uploaded(
     agent: Annotated[Agent, Depends(get_authenticated_agent)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> UploadedResponse:
-    """Complete an upload through the typed service protocol and preserve the agent's HTTP contract."""
+    """Record a successful upload: complete the multipart CONTROL-SIDE + ``UPLOADING -> UPLOADED``.
+
+    The control plane (not the agent) completes the multipart upload (KSTAGE-01/DIST-01) using the
+    agent-reported ``(part_number, etag)`` pairs, then flips ``cloud_job`` with a rowcount guard so a
+    duplicate/late callback is an idempotent 200 no-op that does NOT re-complete the object (T-53-15).
+    On the kueue target this is also the post-staging seam that routes ``submit_cloud_job`` (D-01b,
+    KROUTE-03/04). ``file_id`` is the PATH value only; ``agent`` comes from the token (AUTH-01).
+    """
     settings = cast("ControlSettings", get_settings())
     parts = [(part.part_number, part.etag) for part in body.parts]
     try:
@@ -171,7 +191,15 @@ async def report_upload_failed(
     agent: Annotated[Agent, Depends(get_authenticated_agent)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> UploadFailedResponse:
-    """Re-drive or spill a failed upload while preserving idempotent HTTP-200 compatibility."""
+    """Record an upload failure: bounded re-drive, or terminal cleanup at the cap (KSTAGE-04).
+
+    The bounded ``s3_upload_attempt`` budget rides ``scheduling_ledger.redrive_attempt`` (phaze-y0j0)
+    and its read->+1->write-back is advisory-lock serialized (D-11 / T-83-02) -- see
+    ``services.agent_s3_reports`` for both. Under the cap this re-drives and holds the slot (T-53-16);
+    at/over it the cloud_job spills to awaiting and the multipart + staged object are cleaned up
+    post-commit (T-53-17). ``file_id`` is the PATH value only; ``agent`` from the token (AUTH-01).
+    ``body.detail`` is a bounded optional diagnostic that carries no identity.
+    """
     settings = cast("ControlSettings", get_settings())
     try:
         result = await process_upload_failed(session, file_id, settings, request.app.state.task_router)
