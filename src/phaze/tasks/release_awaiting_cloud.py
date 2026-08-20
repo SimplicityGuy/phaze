@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
@@ -61,12 +62,14 @@ from phaze.services.route_control import get_route_control
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     import uuid
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.config import ControlSettings
     from phaze.services.backend_selection import BackendSlot
+    from phaze.services.backends import Backend
 
 
 logger = structlog.get_logger(__name__)
@@ -222,6 +225,17 @@ async def _cloud_budget_for(session: AsyncSession, file_id: uuid.UUID) -> tuple[
     return int(attempts or 0), budget
 
 
+def _free_slots(snapshot: dict[str, BackendSlot]) -> int:
+    """Total free slots across the AVAILABLE backends -- the tick's candidate budget.
+
+    Read at two points with two meanings, both off the SAME live snapshot: once BEFORE the walk (the
+    first page's LIMIT, and GATE 1 -- zero means a clean no-op tick), and once per page AFTER routing
+    it, when ``remaining`` has been decremented by everything this tick staged (the walk's stop test).
+    An unavailable backend contributes nothing even when it has capacity.
+    """
+    return sum(slot["remaining"] for slot in snapshot.values() if slot["available"])
+
+
 async def _next_candidate_page(
     session: AsyncSession,
     snapshot: dict[str, BackendSlot],
@@ -247,7 +261,7 @@ async def _next_candidate_page(
     The cursor is the last row's ``(created_at, id)``, matching the query's composite ORDER BY exactly;
     ``created_at`` is immutable and ``id`` breaks its ties, so the walk can neither skip nor re-serve a row.
     """
-    free_slots = sum(slot["remaining"] for slot in snapshot.values() if slot["available"])
+    free_slots = _free_slots(snapshot)
     if free_slots <= 0 or len(page) < page_limit or scanned >= _MAX_CANDIDATE_SCAN:
         return None
     # Ask for at least _MIN_CANDIDATE_PAGE (amortize the walk over a long unroutable prefix), never more
@@ -258,6 +272,232 @@ async def _next_candidate_page(
     if not next_page:
         return None
     return next_page, next_limit
+
+
+@dataclass(slots=True)
+class _WalkState:
+    """The mutable running tally of ONE tick's paged FIFO walk (phaze-9sqa).
+
+    Owned by :func:`stage_cloud_window` and mutated IN PLACE by the walk helpers, deliberately: the
+    outer CR-02 safety net reports ``max(scanned, len(candidates))`` held rows using whatever the walk
+    got through *before* it raised, so these counters must survive an exception unwinding out of the
+    walk. Returning them instead would lose exactly the numbers the abort path needs.
+
+    * ``tally`` -- the ``{"staged", "skipped"}`` the cron returns.
+    * ``hold_reasons`` -- each held candidate binned by the ``select_backend`` filter that rejected it;
+      feeds both the completion log line and the repeated-all-held WARNING.
+    * ``scanned`` -- every row examined this tick across ALL pages (the ``_MAX_CANDIDATE_SCAN`` budget).
+    """
+
+    tally: dict[str, int] = field(default_factory=lambda: {"staged": 0, "skipped": 0})
+    hold_reasons: Counter[str] = field(default_factory=Counter)
+    scanned: int = 0
+
+
+async def _snapshot_backend_slots(backends: Sequence[Backend], session: AsyncSession) -> dict[str, BackendSlot]:
+    """Probe EVERY resolved backend ONCE and return the tick's ``{backend_id: BackendSlot}`` snapshot.
+
+    SCHED-02 / Pitfall 1: ``is_available`` (the Kueue cluster probe / compute agent gate / local
+    always-up) and ``in_flight_count`` (the D-05 per-backend cloud_job count replacing the retired
+    global window) are each probed exactly M times HERE -- NEVER re-probed inside the candidate loop.
+    The snapshot IS the atomicity boundary the whole tick routes against.
+
+    Runs inside the caller's advisory-locked transaction; issues no writes and never raises.
+    """
+    snapshot: dict[str, BackendSlot] = {}
+    for backend in backends:
+        # MKUE-03 / D-07 (research Pitfall 8): per-backend failure isolation for the once-per-tick
+        # snapshot. is_available / in_flight_count are SUPPOSED to swallow their own failures (Phase
+        # 68's "is_available never raises" discipline), but a raise or timeout that escapes ONE flaky
+        # cluster's probe must NOT abort the whole drain tick -- it would starve every healthy backend
+        # (and local) of work. Treat a raising/timing-out backend as UNAVAILABLE (0 free slots) for
+        # this tick and log (backend_id only -- never a KubeConfig / SecretStr / exception payload
+        # carrying creds, T-70-03-02), then continue so the surrounding limit-gate simply sees this
+        # backend contribute nothing while every other backend proceeds normally.
+        try:
+            # DRAIN-02: bound the availability probe with asyncio.wait_for so a HUNG cluster probe
+            # (not just a raising one) times out to unavailable rather than stalling the whole tick
+            # while holding the advisory lock -- mirrors the read-path bound in services/backends.py.
+            available = await _bounded_is_available(backend, session)
+            remaining = max(0, backend.cap - await backend.in_flight_count(session))
+        except Exception:
+            logger.warning("stage_cloud_window: backend snapshot probe failed -> treating as unavailable (0 slots)", backend_id=backend.id)
+            snapshot[backend.id] = {"backend": backend, "available": False, "remaining": 0, "cap": backend.cap}
+            continue
+        snapshot[backend.id] = {
+            "backend": backend,
+            "available": available,
+            "remaining": remaining,
+            "cap": backend.cap,
+        }
+    return snapshot
+
+
+def _route_candidate(
+    lane_entered_at: datetime,
+    cloud_attempts: int,
+    snapshot: dict[str, BackendSlot],
+    cfg: ControlSettings,
+    cloud_budget: CloudBudgetState | None,
+) -> tuple[Backend | None, str]:
+    """Return the pure rank/budget policy's ``(backend, "")`` dispatch or ``(None, reason)`` hold.
+
+    No I/O: the whole decision is the pure ``select_backend_with_reason`` over the per-tick snapshot.
+    The ONE thing this wrapper adds is the clock, and it must stay per-candidate:
+
+    models/base.py: created_at/updated_at carry no timezone=True, so create_all yields naive datetimes
+    while a TIMESTAMPTZ migration column hands asyncpg tz-aware ones. Match the candidate's awareness
+    (assume-UTC, the scan_reaper / pipeline_scans convention) so the pure select_backend staleness
+    subtraction (now - lane_entered_at) never raises. ``lane_entered_at`` is the awaiting
+    ``cloud_job.updated_at`` surfaced by get_cloud_staging_candidates (D-07): the staleness clock lives
+    on the sidecar row, NOT file.updated_at, so it survives Phase 90's removal of the dual-written
+    file.state. The parked row is never mutated here.
+    """
+    # Deferred import (Pitfall: keep the module graph acyclic): backend_selection imports backends,
+    # which imports THIS module for the push-job key + compute enqueue leg, so a top-level import
+    # would close the cycle. Called once per candidate, but an already-imported module is a sys.modules
+    # lookup -- immaterial next to the per-candidate _cloud_budget_for round trip that precedes it.
+    from phaze.services.backend_selection import select_backend_with_reason  # noqa: PLC0415 -- deferred to break the import cycle
+
+    now = datetime.now(UTC)
+    if lane_entered_at.tzinfo is None:
+        now = now.replace(tzinfo=None)
+    return select_backend_with_reason(lane_entered_at, cloud_attempts, snapshot, now, cfg, cloud_budget=cloud_budget)
+
+
+async def _stage_candidate_page(
+    session: AsyncSession,
+    page: list[tuple[FileRecord, datetime]],
+    snapshot: dict[str, BackendSlot],
+    cfg: ControlSettings,
+    task_router: Any,
+    state: _WalkState,
+) -> bool:
+    """Route ONE page of FIFO candidates, mutating ``snapshot``/``state``; return "fileserver vanished".
+
+    SCHED-01: each candidate goes to select_backend's rank-first choice across N backends. ``dispatch``
+    owns the FileState -> PUSHING flip AND the cloud_job write in the CALLER's session (D-03), before
+    its enqueue, so the caller's SINGLE post-loop commit stays the atomic boundary -- this function
+    NEVER commits and NEVER rolls back (either would release the advisory lock + row locks and re-open
+    the over-stage class, Landmine L1). A truthy dispatch return is a genuine stage; False is a
+    deterministic-key dedup no-op; either way the cloud_job slot was claimed, so the local remaining is
+    decremented. Returns True only for the fileserver-vanished break, which ends the whole walk.
+    """
+    for index, (file, lane_entered_at) in enumerate(page):
+        cloud_attempts, cloud_budget = await _cloud_budget_for(session, file.id)
+        target, hold_reason = _route_candidate(lane_entered_at, cloud_attempts, snapshot, cfg, cloud_budget)
+        if target is None:
+            # Clean per-candidate hold: no eligible backend for this file this tick. No state change
+            # -- the file stays AWAITING_CLOUD (guards the updated_at staleness signal, RESEARCH A3).
+            # phaze-9sqa: bin the labelled reason. This is the ONLY hold that leaves free slots open
+            # (every other skip below claimed a slot), so it is the one the walk must step past.
+            state.hold_reasons[hold_reason] += 1
+            state.tally["skipped"] += 1
+            continue
+        # WR-02: dispatch re-resolves the fileserver agent per file. Under READ COMMITTED a fileserver
+        # revoked by a concurrent session AFTER GATE-2 in the caller but BEFORE this iteration raises
+        # NoActiveAgentError straight out of dispatch. Catch it -> CLEAN HOLD of the remaining
+        # not-yet-dispatched candidates (this one included), which stay AWAITING_CLOUD (cron NEVER
+        # raises). Every dispatch gates its fileserver agent BEFORE any state mutation (CR-01), so the
+        # raising file is untouched and the already-staged prior candidates are genuine -> stop (NOT
+        # rollback), letting the caller's post-loop commit persist that good prior work.
+        try:
+            dispatched = await target.dispatch(file, session, task_router)
+        except NoActiveAgentError:
+            held = len(page) - index
+            logger.info("stage_cloud_window hold: fileserver agent vanished mid-tick", held=held)
+            state.tally["skipped"] += held
+            # phaze-9sqa: the fileserver is the push initiator for EVERY backend, so this ends the
+            # whole walk -- fetching further pages could only hold them too (and lock them for it).
+            return True
+        except Exception:
+            # MKUE-03 / D-07 (research Pitfall 8): a GENERIC kube/S3 raise from ONE backend's dispatch
+            # (a cluster/bucket error, NOT the fileserver-vanish NoActiveAgentError above) is a clean
+            # hold of THIS candidate ONLY -- distinct from the fileserver-vanish stop, which affects
+            # every remaining dispatch. Each dispatch gates its fileserver agent + runs its fallible
+            # S3 setup BEFORE the FileState flip (CR-01), so the common pre-upsert raise touches
+            # nothing and the file stays AWAITING_CLOUD. We do NOT roll back here (a mid-loop rollback
+            # would drop the advisory lock, Landmine L1); if the raise instead POISONED the txn (a PG
+            # statement error), the caller's safety net rolls the whole tick back so nothing partial is
+            # committed. Count it skipped, log (backend_id only, T-70-03-02), do NOT decrement the slot
+            # (no work claimed), and continue so a single flaky cluster cannot starve the other
+            # backends. The tick NEVER aborts and NEVER raises.
+            logger.warning("stage_cloud_window: backend dispatch failed -> holding this candidate", backend_id=target.id)
+            state.tally["skipped"] += 1
+            continue
+        # The slot is claimed (cloud_job upserted) on both a genuine stage and a dedup no-op, so
+        # decrement the local remaining unconditionally -- this is what makes a full top-rank backend
+        # spill the NEXT candidate to the next rank within the same tick (SCHED-01), cap-safe (SCHED-02).
+        snapshot[target.id]["remaining"] -= 1
+        if dispatched:
+            state.tally["staged"] += 1
+        else:
+            state.tally["skipped"] += 1
+    return False
+
+
+async def _walk_candidate_pages(
+    session: AsyncSession,
+    first_page: tuple[list[tuple[FileRecord, datetime]], int],
+    snapshot: dict[str, BackendSlot],
+    cfg: ControlSettings,
+    task_router: Any,
+    state: _WalkState,
+) -> None:
+    """Drive the phaze-9sqa paged FIFO walk: route a page, then decide whether to fetch the next.
+
+    A page is the pair ``(rows, the LIMIT they were fetched with)`` -- the LIMIT is not decoration, it
+    is what a short page is compared against to detect the end of the candidate set. ``first_page`` is
+    that same pair so it composes with :func:`_next_candidate_page`, which returns it in exactly this
+    shape; the loop below re-binds one from the other without reshaping either.
+
+    Every invariant the original single-page loop held is unchanged: ONE transaction, ONE advisory
+    lock, ONE post-loop commit in the CALLER, no mid-loop rollback -- pagination only widens WHICH rows
+    a tick may consider, never when it commits. This function issues no COMMIT/ROLLBACK of its own; it
+    runs inside the caller's CR-02 safety net and may raise into it, which is why ``state`` carries the
+    counters rather than a return value.
+    """
+    page, page_limit = first_page
+    while True:
+        state.scanned += len(page)
+        fileserver_vanished = await _stage_candidate_page(session, page, snapshot, cfg, task_router, state)
+        next_page = None if fileserver_vanished else await _next_candidate_page(session, snapshot, page, page_limit, state.scanned)
+        if next_page is None:
+            break
+        page, page_limit = next_page
+
+
+def _report_tick_outcome(state: _WalkState, free_slots: int, agent_id: str) -> None:
+    """Aggregate the tick's hold reasons into the starvation alarm + the routine completion line.
+
+    phaze-9sqa starvation alarm. An "all-held" tick examined candidates and routed NONE of them --
+    which, sustained, is the exact production signature this bead came from: free cloud capacity, a
+    non-empty awaiting queue, and ``staged: 0`` forever. One such tick is unremarkable (a full window
+    clears on the next); ``_ALL_HELD_WARN_AFTER_TICKS`` in a row is a stalled lane, and the binned
+    reasons say which filter is doing it -- ``cloud_attempts_exhausted`` is the permanent one and means
+    operator action (raise the local cap, or reset/expire those attempts), not patience.
+
+    Called ONLY on the paths that reached the candidate loop; see :func:`_note_all_held_tick` for why
+    the early-return ticks must not touch the streak.
+    """
+    all_held = state.tally["staged"] == 0 and sum(state.hold_reasons.values()) == state.scanned and state.scanned > 0
+    consecutive_all_held = _note_all_held_tick(all_held)
+    if all_held and consecutive_all_held >= _ALL_HELD_WARN_AFTER_TICKS:
+        logger.warning(
+            "stage_cloud_window: every candidate held on consecutive ticks -- the cloud lane is not draining",
+            consecutive_all_held_ticks=consecutive_all_held,
+            hold_reasons=dict(state.hold_reasons),
+            candidates_scanned=state.scanned,
+            free_slots=free_slots,
+        )
+    logger.info(
+        "stage_cloud_window complete",
+        agent_id=agent_id,
+        staged=state.tally["staged"],
+        skipped=state.tally["skipped"],
+        candidates_scanned=state.scanned,
+        hold_reasons=dict(state.hold_reasons),
+    )
 
 
 async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
@@ -277,6 +517,13 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
     walked past rather than re-read every 5 min while the queue behind it starves. ``skipped`` therefore
     counts holds across every page walked, and a tick that holds 100% of what it scanned
     ``_ALL_HELD_WARN_AFTER_TICKS`` times running escalates to a WARNING naming the hold reasons.
+
+    phaze-1i0h6.9: the orchestration is decomposed into named units (:func:`_snapshot_backend_slots`,
+    :func:`_route_candidate`, :func:`_stage_candidate_page`, :func:`_walk_candidate_pages`,
+    :func:`_report_tick_outcome`) but the TRANSACTION is not. This function remains the sole owner of
+    the session, the ONE ``pg_advisory_xact_lock``, the ONE post-loop commit, the parked-enqueue flush,
+    and the CR-02 rollback -- no helper commits, rolls back, or takes a lock. Fragmenting that
+    ownership is what would re-open the over-stage class (Landmine L1).
     """
     # ControlSettings-scoped: this cron is registered ONLY on the control worker (PHAZE_ROLE=control),
     # so get_settings() returns ControlSettings here (mirrors controller.startup's config access).
@@ -286,9 +533,9 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
     if not cfg.cloud_enabled:
         return {"staged": 0, "skipped": 0}
     # Deferred imports (Pitfall: keep the module graph acyclic): backends.py re-homes this module's
-    # push-job key + compute enqueue leg (it imports this module), and backend_selection imports
-    # backends -- importing either at module top would close the backends<->drain import cycle.
-    from phaze.services.backend_selection import select_backend_with_reason  # noqa: PLC0415 -- deferred to break the import cycle
+    # push-job key + compute enqueue leg (it imports this module), so importing it at module top would
+    # close the backends<->drain import cycle. (The selection policy's own deferred import, for the
+    # same reason, lives in _route_candidate.)
     from phaze.services.backends import (  # noqa: PLC0415 -- deferred to break the import cycle
         drop_pending_push_file_enqueues,
         flush_pending_push_file_enqueues,
@@ -297,6 +544,7 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
 
     # Phase 69 (SCHED-01): resolve ALL backends (resolve_backends no longer raises on >1 non-local).
     backends = resolve_backends(cfg)
+    state = _WalkState()
 
     async with ctx["async_session"]() as session:
         # Phase 71 (BEUI-02, D-08): the force-local override. When engaged, this drain becomes a clean
@@ -311,49 +559,19 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
         # once-per-tick in_flight_count snapshot sees the committed dispatches. Auto-released at txn end.
         await session.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY})
 
-        # SCHED-02 / Pitfall 1: snapshot EVERY backend's availability + free capacity ONCE per tick.
-        # is_available (the Kueue cluster probe / compute agent gate / local always-up) and
-        # in_flight_count (the D-05 per-backend cloud_job count replacing the retired global window) are
-        # each probed exactly M times HERE -- NEVER re-probed inside the candidate loop below.
-        snapshot: dict[str, BackendSlot] = {}
-        for backend in backends:
-            # MKUE-03 / D-07 (research Pitfall 8): per-backend failure isolation for the once-per-tick
-            # snapshot. is_available / in_flight_count are SUPPOSED to swallow their own failures (Phase
-            # 68's "is_available never raises" discipline), but a raise or timeout that escapes ONE flaky
-            # cluster's probe must NOT abort the whole drain tick -- it would starve every healthy backend
-            # (and local) of work. Treat a raising/timing-out backend as UNAVAILABLE (0 free slots) for
-            # this tick and log (backend_id only -- never a KubeConfig / SecretStr / exception payload
-            # carrying creds, T-70-03-02), then continue so the surrounding limit-gate simply sees this
-            # backend contribute nothing while every other backend proceeds normally.
-            try:
-                # DRAIN-02: bound the availability probe with asyncio.wait_for so a HUNG cluster probe
-                # (not just a raising one) times out to unavailable rather than stalling the whole tick
-                # while holding the advisory lock -- mirrors the read-path bound in services/backends.py.
-                available = await _bounded_is_available(backend, session)
-                remaining = max(0, backend.cap - await backend.in_flight_count(session))
-            except Exception:
-                logger.warning("stage_cloud_window: backend snapshot probe failed -> treating as unavailable (0 slots)", backend_id=backend.id)
-                snapshot[backend.id] = {"backend": backend, "available": False, "remaining": 0, "cap": backend.cap}
-                continue
-            snapshot[backend.id] = {
-                "backend": backend,
-                "available": available,
-                "remaining": remaining,
-                "cap": backend.cap,
-            }
-
+        snapshot = await _snapshot_backend_slots(backends, session)
         # Candidate limit = total free slots across all AVAILABLE backends (non-local free capacity +
         # local headroom). GATE 1 for the whole registry: when every backend is full or unavailable the
         # limit is 0 -> clean no-op (no candidate is fetched, no state changes).
-        limit = sum(slot["remaining"] for slot in snapshot.values() if slot["available"])
+        limit = _free_slots(snapshot)
         if limit <= 0:
             return {"staged": 0, "skipped": 0}
 
         # FIFO oldest-first candidates, bounded to the total free slots, row-locked (one transaction).
-        # phaze-9sqa: this is now the FIRST PAGE of a keyset walk rather than the whole window. It stays
+        # phaze-9sqa: this is the FIRST PAGE of a keyset walk rather than the whole window. It stays
         # sized at exactly ``limit``, so a healthy tick -- one whose oldest rows are routable -- issues the
-        # same single query over the same rows and produces the same tally as before; the walk below
-        # engages ONLY once a page leaves free slots unfilled.
+        # same single query over the same rows and produces the same tally as before; the walk engages
+        # ONLY once a page leaves free slots unfilled.
         candidates = await get_cloud_staging_candidates(session, limit)
         if not candidates:
             return {"staged": 0, "skipped": 0}
@@ -367,104 +585,17 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
             logger.info("stage_cloud_window hold: no fileserver agent online", candidates=len(candidates))
             return {"staged": 0, "skipped": len(candidates)}
 
-        # SCHED-01: route each FIFO candidate to select_backend's rank-first choice across N backends.
-        # dispatch owns the FileState -> PUSHING flip AND the cloud_job write in THIS session (D-03),
-        # before its enqueue, so the SINGLE post-loop commit stays the atomic boundary -- dispatch NEVER
-        # commits (a mid-loop commit would release the advisory lock + row locks and re-open the
-        # over-stage class, Landmine L1). A truthy return is a genuine stage; False is a deterministic-key
-        # dedup no-op; either way the cloud_job slot was claimed, so the local remaining is decremented.
-        task_router = ctx["task_router"]
-        tally = {"staged": 0, "skipped": 0}
-        # phaze-9sqa keyset-walk state. ``page`` / ``page_limit`` are the current page and the LIMIT it was
-        # fetched with; ``scanned`` is every row examined this tick (the ``_MAX_CANDIDATE_SCAN`` budget);
-        # ``hold_reasons`` bins each held candidate by the ``select_backend`` filter that rejected it, and
-        # feeds both the completion log line and the repeated-all-held WARNING.
-        page = candidates
-        page_limit = limit
-        scanned = 0
-        hold_reasons: Counter[str] = Counter()
-        # CR-02 safety net (T-50-cron-raise): the candidate loop + the single post-loop commit run under
+        # CR-02 safety net (T-50-cron-raise): the candidate walk + the single post-loop commit run under
         # ONE outer guard so an UNEXPECTED raise -- e.g. a Postgres serialization/deadlock surfaced from a
-        # session.execute mid-loop (which aborts the txn, so every subsequent statement INCLUDING the final
-        # commit raises), or a raise from _cloud_budget_for outside the per-candidate try below -- can
+        # session.execute mid-walk (which aborts the txn, so every subsequent statement INCLUDING the final
+        # commit raises), or a raise from _cloud_budget_for outside the per-candidate try -- can
         # NEVER propagate out of this cron. On any such error we roll back the WHOLE tick (discarding every
         # partial/uncommitted write so no phantom dispatch is ever committed) and report a clean hold; the
         # held candidates stay AWAITING_CLOUD and re-stage next tick. This is the ONLY rollback: we never
-        # roll back mid-loop (that would end the txn and release the pg_advisory_xact_lock, re-opening the
+        # roll back mid-walk (that would end the txn and release the pg_advisory_xact_lock, re-opening the
         # over-stage class, Landmine L1). The advisory-lock scope + single post-loop commit are unchanged.
         try:
-            # phaze-9sqa: the FIFO walk is now paged. Each iteration routes one page, then decides whether
-            # the free slots it failed to fill justify fetching the next one. Every invariant the single-page
-            # loop held is unchanged: one transaction, one advisory lock, one post-loop commit, no mid-loop
-            # rollback -- pagination only widens WHICH rows a tick may consider, never when it commits.
-            while True:
-                scanned += len(page)
-                fileserver_vanished = False
-                for index, (file, lane_entered_at) in enumerate(page):
-                    cloud_attempts, cloud_budget = await _cloud_budget_for(session, file.id)
-                    # models/base.py: created_at/updated_at carry no timezone=True, so create_all yields naive
-                    # datetimes while a TIMESTAMPTZ migration column hands asyncpg tz-aware ones. Match the
-                    # candidate's awareness (assume-UTC, the scan_reaper / pipeline_scans convention) so the pure
-                    # select_backend staleness subtraction (now - lane_entered_at) never raises. lane_entered_at
-                    # is the awaiting cloud_job.updated_at surfaced by get_cloud_staging_candidates (D-07): the
-                    # staleness clock lives on the sidecar row, NOT file.updated_at, so it survives Phase 90's
-                    # removal of the dual-written file.state. The parked row is never mutated here.
-                    now = datetime.now(UTC)
-                    if lane_entered_at.tzinfo is None:
-                        now = now.replace(tzinfo=None)
-                    target, hold_reason = select_backend_with_reason(lane_entered_at, cloud_attempts, snapshot, now, cfg, cloud_budget=cloud_budget)
-                    if target is None:
-                        # Clean per-candidate hold: no eligible backend for this file this tick. No state change
-                        # -- the file stays AWAITING_CLOUD (guards the updated_at staleness signal, RESEARCH A3).
-                        # phaze-9sqa: bin the labelled reason. This is the ONLY hold that leaves free slots open
-                        # (every other skip below claimed a slot), so it is the one the walk must step past.
-                        hold_reasons[hold_reason] += 1
-                        tally["skipped"] += 1
-                        continue
-                    # WR-02: dispatch re-resolves the fileserver agent per file. Under READ COMMITTED a fileserver
-                    # revoked by a concurrent session AFTER GATE-2 above but BEFORE this iteration raises
-                    # NoActiveAgentError straight out of dispatch. Catch it -> CLEAN HOLD of the remaining
-                    # not-yet-dispatched candidates (this one included), which stay AWAITING_CLOUD (cron NEVER
-                    # raises). Every dispatch gates its fileserver agent BEFORE any state mutation (CR-01), so the
-                    # raising file is untouched and the already-staged prior candidates are genuine -> break (NOT
-                    # rollback), letting the post-loop commit persist that good prior work.
-                    try:
-                        dispatched = await target.dispatch(file, session, task_router)
-                    except NoActiveAgentError:
-                        remaining = len(page) - index
-                        logger.info("stage_cloud_window hold: fileserver agent vanished mid-tick", held=remaining)
-                        tally["skipped"] += remaining
-                        # phaze-9sqa: the fileserver is the push initiator for EVERY backend, so this ends the
-                        # whole walk -- fetching further pages could only hold them too (and lock them for it).
-                        fileserver_vanished = True
-                        break
-                    except Exception:
-                        # MKUE-03 / D-07 (research Pitfall 8): a GENERIC kube/S3 raise from ONE backend's dispatch
-                        # (a cluster/bucket error, NOT the fileserver-vanish NoActiveAgentError above) is a clean
-                        # hold of THIS candidate ONLY -- distinct from the fileserver-vanish break, which affects
-                        # every remaining dispatch. Each dispatch gates its fileserver agent + runs its fallible
-                        # S3 setup BEFORE the FileState flip (CR-01), so the common pre-upsert raise touches
-                        # nothing and the file stays AWAITING_CLOUD. We do NOT roll back here (a mid-loop rollback
-                        # would drop the advisory lock, Landmine L1); if the raise instead POISONED the txn (a PG
-                        # statement error), the outer safety net rolls the whole tick back so nothing partial is
-                        # committed. Count it skipped, log (backend_id only, T-70-03-02), do NOT decrement the slot
-                        # (no work claimed), and continue so a single flaky cluster cannot starve the other
-                        # backends. The tick NEVER aborts and NEVER raises.
-                        logger.warning("stage_cloud_window: backend dispatch failed -> holding this candidate", backend_id=target.id)
-                        tally["skipped"] += 1
-                        continue
-                    # The slot is claimed (cloud_job upserted) on both a genuine stage and a dedup no-op, so
-                    # decrement the local remaining unconditionally -- this is what makes a full top-rank backend
-                    # spill the NEXT candidate to the next rank within the same tick (SCHED-01), cap-safe (SCHED-02).
-                    snapshot[target.id]["remaining"] -= 1
-                    if dispatched:
-                        tally["staged"] += 1
-                    else:
-                        tally["skipped"] += 1
-                next_page = None if fileserver_vanished else await _next_candidate_page(session, snapshot, page, page_limit, scanned)
-                if next_page is None:
-                    break
-                page, page_limit = next_page
+            await _walk_candidate_pages(session, (candidates, limit), snapshot, cfg, ctx["task_router"], state)
             await session.commit()
             # phaze-grzo: fire the s3_upload enqueues KueueBackend.dispatch parked, ONLY now that the
             # cloud_job UPLOADING rows are durably committed -- so the worker-visible job (and its
@@ -477,7 +608,7 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
             # never precede the committed row it reads.
             await flush_pending_push_file_enqueues(session)
         except Exception:
-            # A poisoned transaction (or any unexpected raise from the pre-dispatch loop body / the commit)
+            # A poisoned transaction (or any unexpected raise from the pre-dispatch walk body / the commit)
             # must degrade to a clean hold, never a cron raise. Roll back the whole tick -- this discards any
             # uncommitted partial write, so a dispatch that raised AFTER a DB mutation can never leave a
             # committed limbo/phantom row -- and report every candidate held; they stay AWAITING_CLOUD.
@@ -491,33 +622,10 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
             drop_pending_push_file_enqueues(session)
             logger.warning("stage_cloud_window: tick aborted by an unexpected error -> rolling back, holding all", exc_info=True)
             await session.rollback()
-            # phaze-9sqa: ``scanned`` (every row this tick examined across all pages), not the first page's
-            # length -- the rollback discards the whole tick, so everything walked is held. It is at least
-            # ``len(candidates)``, so the single-page abort still reports exactly what it always did.
-            return {"staged": 0, "skipped": max(scanned, len(candidates))}
+            # phaze-9sqa: ``state.scanned`` (every row this tick examined across all pages), not the first
+            # page's length -- the rollback discards the whole tick, so everything walked is held. It is at
+            # least ``len(candidates)``, so the single-page abort still reports exactly what it always did.
+            return {"staged": 0, "skipped": max(state.scanned, len(candidates))}
 
-    # phaze-9sqa starvation alarm. An "all-held" tick examined candidates and routed NONE of them -- which,
-    # sustained, is the exact production signature this bead came from: free cloud capacity, a non-empty
-    # awaiting queue, and ``staged: 0`` forever. One such tick is unremarkable (a full window clears on the
-    # next); _ALL_HELD_WARN_AFTER_TICKS in a row is a stalled lane, and the binned reasons say which filter
-    # is doing it -- ``cloud_attempts_exhausted`` is the permanent one and means operator action (raise the
-    # local cap, or reset/expire those attempts), not patience.
-    all_held = tally["staged"] == 0 and sum(hold_reasons.values()) == scanned and scanned > 0
-    consecutive_all_held = _note_all_held_tick(all_held)
-    if all_held and consecutive_all_held >= _ALL_HELD_WARN_AFTER_TICKS:
-        logger.warning(
-            "stage_cloud_window: every candidate held on consecutive ticks -- the cloud lane is not draining",
-            consecutive_all_held_ticks=consecutive_all_held,
-            hold_reasons=dict(hold_reasons),
-            candidates_scanned=scanned,
-            free_slots=limit,
-        )
-    logger.info(
-        "stage_cloud_window complete",
-        agent_id=fileserver_agent.id,
-        staged=tally["staged"],
-        skipped=tally["skipped"],
-        candidates_scanned=scanned,
-        hold_reasons=dict(hold_reasons),
-    )
-    return tally
+    _report_tick_outcome(state, limit, fileserver_agent.id)
+    return state.tally
