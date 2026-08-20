@@ -53,15 +53,40 @@ def _make_file_record(
     return record
 
 
-def _make_analysis() -> MagicMock:
+def _make_analysis(file_id: uuid.UUID | None = None) -> MagicMock:
     """Create a mock AnalysisResult."""
     analysis = MagicMock()
+    # phaze-vu88k.4: the batched read keys rows back to their file by `file_id`, so the mock has to
+    # carry the real one -- an auto-MagicMock attribute would never match and the analysis would be
+    # silently dropped from the built context.
+    analysis.file_id = file_id
     analysis.bpm = 128.0
     analysis.musical_key = "Am"
     analysis.mood = "dark"
     analysis.style = "techno"
     analysis.features = {"energy": 0.85}
     return analysis
+
+
+def _batch_query_results(
+    file_records: list[MagicMock],
+    analyses: list[MagicMock],
+    metadata_rows: list[MagicMock],
+) -> list[MagicMock]:
+    """Stub the THREE batched reads ``generate_proposals`` issues in its read session, in order.
+
+    phaze-vu88k.4: the task used to issue three round trips PER FILE, and these tests stubbed
+    ``scalar_one_or_none`` three times per file. The reads are now three ``IN (...)`` queries for
+    the whole batch -- files, then analysis, then metadata -- so the stubs return ``.scalars()``
+    iterables that the task keys back by id. Same three reads in the same order against the same
+    session; only the query shape changed.
+    """
+    results = []
+    for rows in (file_records, analyses, metadata_rows):
+        result = MagicMock()
+        result.scalars.return_value = list(rows)
+        results.append(result)
+    return results
 
 
 SAMPLE_BATCH_RESPONSE = BatchProposalResponse(
@@ -91,18 +116,12 @@ async def test_generate_proposals_happy_path(
 
     file_id = uuid.uuid4()
     file_record = _make_file_record(file_id=file_id)
-    analysis = _make_analysis()
+    analysis = _make_analysis(file_id=file_id)
 
     session = AsyncMock()
 
-    # First execute: FileRecord, Second: AnalysisResult, Third: FileMetadata
-    mock_result_file = MagicMock()
-    mock_result_file.scalar_one_or_none.return_value = file_record
-    mock_result_analysis = MagicMock()
-    mock_result_analysis.scalar_one_or_none.return_value = analysis
-    mock_result_metadata = MagicMock()
-    mock_result_metadata.scalar_one_or_none.return_value = None
-    session.execute.side_effect = [mock_result_file, mock_result_analysis, mock_result_metadata]
+    # The three batched reads, in order: FileRecord, AnalysisResult, FileMetadata (no metadata row).
+    session.execute.side_effect = _batch_query_results([file_record], [analysis], [])
 
     mock_targets.return_value = {}
     mock_fetch.return_value = []
@@ -177,17 +196,11 @@ async def test_generate_proposals_calls_rate_limit(
 
     file_id = uuid.uuid4()
     file_record = _make_file_record(file_id=file_id)
-    analysis = _make_analysis()
+    analysis = _make_analysis(file_id=file_id)
 
     session = AsyncMock()
 
-    mock_result_file = MagicMock()
-    mock_result_file.scalar_one_or_none.return_value = file_record
-    mock_result_analysis = MagicMock()
-    mock_result_analysis.scalar_one_or_none.return_value = analysis
-    mock_result_metadata = MagicMock()
-    mock_result_metadata.scalar_one_or_none.return_value = None
-    session.execute.side_effect = [mock_result_file, mock_result_analysis, mock_result_metadata]
+    session.execute.side_effect = _batch_query_results([file_record], [analysis], [])
 
     mock_targets.return_value = {}
     mock_fetch.return_value = []
@@ -234,11 +247,7 @@ async def test_generate_proposals_holds_no_session_across_rate_limit_and_llm(
 
     def _make_recording_session() -> AsyncMock:
         s = AsyncMock()
-        mock_result_file = MagicMock()
-        mock_result_file.scalar_one_or_none.return_value = file_record
-        mock_result_none = MagicMock()
-        mock_result_none.scalar_one_or_none.return_value = None
-        s.execute.side_effect = [mock_result_file, mock_result_none, mock_result_none]
+        s.execute.side_effect = _batch_query_results([file_record], [], [])
         return s
 
     session_count = 0
@@ -332,11 +341,7 @@ async def test_generate_proposals_holds_no_session_across_companion_fetch(
 
     def _make_recording_session() -> AsyncMock:
         s = AsyncMock()
-        mock_result_file = MagicMock()
-        mock_result_file.scalar_one_or_none.return_value = file_record
-        mock_result_none = MagicMock()
-        mock_result_none.scalar_one_or_none.return_value = None
-        s.execute.side_effect = [mock_result_file, mock_result_none, mock_result_none]
+        s.execute.side_effect = _batch_query_results([file_record], [], [])
         return s
 
     def _factory() -> AsyncMock:
