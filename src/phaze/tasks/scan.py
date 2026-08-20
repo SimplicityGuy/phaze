@@ -146,45 +146,30 @@ def _resolve_chunk_size() -> int:
     return min(raw_chunk_size, cfg.agent_file_chunk_max)
 
 
-async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
-    """Walk a directory, SHA-256 known-extension files, POST chunks via HTTP (Phase 27 D-11..D-13).
+class _ScanProgress:
+    """The walk's two counters, mutated in place so the abort handler can still read them.
 
-    Per-chunk flow:
-      1. Append records until len(batch) == AgentSettings.scan_chunk_size (default 500).
-      2. POST FileUpsertChunk(files=batch, batch_id=payload.batch_id) via api.upsert_files.
-      3. PATCH ScanBatchPatch(processed_files=total) via api.patch_scan_batch.
-      4. Reset batch.
-
-    On clean walk: terminal PATCH ScanBatchPatch(status='completed', total_files=N, processed_files=N).
-    On scan_path-missing: short-circuit PATCH ScanBatchPatch(status='failed', error_message=...).
-    On AgentApiServerError after retries (D-12): abort + PATCH 'failed' with the cause.
-    On per-file OSError: log a warning, skip the file, continue the walk (mirrors the
-    Phase-89-retired ``services/ingestion.py``'s per-file skip pattern; D-12).
+    Same out-parameter shape, and the same reason, as ``tasks/functions.py``'s ``scratch_state`` and
+    ``tasks/execution.py``'s ``_MoveStep``: the ``AgentApiServerError`` handler must report
+    ``files_posted`` even when the raise came from inside the chunk loop, so the count cannot live in
+    that frame. ``files_skipped`` rides along because the zero-access guard reads both.
     """
-    payload = ScanDirectoryPayload.model_validate(kwargs)
 
-    api: PhazeAgentClient = ctx["api_client"]
-    chunk_size = _resolve_chunk_size()
+    __slots__ = ("files_skipped", "total")
 
-    # Operational logging (PR3): prove a running scan is doing work. agent context is
-    # the resolved agent_id when the worker stashed an identity; omitted in pure unit
-    # tests. time.monotonic() drives the duration so a clock change cannot skew it.
-    agent_id = getattr(ctx.get("agent_identity"), "agent_id", None)
-    started_at = time.monotonic()
-    logger.info("scan started", batch_id=str(payload.batch_id), path=payload.scan_path, agent=agent_id)
+    def __init__(self) -> None:
+        self.total = 0
+        # phaze-0p90: count per-FILE read failures too. The zero-access loud-failure guard originally
+        # counted only directory-walk errors (walk_errors), so a tree with LISTABLE directories but
+        # UNREADABLE files (dirs 0755, files 0600 owned by a foreign uid -- the common container-UID
+        # mismatch) walked every filename, skipped every hash with a per-file warning, and terminal-PATCHed
+        # status=completed/0-files -- reproducing the exact 260608 silent-failure mode the guard exists to
+        # prevent. Track the skips so a 0-file scan with unreadable files also fails loudly.
+        self.files_skipped = 0
 
-    scan_root = Path(payload.scan_path)
-    if not scan_root.is_dir():
-        logger.error("scan failed", batch_id=str(payload.batch_id), path=payload.scan_path, error="scan_path_not_a_directory")
-        await api.patch_scan_batch(
-            payload.batch_id,
-            ScanBatchPatch(
-                status="failed",
-                error_message=f"Scan path does not exist on agent: {payload.scan_path}",
-            ),
-        )
-        return {"status": "failed", "files_posted": 0, "reason": "scan_path_not_a_directory"}
 
+async def _publish_precount(api: PhazeAgentClient, payload: ScanDirectoryPayload, scan_root: Path) -> None:
+    """Populate ``ScanBatch.total_files`` up front from a hash-free name-only walk (best-effort UX)."""
     # Pre-count pass (UX denominator): walk the tree once WITHOUT stat or hashing,
     # counting only files whose extension is ingestible (MUSIC/VIDEO). This populates
     # ScanBatch.total_files up front so the Recent Scans "N / Z" progress widget shows a
@@ -219,6 +204,200 @@ async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         # controller-5xx failure handling (which surfaces a proper 'failed' terminal PATCH).
         logger.warning("scan_directory: pre-count total_files PATCH failed; continuing", batch_id=str(payload.batch_id))
 
+
+async def _hash_one_file(full_path: Path) -> FileUpsertRecord:
+    """stat + SHA-256 one candidate and build its upsert record. Raises ``OSError`` on an unreadable file.
+
+    Both blocking calls stay individually offloaded via ``asyncio.to_thread`` (phaze-j54q), and the
+    ``OSError`` deliberately propagates: the caller owns the per-file skip counter that the zero-access
+    guard reads, so swallowing it here would hide the 260608 failure mode all over again.
+    """
+    filename = full_path.name
+    stat_result = await asyncio.to_thread(full_path.stat)
+    file_size = stat_result.st_size
+    sha256_hash = await asyncio.to_thread(compute_sha256, full_path)
+    # Pitfall 3: NFC-normalize EVERY path field. Drift between the watcher's
+    # normalization and scan_directory's would create duplicate FileRecord rows
+    # under the composite UQ (agent_id, original_path).
+    normalized_path = unicodedata.normalize("NFC", str(full_path))
+    normalized_filename = unicodedata.normalize("NFC", filename)
+    normalized_current = unicodedata.normalize("NFC", str(full_path))
+    return FileUpsertRecord(
+        sha256_hash=sha256_hash,
+        original_path=normalized_path,
+        original_filename=normalized_filename,
+        current_path=normalized_current,
+        file_type=Path(filename).suffix.lower().lstrip("."),
+        file_size=file_size,
+    )
+
+
+async def _hash_and_post_chunks(
+    api: PhazeAgentClient, payload: ScanDirectoryPayload, candidate_paths: list[Path], chunk_size: int, progress: _ScanProgress
+) -> None:
+    """Hash every candidate and POST it in ``chunk_size`` batches, PATCHing progress after each.
+
+    Per-file ``OSError`` is a warn-and-skip that does NOT abort the walk (D-12); ``AgentApiServerError``
+    from either HTTP call propagates to ``scan_directory``'s single terminal handler, which is why the
+    counts live on ``progress`` rather than in this frame.
+    """
+    batch: list[FileUpsertRecord] = []
+    for full_path in candidate_paths:
+        try:
+            record = await _hash_one_file(full_path)
+        except OSError as exc:
+            progress.files_skipped += 1
+            logger.warning("scan_directory: skipping unreadable file %s: %s", full_path, exc)
+            continue
+
+        batch.append(record)
+        progress.total += 1
+        logger.debug("file discovered", path=record.original_path, size=record.file_size, ext=record.file_type)
+        if len(batch) >= chunk_size:
+            await api.upsert_files(FileUpsertChunk(files=batch, batch_id=payload.batch_id))
+            await api.patch_scan_batch(payload.batch_id, ScanBatchPatch(processed_files=progress.total))
+            logger.info("scan progress", batch_id=str(payload.batch_id), processed=progress.total)
+            batch = []
+
+    # Flush final partial chunk.
+    if batch:
+        await api.upsert_files(FileUpsertChunk(files=batch, batch_id=payload.batch_id))
+        await api.patch_scan_batch(payload.batch_id, ScanBatchPatch(processed_files=progress.total))
+
+
+async def _fail_zero_access(
+    api: PhazeAgentClient, payload: ScanDirectoryPayload, walk_errors: list[OSError], progress: _ScanProgress
+) -> dict[str, Any]:
+    """Terminal-fail a scan that produced no files AND hit at least one access error."""
+    reasons = []
+    if walk_errors:
+        reasons.append(f"{len(walk_errors)} directory read error(s) (first: {walk_errors[0]})")
+    if progress.files_skipped:
+        reasons.append(f"{progress.files_skipped} unreadable file(s)")
+    error_message = (
+        f"Scanned 0 files but hit {' and '.join(reasons)}. The agent container user likely "
+        f"cannot read {payload.scan_path} -- check file ownership/permissions vs the container UID."
+    )
+    logger.error(
+        "scan failed",
+        batch_id=str(payload.batch_id),
+        path=payload.scan_path,
+        error="access_errors",
+        walk_error_count=len(walk_errors),
+        files_skipped=progress.files_skipped,
+    )
+    await api.patch_scan_batch(
+        payload.batch_id,
+        ScanBatchPatch(status="failed", error_message=error_message),
+    )
+    # Preserve the historical reason for the directory-walk case; name the file-skip case distinctly.
+    reason = "walk_permission_errors" if walk_errors else "unreadable_files"
+    return {"status": "failed", "files_posted": 0, "reason": reason}
+
+
+async def _finish_scan(
+    api: PhazeAgentClient, payload: ScanDirectoryPayload, walk_errors: list[OSError], progress: _ScanProgress, started_at: float
+) -> dict[str, Any]:
+    """Decide the walk's terminal outcome: loud zero-access failure, or completion (partial or clean)."""
+    # Zero-access scan: the walk produced no files AND hit at least one access error -- either an
+    # unreadable DIRECTORY (walk_errors) OR an unreadable FILE (files_skipped, phaze-0p90). Surface
+    # this as a terminal failure that names the scan_path, the error/skip counts, and the first
+    # error, and points at the likely container-UID/ownership cause. This makes the incident's
+    # silent completed/0-files failure mode impossible to hide again -- for BOTH access-denial shapes.
+    if progress.total == 0 and (walk_errors or progress.files_skipped):
+        return await _fail_zero_access(api, payload, walk_errors, progress)
+
+    # Partial access: some directories and/or files were unreadable but >=1 file was found.
+    # Complete normally, logging a SINGLE summarizing warning rather than flooding the log with one
+    # line per skipped directory/file. phaze-0p90: include the per-file skip count so a
+    # mostly-unreadable-but-nonzero scan is visible rather than silently reporting only the readable subset.
+    if walk_errors or progress.files_skipped:
+        logger.warning(
+            "scan_directory: completed with partial access -- %d director(ies) and %d file(s) skipped (first dir error: %s)",
+            len(walk_errors),
+            progress.files_skipped,
+            walk_errors[0] if walk_errors else None,
+        )
+
+    # Terminal success PATCH.
+    await api.patch_scan_batch(
+        payload.batch_id,
+        ScanBatchPatch(status="completed", total_files=progress.total, processed_files=progress.total),
+    )
+    logger.info(
+        "scan completed",
+        batch_id=str(payload.batch_id),
+        files=progress.total,
+        duration_s=round(time.monotonic() - started_at, 3),
+    )
+    return {"status": "completed", "files_posted": progress.total}
+
+
+async def _abort_on_controller_error(
+    api: PhazeAgentClient, payload: ScanDirectoryPayload, exc: AgentApiServerError, progress: _ScanProgress
+) -> dict[str, Any]:
+    """5xx after retries (D-12) -- abort the walk and surface a 'failed' terminal PATCH."""
+    # NOTE: do NOT use .exception() in the path that re-PATCHes via the same broken
+    # controller; if the controller is down, this PATCH may also raise -- but the
+    # outer SAQ retry policy handles that. The terminal PATCH is best-effort.
+    logger.exception("scan_directory: controller error after retries; aborting walk batch=%s", payload.batch_id)
+    logger.error("scan failed", batch_id=str(payload.batch_id), error="controller_5xx", files_posted=progress.total)
+    try:
+        await api.patch_scan_batch(
+            payload.batch_id,
+            ScanBatchPatch(status="failed", error_message=f"Controller error: {exc}"),
+        )
+    except AgentApiServerError:
+        logger.exception("scan_directory: terminal failed-PATCH also failed batch=%s", payload.batch_id)
+    return {"status": "failed", "files_posted": progress.total, "reason": "controller_5xx"}
+
+
+async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    """Walk a directory, SHA-256 known-extension files, POST chunks via HTTP (Phase 27 D-11..D-13).
+
+    Per-chunk flow:
+      1. Append records until len(batch) == AgentSettings.scan_chunk_size (default 500).
+      2. POST FileUpsertChunk(files=batch, batch_id=payload.batch_id) via api.upsert_files.
+      3. PATCH ScanBatchPatch(processed_files=total) via api.patch_scan_batch.
+      4. Reset batch.
+
+    On clean walk: terminal PATCH ScanBatchPatch(status='completed', total_files=N, processed_files=N).
+    On scan_path-missing: short-circuit PATCH ScanBatchPatch(status='failed', error_message=...).
+    On AgentApiServerError after retries (D-12): abort + PATCH 'failed' with the cause.
+    On per-file OSError: log a warning, skip the file, continue the walk (mirrors the
+    Phase-89-retired ``services/ingestion.py``'s per-file skip pattern; D-12).
+
+    phaze-vu88k.7: the same four phases in the same order as before they were split into helpers
+    (``_publish_precount``, ``_hash_and_post_chunks``, ``_finish_scan``, ``_abort_on_controller_error``)
+    -- a pure decomposition, not a behaviour change. The single ``AgentApiServerError`` handler still
+    spans the chunk loop AND the terminal PATCH, which is why the counters moved onto ``_ScanProgress``.
+    """
+    payload = ScanDirectoryPayload.model_validate(kwargs)
+
+    api: PhazeAgentClient = ctx["api_client"]
+    chunk_size = _resolve_chunk_size()
+
+    # Operational logging (PR3): prove a running scan is doing work. agent context is
+    # the resolved agent_id when the worker stashed an identity; omitted in pure unit
+    # tests. time.monotonic() drives the duration so a clock change cannot skew it.
+    agent_id = getattr(ctx.get("agent_identity"), "agent_id", None)
+    started_at = time.monotonic()
+    logger.info("scan started", batch_id=str(payload.batch_id), path=payload.scan_path, agent=agent_id)
+
+    scan_root = Path(payload.scan_path)
+    if not scan_root.is_dir():
+        logger.error("scan failed", batch_id=str(payload.batch_id), path=payload.scan_path, error="scan_path_not_a_directory")
+        await api.patch_scan_batch(
+            payload.batch_id,
+            ScanBatchPatch(
+                status="failed",
+                error_message=f"Scan path does not exist on agent: {payload.scan_path}",
+            ),
+        )
+        return {"status": "failed", "files_posted": 0, "reason": "scan_path_not_a_directory"}
+
+    await _publish_precount(api, payload, scan_root)
+
     # os.walk silently swallows a PermissionError raised while reading a
     # directory unless an onerror callback is supplied. Without it, a fully
     # unreadable tree (e.g. media owned by uid 1000, mode 700, scanned by a
@@ -235,123 +414,9 @@ async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     for walk_error in walk_errors:
         logger.warning("scan_directory: cannot read directory during walk: %s", walk_error)
 
-    batch: list[FileUpsertRecord] = []
-    total = 0
-    # phaze-0p90: count per-FILE read failures too. The zero-access loud-failure guard originally
-    # counted only directory-walk errors (walk_errors), so a tree with LISTABLE directories but
-    # UNREADABLE files (dirs 0755, files 0600 owned by a foreign uid -- the common container-UID
-    # mismatch) walked every filename, skipped every hash with a per-file warning, and terminal-PATCHed
-    # status=completed/0-files -- reproducing the exact 260608 silent-failure mode the guard exists to
-    # prevent. Track the skips so a 0-file scan with unreadable files also fails loudly.
-    files_skipped = 0
+    progress = _ScanProgress()
     try:
-        for full_path in candidate_paths:
-            filename = full_path.name
-            try:
-                stat_result = await asyncio.to_thread(full_path.stat)
-                file_size = stat_result.st_size
-                sha256_hash = await asyncio.to_thread(compute_sha256, full_path)
-            except OSError as exc:
-                files_skipped += 1
-                logger.warning("scan_directory: skipping unreadable file %s: %s", full_path, exc)
-                continue
-
-            # Pitfall 3: NFC-normalize EVERY path field. Drift between the watcher's
-            # normalization and scan_directory's would create duplicate FileRecord rows
-            # under the composite UQ (agent_id, original_path).
-            normalized_path = unicodedata.normalize("NFC", str(full_path))
-            normalized_filename = unicodedata.normalize("NFC", filename)
-            normalized_current = unicodedata.normalize("NFC", str(full_path))
-            record = FileUpsertRecord(
-                sha256_hash=sha256_hash,
-                original_path=normalized_path,
-                original_filename=normalized_filename,
-                current_path=normalized_current,
-                file_type=Path(filename).suffix.lower().lstrip("."),
-                file_size=file_size,
-            )
-            batch.append(record)
-            total += 1
-            logger.debug("file discovered", path=normalized_path, size=file_size, ext=record.file_type)
-            if len(batch) >= chunk_size:
-                await api.upsert_files(FileUpsertChunk(files=batch, batch_id=payload.batch_id))
-                await api.patch_scan_batch(payload.batch_id, ScanBatchPatch(processed_files=total))
-                logger.info("scan progress", batch_id=str(payload.batch_id), processed=total)
-                batch = []
-
-        # Flush final partial chunk.
-        if batch:
-            await api.upsert_files(FileUpsertChunk(files=batch, batch_id=payload.batch_id))
-            await api.patch_scan_batch(payload.batch_id, ScanBatchPatch(processed_files=total))
-
-        # Zero-access scan: the walk produced no files AND hit at least one access error -- either an
-        # unreadable DIRECTORY (walk_errors) OR an unreadable FILE (files_skipped, phaze-0p90). Surface
-        # this as a terminal failure that names the scan_path, the error/skip counts, and the first
-        # error, and points at the likely container-UID/ownership cause. This makes the incident's
-        # silent completed/0-files failure mode impossible to hide again -- for BOTH access-denial shapes.
-        if total == 0 and (walk_errors or files_skipped):
-            reasons = []
-            if walk_errors:
-                reasons.append(f"{len(walk_errors)} directory read error(s) (first: {walk_errors[0]})")
-            if files_skipped:
-                reasons.append(f"{files_skipped} unreadable file(s)")
-            error_message = (
-                f"Scanned 0 files but hit {' and '.join(reasons)}. The agent container user likely "
-                f"cannot read {payload.scan_path} -- check file ownership/permissions vs the container UID."
-            )
-            logger.error(
-                "scan failed",
-                batch_id=str(payload.batch_id),
-                path=payload.scan_path,
-                error="access_errors",
-                walk_error_count=len(walk_errors),
-                files_skipped=files_skipped,
-            )
-            await api.patch_scan_batch(
-                payload.batch_id,
-                ScanBatchPatch(status="failed", error_message=error_message),
-            )
-            # Preserve the historical reason for the directory-walk case; name the file-skip case distinctly.
-            reason = "walk_permission_errors" if walk_errors else "unreadable_files"
-            return {"status": "failed", "files_posted": 0, "reason": reason}
-
-        # Partial access: some directories and/or files were unreadable but >=1 file was found.
-        # Complete normally, logging a SINGLE summarizing warning rather than flooding the log with one
-        # line per skipped directory/file. phaze-0p90: include the per-file skip count so a
-        # mostly-unreadable-but-nonzero scan is visible rather than silently reporting only the readable subset.
-        if walk_errors or files_skipped:
-            logger.warning(
-                "scan_directory: completed with partial access -- %d director(ies) and %d file(s) skipped (first dir error: %s)",
-                len(walk_errors),
-                files_skipped,
-                walk_errors[0] if walk_errors else None,
-            )
-
-        # Terminal success PATCH.
-        await api.patch_scan_batch(
-            payload.batch_id,
-            ScanBatchPatch(status="completed", total_files=total, processed_files=total),
-        )
-        logger.info(
-            "scan completed",
-            batch_id=str(payload.batch_id),
-            files=total,
-            duration_s=round(time.monotonic() - started_at, 3),
-        )
-        return {"status": "completed", "files_posted": total}
-
+        await _hash_and_post_chunks(api, payload, candidate_paths, chunk_size, progress)
+        return await _finish_scan(api, payload, walk_errors, progress, started_at)
     except AgentApiServerError as exc:
-        # 5xx after retries (D-12) -- abort the walk and surface a 'failed' terminal PATCH.
-        # NOTE: do NOT use .exception() in the path that re-PATCHes via the same broken
-        # controller; if the controller is down, this PATCH may also raise -- but the
-        # outer SAQ retry policy handles that. The terminal PATCH is best-effort.
-        logger.exception("scan_directory: controller error after retries; aborting walk batch=%s", payload.batch_id)
-        logger.error("scan failed", batch_id=str(payload.batch_id), error="controller_5xx", files_posted=total)
-        try:
-            await api.patch_scan_batch(
-                payload.batch_id,
-                ScanBatchPatch(status="failed", error_message=f"Controller error: {exc}"),
-            )
-        except AgentApiServerError:
-            logger.exception("scan_directory: terminal failed-PATCH also failed batch=%s", payload.batch_id)
-        return {"status": "failed", "files_posted": total, "reason": "controller_5xx"}
+        return await _abort_on_controller_error(api, payload, exc, progress)

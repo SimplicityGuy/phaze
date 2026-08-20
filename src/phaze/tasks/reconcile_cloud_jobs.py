@@ -363,6 +363,181 @@ async def _record_success(session: AsyncSession, cloud_job: CloudJob, name: str 
     tally["succeeded"] += 1
 
 
+async def _spill_to_awaiting_at_ceiling(
+    cfg: ControlSettings,
+    session: AsyncSession,
+    cloud_job: CloudJob,
+    name: str | None,
+    cap: int,
+    tally: dict[str, int],
+    kube: KubeConfig,
+    *,
+    next_attempt: int,
+    ceiling: int,
+    budget: str,
+    effective_node_loss_reason: str | None,
+) -> None:
+    """The at-ceiling terminal of :func:`_handle_no_callback_terminal` -- spill the sidecar to 'awaiting'.
+
+    Reached when ``next_attempt > ceiling`` on EITHER budget; see that function's docstring for why the
+    two ceilings deliberately share this one terminal, and why it is not a hard analyze failure.
+    """
+    file_id = cloud_job.file_id
+    # SCHED-03/D-04: at the cloud cap DO NOT hard-fail. Re-stamp the cloud_job sidecar to 'awaiting'
+    # ('awaiting' is NOT in IN_FLIGHT, so the row drops out of ``in_flight_count`` -- the
+    # reconcile-only-decrements invariant) and write NO FileRecord.state (D-04, the whole point of the
+    # cutover). ``cloud_job.attempts`` already equals ``cap`` here (the last under-cap re-drive set it),
+    # so the next drain tick's ``select_backend`` sees ``attempts >= cap`` and routes the file to local
+    # (the guaranteed safety net) -- do NOT increment attempts again here (avoids a double-count). Local
+    # failure, not cloud flakiness, is the only terminal into ANALYSIS_FAILED (D-04). The re-stamped
+    # ``updated_at`` on the spill gives a fresh lane-entry clock (desirable).
+    #
+    # phaze-1q4g: the NODE-LOSS ceiling lands here too, and on purpose. ``attempts`` may well still be
+    # 0 on that path (node loss never charged it), so the ``attempts=cap`` stamp below is doing real
+    # work there rather than re-affirming a value: it is what makes ``select_backend`` stop offering
+    # this file to cloud at all. Cloud is finished with this row either way -- once because the
+    # analysis kept failing, once because the node kept dying under it -- and the row must land in the
+    # one state the drain can still act on.
+    #
+    # MKUE-04 clean-before-flip (D-01/D-03, Pitfall 9 -- the crux): the OLD (backend_id, staging_bucket)
+    # staged object MUST be deleted WHILE the per-row ``pg_advisory_xact_lock(5_000_504)`` is still held
+    # (acquired at the TOP of this ``KueueBackend.reconcile`` per-row unit, backends.py) -- i.e. BEFORE
+    # the ``session.commit()`` that persists the 'awaiting' re-stamp (making the file a drain candidate)
+    # and thus RELEASES the lock. The re-dispatch reuses the SAME ``file_id``-scoped S3 key; if D-06
+    # lands the re-stage on the same bucket, a delete that ran AFTER the lock released would race the
+    # new stage and destroy the object the new pod needs. Deleting before the flip guarantees the old
+    # object is gone before any re-stage can occur (the drain holds the same lock across its whole
+    # candidate claim, so it physically cannot pick up the file until this txn commits).
+    #
+    # Capture the OLD identity into locals BEFORE any mutation, resolve the RECORDED staging bucket
+    # (never re-derive -- Pitfall 4/T-70-04-04), and delete it UNDER the lock. The delete is best-effort
+    # (D-03): ``contextlib.suppress(Exception)`` so a slow/failed/absent S3 delete never blocks the spill
+    # nor pins the lock beyond one network timeout (the per-bucket TTL is the backstop). A bucketless row
+    # (no staged object) resolves to None and skips the delete cleanly.
+    old_bucket_id = cloud_job.staging_bucket  # captured pre-mutation -- the authoritative old identity.
+    bucket = s3_staging.resolve_bucket_config(cfg, old_bucket_id)
+    with contextlib.suppress(Exception):
+        if bucket is not None:
+            await s3_staging.delete_staged_object(file_id, bucket)  # MKUE-04: under the still-held lock, BEFORE the commit.
+    # D-04/D-12: swap the retired FileRecord.state write + FAILED pre-mutation for the SINGLE go-forward
+    # awaiting writer in spill mode (reconcile is its FOURTH caller, alongside agent_s3/agent_push). The
+    # rowcount-guarded CAS OWNS the status write (UPDATE cloud_job ... WHERE status IN (SUBMITTED,RUNNING)),
+    # so we do NOT pre-mutate cloud_job.status here -- an autoflush of a dirty status would make the CAS
+    # miss its own row (RESEARCH Landmine 3). ``attempts=cap`` is the budget-spent MARKER (a set, NOT an
+    # increment), so the next drain tick's ``select_backend`` sees ``attempts >= cap`` and routes the file
+    # to local; ``clear_cloud_phase=True`` nulls cloud_phase (WR-01, off the "Running" tile). Unlike the
+    # agent_s3/agent_push siblings (which KEEP the gated FileRecord dual-write, 83 D-00c), reconcile writes
+    # NO FileRecord.state at all (D-04): the spilled kueue file stays at its prior PUSHED state, which
+    # satisfies the loosened pushed/pushing shadow invariants -- fixing the HARD state=AWAITING_CLOUD +
+    # cloud_job.status=FAILED shadow violation live on main today.
+    from phaze.services.backends import hold_awaiting_cloud  # noqa: PLC0415 -- deferred to break the backends<->reconcile_cloud_jobs import cycle
+
+    # The helper's spill-mode CAS dereferences file.id (it does NOT write file.state); load the FileRecord.
+    # The FK files.id <- cloud_job.file_id guarantees the row exists, so None is unreachable in practice --
+    # the guard is for mypy (scalar_one_or_none is Optional) and defense-in-depth (a None file skips the CAS
+    # cleanly, matching the agent_s3/agent_push no-op).
+    file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
+    if file is not None:
+        await hold_awaiting_cloud(
+            session,
+            file,
+            attempts=cap,
+            expect_status=(CloudJobStatus.SUBMITTED.value, CloudJobStatus.RUNNING.value),
+            clear_cloud_phase=True,
+        )
+    cloud_job.inadmissible = False  # terminal row must not keep the operator alert lit (helper does not stamp it).
+    cloud_job.staging_bucket = None  # clear so no pre-repurpose reader is misled about the (now-gone) object.
+    cloud_job.node_loss_pending = None  # phaze-mwbz3: row is leaving in-flight -- no verdict left to carry.
+    await session.commit()  # releases the per-row lock -- the old object is ALREADY gone (clean-before-flip).
+    if name is not None:  # phaze-1b39: a phantom row (kueue_workload IS NULL) has no Job to delete.
+        await kube_staging.delete_job(name, kube)  # Job delete stays POST-commit (D-04 status-read-vs-GC; cleanup only).
+    tally["failed"] += 1
+    logger.warning(
+        "reconcile_cloud_jobs: submit cap reached -> cloud_job re-stamped 'awaiting' + spill to local",
+        file_id=str(file_id),
+        attempt=next_attempt,
+        cap=ceiling,
+        budget=budget,  # phaze-1q4g: WHICH ceiling ran out -- 'attempts' (the file kept failing) or
+        node_loss_reason=effective_node_loss_reason,  # 'node_loss_redrives' (the node kept dying under it).
+    )
+
+
+async def _redrive_under_ceiling(
+    ctx: dict[str, Any],
+    session: AsyncSession,
+    cloud_job: CloudJob,
+    name: str | None,
+    tally: dict[str, int],
+    kube: KubeConfig,
+    *,
+    next_attempt: int,
+    budget: str,
+    effective_node_loss_reason: str | None,
+) -> None:
+    """The under-ceiling re-drive of :func:`_handle_no_callback_terminal` -- delete, confirm gone, re-submit.
+
+    See that function's docstring for the delete-then-confirm-gone race guard, the deferral that charges
+    no budget, and the ``kueue_workload=None`` pending-confirmation record this commit leaves behind.
+    """
+    file_id = cloud_job.file_id
+    # Under the ceiling -> re-drive. Delete the prior Job, then confirm it is gone before re-submitting.
+    if name is not None:  # phaze-1b39: a phantom row (kueue_workload IS NULL) has no Job to delete.
+        await kube_staging.delete_job(name, kube)
+    if not await _job_gone(name, kube):
+        # phaze-nq3c: COMMIT before returning. This deferral path makes no OTHER DB mutation worth persisting
+        # (only a kube-side delete_job ran), but the per-row unit acquired pg_advisory_xact_lock(5_000_504) at
+        # the top of KueueBackend.reconcile and the design (SCHED-02 / Pitfall 2) RELIES on _reconcile_one
+        # committing per row to auto-release that transaction-scoped lock at row granularity. Returning without
+        # a commit was the ONLY non-committing exit in this file -- it leaked the lock past the row boundary
+        # until some later row's commit (or session close if this was the last in-flight row), stalling a
+        # concurrent stage_cloud_window drain tick that blocks on the same key. Commit to end the txn and
+        # release the lock, matching every other no-op path here (lines with 'release the per-row advisory
+        # lock (Pitfall 2)').
+        #
+        # phaze-mwbz3: DO persist the node-loss verdict, though -- ``effective_node_loss_reason`` is the ONLY
+        # durable copy of "this terminal's cause was NODE_LOST", and it dies with this stack frame otherwise.
+        # If the Job finally vanishes before the NEXT tick, ``_reconcile_one`` re-enters through the
+        # vanished-Job branch, which has no pods left to classify and passes no ``node_loss_reason`` argument
+        # at all -- without this, that re-entry would silently charge ``attempts`` instead of the tighter
+        # ``node_loss_redrives`` ceiling (the whole defect phaze-1q4g exists to prevent). A ``None`` here
+        # (ordinary, non-node-loss cause) correctly clears any stale marker from an earlier, unrelated Job
+        # under this same deterministic name.
+        cloud_job.node_loss_pending = effective_node_loss_reason
+        await session.commit()
+        logger.info(
+            "reconcile_cloud_jobs: prior Job still terminating; deferring re-drive",
+            file_id=str(file_id),
+            kueue_workload=name,
+            node_loss_reason=effective_node_loss_reason,
+        )
+        return
+    # phaze-1q4g: charge the budget this cause spends -- and ONLY that one. A node-loss re-drive leaves
+    # ``attempts`` untouched (the file has not failed an analysis), so the two causes stay separable on
+    # the row forever; an ordinary re-drive leaves ``node_loss_redrives`` untouched for the same reason.
+    if effective_node_loss_reason is not None:
+        cloud_job.node_loss_redrives = next_attempt
+    else:
+        cloud_job.attempts = next_attempt
+    cloud_job.status = CloudJobStatus.SUBMITTED.value
+    cloud_job.inadmissible = False  # CR-01: re-driving a failed Job clears any stale Inadmissible flag.
+    cloud_job.node_loss_pending = None  # phaze-mwbz3: verdict spent -- the NEXT Job under this name starts fresh.
+    # phaze-32wz: clear the (now-deleted) Job's name so the NEXT tick reads this row as "pending
+    # confirmation" (the phantom-row branch's fresh-hold path), not as a fresh no-callback terminal
+    # against the OLD, already-confirmed-gone name -- this is what stops the enqueue-time attempt bump
+    # above from being immediately re-charged before the re-submitted Job even exists.
+    cloud_job.kueue_workload = None
+    await session.commit()
+    await _enqueue_resubmit(ctx, file_id)
+    tally["redriven"] += 1
+    logger.info(
+        "reconcile_cloud_jobs: re-driving submit_cloud_job",
+        file_id=str(file_id),
+        attempt=next_attempt,
+        budget=budget,  # phaze-1q4g: which of the two re-drive budgets this one spent, and (when it is
+        node_loss_reason=effective_node_loss_reason,  # the node-loss one) the pod evidence that classified it.
+    )
+
+
 async def _handle_no_callback_terminal(
     ctx: dict[str, Any],
     session: AsyncSession,
@@ -448,7 +623,6 @@ async def _handle_no_callback_terminal(
     because no writer but this cron can advance it and this cron would only re-drive it again.
     """
     cfg = cast("ControlSettings", get_settings())
-    file_id = cloud_job.file_id
     # phaze-mwbz3: the still-terminating deferral below commits with NO other DB mutation, so a FRESH
     # node-loss verdict computed for THIS call (``node_loss_reason`` not None) must be persisted across
     # it -- otherwise it dies with this stack frame and, once the Job finally vanishes, the NEXT tick
@@ -469,141 +643,278 @@ async def _handle_no_callback_terminal(
         next_attempt, ceiling, budget = cloud_job.attempts + 1, cap, "attempts"
 
     if next_attempt > ceiling:
-        # SCHED-03/D-04: at the cloud cap DO NOT hard-fail. Re-stamp the cloud_job sidecar to 'awaiting'
-        # ('awaiting' is NOT in IN_FLIGHT, so the row drops out of ``in_flight_count`` -- the
-        # reconcile-only-decrements invariant) and write NO FileRecord.state (D-04, the whole point of the
-        # cutover). ``cloud_job.attempts`` already equals ``cap`` here (the last under-cap re-drive set it),
-        # so the next drain tick's ``select_backend`` sees ``attempts >= cap`` and routes the file to local
-        # (the guaranteed safety net) -- do NOT increment attempts again here (avoids a double-count). Local
-        # failure, not cloud flakiness, is the only terminal into ANALYSIS_FAILED (D-04). The re-stamped
-        # ``updated_at`` on the spill gives a fresh lane-entry clock (desirable).
-        #
-        # phaze-1q4g: the NODE-LOSS ceiling lands here too, and on purpose. ``attempts`` may well still be
-        # 0 on that path (node loss never charged it), so the ``attempts=cap`` stamp below is doing real
-        # work there rather than re-affirming a value: it is what makes ``select_backend`` stop offering
-        # this file to cloud at all. Cloud is finished with this row either way -- once because the
-        # analysis kept failing, once because the node kept dying under it -- and the row must land in the
-        # one state the drain can still act on.
-        #
-        # MKUE-04 clean-before-flip (D-01/D-03, Pitfall 9 -- the crux): the OLD (backend_id, staging_bucket)
-        # staged object MUST be deleted WHILE the per-row ``pg_advisory_xact_lock(5_000_504)`` is still held
-        # (acquired at the TOP of this ``KueueBackend.reconcile`` per-row unit, backends.py) -- i.e. BEFORE
-        # the ``session.commit()`` that persists the 'awaiting' re-stamp (making the file a drain candidate)
-        # and thus RELEASES the lock. The re-dispatch reuses the SAME ``file_id``-scoped S3 key; if D-06
-        # lands the re-stage on the same bucket, a delete that ran AFTER the lock released would race the
-        # new stage and destroy the object the new pod needs. Deleting before the flip guarantees the old
-        # object is gone before any re-stage can occur (the drain holds the same lock across its whole
-        # candidate claim, so it physically cannot pick up the file until this txn commits).
-        #
-        # Capture the OLD identity into locals BEFORE any mutation, resolve the RECORDED staging bucket
-        # (never re-derive -- Pitfall 4/T-70-04-04), and delete it UNDER the lock. The delete is best-effort
-        # (D-03): ``contextlib.suppress(Exception)`` so a slow/failed/absent S3 delete never blocks the spill
-        # nor pins the lock beyond one network timeout (the per-bucket TTL is the backstop). A bucketless row
-        # (no staged object) resolves to None and skips the delete cleanly.
-        old_bucket_id = cloud_job.staging_bucket  # captured pre-mutation -- the authoritative old identity.
-        bucket = s3_staging.resolve_bucket_config(cfg, old_bucket_id)
-        with contextlib.suppress(Exception):
-            if bucket is not None:
-                await s3_staging.delete_staged_object(file_id, bucket)  # MKUE-04: under the still-held lock, BEFORE the commit.
-        # D-04/D-12: swap the retired FileRecord.state write + FAILED pre-mutation for the SINGLE go-forward
-        # awaiting writer in spill mode (reconcile is its FOURTH caller, alongside agent_s3/agent_push). The
-        # rowcount-guarded CAS OWNS the status write (UPDATE cloud_job ... WHERE status IN (SUBMITTED,RUNNING)),
-        # so we do NOT pre-mutate cloud_job.status here -- an autoflush of a dirty status would make the CAS
-        # miss its own row (RESEARCH Landmine 3). ``attempts=cap`` is the budget-spent MARKER (a set, NOT an
-        # increment), so the next drain tick's ``select_backend`` sees ``attempts >= cap`` and routes the file
-        # to local; ``clear_cloud_phase=True`` nulls cloud_phase (WR-01, off the "Running" tile). Unlike the
-        # agent_s3/agent_push siblings (which KEEP the gated FileRecord dual-write, 83 D-00c), reconcile writes
-        # NO FileRecord.state at all (D-04): the spilled kueue file stays at its prior PUSHED state, which
-        # satisfies the loosened pushed/pushing shadow invariants -- fixing the HARD state=AWAITING_CLOUD +
-        # cloud_job.status=FAILED shadow violation live on main today.
-        from phaze.services.backends import hold_awaiting_cloud  # noqa: PLC0415 -- deferred to break the backends<->reconcile_cloud_jobs import cycle
-
-        # The helper's spill-mode CAS dereferences file.id (it does NOT write file.state); load the FileRecord.
-        # The FK files.id <- cloud_job.file_id guarantees the row exists, so None is unreachable in practice --
-        # the guard is for mypy (scalar_one_or_none is Optional) and defense-in-depth (a None file skips the CAS
-        # cleanly, matching the agent_s3/agent_push no-op).
-        file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
-        if file is not None:
-            await hold_awaiting_cloud(
-                session,
-                file,
-                attempts=cap,
-                expect_status=(CloudJobStatus.SUBMITTED.value, CloudJobStatus.RUNNING.value),
-                clear_cloud_phase=True,
-            )
-        cloud_job.inadmissible = False  # terminal row must not keep the operator alert lit (helper does not stamp it).
-        cloud_job.staging_bucket = None  # clear so no pre-repurpose reader is misled about the (now-gone) object.
-        cloud_job.node_loss_pending = None  # phaze-mwbz3: row is leaving in-flight -- no verdict left to carry.
-        await session.commit()  # releases the per-row lock -- the old object is ALREADY gone (clean-before-flip).
-        if name is not None:  # phaze-1b39: a phantom row (kueue_workload IS NULL) has no Job to delete.
-            await kube_staging.delete_job(name, kube)  # Job delete stays POST-commit (D-04 status-read-vs-GC; cleanup only).
-        tally["failed"] += 1
-        logger.warning(
-            "reconcile_cloud_jobs: submit cap reached -> cloud_job re-stamped 'awaiting' + spill to local",
-            file_id=str(file_id),
-            attempt=next_attempt,
-            cap=ceiling,
-            budget=budget,  # phaze-1q4g: WHICH ceiling ran out -- 'attempts' (the file kept failing) or
-            node_loss_reason=effective_node_loss_reason,  # 'node_loss_redrives' (the node kept dying under it).
+        await _spill_to_awaiting_at_ceiling(
+            cfg,
+            session,
+            cloud_job,
+            name,
+            cap,
+            tally,
+            kube,
+            next_attempt=next_attempt,
+            ceiling=ceiling,
+            budget=budget,
+            effective_node_loss_reason=effective_node_loss_reason,
         )
         return
 
-    # Under the ceiling -> re-drive. Delete the prior Job, then confirm it is gone before re-submitting.
-    if name is not None:  # phaze-1b39: a phantom row (kueue_workload IS NULL) has no Job to delete.
-        await kube_staging.delete_job(name, kube)
-    if not await _job_gone(name, kube):
-        # phaze-nq3c: COMMIT before returning. This deferral path makes no OTHER DB mutation worth persisting
-        # (only a kube-side delete_job ran), but the per-row unit acquired pg_advisory_xact_lock(5_000_504) at
-        # the top of KueueBackend.reconcile and the design (SCHED-02 / Pitfall 2) RELIES on _reconcile_one
-        # committing per row to auto-release that transaction-scoped lock at row granularity. Returning without
-        # a commit was the ONLY non-committing exit in this file -- it leaked the lock past the row boundary
-        # until some later row's commit (or session close if this was the last in-flight row), stalling a
-        # concurrent stage_cloud_window drain tick that blocks on the same key. Commit to end the txn and
-        # release the lock, matching every other no-op path here (lines with 'release the per-row advisory
-        # lock (Pitfall 2)').
-        #
-        # phaze-mwbz3: DO persist the node-loss verdict, though -- ``effective_node_loss_reason`` is the ONLY
-        # durable copy of "this terminal's cause was NODE_LOST", and it dies with this stack frame otherwise.
-        # If the Job finally vanishes before the NEXT tick, ``_reconcile_one`` re-enters through the
-        # vanished-Job branch, which has no pods left to classify and passes no ``node_loss_reason`` argument
-        # at all -- without this, that re-entry would silently charge ``attempts`` instead of the tighter
-        # ``node_loss_redrives`` ceiling (the whole defect phaze-1q4g exists to prevent). A ``None`` here
-        # (ordinary, non-node-loss cause) correctly clears any stale marker from an earlier, unrelated Job
-        # under this same deterministic name.
-        cloud_job.node_loss_pending = effective_node_loss_reason
-        await session.commit()
-        logger.info(
-            "reconcile_cloud_jobs: prior Job still terminating; deferring re-drive",
-            file_id=str(file_id),
-            kueue_workload=name,
-            node_loss_reason=effective_node_loss_reason,
-        )
-        return
-    # phaze-1q4g: charge the budget this cause spends -- and ONLY that one. A node-loss re-drive leaves
-    # ``attempts`` untouched (the file has not failed an analysis), so the two causes stay separable on
-    # the row forever; an ordinary re-drive leaves ``node_loss_redrives`` untouched for the same reason.
-    if effective_node_loss_reason is not None:
-        cloud_job.node_loss_redrives = next_attempt
-    else:
-        cloud_job.attempts = next_attempt
-    cloud_job.status = CloudJobStatus.SUBMITTED.value
-    cloud_job.inadmissible = False  # CR-01: re-driving a failed Job clears any stale Inadmissible flag.
-    cloud_job.node_loss_pending = None  # phaze-mwbz3: verdict spent -- the NEXT Job under this name starts fresh.
-    # phaze-32wz: clear the (now-deleted) Job's name so the NEXT tick reads this row as "pending
-    # confirmation" (the phantom-row branch's fresh-hold path), not as a fresh no-callback terminal
-    # against the OLD, already-confirmed-gone name -- this is what stops the enqueue-time attempt bump
-    # above from being immediately re-charged before the re-submitted Job even exists.
-    cloud_job.kueue_workload = None
-    await session.commit()
-    await _enqueue_resubmit(ctx, file_id)
-    tally["redriven"] += 1
-    logger.info(
-        "reconcile_cloud_jobs: re-driving submit_cloud_job",
-        file_id=str(file_id),
-        attempt=next_attempt,
-        budget=budget,  # phaze-1q4g: which of the two re-drive budgets this one spent, and (when it is
-        node_loss_reason=effective_node_loss_reason,  # the node-loss one) the pod evidence that classified it.
+    await _redrive_under_ceiling(
+        ctx,
+        session,
+        cloud_job,
+        name,
+        tally,
+        kube,
+        next_attempt=next_attempt,
+        budget=budget,
+        effective_node_loss_reason=effective_node_loss_reason,
     )
+
+
+async def _finalize_or_redrive(
+    ctx: dict[str, Any],
+    session: AsyncSession,
+    cloud_job: CloudJob,
+    name: str | None,
+    cap: int,
+    tally: dict[str, int],
+    kube: KubeConfig,
+    *,
+    probe_node_loss: bool = False,
+) -> None:
+    """The terminal seam every no-callback branch shares: finalize a landed callback, else re-drive.
+
+    phaze-2o8p / phaze-73sv: each terminal path below asks the SAME question first -- "did the
+    analysis result already land?" -- because the ``/analysis`` callback (KSUBMIT-03) keys off
+    ``file_id``, not the Job, and records the result + deletes the staged object (D-05) WITHOUT ever
+    advancing ``cloud_job.status``. So a Job that reads vanished / Failed / Evicted AFTER its own
+    success callback completed is a SUCCESS whose bookkeeping is merely lagging: re-driving it
+    re-submits a pod that 404s the now-deleted staged object (EXIT_DOWNLOAD) and re-fails, burning the
+    whole cap. Finalize it as the success it is instead. This helper is the single copy of that guard;
+    the four callers below differ only in what they had already proved before reaching it.
+
+    ``probe_node_loss`` (phaze-1q4g) asks the pods WHICH budget the re-drive spends. It is probed only
+    on the not-already-completed path -- ``_terminal_node_loss_reason`` is a kube read and must not run
+    for a row that is about to be recorded a success -- and only for the two branches that still have a
+    real Job whose pods can be classified (Job Failed, Workload Evicted). The phantom-row and
+    vanished-Job callers have no pods left to ask and leave it False, exactly as before.
+    """
+    if await _analysis_completed(session, cloud_job.file_id):
+        await _record_success(session, cloud_job, name, tally, kube)
+        return
+    node_loss_reason = await _terminal_node_loss_reason(name, kube) if probe_node_loss and name is not None else None
+    await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally, kube, node_loss_reason=node_loss_reason)
+
+
+async def _reconcile_pending_confirmation(
+    ctx: dict[str, Any], session: AsyncSession, cloud_job: CloudJob, cap: int, tally: dict[str, int], kube: KubeConfig
+) -> None:
+    """A row with NO ``kueue_workload``: hold while the pending submit is fresh, terminalize past the bound."""
+    # phaze-1b39 / phaze-32wz: this row has PENDING CONFIRMATION, not a Job to read, so no terminal
+    # signal can arrive for it yet -- the pre-1b39 behaviour (warn + skip) re-logged the same line
+    # every tick forever while the row kept its burst-lane cap slot: a permanent phantom. Two
+    # equally-legitimate ways a row lands here with status in {SUBMITTED, RUNNING}: (a) the FIRST
+    # submit crashed between the row insert and the workload stamp, or is mid-flight right now; (b) a
+    # no-callback-terminal RE-DRIVE just cleared ``kueue_workload`` (phaze-32wz, above) after
+    # confirming the OLD Job gone, and its freshly-enqueued ``submit_cloud_job`` has not yet run to
+    # re-stamp a new one. Both are "pending confirmation", explicitly recorded by the cleared column
+    # rather than inferred from elapsed time -- bound ONLY the "how long is too long" question by
+    # age. Fresh -> hold quietly, so a live/pending submit is never stolen and NO attempt is charged
+    # for a submit that simply hasn't run yet. Past the pending-submit bound the pending resubmit is
+    # CONFIRMED VANISHED (not merely pending) -> terminalize through the SAME no-callback path
+    # everything else uses (bounded re-drive under cap -- a NEW, independently-charged attempt --
+    # spill to local at cap), which is what returns the cap slot without operator surgery.
+    if _row_age_seconds(cloud_job) <= PENDING_SUBMIT_CONFIRMATION_SECONDS:
+        logger.warning("reconcile_cloud_jobs: cloud_job missing kueue_workload; skipping", cloud_job_id=str(cloud_job.id))
+        await session.commit()  # WR-01: no mutation, but release the per-row advisory lock (Pitfall 2).
+        return
+    logger.warning(
+        "reconcile_cloud_jobs: cloud_job missing kueue_workload past the pending-submit bound -- terminalizing phantom row",
+        cloud_job_id=str(cloud_job.id),
+        file_id=str(cloud_job.file_id),
+        age_seconds=int(_row_age_seconds(cloud_job)),
+    )
+    # The callback may have landed anyway (it keys off file_id, not the Job) -- ``_finalize_or_redrive``
+    # finalizes that as the success it is rather than re-driving an already-analyzed file. name=None:
+    # there is no Job to delete, and no pods to classify, so no node-loss probe.
+    await _finalize_or_redrive(ctx, session, cloud_job, None, cap, tally, kube)
+
+
+async def _reconcile_job_terminal_signal(
+    ctx: dict[str, Any], session: AsyncSession, cloud_job: CloudJob, job: Any, name: str, cap: int, tally: dict[str, int], kube: KubeConfig
+) -> bool:
+    """Job terminal signals first -- the Job is the source of truth for succeeded-vs-failed.
+
+    Returns True when the Job carried a terminal signal and this row is fully handled, False when the
+    Job is still in flight and the caller must go on to read the paired Kueue Workload.
+    """
+    if _job_counter(job, "succeeded") >= 1 or _job_has_true_condition(job, "Complete"):
+        await _record_success(session, cloud_job, name, tally, kube)
+        return True
+    if _job_counter(job, "failed") >= 1 or _job_has_true_condition(job, "Failed"):
+        # phaze-73sv: mirror the vanished-Job guard. A Job can read Failed AFTER its success callback
+        # landed -- activeDeadlineSeconds firing just after the callback PUT completed, an OOM/preempt in
+        # the post-callback teardown window -- because the /analysis callback records the result + deletes
+        # the staged object (D-05) but never advances cloud_job.status. ``_finalize_or_redrive`` holds that
+        # guard. phaze-1q4g: with ``backoffLimit: 0`` a Job reads Failed for BOTH "the analysis died" and
+        # "the node took the pod", and the two must not share a retry budget. The Job cannot tell them
+        # apart; its pods can. Ask them once, here on the terminal path only (probe_node_loss).
+        await _finalize_or_redrive(ctx, session, cloud_job, name, cap, tally, kube, probe_node_loss=True)
+        return True
+    return False
+
+
+async def _terminalize_if_wedged(
+    ctx: dict[str, Any], session: AsyncSession, cloud_job: CloudJob, job: Any, name: str, cap: int, tally: dict[str, int], kube: KubeConfig
+) -> bool:
+    """phaze-202e wedge detection, run BEFORE the RUNNING re-affirm. True when the row was terminalized.
+
+    Admission state alone says nothing about progress: an admitted Workload whose pod never runs
+    (ImagePullBackOff / CreateContainerConfigError from a missing operator ConfigMap/Secret) leaves the
+    Job non-terminal, so the caller below would stamp RUNNING and return -- every tick, forever -- while
+    the row holds its burst-lane cap slot. That is the phaze-1b39 failure, and it is still covered here.
+
+    What changed is HOW. phaze-1b39 answered it with a wall clock (activeDeadlineSeconds + slack) and
+    phaze-uui9 then had to bolt on a "only if already observed RUNNING" gate to stop that clock from
+    killing a pod the instant it was admitted after a long healthy quota wait. Both were fighting the
+    same unfixable ambiguity: elapsed time cannot distinguish a 2-6 h concert-set analyze from a hang. In
+    production it resolved that ambiguity the wrong way -- every long recording SIGTERM'd at exactly 3h,
+    the whole cloud attempt budget burned, 14 files permanently barred from Kueue (incident 2026-07-28).
+
+    ``_pod_wedge_reason`` asks the POD instead. It returns a reason ONLY on positive proof that no work
+    is happening (fatal container waiting reason, persistent unschedulable, or an un-suspended Job with
+    no pod at all) and returns None for a Running pod at ANY age. No wall clock bounds a run, so the
+    uui9 status gate is no longer needed and is GONE: pod state is equally valid on a row's first
+    admitted tick and on its thousandth.
+
+    The analysis-result guard stays: the callback (KSUBMIT-03) keys off file_id, so a row whose result
+    already landed is finalized by the normal terminal paths, never re-driven.
+    """
+    wedge = await _pod_wedge_reason(job, name, kube)
+    if wedge is None or await _analysis_completed(session, cloud_job.file_id):
+        return False
+    logger.warning(
+        "reconcile_cloud_jobs: in-flight Job's pod is provably not working -- terminalizing",
+        cloud_job_id=str(cloud_job.id),
+        file_id=str(cloud_job.file_id),
+        kueue_workload=name,
+        wedge_reason=wedge.reason,
+        node_loss=wedge.node_loss,  # phaze-1q4g: which budget the re-drive below will spend.
+    )
+    await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally, kube, node_loss_reason=wedge.reason if wedge.node_loss else None)
+    return True
+
+
+def _condition_true(condition: dict[str, Any] | None) -> bool:
+    """A Job/Workload condition tuple that is PRESENT and reads ``status="True"``."""
+    return condition is not None and condition.get("status") == "True"
+
+
+def _quota_hold_reason(quota_reserved: dict[str, Any] | None) -> Any:
+    """The ``reason`` of a ``QuotaReserved=False`` condition -- the axis the two admission holds select on.
+
+    ``None`` whenever the condition is absent or is not False, so neither hold can fire on it. Keeping this
+    one resolution here is what lets ``_reconcile_workload_state`` read as the mapping table it is
+    (RESEARCH Status->Outcome Mapping) rather than re-deriving the same three-part condition per branch.
+    """
+    if quota_reserved is None or quota_reserved.get("status") != "False":
+        return None
+    return quota_reserved.get("reason")
+
+
+async def _hold_inadmissible(session: AsyncSession, cloud_job: CloudJob, name: str, tally: dict[str, int]) -> None:
+    """Inadmissible (operator misconfig): loud + hold, NEVER consumes the cap (D-06/D-07)."""
+    if not cloud_job.inadmissible:
+        cloud_job.inadmissible = True
+    await session.commit()  # WR-01: commit unconditionally (no-op when already flagged) to release the lock.
+    tally["inadmissible"] += 1
+    logger.warning(
+        "reconcile_cloud_jobs: Workload Inadmissible -- K8s Jobs not admitting; check LocalQueue config",
+        cloud_job_id=str(cloud_job.id),
+        file_id=str(cloud_job.file_id),
+        kueue_workload=name,
+    )
+
+
+async def _hold_pending_quota(session: AsyncSession, cloud_job: CloudJob, tally: dict[str, int]) -> None:
+    """Healthy Pending: silent hold, waits indefinitely -- no cap, no alert (D-07, Pitfall 3)."""
+    if cloud_job.inadmissible:  # CR-01: the misconfig was fixed -- Workload is back to a healthy quota wait.
+        cloud_job.inadmissible = False
+    if cloud_job.cloud_phase != CloudPhase.QUEUED_BEHIND_QUOTA.value:  # D-04: behind quota, waiting for admission.
+        cloud_job.cloud_phase = CloudPhase.QUEUED_BEHIND_QUOTA.value
+    # WR-01: commit unconditionally (a clean no-op when neither field changed) to release the per-row lock.
+    await session.commit()
+    tally["pending"] += 1
+
+
+async def _advance_admitted(
+    ctx: dict[str, Any],
+    session: AsyncSession,
+    cloud_job: CloudJob,
+    job: Any,
+    name: str,
+    cap: int,
+    tally: dict[str, int],
+    kube: KubeConfig,
+    *,
+    admitted_true: bool,
+) -> None:
+    """Admitted / QuotaReserved=True -> in-flight running; advance SUBMITTED -> RUNNING (after the wedge check)."""
+    if await _terminalize_if_wedged(ctx, session, cloud_job, job, name, cap, tally, kube):
+        return
+    # D-04 admission progression (ORTHOGONAL to the status advance): Admitted=True means the pod
+    # is un-gated and running -> RUNNING; QuotaReserved-only (quota granted, not yet un-suspended)
+    # is the intermediate ADMITTED phase. The cloud_job ``status`` axis still advances to RUNNING
+    # in both cases (unchanged).
+    next_phase = CloudPhase.RUNNING.value if admitted_true else CloudPhase.ADMITTED.value
+    if cloud_job.status != CloudJobStatus.RUNNING.value or cloud_job.inadmissible or cloud_job.cloud_phase != next_phase:
+        cloud_job.status = CloudJobStatus.RUNNING.value
+        cloud_job.inadmissible = False  # CR-01: an admitted Workload is no longer Inadmissible -- clear the alert.
+        cloud_job.cloud_phase = next_phase
+    # WR-01: commit unconditionally (a clean no-op when already RUNNING in the target phase) to release the lock.
+    await session.commit()
+    tally["running"] += 1
+
+
+async def _reconcile_workload_state(
+    ctx: dict[str, Any],
+    session: AsyncSession,
+    cloud_job: CloudJob,
+    job: Any,
+    workload: Any,
+    name: str,
+    cap: int,
+    tally: dict[str, int],
+    kube: KubeConfig,
+) -> None:
+    """Map the paired Kueue Workload's admission conditions to this row's outcome (RESEARCH Status->Outcome Mapping)."""
+    # Evicted/deactivated -> no-callback terminal (re-drive under cap).
+    if _condition_true(_workload_condition(workload, _TYPE_EVICTED)):
+        # phaze-73sv: same guard as the Job-Failed branch -- a Kueue eviction under quota pressure can
+        # land AFTER the pod's success callback PUT completed, and ``_finalize_or_redrive`` finalizes such
+        # a row as the success it is rather than re-driving an already-analyzed file against a staged
+        # object the callback already deleted. phaze-1q4g: same question about WHICH budget, too -- a
+        # Kueue eviction is usually quota pressure (ordinary), but a node going down also evicts, and the
+        # pods say which.
+        await _finalize_or_redrive(ctx, session, cloud_job, name, cap, tally, kube, probe_node_loss=True)
+        return
+
+    quota_reserved = _workload_condition(workload, _TYPE_QUOTA_RESERVED)
+    hold_reason = _quota_hold_reason(quota_reserved)
+    if hold_reason == _REASON_INADMISSIBLE:
+        await _hold_inadmissible(session, cloud_job, name, tally)
+        return
+    if hold_reason == _REASON_PENDING:
+        await _hold_pending_quota(session, cloud_job, tally)
+        return
+
+    admitted_true = _condition_true(_workload_condition(workload, _TYPE_ADMITTED))
+    if admitted_true or _condition_true(quota_reserved):
+        await _advance_admitted(ctx, session, cloud_job, job, name, cap, tally, kube, admitted_true=admitted_true)
+        return
+
+    # Unknown in-flight condition set -> leave the row untouched for a later tick.
+    await session.commit()  # WR-01: no mutation, but release the per-row advisory lock (Pitfall 2).
 
 
 async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: CloudJob, cap: int, tally: dict[str, int], kube: KubeConfig) -> None:
@@ -612,39 +923,15 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
     Phase 70 (MKUE-01/D-04): ``kube`` is THIS row's owning backend ``KubeConfig`` (threaded from
     ``KueueBackend.reconcile``), so every ``get_job`` / ``get_workload_for`` / ``delete_job`` targets the
     file's own cluster.
+
+    phaze-vu88k.7: this is the same decision tree in the same order as before it was split into helpers
+    (``_reconcile_pending_confirmation``, ``_finalize_or_redrive``, ``_reconcile_job_terminal_signal``,
+    ``_reconcile_workload_state`` and its holds) -- a pure decomposition, not a behaviour change. Each
+    step's own incident history moved WITH it, into the helper that owns that branch.
     """
     name = cloud_job.kueue_workload
     if not name:
-        # phaze-1b39 / phaze-32wz: this row has PENDING CONFIRMATION, not a Job to read, so no terminal
-        # signal can arrive for it yet -- the pre-1b39 behaviour (warn + skip) re-logged the same line
-        # every tick forever while the row kept its burst-lane cap slot: a permanent phantom. Two
-        # equally-legitimate ways a row lands here with status in {SUBMITTED, RUNNING}: (a) the FIRST
-        # submit crashed between the row insert and the workload stamp, or is mid-flight right now; (b) a
-        # no-callback-terminal RE-DRIVE just cleared ``kueue_workload`` (phaze-32wz, above) after
-        # confirming the OLD Job gone, and its freshly-enqueued ``submit_cloud_job`` has not yet run to
-        # re-stamp a new one. Both are "pending confirmation", explicitly recorded by the cleared column
-        # rather than inferred from elapsed time -- bound ONLY the "how long is too long" question by
-        # age. Fresh -> hold quietly, so a live/pending submit is never stolen and NO attempt is charged
-        # for a submit that simply hasn't run yet. Past the pending-submit bound the pending resubmit is
-        # CONFIRMED VANISHED (not merely pending) -> terminalize through the SAME no-callback path
-        # everything else uses (bounded re-drive under cap -- a NEW, independently-charged attempt --
-        # spill to local at cap), which is what returns the cap slot without operator surgery.
-        if _row_age_seconds(cloud_job) <= PENDING_SUBMIT_CONFIRMATION_SECONDS:
-            logger.warning("reconcile_cloud_jobs: cloud_job missing kueue_workload; skipping", cloud_job_id=str(cloud_job.id))
-            await session.commit()  # WR-01: no mutation, but release the per-row advisory lock (Pitfall 2).
-            return
-        logger.warning(
-            "reconcile_cloud_jobs: cloud_job missing kueue_workload past the pending-submit bound -- terminalizing phantom row",
-            cloud_job_id=str(cloud_job.id),
-            file_id=str(cloud_job.file_id),
-            age_seconds=int(_row_age_seconds(cloud_job)),
-        )
-        if await _analysis_completed(session, cloud_job.file_id):
-            # The callback landed anyway (it keys off file_id, not the Job) -- finalize as the success it
-            # is rather than re-driving an already-analyzed file. name=None: there is no Job to delete.
-            await _record_success(session, cloud_job, None, tally, kube)
-            return
-        await _handle_no_callback_terminal(ctx, session, cloud_job, None, cap, tally, kube)
+        await _reconcile_pending_confirmation(ctx, session, cloud_job, cap, tally, kube)
         return
 
     # WR-01: a vanished Job (real kube 404 -> NotFoundError; fake seam -> None) on an in-flight row is a
@@ -658,37 +945,15 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
         job = None
     if job is None:
         # phaze-2o8p: distinguish a callback-completed-then-TTL-GC'd Job from a genuine no-callback
-        # terminal. If the analysis result already landed (analysis_completed_at IS NOT NULL), the
-        # vanished Job is a SUCCESS whose Job was reaped by ttlSecondsAfterFinished before this lagging
-        # tick read it -- finalize it (record SUCCEEDED + delete Job) instead of re-driving an
-        # already-analyzed file against a staged object the success callback already deleted.
-        if await _analysis_completed(session, cloud_job.file_id):
-            await _record_success(session, cloud_job, name, tally, kube)
-            return
-        await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally, kube)
+        # terminal -- ``_finalize_or_redrive`` records the former as the SUCCESS it is (its Job was reaped
+        # by ttlSecondsAfterFinished before this lagging tick read it) instead of re-driving an
+        # already-analyzed file against a staged object the success callback already deleted. There are no
+        # pods left to classify here, so no node-loss probe.
+        await _finalize_or_redrive(ctx, session, cloud_job, name, cap, tally, kube)
         return
 
     # 1. Job terminal signals first -- the Job is the source of truth for succeeded-vs-failed.
-    if _job_counter(job, "succeeded") >= 1 or _job_has_true_condition(job, "Complete"):
-        await _record_success(session, cloud_job, name, tally, kube)
-        return
-    if _job_counter(job, "failed") >= 1 or _job_has_true_condition(job, "Failed"):
-        # phaze-73sv: mirror the vanished-Job guard (line 412). A Job can read Failed AFTER its success
-        # callback landed -- activeDeadlineSeconds firing just after the callback PUT completed, an
-        # OOM/preempt in the post-callback teardown window -- because the /analysis callback records the
-        # result + deletes the staged object (D-05) but never advances cloud_job.status. Re-driving such a row
-        # (_handle_no_callback_terminal) re-submits a pod that 404s its now-deleted staged object
-        # (EXIT_DOWNLOAD) and re-fails, burning the whole cap. If the analysis already completed,
-        # finalize it as the success it is instead of re-driving an already-analyzed file.
-        if await _analysis_completed(session, cloud_job.file_id):
-            await _record_success(session, cloud_job, name, tally, kube)
-            return
-        # phaze-1q4g: with ``backoffLimit: 0`` a Job reads Failed for BOTH "the analysis died" and "the
-        # node took the pod", and the two must not share a retry budget. The Job cannot tell them apart;
-        # its pods can. Ask them once, here on the terminal path only.
-        await _handle_no_callback_terminal(
-            ctx, session, cloud_job, name, cap, tally, kube, node_loss_reason=await _terminal_node_loss_reason(name, kube)
-        )
+    if await _reconcile_job_terminal_signal(ctx, session, cloud_job, job, name, cap, tally, kube):
         return
 
     # 2. Not terminal -> read the paired Kueue Workload for admission state (D-02 by job-uid).
@@ -699,109 +964,7 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
         await session.commit()  # WR-01: no mutation, but release the per-row advisory lock (Pitfall 2).
         return
 
-    # Evicted/deactivated -> no-callback terminal (re-drive under cap).
-    evicted = _workload_condition(workload, _TYPE_EVICTED)
-    if evicted is not None and evicted.get("status") == "True":
-        # phaze-73sv: same guard as the Job-Failed branch above. A Kueue eviction under quota pressure
-        # can land AFTER the pod's success callback PUT completed (the /analysis callback stamps the
-        # result + deletes the staged object but never advances cloud_job.status). Re-driving then re-submits a
-        # pod that 404s the deleted staged object and re-fails, burning the cap. Finalize a
-        # callback-completed row as the success it is rather than re-driving an already-analyzed file.
-        if await _analysis_completed(session, cloud_job.file_id):
-            await _record_success(session, cloud_job, name, tally, kube)
-            return
-        # phaze-1q4g: same question as the Job-Failed branch. A Kueue eviction is usually quota pressure
-        # (ordinary), but a node going down also evicts -- and the pods say which.
-        await _handle_no_callback_terminal(
-            ctx, session, cloud_job, name, cap, tally, kube, node_loss_reason=await _terminal_node_loss_reason(name, kube)
-        )
-        return
-
-    quota_reserved = _workload_condition(workload, _TYPE_QUOTA_RESERVED)
-
-    # Inadmissible (operator misconfig): loud + hold, NEVER consumes the cap (D-06/D-07).
-    if quota_reserved is not None and quota_reserved.get("status") == "False" and quota_reserved.get("reason") == _REASON_INADMISSIBLE:
-        if not cloud_job.inadmissible:
-            cloud_job.inadmissible = True
-        await session.commit()  # WR-01: commit unconditionally (no-op when already flagged) to release the lock.
-        tally["inadmissible"] += 1
-        logger.warning(
-            "reconcile_cloud_jobs: Workload Inadmissible -- K8s Jobs not admitting; check LocalQueue config",
-            cloud_job_id=str(cloud_job.id),
-            file_id=str(cloud_job.file_id),
-            kueue_workload=name,
-        )
-        return
-
-    # Healthy Pending: silent hold, waits indefinitely -- no cap, no alert (D-07, Pitfall 3).
-    if quota_reserved is not None and quota_reserved.get("status") == "False" and quota_reserved.get("reason") == _REASON_PENDING:
-        if cloud_job.inadmissible:  # CR-01: the misconfig was fixed -- Workload is back to a healthy quota wait.
-            cloud_job.inadmissible = False
-        if cloud_job.cloud_phase != CloudPhase.QUEUED_BEHIND_QUOTA.value:  # D-04: behind quota, waiting for admission.
-            cloud_job.cloud_phase = CloudPhase.QUEUED_BEHIND_QUOTA.value
-        # WR-01: commit unconditionally (a clean no-op when neither field changed) to release the per-row lock.
-        await session.commit()
-        tally["pending"] += 1
-        return
-
-    # Admitted / QuotaReserved=True -> in-flight running; advance SUBMITTED -> RUNNING.
-    admitted = _workload_condition(workload, _TYPE_ADMITTED)
-    admitted_true = admitted is not None and admitted.get("status") == "True"
-    quota_true = quota_reserved is not None and quota_reserved.get("status") == "True"
-    if admitted_true or quota_true:
-        # phaze-202e wedge detection, BEFORE the RUNNING re-affirm. Admission state alone says nothing
-        # about progress: an admitted Workload whose pod never runs (ImagePullBackOff /
-        # CreateContainerConfigError from a missing operator ConfigMap/Secret) leaves the Job
-        # non-terminal, so the branch below would stamp RUNNING and return -- every tick, forever --
-        # while the row holds its burst-lane cap slot. That is the phaze-1b39 failure, and it is still
-        # covered here.
-        #
-        # What changed is HOW. phaze-1b39 answered it with a wall clock (activeDeadlineSeconds + slack)
-        # and phaze-uui9 then had to bolt on a "only if already observed RUNNING" gate to stop that
-        # clock from killing a pod the instant it was admitted after a long healthy quota wait. Both
-        # were fighting the same unfixable ambiguity: elapsed time cannot distinguish a 2-6 h concert-set
-        # analyze from a hang. In production it resolved that ambiguity the wrong way -- every long
-        # recording SIGTERM'd at exactly 3h, the whole cloud attempt budget burned, 14 files permanently
-        # barred from Kueue (incident 2026-07-28).
-        #
-        # ``_pod_wedge_reason`` asks the POD instead. It returns a reason ONLY on positive proof that no
-        # work is happening (fatal container waiting reason, persistent unschedulable, or an un-suspended
-        # Job with no pod at all) and returns None for a Running pod at ANY age. No wall clock bounds a
-        # run, so the uui9 status gate is no longer needed and is GONE: pod state is equally valid on a
-        # row's first admitted tick and on its thousandth.
-        #
-        # The analysis-result guard stays: the callback (KSUBMIT-03) keys off file_id, so a row whose
-        # result already landed is finalized by the normal terminal paths, never re-driven.
-        wedge = await _pod_wedge_reason(job, name, kube)
-        if wedge is not None and not await _analysis_completed(session, cloud_job.file_id):
-            logger.warning(
-                "reconcile_cloud_jobs: in-flight Job's pod is provably not working -- terminalizing",
-                cloud_job_id=str(cloud_job.id),
-                file_id=str(cloud_job.file_id),
-                kueue_workload=name,
-                wedge_reason=wedge.reason,
-                node_loss=wedge.node_loss,  # phaze-1q4g: which budget the re-drive below will spend.
-            )
-            await _handle_no_callback_terminal(
-                ctx, session, cloud_job, name, cap, tally, kube, node_loss_reason=wedge.reason if wedge.node_loss else None
-            )
-            return
-        # D-04 admission progression (ORTHOGONAL to the status advance): Admitted=True means the pod
-        # is un-gated and running -> RUNNING; QuotaReserved-only (quota granted, not yet un-suspended)
-        # is the intermediate ADMITTED phase. The cloud_job ``status`` axis still advances to RUNNING
-        # in both cases (unchanged).
-        next_phase = CloudPhase.RUNNING.value if admitted_true else CloudPhase.ADMITTED.value
-        if cloud_job.status != CloudJobStatus.RUNNING.value or cloud_job.inadmissible or cloud_job.cloud_phase != next_phase:
-            cloud_job.status = CloudJobStatus.RUNNING.value
-            cloud_job.inadmissible = False  # CR-01: an admitted Workload is no longer Inadmissible -- clear the alert.
-            cloud_job.cloud_phase = next_phase
-        # WR-01: commit unconditionally (a clean no-op when already RUNNING in the target phase) to release the lock.
-        await session.commit()
-        tally["running"] += 1
-        return
-
-    # Unknown in-flight condition set -> leave the row untouched for a later tick.
-    await session.commit()  # WR-01: no mutation, but release the per-row advisory lock (Pitfall 2).
+    await _reconcile_workload_state(ctx, session, cloud_job, job, workload, name, cap, tally, kube)
 
 
 async def reconcile_cloud_jobs(ctx: dict[str, Any]) -> dict[str, int]:

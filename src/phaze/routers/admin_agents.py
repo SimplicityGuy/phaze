@@ -300,6 +300,17 @@ class TableRow:
         return f"/s/agents?{self.selection_param}={self.id}"
 
 
+def _agent_queue_depth(agent: Agent) -> int:
+    """The agent's last reported queue depth, or -1 when it has never reported a usable one.
+
+    -1 folds a missing/non-integer depth to the same "no value" end that :data:`_QUEUE_DEPTH_ORDER`
+    folds a NULL to in SQL, and that :func:`_lane_sort_value` returns for the concepts a lane
+    lacks -- so an agent that has never reported sorts exactly where SQL would put it.
+    """
+    depth = (agent.last_status or {}).get("queue_depth")
+    return depth if isinstance(depth, int) else -1
+
+
 def _agent_sort_value(agent: Agent, key: str) -> Any:
     """Return the Python-comparable value for ``agent`` under sort ``key`` (mirrors the SQL fold).
 
@@ -313,8 +324,7 @@ def _agent_sort_value(agent: Agent, key: str) -> Any:
     if key == "kind":
         return agent.kind
     if key == "queue":
-        depth = (agent.last_status or {}).get("queue_depth")
-        return depth if isinstance(depth, int) else -1
+        return _agent_queue_depth(agent)
     if key == "last_seen":
         return agent.last_seen_at.timestamp() if agent.last_seen_at is not None else -math.inf
     if key == "scan_roots":

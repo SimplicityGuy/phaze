@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisWindow
+from phaze.models.file import FileRecord
 from phaze.models.proposal import APPROVE_REJECT_FROM, UNDO_FROM, ProposalStatus, RenameProposal
 
 # Changes Review's container id + list context, so a bulk action re-renders that surface through
@@ -174,17 +175,15 @@ def _row_target(request: Request, proposal_id: uuid.UUID) -> tuple[str, str]:
     return "rename-row", "filename"
 
 
-def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, row_state: str) -> dict[str, object]:
-    """Build the render context _diff_row.html expects for one proposal (phaze-3a2j).
+def _diff_facet_fields(proposal: RenameProposal, file_record: FileRecord, facet: str) -> tuple[str, str, str, dict[str, object]]:
+    """The facet-dependent half of a diff row: ``(before, after, edit_facet, extra_context)``.
 
-    phaze-7tiqp: the builder used to take an ``oob`` keyword for a second consumer, the
-    bulk-approve-high-confidence response (phaze-71hi), which needed a LIST of these rendered with
-    ``oob=True`` because the rename/move workspaces ran no row poll (R-2) to pick a bulk transition
-    up on their own. Those workspaces, that route and its template are all retired, so the keyword
-    had one possible value left and ``_diff_row.html`` dropped the ``hx-swap-oob`` it fed. The only
-    consumer now is :func:`_diff_row_response`, which swaps the row it was targeted at.
+    The two facets are mirror images -- whichever one the row is diffing becomes ``before``/
+    ``after``, and the other becomes the ``secondary_*`` pair shown beneath it. The path facet
+    reads its secondary destination straight off the record, while the filename facet has to
+    RECONSTRUCT it (proposed path if there is one, else the current parent), which is the only
+    real asymmetry between them.
     """
-    file_record = proposal.file
     if facet == "path":
         before = file_record.current_path
         after = proposal.proposed_path or ""
@@ -210,6 +209,21 @@ def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, 
             "secondary_before": file_record.current_path,
             "secondary_after": destination,
         }
+    return before, after, edit_facet, extra_context
+
+
+def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, row_state: str) -> dict[str, object]:
+    """Build the render context _diff_row.html expects for one proposal (phaze-3a2j).
+
+    phaze-7tiqp: the builder used to take an ``oob`` keyword for a second consumer, the
+    bulk-approve-high-confidence response (phaze-71hi), which needed a LIST of these rendered with
+    ``oob=True`` because the rename/move workspaces ran no row poll (R-2) to pick a bulk transition
+    up on their own. Those workspaces, that route and its template are all retired, so the keyword
+    had one possible value left and ``_diff_row.html`` dropped the ``hx-swap-oob`` it fed. The only
+    consumer now is :func:`_diff_row_response`, which swaps the row it was targeted at.
+    """
+    file_record = proposal.file
+    before, after, edit_facet, extra_context = _diff_facet_fields(proposal, file_record, facet)
     pid = proposal.id
     return {
         "row_id_prefix": row_id_prefix,
@@ -516,12 +530,18 @@ async def bulk_action(
         except (TypeError, ValueError):
             continue
     uuids = [token.proposal_id for token in reviewed]
+    # phaze-vu88k.4: the dedup test used to be `parsed not in uuids` against a LIST that grows as
+    # the loop runs -- O(n*m) over the submitted set. `seen` mirrors `uuids` for the membership
+    # test ONLY; `uuids` stays a list because the order it is built in is the order handed to
+    # bulk_update_status, and the same ids are appended in the same sequence as before.
+    seen = set(uuids)
     for pid in proposal_ids:
         try:
             parsed = uuid.UUID(pid)
         except ValueError:
             continue
-        if parsed not in uuids:
+        if parsed not in seen:
+            seen.add(parsed)
             uuids.append(parsed)
     # phaze-uu17: only PENDING rows may be bulk approved/rejected; terminal EXECUTED/FAILED
     # rows selected via the "All" tab are skipped, and count reflects only real transitions.

@@ -332,6 +332,256 @@ async def report_push_failed(
     return PushFailedResponse(file_id=file_id, cleared=cleared)
 
 
+async def _hold_push_mismatch(
+    session: AsyncSession,
+    message: str,
+    *,
+    file_id: uuid.UUID,
+    agent_id: str,
+    attempt: int,
+) -> PushMismatchResponse:
+    """Commit and answer a /mismatch that cannot re-drive right now.
+
+    The file is deliberately LEFT ``PUSHING`` (its cap slot retained, Open-Q1) so the staging cron
+    / recovery re-drives it later -- a hold is not a failure and must not consume the budget. Every
+    hold answers ``cleared=False`` in the same shape, so the reasons cannot drift apart.
+    """
+    logger.warning(message, file_id=str(file_id), agent_id=agent_id, attempt=attempt)
+    await session.commit()
+    return PushMismatchResponse(file_id=file_id, cleared=False)
+
+
+async def _spill_over_cap_push(
+    file_id: uuid.UUID,
+    settings: "ControlSettings",
+    session: AsyncSession,
+    ledger_key: str,
+    *,
+    agent_id: str,
+    next_attempt: int,
+) -> bool:
+    """Spill the file back to AWAITING_CLOUD once its push re-drive budget is spent.
+
+    Returns the ``cleared`` flag the caller echoes back: True when the CAS hit and the ledger was
+    cleared, False for the idempotent full no-op a duplicate/late /mismatch takes.
+
+    Phase 69, SCHED-03/D-04: exhausting ``push_max_attempts`` no longer HARD-fails. The spill lets
+    the next ``release_awaiting_cloud`` drain tick route the file to a lower-rank backend -- and,
+    because this backend's cloud budget is now spent, to LOCAL. ANALYSIS_FAILED comes ONLY from a
+    local analysis failure; every cloud-failure path spills to local.
+    """
+    # SCHED-03/D-04: a compute push that exhausts its push_max_attempts re-drives no longer HARD-fails.
+    # Spill the file back to AWAITING_CLOUD so the next release_awaiting_cloud drain tick can route it
+    # to a lower-rank backend -- and, because this backend's cloud budget is now exhausted, to LOCAL.
+    # ANALYSIS_FAILED comes ONLY from a local analysis failure; every cloud-failure path spills to local.
+    #
+    # SC#1/D-12 anchor swap: the CAS guard now keys on cloud_job.status == 'submitted' (compute's single
+    # in-flight status), NOT FileRecord.state == PUSHING -- collapsing the guard onto the sidecar as the
+    # single CAS domain and removing the last FileRecord.state ROUTING read before Phase 90 drops the
+    # column. D-03: this SAME CAS re-stamps the row submitted -> awaiting (was a separate FAILED write) so
+    # the hard shadow invariant AWAITING_CLOUD => status='awaiting' holds, keeping attempts SPENT
+    # (>= cloud_submit_max_attempts) so select_backend excludes cloud and routes the file to local (D-04).
+    # A duplicate/late /mismatch (SAQ retry) -- or a stale/removed-backend reporter that skipped the D-07
+    # gate -- on a file whose cloud_job already advanced past 'submitted'/'succeeded' (RUNNING/reaped/
+    # awaiting) matches 0 rows and CANNOT clobber it back to AWAITING_CLOUD (T-83-PUSH-CLOBBER).
+    #
+    # phaze-7lpe: expect_status widens to ('submitted', 'succeeded'). /mismatch is reached ONLY via
+    # process_file (tasks/functions.py), which by construction runs AFTER report_pushed has already
+    # flipped the row submitted -> succeeded (compute has no further transition between a landed push
+    # and analysis completing -- unlike kueue, a compute cloud_job never advances past 'succeeded').
+    # So the REAL state at /mismatch time is ALWAYS 'succeeded', never 'submitted' -- the original
+    # 'submitted'-only guard meant this branch could never fire in production, permanently disabling
+    # the T-50-loop spill-to-local safety for a persistently corrupt/skewed push.
+    #
+    # D-01/D-02: route the spill re-stamp through the SINGLE awaiting writer
+    # (services.backends.hold_awaiting_cloud) instead of an inline CAS. Its spill branch re-stamps
+    # submitted/succeeded -> awaiting with attempts SPENT (D-03), returning False (a full no-op) on
+    # the 0-row advanced-file case. NO clear_cloud_phase: the push spill must NOT touch cloud_phase
+    # (D-12 -- only the s3 spill clears it).
+    #
+    # NULL-GUARD: the helper's CAS dereferences file.id, so load the FileRecord (none is loaded in this
+    # branch today). An absent file (unreachable in practice -- cloud_job.file_id FKs files.id) takes the
+    # FULL no-op below (cleared=False), identical to a CAS miss; passing None would raise AttributeError
+    # where the old disconnected update(FileRecord) silently matched 0 rows. No 404 here: the over-cap
+    # spill is an agent callback and a 404 would change the response contract.
+    file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
+    cleared = file is not None and await hold_awaiting_cloud(
+        session,
+        file,
+        attempts=settings.cloud_submit_max_attempts,
+        expect_status=(CloudJobStatus.SUBMITTED.value, CloudJobStatus.SUCCEEDED.value),
+    )
+    if not cleared:
+        # cloud_job no longer submitted/succeeded (already advanced, reaped, or a non-compute file
+        # with no row): idempotent FULL no-op. No cloud_job write, no FileRecord write, no ledger clear.
+        await session.commit()
+        logger.info(
+            "report_push_mismatch: idempotent no-op (cloud_job no longer submitted/succeeded, over-cap spill skipped)",
+            file_id=str(file_id),
+            agent_id=agent_id,
+        )
+        return False
+    # cleared (helper CAS hit): gate the ledger clear behind the cloud_job CAS. The submitted ->
+    # awaiting re-stamp above already drained the row from the D-10 in-flight set so
+    # in_flight_count(compute) stays honest and the backend's cap slot is released (Phase 69, D-05);
+    # 'awaiting' is not in IN_FLIGHT (D-03).
+    # Phase 90 (D-09): the former AWAITING_CLOUD FileRecord.state dual-write was removed; the
+    # cloud_job sidecar re-stamped to 'awaiting' by hold_awaiting_cloud is the sole derived authority.
+    await clear_ledger_entry(session, ledger_key)
+    await session.commit()
+    logger.warning(
+        "report_push_mismatch: push cap reached -> cloud_job re-stamped to awaiting + spill to AWAITING_CLOUD (routes to local)",
+        file_id=str(file_id),
+        agent_id=agent_id,
+        attempt=next_attempt,
+        cap=settings.push_max_attempts,
+    )
+    return True
+
+
+async def _redrive_under_cap_push(
+    file_id: uuid.UUID,
+    request: Request,
+    agent: Agent,
+    session: AsyncSession,
+    backend: Any,
+    ledger_key: str,
+    next_attempt: int,
+) -> PushMismatchResponse:
+    """Re-arm the cloud_job CAS domain and re-enqueue push_file, keeping the PUSHING slot.
+
+    Four conditions HOLD instead of re-driving -- no attributed backend, the file record gone, no
+    fileserver online, or a cloud_job that is no longer re-armable -- and each answers through
+    :func:`_hold_push_mismatch`, leaving the file for the staging cron / recovery to re-drive.
+
+    phaze-7lpe: the re-arm (``succeeded``/``submitted`` -> ``submitted``) is what lets the D-12
+    re-verify loop survive more than one re-push -- without it the re-driven push's OWN /pushed
+    callback matches 0 rows and silently never re-enqueues ``process_file``.
+
+    HARD-02/D-05: the ledger stamp shares the caller's FINAL commit, because the
+    ``pg_advisory_xact_lock`` the caller took must stay held across the whole counter
+    read -> increment -> write-back. Do NOT commit the re-arm early.
+    """
+    # Under the cap: re-drive push_file on the FILESERVER queue, keeping the PUSHING slot (Open-Q1).
+    # Landmine 1: the re-drive MUST carry the recorded destination -- never a destination-less payload
+    # (the fileserver would rsync to a null remote spec). An unattributed file (no cloud_job / an
+    # operator-removed backend_id -> backend is None) has no destination to stamp, so it cannot be
+    # re-driven: hold it PUSHING for the staging cron / recovery (mirrors the no-fileserver hold below)
+    # rather than enqueue a destination-less push.
+    if backend is None:
+        return await _hold_push_mismatch(
+            session,
+            "report_push_mismatch held: no attributed compute backend to re-stamp the push destination",
+            file_id=file_id,
+            agent_id=agent.id,
+            attempt=next_attempt,
+        )
+
+    # NULL-GUARD (phaze-zdej, request_guards.py rule 3 -- copy the over-cap branch's shape): a
+    # concurrent scan-deletion can remove this FileRecord (and cascade-delete the SAME cloud_job row
+    # this handler already read above) in the window between the cloud_job SELECT and this SELECT.
+    # `backend` was resolved from the in-memory cloud_job read before that deletion could have
+    # committed, so reaching here with a vanished FileRecord is a genuine race, not a contradiction.
+    # scalar_one() would raise NoResultFound -> unhandled 500; there is nothing left to re-drive a
+    # push for, so hold cleanly (mirrors the "no fileserver online" hold below) instead of crashing.
+    file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
+    if file is None:
+        return await _hold_push_mismatch(
+            session,
+            "report_push_mismatch held: file record no longer exists (concurrent scan-deletion)",
+            file_id=file_id,
+            agent_id=agent.id,
+            attempt=next_attempt,
+        )
+
+    try:
+        fileserver_agent = await select_active_agent(session, kind="fileserver")
+    except NoActiveAgentError:
+        # No fileserver online: leave the file PUSHING for the staging cron / recovery to re-drive.
+        return await _hold_push_mismatch(
+            session, "report_push_mismatch held: no fileserver agent online", file_id=file_id, agent_id=agent.id, attempt=next_attempt
+        )
+
+    # phaze-7lpe: re-arm the cloud_job CAS domain BEFORE re-driving. report_pushed's ONLY guard is
+    # cloud_job.status == 'submitted' (SC#1/D-12); by the time /mismatch is reachable that token has
+    # ALREADY been consumed -- report_pushed flips submitted -> succeeded before process_file (the sole
+    # /mismatch caller) can ever run. Without this re-stamp the re-driven push's OWN /pushed callback
+    # matches 0 rows (idempotent no-op) and NEVER re-enqueues process_file -- the D-12 re-verify loop
+    # silently dies after exactly one re-push. CAS from 'succeeded' (the real state) -- or 'submitted'
+    # (kept for idempotency / defense-in-depth against a re-drive racing a fresh dispatch) -- back to
+    # 'submitted'. NOT committed here: the ``pg_advisory_xact_lock`` taken above is TRANSACTION-scoped
+    # and serializes the redrive_attempt counter's read->increment->write across concurrent /mismatch
+    # calls for this file -- an early commit here would release it before the counter stamp below and
+    # reopen the lost-update window (HARD-02/D-05). It commits together with the enqueue + counter
+    # stamp in the SAME final commit this handler already used, matching the existing (accepted) risk
+    # profile of that commit boundary rather than the tighter enqueue-after-commit discipline used
+    # where no counter atomicity is at stake (report_pushed, ComputeAgentBackend.dispatch).
+    res = cast(
+        "CursorResult[Any]",
+        await session.execute(
+            update(CloudJob)
+            .where(CloudJob.file_id == file_id, CloudJob.status.in_((CloudJobStatus.SUBMITTED.value, CloudJobStatus.SUCCEEDED.value)))
+            .values(status=CloudJobStatus.SUBMITTED.value)
+        ),
+    )
+    if res.rowcount == 0:
+        # cloud_job already advanced past a mismatch-reachable state (e.g. a concurrent over-cap
+        # /mismatch already spilled it to 'awaiting', or the row was reaped): hold rather than re-drive
+        # a push whose callback could never re-arm the CAS either way.
+        await session.commit()
+        logger.info(
+            "report_push_mismatch held: cloud_job no longer re-armable (already advanced)",
+            file_id=str(file_id),
+            agent_id=agent.id,
+            attempt=next_attempt,
+        )
+        return PushMismatchResponse(file_id=file_id, cleared=False)
+
+    fileserver_queue = request.app.state.task_router.queue_for(fileserver_agent.id, lane_for_task("push_file"))
+    # Landmine 1: stamp the RECORDED backend's destination onto the re-driven payload (backend is non-None
+    # here -- either the reporter passed the D-07 gate or no gate applied and the backend-None hold above
+    # already returned). The destination is the compute backend to push TO; agent_id is the FILESERVER
+    # that initiates the rsync (the push origin), unchanged.
+    payload = PushFilePayload(
+        file_id=file.id,
+        original_path=file.original_path,
+        file_type=file.file_type,
+        agent_id=fileserver_agent.id,
+        dest_host=backend.push_host,
+        dest_scratch_dir=backend.scratch_dir,
+        dest_ssh_user=backend.ssh_user,
+    )
+    dumped = payload.model_dump(mode="json")
+    await fileserver_queue.connect()
+    # Deterministic key collapses a still-live push to a no-op (the control-side before_enqueue hook
+    # also derives it from file_id); passing it explicitly keeps the dedup contract clear here.
+    # WR-03: stamp the explicit SAQ job-net timeout (strictly above the agent's asyncio outer guard)
+    # so a re-driven push has the same deterministic inner<outer<net kill ordering as the staged one.
+    # phaze-2qpn: size-scaled + retries, matching the staged-path enqueue.
+    await fileserver_queue.enqueue(
+        "push_file", key=ledger_key, timeout=push_file_saq_timeout_sec(file.file_size), retries=PUSH_FILE_SAQ_RETRIES, **dumped
+    )
+
+    # Persist the incremented attempt counter into the DEDICATED `redrive_attempt` column. The
+    # control-side before_enqueue hook upserts the row with the fresh PushFilePayload kwargs in its own
+    # session (rewriting `payload`, which no longer carries the counter), so stamp the counter AFTER the
+    # enqueue. The hook's ON CONFLICT DO UPDATE never touches `redrive_attempt`; a crash between the
+    # hook's commit and this commit therefore leaves the counter at `current_attempt` (un-incremented),
+    # never reset to 0 -- the bounded push budget survives the crash window (phaze-2jl1). The file stays
+    # PUSHING (the slot is retained); no FileRecord state change.
+    await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == ledger_key).values(redrive_attempt=next_attempt))
+    await session.commit()
+
+    logger.info(
+        "report_push_mismatch: re-driving push_file (slot retained)",
+        file_id=str(file_id),
+        agent_id=agent.id,
+        attempt=next_attempt,
+        fileserver_agent_id=fileserver_agent.id,
+    )
+    return PushMismatchResponse(file_id=file_id, cleared=False)
+
+
 @router.post("/{file_id}/mismatch", status_code=status.HTTP_200_OK, response_model=PushMismatchResponse)
 async def report_push_mismatch(
     file_id: uuid.UUID,
@@ -430,196 +680,7 @@ async def report_push_mismatch(
 
     # Over the cap: SPILL back to AWAITING_CLOUD + ledger clear, one transaction (Phase 69, SCHED-03/D-04).
     if next_attempt > settings.push_max_attempts:
-        # SCHED-03/D-04: a compute push that exhausts its push_max_attempts re-drives no longer HARD-fails.
-        # Spill the file back to AWAITING_CLOUD so the next release_awaiting_cloud drain tick can route it
-        # to a lower-rank backend -- and, because this backend's cloud budget is now exhausted, to LOCAL.
-        # ANALYSIS_FAILED comes ONLY from a local analysis failure; every cloud-failure path spills to local.
-        #
-        # SC#1/D-12 anchor swap: the CAS guard now keys on cloud_job.status == 'submitted' (compute's single
-        # in-flight status), NOT FileRecord.state == PUSHING -- collapsing the guard onto the sidecar as the
-        # single CAS domain and removing the last FileRecord.state ROUTING read before Phase 90 drops the
-        # column. D-03: this SAME CAS re-stamps the row submitted -> awaiting (was a separate FAILED write) so
-        # the hard shadow invariant AWAITING_CLOUD => status='awaiting' holds, keeping attempts SPENT
-        # (>= cloud_submit_max_attempts) so select_backend excludes cloud and routes the file to local (D-04).
-        # A duplicate/late /mismatch (SAQ retry) -- or a stale/removed-backend reporter that skipped the D-07
-        # gate -- on a file whose cloud_job already advanced past 'submitted'/'succeeded' (RUNNING/reaped/
-        # awaiting) matches 0 rows and CANNOT clobber it back to AWAITING_CLOUD (T-83-PUSH-CLOBBER).
-        #
-        # phaze-7lpe: expect_status widens to ('submitted', 'succeeded'). /mismatch is reached ONLY via
-        # process_file (tasks/functions.py), which by construction runs AFTER report_pushed has already
-        # flipped the row submitted -> succeeded (compute has no further transition between a landed push
-        # and analysis completing -- unlike kueue, a compute cloud_job never advances past 'succeeded').
-        # So the REAL state at /mismatch time is ALWAYS 'succeeded', never 'submitted' -- the original
-        # 'submitted'-only guard meant this branch could never fire in production, permanently disabling
-        # the T-50-loop spill-to-local safety for a persistently corrupt/skewed push.
-        #
-        # D-01/D-02: route the spill re-stamp through the SINGLE awaiting writer
-        # (services.backends.hold_awaiting_cloud) instead of an inline CAS. Its spill branch re-stamps
-        # submitted/succeeded -> awaiting with attempts SPENT (D-03), returning False (a full no-op) on
-        # the 0-row advanced-file case. NO clear_cloud_phase: the push spill must NOT touch cloud_phase
-        # (D-12 -- only the s3 spill clears it).
-        #
-        # NULL-GUARD: the helper's CAS dereferences file.id, so load the FileRecord (none is loaded in this
-        # branch today). An absent file (unreachable in practice -- cloud_job.file_id FKs files.id) takes the
-        # FULL no-op below (cleared=False), identical to a CAS miss; passing None would raise AttributeError
-        # where the old disconnected update(FileRecord) silently matched 0 rows. No 404 here: the over-cap
-        # spill is an agent callback and a 404 would change the response contract.
-        file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
-        cleared = file is not None and await hold_awaiting_cloud(
-            session,
-            file,
-            attempts=settings.cloud_submit_max_attempts,
-            expect_status=(CloudJobStatus.SUBMITTED.value, CloudJobStatus.SUCCEEDED.value),
-        )
-        if not cleared:
-            # cloud_job no longer submitted/succeeded (already advanced, reaped, or a non-compute file
-            # with no row): idempotent FULL no-op. No cloud_job write, no FileRecord write, no ledger clear.
-            await session.commit()
-            logger.info(
-                "report_push_mismatch: idempotent no-op (cloud_job no longer submitted/succeeded, over-cap spill skipped)",
-                file_id=str(file_id),
-                agent_id=agent.id,
-            )
-            return PushMismatchResponse(file_id=file_id, cleared=False)
-        # cleared (helper CAS hit): gate the ledger clear behind the cloud_job CAS. The submitted ->
-        # awaiting re-stamp above already drained the row from the D-10 in-flight set so
-        # in_flight_count(compute) stays honest and the backend's cap slot is released (Phase 69, D-05);
-        # 'awaiting' is not in IN_FLIGHT (D-03).
-        # Phase 90 (D-09): the former AWAITING_CLOUD FileRecord.state dual-write was removed; the
-        # cloud_job sidecar re-stamped to 'awaiting' by hold_awaiting_cloud is the sole derived authority.
-        await clear_ledger_entry(session, ledger_key)
-        await session.commit()
-        logger.warning(
-            "report_push_mismatch: push cap reached -> cloud_job re-stamped to awaiting + spill to AWAITING_CLOUD (routes to local)",
-            file_id=str(file_id),
-            agent_id=agent.id,
-            attempt=next_attempt,
-            cap=settings.push_max_attempts,
-        )
-        return PushMismatchResponse(file_id=file_id, cleared=True)
+        cleared = await _spill_over_cap_push(file_id, settings, session, ledger_key, agent_id=agent.id, next_attempt=next_attempt)
+        return PushMismatchResponse(file_id=file_id, cleared=cleared)
 
-    # Under the cap: re-drive push_file on the FILESERVER queue, keeping the PUSHING slot (Open-Q1).
-    # Landmine 1: the re-drive MUST carry the recorded destination -- never a destination-less payload
-    # (the fileserver would rsync to a null remote spec). An unattributed file (no cloud_job / an
-    # operator-removed backend_id -> backend is None) has no destination to stamp, so it cannot be
-    # re-driven: hold it PUSHING for the staging cron / recovery (mirrors the no-fileserver hold below)
-    # rather than enqueue a destination-less push.
-    if backend is None:
-        logger.warning(
-            "report_push_mismatch held: no attributed compute backend to re-stamp the push destination",
-            file_id=str(file_id),
-            agent_id=agent.id,
-            attempt=next_attempt,
-        )
-        await session.commit()
-        return PushMismatchResponse(file_id=file_id, cleared=False)
-
-    # NULL-GUARD (phaze-zdej, request_guards.py rule 3 -- copy the over-cap branch's shape): a
-    # concurrent scan-deletion can remove this FileRecord (and cascade-delete the SAME cloud_job row
-    # this handler already read above) in the window between the cloud_job SELECT and this SELECT.
-    # `backend` was resolved from the in-memory cloud_job read before that deletion could have
-    # committed, so reaching here with a vanished FileRecord is a genuine race, not a contradiction.
-    # scalar_one() would raise NoResultFound -> unhandled 500; there is nothing left to re-drive a
-    # push for, so hold cleanly (mirrors the "no fileserver online" hold below) instead of crashing.
-    file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
-    if file is None:
-        logger.warning(
-            "report_push_mismatch held: file record no longer exists (concurrent scan-deletion)",
-            file_id=str(file_id),
-            agent_id=agent.id,
-            attempt=next_attempt,
-        )
-        await session.commit()
-        return PushMismatchResponse(file_id=file_id, cleared=False)
-
-    try:
-        fileserver_agent = await select_active_agent(session, kind="fileserver")
-    except NoActiveAgentError:
-        # No fileserver online: leave the file PUSHING for the staging cron / recovery to re-drive.
-        logger.warning(
-            "report_push_mismatch held: no fileserver agent online",
-            file_id=str(file_id),
-            agent_id=agent.id,
-            attempt=next_attempt,
-        )
-        await session.commit()
-        return PushMismatchResponse(file_id=file_id, cleared=False)
-
-    # phaze-7lpe: re-arm the cloud_job CAS domain BEFORE re-driving. report_pushed's ONLY guard is
-    # cloud_job.status == 'submitted' (SC#1/D-12); by the time /mismatch is reachable that token has
-    # ALREADY been consumed -- report_pushed flips submitted -> succeeded before process_file (the sole
-    # /mismatch caller) can ever run. Without this re-stamp the re-driven push's OWN /pushed callback
-    # matches 0 rows (idempotent no-op) and NEVER re-enqueues process_file -- the D-12 re-verify loop
-    # silently dies after exactly one re-push. CAS from 'succeeded' (the real state) -- or 'submitted'
-    # (kept for idempotency / defense-in-depth against a re-drive racing a fresh dispatch) -- back to
-    # 'submitted'. NOT committed here: the ``pg_advisory_xact_lock`` taken above is TRANSACTION-scoped
-    # and serializes the redrive_attempt counter's read->increment->write across concurrent /mismatch
-    # calls for this file -- an early commit here would release it before the counter stamp below and
-    # reopen the lost-update window (HARD-02/D-05). It commits together with the enqueue + counter
-    # stamp in the SAME final commit this handler already used, matching the existing (accepted) risk
-    # profile of that commit boundary rather than the tighter enqueue-after-commit discipline used
-    # where no counter atomicity is at stake (report_pushed, ComputeAgentBackend.dispatch).
-    res = cast(
-        "CursorResult[Any]",
-        await session.execute(
-            update(CloudJob)
-            .where(CloudJob.file_id == file_id, CloudJob.status.in_((CloudJobStatus.SUBMITTED.value, CloudJobStatus.SUCCEEDED.value)))
-            .values(status=CloudJobStatus.SUBMITTED.value)
-        ),
-    )
-    if res.rowcount == 0:
-        # cloud_job already advanced past a mismatch-reachable state (e.g. a concurrent over-cap
-        # /mismatch already spilled it to 'awaiting', or the row was reaped): hold rather than re-drive
-        # a push whose callback could never re-arm the CAS either way.
-        await session.commit()
-        logger.info(
-            "report_push_mismatch held: cloud_job no longer re-armable (already advanced)",
-            file_id=str(file_id),
-            agent_id=agent.id,
-            attempt=next_attempt,
-        )
-        return PushMismatchResponse(file_id=file_id, cleared=False)
-
-    fileserver_queue = request.app.state.task_router.queue_for(fileserver_agent.id, lane_for_task("push_file"))
-    # Landmine 1: stamp the RECORDED backend's destination onto the re-driven payload (backend is non-None
-    # here -- either the reporter passed the D-07 gate or no gate applied and the backend-None hold above
-    # already returned). The destination is the compute backend to push TO; agent_id is the FILESERVER
-    # that initiates the rsync (the push origin), unchanged.
-    payload = PushFilePayload(
-        file_id=file.id,
-        original_path=file.original_path,
-        file_type=file.file_type,
-        agent_id=fileserver_agent.id,
-        dest_host=backend.push_host,
-        dest_scratch_dir=backend.scratch_dir,
-        dest_ssh_user=backend.ssh_user,
-    )
-    dumped = payload.model_dump(mode="json")
-    await fileserver_queue.connect()
-    # Deterministic key collapses a still-live push to a no-op (the control-side before_enqueue hook
-    # also derives it from file_id); passing it explicitly keeps the dedup contract clear here.
-    # WR-03: stamp the explicit SAQ job-net timeout (strictly above the agent's asyncio outer guard)
-    # so a re-driven push has the same deterministic inner<outer<net kill ordering as the staged one.
-    # phaze-2qpn: size-scaled + retries, matching the staged-path enqueue.
-    await fileserver_queue.enqueue(
-        "push_file", key=ledger_key, timeout=push_file_saq_timeout_sec(file.file_size), retries=PUSH_FILE_SAQ_RETRIES, **dumped
-    )
-
-    # Persist the incremented attempt counter into the DEDICATED `redrive_attempt` column. The
-    # control-side before_enqueue hook upserts the row with the fresh PushFilePayload kwargs in its own
-    # session (rewriting `payload`, which no longer carries the counter), so stamp the counter AFTER the
-    # enqueue. The hook's ON CONFLICT DO UPDATE never touches `redrive_attempt`; a crash between the
-    # hook's commit and this commit therefore leaves the counter at `current_attempt` (un-incremented),
-    # never reset to 0 -- the bounded push budget survives the crash window (phaze-2jl1). The file stays
-    # PUSHING (the slot is retained); no FileRecord state change.
-    await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == ledger_key).values(redrive_attempt=next_attempt))
-    await session.commit()
-
-    logger.info(
-        "report_push_mismatch: re-driving push_file (slot retained)",
-        file_id=str(file_id),
-        agent_id=agent.id,
-        attempt=next_attempt,
-        fileserver_agent_id=fileserver_agent.id,
-    )
-    return PushMismatchResponse(file_id=file_id, cleared=False)
+    return await _redrive_under_cap_push(file_id, request, agent, session, backend, ledger_key, next_attempt)

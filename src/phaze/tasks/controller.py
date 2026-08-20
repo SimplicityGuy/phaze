@@ -88,6 +88,20 @@ _BOOT_RECONCILE_RETRY_DELAY_SECONDS = 2.0
 _RETRYABLE_BOOT_RECONCILE_EXCEPTIONS = (DBAPIError,)
 
 
+async def _pause_before_boot_retry(description: str, attempt: int, attempts: int, delay_seconds: float) -> None:
+    """One retryable boot-reconcile failure: warn + back off while budget remains, else log the final failure.
+
+    Split out of :func:`_run_boot_reconcile_with_retry` (phaze-vu88k.7) so the retry loop reads as a loop
+    rather than a four-deep nest. Returns either way -- exhausting the budget is not an exception here,
+    because boot resilience means a failed reconcile NEVER aborts controller boot.
+    """
+    if attempt < attempts:
+        logger.warning(f"{description} failed (schema not ready?), retrying", attempt=attempt, attempts=attempts)
+        await asyncio.sleep(delay_seconds)
+    else:
+        logger.exception(f"{description} failed on final attempt", attempts=attempts)
+
+
 async def _run_boot_reconcile_with_retry(
     description: str,
     attempt_fn: Callable[[], Awaitable[Any]],
@@ -108,17 +122,68 @@ async def _run_boot_reconcile_with_retry(
         try:
             return await attempt_fn()
         except _RETRYABLE_BOOT_RECONCILE_EXCEPTIONS:
-            if attempt < attempts:
-                logger.warning(f"{description} failed (schema not ready?), retrying", attempt=attempt, attempts=attempts)
-                await asyncio.sleep(delay_seconds)
-            else:
-                logger.exception(f"{description} failed on final attempt", attempts=attempts)
+            await _pause_before_boot_retry(description, attempt, attempts, delay_seconds)
         except Exception:
             # Boot resilience still applies (never abort controller boot) -- but this is not the
             # race the retry budget exists for, so don't spend it: log once and stop.
             logger.exception(f"{description} failed")
             break
     return None
+
+
+async def _probe_kueue_local_queues(control_cfg: ControlSettings) -> None:
+    """Per-cluster LocalQueue reachability probe, warn-only (KDEPLOY-04, MKUE-01/03, D-05/D-06)."""
+    # Phase 56/70 (KDEPLOY-04, MKUE-01/03, D-05/D-06 -- REVISED phaze-6r39): PER-CLUSTER LocalQueue-
+    # reachability probe. This is a RUNTIME probe, distinct from the fail-fast kube config validators --
+    # for EACH configured Kueue backend it GETs THAT cluster's LocalQueue (threaded the backend's own
+    # KubeConfig) and logs a WARNING on failure. Phase 70 iterates every kueue backend (was a single
+    # global probe gated on a ≤1-non-local resolved kind), so N clusters each get their own reachability
+    # check. Each probe is INDEPENDENTLY guarded (its own broad try/except): a transient kube/mesh blip
+    # MUST NEVER abort controller boot (D-05 -- the control plane still boots Postgres/Redis/UI/local-
+    # analysis). Warnings name only the config surface; they never interpolate an SA token or kube DSN
+    # (T-56-LOG / T-54-07).
+    #
+    # phaze-6r39: this loop USED TO ALSO persist a cross-process Redis flag (D-05/D-06, the
+    # "LocalQueue-unreachable" key) for the dashboard to read. That flag was a
+    # boot-time SNAPSHOT with no TTL and no other writer: it never cleared once connectivity was
+    # restored (the reported bug) and never appeared at all for an outage that began AFTER boot (the
+    # silent, more dangerous half -- the alert was structurally incapable of firing for the exact class
+    # of event it exists to surface). The dashboard now derives the SAME alert LIVE, from the SAME probe
+    # already run on every 5s ``/pipeline/stats`` poll via ``get_backend_lane_snapshot`` ->
+    # ``derive_localqueue_unreachable`` (services/backends.py), so the Redis write is GONE -- there is no
+    # migration and no key to clear; a currently-stuck stale key simply becomes unread and inert the
+    # moment this deploy lands. This loop and its WARNING log are KEPT deliberately: they remain the
+    # operator's boot-time log signal that a configured cluster was unreachable at startup. Do NOT
+    # "restore" a Redis write here -- only the write was retired, the probe and its log were not.
+    kueue_kubes = [kube for entry in control_cfg.backends if entry.kind == "kueue" and (kube := getattr(entry, "kube", None)) is not None]
+    for kube in kueue_kubes:
+        try:
+            await kube_staging.get_local_queue(kube)
+        except Exception:
+            logger.warning(
+                "phaze.controller startup: a Kueue LocalQueue is unreachable -- check cluster connectivity "
+                "and the backend's [kube] local_queue configuration; control plane boots regardless (D-05)"
+            )
+
+
+async def _push_bucket_lifecycle_ttls(control_cfg: ControlSettings) -> None:
+    """Push the KSTAGE-04/D-02 lifecycle-TTL backstop onto every configured staging bucket (phaze-cws5)."""
+    # phaze-cws5: wire the KSTAGE-04/D-02 lifecycle backstop into production. Every comment in the S3
+    # staging pipeline (stage_file_to_s3's phaze-bbwx compensation, the reaper's post-commit cleanup,
+    # report_upload_failed's terminal cleanup) names ensure_bucket_lifecycle_ttl as "the eventual
+    # backstop" for a missed inline abort/delete -- but nothing ever called it, so it configured ZERO
+    # buckets in production (it was vulture-whitelisted as unused). Push it once per configured bucket
+    # at boot. Best-effort PER BUCKET (mirrors the LocalQueue probe above, D-05): a transient S3
+    # auth/network hiccup must never abort control-plane startup -- a failure here just means this
+    # boot's TTL push did not land, and the next restart retries the same idempotent upsert.
+    for bucket in control_cfg.buckets:
+        try:
+            await s3_staging.ensure_bucket_lifecycle_ttl(bucket)
+        except Exception:
+            logger.warning(
+                "phaze.controller startup: could not configure the staging bucket's lifecycle TTL backstop; control plane boots regardless (D-05)",
+                bucket_id=bucket.id,
+            )
 
 
 async def startup(ctx: dict[str, Any]) -> None:
@@ -253,55 +318,9 @@ async def startup(ctx: dict[str, Any]) -> None:
     if result is not None:
         logger.info("phaze.controller startup recovery", detected_loss=result["detected_loss"], stages=result["stages"])
 
-    # Phase 56/70 (KDEPLOY-04, MKUE-01/03, D-05/D-06 -- REVISED phaze-6r39): PER-CLUSTER LocalQueue-
-    # reachability probe. This is a RUNTIME probe, distinct from the fail-fast kube config validators --
-    # for EACH configured Kueue backend it GETs THAT cluster's LocalQueue (threaded the backend's own
-    # KubeConfig) and logs a WARNING on failure. Phase 70 iterates every kueue backend (was a single
-    # global probe gated on a ≤1-non-local resolved kind), so N clusters each get their own reachability
-    # check. Each probe is INDEPENDENTLY guarded (its own broad try/except): a transient kube/mesh blip
-    # MUST NEVER abort controller boot (D-05 -- the control plane still boots Postgres/Redis/UI/local-
-    # analysis). Warnings name only the config surface; they never interpolate an SA token or kube DSN
-    # (T-56-LOG / T-54-07).
-    #
-    # phaze-6r39: this loop USED TO ALSO persist a cross-process Redis flag (D-05/D-06, the
-    # "LocalQueue-unreachable" key) for the dashboard to read. That flag was a
-    # boot-time SNAPSHOT with no TTL and no other writer: it never cleared once connectivity was
-    # restored (the reported bug) and never appeared at all for an outage that began AFTER boot (the
-    # silent, more dangerous half -- the alert was structurally incapable of firing for the exact class
-    # of event it exists to surface). The dashboard now derives the SAME alert LIVE, from the SAME probe
-    # already run on every 5s ``/pipeline/stats`` poll via ``get_backend_lane_snapshot`` ->
-    # ``derive_localqueue_unreachable`` (services/backends.py), so the Redis write is GONE -- there is no
-    # migration and no key to clear; a currently-stuck stale key simply becomes unread and inert the
-    # moment this deploy lands. This loop and its WARNING log are KEPT deliberately: they remain the
-    # operator's boot-time log signal that a configured cluster was unreachable at startup. Do NOT
-    # "restore" a Redis write here -- only the write was retired, the probe and its log were not.
     control_cfg = cast("ControlSettings", cfg)
-    kueue_kubes = [kube for entry in control_cfg.backends if entry.kind == "kueue" and (kube := getattr(entry, "kube", None)) is not None]
-    for kube in kueue_kubes:
-        try:
-            await kube_staging.get_local_queue(kube)
-        except Exception:
-            logger.warning(
-                "phaze.controller startup: a Kueue LocalQueue is unreachable -- check cluster connectivity "
-                "and the backend's [kube] local_queue configuration; control plane boots regardless (D-05)"
-            )
-
-    # phaze-cws5: wire the KSTAGE-04/D-02 lifecycle backstop into production. Every comment in the S3
-    # staging pipeline (stage_file_to_s3's phaze-bbwx compensation, the reaper's post-commit cleanup,
-    # report_upload_failed's terminal cleanup) names ensure_bucket_lifecycle_ttl as "the eventual
-    # backstop" for a missed inline abort/delete -- but nothing ever called it, so it configured ZERO
-    # buckets in production (it was vulture-whitelisted as unused). Push it once per configured bucket
-    # at boot. Best-effort PER BUCKET (mirrors the LocalQueue probe above, D-05): a transient S3
-    # auth/network hiccup must never abort control-plane startup -- a failure here just means this
-    # boot's TTL push did not land, and the next restart retries the same idempotent upsert.
-    for bucket in control_cfg.buckets:
-        try:
-            await s3_staging.ensure_bucket_lifecycle_ttl(bucket)
-        except Exception:
-            logger.warning(
-                "phaze.controller startup: could not configure the staging bucket's lifecycle TTL backstop; control plane boots regardless (D-05)",
-                bucket_id=bucket.id,
-            )
+    await _probe_kueue_local_queues(control_cfg)
+    await _push_bucket_lifecycle_ttls(control_cfg)
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:

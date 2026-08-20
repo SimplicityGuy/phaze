@@ -76,13 +76,20 @@ async def match_tracklist_to_discogs(ctx: dict[str, Any], *, tracklist_id: str) 
     #    across the whole match run (phaze-xdu1).
     candidates_created = 0
     async with ctx["async_session"]() as session:
-        for track, candidates in zip(eligible, match_results, strict=True):
+        # phaze-vu88k.4: ONE DELETE for every eligible track instead of one per track. The old
+        # per-track DELETE ran inside the zip loop below, so a tracklist of N eligible tracks cost N
+        # round trips to remove exactly the rows this single statement removes. Same transaction,
+        # same predicate (`status == "candidate"`, so accepted links are still preserved -- pitfall
+        # 3), same rows, and still no network in this span. `eligible` may be empty, in which case
+        # there is nothing to delete and no statement is issued.
+        if eligible:
             await session.execute(
                 delete(DiscogsLink).where(
-                    DiscogsLink.track_id == track.id,
+                    DiscogsLink.track_id.in_([track.id for track in eligible]),
                     DiscogsLink.status == "candidate",
                 )
             )
+        for track, candidates in zip(eligible, match_results, strict=True):
             for candidate in candidates:
                 link = DiscogsLink(
                     track_id=track.id,
