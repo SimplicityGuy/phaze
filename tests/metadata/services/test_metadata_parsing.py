@@ -10,7 +10,13 @@ from mutagen.mp4 import MP4
 import pytest
 
 from phaze.services.metadata import ExtractedTags, TagReadError, extract_tags
-from phaze.services.metadata_parsing import ParsedTagValues, normalize_track_number_text, normalize_year_text, parse_format_tags
+from phaze.services.metadata_parsing import (
+    ParsedTagValues,
+    _raw_track_text,
+    normalize_track_number_text,
+    normalize_year_text,
+    parse_format_tags,
+)
 
 
 if TYPE_CHECKING:
@@ -148,3 +154,12 @@ def test_parse_failure_strictness_is_an_explicit_policy_split(strict: bool, rais
 def test_no_tags_is_a_valid_pure_result() -> None:
     """An opened, recognized file with no tag object is not a parse failure."""
     assert parse_format_tags(MagicMock(), None) == ParsedTagValues()
+
+
+def test_raw_track_text_list_of_none_is_none_not_the_string_none() -> None:
+    """``[None]`` is unreachable from a real mutagen tag, but pin the deliberate divergence:
+
+    it now returns ``None`` (restoring the phaze-2zl7 "raw is None iff normalized is None"
+    contract) rather than the pre-refactor literal string ``"None"``.
+    """
+    assert _raw_track_text([None]) is None

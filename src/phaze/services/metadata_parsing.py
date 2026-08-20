@@ -57,7 +57,16 @@ class ParsedTagValues:
 
 
 def _first_str(val: Any) -> str | None:
-    """Extract, sanitize, and repair the first string from a tag value."""
+    """Extract the first string from a tag value.
+
+    Handles lists, ID3 text frames, and plain strings. Runs the result through
+    :func:`~phaze.services.text_repair.repair_mojibake` (phaze-x4ux) -- this is the ingest
+    boundary for artist/title/album/genre, the ONE place a mis-decoded tag (e.g. a UTF-8
+    filename or comment misread as cp1252/latin-1 upstream) gets persisted, so repairing here
+    means every downstream reader (search, tracklist matching, rename proposals) sees clean text
+    without needing its own repair call. Conservative and a no-op on already-clean text -- see
+    the module's own safety-gate documentation.
+    """
     if val is None:
         return None
     if isinstance(val, list):
@@ -80,7 +89,17 @@ def _parse_year(val: str | None) -> int | None:
 
 
 def _bounded_track(number: int) -> int | None:
-    """Keep a parsed track number inside the wire contract's 0..9999 domain."""
+    """Clamp a parsed track number to the wire contract's domain (phaze-0do9).
+
+    Mirrors ``_parse_year``'s sanity check above: ``MetadataWriteRequest.track_number``
+    (schemas/agent_metadata.py) is ``Field(ge=0, le=9999)``, guarding an int4 column. Degrading
+    an out-of-domain value to ``None`` here -- instead of letting it ride to the wire boundary --
+    keeps one junk field from sinking the whole metadata row: previously a TRCK tag like
+    "20211013" (a ripper stuffing a date into the track frame) or a bogus "-1"/"10000" raised a
+    pydantic ``ValidationError`` *inside* the extraction task's ``try`` block, which the generic
+    ``except`` treated as a terminal metadata failure -- permanently losing that file's
+    artist/title/album/year too.
+    """
     return number if 0 <= number <= 9999 else None
 
 
@@ -133,7 +152,22 @@ def normalize_track_number_text(value: Any) -> int | None:
 
 
 def _raw_genre_value(val: Any) -> str | list[str] | None:
-    """Preserve one genre as text and multiple genres as separate values."""
+    """Preserve every value of a multi-value genre tag, as a real ``list[str]``.
+
+    phaze-2zl7: unlike :func:`_first_str` (which keeps only the FIRST value -- correct for the
+    normalized ``genre`` field used in search/matching), this preserves the full genre list for
+    an undo snapshot, so reverting a write does not silently collapse a multi-genre tag down to
+    one value.
+
+    phaze-z2u08: this used to ``"; ".join`` the values into one string, which fixed the CAPTURE
+    half of the undo snapshot but not the RESTORE half -- nothing on the write side ever split
+    that joined string back apart, so undo wrote it as a single tag value anyway (and a naive
+    ``split("; ")`` fix would be wrong too: a single genre value can legitimately contain "; ").
+    Returning the values themselves, never re-joined into text, lets the write path put each one
+    back on disk verbatim. A single-value genre still returns a plain ``str`` (unchanged
+    behavior); ``None`` iff the tag is genuinely absent -- same contract as the sibling
+    raw_year/raw_track_number helpers.
+    """
     if val is None:
         return None
     if isinstance(val, list):
@@ -145,7 +179,24 @@ def _raw_genre_value(val: Any) -> str | list[str] | None:
 
 
 def _raw_track_text(val: Any) -> str | None:
-    """Preserve raw ``N`` / ``N/total`` text across every supported track shape."""
+    """Raw ``"N"`` / ``"N/total"`` text for a track-number tag value (phaze-2zl7).
+
+    Unlike :func:`_parse_track` (which keeps only the leading number, discarding a "/total"
+    suffix), this preserves the total for an undo snapshot. Handles the same shapes
+    ``_parse_track`` does: a plain string ("3", "3/12"), an MP4 ``trkn`` tuple/list-of-tuple
+    (``(3, 12)`` / ``[(3, 12)]``), and ``None``.
+
+    phaze-6p7fz: an in-domain track 0 (e.g. ``(0, 12)``) round-trips to raw text ("0/12") the
+    same way :func:`_parse_track` parses it (0, not None) -- keeping the phaze-2zl7 "raw is None
+    iff normalized is None" contract intact. See :func:`_raw_track_tuple` for the deliberate
+    asymmetry between the two tuple components.
+
+    Deliberate divergence from the pre-refactor implementation: a list wrapping ``None``
+    (``[None]``, unreachable from a real mutagen tag) now returns ``None`` instead of the
+    literal string ``"None"`` -- restoring the phaze-2zl7 "raw is None iff normalized is None"
+    contract for this input rather than preserving the old bug. Pinned by
+    ``test_raw_track_text_list_of_none_is_none_not_the_string_none``.
+    """
     value = _first_track_value(val)
     if value is None:
         return None
@@ -156,7 +207,15 @@ def _raw_track_text(val: Any) -> str | None:
 
 
 def _raw_track_tuple(value: tuple[Any, ...]) -> str | None:
-    """Render an MP4 ``trkn`` tuple without losing a valid zero track."""
+    """Render an MP4 ``trkn`` tuple without losing a valid zero track.
+
+    The two components are checked differently, on purpose (phaze-6p7fz). ``value[0]`` (the
+    track number) is checked with ``is not None``, not truthiness, so a valid track 0 still
+    renders. ``value[1]`` (the total) keeps its truthiness check: MP4 rippers use a total of 0
+    to mean "no total" (e.g. ``(3, 0)``), so a 0 total is still omitted from the "/total" suffix
+    -- do not "fix" this into a matching ``is not None`` check on ``value[1]``, it would render a
+    bogus "/0" suffix.
+    """
     if len(value) >= 2 and value[1]:
         return f"{value[0]}/{value[1]}"
     if value and value[0] is not None:
