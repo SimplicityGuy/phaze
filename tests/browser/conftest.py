@@ -117,6 +117,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import os
 from pathlib import Path
@@ -578,3 +579,112 @@ def pytest_collection_modifyitems(items: list[Any]) -> None:
     for item in items:
         if _BROWSER_DIR in Path(str(item.fspath)).resolve().parents:
             item.add_marker(pytest.mark.browser)
+
+
+# --- Stray scratch-test guard (phaze-o7e3e) -------------------------------------------------------
+#
+# pytest's collection has no concept of "committed" -- every ``test_*.py`` dropped into this
+# directory joins the suite, including one written mid-investigation as throwaway scratch. Measured,
+# 2026-08-20: a 40-test scratch file (``tests/browser/test_zz_investigate_39eiy.py``, `test_zz_*`
+# chosen by its author specifically to signal "ignore me") collected into three consecutive
+# ``just test-browser`` runs before a reviewer noticed the pass count did not match the baseline
+# (162 -> 202 -> 202 -> 202; three of four runs had to be discarded). That is worse than an ordinary
+# failure: a contaminated run LOOKS healthier than a clean one, and this suite is the only source of
+# the 10-consecutive-clean-run evidence phaze-8p1uq's promotion gate needs.
+#
+# AC1 choice: loud failure, not silent exclusion (option (a), preferred explicitly by the bead). A
+# naming convention was rejected on the evidence above -- the author already tried exactly that
+# (`test_zz_*`) and it did nothing, because nothing in pytest's default collection reads a filename
+# as a signal. An explicit opt-in marker was rejected too: it would force every real committed test
+# to carry ceremony it does not need today (AC2), just to prove a negative for files that do not
+# exist yet.
+#
+# AC5 scope: the same exposure -- any stray test_*.py anywhere under tests/ collects silently, since
+# ``testpaths = ["tests"]`` in pyproject.toml has no tracked-file check either -- is real tree-wide,
+# not unique to this directory. This guard is scoped to tests/browser/ only, deliberately: this is
+# the one directory currently backing load-bearing evidence for a promotion gate, and a tree-wide
+# guard is a materially bigger blast radius (every test directory, every contributor) that this bead
+# did not ask for and that was not evaluated here. Widening it is a separate decision.
+#
+# Cost: this hook runs ``git ls-files`` ONCE per pytest session (cached, not per collected item), and
+# only when at least one browser test is actually SELECTED to run -- see ``trylast=True`` below, which
+# makes this the last ``pytest_collection_modifyitems`` hookimpl to run, after the ``-m`` mark plugin
+# has already removed deselected items from ``items``. That means a bare ``pytest`` / ``just check``
+# run (default ``-m 'not browser'``) collects tests/browser/ (so the marker above still applies) but
+# never reaches this check at all, because no browser item survives deselection -- the guard costs
+# nothing on the suite everyone runs constantly, and only pays its one subprocess call on
+# ``just test-browser``, the "counted form" this bead's design section anticipated.
+#
+# Escape hatch (AC3) for deliberate local debugging: set PHAZE_TEST_BROWSER_ALLOW_UNTRACKED=1 to run
+# an untracked file anyway. It is a per-invocation env var, not a per-file marker or a directory
+# carve-out, on purpose -- it has to be typed again every time, so it never becomes muscle memory the
+# way a forgotten marker or an established "junk" folder would.
+_ALLOW_UNTRACKED_ENV = "PHAZE_TEST_BROWSER_ALLOW_UNTRACKED"
+
+
+@functools.lru_cache(maxsize=1)
+def _git_tracked_browser_files() -> frozenset[Path] | None:
+    """Absolute paths ``git`` tracks under tests/browser/, or ``None`` if the lookup itself failed.
+
+    One subprocess call per session (cached) -- see the guard comment above for why a per-item
+    shell-out was rejected on cost grounds. Failing open (``None``, which skips the check further
+    down) rather than closed: a git lookup failure is a tooling problem, not evidence of a stray
+    file, and should not turn into a false collection failure for every browser-suite run on a
+    machine where it occurs.
+    """
+    try:
+        result = subprocess.run(  # noqa: S603 -- fixed argv, no shell, test-only collection guard
+            ["git", "ls-files", "--", str(_BROWSER_DIR)],  # noqa: S607 -- resolved via PATH deliberately
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            check=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(
+            f"tests/browser/conftest.py: could not list git-tracked files under tests/browser/ ({exc}); "
+            "skipping the untracked-scratch-test guard for this run",
+            file=sys.stderr,
+        )
+        return None
+    return frozenset((_REPO_ROOT / line).resolve() for line in result.stdout.splitlines() if line)
+
+
+@pytest.hookimpl(specname="pytest_collection_modifyitems", trylast=True)
+def pytest_collection_modifyitems_untracked_browser_guard(items: list[Any]) -> None:
+    """Fail the whole session, loudly, if a SELECTED tests/browser/ item is not tracked by git.
+
+    ``trylast=True`` is load-bearing: it is what makes this hookimpl run after the ``-m`` mark
+    plugin's own ``pytest_collection_modifyitems`` has already dropped deselected items from
+    ``items``, so this only looks at tests that are actually about to execute.
+
+    The function name is load-bearing too, not just descriptive: pytest's own plugin manager
+    (``_pytest.config.PytestPluginManager.parse_hookimpl_opts``) discards any attribute whose name
+    does not start with ``pytest_`` before it ever looks at the ``specname=`` marker below -- unlike
+    plain pluggy, which honors ``specname`` regardless of the Python-level name. A name like
+    ``_guard_untracked_browser_tests`` is silently never registered as a hookimpl at all (verified:
+    it neither prints nor runs), which is exactly the kind of failure this guard exists to avoid
+    elsewhere -- so it is not one to reproduce here by accident.
+    """
+    if os.environ.get(_ALLOW_UNTRACKED_ENV) == "1":
+        return
+
+    selected_browser_files = {Path(str(item.fspath)).resolve() for item in items if _BROWSER_DIR in Path(str(item.fspath)).resolve().parents}
+    if not selected_browser_files:
+        return
+
+    tracked = _git_tracked_browser_files()
+    if tracked is None:
+        return
+
+    untracked = sorted(path.relative_to(_REPO_ROOT) for path in selected_browser_files if path not in tracked)
+    if not untracked:
+        return
+
+    names = "\n  ".join(str(path) for path in untracked)
+    pytest.exit(
+        f"tests/browser/ collection guard (phaze-o7e3e): untracked test file(s) about to run:\n  {names}\n"
+        f"Commit the file if it's a real test, delete it if it was scratch, or set "
+        f"{_ALLOW_UNTRACKED_ENV}=1 to run it deliberately anyway.",
+        returncode=2,
+    )
