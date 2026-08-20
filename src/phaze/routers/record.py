@@ -66,6 +66,88 @@ def _history_sort_key(when: datetime | None) -> tuple[bool, datetime]:
     return (True, when)
 
 
+async def _load_lane(session: AsyncSession, file_id: uuid.UUID) -> tuple[str, str | None]:
+    """This file's (lane, lane_kind), derived the SAME way the Analyze matrix derives it.
+
+    phaze-lljfx: the facts grid's Lane tile used to hardcode "local" unconditionally. Deriving
+    it through ``derive_file_lane`` (COMPUTE-03) off this file's possibly-absent ``CloudJob``
+    is what stops the record view contradicting the badge the operator just saw for the same
+    file. ``CloudJob.file_id`` is unique -- at most one row.
+    """
+    cloud_job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
+    kinds = non_local_backend_kinds(type_cast("ControlSettings", get_settings()))
+    return derive_file_lane(cloud_job.id if cloud_job else None, cloud_job.backend_id if cloud_job else None, kinds)
+
+
+async def _load_pending_rows(session: AsyncSession, file_id: uuid.UUID) -> tuple[list[dict[str, Any]], RenameProposal | None]:
+    """This file's PENDING proposals as render rows, plus the one the identity section reuses.
+
+    The second element is ``proposals[0]`` -- with ``file`` eager-loaded, because the identity
+    section renders ``proposals/partials/row_detail.html`` verbatim -- or None when this file has
+    no pending proposals.
+    """
+    # Pending approvals for THIS file -- reuse the Phase 60 approve/edit/undo routes verbatim.
+    #
+    # ``created_at`` carries no uniqueness constraint, so two proposals for the same file can share
+    # a value; with a partial ORDER BY, tied rows would come back in ANY order (heap order, which
+    # shifts with page layout, vacuum, and plan choice). Appending the unique ``RenameProposal.id``
+    # makes the order TOTAL and deterministic. Same rationale as the paging contract's mandatory
+    # unique tiebreaker (rule 4, see :mod:`phaze.services.pagination`).
+    proposals_stmt = (
+        select(RenameProposal)
+        .options(selectinload(RenameProposal.file))
+        .where(RenameProposal.file_id == file_id, RenameProposal.status == ProposalStatus.PENDING.value)
+        .order_by(RenameProposal.created_at, RenameProposal.id)
+    )
+    proposals = list((await session.execute(proposals_stmt)).scalars().all())
+    pending_rows = [
+        {
+            "id": p.id,
+            "filename": p.file.original_filename,
+            "original_path": p.file.current_path,
+            "proposed_filename": p.proposed_filename,
+            "proposed_path": p.proposed_path or "",
+            # phaze-exivg: the optimistic-concurrency token the record page's APPROVE button
+            # round-trips back to /proposals/{id}/approve.
+            "updated_at": p.updated_at,
+        }
+        for p in proposals
+    ]
+    # Identity section reuses proposals/partials/row_detail.html (needs the file eager-loaded).
+    identity = proposals[0] if proposals else None
+    return pending_rows, identity
+
+
+async def _load_history(session: AsyncSession, file_id: uuid.UUID) -> list[dict[str, Any]]:
+    """This file's execution + tag-write history, merged into one globally-DESC timeline."""
+    # History (read-only, file_id-scoped): ExecutionLog (via its proposal) + TagWriteLog (direct).
+    #
+    # ``executed_at`` carries no uniqueness constraint, so two execution log rows for the same file
+    # can share a value; with a partial ORDER BY, tied rows would come back in ANY order (heap
+    # order, which shifts with page layout, vacuum, and plan choice). Appending the unique
+    # ``ExecutionLog.id`` (DESC, matching the descending timestamp sort) makes the order TOTAL and
+    # deterministic. Same rationale as the paging contract's mandatory unique tiebreaker (rule 4,
+    # see :mod:`phaze.services.pagination`).
+    exec_stmt = (
+        select(ExecutionLog)
+        .join(RenameProposal, ExecutionLog.proposal_id == RenameProposal.id)
+        .where(RenameProposal.file_id == file_id)
+        .order_by(ExecutionLog.executed_at.desc(), ExecutionLog.id.desc())
+    )
+    exec_logs = list((await session.execute(exec_stmt)).scalars().all())
+    tag_stmt = select(TagWriteLog).where(TagWriteLog.file_id == file_id).order_by(TagWriteLog.written_at.desc())
+    tag_logs = list((await session.execute(tag_stmt)).scalars().all())
+    # Merge-sort by timestamp: concatenating two independently-DESC lists is NOT globally DESC
+    # (WR-04). None timestamps sort last so a half-written row never masks real history.
+    history: list[dict[str, Any]] = sorted(
+        [{"when": e.executed_at, "label": e.operation, "status": e.status, "detail": e.destination_path} for e in exec_logs]
+        + [{"when": t.written_at, "label": "tag write", "status": t.status, "detail": t.source} for t in tag_logs],
+        key=lambda h: _history_sort_key(h["when"]),
+        reverse=True,
+    )
+    return history
+
+
 @router.get("/{file_id}", response_class=HTMLResponse)
 async def file_record(
     request: Request,
@@ -96,61 +178,8 @@ async def file_record(
     total_sec = max((w.end_sec for w in windows), default=0.0)
     analysis = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
 
-    # Pending approvals for THIS file -- reuse the Phase 60 approve/edit/undo routes verbatim.
-    #
-    # ``created_at`` carries no uniqueness constraint, so two proposals for the same file can share
-    # a value; with a partial ORDER BY, tied rows would come back in ANY order (heap order, which
-    # shifts with page layout, vacuum, and plan choice). Appending the unique ``RenameProposal.id``
-    # makes the order TOTAL and deterministic. Same rationale as the paging contract's mandatory
-    # unique tiebreaker (rule 4, see :mod:`phaze.services.pagination`).
-    proposals_stmt = (
-        select(RenameProposal)
-        .options(selectinload(RenameProposal.file))
-        .where(RenameProposal.file_id == file_id, RenameProposal.status == ProposalStatus.PENDING.value)
-        .order_by(RenameProposal.created_at, RenameProposal.id)
-    )
-    proposals = list((await session.execute(proposals_stmt)).scalars().all())
-    pending_rows = [
-        {
-            "id": p.id,
-            "filename": p.file.original_filename,
-            "original_path": p.file.current_path,
-            "proposed_filename": p.proposed_filename,
-            "proposed_path": p.proposed_path or "",
-            # phaze-exivg: the optimistic-concurrency token the record page's APPROVE button
-            # round-trips back to /proposals/{id}/approve.
-            "updated_at": p.updated_at,
-        }
-        for p in proposals
-    ]
-    # Identity section reuses proposals/partials/row_detail.html (needs the file eager-loaded).
-    identity = proposals[0] if proposals else None
-
-    # History (read-only, file_id-scoped): ExecutionLog (via its proposal) + TagWriteLog (direct).
-    #
-    # ``executed_at`` carries no uniqueness constraint, so two execution log rows for the same file
-    # can share a value; with a partial ORDER BY, tied rows would come back in ANY order (heap
-    # order, which shifts with page layout, vacuum, and plan choice). Appending the unique
-    # ``ExecutionLog.id`` (DESC, matching the descending timestamp sort) makes the order TOTAL and
-    # deterministic. Same rationale as the paging contract's mandatory unique tiebreaker (rule 4,
-    # see :mod:`phaze.services.pagination`).
-    exec_stmt = (
-        select(ExecutionLog)
-        .join(RenameProposal, ExecutionLog.proposal_id == RenameProposal.id)
-        .where(RenameProposal.file_id == file_id)
-        .order_by(ExecutionLog.executed_at.desc(), ExecutionLog.id.desc())
-    )
-    exec_logs = list((await session.execute(exec_stmt)).scalars().all())
-    tag_stmt = select(TagWriteLog).where(TagWriteLog.file_id == file_id).order_by(TagWriteLog.written_at.desc())
-    tag_logs = list((await session.execute(tag_stmt)).scalars().all())
-    # Merge-sort by timestamp: concatenating two independently-DESC lists is NOT globally DESC
-    # (WR-04). None timestamps sort last so a half-written row never masks real history.
-    history: list[dict[str, Any]] = sorted(
-        [{"when": e.executed_at, "label": e.operation, "status": e.status, "detail": e.destination_path} for e in exec_logs]
-        + [{"when": t.written_at, "label": "tag write", "status": t.status, "detail": t.source} for t in tag_logs],
-        key=lambda h: _history_sort_key(h["when"]),
-        reverse=True,
-    )
+    pending_rows, identity = await _load_pending_rows(session, file_id)
+    history = await _load_history(session, file_id)
 
     # CONSOLE-01: the six derived per-stage buckets — the SAME stage_status_case derivation the
     # Files matrix renders, single-file-scoped, so the Stage-Eligibility pills match that row.
@@ -175,13 +204,7 @@ async def file_record(
     # above, so this can never legitimately come back None here.
     tracklist_review = await get_file_tracklist_review(session, file_id)
 
-    # phaze-lljfx: the facts grid's Lane tile used to hardcode "local" unconditionally. Derive it
-    # the SAME way the Analyze matrix does (COMPUTE-03, `derive_file_lane`) off this file's
-    # (possibly absent) `CloudJob`, so the record view can never contradict the badge the operator
-    # just saw for the same file. `CloudJob.file_id` is unique -- at most one row.
-    cloud_job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
-    kinds = non_local_backend_kinds(type_cast("ControlSettings", get_settings()))
-    lane, lane_kind = derive_file_lane(cloud_job.id if cloud_job else None, cloud_job.backend_id if cloud_job else None, kinds)
+    lane, lane_kind = await _load_lane(session, file_id)
 
     spark = _bpm_spark(fine, total_sec, TIMELINE_W, TIMELINE_H)
     context: dict[str, Any] = {

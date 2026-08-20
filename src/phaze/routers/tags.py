@@ -893,6 +893,66 @@ async def bulk_write_no_discrepancies(
     return await _bulk_write_response(request, session, queued, noop, failed, resolved_ids)
 
 
+async def _already_reverted_response(request: Request, session: AsyncSession, file_record: FileRecord, file_id: uuid.UUID) -> HTMLResponse | None:
+    """The "already reverted" row response when an undo is redundant, else None to proceed.
+
+    A repeat undo must be a NO-OP -- never a re-apply of the written tags -- with an honest toast.
+
+    phaze-6bkk widens the guard to QUEUED: with the write dispatched to the agent, the window
+    between "undo pressed" and "undo COMPLETED" is a real, observable interval rather than an
+    in-request instant, so a second click during it is the COMMON case, not a rare double-click.
+    Re-dispatching would enqueue a second reversal whose before_tags snapshot is read AFTER the
+    first one lands -- i.e. it would restore the reverted state, undoing the undo.
+
+    phaze-lwqk: this check MUST run before ``_get_write_log_to_undo``. That selector's chain-walk
+    treats a COMPLETED undo as the boundary of the CURRENT write chain and deliberately returns
+    nothing for a file with no write AFTER that boundary (there is genuinely nothing left to
+    revert) -- which would otherwise reach the generic "No prior tag write to undo" branch instead
+    of this more specific "already reverted" one.
+    """
+    newest = await _get_latest_write_log(session, file_id)
+    if newest is not None and newest.source == "undo" and newest.status in (TagWriteStatus.COMPLETED, TagWriteStatus.QUEUED):
+        in_flight = newest.status == TagWriteStatus.QUEUED
+        already_message = (
+            f"A revert for {file_record.original_filename} is already queued on the file server."
+            if in_flight
+            else f"Tags for {file_record.original_filename} were already reverted."
+        )
+        row_context = await _tagwrite_row_context(session, file_record, row_state="queued" if in_flight else "pending")
+        return _tagwrite_diff_row_response(request, row_context, already_message)
+
+    return None
+
+
+def _undo_dispatch_outcome(log_entry: TagWriteLog, file_record: FileRecord) -> tuple[str, str]:
+    """How a dispatched undo landed, as ``(toast_message, row_state)``.
+
+    Both halves are the SAME decision -- whether the enqueue reached QUEUED -- so they are
+    derived together; splitting them is how a toast that says "queued" ends up beside a row
+    control that says otherwise.
+
+    phaze-26t7 / phaze-6bkk: the toast must never claim an on-disk outcome the api has not
+    observed -- and post-DIST-01 it observes none, because the reversal runs on the agent. Say
+    exactly what happened: the revert was queued, or it could not be handed off (and in that case
+    point at the agent, NOT at file permissions -- the advice that used to send operators hunting
+    a directory that simply is not mounted in this container).
+    """
+    filename = file_record.original_filename
+    if log_entry.status == TagWriteStatus.QUEUED:
+        toast_message = f"Revert queued for {filename} on agent {file_record.agent_id}. The file server restores the previous tags; the row updates when it reports back."
+    else:
+        toast_message = (
+            f"Undo could not be dispatched for {filename}: {log_entry.error_message or 'Unknown error'}. "
+            f"Check that agent {file_record.agent_id} is reachable and its worker is running, then retry."
+        )
+
+    # phaze-nvll / phaze-6bkk: a queued revert leaves the row in "queued" (no control -- the write
+    # is in flight and there is nothing coherent to press); an undispatchable one keeps "approved"
+    # so UNDO stays available to retry, rather than claiming a revert that did not happen.
+    row_state = "queued" if log_entry.status == TagWriteStatus.QUEUED else "approved"
+    return toast_message, row_state
+
+
 @router.post("/{file_id}/undo", response_class=HTMLResponse)
 async def undo_tag_write(
     request: Request,
@@ -922,29 +982,9 @@ async def undo_tag_write(
 
     # phaze-04bz: undo must be idempotent. If the most recent operation on this file was already a
     # COMPLETED reversal (an htmx double-click, or a second tab firing the still-rendered UNDO), a
-    # repeat undo must be a NO-OP -- never a re-apply of the written tags -- with an honest toast.
-    #
-    # phaze-6bkk widens the guard to QUEUED: with the write dispatched to the agent, the window
-    # between "undo pressed" and "undo COMPLETED" is now a real, observable interval rather than an
-    # in-request instant, so a second click during it is the COMMON case, not a rare double-click.
-    # Re-dispatching would enqueue a second reversal whose before_tags snapshot is read AFTER the
-    # first one lands -- i.e. it would restore the reverted state, undoing the undo.
-    #
-    # phaze-lwqk: this idempotency check MUST run before ``_get_write_log_to_undo`` below. That
-    # selector's chain-walk treats a COMPLETED undo as the boundary of the CURRENT write chain and
-    # deliberately returns nothing for a file with no write AFTER that boundary (there is genuinely
-    # nothing left to revert) -- which would otherwise reach the generic "No prior tag write to
-    # undo" branch instead of this more specific "already reverted" one.
-    newest = await _get_latest_write_log(session, file_id)
-    if newest is not None and newest.source == "undo" and newest.status in (TagWriteStatus.COMPLETED, TagWriteStatus.QUEUED):
-        in_flight = newest.status == TagWriteStatus.QUEUED
-        already_message = (
-            f"A revert for {file_record.original_filename} is already queued on the file server."
-            if in_flight
-            else f"Tags for {file_record.original_filename} were already reverted."
-        )
-        row_context = await _tagwrite_row_context(session, file_record, row_state="queued" if in_flight else "pending")
-        return _tagwrite_diff_row_response(request, row_context, already_message)
+    already = await _already_reverted_response(request, session, file_record, file_id)
+    if already is not None:
+        return already
 
     # phaze-soph/phaze-lwqk: target the HEAD of the current write chain -- the row whose
     # before_tags is the true pre-write state, not a later retry's shadow (see the selector's own
@@ -986,23 +1026,7 @@ async def undo_tag_write(
         await session.rollback()
         return _tagwrite_stale_toast_response(request, "File not found -- it may have been removed or already processed.")
 
-    # phaze-26t7 / phaze-6bkk: the toast must never claim an on-disk outcome the api has not
-    # observed -- and post-DIST-01 it observes none, because the reversal runs on the agent. Say
-    # exactly what happened: the revert was queued, or it could not be handed off (and in that case
-    # point at the agent, NOT at file permissions -- the advice that used to send operators hunting
-    # a directory that simply is not mounted in this container).
-    filename = file_record.original_filename
-    if log_entry.status == TagWriteStatus.QUEUED:
-        toast_message = f"Revert queued for {filename} on agent {file_record.agent_id}. The file server restores the previous tags; the row updates when it reports back."
-    else:
-        toast_message = (
-            f"Undo could not be dispatched for {filename}: {log_entry.error_message or 'Unknown error'}. "
-            f"Check that agent {file_record.agent_id} is reachable and its worker is running, then retry."
-        )
+    toast_message, row_state = _undo_dispatch_outcome(log_entry, file_record)
 
-    # phaze-nvll / phaze-6bkk: a queued revert leaves the row in "queued" (no control -- the write
-    # is in flight and there is nothing coherent to press); an undispatchable one keeps "approved"
-    # so UNDO stays available to retry, rather than claiming a revert that did not happen.
-    row_state = "queued" if log_entry.status == TagWriteStatus.QUEUED else "approved"
     row_context = await _tagwrite_row_context(session, file_record, row_state=row_state)
     return _tagwrite_diff_row_response(request, row_context, toast_message)

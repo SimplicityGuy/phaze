@@ -171,6 +171,70 @@ async def _delete_staged_object_if_cloud(session: AsyncSession, file_id: uuid.UU
         logger.warning("inline staged-object delete failed; lifecycle TTL will reap", file_id=str(file_id), exc_info=True)
 
 
+async def _replace_analysis_windows(session: AsyncSession, file_id: uuid.UUID, windows: list[Any]) -> None:
+    """Replace this file's AnalysisWindow rows wholesale, in the caller's transaction.
+
+    Called only when the wire body carried a ``windows`` key at all; an explicit empty list is a
+    deliberate "clear the windows" and must not be confused with omission, which is why the caller
+    tests ``is not None`` rather than truthiness.
+
+    ATOMICITY: the DELETE and every insert chunk execute on the CALLER's session inside its
+    transaction, alongside the aggregate upsert, so the replace stays all-or-nothing -- a
+    half-written window set is never committed (it would read as a complete analysis).
+    """
+    await session.execute(delete(AnalysisWindow).where(AnalysisWindow.file_id == file_id))
+    if windows:
+        # pg_insert bypasses the Python-only `default=uuid.uuid4` PK, so stamp `id`
+        # explicitly per row (mirrors the aggregate path above).
+        rows = [{"id": uuid.uuid4(), "file_id": file_id, **w.model_dump()} for w in windows]
+        # phaze-syxv: CHUNKED, because an explicit multi-row VALUES binds
+        # `len(rows) * params_per_row` parameters in ONE statement and PostgreSQL's Bind
+        # message caps that at int16 (32767) -- 2,730 rows at this model's 12 parameters,
+        # BELOW the ~2,880 windows a 24h recording produces and 18x below the schema's own
+        # 50,000 cap. `chunk_rows` derives the split from the rows' actual parameter count
+        # (see services/bulk_insert.py), so adding a column cannot silently reintroduce it.
+        # ATOMICITY: every chunk executes on THIS session inside the SAME transaction as the
+        # aggregate upsert and the preceding DELETE, so the replace stays all-or-nothing --
+        # a half-written window set is never committed (it would read as a complete analysis).
+        for chunk in chunk_rows(rows):
+            await session.execute(pg_insert(AnalysisWindow).values(chunk))
+
+
+def _fold_wire_fields(dumped: dict[str, Any]) -> None:
+    """Fold the wire payload into this model's columns, in place.
+
+    Two boundary conversions that must both happen before the upsert is built, and that the
+    metadata sibling performs identically:
+
+    - ``mood``/``style`` arrive as ``dict[str, float]`` from essentia but are ``String(50)``
+      columns, so they collapse to a bounded "k=v,k=v" summary.
+    - Any wire field without a dedicated column funnels into the ``features`` JSONB. D-26's wire
+      schema includes ``danceability``/``energy`` (and future-proofs additions) while the model
+      only has bpm/musical_key/mood/style columns; the funnel keeps the wire contract intact
+      without a migration, and merges rather than clobbers ``features`` the caller set itself.
+    """
+    # Storage conversion at the boundary: AnalysisResult.mood/.style are String(50).
+    # Wire format from essentia is dict[str, float]; we serialize to a "k=v,k=v"
+    # summary bounded at 50 chars. The conversion stays inside ``dumped`` so the
+    # rest of the upsert pipeline is identical to agent_metadata.py.
+    for field in ("mood", "style"):
+        raw = dumped.get(field)
+        if isinstance(raw, dict):
+            dumped[field] = _summarize_dict_to_string(raw)
+
+    # Funnel any wire-format fields without a dedicated column into `features` JSONB.
+    # D-26's wire schema includes `danceability`/`energy` (and future-proofs additions);
+    # the model currently only has columns for bpm/musical_key/mood/style. The funnel
+    # keeps the wire contract intact without requiring a migration this phase.
+    overflow = {k: dumped.pop(k) for k in list(dumped) if k not in _ANALYSIS_COLUMN_FIELDS}
+    if overflow:
+        # Merge into any features the caller also set explicitly (avoid clobbering).
+        existing_features = dumped.get("features")
+        merged_features: dict[str, object] = dict(existing_features) if isinstance(existing_features, dict) else {}
+        merged_features.update(overflow)
+        dumped["features"] = merged_features
+
+
 @router.put("/{file_id}", status_code=status.HTTP_200_OK, response_model=AnalysisWriteResponse)
 async def put_analysis(
     file_id: uuid.UUID,
@@ -205,26 +269,7 @@ async def put_analysis(
     # falsy, so read the field off `body` directly to distinguish [] from None.
     dumped.pop("windows", None)
 
-    # Storage conversion at the boundary: AnalysisResult.mood/.style are String(50).
-    # Wire format from essentia is dict[str, float]; we serialize to a "k=v,k=v"
-    # summary bounded at 50 chars. The conversion stays inside ``dumped`` so the
-    # rest of the upsert pipeline is identical to agent_metadata.py.
-    for field in ("mood", "style"):
-        raw = dumped.get(field)
-        if isinstance(raw, dict):
-            dumped[field] = _summarize_dict_to_string(raw)
-
-    # Funnel any wire-format fields without a dedicated column into `features` JSONB.
-    # D-26's wire schema includes `danceability`/`energy` (and future-proofs additions);
-    # the model currently only has columns for bpm/musical_key/mood/style. The funnel
-    # keeps the wire contract intact without requiring a migration this phase.
-    overflow = {k: dumped.pop(k) for k in list(dumped) if k not in _ANALYSIS_COLUMN_FIELDS}
-    if overflow:
-        # Merge into any features the caller also set explicitly (avoid clobbering).
-        existing_features = dumped.get("features")
-        merged_features: dict[str, object] = dict(existing_features) if isinstance(existing_features, dict) else {}
-        merged_features.update(overflow)
-        dumped["features"] = merged_features
+    _fold_wire_fields(dumped)
 
     # Stamp PK explicitly because AnalysisResult.id has a Python-only default,
     # which pg_insert bypasses.
@@ -274,22 +319,7 @@ async def put_analysis(
     # inserted row's file_id use the PATH `file_id` ONLY -- the body never carries a
     # file/window-owner id (cross-file-deletion mitigation, AUTH-01).
     if body.windows is not None:
-        await session.execute(delete(AnalysisWindow).where(AnalysisWindow.file_id == file_id))
-        if body.windows:
-            # pg_insert bypasses the Python-only `default=uuid.uuid4` PK, so stamp `id`
-            # explicitly per row (mirrors the aggregate path above).
-            rows = [{"id": uuid.uuid4(), "file_id": file_id, **w.model_dump()} for w in body.windows]
-            # phaze-syxv: CHUNKED, because an explicit multi-row VALUES binds
-            # `len(rows) * params_per_row` parameters in ONE statement and PostgreSQL's Bind
-            # message caps that at int16 (32767) -- 2,730 rows at this model's 12 parameters,
-            # BELOW the ~2,880 windows a 24h recording produces and 18x below the schema's own
-            # 50,000 cap. `chunk_rows` derives the split from the rows' actual parameter count
-            # (see services/bulk_insert.py), so adding a column cannot silently reintroduce it.
-            # ATOMICITY: every chunk executes on THIS session inside the SAME transaction as the
-            # aggregate upsert and the preceding DELETE, so the replace stays all-or-nothing --
-            # a half-written window set is never committed (it would read as a complete analysis).
-            for chunk in chunk_rows(rows):
-                await session.execute(pg_insert(AnalysisWindow).values(chunk))
+        await _replace_analysis_windows(session, file_id, body.windows)
 
     # Phase 43 state-advance: a non-empty write (any aggregate/coverage field the
     # client actually set) means analysis produced a real result, so advance the
