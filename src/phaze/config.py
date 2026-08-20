@@ -7,7 +7,6 @@ env var. `get_settings()` is the single dispatch point; module-level
 `from phaze.config import settings` call sites.
 """
 
-from collections import Counter
 from enum import StrEnum
 from functools import lru_cache
 import os
@@ -24,10 +23,15 @@ import structlog
 from phaze.config_backends import (
     BackendConfig,
     BucketConfig,
-    ComputeBackend,
-    KueueBackend,
     _default_local_registry,
     _read_secret_file,
+)
+from phaze.config_registry_policies import (
+    validate_backend_bucket_lists,
+    validate_cluster_specific_sharing,
+    validate_non_empty_registry,
+    validate_unique_compute_agent_refs,
+    validate_unique_registry_ids,
 )
 from phaze.services.analysis_sizing import derive_sizing
 
@@ -717,84 +721,21 @@ class ControlSettings(BaseSettings):
           * A resolved-empty registry (present-but-empty `backends = []`) fails fast rather than
             booting with no backend — the Phase-30 silent-wedge failure mode (REG-04, Pitfall 2).
           * Duplicate `[[buckets]]` ids fail fast (REG-05).
-          * Duplicate `[[backends]]` ids fail fast, kind-agnostic (phaze-1sgee, see below).
+          * Duplicate `[[backends]]` ids fail fast, kind-agnostic (phaze-1sgee; see
+            `validate_unique_registry_ids` in `config_registry_policies.py` for why).
+          * Duplicate non-null compute `agent_ref` values fail fast without checking agent existence
+            (D-04/D-05).
           * Each KueueBackend's `buckets` id-list must resolve against `self.buckets`: an unknown id
             (D-08) or an empty resolved set (D-08) fails fast, naming the offending backend id.
           * A `scope="cluster-specific"` bucket referenced by >1 kueue backend fails fast, naming the
             bucket id — the sharing-cardinality invariant (D-09). `scope="shared"` may be referenced
             by many.
         """
-        if not self.backends:
-            raise ValueError("backend registry resolved to empty — refusing to start (REG-04)")
-        # WR-03: fail fast on duplicate [[buckets]] ids. `bucket_by_id` (and s3_staging.resolve_bucket_config)
-        # build a `{b.id: b}` dict that silently collapses duplicates to whichever entry appears LAST in the
-        # TOML list — with distinct endpoint_url/creds per entry, a copy-paste id typo would then non-
-        # deterministically redirect every presign/cleanup for that id to the wrong bucket. Surface it at boot
-        # like every other registry invariant here (REG-05).
-        dupes = sorted(bid for bid, count in Counter(b.id for b in self.buckets).items() if count > 1)
-        if dupes:
-            raise ValueError(f"duplicate bucket ids in registry: {dupes} — each [[buckets]] id must be unique (REG-05)")
-        # phaze-1sgee: fail fast on a duplicate [[backends]] id, mirroring the WR-03 bucket-id Counter
-        # above. `resolve_compute_backend` (services/backends.py) builds a `{backend.id: backend}` dict
-        # over self.backends — the exact silently-collapses-to-LAST shape WR-03 guards against for
-        # buckets — and every backend's cap accounting scopes `COUNT(cloud_job WHERE backend_id ==
-        # self.id)`, so two entries sharing an id double-count each other's in-flight rows. Deliberately
-        # KIND-AGNOSTIC: a compute and a kueue entry sharing an id is the nastiest variant, because
-        # resolve_compute_backend (kind=="compute" filter) and the drain snapshot / non_local_backend_kinds
-        # (whichever came last) would then resolve genuinely inconsistent views of "the backend named
-        # <id>". Report both the offending ids and their kinds so the operator can find the copy-paste.
-        backend_id_counts = Counter(be.id for be in self.backends)
-        backend_dupes = sorted(bid for bid, count in backend_id_counts.items() if count > 1)
-        if backend_dupes:
-            id_kinds = {bid: sorted(be.kind for be in self.backends if be.id == bid) for bid in backend_dupes}
-            raise ValueError(f"duplicate backend ids in registry: {backend_dupes} (kinds: {id_kinds}) — each [[backends]] id must be unique")
-        # D-04: fail fast on a duplicate compute agent_ref. Plan 02 retired the ≤1-compute blanket
-        # fail-fast so N distinct compute agents dispatch in parallel; without this guard two compute
-        # backends naming the SAME agent_ref would silently double-bind (a copy-paste id typo routing two
-        # entries at one node). STATIC check only — a Counter over config values, mirroring the bucket-id
-        # idiom above. Per D-05 an agent_ref naming a not-yet-checked-in agent is LEGAL at boot (agents
-        # register dynamically via check-in), so this opens NO DB session; that path degrades to a runtime
-        # hold (Plan 03). Skip ``agent_ref is None`` so the per-variant ``_require_dispatch_fields``
-        # "requires an agent_ref" message is never masked by this container-level guard.
-        compute_agent_refs = [be.agent_ref for be in self.backends if isinstance(be, ComputeBackend) and be.agent_ref is not None]
-        agent_dupes = sorted(ref for ref, count in Counter(compute_agent_refs).items() if count > 1)
-        if agent_dupes:
-            collisions = {ref: sorted(be.id for be in self.backends if isinstance(be, ComputeBackend) and be.agent_ref == ref) for ref in agent_dupes}
-            raise ValueError(
-                f"duplicate compute agent_ref(s) {agent_dupes} bound by backends {collisions} — each compute backend must bind a distinct agent_ref (D-04)"
-            )
-        bucket_by_id = {b.id: b for b in self.buckets}
-        cluster_specific_refs: dict[str, list[str]] = {}
-        for be in self.backends:
-            if not isinstance(be, KueueBackend):
-                continue
-            missing = [bid for bid in be.buckets if bid not in bucket_by_id]
-            if missing:
-                raise ValueError(f"backend {be.id!r} references unknown bucket ids {missing} (D-08)")
-            # phaze-ru9oe: fail fast on a duplicate bucket id WITHIN one backend's own `buckets`
-            # list (a copy-paste duplicate, not a cross-backend share). Left unchecked, resolving
-            # `be.buckets` positionally below appends `be.id` once per LIST ENTRY into
-            # `cluster_specific_refs`, so a single backend listing the same cluster-specific bucket
-            # twice falsely trips the D-09 cross-backend cardinality guard below — it reports the
-            # SAME backend id twice as if two distinct backends shared the bucket. For scope=shared
-            # the same duplicate silently double-weights the bucket in pick_bucket's candidates.
-            # Mirror the existing duplicate-id idiom (Counter over entries) used at 612/624.
-            within_backend_dupes = sorted(bid for bid, count in Counter(be.buckets).items() if count > 1)
-            if within_backend_dupes:
-                raise ValueError(
-                    f"backend {be.id!r} lists duplicate bucket ids {within_backend_dupes} in its own buckets list — each id must appear once"
-                )
-            resolved = [bucket_by_id[bid] for bid in be.buckets]
-            if not resolved:
-                raise ValueError(f"backend {be.id!r} (kueue) resolves to an empty bucket set (D-08)")
-            for bucket in resolved:
-                if bucket.scope == "cluster-specific":
-                    cluster_specific_refs.setdefault(bucket.id, []).append(be.id)
-        for bid, refs in cluster_specific_refs.items():
-            if len(refs) > 1:
-                raise ValueError(
-                    f"bucket {bid!r} is scope=cluster-specific but referenced by {len(refs)} kueue backends {refs} — at most one allowed (D-09)"
-                )
+        validate_non_empty_registry(self.backends)
+        validate_unique_registry_ids(self.backends, self.buckets)
+        validate_unique_compute_agent_refs(self.backends)
+        cluster_specific_refs = validate_backend_bucket_lists(self.backends, self.buckets)
+        validate_cluster_specific_sharing(cluster_specific_refs)
         return self
 
     @model_validator(mode="after")

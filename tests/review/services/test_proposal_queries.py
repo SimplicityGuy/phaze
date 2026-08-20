@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING
 import uuid
 
 import pytest
-from sqlalchemy import select, text, update
+from sqlalchemy import event, select, text, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from phaze.models.file import FileRecord
@@ -34,7 +35,7 @@ from phaze.services.proposal_queries import (
 
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 
 async def _create_proposal(
@@ -790,16 +791,11 @@ async def test_bulk_approve_batch_keeps_the_token_predicate_inside_the_statement
     fresh_token = await _review_token_for(session, fresh)
     raced_token = await _review_token_for(session, raced)
 
-    real_get_review_collision_ids = proposal_queries.get_review_collision_ids
-
-    async def _swap_then_delegate(inner_session: AsyncSession) -> set[str]:
-        await inner_session.execute(
-            text("UPDATE proposals SET updated_at = updated_at + interval '5 seconds' WHERE id = :id"),
-            {"id": raced.id},
-        )
-        return await real_get_review_collision_ids(inner_session)
-
-    monkeypatch.setattr(proposal_queries, "get_review_collision_ids", _swap_then_delegate)
+    # The seam helper (defined with the phaze-1i0h6.4 block below) is this same injection point,
+    # factored out once the status and confidence guards needed their own races through it.
+    await _race_at_the_collision_seam(
+        monkeypatch, "UPDATE proposals SET updated_at = updated_at + interval '5 seconds' WHERE id = :id", {"id": raced.id}
+    )
 
     applied = await bulk_approve_selected_above_confidence(session, [fresh_token, raced_token])
 
@@ -811,3 +807,295 @@ async def test_bulk_approve_batch_keeps_the_token_predicate_inside_the_statement
     refused = await session.get(RenameProposal, raced.id)
     assert refused is not None
     assert refused.status == ProposalStatus.PENDING
+
+
+# ---------------------------------------------------------------------------
+# bulk_approve_selected_above_confidence -- the set-based transition (phaze-1i0h6.4)
+#
+# The batched shape is only correct if BOTH halves hold: the Python classifier admits exactly the
+# eligible rows, and the single statement re-checks every race guard at write time. The tests below
+# are split along that seam on purpose.
+#
+#   * Classifier tests seed a condition BEFORE the call (collision, stale digest, low confidence,
+#     duplicate token) and assert the row is skipped.
+#   * Arbiter tests inject the change INSIDE the read-to-write window, at the one awaited call
+#     between the SELECT and the UPDATE (``get_review_collision_ids``). The ORM objects the
+#     classifier reads keep the values they were loaded with -- raw ``text()`` does not synchronize
+#     the identity map -- so the classifier admits the row and the statement's own WHERE clause is
+#     the only thing left standing. Deleting a WHERE clause from ``_bulk_approve_statement`` makes
+#     exactly one of these fail; that is what they are for. Do not "simplify" them into pre-seeded
+#     variants of the classifier tests, which would pass against a predicate-free UPDATE.
+# ---------------------------------------------------------------------------
+
+
+async def _live_status(session: AsyncSession, proposal_id: uuid.UUID) -> str:
+    """Read a proposal's status straight from the row, bypassing the identity map.
+
+    ``session.get`` would answer from the ORM identity map, which is NOT synchronized by the raw
+    ``text()`` writes the race tests below inject -- it reports the value the object was loaded
+    with and every "was it refused?" assertion passes vacuously. Reading the column itself is the
+    only way to see what the database actually holds.
+    """
+    return (await session.execute(select(RenameProposal.status).where(RenameProposal.id == proposal_id))).scalar_one()
+
+
+async def _race_at_the_collision_seam(monkeypatch: pytest.MonkeyPatch, sql: str, params: dict[str, object]) -> None:
+    """Run ``sql`` at the one awaited point between the eligibility SELECT and the guarded UPDATE."""
+    real_get_review_collision_ids = proposal_queries.get_review_collision_ids
+
+    async def _race_then_delegate(inner_session: AsyncSession) -> set[str]:
+        await inner_session.execute(text(sql), params)
+        return await real_get_review_collision_ids(inner_session)
+
+    monkeypatch.setattr(proposal_queries, "get_review_collision_ids", _race_then_delegate)
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_issues_exactly_one_update_for_a_multi_row_batch(
+    session: AsyncSession,
+    async_engine: AsyncEngine,
+) -> None:
+    """The acceptance criterion of phaze-1i0h6.4, pinned as a ROUND-TRIP COUNT, not as contents.
+
+    Every other test in this block passes identically whether the transition is one set-based
+    statement or a per-row loop -- the outcomes are the same by construction, which is the whole
+    point of the batching. This is the only assertion in the suite that would fail if the loop came
+    back, so it asserts on the captured SQL rather than on the rows: FIVE eligible proposals, and
+    exactly ONE ``UPDATE proposals`` statement reaches the cursor.
+    """
+    proposals = [
+        await _create_proposal(session, original_filename=f"rt{index}.mp3", proposed_filename=f"Artist - RT{index}.mp3", confidence=0.95)
+        for index in range(5)
+    ]
+    tokens = [await _review_token_for(session, proposal) for proposal in proposals]
+
+    captured: list[str] = []
+
+    def _capture(conn, cursor, statement, parameters, context, executemany) -> None:  # type: ignore[no-untyped-def]
+        captured.append(statement)
+
+    event.listen(async_engine.sync_engine, "before_cursor_execute", _capture)
+    try:
+        applied = await bulk_approve_selected_above_confidence(session, tokens)
+    finally:
+        event.remove(async_engine.sync_engine, "before_cursor_execute", _capture)
+
+    assert applied == 5
+    updates = [stmt for stmt in captured if stmt.lstrip().lower().startswith("update proposals")]
+    assert len(updates) == 1, f"expected ONE batched UPDATE, saw {len(updates)}:\n" + "\n---\n".join(updates)
+    # ...and it really did carry all five rows, so "one statement" is not "one row updated".
+    for proposal in proposals:
+        assert await _live_status(session, proposal.id) == ProposalStatus.APPROVED
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_counts_only_the_rows_it_transitioned(session: AsyncSession) -> None:
+    """The returned count is RETURNING's row set, never the selection size (phaze-uu17 toast contract).
+
+    A three-row selection of which one is already APPROVED must report 2. The router quotes this
+    number to the operator as "N approved", and reporting the selection size there would be a
+    confident lie about an irreplaceable archive.
+    """
+    eligible_a = await _create_proposal(session, original_filename="ct1.mp3", proposed_filename="Artist - C1.mp3", confidence=0.95)
+    eligible_b = await _create_proposal(session, original_filename="ct2.mp3", proposed_filename="Artist - C2.mp3", confidence=0.95)
+    already = await _create_proposal(
+        session, original_filename="ct3.mp3", proposed_filename="Artist - C3.mp3", confidence=0.95, status=ProposalStatus.APPROVED
+    )
+    tokens = [await _review_token_for(session, p) for p in (eligible_a, eligible_b, already)]
+
+    assert await bulk_approve_selected_above_confidence(session, tokens) == 2
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_returns_zero_for_an_empty_selection(session: AsyncSession) -> None:
+    """No tokens at all: nothing is read, nothing is written, the count is 0."""
+    assert await bulk_approve_selected_above_confidence(session, []) == 0
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_returns_zero_when_no_selected_row_is_eligible(session: AsyncSession) -> None:
+    """A non-empty selection none of which qualifies still commits and reports 0 -- no UPDATE at all.
+
+    Distinct from the empty-selection case above: the reads happen, the classifier admits nothing,
+    and the early return must still leave the transaction closed rather than dangling.
+    """
+    below = await _create_proposal(session, original_filename="ze1.mp3", proposed_filename="Artist - Z1.mp3", confidence=0.5)
+    missing = ProposalReviewToken(proposal_id=uuid.uuid4(), updated_at=below.updated_at, content_digest="not-a-real-digest")
+
+    assert await bulk_approve_selected_above_confidence(session, [await _review_token_for(session, below), missing]) == 0
+
+    assert await _live_status(session, below.id) == ProposalStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_takes_the_last_token_submitted_for_a_repeated_id(session: AsyncSession) -> None:
+    """A duplicated id collapses to ONE relation row, and the LAST token submitted is authoritative.
+
+    Changes Review keeps selection in browser/history state, so a re-render or back-button replay
+    can put one id on the wire twice with different snapshots. Two things must hold and each has its
+    own half here: the row is counted ONCE (a duplicated relation row would let one proposal match
+    the join twice and double the count the operator is shown), and the winner is the token minted
+    LAST -- the snapshot the operator saw most recently.
+    """
+    proposal = await _create_proposal(session, original_filename="dup1.mp3", proposed_filename="Artist - Dup.mp3", confidence=0.95)
+    fresh = await _review_token_for(session, proposal)
+    stale = ProposalReviewToken(
+        proposal_id=fresh.proposal_id, updated_at=fresh.updated_at - timedelta(seconds=5), content_digest=fresh.content_digest
+    )
+
+    # Stale first, fresh last -> the fresh token wins, the row transitions, and it counts ONCE.
+    assert await bulk_approve_selected_above_confidence(session, [stale, fresh]) == 1
+    assert await _live_status(session, proposal.id) == ProposalStatus.APPROVED
+
+    # ...and the ordering genuinely decides it: fresh first, stale last refuses the same row.
+    other = await _create_proposal(session, original_filename="dup2.mp3", proposed_filename="Artist - Dup2.mp3", confidence=0.95)
+    other_fresh = await _review_token_for(session, other)
+    other_stale = ProposalReviewToken(
+        proposal_id=other_fresh.proposal_id,
+        updated_at=other_fresh.updated_at - timedelta(seconds=5),
+        content_digest=other_fresh.content_digest,
+    )
+
+    assert await bulk_approve_selected_above_confidence(session, [other_fresh, other_stale]) == 0
+    assert await _live_status(session, other.id) == ProposalStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_excludes_a_row_that_collides_at_its_destination(session: AsyncSession) -> None:
+    """Colliding rows are excluded, and the collision vetoes only the rows in it.
+
+    Two proposals resolving to the same agent + owning root + destination path would land one
+    physical file on top of another, so neither may be authorized. A third, unrelated row in the
+    same selection must still approve -- the veto is per-destination, not per-batch.
+    """
+    left = await _create_proposal(session, original_filename="col1.mp3", proposed_filename="Same.mp3", confidence=0.95)
+    right = await _create_proposal(session, original_filename="col2.mp3", proposed_filename="Same.mp3", confidence=0.95)
+    clear = await _create_proposal(session, original_filename="col3.mp3", proposed_filename="Different.mp3", confidence=0.95)
+    await session.execute(update(RenameProposal).where(RenameProposal.id.in_([left.id, right.id, clear.id])).values(proposed_path="Collide/Here"))
+    await session.commit()
+    tokens = [await _review_token_for(session, p) for p in (left, right, clear)]
+
+    assert await bulk_approve_selected_above_confidence(session, tokens) == 1
+
+    for proposal in (left, right):
+        assert await _live_status(session, proposal.id) == ProposalStatus.PENDING
+    assert await _live_status(session, clear.id) == ProposalStatus.APPROVED
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_refuses_a_token_whose_content_digest_no_longer_matches(session: AsyncSession) -> None:
+    """The digest is checked independently of ``updated_at`` -- a rewrite that kept the timestamp still fails.
+
+    ``updated_at`` alone cannot carry this: the operator authorized a specific rendered filename and
+    destination, and the digest is the only thing that binds the approval to those exact values. The
+    write here deliberately restores the original ``updated_at`` so the timestamp axis passes and
+    only the digest can refuse.
+    """
+    proposal = await _create_proposal(session, original_filename="dig1.mp3", proposed_filename="Artist - Digest.mp3", confidence=0.95)
+    token = await _review_token_for(session, proposal)
+
+    await session.execute(
+        update(RenameProposal).where(RenameProposal.id == proposal.id).values(proposed_filename="Artist - Swapped.mp3", updated_at=token.updated_at)
+    )
+    await session.commit()
+
+    assert await bulk_approve_selected_above_confidence(session, [token]) == 0
+
+    assert await _live_status(session, proposal.id) == ProposalStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_refuses_a_row_below_the_confidence_threshold(session: AsyncSession) -> None:
+    """A forged or rewritten low-confidence id never transitions, whatever token accompanies it."""
+    low = await _create_proposal(session, original_filename="conf1.mp3", proposed_filename="Artist - Low.mp3", confidence=0.5)
+    high = await _create_proposal(session, original_filename="conf2.mp3", proposed_filename="Artist - High.mp3", confidence=0.95)
+    tokens = [await _review_token_for(session, low), await _review_token_for(session, high)]
+
+    assert await bulk_approve_selected_above_confidence(session, tokens) == 1
+
+    assert await _live_status(session, low.id) == ProposalStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_refuses_a_row_rejected_inside_the_read_to_write_window(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The STATUS guard lives in the statement: a concurrent reject landing mid-call is not overwritten.
+
+    This is the arbiter half of the status check. The classifier read the row as PENDING and admits
+    it; the reject commits after that read; only ``status = 'pending'`` inside the UPDATE's WHERE
+    clause stops the batch from resurrecting a row the operator (or another tab) just rejected.
+    Deleting that clause from ``_bulk_approve_statement`` makes this test, and only this test, fail.
+    """
+    fresh = await _create_proposal(session, original_filename="race1.mp3", proposed_filename="Artist - Race1.mp3", confidence=0.95)
+    raced = await _create_proposal(session, original_filename="race2.mp3", proposed_filename="Artist - Race2.mp3", confidence=0.95)
+    tokens = [await _review_token_for(session, fresh), await _review_token_for(session, raced)]
+
+    await _race_at_the_collision_seam(monkeypatch, "UPDATE proposals SET status = 'rejected' WHERE id = :id", {"id": raced.id})
+
+    assert await bulk_approve_selected_above_confidence(session, tokens) == 1
+
+    assert await _live_status(session, fresh.id) == ProposalStatus.APPROVED
+    assert await _live_status(session, raced.id) == ProposalStatus.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_refuses_a_row_downgraded_inside_the_read_to_write_window(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CONFIDENCE guard lives in the statement too (phaze-p35v).
+
+    A confidence rewrite that lands after the classifier read the row must not ride along inside the
+    batch. Same seam as the reject race above, different predicate: this is what would fail if
+    ``confidence >= threshold`` were dropped from the UPDATE as "already checked in Python".
+    """
+    fresh = await _create_proposal(session, original_filename="race3.mp3", proposed_filename="Artist - Race3.mp3", confidence=0.95)
+    raced = await _create_proposal(session, original_filename="race4.mp3", proposed_filename="Artist - Race4.mp3", confidence=0.95)
+    tokens = [await _review_token_for(session, fresh), await _review_token_for(session, raced)]
+
+    await _race_at_the_collision_seam(monkeypatch, "UPDATE proposals SET confidence = 0.10 WHERE id = :id", {"id": raced.id})
+
+    assert await bulk_approve_selected_above_confidence(session, tokens) == 1
+
+    assert await _live_status(session, fresh.id) == ProposalStatus.APPROVED
+    assert await _live_status(session, raced.id) == ProposalStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_commits_nothing_when_the_batched_write_fails(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All-or-nothing: a failing statement leaves EVERY row untransitioned, not a partial batch.
+
+    The single commit at the tail is what makes this true, and it is the property a chunked
+    rewrite would be most likely to break -- chunk 1 committed, chunk 2 raised. The failure is
+    INJECTED because no reachable input can make this particular write fail: PENDING -> APPROVED
+    moves a row OUT of the one-pending-per-file partial unique index
+    (``uq_proposals_file_id_pending``), so it cannot collide with it the way a revert TO pending
+    can (that path is :class:`ProposalPendingConflictError`, on ``update_proposal_status``). What is
+    under test is the transaction shape, not a specific constraint, so any DBAPI failure stands in.
+    """
+    left = await _create_proposal(session, original_filename="rb1.mp3", proposed_filename="Artist - RB1.mp3", confidence=0.95)
+    right = await _create_proposal(session, original_filename="rb2.mp3", proposed_filename="Artist - RB2.mp3", confidence=0.95)
+    tokens = [await _review_token_for(session, left), await _review_token_for(session, right)]
+    # Hold the ids as plain values: the rollback below expires every ORM instance, and reading
+    # ``left.id`` afterwards would emit a lazy refresh from sync attribute-access context.
+    proposal_ids = [left.id, right.id]
+
+    real_statement = proposal_queries._bulk_approve_statement
+
+    def _sabotage(*args: object, **kwargs: object) -> object:
+        real_statement(*args, **kwargs)  # type: ignore[arg-type]
+        raise IntegrityError("simulated constraint violation on the batched UPDATE", None, Exception())
+
+    monkeypatch.setattr(proposal_queries, "_bulk_approve_statement", _sabotage)
+
+    with pytest.raises(IntegrityError):
+        await bulk_approve_selected_above_confidence(session, tokens)
+    await session.rollback()
+
+    for proposal_id in proposal_ids:
+        assert await _live_status(session, proposal_id) == ProposalStatus.PENDING

@@ -304,7 +304,11 @@ async def test_dispatch_logs_info_line(
     for i in range(3):
         await _seed_approved_proposal(session, agent_id="agent-only", path_suffix=f"x-{i}")
 
-    with caplog.at_level(logging.INFO, logger="phaze.routers.execution"):
+    # phaze-1i0h6.5: dispatch logging moved with the protocol, so the capture names the service.
+    # Only the logger NAME changed -- every assertion below is byte-identical. pytest never calls
+    # ``configure_logging``, so an INFO record needs its logger named here; in production the root
+    # level is INFO and this line emits regardless of which module logs it.
+    with caplog.at_level(logging.INFO, logger="phaze.services.execution_dispatch_protocol"):
         response = await ac.post("/execution/start")
     assert response.status_code == 200
 
