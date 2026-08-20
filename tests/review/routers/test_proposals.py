@@ -518,9 +518,16 @@ async def test_timeline_with_windows(client: AsyncClient, session: AsyncSession)
     # Seeded fine windows carry bpm 120.0 / 128.0 (add_analysis_windows) -> 120..130.
     assert "130" in response.text
     assert "120" in response.text
-    assert 'aria-label="BPM range 120 to 130"' in response.text
-    assert "Elapsed time" in response.text
+    assert 'aria-label="BPM over elapsed time, displayed from 120 to 130 BPM"' in response.text
+    assert "elapsed time" in response.text.lower()
     assert "1:00" in response.text
+    assert 'vector-effect="non-scaling-stroke"' in response.text
+    assert 'stroke-linecap="round"' in response.text
+    assert 'stroke-linejoin="round"' in response.text
+    assert "data-timeline-inspector" in response.text
+    assert 'role="slider"' in response.text
+    assert 'tabindex="0"' in response.text
+    assert "Scroll timeline" in response.text
     # Escaped ribbon labels rendered via Jinja2 autoescaping.
     assert "techno" in response.text
     assert "happy" in response.text

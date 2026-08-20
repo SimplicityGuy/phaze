@@ -7,13 +7,14 @@ stride, or otherwise reinterpret coverage.
 
 from collections.abc import Sequence
 import math
-from typing import NamedTuple
+from typing import NamedTuple, cast
 
 from phaze.models.analysis import AnalysisWindow
 
 
-TIMELINE_W = 1000.0
+TIMELINE_W = 640.0
 TIMELINE_H = 120.0
+WINDOW_WIDTH_PX = 56.0
 
 
 class BpmSpark(NamedTuple):
@@ -73,6 +74,50 @@ def bpm_spark(windows: Sequence[AnalysisWindow], total_sec: float, width: float,
     return BpmSpark(" ".join(coords), lo, hi, len(pairs))
 
 
+def bpm_segments(
+    windows: Sequence[AnalysisWindow],
+    total_sec: float,
+    width: float,
+    height: float,
+    lo: float | None,
+    hi: float | None,
+) -> list[dict[str, object]]:
+    """Build one polyline per contiguous measured run so gaps are never bridged."""
+    if lo is None or hi is None or hi <= lo or total_sec <= 0:
+        return []
+    result: list[dict[str, object]] = []
+    run: list[tuple[float, float]] = []
+    previous_end: float | None = None
+
+    def flush() -> None:
+        if not run:
+            return
+        result.append(
+            {
+                "points": " ".join(f"{x:.2f},{y:.2f}" for x, y in run),
+                "single_x": run[0][0] if len(run) == 1 else None,
+                "single_y": run[0][1] if len(run) == 1 else None,
+            }
+        )
+        run.clear()
+
+    for window in windows:
+        bpm = _valid_bpm(window.bpm)
+        if bpm is None or not math.isfinite(window.start_sec) or not math.isfinite(window.end_sec):
+            flush()
+            previous_end = None
+            continue
+        if previous_end is not None and window.start_sec > previous_end + 1e-6:
+            flush()
+        midpoint = (window.start_sec + window.end_sec) / 2.0
+        x = min(max(midpoint / total_sec * width, 0.0), width)
+        y = height - ((bpm - lo) / (hi - lo)) * height
+        run.append((x, y))
+        previous_end = window.end_sec
+    flush()
+    return result
+
+
 def format_elapsed_time(seconds: float) -> str:
     """Format an elapsed-time axis value without implying a wall-clock time."""
     whole = max(0, round(seconds))
@@ -128,6 +173,26 @@ def inspection_windows(windows: Sequence[AnalysisWindow]) -> list[dict[str, obje
     ]
 
 
+def resolve_inspection(windows: Sequence[AnalysisWindow], time_sec: float, total_sec: float) -> dict[str, object]:
+    """Resolve the containing fine and coarse windows at one in-range elapsed time."""
+    payload = inspection_windows(windows)
+
+    def containing(tier: str) -> dict[str, object] | None:
+        candidates = [
+            window
+            for window in payload
+            if window["tier"] == tier and isinstance(window["start"], float) and isinstance(window["end"], float) and window["start"] <= time_sec
+        ]
+        if not candidates:
+            return None
+        candidate = max(candidates, key=lambda window: cast("float", window["start"]))
+        candidate_end = cast("float", candidate["end"])
+        includes_final_end = math.isclose(time_sec, total_sec) and math.isclose(time_sec, candidate_end)
+        return candidate if time_sec < candidate_end or includes_final_end else None
+
+    return {"time": time_sec, "fine": containing("fine"), "coarse": containing("coarse")}
+
+
 def hue_for(label: str) -> int:
     """Derive a stable integer HSL hue without putting label text into CSS syntax."""
     return sum(ord(character) for character in label) % 360
@@ -162,15 +227,17 @@ def build_analysis_timeline_context(windows: Sequence[AnalysisWindow]) -> dict[s
     total_sec = max(finite_ends, default=0.0)
     fine = [window for window in ordered if window.tier == "fine"]
     coarse = [window for window in ordered if window.tier == "coarse"]
-    spark = bpm_spark(fine, total_sec, TIMELINE_W, TIMELINE_H)
+    timeline_w = max(TIMELINE_W, max(len(fine), len(coarse), 1) * WINDOW_WIDTH_PX)
+    spark = bpm_spark(fine, total_sec, timeline_w, TIMELINE_H)
     return {
         "has_windows": bool(ordered),
         "total_sec": total_sec,
-        "timeline_w": TIMELINE_W,
+        "timeline_w": timeline_w,
         "timeline_h": TIMELINE_H,
         "bpm_points": spark.points,
         "bpm_lo": spark.lo,
         "bpm_hi": spark.hi,
+        "bpm_segments": bpm_segments(fine, total_sec, timeline_w, TIMELINE_H, spark.lo, spark.hi),
         "time_ticks": elapsed_time_ticks(total_sec),
         "timeline_inspection": {"duration": total_sec, "windows": inspection_windows(ordered)},
         "key_ribbons": ribbons(fine, "musical_key", total_sec),

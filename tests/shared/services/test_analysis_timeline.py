@@ -7,11 +7,13 @@ import uuid
 
 from phaze.models.analysis import AnalysisWindow
 from phaze.services.analysis_timeline import (
+    bpm_segments,
     bpm_spark,
     build_analysis_timeline_context,
     elapsed_time_ticks,
     format_elapsed_time,
     inspection_windows,
+    resolve_inspection,
     rounded_bpm_bounds,
 )
 
@@ -106,3 +108,45 @@ def test_context_keeps_gaps_and_all_windows_for_long_files() -> None:
     key_ribbons = context["key_ribbons"]
     assert isinstance(key_ribbons, list)
     assert key_ribbons[1]["left_pct"] > key_ribbons[0]["width_pct"]
+
+
+def test_inspection_resolves_tiers_and_leaves_gaps_absent() -> None:
+    windows = [
+        _window(0, 0.0, 30.0, bpm=128.0, key="Am"),
+        _window(1, 90.0, 120.0, bpm=130.0, key="C"),
+        _window(0, 0.0, 120.0, tier="coarse", mood="focused", style=None),
+    ]
+
+    measured = resolve_inspection(windows, 15.0, 120.0)
+    gap = resolve_inspection(windows, 60.0, 120.0)
+    final = resolve_inspection(windows, 120.0, 120.0)
+
+    assert measured["fine"]["bpm"] == 128.0  # type: ignore[index]
+    assert measured["coarse"]["mood"] == "focused"  # type: ignore[index]
+    assert gap["fine"] is None
+    assert gap["coarse"] is not None
+    assert final["fine"]["key"] == "C"  # type: ignore[index]
+
+
+def test_bpm_segments_do_not_draw_across_unmeasured_gaps() -> None:
+    windows = [
+        _window(0, 0.0, 30.0, bpm=120.0),
+        _window(1, 30.0, 60.0, bpm=125.0),
+        _window(2, 60.0, 90.0, bpm=None),
+        _window(3, 120.0, 150.0, bpm=130.0),
+    ]
+
+    segments = bpm_segments(windows, 150.0, 600.0, 120.0, 120.0, 130.0)
+
+    assert len(segments) == 2
+    assert segments[0]["points"] == "60.00,120.00 180.00,60.00"
+    assert segments[1]["single_x"] == 540.0
+
+
+def test_canvas_width_grows_without_capping_or_dropping_windows() -> None:
+    windows = [_window(index, index * 30.0, (index + 1) * 30.0, bpm=120.0 + index) for index in range(24)]
+
+    context = build_analysis_timeline_context(windows)
+
+    assert context["timeline_w"] == 1_344.0
+    assert len(context["timeline_inspection"]["windows"]) == 24  # type: ignore[index]

@@ -66,7 +66,7 @@ async def test_record_renders_bpm_scale_labels(client: AsyncClient, seed_file_wi
     assert "<polyline" in body
     assert "130" in body  # max BPM (top of the gutter)
     assert "120" in body  # rounded minimum (bottom of the gutter)
-    assert 'aria-label="BPM range 120 to 130"' in body
+    assert 'aria-label="BPM over elapsed time, displayed from 120 to 130 BPM"' in body
 
 
 @pytest.mark.asyncio
