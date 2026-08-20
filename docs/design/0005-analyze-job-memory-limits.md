@@ -32,7 +32,11 @@ decision:
 
 - Peak RSS is a **duration-independent 8.5–10.5 GiB floor** on the measurement host, created
   almost entirely inside the first `_run_model_sets` call, and dominated by the 34
-  `TensorflowPredict*` graphs held co-resident in `_classifier_cache`.
+  `TensorflowPredict*` graphs held co-resident in `_classifier_cache`. *(Superseded macOS
+  figure — `phaze-esut` ran on the measurement host of its era, not the Linux deployment target,
+  and the pipeline it measured predates the model-major rework, the batch-size change and the
+  streaming decode. It is kept here as the historical starting point of the investigation; see
+  the 2026-08-19 amendment at the end of this document for the current, Linux-measured figures.)*
 - **Every file exceeds the 8Gi request**, including a 3.3-minute one (9.73 GiB measured). A
   12.1-hour file peaked at 9.03 GiB — one of the *cheapest* runs.
 - The coefficient of peak on one decoded-signal copy (`sample_rate × channels × duration`) is
@@ -163,3 +167,76 @@ compatible change that ships first. The actual reduction is spike follow-up A �
 > — the unexplained 2–4× population in `phaze-7i0k` §6d is neither explained nor reached by a
 > decode rewrite, so a limit is still the right backstop, and `3Gi`/`4Gi` still clear the
 > measured peak by 1.73× / 2.30×.
+
+______________________________________________________________________
+
+## Amendment 2026-08-19 (`phaze-y6np2`) — follow-up C discharged; point 4 restated as conditional
+
+**What was believed.** Point 5, unedited above, still reads as live guidance: `memory_request:
+12Gi`, `memory_limit: 16Gi`, concurrency 1, pending "a Linux measurement (spike follow-up C)".
+Decision point 4 states "Peak is uncorrelated with duration" without qualification.
+
+**What was tested.** `phaze-u1n7j`, [report](../spikes/phaze-u1n7j-vox-fix-verification.md), is
+spike follow-up C: it re-measured this ADR's `_run_model_sets` pipeline on real Linux hardware —
+**`vox`, Debian 13 (trixie), kernel 6.12.100, glibc 2.41, Xeon E3-1271 v3, 4 physical / 8 logical
+cores, 31.31 GiB, k0s burst node** — running the deployed job image **`job:2026.8.2`**, on the
+same three real corpus files `phaze-b2qs9` used. It is also the verification of the D-09 fix
+(`src/phaze/services/analysis.py:844`) that made the current sizing regime possible at all: the
+exhaustive chunking this ADR's own §Context reasons about had leaked its streaming network per
+chunk, making peak RSS **linear** in duration (`0.7634 + 0.3108 × n_fine_chunks` GiB, R² 0.99959,
+breaching the deployed 4Gi limit at ~4 hours — measured by `phaze-b2qs9`). With D-09's fix
+(disconnect the network before dropping it, then `gc.collect()`), peak RSS on the same files,
+same node, same image:
+
+| file | duration | **peak RSS (GiB)** | headroom under the deployed 4Gi limit |
+| --- | ---: | ---: | ---: |
+| `<set-01>` | 1:00 | 1.4985 | 62.5% |
+| `<set-04>` | 4:00 | 1.6500 | 58.8% |
+| `<set-07>` — longest in corpus | 12:04 | 1.6725 | **58.2%** (41.8% used) |
+
+The spread across the 12.1× duration span is +11.6% overall and **+1.4%** between the two bands
+whose coarse chunks are both full (`<set-04>` → `<set-07>`, 3.1× the fine-chunk count) — a
+residual slope of **0.0013 GiB per fine chunk** against the defect's **0.3108**, i.e. **99.6% of
+the slope removed**. Full detail, including the pre-registered abort-gate check and the mechanism
+confirmation under glibc, is in the spike.
+
+**Point 5's figures, tracked to their disposition:**
+
+| pair (request / limit / concurrency) | source | status |
+| --- | --- | --- |
+| `12Gi` / `16Gi` / 1 *(point 5, as written above)* | this ADR, interim, from `phaze-esut`'s macOS 8.5–10.5 GiB floor plus an assumed allocator ratchet | **withdrawn** — `phaze-7i0k` refuted the ratchet (Linux measured *lower* than macOS, not higher) |
+| `9Gi` / `12Gi` / 2 *(2026-08-05 update, above)* | `phaze-7i0k`, against an ~8.0 GiB window-major floor | **withdrawn** — superseded by `phaze-15sw`'s model-major rework (34 graphs → 1 resident at a time), a code shape that no longer exists |
+| `3Gi` / `4Gi` *(the 2026-08-06 "number to derive from" update, above; deployed today per `docs/k8s-burst.md`)* | `phaze-5lop`'s 1.7383 GiB joint measurement | **still current, and now better supported** — see below |
+
+**What this amendment decides.** Spike follow-up C is **discharged**. It does **not** license a
+new `memory_request`/`memory_limit` value — the spike says so explicitly (§5): the headroom table
+above is measured solo on an idle node, not under the concurrent admission Kueue actually
+schedules, so it is not a basis for tightening (or loosening) the limit. What it establishes is
+that the already-deployed `3Gi`/`4Gi` pair (`docs/k8s-burst.md`, ["Superseded
+values"](../k8s-burst.md#superseded-values)) is **even better supported** than the 1.73×/2.30×
+margin it was carrying against the pre-D-09 1.7383 GiB figure: the longest file in the corpus now
+uses **41.8%** of the deployed 4Gi limit, against **2.57×** OVER that same limit before the D-09
+fix (`phaze-b2qs9`, `<set-07>`, 10.2768 GiB). **No `memory_request`/`memory_limit` change is made
+by this amendment.** Point 5's "concurrency 1" is likewise withdrawn as stale for the same reason
+the request/limit figures are: concurrency is tracked independently of this ADR as Kueue's `cap`
+(currently `4`, `docs/k8s-burst.md`, ["How many files can run at
+once?"](../k8s-burst.md#how-many-files-can-run-at-once)), and is unaffected by anything here.
+
+**Decision point 4 is restated as conditional.** "Peak is uncorrelated with duration" is true
+again of the shipped pipeline, but **only given the D-09 invariant holds** — a chunk's streaming
+network must be *disconnected*, not merely dropped, with `gc.collect()` run alongside it
+(`src/phaze/services/analysis.py:844`). Break D-09 and the 0.3108 GiB-per-fine-chunk slope
+returns; that is precisely the mechanism by which the original OOM shipped, on this same
+"duration-independent" premise stated without its precondition. Point 4 should be read as: *peak
+is uncorrelated with duration, given D-09 holds* — the precondition travels with the conclusion
+from this amendment forward.
+
+**Operator note (not applied by this amendment).** The deployed `memory_request`/`memory_limit`
+are operator config and are not tracked in this repository, so no deployed value is changed here.
+Given the restored headroom (41.8% of the 4Gi limit at the corpus's longest file, versus the
+1.73×/2.30× margin the same pair was previously carrying), the currently-deployed `3Gi`/`4Gi`
+pair remains adequately — if not generously — sized, and no *reduction* in `cap` or the memory
+tier is indicated. Whether the *operator* wants to use the extra headroom to raise Kueue's
+concurrency `cap` above its current `4` is a capacity-planning choice this ADR does not make;
+raising it is unrelated to this amendment's memory-safety finding and would need its own
+concurrency measurement (in the lineage of `phaze-3j67` / `phaze-8r6t4`), not a memory one.
