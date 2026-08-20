@@ -13,11 +13,11 @@ import platform
 import resource
 from statistics import mean, median
 import subprocess  # nosec B404  # ffprobe duration probe (D-10); fixed argv, no shell
-import threading
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from phaze.services import analysis_decoder
 from phaze.services.analysis_sizing import apply_thread_env
 
 
@@ -194,10 +194,9 @@ _classifier_cache: dict[str, Any] = {}
 _labels_cache: dict[str, list[str]] = {}
 _essentia_logging_suppressed = False
 
-# phaze-5lop: the streaming decode's sink-key namespace inside its per-tier essentia
-# ``Pool``. Prefixed and numbered by ORIGINAL window index (never renumbered), so a
-# chunk's window set maps back to whole-file window indices without a side table.
-_SINK_KEY_PREFIX = "phaze.window."
+# The streaming decode's sink-key namespace and its chunk-gate margin live with the decoder
+# that uses them, in `analysis_decoder`. They were duplicated here during the extraction; two
+# copies of a load-bearing constant can silently diverge, so this module has none.
 
 
 # ---------------------------------------------------------------------------
@@ -310,15 +309,7 @@ def _resolve_malloc_trim() -> Callable[[int], int] | None:
     fail the lookup. (It also keeps the body reachable for a type checker running on macOS,
     which narrows ``sys.platform`` to a literal and would call everything below it dead.)
     """
-    try:
-        if platform.libc_ver()[0] != "glibc":
-            return None
-        trim: Callable[[int], int] = ctypes.CDLL(None).malloc_trim
-    except (AttributeError, OSError):  # no malloc_trim, or no dlopen of the running image
-        return None
-    trim.argtypes = [ctypes.c_size_t]  # type: ignore[attr-defined]
-    trim.restype = ctypes.c_int  # type: ignore[attr-defined]
-    return trim
+    return analysis_decoder._resolve_malloc_trim(platform_module=platform, ctypes_module=ctypes)
 
 
 _MALLOC_TRIM: Callable[[int], int] | None = _resolve_malloc_trim()
@@ -348,12 +339,7 @@ def _malloc_trim() -> None:
 
     Never raises -- a failed trim is a missed optimisation, not an analysis failure.
     """
-    if _MALLOC_TRIM is None:
-        return
-    try:
-        _MALLOC_TRIM(0)
-    except Exception:  # pragma: no cover -- defensive; a trim must never fail a file
-        log.debug("malloc_trim(0) failed; continuing", exc_info=True)
+    analysis_decoder._malloc_trim(_MALLOC_TRIM, log)
 
 
 def _get_classifier(model: ModelConfig, models_dir: str) -> Any:
@@ -833,12 +819,6 @@ _DEFAULT_FINE_MIN_SEC = 15
 _FINE_CHUNK_WINDOWS = 60
 _COARSE_CHUNK_WINDOWS = 30
 
-# Slack added to a chunk decode's early-stop gate (see `_decode_windows_streaming`). The gate
-# exists to stop the non-seeking loader once a chunk's last window has been read; a second of
-# over-read costs nothing and removes any chance that the stop lands a token early and truncates
-# that last window.
-_CHUNK_GATE_MARGIN_SEC = 1.0
-
 
 # ---------------------------------------------------------------------------
 # D-09 DECISION RECORD -- a streaming network must be DISCONNECTED, not just dropped (phaze-u1n7j)
@@ -960,23 +940,7 @@ def _disconnect_network(algos: Sequence[Any]) -> None:
     with no ``connections`` map, edges already severed) because its most important caller is the
     failure path. It never raises.
     """
-    for algo in algos:
-        # Snapshot both levels BEFORE touching anything, and inside the guard: `disconnect`
-        # mutates the very list it is iterating, and `connections` is whatever the object
-        # happens to carry -- on the failure path that includes objects this module never
-        # built. Reading it must not be the thing that raises out of a `finally`.
-        try:
-            edges = [
-                (connector, target) for connector, targets in list((getattr(algo, "connections", None) or {}).items()) for target in list(targets)
-            ]
-        except Exception:
-            log.warning("could not read a streaming algorithm's connections; its network will leak", exc_info=True)
-            continue
-        for connector, target in edges:
-            try:
-                connector.disconnect(target)
-            except Exception:  # a stuck edge leaks, but must never mask the caller's error
-                log.warning("failed to disconnect a streaming edge; this chunk's network will leak", exc_info=True)
+    analysis_decoder._disconnect_network(algos, log)
 
 
 def _release_decode_network() -> None:
@@ -993,8 +957,7 @@ def _release_decode_network() -> None:
     ordered after the collect deliberately, so it trims pages the collect has just freed rather
     than pages it is about to.
     """
-    gc.collect()
-    _malloc_trim()
+    analysis_decoder._release_decode_network(collect=gc.collect, trim=_malloc_trim)
 
 
 def _chunked(windows: list[tuple[int, float, float]], size: int) -> list[list[tuple[int, float, float]]]:
@@ -1004,7 +967,7 @@ def _chunked(windows: list[tuple[int, float, float]], size: int) -> list[list[tu
     introduced), so a chunked run analyzes the identical window set an unchunked one would.
     An empty input yields no chunks, so a zero-window tier does no decode work at all.
     """
-    return [windows[i : i + size] for i in range(0, len(windows), size)]
+    return analysis_decoder._chunked(windows, size)
 
 
 def _probe_duration_sec(file_path: str) -> float:
@@ -1214,58 +1177,27 @@ def _decode_windows_streaming(
     the CHEAPEST chunk of all (§4b, §4d); a fine chunk admitting 11x the audio of chunk 0 cost
     only 1.16x the wall clock. Treat the formula as the volume it is, not the saving it was
     written to claim. It is still an OPTIMISATION only: ``startTime`` stays 0 so every window
-    keeps absolute file time, the margin (:data:`_CHUNK_GATE_MARGIN_SEC`) guarantees the last
+    keeps absolute file time, the margin (``analysis_decoder._CHUNK_GATE_MARGIN_SEC``) guarantees the last
     window of the chunk is complete, and the final chunk is passed ``stop_at_sec=None`` because
     it runs to EOF anyway. If the gated network cannot be built or run, :func:`_decode_windows`
     retries UNGATED before falling back to the per-window loader, so a gate that misbehaves on
     some future essentia costs wall clock and never correctness.
     """
-    pool = essentia.Pool()
-    loader = ess.MonoLoader(filename=file_path, sampleRate=sample_rate)
-    branches: list[tuple[Any, Any]] = []  # holds the per-branch algos alive for the run
-    gate: Any = None
-    try:
-        if stop_at_sec is None:
-            source = loader.audio
-        else:
-            # No Scale interposer here, deliberately: this Trimmer's parent MUST be the loader
-            # so that reaching endTime shuts the decode down (see the docstring's chunk gate).
-            gate = ess.Trimmer(sampleRate=sample_rate, startTime=0.0, endTime=stop_at_sec + _CHUNK_GATE_MARGIN_SEC)
-            loader.audio >> gate.signal
-            source = gate.signal
-        for idx, start, end in windows:
-            scale = ess.Scale(factor=1.0)
-            trimmer = ess.Trimmer(sampleRate=sample_rate, startTime=start, endTime=end)
-            source >> scale.signal
-            scale.signal >> trimmer.signal
-            trimmer.signal >> (pool, f"{_SINK_KEY_PREFIX}{idx}")
-            branches.append((scale, trimmer))
-
-        essentia.run(loader)
-
-        produced = set(pool.descriptorNames())  # read ONCE: `remove` below mutates it
-        decoded: dict[int, Any] = {}
-        for idx, _start, _end in windows:
-            key = f"{_SINK_KEY_PREFIX}{idx}"
-            if key not in produced:
-                continue  # the pass produced no audio for this window; caller reports it as a skip
-            buf = pool[key]
-            pool.remove(key)  # drop the Pool's copy NOW -- see trap 3 above
-            if len(buf) == 0:
-                continue
-            decoded[idx] = buf
-        return decoded
-    finally:
-        # Drop the network before returning. Clearing `branches` and deleting the names is NOT
-        # sufficient and was the phaze-u1n7j defect: it frees the Python proxies and leaves
-        # essentia's C++ connection buffers -- ~5 MB per branch -- live, so every chunk leaked
-        # one network's worth and peak RSS grew linearly with duration until the pod OOMKilled.
-        # The edges must be severed explicitly; see D-09. Branches first, then the shared head
-        # of the fan-out (gate, then loader) -- teardown measured flat in either direction, so
-        # this order is for readability, not correctness.
-        _disconnect_network([*(algo for branch in branches for algo in branch), gate, loader])
-        branches.clear()
-        del loader, pool, gate
+    runtime = analysis_decoder.StreamingRuntime(
+        pool=essentia.Pool,
+        mono_loader=ess.MonoLoader,
+        scale=ess.Scale,
+        trimmer=ess.Trimmer,
+        run=essentia.run,
+        disconnect_network=_disconnect_network,
+    )
+    return analysis_decoder._decode_windows_streaming(
+        file_path,
+        sample_rate,
+        windows,
+        runtime=runtime,
+        stop_at_sec=stop_at_sec,
+    )
 
 
 def _decode_windows(
@@ -1313,67 +1245,23 @@ def _decode_windows(
     silence threshold from file duration and source sample rate.
     """
 
-    def _streaming(*, gated_stop_at_sec: float | None = None) -> dict[int, Any]:
-        def _run() -> dict[int, Any]:
-            # Preserve the established ungated call shape. Tests and instrumentation wrap
-            # this seam with a three-argument callable; passing ``stop_at_sec=None`` is
-            # semantically equivalent to omitting it, but unnecessarily breaks those wrappers
-            # and can demote a healthy streaming pass to the per-window fallback.
-            if gated_stop_at_sec is None:
-                return _decode_windows_streaming(file_path, sample_rate, windows)
-            return _decode_windows_streaming(file_path, sample_rate, windows, stop_at_sec=gated_stop_at_sec)
-
-        # "Nobody is listening" is an identity check against the module-level default rather
-        # than a ``None`` test, because ``on_beat`` is TOTAL since phaze-mp0op. This is the
-        # same condition the original ``on_beat is None`` guarded: an unset channel must not
-        # make a decode pay for a watchdog thread whose beats would go nowhere.
-        if on_beat is _noop:
-            return _run()
-
-        stopped = threading.Event()
-
-        def _watch() -> None:
-            while not stopped.wait(_DECODE_HEARTBEAT_INTERVAL_SEC):
-                try:
-                    on_beat()
-                except Exception:  # liveness reporting is best-effort; decode correctness wins
-                    log.warning("decode heartbeat callback failed; continuing", exc_info=True)
-
-        watchdog = threading.Thread(target=_watch, name="phaze-decode-heartbeat", daemon=True)
-        watchdog.start()
-        try:
-            return _run()
-        finally:
-            stopped.set()
-            watchdog.join()
-
-    decoded: dict[int, Any] | None = None
-    if stop_at_sec is not None:
-        try:
-            decoded = _streaming(gated_stop_at_sec=stop_at_sec)
-        except Exception:  # gate-level isolation: retry the same pass without the early-stop gate
-            log.warning("gated streaming decode failed at %d Hz; retrying ungated", sample_rate, exc_info=True)
-            on_beat()  # the gated attempt may itself have burned minutes before failing
-    if decoded is None:
-        try:
-            decoded = _streaming()
-        except Exception:  # tier-level failure isolation: fall back to the per-window decode
-            log.warning("streaming decode pass failed at %d Hz; falling back to per-window EasyLoader", sample_rate, exc_info=True)
-            decoded = {}
-            for idx, start, end in windows:
-                try:
-                    decoded[idx] = es.EasyLoader(filename=file_path, sampleRate=sample_rate, startTime=start, endTime=end)()
-                except Exception:  # per-window failure isolation: skip, never fail the file
-                    on_skip(idx, start, end, True)
-                on_beat()  # per WINDOW, and outside the try: a skip is progress too, and this loop's
-                # silence is what would otherwise get the whole fallback killed as stalled.
-            _release_decode_network()
-            return decoded
-    for idx, start, end in windows:
-        if idx not in decoded:
-            on_skip(idx, start, end, False)
-    _release_decode_network()
-    return decoded
+    runtime = analysis_decoder.DecodeRuntime(
+        streaming_decode=_decode_windows_streaming,
+        easy_loader=es.EasyLoader,
+        release_decode_network=_release_decode_network,
+        logger=log,
+        heartbeat_interval_sec=_DECODE_HEARTBEAT_INTERVAL_SEC,
+    )
+    return analysis_decoder._decode_windows(
+        file_path,
+        sample_rate,
+        windows,
+        on_skip,
+        runtime=runtime,
+        stop_at_sec=stop_at_sec,
+        on_beat=on_beat,
+        watchdog_enabled=on_beat is not _noop,
+    )
 
 
 def _sweep_one_model(
