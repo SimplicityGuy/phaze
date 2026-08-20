@@ -45,6 +45,16 @@ def validate_unique_registry_ids(backends: Sequence[BackendConfig], buckets: Seq
     if bucket_dupes:
         raise ValueError(f"duplicate bucket ids in registry: {bucket_dupes} — each [[buckets]] id must be unique (REG-05)")
 
+    # phaze-1sgee: the backend-id Counter below is deliberately KIND-AGNOSTIC — keyed on `backend.id`
+    # alone, NOT on `(id, kind)`. `resolve_compute_backend` (services/backends.py) builds a
+    # `{backend.id: backend}` dict over the full registry — the exact silently-collapses-to-LAST shape
+    # the bucket-id Counter above guards against — and every backend's cap accounting scopes
+    # `COUNT(cloud_job WHERE backend_id == self.id)`, so two entries sharing an id double-count each
+    # other's in-flight rows. A compute and a kueue backend sharing an id is the NASTIEST variant,
+    # because `resolve_compute_backend`'s `kind == "compute"` filter and the drain snapshot then resolve
+    # genuinely inconsistent views of "the backend named <id>". Scoping the Counter to same-kind
+    # collisions only — a plausible "fix" for a perceived false positive — would silently reopen this.
+    # Report both the offending ids and their kinds so the operator can find the copy-paste.
     backend_dupes = sorted(backend_id for backend_id, count in Counter(backend.id for backend in backends).items() if count > 1)
     if backend_dupes:
         id_kinds = {backend_id: sorted(backend.kind for backend in backends if backend.id == backend_id) for backend_id in backend_dupes}
@@ -57,6 +67,16 @@ def validate_unique_compute_agent_refs(backends: Sequence[BackendConfig]) -> Non
     This is intentionally not an existence check.  Agents register dynamically, so a unique
     ref naming an agent that has not checked in yet must remain legal and degrade to a runtime
     hold rather than a controller boot failure.
+
+    D-04: this is a STATIC check only — a Counter over config values, mirroring the bucket-id and
+    backend-id idioms above — so it opens no DB session.  Skip ``agent_ref is None`` so the
+    per-variant ``ComputeBackend._require_dispatch_fields`` "requires an agent_ref" message is never
+    masked by this container-level guard.  ``ComputeBackend`` already requires a non-null
+    ``agent_ref`` under normal validation, which makes the filter look redundant — it would only ever
+    matter for an instance built via ``model_construct`` that bypasses that per-variant check.  That
+    is exactly why it stays: without it, two such null-``agent_ref`` entries would collide in the
+    Counter and raise a confusing "duplicate compute agent_ref(s): [None]" here instead of letting
+    the clearer per-entry "requires an agent_ref" error surface first.
     """
     compute_agent_refs = [backend.agent_ref for backend in backends if isinstance(backend, ComputeBackend) and backend.agent_ref is not None]
     agent_dupes = sorted(agent_ref for agent_ref, count in Counter(compute_agent_refs).items() if count > 1)
@@ -89,6 +109,13 @@ def validate_backend_bucket_lists(
         missing = [bucket_id for bucket_id in backend.buckets if bucket_id not in bucket_by_id]
         if missing:
             raise ValueError(f"backend {backend.id!r} references unknown bucket ids {missing} (D-08)")
+        # phaze-ru9oe: fail fast on a duplicate bucket id WITHIN one backend's own `buckets` list (a
+        # copy-paste duplicate, not a cross-backend share). Left unchecked, resolving `backend.buckets`
+        # positionally below appends `backend.id` once per LIST ENTRY into `cluster_specific_refs`, so a
+        # single backend listing the same cluster-specific bucket twice falsely trips the D-09
+        # cross-backend cardinality guard in `validate_cluster_specific_sharing` — it reports the SAME
+        # backend id twice as if two distinct backends shared the bucket. For scope=shared the same
+        # duplicate silently double-weights the bucket in `pick_bucket`'s candidates.
         within_backend_dupes = sorted(bucket_id for bucket_id, count in Counter(backend.buckets).items() if count > 1)
         if within_backend_dupes:
             raise ValueError(

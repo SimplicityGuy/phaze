@@ -721,7 +721,8 @@ class ControlSettings(BaseSettings):
           * A resolved-empty registry (present-but-empty `backends = []`) fails fast rather than
             booting with no backend — the Phase-30 silent-wedge failure mode (REG-04, Pitfall 2).
           * Duplicate `[[buckets]]` ids fail fast (REG-05).
-          * Duplicate `[[backends]]` ids fail fast, kind-agnostic (phaze-1sgee, see below).
+          * Duplicate `[[backends]]` ids fail fast, kind-agnostic (phaze-1sgee; see
+            `validate_unique_registry_ids` in `config_registry_policies.py` for why).
           * Duplicate non-null compute `agent_ref` values fail fast without checking agent existence
             (D-04/D-05).
           * Each KueueBackend's `buckets` id-list must resolve against `self.buckets`: an unknown id
