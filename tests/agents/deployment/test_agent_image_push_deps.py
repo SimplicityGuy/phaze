@@ -31,7 +31,13 @@ def test_agent_image_installs_rsync_and_openssh_client() -> None:
     """
     text = _dockerfile_text()
 
-    install_lines = [line for line in text.splitlines() if "apt-get install" in line]
+    # Join line continuations BEFORE scanning (phaze-b62ri). A package list split across
+    # backslash-continued lines is one `apt-get install` command but several text lines, so a
+    # per-line scan reports a package as missing purely because of how the layer is wrapped.
+    # That produced a false failure here when the runtime apt layer was re-wrapped to carry a
+    # pinned `ffmpeg=<version>` -- rsync and openssh-client were installed the whole time.
+    joined = text.replace("\\\n", " ")
+    install_lines = [line for line in joined.splitlines() if "apt-get install" in line and not line.lstrip().startswith("#")]
     assert install_lines, "Dockerfile has no `apt-get install` line."
 
     combined = "\n".join(install_lines)

@@ -1,8 +1,17 @@
 # Phaze x86 Job-runner image (Phase 52 — KJOB-01; Phase 56 — KDEPLOY-06).
 #
 # x86-only. FROM the freshly-published api base image — it already carries
-# Python 3.14 + essentia + every native lib (libatomic1, ffmpeg, libsndfile1,
-# libchromaprint-tools, libpq5) + the `phaze` package + uv. This image adds
+# Python 3.14 + essentia + every native lib (libatomic1, libsndfile1,
+# libchromaprint-tools, libpq5) + the `phaze` package + uv + the PINNED
+# ffmpeg/ffprobe CLI.
+#
+# ffmpeg (phaze-b62ri): this image installs NOTHING itself -- it has no apt layer at all --
+# so it inherits whatever the api base carries, which is Debian trixie's ffmpeg 7.1.x. That
+# inheritance IS the mechanism, and it is why `job_runner.py`'s video-extraction path
+# (services/video_audio.py) runs the same binary the api image does, without this file
+# needing to name a version at all. Do NOT add an apt-get layer here to install ffmpeg: it
+# would be a second copy that can drift from the base independently -- the one failure mode
+# the single-base arrangement rules out by construction. This image adds
 # ZERO new pip dependencies (KJOB-01) and ZERO baked secrets: the only addition
 # is the one-shot CMD. The internal CA is NOT baked here — it is MOUNTED at
 # runtime from an operator-created Kubernetes Secret (Phase 56, KDEPLOY-06,
