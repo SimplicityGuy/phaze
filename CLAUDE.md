@@ -26,9 +26,11 @@ uv run pre-commit run --all-files # Run all pre-commit hooks
 
 just test                  # Fast LOCAL ITERATION only: -x -q. Not a gate — see below
 just check                 # THE per-bead gate: lint + typecheck + the full suite WITH
-                           # coverage (95% floor enforced). What `bh work check`/`submit` run
+                           # coverage (95% LINE floor enforced). What `bh work check`/`submit` run
 just check-all             # THE molecule / merge-to-main gate: every pre-commit hook + the
                            # same suite. What `bh work finish` runs
+just branch-check          # Per-bead BRANCH-coverage gate: fail if this bead lowered branch
+                           # coverage on any src/phaze file it touched. Free after any `check`
 just test-db               # Bring up the shared test Postgres (5433) + Redis (6380) harness
 just test-db-for <name>    # Carve an isolated seat out of that harness — REQUIRED for
                            # concurrent worktrees; prints three exports to set
@@ -47,14 +49,14 @@ phaze-1i0h6's four-of-four unevidenced validation claims.
 | Command | ruff | mypy | tests | coverage | pytest header | evidence |
 |---------|------|------|-------|----------|---------------|----------|
 | `just test` | — | — | yes, **`-x`: stops at the first failure** | no | **no (`-q`)** | **I** — recipe text via `just --dry-run test`; never executed |
-| `just test-cov` | — | — | whole suite | yes, 95% floor | yes | **M** — run 2026-08-21: 7323 passed, 98.78%, `real 1193.88` |
-| `just test-validate` | — | — | whole suite | yes, 95% floor | yes | **M** — executed as `check`'s delegate in the red-gate run below |
-| `just check` | yes | yes | whole suite | yes, 95% floor | yes | **M** — the red-gate run below |
-| `just check-all` | yes (via pre-commit) | yes (via pre-commit) | whole suite | yes, 95% floor | yes | **I** — never executed as one command; measures itself at the next `bh work finish` |
-| `bh work check <id>` | yes | yes | whole suite | yes, 95% floor | yes | **M** — red-gate run 2026-08-21: a deliberately failing test gave `1 failed, 7329 passed` and **exit 1** |
-| `bh work submit <id>` | yes | yes | whole suite | yes, 95% floor | yes | **M** — phaze-jnj90/phaze-nqawu's own group submit, 2026-08-21 |
-| `bh work finish <epic>` (= `merge --molecule`) | via pre-commit | via pre-commit | whole suite | yes, 95% floor | yes | **I** — config + `bh work merge --help` |
-| `bh work merge --group <ids>` | yes | yes | whole suite | yes, 95% floor | yes | **I** — config + `bh work merge --help` |
+| `just test-cov` | — | — | whole suite | yes, 95% line floor | yes | **M** — run 2026-08-21: 7323 passed, 98.78%, `real 1193.88` |
+| `just test-validate` | — | — | whole suite | yes, 95% line floor | yes | **M** — executed as `check`'s delegate in the red-gate run below |
+| `just check` | yes | yes | whole suite | yes, 95% line floor | yes | **M** — the red-gate run below |
+| `just check-all` | yes (via pre-commit) | yes (via pre-commit) | whole suite | yes, 95% line floor | yes | **I** — never executed as one command; measures itself at the next `bh work finish` |
+| `bh work check <id>` | yes | yes | whole suite | yes, 95% line floor | yes | **M** — red-gate run 2026-08-21: a deliberately failing test gave `1 failed, 7329 passed` and **exit 1** |
+| `bh work submit <id>` | yes | yes | whole suite | yes, 95% line floor | yes | **M** — phaze-jnj90/phaze-nqawu's own group submit, 2026-08-21 |
+| `bh work finish <epic>` (= `merge --molecule`) | via pre-commit | via pre-commit | whole suite | yes, 95% line floor | yes | **I** — config + `bh work merge --help` |
+| `bh work merge --group <ids>` | yes | yes | whole suite | yes, 95% line floor | yes | **I** — config + `bh work merge --help` |
 | `bh work merge <id>` (single bead → molecule) | **no — see below** | no | no | no | no | **I** — config + `bh work merge --help` |
 
 **M** = the command itself was executed and its transcript read; the cell says which run.
@@ -146,6 +148,29 @@ described below. The header renders the other state as the literal
 
 In cases 1 and 2 the run is *not* protected and its failures are not trustworthy under any
 concurrency.
+
+**`just check` provisions a seat for itself when you have not (phaze-bk9el.23).** With
+`TEST_DATABASE_URL` unset, `just test-validate` — the test step both gates run, and therefore what
+`bh work check` and `bh work submit` run — derives a seat from the worktree (the branch name for
+legibility plus a digest of the absolute worktree root for uniqueness) and provisions it through
+the same `scripts/provision-test-seat.sh` that `just test-db-for` runs. Derived seats are named
+`auto_<branch>_<hash>_<hash>`, show up in `just test-db-seats`, and are reclaimed by
+`just test-db-reclaim` under the usual rules — O1 frees them when the worktree that minted them is
+removed, which is the normal end of `bh work merge`.
+
+Two things follow, and they pull in opposite directions:
+
+- **A solo worktree with no seat still just works, and is now genuinely isolated.** Until
+  phaze-bk9el.23 that path landed on the SHARED `phaze_test` + Redis DB 0, so any concurrent seat
+  that forgot to export its own rig collided there. phaze-ieqg's advisory lock refuses the second
+  pytest rather than corrupting both — a red run that passes on isolated re-run, the shape named
+  below as the worst possible one.
+- **This is a floor, not a substitute for `just test-db-for <name>`.** Export your seat anyway.
+  The derived name is opaque, which makes a `just test-db-seats` listing harder to read back to a
+  bead, and a seat you did not name is a seat you will not think to release.
+
+An exported `TEST_DATABASE_URL` is still honoured **verbatim** and provisions nothing — CI depends
+on that, since it exports its own DSN against a 5432 service container.
 
 **Never share Postgres OR Redis between concurrent agents.** Both are stateful, both are shared by
 default, and both must be isolated per worktree. Saying "test database" here was the phaze-fwo7
@@ -354,9 +379,49 @@ Use frozen SHAs (not just tags) for all hooks. Required hooks:
 
 ## Testing
 
-- Minimum **95% code coverage** required
+- Minimum **95% LINE coverage** repo-wide, plus a **90% per-module line floor**. Both are
+  enforced by `scripts/coverage_floor.py`, which `just test-cov` and `just coverage-combine` run.
 - Upload coverage to Codecov with service-specific flags
 - Codecov config: precision 2, round down, range 70-100%, project target auto with 1% threshold, patch target 80% with 5% threshold
+
+### Branch coverage: measured everywhere, gated per bead (phaze-bk9el.21)
+
+**Operator decision 2026-08-21.** Question as put: *"Branch coverage is off, and runs 4-8 points
+under line coverage on the refactor targets. What should this epic do about it?"* Answer as given
+(selected option label, verbatim): *"Enable it, gate the refactor targets only (Recommended)"*.
+Durable record: bead `phaze-bk9el.21`.
+
+`branch = true` is set in `[tool.coverage.run]`, so **every** coverage run in this repo measures
+branches and the number is visible everywhere. The **gate** is deliberately narrow:
+
+- **Repo-wide, the floors stay on LINES** — 95% total, 90% per module. Branch coverage sits below
+  the line figure on most files here, so a repo-wide branch floor would fail on day one and the
+  backfill would dwarf whatever work it was meant to protect. Do **not** raise `fail_under` against
+  branches.
+- **Per bead, branch coverage is gated on the files that bead touched.** `just branch-check` reads
+  the `coverage.json` any gate run leaves behind, checks only the `src/phaze/**.py` files changed
+  against `--base-ref` (committed, staged *and* unstaged, so it is useful mid-flight), names every
+  file it checked, and prints the **uncovered branch line numbers** rather than a bare percentage.
+  Raising branch coverage is welcome, holding it steady is fine, **lowering it fails the bead**. A
+  file the bead did not touch is out of scope for that bead's check.
+
+Why per-bead is where the value is: decomposing a long function, flattening a nest or splitting a
+file are all operations where **every line still executes** and only the branch combinations
+change. Line coverage is structurally unable to see that regression, and a repo-wide average is far
+too coarse to. Measured on the refactor targets — `job_runner.py` 97.12% lines / **89.13%**
+branches, `services/analysis.py` 97.91% / **93.97%**, `services/video_audio.py` 94.62% /
+**87.50%** — all three clear the line gates while sitting below them on branches.
+
+**The trap, if you ever change a coverage floor.** With `branch = true`, coverage.py's own
+`fail_under` measures the **combined** `(covered_lines + covered_branches) / (num_statements +
+num_branches)`, not lines, and offers no option to select the metric (verified against coverage
+7.15.4). Enabling branch measurement therefore silently re-points every floor left on that knob —
+which is why both repo-wide floors read `percent_statements_covered` explicitly in
+`scripts/coverage_floor.py`, why `coverage xml` / `coverage json` / `coverage report` all carry
+`--fail-under=0` in `coverage-combine` (all three honour it, and the first two run *before*
+`report`, so an arming there aborts the combine before the real gate is reached), and why every
+line the gate prints names the metric it measured. `fail_under = 95` remains in `pyproject.toml`
+purely as a backstop for an ad-hoc `uv run pytest --cov=phaze` outside those recipes.
 
 ## Workflow: Features and PRs
 
