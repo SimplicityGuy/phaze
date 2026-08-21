@@ -489,12 +489,17 @@ async def run() -> None:
         # human-recognizable; event/step/elapsed_ms unchanged, sha256 is additive.
         log.info("job_runner_step_ok", file_id=fid, step="verify", elapsed_ms=_elapsed_ms(t_verify), sha256=actual_sha256[:12])
 
-        # (3.5) video-audio extraction (phaze-3ea41, operator decision: format scope) —
+        # (3.5) video-audio extraction (phaze-3ea41, probe-based format scope) —
         # symmetric with the SAQ lane (tasks/functions.py::process_file); see
-        # services/video_audio.py's decision record for track-selection, disk-headroom and
-        # lane-symmetry rationale. Runs for EVERY downloaded file, unconditionally -- ffprobe is
-        # the sole authority on whether it has an audio stream, not the downloaded suffix or the
-        # raw ``audio_ext`` field. There is no SAQ job in this one-shot pod (D-25: it never
+        # services/video_audio.py's D-09 for track-selection, disk-headroom and lane-symmetry
+        # rationale, and for which of those are the operator's and which the implementer's
+        # ("operator decisions of record", 2026-08-12). This lane's own presence there is the
+        # operator's: extraction runs on BOTH lanes, answered "Both lanes" 2026-08-12 (record
+        # 2). Offering EVERY downloaded file to extraction rather than only video containers is
+        # the IMPLEMENTER's, not the operator's -- ffprobe is the sole authority on whether it
+        # has an audio stream, not the downloaded suffix or the raw ``audio_ext`` field.
+        #
+        # There is no SAQ job in this one-shot pod (D-25: it never
         # imports the agent worker or its liveness machinery -- test_task_split.py enforces
         # that), so this call passes no progress/liveness callback -- the pod has no wall-clock
         # bound at all on THIS step, matching every other step's D-01/phaze-202e "no bound"

@@ -204,7 +204,9 @@ def _ffmpeg_kwargs(make_fake_exec: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# _select_track (operator decision: prefer disposition.default, fallback to first)
+# _select_track -- operator decision (phaze-3ea41), answered "Default/first track"
+# 2026-08-12: prefer disposition.default, fall back to first. Question as put, and the
+# label/description split it turns on, in services/video_audio.py's D-09 record 3.
 # ---------------------------------------------------------------------------
 
 
@@ -320,8 +322,12 @@ async def test_extract_audio_track_falls_back_to_first_stream_when_none_default(
 
 
 async def test_extract_audio_track_prefers_default_flagged_stream_over_first(make_fake_exec: Any) -> None:
-    """The container's DEFAULT-flagged stream wins even when it is NOT the first-listed one
-    (operator decision, phaze-3ea41)."""
+    """The container's DEFAULT-flagged stream wins even when it is NOT the first-listed one.
+
+    Operator decision (phaze-3ea41), answered "Default/first track" 2026-08-12 -- chosen by
+    that LABEL. Question as put and the durable record: services/video_audio.py's D-09
+    "operator decisions of record", record 3.
+    """
     streams = [
         {"index": 2, "codec_name": "aac", "disposition": {"default": 0}},
         {"index": 3, "codec_name": "ac3", "disposition": {"default": 1}},
@@ -336,8 +342,15 @@ async def test_extract_audio_track_prefers_default_flagged_stream_over_first(mak
 
 
 async def test_extract_audio_track_logs_multi_track_with_file_id(make_fake_exec: Any) -> None:
-    """The 'log the other streams' existence in the analysis record' operator decision --
-    ``file_id`` rides the structured log line so a multi-track pick is attributable."""
+    """The 'log the others' existence in the analysis record' instruction.
+
+    Carries the operator decision of 2026-08-12 (phaze-3ea41), in its weaker register: it is
+    dispatcher-written ACCOMPANYING CONTEXT in the DESCRIPTION beside the option label the
+    operator actually chose, "Default/first track", not a separately-asked question.
+    services/video_audio.py's D-09 record 3 keeps the two apart. That it is a structured log
+    line keyed by ``file_id`` rather than a row on the analysis record is the implementer's
+    reading, and this test pins that reading.
+    """
     from structlog.testing import capture_logs
 
     streams = [
@@ -706,8 +719,14 @@ async def test_real_extract_audio_track_no_audio_stream_raises(tmp_path: Path) -
 
 @pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg/ffprobe not installed on this runner")
 async def test_real_extract_audio_track_prefers_default_flagged_stream(tmp_path: Path) -> None:
-    """Real ffprobe/ffmpeg round-trip proving the disposition.default preference (operator
-    decision) against genuine ffprobe JSON, not a hand-built fixture."""
+    """Real ffprobe/ffmpeg round-trip proving the disposition.default preference against
+    genuine ffprobe JSON, not a hand-built fixture.
+
+    Operator decision (phaze-3ea41), answered "Default/first track" 2026-08-12 -- the same
+    proposition the two fixture-based tests above pin, here against the real consumer's own
+    output. Question as put and the durable record: record 3 of the "operator decisions of
+    record" block in services/video_audio.py's D-09.
+    """
     src = tmp_path / "synthetic_multi_track.mkv"
     proc = await asyncio.create_subprocess_exec(
         "ffmpeg",

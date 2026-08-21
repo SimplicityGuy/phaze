@@ -58,9 +58,13 @@ _DOWNLOAD_URL = "http://bucket.test/obj"
 def _patch_extract_audio_track(monkeypatch):  # type: ignore[no-untyped-def]
     """Default extraction stub: fabricates a DISTINCT synthetic extracted path.
 
-    phaze-3ea41 operator decision: extraction runs for EVERY downloaded file (format-scope
-    decision, no extension whitelist), so every ``jr.run()`` call reaches
-    ``extract_audio_track``. Most tests in this file exercise job_runner's OTHER behavior and
+    phaze-3ea41, IMPLEMENTER's decision (format scope): extraction is offered EVERY
+    downloaded file, not just recognized video containers, so every ``jr.run()`` call reaches
+    ``extract_audio_track``. The operator decided probe-based acceptance for VIDEO containers
+    ("Probe-based, any container", 2026-08-12); widening that to every file was not asked --
+    see services/video_audio.py's D-09 "operator decisions of record".
+
+    Most tests in this file exercise job_runner's OTHER behavior and
     have no interest in extraction at all -- patching it here keeps them oblivious to it,
     exactly as they were before this bead. A module-level import is safe (no env/settings
     read at import time -- only inside ``run()``), so this needs no ``job_env`` dependency and
@@ -460,9 +464,11 @@ async def test_video_extracts_audio_before_analyzing(job_env, monkeypatch):  # t
 
 @respx.mock
 async def test_audio_file_also_goes_through_extraction(job_env, monkeypatch):  # type: ignore[no-untyped-def]
-    """phaze-3ea41 operator decision (format scope): extraction runs for EVERY downloaded
-    file, audio included -- there is no ``audio_ext``/suffix gate any more. ``ffprobe`` is
-    the sole authority on whether the download has an audio stream."""
+    """phaze-3ea41, IMPLEMENTER's decision (format scope): extraction is offered EVERY
+    downloaded file, audio included -- there is no ``audio_ext``/suffix gate any more.
+    ``ffprobe`` is the sole authority on whether the download has an audio stream. The
+    operator's answer covered VIDEO containers only ("Probe-based, any container",
+    2026-08-12); see services/video_audio.py's D-09 "operator decisions of record"."""
     import phaze.job_runner as jr
 
     file_id = job_env["file_id"]
