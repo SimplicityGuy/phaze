@@ -29,6 +29,25 @@ TAG_FIELDS = ["artist", "title", "album", "year", "genre", "track_number"]
 # of one card's normal size.
 _MAX_GROUP_MEMBERS = 500
 
+# phaze-4iq5t: the page size for the OTHER cap this module owns -- the number of GROUPS
+# find_duplicate_groups / find_duplicate_groups_with_metadata return per call (via
+# _dup_hash_subquery's limit/offset), distinct from _MAX_GROUP_MEMBERS above (members WITHIN one
+# group). This used to be an unlabeled bare ``100`` default with a live caller
+# (services/review.get_dedupe_groups) that never passed an offset override, so a duplicate-hash
+# group past the hundredth in sort order never rendered on the Dedupe workspace -- permanently and
+# silently, with no "showing N of M" signal anywhere (measured on a synthetic corpus at the
+# archive's documented current scale, docs/spikes/phaze-ytgo.7-verdict.md's 11,428 files: even a
+# conservative 5% duplicate-file rate produced 220 real groups against this 100-group cap, i.e. 120
+# groups -- 55% -- silently dropped). Named here so services/review.get_dedupe_groups, the
+# /duplicates/groups "Load more" endpoint, and the Dedupe workspace template's button label all
+# derive the SAME number from ONE place rather than three independently-drifting literals.
+#
+# Pagination over this cap was deleted once already (phaze-y4s6, the Phase-62 /duplicates/ cutover
+# documented in routers/duplicates.py's list_duplicates()) on the reasoning that there was no live
+# caller left for it -- correct at the time. GET /duplicates/groups (routers/duplicates.py) is that
+# caller now; do not delete this again on the same reasoning without checking for one.
+GROUP_PAGE_SIZE = 100
+
 
 def tag_completeness(file_dict: dict[str, Any]) -> tuple[str, int, int]:
     """Return (label, filled_count, total_count) for tag completeness.
@@ -95,6 +114,23 @@ def _dup_hash_subquery(limit: int, offset: int) -> Subquery:
     Ordering by ``sha256_hash`` before LIMIT/OFFSET makes the selected page of hashes stable and
     reproducible across calls (the outer queries below additionally ORDER BY sha256_hash for display,
     but that sorts only the hashes THIS subquery already selected -- it can't fix an unstable selection).
+
+    phaze-4iq5t REJECTED ALTERNATIVE, recorded so it is not naively re-attempted: sorting by member
+    COUNT instead of (or before) ``sha256_hash`` -- "biggest groups land on the first page" -- was
+    tried and reverted during this same bead's review. ``sha256_hash`` is provably unique per row
+    here AND immutable (a group's hash never changes); member count is neither -- it changes every
+    time a scan adds/removes a duplicate file. Sorting by a MUTABLE key under LIMIT/OFFSET is the
+    classic offset-pagination bug: a group that crosses the page boundary between an operator's
+    initial load and their "Load more" click (because a concurrent scan changed its count) is either
+    skipped entirely or rendered twice -- silently, which is exactly the class of bug this bead
+    exists to eliminate. Reintroducing it under the "operator-meaningful order" acceptance option
+    (AC1(c)) would trade a static, always-reproducible cap for a dynamic, load-timing-dependent one.
+    Since real pagination now exists (GET /duplicates/groups), every group is reachable regardless of
+    hash order -- the ordering only decides what renders FIRST, not what is reachable at all -- so
+    the "biggest groups first" benefit was judged not worth paying pagination correctness for. If a
+    priority order is wanted later, it needs either a stable snapshot of the ordering key for the
+    whole paging session or keyset pagination on an immutable column, not a plain LIMIT/OFFSET sort
+    on a mutable one.
     """
     return (
         select(FileRecord.sha256_hash)
@@ -196,7 +232,7 @@ def _build_metadata_groups(rows: Iterable[Sequence[Any]], cap: int | None = None
     return groups
 
 
-async def find_duplicate_groups(session: AsyncSession, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+async def find_duplicate_groups(session: AsyncSession, limit: int = GROUP_PAGE_SIZE, offset: int = 0) -> list[dict[str, Any]]:
     """Find groups of files sharing the same SHA256 hash.
 
     Returns a paginated list of duplicate groups, each containing the
@@ -237,7 +273,7 @@ async def find_duplicate_groups(session: AsyncSession, limit: int = 100, offset:
     ]
 
 
-async def find_duplicate_groups_with_metadata(session: AsyncSession, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+async def find_duplicate_groups_with_metadata(session: AsyncSession, limit: int = GROUP_PAGE_SIZE, offset: int = 0) -> list[dict[str, Any]]:
     """Find duplicate groups with metadata fields included.
 
     Like find_duplicate_groups but outer-joins FileMetadata to include
@@ -316,10 +352,12 @@ async def count_duplicate_groups(session: AsyncSession) -> int:
     "how many duplicate groups are there" anywhere a corpus-wide number is wanted, and
     phaze-tzy6s.17 rewired the Execute preflight onto it for exactly that reason:
     ``len(await get_dedupe_groups(session))`` is NOT a corpus count and reads as one. That path goes
-    through :func:`find_duplicate_groups_with_metadata`, whose ``limit`` defaults to **100** and
-    PAGES, so a corpus with 100 duplicate groups and one with 100,000 both reported "100" -- on the
-    final confirmation dialog before an irreversible batch, the one screen whose whole job is to be
-    accurate about scale. Prefer this over a bigger page size; a page's length is never a total.
+    through :func:`find_duplicate_groups_with_metadata`, whose ``limit`` defaults to
+    :data:`GROUP_PAGE_SIZE` (**100**) and PAGES, so a corpus with 100 duplicate groups and one with
+    100,000 both reported "100" -- on the final confirmation dialog before an irreversible batch, the
+    one screen whose whole job is to be accurate about scale. Prefer this over a bigger page size; a
+    page's length is never a total. (phaze-4iq5t: the Dedupe workspace ITSELF used to make this same
+    mistake, unnoticed, because nothing paged past page 1 -- see :data:`GROUP_PAGE_SIZE`.)
 
     Counts the same population the paged reader selects, and deliberately carries no
     ``ORDER BY``/``LIMIT``/``OFFSET``: :func:`_dup_hash_subquery` needs them because a PAGE must be

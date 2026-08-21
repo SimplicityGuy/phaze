@@ -11,10 +11,18 @@
    on any group card"): phaze-wgse made bulk_resolve_response.html OOB-delete every
    #dupe-group-{hash} it was shown, and bulk_undo_response.html OOB-appends the restored ones back
    into #dedupe-group-list. The two are one contract -- change either side and the other must move
-   with it, or a successful undo leaves the workspace claiming N files restored with no cards. #}
+   with it, or a successful undo leaves the workspace claiming N files restored with no cards.
+
+   phaze-4iq5t: #dedupe-load-more-wrap is the SAME OOB idiom applied to pagination -- GET
+   /duplicates/groups (routers/duplicates.py) OOB-appends its page of cards into #dedupe-group-list
+   and their hashes into #dedupe-group-hash-inputs exactly like bulk_undo_response.html does, then
+   replaces (outerHTML) this wrapper with either the next button or nothing. Before this, dedupe_groups
+   was silently capped at GROUP_PAGE_SIZE with no way to see or even know about the rest -- see
+   services/dedup.py's GROUP_PAGE_SIZE docstring for the measured scale of what that hid. #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
-{% set subcount = "'" ~ (dedupe_groups | length) ~ " duplicate groups · pick the keeper, others archived'" %}
+{% set subcount = "'" ~ dedupe_subcount ~ "'" %}
 {% set _bulk_btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-amber-500/40 text-warn hover:bg-amber-500/10 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
+{% set _load_more_btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 text-muted hover:bg-gray-100 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed dark:border-phaze-border dark:hover:bg-phaze-panel' %}
 {% set actions %}
     <button type="button"
             hx-post="/duplicates/review-all"
@@ -57,4 +65,23 @@
         <p class="text-sm text-muted ">No duplicate groups surfaced. Nothing to reconcile.</p>
     </div>
     {% endif %}
+    {# phaze-4iq5t: always present (even with 0 groups) so GET /duplicates/groups always has an
+       outerHTML swap target to replace -- see the header comment for the OOB contract this is
+       half of. Empty (no button) whenever everything already rendered fits on this page. #}
+    {# `| default(0)` on dedupe_total_groups/dedupe_page_size (NOT provided by the standalone
+       Alpine-root render test, tests/shared/core/test_workspace_scaffold_alpine_root.py, which
+       renders this fragment with an empty context): `>`/`-` on a genuinely Undefined value raises,
+       unlike the `{% if %}`/`{% for %}`/`| length` degrade-to-falsy Jinja already relies on
+       elsewhere in this file, so this needs an explicit fallback to stay in the "no route context
+       required to render" set that test locks in. #}
+    <div id="dedupe-load-more-wrap" class="px-4 pb-4 sm:px-6">
+        {% if (dedupe_total_groups | default(0)) > (dedupe_groups | length) %}
+        <button type="button"
+                hx-get="/duplicates/groups?offset={{ dedupe_groups | length }}"
+                hx-target="#dedupe-load-more-wrap" hx-swap="outerHTML"
+                hx-disabled-elt="this"
+                aria-label="Load more duplicate groups"
+                class="{{ _load_more_btn }}">Load {{ [(dedupe_total_groups | default(0)) - (dedupe_groups | length), dedupe_page_size | default(100)] | min }} more</button>
+        {% endif %}
+    </div>
 {% endcall %}

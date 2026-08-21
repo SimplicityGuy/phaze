@@ -118,9 +118,19 @@ def test_dup_hash_subquery_orders_by_hash_before_limit_offset() -> None:
     """The paginated hash-selection subquery must ORDER BY sha256_hash before LIMIT/OFFSET.
 
     Without this, Postgres's ``GROUP BY ... HAVING`` aggregate output order is unspecified and
-    plan-dependent, so LIMIT/OFFSET pagination over it can select a DIFFERENT set of hashes per call --
-    silently repeating or skipping duplicate groups in the review UI (acceptance: stable page membership
-    across repeated requests). No DB round-trip needed: this inspects the compiled SQL directly.
+    plan-dependent -- different LIMIT/OFFSET values are likely to produce different plans/orders.
+    Without an explicit ORDER BY here, two calls for "the same page" (or two adjacent pages) can
+    select a DIFFERENT set of hashes, so the review UI can silently show a duplicate group twice
+    while another is never shown. No DB round-trip needed: this inspects the compiled SQL directly.
+
+    phaze-4iq5t REJECTED ALTERNATIVE: ordering by member COUNT instead (operator-meaningful --
+    "biggest groups first") was tried and reverted during this bead's review. Member count is
+    MUTABLE (every scan that adds/removes a duplicate file changes it), unlike ``sha256_hash``
+    (immutable, unique per row here) -- sorting a LIMIT/OFFSET page by a mutable key is the classic
+    offset-pagination bug: a group that crosses the page boundary between two page fetches (because
+    its count changed in between) is skipped or duplicated, silently. See _dup_hash_subquery's
+    docstring for the full reasoning, and test_pagination_is_stable_under_a_concurrent_count_change
+    below for the regression this would have reintroduced.
     """
     from phaze.services.dedup import _dup_hash_subquery
 
@@ -131,6 +141,33 @@ def test_dup_hash_subquery_orders_by_hash_before_limit_offset() -> None:
     assert order_by_idx != -1, "hash-selection subquery has no ORDER BY -- LIMIT/OFFSET pagination is unstable"
     assert limit_idx != -1
     assert order_by_idx < limit_idx, "ORDER BY must precede LIMIT so the paginated window is deterministic"
+
+
+@pytest.mark.asyncio
+async def test_pagination_is_stable_under_a_concurrent_count_change(session: AsyncSession) -> None:
+    """phaze-4iq5t: a group's MEMBER COUNT changing between two page fetches must not skip or
+    duplicate it -- the regression a count-based ORDER BY would have reintroduced.
+
+    Seeds 3 groups (A, B, C by hash order) and fetches page 1 (limit=2 -> A, B). A concurrent scan
+    then adds a THIRD member to C -- exactly the kind of write that would move C across a
+    count-ordered page boundary. Page 2 (limit=2, offset=2) must still yield exactly C, once: the
+    ordering key (sha256_hash) never changes, so pages stay stable regardless of what happens to
+    member counts between fetches.
+    """
+    for h in (HASH_A, HASH_B, HASH_C):
+        session.add_all([_make_file(f"/dir/{h[0]}1.mp3", "mp3", h), _make_file(f"/dir/{h[0]}2.mp3", "mp3", h)])
+    await session.flush()
+
+    page1 = await find_duplicate_groups(session, limit=2, offset=0)
+    assert {g["sha256_hash"] for g in page1} == {HASH_A, HASH_B}
+
+    # Concurrent write: C's member count changes between the two page fetches.
+    session.add(_make_file("/dir/c3.mp3", "mp3", HASH_C))
+    await session.flush()
+
+    page2 = await find_duplicate_groups(session, limit=2, offset=2)
+    page2_hashes = [g["sha256_hash"] for g in page2]
+    assert page2_hashes == [HASH_C], "C must still be reachable, exactly once, after its count changed mid-pagination"
 
 
 @pytest.mark.asyncio

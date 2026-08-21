@@ -1,0 +1,46 @@
+{# phaze-4iq5t: response to GET /duplicates/groups (routers/duplicates.py's load_more_groups), the
+   "Load more" fragment for the Dedupe workspace (pipeline/partials/dedupe_workspace.html).
+
+   Pagination for the Dedupe workspace was deleted once already (phaze-y4s6, the Phase-62
+   /duplicates/ cutover -- see routers/duplicates.py's list_duplicates() docstring) on the
+   reasoning that there was no live caller left. This endpoint IS that live caller again; do not
+   delete this template on the same reasoning without checking for it first.
+
+   PRIMARY target/swap: the request's hx-target is #dedupe-load-more-wrap with hx-swap="outerHTML",
+   so the top-level markup below (either the next button or nothing, once exhausted) replaces that
+   wrapper in place.
+
+   Everything else lands via OOB, mirroring the EXACT technique dedupe_workspace.html documents for
+   bulk_undo_response.html:
+     * the new cards        -> hx-swap-oob="beforeend:#dedupe-group-list"
+     * their bulk-review ids -> hx-swap-oob="beforeend:#dedupe-group-hash-inputs" (so "REVIEW
+       AUTO-SELECTION" -- hx-include="#dedupe-group-hash-inputs" -- covers groups loaded via
+       "Load more" too, not just the first page)
+     * the header subcount  -> hx-swap-oob="true" on #stage-workspace-subcount, the SAME id/shape
+       tags/partials/bulk_write_response.html already uses for a plain (non-Alpine-x-text) OOB
+       subcount replacement.
+#}
+<div id="dedupe-load-more-wrap" class="px-4 pb-4 sm:px-6">
+    {% if has_more %}
+    <button type="button"
+            hx-get="/duplicates/groups?offset={{ rendered_through }}"
+            hx-target="#dedupe-load-more-wrap" hx-swap="outerHTML"
+            hx-disabled-elt="this"
+            aria-label="Load more duplicate groups"
+            class="inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 text-muted hover:bg-gray-100 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed dark:border-phaze-border dark:hover:bg-phaze-panel">Load {{ [total_groups - rendered_through, page_size] | min }} more</button>
+    {% endif %}
+</div>
+
+<div hx-swap-oob="beforeend:#dedupe-group-list">
+    {% for group in groups %}
+        {% include "pipeline/partials/_dupe_group.html" %}
+    {% endfor %}
+</div>
+
+<div hx-swap-oob="beforeend:#dedupe-group-hash-inputs">
+    {% for group in groups %}
+    <input type="hidden" name="group_hashes" value="{{ group.sha256_hash }}">
+    {% endfor %}
+</div>
+
+<p id="stage-workspace-subcount" hx-swap-oob="true" class="mt-1 text-sm text-muted ">{{ subcount_text }}</p>

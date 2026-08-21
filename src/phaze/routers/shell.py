@@ -50,7 +50,7 @@ from phaze.routers.proposal_sort import PROPOSE_SORT
 from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_fragment
 from phaze.routers.view_state import PAGE_SIZE_CHOICES, ListViewState
 from phaze.services.backends import derive_cloud_hold_reason, get_analysis_activity_counts, get_analysis_live_count
-from phaze.services.dedup import count_duplicate_groups
+from phaze.services.dedup import GROUP_PAGE_SIZE, count_duplicate_groups
 from phaze.services.execution_preflight import get_execution_preflight
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, clamp_page, clamp_page_size
 from phaze.services.pipeline import (
@@ -77,6 +77,7 @@ from phaze.services.proposal_queries import ProposalStats, get_proposal_stats
 from phaze.services.review import (
     ChangesReviewStats,
     count_cue_review_candidates,
+    dedupe_subcount_text,
     get_changes_review_page,
     get_cue_review_cards,
     get_dedupe_groups,
@@ -1140,8 +1141,22 @@ async def _dedupe_stage_context(session: AsyncSession) -> dict[str, Any]:
     get_dedupe_groups is a read-only, SAVEPOINT-wrapped, degrade-safe assembly over the
     existing dedup reads (NO new query path, NO enqueue, NO backend change) that returns []
     on any DB error, so no router try/except is needed.
+
+    phaze-4iq5t: also carries ``dedupe_total_groups`` (one ``count_duplicate_groups`` corpus-wide
+    COUNT -- the SAME call the Apply-stage preflight below already pays every render, so this is one
+    additional scan per Dedupe-stage VISIT, not a per-page-render cost the general paging contract's
+    rule 2 (services/pagination.py) forbids) and ``dedupe_page_size`` (GROUP_PAGE_SIZE), so the
+    template can render an honest "Showing N of M" subcount and a bounded "Load more" affordance
+    instead of silently rendering only the first page as though it were everything.
     """
-    return {"dedupe_groups": await get_dedupe_groups(session)}
+    groups = await get_dedupe_groups(session)
+    total = await count_duplicate_groups(session)
+    return {
+        "dedupe_groups": groups,
+        "dedupe_total_groups": total,
+        "dedupe_page_size": GROUP_PAGE_SIZE,
+        "dedupe_subcount": dedupe_subcount_text(len(groups), total),
+    }
 
 
 async def _cue_stage_context(session: AsyncSession) -> dict[str, Any]:
