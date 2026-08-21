@@ -31,7 +31,7 @@ from typing import Any
 import pytest
 
 from phaze.models.proposal import ProposalStatus
-from tests.browser.helpers import click_swap, open_shell
+from tests.browser.helpers import click_swap, open_shell, settled
 
 
 pytestmark = pytest.mark.browser
@@ -361,3 +361,117 @@ async def test_bulk_approving_changes_the_instant_the_list_swaps_in_still_patche
     await page.wait_for_function("() => document.body.innerText.includes('proposal approved')")
     assert await page.evaluate("window.__documentAlive === true"), "the bulk approve click fell through to a native form submission"
     assert "review_tokens=" not in page.url, f"the hx-patch click fell through to the native GET fallback: {page.url}"
+
+
+# --- The guard must not be a new way for a button to be stuck ---------------------------------
+#
+# Everything above asks "can a premature click still fall through?". These two ask the opposite, and
+# they exist because the fix's own failure mode is the mirror image of the bug: a guard that is never
+# released leaves a permanently dead control, and a guard applied over a button that was ALREADY
+# conditionally disabled can enable it when it should not be.
+
+
+async def test_every_guarded_button_on_its_own_route_is_released_by_htmx(page: Any, seed: Any) -> None:
+    """The three forms not raced above, each reached the way an operator reaches it.
+
+    A race test is not the only thing the four unraced forms are owed. Their guards are inert markup
+    until shell.html's listener sees them, and "the same listener handles them" is an argument, not
+    an observation -- the class of claim that keeps shipping through green suites here. So each is
+    driven to its real route by a real htmx swap and asserted to come out USABLE: ``data-hx-guard``
+    removed (the listener ran on this subtree) and the control not ``:disabled`` (the browser's own
+    definition of activatable, which is what decides whether a click submits at all -- not
+    Playwright's, and not the attribute the template emitted).
+
+    This is deliberately weaker than the races above and the difference matters: it proves the guard
+    is RELEASED on these routes, not that the pre-release window is closed on them. That second claim
+    rests on the shared listener, which the four races do exercise.
+
+    ``comparison_table.html``'s "Review decision" form is the fourth, and it is absent here because
+    it is unreachable: nothing in the v7 shell links to ``GET /duplicates/{hash}/compare``, so there
+    is no operator route to drive. Stated rather than papered over with a synthesized request that
+    would prove only that the template renders.
+
+    The barrier is a wait for the guard to clear, never ``settled()`` plus a read. ``settled()``
+    polls for zero in-flight requests and returns BEFORE htmx's deferred settle task has run, so a
+    count taken straight after it sees guards that are about to be released one tick later -- which
+    is exactly the false positive this test reported on its first draft.
+    """
+    await seed.agent(scan_roots=["<archive-mount>/incoming", "<archive-mount>/sets"])
+
+    async def released(where: str, selector: str, what: str) -> None:
+        await page.wait_for_function(
+            "sel => { const els = [...document.querySelectorAll(sel)]; return els.length > 0 && els.every(el => !el.hasAttribute('data-hx-guard')); }",
+            arg=selector,
+            timeout=5_000,
+        )
+        still_disabled = await page.evaluate("sel => [...document.querySelectorAll(sel)].filter(el => el.matches(':disabled')).length", selector)
+        assert still_disabled == 0, f"{where}: {still_disabled} {what} stayed disabled after htmx processed them — the guard became a dead control"
+
+    # trigger_scan_card.html, on the Discover workspace.
+    await open_shell(page, "/s/summary")
+    await page.click("[data-rail-stage='discover']")
+    await released("discover", "#stage-workspace form button[type=submit]", "Start Scan buttons")
+
+    # empty_state.html, on the Analyze workspace with zero files — the first-run guide, whose whole
+    # purpose is getting the first scan started, so a dead button here is the worst place for one.
+    await page.click("[data-rail-stage='analyze']")
+    await released("analyze empty state", "button[aria-label^='Scan ']", "per-root Scan buttons")
+
+    # _force_skip_dialog.html, in the record slide-in. Its submit lives inside an Alpine `x-show`
+    # modal that is still hidden at this point, which is the reason to check it: the guard is
+    # released by the record-pane swap, not by opening the modal, so a hidden control must come out
+    # of the swap already live.
+    target = await seed.file(filename="<track-01>.mp3")
+    await open_shell(page, "/s/files")
+    await settled(page)
+    # Scoped to the DESKTOP table the same way test_files_record.py scopes it: the responsive list
+    # renders a second control with the same hx-get, and an unscoped selector is two matches.
+    await page.click(f'#files-table-view .md\\:block button[hx-get="/record/{target.id}"]')
+    await page.wait_for_selector("#record-body h2")
+    await released("record force-skip", "#record-body form button[type=submit]", "force-skip submits")
+
+
+async def test_the_guard_does_not_enable_a_bulk_action_that_business_logic_disabled(page: Any, seed: Any) -> None:
+    """The blast-radius risk of this whole change, asserted rather than argued.
+
+    Two of the ten guarded buttons -- ``_changes_list.html``'s bulk approve and reject -- were
+    ALREADY conditionally disabled before this change, by Alpine's ``:disabled="selected.length ===
+    0"``. shell.html's listener enables a ``[data-hx-guard]`` button unconditionally, so applying
+    the guard to those two directly would have made "Approve selected eligible" clickable with
+    nothing selected: a bulk write against an empty selection, introduced by a fix for a different
+    bug. That is why the guard stayed on the buttons and the business rule moved up to a wrapping
+    ``<fieldset>`` (see the template comment), and this is the test that says the composition holds
+    rather than the comment saying it.
+
+    ``:disabled`` is read from the browser, not from Playwright and not from the attribute: a
+    control is "actually disabled" if it is disabled OR sits inside a disabled fieldset, and that
+    computed state -- not the markup -- is what decides whether a click activates a submit.
+    Asserting ``el.hasAttribute('disabled')`` would report the button as ENABLED here and pass a
+    broken composition.
+    """
+    target = await seed.proposal(status=ProposalStatus.PENDING, filename="<set-01>.mp3")
+
+    await open_shell(page, "/s/rename")
+    approve = "button[value='approve_eligible']"
+    reject = "button[value='reject']"
+
+    # First: the guard really was released, so a failure below is about business logic and not about
+    # a button that simply never woke up.
+    await page.wait_for_function(
+        "sel => { const el = document.querySelector(sel); return el !== null && !el.hasAttribute('data-hx-guard'); }",
+        arg=approve,
+        timeout=5_000,
+    )
+
+    for selector, label in ((approve, "Approve selected eligible"), (reject, "Reject selected pending")):
+        assert await page.evaluate("sel => document.querySelector(sel).matches(':disabled')", selector), (
+            f"{label!r} is clickable with nothing selected — the guard's release overrode the business rule that disabled it"
+        )
+    assert not await page.locator(approve).is_enabled(), (
+        "Playwright disagrees with :disabled about the bulk approve button — actionability would not protect a raced click"
+    )
+
+    # And the rule is a rule, not a permanent lock: selecting a row must still enable them.
+    await page.get_by_label("Select <set-01>.mp3").check()
+    await page.wait_for_function("sel => !document.querySelector(sel).matches(':disabled')", arg=approve, timeout=5_000)
+    assert str(target.id) in page.url, "the selection never reached the URL, so this assertion proved nothing about the fieldset"
