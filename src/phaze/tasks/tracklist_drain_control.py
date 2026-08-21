@@ -65,8 +65,12 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-# phaze-6nrrf, operator decision: auto-disarm after 3 consecutive CRON-ENQUEUED slice failures.
-# A successful slice (services.tracklist_drain_arm.mark_slice_finished) resets this to 0.
+# phaze-6nrrf, operator decision (2026-08-11): auto-disarm after 3 consecutive CRON-ENQUEUED slice
+# failures -- the LABEL the operator selected, over "1 failure -- disarm immediately" and "5
+# consecutive failures" (session 4b27bb6e, asked 16:13:19Z, answered 16:15:16Z; recovered via
+# phaze-d2hgv.4's provenance tool -- the exchange never names this bead, so a --bead search misses
+# it and only a --since/--until date-range search finds it). A successful slice
+# (services.tracklist_drain_arm.mark_slice_finished) resets this to 0.
 MAX_CONSECUTIVE_SLICE_FAILURES = 3
 
 # Extra headroom (seconds) added on top of the role's worst-case retry envelope

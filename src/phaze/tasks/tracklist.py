@@ -23,7 +23,7 @@ The replacement is the drain: ``services/tracklist_drain.py`` +
 ``tasks/tracklist_drain.drain_tracklists``, which collapses derive -> search -> score -> render ->
 parse -> persist into ONE operation per unique set.
 
-WHAT REFRESH MEANS NOW (operator decision, 2026-08-03)
+WHAT REFRESH MEANS NOW (operator decision, 2026-08-03, phaze-2akf)
 ------------------------------------------------------
 The old ``refresh_tracklists`` was a monthly CRON that re-fetched every tracklist older than 90
 days. That is in direct contradiction with the drain's cache, which is built on "a published

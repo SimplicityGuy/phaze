@@ -53,7 +53,7 @@ PYTHON_VERSION=""
 # relative `"COOLDOWN_DAYS days"` window present and uniform across every
 # pyproject.toml, paired with Dependabot's matching cooldown.default-days so fresh
 # floors are never pinned. See ensure_cooldown_window() for the full rationale.
-# 0 disables the window entirely (operator decision 2026-08-03; see pyproject.toml
+# 0 disables the window entirely (operator decision 2026-08-03, phaze-d4eiq; see pyproject.toml
 # [tool.uv] for the rationale and the semgrep suppression that pairs with it).
 COOLDOWN_DAYS=0
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
