@@ -64,7 +64,12 @@
                               class="shrink-0">
                             <input type="hidden" name="agent_id" value="{{ agent.id }}">
                             <input type="hidden" name="scan_root" value="{{ root }}">
-                            <button type="submit" class="{{ _scan_btn }}"
+                            {# phaze-tckiy: no method/action -- a click before htmx has
+                               processed this form falls through to a native GET and the scan is
+                               never enqueued, on the one screen whose entire purpose is getting the
+                               first scan started. `disabled` + `data-hx-guard`; released by
+                               shell.html's htmx:load listener. #}
+                            <button type="submit" disabled data-hx-guard class="{{ _scan_btn }}"
                                     aria-label="Scan {{ root }} on {{ agent.name }}">
                                 Scan {{ agent.name }}
                             </button>

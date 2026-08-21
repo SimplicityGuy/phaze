@@ -51,10 +51,38 @@
                     <p class="mt-1 text-xs text-muted ">Approve selected accepts only rows still pending and at or above 90% confidence. Low/null confidence remains available for individual approval. The server rechecks every row at submit.</p>
                     <p class="mt-1 text-xs text-muted "><span x-text="selected.length">0</span> selected on this reviewed page.</p>
                 </div>
-                <div class="flex flex-wrap gap-2">
-                    <button type="submit" name="action" value="approve_eligible" :disabled="selected.length === 0" hx-disabled-elt="this" class="h-9 rounded-md bg-action-ok px-3 font-jura text-xs uppercase tracking-wider text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50">Approve selected eligible</button>
-                    <button type="submit" name="action" value="reject" :disabled="selected.length === 0" hx-disabled-elt="this" class="h-9 rounded-md border border-gray-300 px-3 font-jura text-xs uppercase tracking-wider text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-phaze-border dark:text-gray-300">Reject selected pending</button>
-                </div>
+                <!-- phaze-tckiy: #changes-bulk-form declares no method/action either, and hx-patch is
+                     affected IDENTICALLY to hx-post -- browsers have no native PATCH, so a click that
+                     lands before htmx has processed the form falls through to the same native GET
+                     (method-less => GET, action-less => the current URL, every checked review_token
+                     promoted to a query param) and the bulk approve/reject silently never happens.
+
+                     These two buttons cannot simply take `disabled` + `data-hx-guard` the way every
+                     other form in phaze-5i74w/phaze-tckiy does, because their `disabled` is ALREADY
+                     owned by Alpine's `:disabled="selected.length === 0"`. Alpine binds during the
+                     microtask after the swap inserts these nodes; shell.html's guard listener runs
+                     from htmx's deferred settle task (defaultSettleDelay, 20ms) after that, so its
+                     `btn.disabled = false` would land LAST and leave "Approve selected eligible"
+                     clickable with nothing selected. `data-hx-guard-keep` would avoid that clobber
+                     but hand enablement back to Alpine, which knows nothing about htmx readiness --
+                     and whenever the swapped-in URL carries ?selected= the list comes back with a
+                     non-empty selection, so Alpine would enable these buttons inside exactly the
+                     window the guard exists to close.
+
+                     So the two concerns are put on two elements instead of fighting over one: the
+                     BUTTONS keep the unmodified guard (`disabled` + `data-hx-guard`, released by
+                     shell.html on htmx:load), and the business rule moves up to a wrapping <fieldset>
+                     whose `disabled` Alpine owns alone. A control is natively disabled if it is
+                     disabled OR sits inside a disabled fieldset, so the two layers compose: neither
+                     writer touches the other's element, and `disabled:opacity-50` still matches
+                     because :disabled matches a fieldset-disabled descendant. If Alpine never loads,
+                     behaviour is exactly what it was before this change (the fieldset never gains the
+                     attribute), so the guard adds no new failure mode of its own. `border-0 p-0` are
+                     belt-and-braces over Tailwind preflight's fieldset reset. -->
+                <fieldset :disabled="selected.length === 0" class="flex min-w-0 flex-wrap gap-2 border-0 p-0">
+                    <button type="submit" name="action" value="approve_eligible" disabled data-hx-guard hx-disabled-elt="this" class="h-9 rounded-md bg-action-ok px-3 font-jura text-xs uppercase tracking-wider text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50">Approve selected eligible</button>
+                    <button type="submit" name="action" value="reject" disabled data-hx-guard hx-disabled-elt="this" class="h-9 rounded-md border border-gray-300 px-3 font-jura text-xs uppercase tracking-wider text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-phaze-border dark:text-gray-300">Reject selected pending</button>
+                </fieldset>
             </div>
             <div id="changes-bulk-result" aria-live="polite"></div>
             {% if changes_proposals %}
