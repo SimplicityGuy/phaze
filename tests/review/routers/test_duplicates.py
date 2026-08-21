@@ -129,27 +129,6 @@ async def test_list_duplicates_redirects_even_with_hx_request_header(session: As
 
 
 @pytest.mark.asyncio
-async def test_compare_endpoint(session: AsyncSession, client: AsyncClient) -> None:
-    """GET /duplicates/{hash}/compare returns a comparison table with the staged review action."""
-    f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A, file_size=2000)
-    f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A, file_size=1000)
-    session.add_all([f1, f2])
-    await session.flush()
-
-    m1 = _make_metadata(f1.id, bitrate=320, artist="Artist A")
-    m2 = _make_metadata(f2.id, bitrate=128, artist="Artist B")
-    session.add_all([m1, m2])
-    await session.flush()
-
-    response = await client.get(f"/duplicates/{HASH_A}/compare")
-
-    assert response.status_code == 200
-    assert "Review decision" in response.text
-    assert "Artist A" in response.text
-    assert "Artist B" in response.text
-
-
-@pytest.mark.asyncio
 async def test_resolve_group(session: AsyncSession, client: AsyncClient) -> None:
     """POST /duplicates/{hash}/resolve writes the DedupResolution marker for non-canonical files.
 
@@ -874,16 +853,15 @@ async def test_undo_roundtrip_id_only_payload_no_longer_deletes_marker(session: 
 
 
 # ---------------------------------------------------------------------------
-# phaze-m7ya: compare/undo must find a group NO MATTER WHERE IT SORTS.
+# phaze-m7ya: undo must find a group NO MATTER WHERE IT SORTS.
 #
-# Both endpoints used to locate a single group by fetching a hardcoded first 1000 groups
-# (``find_duplicate_groups_with_metadata(session, limit=1000, offset=0)``) and linear-scanning the
-# result for the requested hash. Any group past that arbitrary boundary answered "Group not found"
-# permanently -- while the list page, which paginates the FULL set, still rendered it with a Compare
-# button. These tests therefore MUST build more than 1000 groups: a small fixture passes against the
-# broken code and proves nothing. The hashes are zero-padded hex of the row index, so they sort
-# lexicographically by index and ``_BEYOND_CAP_INDEX`` is genuinely past the old cap under the
-# subquery's ``ORDER BY sha256_hash``.
+# This endpoint (and the since-deleted ``compare_group``, phaze-ur8o3) used to locate a single group
+# by fetching a hardcoded first 1000 groups (``find_duplicate_groups_with_metadata(session,
+# limit=1000, offset=0)``) and linear-scanning the result for the requested hash. Any group past that
+# arbitrary boundary answered "Group not found" permanently. This test therefore MUST build more than
+# 1000 groups: a small fixture passes against the broken code and proves nothing. The hashes are
+# zero-padded hex of the row index, so they sort lexicographically by index and
+# ``_BEYOND_CAP_INDEX`` is genuinely past the old cap under the subquery's ``ORDER BY sha256_hash``.
 # ---------------------------------------------------------------------------
 
 _GROUP_COUNT = 1200
@@ -904,24 +882,6 @@ async def _seed_many_duplicate_groups(session: AsyncSession, count: int = _GROUP
         files.append(_make_file(f"/dir/g{index}_dup.mp3", "mp3", group_hash, file_size=1000))
     session.add_all(files)
     await session.flush()
-
-
-@pytest.mark.asyncio
-async def test_compare_finds_group_beyond_the_old_1000_group_scan(session: AsyncSession, client: AsyncClient) -> None:
-    """Regression (phaze-m7ya): a group past the old cap is reachable by Compare, not 'Group not found'.
-
-    Fails on the pre-fix code: the group at index 1150 never lands in the first 1000 hashes, so the
-    linear scan misses it and the endpoint renders 'Group not found.' forever.
-    """
-    await _seed_many_duplicate_groups(session)
-    target_hash = _hash_for(_BEYOND_CAP_INDEX)
-
-    response = await client.get(f"/duplicates/{target_hash}/compare")
-
-    assert response.status_code == 200
-    assert "Group not found" not in response.text, "a real, unresolved group past the old 1000-group cap was unreachable"
-    assert "Review decision" in response.text
-    assert f"/duplicates/{target_hash}/review" in response.text
 
 
 @pytest.mark.asyncio
@@ -951,20 +911,6 @@ async def test_undo_restores_card_for_group_beyond_the_old_1000_group_scan(sessi
 
     assert undo.status_code == 200
     assert f'id="dupe-group-{target_hash}"' in undo.text, "undo dropped the restored card for a group past the old 1000-group cap"
-
-
-@pytest.mark.asyncio
-async def test_compare_reports_not_found_for_an_unknown_hash(session: AsyncSession, client: AsyncClient) -> None:
-    """A hash that is genuinely not a duplicate group still renders the ordinary empty state, not a 500."""
-    f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A)
-    f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A)
-    session.add_all([f1, f2])
-    await session.flush()
-
-    response = await client.get(f"/duplicates/{HASH_B}/compare")
-
-    assert response.status_code == 200
-    assert "Group not found" in response.text
 
 
 # ---------------------------------------------------------------------------
@@ -1268,16 +1214,6 @@ def _quote_hash(bad_hash: str) -> str:
     directly and skips its own ``str.encode`` step in that case.
     """
     return quote(bad_hash.encode("utf-8", "surrogatepass"), safe="")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("bad_hash", [_NUL_HASH, _SURROGATE_HASH])
-async def test_compare_rejects_invalid_group_hash_never_500(client: AsyncClient, bad_hash: str) -> None:
-    """GET /duplicates/{hash}/compare with a NUL/lone-surrogate hash degrades to 'Group not found'."""
-    response = await client.get(f"/duplicates/{_quote_hash(bad_hash)}/compare")
-
-    assert response.status_code == 200
-    assert "Group not found" in response.text
 
 
 @pytest.mark.asyncio

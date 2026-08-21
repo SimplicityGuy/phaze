@@ -161,7 +161,8 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # and _param_cases() stops emitting them -- the bound is the type. Entries removed rather
     # than reclassified; leaving them would fail the stale-entry check.
     ("/audit/", "status"): _WHITELIST,
-    ("/duplicates/{group_hash}/compare", "group_hash"): _NOT_STORED,
+    # (phaze-ur8o3 removed the /duplicates/{group_hash}/compare entry with the route itself --
+    # leaving it would fail test_registries_have_no_stale_entries, same as the phaze-c3j0 note above.)
     ("/duplicates/{group_hash}/review", "group_hash"): _NOT_STORED,
     ("/duplicates/{group_hash}/resolve", "group_hash"): _NOT_STORED,
     ("/duplicates/{group_hash}/undo", "group_hash"): _NOT_STORED,
