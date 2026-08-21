@@ -62,9 +62,13 @@ def _real_child_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 def _patch_extract_audio_track(monkeypatch: pytest.MonkeyPatch) -> None:
     """Default extraction stub on BOTH lanes: fabricates a distinct synthetic extracted path.
 
-    phaze-3ea41 operator decision: extraction now runs for EVERY file. This module's tests
-    are about the progress-relay done-gate, not extraction, so this keeps both the pod lane
-    (``phaze.job_runner``) and the worker lane (``phaze.tasks.functions``) oblivious to it --
+    phaze-3ea41, IMPLEMENTER's decision (format scope): extraction is offered EVERY file,
+    not just video containers -- the operator's answer covered VIDEO containers only
+    ("Probe-based, any container", 2026-08-12; the durable record is
+    services/video_audio.py's D-09 "operator decisions of record").
+
+    This module's tests are about the progress-relay done-gate, not extraction, so this keeps
+    both the pod lane (``phaze.job_runner``) and the worker lane (``phaze.tasks.functions``) oblivious to it --
     neither the presign/download/verify path nor the real analysis-child subprocess this
     module deliberately exercises unpatched needs to change.
     """
