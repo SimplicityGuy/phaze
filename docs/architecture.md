@@ -254,7 +254,7 @@ neither is reachable from a proposal re-run. `store_proposals` also rejects an o
 
 ### Per-stage DB-truth progress
 
-`get_stage_progress` (`services/pipeline.py`) is the authoritative per-DAG-node source. It
+`get_stage_progress` (`services/pipeline/stages.py`) is the authoritative per-DAG-node source. It
 counts `COUNT(DISTINCT file_id / tracklist_id)` against each stage's OUTPUT table
 (`metadata`, `analysis`, `tracklists`,
 `tracklist_versions`, `discogs_links`, `proposals`, and completed `execution_log`), so a
@@ -266,7 +266,7 @@ failing stage never 500s the 5-second poll. The Scan/Search node is counter-only
 (`total=None`, rendered `done / —`): no table defines "should get a tracklist", so no
 denominator is fabricated.
 
-`get_global_reconciliation` / `get_agent_reconciliations` (`services/pipeline.py`) explain the
+`get_global_reconciliation` / `get_agent_reconciliations` (`services/pipeline/reconciliation.py`) explain the
 Discovery `COUNT(files)` vs agent scan-total (`SUM(scan_batches.total_files)`) gap as dedup, not
 lost work: `scanned` sums each agent's LATEST completed batch (re-scan-safe via `row_number()`) and
 `deduped = max(0, scanned − discovery_done)`. The Discovery node renders a `scanned · deduped`
@@ -275,7 +275,7 @@ when `deduped > 0` and degrade-safe (None / `{}` → hidden).
 
 ### DAG rail & stage workspaces
 
-`_build_dag_context` (`routers/pipeline.py`) reconciles three sources per node (D-03):
+`_build_dag_context` (`routers/pipeline/dashboard_stats.py`) reconciles three sources per node (D-03):
 `get_stage_progress` DB-truth `done`/`total` (the authority), the maintained `completed`
 counters (a degrade backstop via `_reconciled_done`, capped at the node total), and
 `get_queue_activity` (the per-node ACTIVE state). It is assembled by
@@ -460,7 +460,7 @@ list discriminated by `kind` — `local | compute | kueue` — each carrying a c
 schema (pydantic v2 discriminated union + `[kube]` / `[[buckets]]` tables) lives in
 `src/phaze/config_backends.py`; the runtime dispatch objects — `LocalBackend`,
 `ComputeAgentBackend`, `KueueBackend`, conforming to a structural `Backend`
-`typing.Protocol` — live in `src/phaze/services/backends.py`. Whether cloud is on at all is
+`typing.Protocol` — live in `src/phaze/services/backends/`. Whether cloud is on at all is
 **derived**, not a flag: `ControlSettings.cloud_enabled` is true when any non-local backend
 is resolved. (The flat `PHAZE_CLOUD_TARGET` env switch and `s3_*` / `kube_*` / `compute_*`
 scalar fields were **removed** in Phase 67.) N Kueue clusters each hold their own `kr8s`
@@ -690,8 +690,8 @@ restored = await undo_resolve(session, parsed_states)                       # dr
 | ----------- | ---- | ---- |
 | `scan_directory` | `tasks/scan.py` | Agent-side chunked directory walk + SHA-256 hash, POSTed to `/api/internal/agent/files` for upsert (rows only; no auto-enqueue). Phase 89 removed the older api-server-side `services/ingestion.py::run_scan` path. |
 | `ProposalService` / `store_proposals` | `proposal.py` | LLM calling, context build, confidence clamp, idempotent partial-index proposal upsert |
-| `get_stage_progress` / `_derive_stats` | `pipeline.py` / `routers/pipeline.py` | Per-DAG-node DB-truth `COUNT(DISTINCT)` off each stage's output table (the rendering authority); `_derive_stats` re-expresses the former state-grouped `get_pipeline_stats` keys off this derived source (Phase 82, D-05) |
-| `get_global_reconciliation` / `get_agent_reconciliations` | `pipeline.py` | Scanned-vs-file-row dedup reconciliation (latest completed batch per agent); degrade-safe, hidden when `deduped == 0` |
+| `get_stage_progress` / `_derive_stats` | `services/pipeline/stages.py` / `routers/pipeline/dashboard_stats.py` | Per-DAG-node DB-truth `COUNT(DISTINCT)` off each stage's output table (the rendering authority); `_derive_stats` re-expresses the former state-grouped `get_pipeline_stats` keys off this derived source (Phase 82, D-05) |
+| `get_global_reconciliation` / `get_agent_reconciliations` | `services/pipeline/reconciliation.py` | Scanned-vs-file-row dedup reconciliation (latest completed batch per agent); degrade-safe, hidden when `deduped == 0` |
 | `incr_*` / `read_counters` | `pipeline_counters.py` | Durable Redis per-function enqueued/completed counters (non-authoritative cache) |
 | `execute_approved_batch` | `tasks/execution.py` | Per-agent copy → verify → delete with write-ahead log + containment guard |
 | `AgentTaskRouter` | `agent_task_router.py` | Per-agent SAQ enqueuer (`phaze-agent-<id>`) |

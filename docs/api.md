@@ -10,6 +10,13 @@ The responsive console shell. `shell.py` owns the application root (`GET /`) and
 | GET    | `/`               | Console shell root with the actionable Summary selected                 |
 | GET    | `/s/{stage}`      | Single rail-node stage workspace (`stage` whitelisted via `STAGE_PARTIALS`; unknown stage 404s) |
 | GET    | `/record/{file_id}` | Per-file full-record read-only detail fragment (typed `uuid.UUID`, strictly `file_id`-scoped) |
+| GET    | `/files/{file_id}`  | Addressable full-record **page** for one file (same canonical record context, `record_presentation="page"`) |
+
+`/record/{file_id}` and `/files/{file_id}` are the same record behind two presentations, both served by
+`record.py` off one `build_file_record_context` call: `/record/` returns the drawer *fragment* the shell
+swaps in place (`record_body.html`, `record_presentation="drawer"`), while `/files/` returns the
+standalone, linkable *document* (`record_page.html`, `record_presentation="page"`). Both 404 into their
+own presentation's not-found rendering rather than raising.
 
 A direct/bookmark navigation to `/` or `/s/{stage}` renders the full shell chrome; an `HX-Request` rail swap returns a bare content fragment. `stage` is never interpolated into a template path — the partial name always comes from the static `STAGE_PARTIALS` dict (template-path-injection mitigation, T-57-01).
 
@@ -184,17 +191,40 @@ Only **terminal** scans (`completed` / `failed`) are deletable; the delete runs 
 | GET    | `/execution/progress/{batch_id}`  | SSE stream with real-time progress   |
 | GET    | `/execution/agents-table`         | Per-agent execution table re-sorted by a header-chosen column (`?batch_id=&sort=&order=`, HTMX partial) |
 | GET    | `/audit/`                         | Audit log (HTML, filterable)         |
+| GET    | `/audit/{log_id}/detail`          | Expanded per-entry drill-down: which file, which proposal, and a failed entry's actual error text |
 
 ## Duplicates (`/duplicates`)
 
 | Method | Path                          | Description                        |
 |--------|-------------------------------|------------------------------------|
 | GET    | `/duplicates/`                | Legacy route: 302-redirects into the v7.0 shell's Dedupe workspace (`/s/dedupe`) |
-| GET    | `/duplicates/{group_hash}/compare`  | Comparison table for a group       |
-| POST   | `/duplicates/{group_hash}/resolve`  | Mark non-canonical as duplicates   |
+| GET    | `/duplicates/groups`          | HTMX "Load more" fragment: the next `GROUP_PAGE_SIZE` duplicate groups (`?offset=`) |
+| POST   | `/duplicates/{group_hash}/review`   | Build an opaque review plan for one group without resolving it |
+| POST   | `/duplicates/{group_hash}/resolve`  | Commit exactly one reviewed plan (`plan_id`); marks non-canonical as duplicates |
 | POST   | `/duplicates/{group_hash}/undo`     | Undo resolution                    |
+| POST   | `/duplicates/review-all`      | Build the bulk review plan over the selected groups without resolving any |
 | POST   | `/duplicates/resolve-all`     | Bulk resolve all groups            |
 | POST   | `/duplicates/undo-all`        | Undo bulk resolution               |
+
+**Dedupe is two-phase: review builds a plan, resolve commits it.** `POST /{group_hash}/review`
+(and its bulk twin `POST /review-all`) persists a `DedupReviewPlan` and renders the keeper
+selection for confirmation; it changes no file state. `POST /{group_hash}/resolve` takes that
+plan's `plan_id` and is the only endpoint that mutates, rejecting a stale, replayed, or forged
+plan. Every zero-resolved shape — invalid `group_hash`, a resubmit of an already-resolved card, a
+concurrent resolve that already claimed the canonical, a group member deleted mid-flight — renders
+the group's current state with an honest "nothing changed" response rather than an error, because
+`resolved_count` is the single honest signal for all four.
+
+`GET /duplicates/groups` is the Dedupe workspace's paging seam. `services/review.get_dedupe_groups`
+renders `GROUP_PAGE_SIZE` groups at a time; this endpoint supplies the offset override, swapping the
+next page's cards in via `hx-swap-oob="beforeend:"` alongside the refreshed subcount. It is the only
+live caller of the offset plumbing in `services/dedup.py` — do not delete that plumbing on a
+"no live caller" reading without checking here first (`phaze-4iq5t`).
+
+> **Removed:** `GET /duplicates/{group_hash}/compare` (commit `053997bf`, 2026-08-20). The
+> standalone comparison table and its template were deleted; the live Dedupe workspace
+> (`pipeline/partials/dedupe_workspace.html`) renders each group's files inline on the card, so
+> there was no caller left for a separate compare view.
 
 ## Tracklists (`/tracklists`)
 

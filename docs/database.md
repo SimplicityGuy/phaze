@@ -35,6 +35,8 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `filename_convention` | Corpus-learned filename conventions (e.g. date order), keyed generically by `(scope, scope_value, convention_kind)` with a DB-derived confidence (phaze-5fta.2) |
 | `tracklist_lookup_cache` | Persisted per-unique-set record of the last 1001Tracklists lookup outcome, so a drain restart never re-asks an already-answered question (phaze-fq9h.3) |
 | `tracklist_priority_flags` | Persisted operator "answer this file's tracklist lookup next" flag consumed by the drain (phaze-fq9h.8) |
+| `tracklist_drain_arm_state` | Single durable ARM/DISARM row for the continuous 1001Tracklists drain: `armed`, `in_flight`, `consecutive_failures`, and the `next_eligible_at` cooldown the scheduler reads (migration `059`) |
+| `dedup_review_plan` | Opaque, immutable keeper choice plus the complete reviewed membership snapshot (`group_hash`, `canonical_file_id`, `member_ids`), committed at most once via `committed_at` (migration `061`) |
 
 One further table shares the database but is **not** in the list above because it is not an
 Alembic-managed model: **`saq_jobs`**. Since Phase 36 the SAQ broker is a `PostgresQueue`, and

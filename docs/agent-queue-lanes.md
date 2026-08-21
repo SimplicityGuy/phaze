@@ -124,7 +124,7 @@ one of those beats — turning a liveness fix into a liveness outage during a ro
 means "unlaned beat" and is stored the way it always was. `worker-drain` stays
 `PHAZE_AGENT_HEARTBEAT=false` for the same reason: it is unlaned, so its beat carries no lane tag.
 
-The dashboard's `get_queue_activity` (`src/phaze/services/pipeline.py`) remains the broker-side
+The dashboard's `get_queue_activity` (`src/phaze/services/pipeline/agents.py`) remains the broker-side
 in-flight view, summing queued+active across all three lane queues **plus** the legacy base queue
 per agent.
 
