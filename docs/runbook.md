@@ -495,9 +495,9 @@ still leaves a readable audit trail), and a final summary tally. `<outcome>` is 
 | `enqueue_error` | The enqueue call itself raised (a transient broker/pool error); unknown whether a job now exists for this file. Safe to just re-run the command. |
 | `no_active_agent` | The file's owning fileserver agent was offline at run time; never rerouted to a different agent. |
 
-Local candidates are enqueued **at once** — an explicit operator decision (no throttling/batching)
-— and drain under the existing lane concurrency caps over the following days; held long files drain
-under the existing `stage_cloud_window` bounded window.
+Local candidates are enqueued **at once** — an explicit operator decision (2026-08-11, `phaze-kj8dl`;
+no throttling/batching) — and drain under the existing lane concurrency caps over the following days;
+held long files drain under the existing `stage_cloud_window` bounded window.
 
 Exit code: **0** when there was genuinely nothing to do (no incomplete-coverage candidates) or at
 least one file made real progress (`queued` / `in_flight` / `awaiting_cloud` / `in_cloud_pipeline`).

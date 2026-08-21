@@ -25,7 +25,7 @@ from phaze.config import ControlSettings
 
 class TestEnabledDefault:
     def test_the_fallback_defaults_on(self) -> None:
-        """Enabled by operator decision on phaze-5fta.5's passing external validation."""
+        """Enabled by operator decision (2026-08-04) on phaze-5fta.5's passing external validation."""
         assert ControlSettings().convention_date_fallback_enabled is True
 
     def test_it_stays_one_env_var_from_fail_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:

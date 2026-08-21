@@ -124,7 +124,7 @@ until the whole run returns -- so a crash partway through (this module's own con
 KeyboardInterrupt or a truly unrecoverable error elsewhere) still leaves a durable, printed record
 of what was actually done, not silence.
 
-Operator decision (2026-08-11): enqueue every selected local-routed file AT ONCE and let the
+Operator decision (2026-08-11, phaze-kj8dl): enqueue every selected local-routed file AT ONCE and let the
 existing lane scheduling drain the queue over days. No throttling or batching here -- the
 deterministic-key dedup already makes a re-run of this module idempotent (a still in-flight file
 re-enqueues to a no-op), so there is no correctness reason to trickle the enqueue, and the lanes'
