@@ -51,6 +51,11 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+from typing import TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -99,29 +104,45 @@ def test_test_redis_dsns_are_always_env_var_defaults() -> None:
     )
 
 
-def test_test_db_for_emits_a_redis_url_export() -> None:
+def test_test_db_for_emits_a_redis_url_export(tmp_path: Path, run_provisioner: Callable[..., tuple[str, str]]) -> None:
     """`just test-db-for` must hand the engineer a PHAZE_REDIS_URL alongside the Postgres exports.
 
-    The original defect was not that Redis isolation was impossible — it was that the recipe which
+    The original defect was not that Redis isolation was impossible -- it was that the recipe which
     taught the isolation workflow only ever mentioned Postgres. A fix requiring a separate,
     easily-forgotten second step would not be a fix.
-    """
-    justfile = _JUSTFILE.read_text(encoding="utf-8")
-    recipe = justfile.split("test-db-for name:", 1)
-    assert len(recipe) == 2, "could not locate the `test-db-for` recipe in the justfile"
-    body = recipe[1].split("\n[doc(", 1)[0]
 
-    assert "PHAZE_REDIS_URL" in body, "`just test-db-for` must print a PHAZE_REDIS_URL export, not just the Postgres ones"
-    # Allocation must come from the atomic registry, not a hash of the name: `hash(name) % 16`
-    # collides ~35% of the time across 8 seats, which would restore the bug intermittently.
-    # phaze-68wky moved that registry out of this recipe and into `scripts/redis-seat-registry.sh`
-    # (the inline `INCR`/`HSETNX` pair was a monotonic counter that never reclaimed, so it walked
-    # past the logical-DB cap and then refused every new seat). The property this line has always
-    # been about — a real allocator, not a hash of the name — is unchanged, and the allocator's own
-    # behaviour is pinned by tests/shared/test_redis_seat_registry.py against a throwaway Redis.
-    assert "scripts/redis-seat-registry.sh allocate" in body, (
-        "Redis DB allocation must go through the atomic seat registry, not a hash-and-hope scheme"
-    )
+    phaze-bk9el.23 moved the body that prints those exports into ``scripts/provision-test-seat.sh``
+    so ``just test-validate`` could provision an IDENTICAL seat rather than falling back to the
+    shared ``phaze_test`` pair and Redis DB 0. What the engineer SEES is unchanged: the recipe
+    reprints the script's stdout, indented. So this RUNS the provisioner and reads its stdout --
+    the actual exports -- rather than grepping for them in whichever file currently holds them.
+    """
+    stdout, _argv = run_provisioner(tmp_path, seat="laqf", allocated_index="9")
+    exports = dict(line.removeprefix("export ").split("=", 1) for line in stdout.splitlines() if line.startswith("export "))
+
+    assert "PHAZE_REDIS_URL" in exports, f"`just test-db-for` must emit a PHAZE_REDIS_URL export, not just the Postgres ones:\n{stdout}"
+    # The index must be the one the allocator handed back, and must never be 0 -- DB 0 is the
+    # registry itself and the shared seat every worktree used to land on (phaze-fwo7).
+    assert exports["PHAZE_REDIS_URL"].strip('"') == "redis://localhost:6380/9", exports["PHAZE_REDIS_URL"]
+    # All three, together, in one command: a fix that emitted only Postgres would be the defect.
+    assert set(exports) == {"TEST_DATABASE_URL", "MIGRATIONS_TEST_DATABASE_URL", "PHAZE_REDIS_URL"}, exports
+    # ...and the Postgres pair must be the per-seat databases, never the shared `phaze_test`.
+    assert re.search(r"/phaze_laqf_[0-9a-f]{8}_test\"$", exports["TEST_DATABASE_URL"]), exports
+    assert re.search(r"/phaze_laqf_[0-9a-f]{8}_migrations_test\"$", exports["MIGRATIONS_TEST_DATABASE_URL"]), exports
+
+
+def test_the_provisioner_emits_nothing_but_exports_on_stdout(tmp_path: Path, run_provisioner: Callable[..., tuple[str, str]]) -> None:
+    """`just test-validate` ``eval``s this stdout, so a stray human-readable line would execute.
+
+    Asserted by running the script, not by reading it: every diagnostic the real
+    ``ensure-pg-database.sh`` and ``redis-seat-registry.sh`` print must be kept on stderr too, and
+    a future edit that let one through would be caught here rather than at the next gate run.
+    """
+    stdout, _argv = run_provisioner(tmp_path, seat="laqf")
+
+    assert stdout.strip(), "the provisioner produced no exports at all"
+    for line in stdout.splitlines():
+        assert line.startswith("export "), f"non-export line on stdout would be eval'd by test-validate: {line!r}"
 
 
 def test_meta_guard_flags_a_hardcoded_dsn() -> None:

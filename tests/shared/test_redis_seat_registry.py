@@ -61,7 +61,7 @@ import pytest
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
 
 # tests/shared/test_redis_seat_registry.py -> parents[2] == repo root.
@@ -1252,16 +1252,53 @@ def _recipe_commands(name: str) -> str:
     return "\n".join(line for line in _recipe_body(name).splitlines() if not line.strip().startswith("#"))
 
 
-def test_test_db_for_delegates_allocation_to_the_registry_script() -> None:
-    """The recipe must not carry a second, drifting copy of the allocator.
+def test_test_db_for_allocates_through_the_registry_script(tmp_path: Path, run_provisioner: Callable[..., tuple[str, str]]) -> None:
+    """Running the provisioner MUST call the registry allocator -- observed, not grepped.
 
-    ``derive-seat-name.sh`` and ``ensure-pg-database.sh`` already established this: the recipe
-    orchestrates, the scripts decide, and the scripts are what the tests can drive.
+    ``derive-seat-name.sh`` and ``ensure-pg-database.sh`` established the principle: the recipe
+    orchestrates, the scripts decide, and the scripts are what the tests can drive. phaze-bk9el.23
+    took the same step once more, moving provisioning into ``provision-test-seat.sh`` so
+    ``just test-validate`` and ``just test-db-for`` cannot drift apart.
+
+    The allocation must come from the ATOMIC REGISTRY, not a hash of the name: ``hash(name) % 16``
+    collides ~35% of the time across 8 seats, which would restore phaze-fwo7 intermittently. This
+    asserts the registry was actually invoked, with ``allocate``, against the DERIVED seat name and
+    the capacity -- so a future edit that computed an index inline would fail here even if it left
+    the string "redis-seat-registry.sh" in a comment.
     """
-    body = _recipe_commands("test-db-for name:")
+    _stdout, argv = run_provisioner(tmp_path, seat="my-seat")
 
-    assert "scripts/redis-seat-registry.sh allocate" in body
-    assert "INCR" not in body, "the monotonic counter is the defect; it must not survive in the recipe"
+    assert "redis-seat-registry.sh" in argv, f"the registry allocator was never invoked; calls were:\n{argv}"
+    assert "allocate" in argv, f"the registry was invoked without `allocate`:\n{argv}"
+    assert "--capacity 64" in argv, f"allocation must be bounded by the container's database count:\n{argv}"
+    # phaze-fmfk: the seat reaching the registry is the DERIVED identifier, never the raw name --
+    # `my-seat` and `my_seat` must not collapse onto one seat.
+    assert "--seat my_seat_" in argv, f"the registry must be keyed on the derived identifier:\n{argv}"
+    assert "--seat my-seat " not in argv, f"the raw (un-normalized) name reached the registry:\n{argv}"
+
+
+def test_the_provisioner_is_not_a_monotonic_counter() -> None:
+    """The phaze-68wky defect must not return: no INCR anywhere on the provisioning path."""
+    body = _recipe_commands("test-db-for name:")
+    provisioner = (Path(__file__).resolve().parents[2] / "scripts" / "provision-test-seat.sh").read_text(encoding="utf-8")
+
+    assert "INCR" not in body + provisioner, "the monotonic counter is the defect; it must not survive"
+
+
+def test_test_validate_provisions_through_the_same_script_as_test_db_for() -> None:
+    """phaze-bk9el.23: the gate's seat and an operator's seat for one worktree cannot diverge.
+
+    ``just test-validate`` is what ``just check`` / ``just check-all`` -- and therefore
+    ``bh work check`` and ``bh work submit`` -- ultimately run. When it provisions for itself it
+    must use the same normalization (phaze-fmfk), the same database pair and the same Redis
+    registry allocation the operator gets from ``just test-db-for``. A second copy of that body is
+    exactly how the two would silently drift apart.
+    """
+    validate = _recipe_commands("test-validate:")
+
+    assert "scripts/provision-test-seat.sh" in validate
+    assert "scripts/derive-validate-seat-name.sh" in validate
+    assert "/phaze_test" not in validate, "the shared-seat fallback is the defect; it must not come back"
 
 
 def test_the_non_destructive_recipes_exist_and_do_not_tear_anything_down() -> None:
