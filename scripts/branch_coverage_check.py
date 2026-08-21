@@ -26,7 +26,8 @@ Usage
 -----
     just branch-check                     # after a coverage run, against the recorded baseline
     just branch-check --base-ref main     # choose the ref the touched-file set is diffed against
-    just branch-check --write-baseline    # record the current numbers as the baseline
+    just branch-check --write-baseline    # record the current numbers as the baseline (phaze-bk9el.1)
+    just branch-check --allow-missing-baseline   # phaze-bk9el.1 ONLY -- see "ON THE MISSING BASELINE"
 
 or directly::
 
@@ -46,16 +47,29 @@ Inputs
     "num_branches": int}}}`` plus provenance. A file ABSENT from the baseline is treated as new and
     cannot regress.
 
-Exit semantics (FAIL CLOSED on a broken measurement, OPEN on a missing baseline)
--------------------------------------------------------------------------------
-0   -- no touched file lowered its branch coverage; or nothing tracked was touched; or no baseline
-       has been recorded yet, in which case the current figures are printed under an explicit
-       "NOT A COMPARISON" banner. That last case is deliberate: the baseline is captured by
-       phaze-bk9el.1, which is itself a bead that must pass this check, so a hard failure on a
-       missing baseline would make the baseline bead unable to land.
+Exit semantics (FAIL CLOSED, without exception)
+----------------------------------------------
+0   -- no touched file lowered its branch coverage; or nothing tracked was touched; or
+       ``--allow-missing-baseline`` was passed and no baseline exists.
 1   -- at least one touched file's branch coverage is below its baseline.
-2   -- the measurement itself is broken: coverage.json missing/unparseable, or carrying no branch
-       data at all (which would otherwise read as "0 regressions" for the wrong reason).
+2   -- the check could not perform a comparison: coverage.json missing/unparseable, carrying no
+       branch data at all (which would otherwise read as "0 regressions" for the wrong reason), or
+       NO BASELINE recorded and no ``--allow-missing-baseline``.
+
+ON THE MISSING BASELINE, because the obvious design is wrong. There is a real circularity here:
+the baseline is produced by ``phaze-bk9el.1``, which is itself a bead that has to pass this check,
+so a missing baseline cannot simply be fatal for everyone. The tempting fix -- exit 0 with a
+warning banner -- is the one this epic specifically cannot afford. ``exit 0`` is what ``just check``
+and CI consume; a banner is for a human reading a transcript, and nobody reads banners in a
+20-minute log. "Emit a success signal that measured nothing" is the exact defect class this
+molecule exists to close: ``phaze-jnj90`` was a gate that produced no coverage and ``phaze-nqawu``
+was a submit that ran no tests, and both looked green.
+
+It is also not only ``.1`` at risk. Twelve wave-2 beads run this check, and from inside the tool a
+baseline that "legitimately does not exist yet" is indistinguishable from one that should be there
+and is missing for a mundane reason -- a bad fetch, a branch that does not carry the file yet, a
+worktree cut before ``.1`` landed. So the default is fatal, and the exemption is an explicit flag
+that appears at the call site where a reviewer can see it. Only ``phaze-bk9el.1`` passes it.
 """
 
 from __future__ import annotations
@@ -206,6 +220,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base-ref", default="main", help="ref the touched-file set is diffed against")
     parser.add_argument("--file", action="append", default=[], help="check this file instead of the git-derived set (repeatable)")
     parser.add_argument("--write-baseline", action="store_true", help="record the current report as the baseline")
+    parser.add_argument(
+        "--allow-missing-baseline",
+        action="store_true",
+        help="report current figures and exit 0 when no baseline exists (phaze-bk9el.1 only -- see the module docstring)",
+    )
     args = parser.parse_args(argv)
 
     data = load_coverage(Path(args.coverage))
@@ -223,9 +242,16 @@ def main(argv: list[str] | None = None) -> int:
     have_baseline = baseline_path.exists()
     if have_baseline:
         baseline = json.loads(baseline_path.read_text(encoding="utf-8")).get("files", {})
-    else:
+    elif args.allow_missing_baseline:
         print(f"⚠️  NOT A COMPARISON: no baseline at {baseline_path} (recorded by phaze-bk9el.1).")  # noqa: T201
         print("   The figures below are this run's branch coverage, with nothing to compare them to.")  # noqa: T201
+        print("   Exiting 0 only because --allow-missing-baseline was passed.")  # noqa: T201
+    else:
+        # FAIL CLOSED. If the check could not perform a comparison, it did not pass.
+        print(f"❌ No branch-coverage baseline at {baseline_path} — cannot tell whether this bead lowered anything.")  # noqa: T201
+        print("   The baseline is recorded by phaze-bk9el.1 (`just branch-check --write-baseline`).")  # noqa: T201
+        print("   If this bead is phaze-bk9el.1 itself, pass --allow-missing-baseline; nothing else should.")  # noqa: T201
+        raise SystemExit(2)
 
     print(f"Branch coverage for the {len(checked)} tracked file(s) this bead touched (base-ref '{args.base_ref}'):")  # noqa: T201
     regressions: list[str] = []

@@ -444,6 +444,13 @@ test-bucket NAME PATHS XDIST="":
 # holding it steady is fine, LOWERING it against the recorded baseline fails. It reports the
 # uncovered branch LINE NUMBERS, not just a percentage, so the answer is actionable.
 #
+# It FAILS CLOSED on a missing baseline: if the check could not perform a comparison, it did not
+# pass. The baseline is written by phaze-bk9el.1 (`just branch-check --write-baseline`), and that
+# one bead -- which cannot be blocked by a check consuming the artifact it exists to produce --
+# passes `--allow-missing-baseline` explicitly. Nothing else should: an exemption at the call site
+# is auditable, one baked into the default is invisible to the twelve wave-2 beads downstream, and
+# "exit 0 having measured nothing" is the same defect class as phaze-jnj90 and phaze-nqawu.
+#
 # Why this and not a repo-wide branch floor: branch coverage sits below the line figure on most of
 # this repo, so a repo-wide branch gate fails on day one and the backfill dwarfs the work it was
 # protecting. Per-bead is where a refactor can actually regress branches -- decomposing a function

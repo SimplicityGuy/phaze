@@ -404,6 +404,14 @@ branches and the number is visible everywhere. The **gate** is deliberately narr
   file it checked, and prints the **uncovered branch line numbers** rather than a bare percentage.
   Raising branch coverage is welcome, holding it steady is fine, **lowering it fails the bead**. A
   file the bead did not touch is out of scope for that bead's check.
+- **It fails closed on a missing baseline** — if the check could not perform a comparison, it did
+  not pass. The baseline is written by `phaze-bk9el.1` (`just branch-check --write-baseline`); that
+  bead alone passes `--allow-missing-baseline`, because it cannot be blocked by a check that
+  consumes the artifact it exists to produce. **No other bead should pass that flag** — seeing it
+  in one is a signal something is wrong. An exemption written at the call site is auditable; a
+  lenient default is invisible to every bead downstream, and "exit 0 having measured nothing" is
+  the same defect class as `phaze-jnj90` (a gate producing no coverage) and `phaze-nqawu` (a submit
+  running no tests).
 
 Why per-bead is where the value is: decomposing a long function, flattening a nest or splitting a
 file are all operations where **every line still executes** and only the branch combinations

@@ -147,17 +147,41 @@ def test_a_missing_coverage_report_fails_closed(tmp_path: Path) -> None:
     assert excinfo.value.code == 2
 
 
-def test_a_missing_baseline_reports_but_does_not_fail(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """Deliberately fail-OPEN here, and only here.
+def test_a_missing_baseline_fails_closed_by_default(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The rule: if the check could not perform a comparison, it did not pass.
 
-    The baseline is captured by phaze-bk9el.1, which is itself a bead that has to pass this check,
-    so failing on a missing baseline would make the baseline bead unable to land. The banner makes
-    the difference impossible to misread as a comparison that passed.
+    The tempting design is to exit 0 with a warning banner, because the baseline is produced by
+    phaze-bk9el.1 which must itself pass this check. That is the one shape this epic cannot
+    afford: ``exit 0`` is what `just check` and CI consume, a banner is for a human reading a
+    transcript, and nobody reads banners in a 20-minute log. "Emit a success signal that measured
+    nothing" is what phaze-jnj90 (a gate producing no coverage) and phaze-nqawu (a submit running
+    no tests) both were. Twelve wave-2 beads run this check, and from inside the tool a baseline
+    that legitimately does not exist yet is indistinguishable from one missing for a mundane
+    reason -- a bad fetch, a branch without the file, a worktree cut before .1 landed.
     """
     module = _load()
     coverage = _write_coverage(tmp_path, {"src/phaze/a.py": {"summary": _summary(num_branches=10, covered=5), "missing_branches": [[9, 10]]}})
 
-    exit_code = _run(module, coverage, "--baseline", str(tmp_path / "absent.json"), "--file", "src/phaze/a.py")
+    with pytest.raises(SystemExit) as excinfo:
+        _run(module, coverage, "--baseline", str(tmp_path / "absent.json"), "--file", "src/phaze/a.py")
+
+    assert excinfo.value.code == 2
+    out = capsys.readouterr().out
+    assert "No branch-coverage baseline" in out
+    assert "--allow-missing-baseline" in out
+
+
+def test_the_missing_baseline_exemption_is_explicit_at_the_call_site(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """phaze-bk9el.1's exemption is a flag a reviewer can see, not a default nobody can.
+
+    An exemption written at the call site is auditable; one baked into the default is invisible to
+    every bead downstream. Anyone who later finds --allow-missing-baseline in a wave-2 bead knows
+    immediately that something is wrong.
+    """
+    module = _load()
+    coverage = _write_coverage(tmp_path, {"src/phaze/a.py": {"summary": _summary(num_branches=10, covered=5), "missing_branches": [[9, 10]]}})
+
+    exit_code = _run(module, coverage, "--baseline", str(tmp_path / "absent.json"), "--file", "src/phaze/a.py", "--allow-missing-baseline")
 
     assert exit_code == 0
     out = capsys.readouterr().out
