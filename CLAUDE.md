@@ -44,23 +44,36 @@ Read this before citing any command as evidence in a bead. Before 2026-08-21 `ju
 coverage and `bh work check`/`submit` ran no tests at all, and that gap produced epic
 phaze-1i0h6's four-of-four unevidenced validation claims.
 
-| Command | ruff | mypy | tests | coverage | pytest header | |
-|---------|------|------|-------|----------|---------------|---|
-| `just test` | — | — | yes, **`-x`: stops at the first failure** | no | **no (`-q`)** | M |
-| `just test-cov` / `just test-validate` | — | — | whole suite | yes, 95% floor | yes | M |
-| `just check` | yes | yes | whole suite | yes, 95% floor | yes | M |
-| `just check-all` | yes (via pre-commit) | yes (via pre-commit) | whole suite | yes, 95% floor | yes | M |
-| `bh work check <id>` | yes | yes | whole suite | yes, 95% floor | yes | M |
-| `bh work submit <id>` | yes | yes | whole suite | yes, 95% floor | yes | M |
-| `bh work finish <epic>` (= `merge --molecule`) | via pre-commit | via pre-commit | whole suite | yes, 95% floor | yes | I |
-| `bh work merge --group <ids>` | yes | yes | whole suite | yes, 95% floor | yes | I |
-| `bh work merge <id>` (single bead → molecule) | **no — see below** | no | no | no | no | I |
+| Command | ruff | mypy | tests | coverage | pytest header | evidence |
+|---------|------|------|-------|----------|---------------|----------|
+| `just test` | — | — | yes, **`-x`: stops at the first failure** | no | **no (`-q`)** | **I** — recipe text via `just --dry-run test`; never executed |
+| `just test-cov` | — | — | whole suite | yes, 95% floor | yes | **M** — run 2026-08-21: 7323 passed, 98.78%, `real 1193.88` |
+| `just test-validate` | — | — | whole suite | yes, 95% floor | yes | **M** — executed as `check`'s delegate in the red-gate run below |
+| `just check` | yes | yes | whole suite | yes, 95% floor | yes | **M** — the red-gate run below |
+| `just check-all` | yes (via pre-commit) | yes (via pre-commit) | whole suite | yes, 95% floor | yes | **I** — never executed as one command; measures itself at the next `bh work finish` |
+| `bh work check <id>` | yes | yes | whole suite | yes, 95% floor | yes | **M** — red-gate run 2026-08-21: a deliberately failing test gave `1 failed, 7329 passed` and **exit 1** |
+| `bh work submit <id>` | yes | yes | whole suite | yes, 95% floor | yes | **M** — phaze-jnj90/phaze-nqawu's own group submit, 2026-08-21 |
+| `bh work finish <epic>` (= `merge --molecule`) | via pre-commit | via pre-commit | whole suite | yes, 95% floor | yes | **I** — config + `bh work merge --help` |
+| `bh work merge --group <ids>` | yes | yes | whole suite | yes, 95% floor | yes | **I** — config + `bh work merge --help` |
+| `bh work merge <id>` (single bead → molecule) | **no — see below** | no | no | no | no | **I** — config + `bh work merge --help` |
 
-**M** = measured on 2026-08-21 by running the command and reading its transcript. **I** = inferred
-from the phaze block in `~/.beadhive/config.yaml` plus `bh`'s documented phase model
-(`bh work merge --help`), **not** executed. Treat an **I** row as a claim to re-measure the first
-time you hit that boundary, not as established fact — this repo's ADR-0012 exists because an
-argument verified against the wrong proxy reads exactly like a verified one.
+**M** = the command itself was executed and its transcript read; the cell says which run.
+**I** = inferred from the phaze block in `~/.beadhive/config.yaml` plus `bh`'s documented phase
+model, **not** executed. Treat an **I** row as a claim to re-measure the first time you hit that
+boundary, not as established fact. **Do not upgrade an I to an M without running the command** —
+a bare letter with no named run decays into folklore the moment its author leaves the room, which
+is why every M here cites its evidence.
+
+**The general form, because this table caught its own author out.** The first draft of it marked
+`just check`, `just check-all`, `bh work check` and `bh work submit` as **M** when none of the four
+had been run; the reasoning was "`check` delegates to `test-cov`, and `test-cov` was measured."
+That is the lesson worth keeping: **an inference that a wrapper is measured because its delegate
+was measured is still an inference — the composed command is its own claim.** A wrapper adds
+ordering, environment, error propagation and exit-code handling, and every one of those is a place
+the composition can fail while each part works. It is the same shape as
+[ADR-0012](docs/design/0012-verification-fidelity-and-operator-attribution.md) rule 3 (verify with
+the artifact's real consumer, not the tool that produced it), and it will recur in this repo
+wherever a change argues it is equivalent because its parts are.
 
 **`bh work merge <id>` re-validates nothing**, and that is by design rather than by oversight:
 `work.validation` defaults to `relaxed`, which re-tests at submit and at assembled-molecule
@@ -83,6 +96,15 @@ in this repo can guard the config half.
 edit/run loop, and `-q` gives dot-density. Both cost evidence — a red `-x` run characterises only
 the prefix of the suite before the first failure, and `-q` suppresses the pytest header entirely.
 Use it while iterating; cite `just check`.
+
+**Dropping `-x` from the gate has a measured price, and it is the right one to pay.** The red-gate
+run above put a deliberately failing test in `tests/shared/` and the gate still took **19m18s** to
+reach `1 failed, 7329 passed` — a bead with a genuine failure pays full freight to learn it, and
+pays it again on every re-run. That is the correct trade for a *gate*, whose job is to characterise
+the whole suite rather than to fail fast: a truncated prefix tells you nothing about the 7000 tests
+after the first failure. Iterate with `just test`, which is fail-fast precisely so you do not pay
+this twenty minutes while debugging. **Do not "optimise" `-x` back into the gate** — you would be
+trading complete counts for wall-clock at the one boundary where completeness is the entire point.
 
 **Consequence: a submit now costs a full suite run.** Export a per-worktree seat
 (`just test-db-for <name>`) before submitting, or the gate falls back to the shared `phaze_test`
