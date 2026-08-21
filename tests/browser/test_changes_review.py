@@ -88,8 +88,8 @@ async def test_a_facet_tab_swaps_the_list_and_pushes_the_url_without_reloading(p
     assert await rows.first.locator("button:has-text('UNDO')").count() == 1, "the row shown under Approved is not an approved row"
 
 
-async def test_a_row_selection_is_carried_into_the_url_and_survives_a_tab_change(page: Any, seed: Any) -> None:
-    """Checking a row writes ``selected`` into the URL and into every nav target's query.
+async def test_a_row_selection_is_written_into_the_url_and_into_every_nav_attribute(page: Any, seed: Any) -> None:
+    """Checking a row writes ``selected`` into the URL and into every nav target's ATTRIBUTE.
 
     ``_changes_list.html``'s ``sync()`` does three things on every selection change: rewrites the
     address bar via ``history.replaceState``, rewrites the ``href``/``hx-get`` of each
@@ -97,11 +97,23 @@ async def test_a_row_selection_is_carried_into_the_url_and_survives_a_tab_change
     client-side DOM mutation with no server involvement whatsoever, so this behaviour has no
     server-side test and can have none.
 
-    It matters because the bulk approve form is a WRITE keyed on that query. A selection the URL
-    rewrite drops is a selection the operator can still see checked while the form no longer carries
-    it -- "approve selected" then approves a different set than the one on screen, which is the
-    REVIEW-02 shape the server-side suite already guards from the other direction (the server
-    re-queries rather than trusting the client's id list).
+    Two corrections from phaze-tp52f, both of which this docstring got wrong and which are worth
+    keeping written down rather than quietly edited away:
+
+    1. **This test does not change a tab, and never did** -- it was named as though it did. Every
+       assertion below reads an ATTRIBUTE, and the attribute was correct for the entire lifetime of
+       the defect phaze-tp52f fixed: htmx 2.0.10 captured a verb's path in the trigger-handler
+       closure at ``processNode`` time, so the rewritten ``hx-get`` never reached the wire and a tab
+       change dropped (or resurrected) the selection with all of these assertions still green. What
+       actually crosses a tab boundary, and reads the socket rather than the DOM, is
+       ``tests/browser/test_changes_facet_selection_wire.py``. This file keeps the attribute half,
+       which is a real and cheap contract; it is simply not the half that was ever in doubt.
+    2. **The bulk approve write is NOT keyed on this query.** ``PATCH /proposals/bulk`` scopes from
+       ``review_tokens``/``proposal_ids`` in the request BODY, which htmx serializes from the live
+       DOM at request time; ``selected`` is read only by ``build_changes_review_context``, to seed
+       the RESPONSE's checkbox state. So a dropped ``selected`` never approved "a different set than
+       the one on screen" directly. It does so indirectly -- the checkbox it resurrects IS the bulk
+       scope -- which is a slower and more visible failure than the one claimed here.
     """
     keeper = await seed.proposal(status=ProposalStatus.PENDING, filename="<set-01>.mp3")
     await seed.proposal(status=ProposalStatus.PENDING, filename="<set-02>.mp3")
