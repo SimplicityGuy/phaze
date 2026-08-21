@@ -210,9 +210,10 @@ async def refresh_tracklist_lookup_ui(
     The replacement for the retired monthly ``refresh_tracklists`` cron and for the removed
     per-tracklist re-scrape trigger. The cron re-fetched every tracklist older than 90 days, which
     contradicts the drain's cache ("a published tracklist does not change, so never re-fetch") and
-    put a second, unbounded consumer on a whole-host budget of ~1 request / 8 s. The operator
-    decision was to keep the drain never-re-fetching and make refresh explicit, targeted, and
-    operator-initiated -- this button is that trigger, and there is no scheduled counterpart.
+    put a second, unbounded consumer on a whole-host budget of ~1 request / 8 s. Operator decision
+    (2026-08-03, see tasks/controller.py's cron_jobs comment for the dated citation): keep the
+    drain never-re-fetching and make refresh explicit, targeted, and operator-initiated -- this
+    button is that trigger, and there is no scheduled counterpart.
 
     :func:`phaze.tasks.tracklist.refresh_tracklists` is called DIRECTLY rather than enqueued, for
     the same reason ``tracklist_drain_status`` is: it spends NO host requests. All it does is drop
