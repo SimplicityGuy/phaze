@@ -19,7 +19,8 @@
    **Python stays 3.13** there.
 3. **7.1 is the right line to land on**, not merely the incumbent — it is what the
    essentia-tensorflow wheel statically links (§2).
-4. **CI stays on 8.1.** A settled operator decision, recorded with what it costs (§7).
+4. **CI stays on 8.1.** A settled operator decision (`phaze-b62ri`, 2026-08-20), recorded with
+   what it costs (§7).
 
 The amd64 app image needs **no change at all** beyond comments: `python:3.14-slim` is already
 trixie and already ffmpeg 7.1.x. The work there was discovering that, not altering it.
@@ -313,7 +314,8 @@ leaves uncovered, and it is the evidence that would change the decision.
 ## What this does **not** cover
 
 
-- **9.x.** Out of scope by operator decision, with a **stated suspicion** of essentia
+- **9.x.** Out of scope by operator decision (`phaze-b62ri`, 2026-08-20), with a **stated
+  suspicion** of essentia
   incompatibility — recorded as the hedge it was, not as a finding. Nobody has tested it. The 7.1
   evidence does make it less attractive (upstream builds against 7.1, so 9.x is two majors past
   validated), but that is an argument, not a measurement.
