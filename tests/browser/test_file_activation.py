@@ -297,7 +297,8 @@ async def test_tracklist_rows_distinguish_matched_files_from_candidates_after_pa
 async def test_escape_falls_back_to_the_stage_heading_when_the_opener_row_has_gone_stale(page: Any, seed: Any) -> None:
     """phaze-39eiy: focus must not strand on <body> when the opener is gone by the time Escape runs.
 
-    Measured in the wild (FLAKE_RECORD.md): the Analyze workspace's own filter re-render can race
+    Measured in the wild (recorded in the since-deleted ``tests/browser/FLAKE_RECORD.md``; see
+    ADR-0009 § "The browser contract suite"): the Analyze workspace's own filter re-render can race
     its container's ``hx-trigger="load"`` fetch and replace ``#analyze-files-view``'s rows while the
     drawer a click just opened is still up -- disconnecting the exact ``<tr>`` record_host.html's
     ``hide()`` was holding onto as its focus-restore target. ``.focus()`` on a disconnected element

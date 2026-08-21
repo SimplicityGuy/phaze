@@ -137,10 +137,38 @@ just test-browser-install    # once per machine — downloads the Chromium build
 just test-browser            # runs the suite (depends on `tailwind`, see below)
 ```
 
-CI runs it as the **`Browser contract (non-blocking)`** job in `.github/workflows/tests.yml`, with
-`continue-on-error: true`. A brand-new browser suite has no flake record, and gating merges on it
-before that record exists trains everyone to re-run CI on red — which is how a real failure gets
-waved through. Promote it to blocking after a clean run of 10 (tracked on `phaze-8p1uq`).
+CI runs it as the **`Browser contract (non-blocking)`** job in `.github/workflows/tests.yml`. It is
+**blocking** as of 2026-08-21 (`phaze-8p1uq`): a red browser job now fails the build.
+
+It did not start that way, and the reason it did not is the reason to keep it red-means-red now. A
+brand-new browser suite has no flake record, and gating merges on it before that record exists
+trains everyone to re-run CI on red — which is how a real failure gets waved through. So the job
+shipped with `continue-on-error: true` against a stated bar: **10 consecutive clean post-merge runs
+of the job itself on `main`**, counted on the *job's* conclusion rather than the workflow's (the
+workflow is green either way while `continue-on-error` is set), with runs where the job did not
+execute — a docs-only push, a run cancelled by the concurrency group — neutral rather than
+count-advancing, and an infrastructure failure resetting the count just as a product failure does.
+
+The bar was met on 2026-08-21 with **14** consecutive green executions, from run `32404559677`
+(`827052af`) through `32451444163` (`ebae0f4`); `continue-on-error: true` was deleted in the same
+change. The count restarted at `827052af` because the previous window was reset by a **real product
+defect**, not a flake: three consecutive failures of
+`test_analysis_timeline.py::test_timeline_inspects_with_pointer_touch_and_keyboard_and_cues_overflow`,
+traced to a `scrollbar-gutter: stable` on `.analysis-timeline-viewport` that overstated the maximum
+scroll offset by the reserved gutter width, so the "scroll right" affordance could never turn off.
+It reproduced 3/3 on Ubuntu/Chromium and never once on macOS, whose overlay scrollbars reserve a 0px
+gutter and made the same arithmetic accidentally correct. That is the load-bearing precedent for
+reading a red run here: **CI differs from a developer machine in what it renders, not only in how
+fast it does so.** A CI-only browser failure is not presumptively a flake — check the rendering axis
+first, because that class of failure reproduces 10/10 and is a real defect every time. The job
+uploads a Playwright trace on failure (artifact `browser-test-results`, 14-day retention), which is
+what makes that check possible without a Linux box.
+
+The evidence and promotion scaffolding lived in `tests/browser/FLAKE_RECORD.md`, which was deleted
+when the gate was met — leaving a file reading `Status: NOT MET` in a repo where the gate had passed
+would be worse than removing it. Its per-run history remains readable in git history and in
+`phaze-8p1uq`'s comment thread; its one piece of durable content, the ranked list of CI-only failure
+suspects, was moved here verbatim (below).
 
 Three properties of the harness are load-bearing and easy to break:
 
@@ -164,6 +192,35 @@ Note for anyone asserting on rendered text: `inner_text()` returns text as *rend
 eyebrow headings carry `uppercase`, so compare case-insensitively. And a rail swap uses
 `hx-swap="innerHTML"` — the container's own `data-stage` never changes, so the fragment's
 `data-document-title` marker is the signal a swap actually landed.
+
+### What to watch when a CI run goes red
+
+Migrated verbatim from `tests/browser/FLAKE_RECORD.md` (deleted 2026-08-21 when the promotion
+gate was met); it was headed "What to watch when the CI runs start" there. The reasoning is
+unchanged and it matters more now than it did then, because a red run stops the build.
+
+Ranked by how likely each is to produce a CI-only failure. None of these produced a local flake;
+they are listed because local timing is the wrong instrument for all of them.
+
+1. **The axe CDN fetch** (`tests/browser/axe.py`). One network round trip per pytest process,
+   digest-verified, cached for the session. It is the suite's only hard dependency on a host other
+   than the app itself, and therefore the first suspect for a run that fails once and passes on
+   re-run. If it flakes, vendor the bundle rather than adding a retry — a retry hides an outage
+   behind a slower green.
+2. **The SSE reconnect windows** (`test_execute_dispatch.py`). Two tests sleep 6 s to prove the
+   EventSource did *not* reconnect. That is a lower bound on Chromium's ~3 s reconnect delay with
+   generous margin, but it is wall-clock reasoning, and a heavily loaded runner is where wall-clock
+   reasoning breaks. A failure here reads as "the stream reconnected" and would be a REAL defect
+   (phaze-047gd) — do not lengthen the window without first checking the request log in the failure
+   output, which names how many connections were made.
+3. **The 5 s stats poll** (`test_live_refresh_and_states.py`). Waits up to 20 s for a poll tick, so
+   it tolerates three missed ticks. Generous, but it is the only assertion whose success depends on
+   a timer the test does not control.
+4. **App boot** (`conftest._wait_until_serving`, 180 s). Runs migrations from an empty database on
+   every session. Comfortable locally; unmeasured on a GitHub runner.
+5. **Postgres/Redis service readiness.** The CI job gives both health checks, and the browser
+   database is derived by appending `_browser`, so it never collides with the unit matrix — which
+   runs in a different job with its own services.
 
 ## Keyboard and screen-reader smoke pass
 
@@ -328,9 +385,10 @@ Every file in `tests/browser/` (21 test modules, plus `conftest.py`, `helpers.py
 read for: fixed sleeps and fixed-timeout waits, `wait_for_function` calls with an implicit
 assumption about response latency, any assertion that something did **not** happen within a
 window, and settle helpers whose stability window could be satisfied by the wrong state. The
-`FLAKE_RECORD.md` section "What to watch when the CI runs start" was the starting list, not the
-whole one — it was written as speculation before this bead had evidence, and three of the six
-findings below are not in it.
+ranked suspect list then headed "What to watch when the CI runs start" (in `FLAKE_RECORD.md` at the
+time, now § "What to watch when a CI run goes red" above) was the starting list, not the whole one —
+it was written as speculation before this bead had evidence, and three of the six findings below are
+not in it.
 
 #### The dangerous shape: asserting a negative inside a fixed window
 
@@ -346,7 +404,7 @@ Three tests carry this shape:
 
 1. **`test_execute_dispatch.py::test_the_progress_stream_opens_once_and_stops_reconnecting_after_close`**
    — `await asyncio.sleep(_RECONNECT_WINDOW_SEC)` (6.0s, "Chromium's ~3s reconnect delay with
-   generous margin") then `assert len(stream_requests) == 1`. Already named in `FLAKE_RECORD.md`.
+   generous margin") then `assert len(stream_requests) == 1`. Already named in the suspect list above.
 2. **`test_execute_dispatch.py::test_an_execution_that_finishes_with_failures_reports_them_and_still_closes`**
    — the same 6.0s pattern, for the `complete_with_errors` terminal status. Also already named.
 3. **`test_analyze_lane_detail.py::test_dismissing_the_lane_detail_stops_its_poll_and_returns_focus`**
@@ -382,8 +440,8 @@ locally — direct evidence, not conjecture, that this class of race is CI-sensi
    command-palette focus-restore. Its own comment records the precedent directly: "Failed exactly
    that way on phone/dark in CI while passing locally (phaze-bdeih is the same race in the
    drawer)."
-8. **`tests/browser/conftest.py::_wait_until_serving`** (180s ceiling) — already named in
-   `FLAKE_RECORD.md`; this is the boot-latency ceiling the measurement gap below is meant to fill
+8. **`tests/browser/conftest.py::_wait_until_serving`** (180s ceiling) — already named in the
+   suspect list above; this is the boot-latency ceiling the measurement gap below is meant to fill
    with real numbers.
 
 #### Infrastructure and session shape

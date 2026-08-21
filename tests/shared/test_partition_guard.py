@@ -91,7 +91,7 @@ def test_buckets_json_is_the_source_of_truth() -> None:
     # run.
     #
     # It deliberately has NO entry in `tests/ci_shards.json`: the CI matrix shards the unit suite
-    # for coverage, and this lane runs in its own non-blocking `browser` job instead. Nothing
+    # for coverage, and this lane runs in its own `browser` job instead. Nothing
     # requires a shard per bucket -- the two files are related but distinct (phaze-crq9k).
     #
     # A rename/add/remove here must be a deliberate json edit.

@@ -88,7 +88,7 @@ def _find_codecov_token_steps(job: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _browser_job() -> dict[str, Any]:
-    """Return the non-blocking real-browser job from the canonical test workflow."""
+    """Return the real-browser job from the canonical test workflow."""
     return _load_workflow()["jobs"]["browser"]
 
 

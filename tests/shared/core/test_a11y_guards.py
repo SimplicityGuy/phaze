@@ -152,8 +152,11 @@ def test_cmdk_listbox_and_dialog_present() -> None:
 # rated it critical. The behavioural half is the one that actually hurt — a swapped-away node
 # cannot be announced, so ⌘K commands gave a screen-reader user no feedback at all.
 #
-# The browser suite proves the node's identity survives a keystroke; these guards are the blocking
-# lane's copy, because the browser job is non-blocking and cannot stop the hoist being undone.
+# The browser suite proves the node's identity survives a keystroke; these guards are the markup
+# lane's copy. That was originally because the browser job was non-blocking and could not stop the
+# hoist being undone. It is blocking as of 2026-08-21 (phaze-8p1uq), so the reason is now the
+# cheaper one: this lane is filesystem-exhaustive and runs in every shard, so it catches the hoist
+# without booting a browser.
 _PALETTE_RESULTS = _TEMPLATES / "search" / "partials" / "palette_results.html"
 # The live region's own opening tag (no `>` inside any attribute value, so `[^>]*` bounds it).
 _CMDK_LIVE_REGION = re.compile(r'<div\b[^>]*\bid="cmdk-command-result"[^>]*>', re.DOTALL)
@@ -240,9 +243,11 @@ def test_record_after_swap_waits_for_the_reveal_before_focusing_the_heading() ->
     through ``x-show`` and Alpine defers that reveal onto a later task — so ``focus()`` ran against
     a ``display:none`` element, where it is a silent no-op.
 
-    Guarded here rather than only in ``tests/browser`` because the browser suite is a separate,
-    non-blocking job: this is the lane that keeps a "simplification" back to a straight-line
-    ``focus()`` from shipping. Asserted structurally (the call is not a top-level statement, and
+    Guarded here rather than only in ``tests/browser`` because that suite is a separate job -- it
+    was non-blocking when this guard was written (blocking since 2026-08-21, phaze-8p1uq), and it
+    still costs a real browser boot, while this lane is structural and runs in every shard. Either
+    way this is the lane that keeps a "simplification" back to a straight-line ``focus()`` from
+    shipping. Asserted structurally (the call is not a top-level statement, and
     the handler consults a visibility primitive) so the guard survives the wait being reshaped.
     """
     expr = _record_body_after_swap()
