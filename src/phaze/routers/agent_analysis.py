@@ -25,29 +25,31 @@ therefore stamp `payload["id"] = uuid.uuid4()` explicitly so a fresh INSERT
 doesn't raise `NotNullViolationError`. `ON CONFLICT DO UPDATE` preserves the
 existing row's id (`excluded.id` is not in the SET clause).
 
-NULL-GUARD FOR A CONCURRENTLY-DELETED FileRecord (request_guards.py rule 3, phaze-wn1l):
+NULL-GUARD FOR A CONCURRENTLY-DELETED FileRecord (request_guards.py rules 3-5, phaze-wn1l):
 `AnalysisResult.file_id` is a bare `ForeignKey("files.id")` with NO `ondelete`, and
 `services/scan_deletion.delete_scan_cascade` can remove a file's row (and cascade its
 analysis row) while a multi-hour `process_file` run is still in flight -- the cascade's
 own docstring elects this as "the correct, cheap place for that race to resolve", but
 nothing on THIS end previously handled the resulting `ForeignKeyViolation`. Every write
 in this module that upserts an `AnalysisResult` row (`put_analysis`,
-`post_analysis_progress`, `report_analysis_failed`) now wraps its `pg_insert` in a
+`post_analysis_progress`, `report_analysis_failed`) now runs its `pg_insert` through
+`request_guards.execute_guarding_vanished_file`, which wraps it in a
 `session.begin_nested()` SAVEPOINT and maps a caught `IntegrityError` to a clean 200
 hold -- mirroring `agent_push.py`'s vanished-FileRecord branch -- rather than letting an
 unhandled 500 propagate. A 200 (not 404) is deliberate: `agent_client.py`'s retry
 predicate treats 4xx as non-retryable but 5xx as retryable, so a 404 here would still
 have looked like a transient server error to a caller checking only the status family,
-burning the same wasted re-analysis this guard exists to stop.
+burning the same wasted re-analysis this guard exists to stop. (`execute_guarding_vanished_file`
+also replaces `agent_metadata.py`'s identical try/except -- phaze-bk9el.9 consolidated the two
+five-call-site duplicates into the one helper.)
 """
 
 from typing import TYPE_CHECKING, Annotated, Any, cast
 import uuid
 
 from fastapi import APIRouter, Depends, status
-from sqlalchemy import CursorResult, delete, func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
@@ -57,6 +59,7 @@ from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.routers.agent_auth import get_authenticated_agent
+from phaze.routers.request_guards import execute_guarding_vanished_file
 from phaze.schemas.agent_analysis import (
     AnalysisFailurePayload,
     AnalysisFailureResponse,
@@ -302,14 +305,11 @@ async def put_analysis(
         stmt = stmt.on_conflict_do_nothing(index_elements=["file_id"])
     # phaze-wn1l: a concurrent scan deletion can remove this file's FileRecord between the
     # worker starting its (multi-hour) analysis and this callback landing. Run the upsert
-    # inside a SAVEPOINT so a caught IntegrityError (ForeignKeyViolation) unwinds only the
-    # nested scope, leaving the session usable, and hold with a clean 200 rather than letting
-    # the 500 propagate and burn a wasted re-analysis retry (module docstring).
-    try:
-        async with session.begin_nested():
-            await session.execute(stmt)
-    except IntegrityError:
-        logger.warning("put_analysis file vanished mid-write; holding with a no-op 200", file_id=str(file_id), agent_id=agent.id)
+    # through the shared guard (request_guards.py rules 4-5, module docstring) so a caught
+    # IntegrityError (ForeignKeyViolation) unwinds only its own SAVEPOINT, leaving the session
+    # usable, and holds with a clean 200 rather than letting the 500 propagate and burn a
+    # wasted re-analysis retry.
+    if await execute_guarding_vanished_file(session, stmt, logger=logger, handler_name="put_analysis", file_id=file_id, agent_id=agent.id) is None:
         return AnalysisWriteResponse(agent_id=agent.id, file_id=file_id)
 
     # Child-row replace (Phase 31, ANL-01): idempotently REPLACE this file's windows
@@ -430,11 +430,10 @@ async def post_analysis_progress(
     # docstring) -- this is the START-of-analysis progress POST, so it fires at the
     # BEGINNING of every run and is the most frequently-hit of the three vanished-file
     # vectors in this module.
-    try:
-        async with session.begin_nested():
-            await session.execute(stmt)
-    except IntegrityError:
-        logger.warning("post_analysis_progress file vanished mid-write; holding with a no-op 200", file_id=str(file_id), agent_id=agent.id)
+    if (
+        await execute_guarding_vanished_file(session, stmt, logger=logger, handler_name="post_analysis_progress", file_id=file_id, agent_id=agent.id)
+        is None
+    ):
         return AnalysisProgressResponse(agent_id=agent.id, file_id=file_id)
     # NO FileRecord state flip, NO AnalysisWindow delete/insert, NO ledger clear,
     # NO staged-object delete, NO analysis_completed_at stamp -- this is what makes
@@ -532,13 +531,12 @@ async def report_analysis_failed(
     # this path -- the guard here is purely about not 500ing the worker's terminal ack).
     #
     # An INSERT .. ON CONFLICT DO UPDATE returns a CursorResult at runtime (exposing rowcount); the
-    # async stubs type it as the base Result, so cast to read the affected-row count (mirrors
-    # agent_push.py / services/scan_deletion.py).
-    try:
-        async with session.begin_nested():
-            result = cast("CursorResult[Any]", await session.execute(stmt))
-    except IntegrityError:
-        logger.warning("report_analysis_failed file vanished mid-write; holding with a no-op 200", file_id=str(file_id), agent_id=agent.id)
+    # async stubs type it as the base Result, so the shared guard casts to read the affected-row
+    # count (mirrors agent_push.py / services/scan_deletion.py).
+    result = await execute_guarding_vanished_file(
+        session, stmt, logger=logger, handler_name="report_analysis_failed", file_id=file_id, agent_id=agent.id
+    )
+    if result is None:
         return AnalysisFailureResponse(agent_id=agent.id, file_id=file_id)
     if result.rowcount == 0:
         # CAS skip: the row was already COMPLETED. Log so an operator can see a failed re-analysis
