@@ -99,3 +99,54 @@ def test_the_fail_fast_recipe_is_retained_and_labelled_as_local_iteration() -> N
 
     assert "-x" in recipe_body and "-q" in recipe_body
     assert "NOT the validation gate" in doc_line
+
+
+# --- phaze-bk9el.21: branch coverage is MEASURED everywhere and GATED per bead, not repo-wide ---
+
+
+def test_branch_coverage_is_enabled_repo_wide() -> None:
+    """Criterion 1. Without `branch = true` the number is invisible and every later check is moot."""
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    run_section = pyproject.split("[tool.coverage.run]", 1)[1].split("\n[", 1)[0]
+
+    assert re.search(r"^branch = true$", run_section, re.MULTILINE), run_section
+
+
+def test_the_repo_wide_gate_reads_lines_not_the_combined_branch_figure() -> None:
+    """Criterion 3, asserted where it can actually regress: the recipes.
+
+    With `branch = true`, coverage.py's own `fail_under` measures
+    `(covered_lines + covered_branches) / (num_statements + num_branches)` and offers no option to
+    select lines (coverage 7.15.4). Leaving it armed in these recipes would convert phaze's
+    repo-wide gate into a branch gate without anyone changing a number -- the operator's decision
+    on phaze-bk9el.21 is explicitly that it stays on lines at 95%. So the reporting steps are
+    disarmed and `scripts/coverage_floor.py`, which reads `percent_statements_covered`, is the gate.
+
+    `--fail-under=0` is asserted on `xml` and `json` too, not just `report`: all three honour it,
+    and both run BEFORE `report` here, so an arming there aborts the combine before the real gate
+    is ever reached.
+    """
+    combine = _dry_run("coverage-combine")
+
+    assert "scripts/coverage_floor.py" in combine
+    assert "--fail-under=95" not in combine, combine
+    for step in ("xml", "json", "report"):
+        assert re.search(rf"coverage {step} --fail-under=0", combine), combine
+
+
+def test_the_validation_test_step_enforces_the_line_floor_and_writes_a_json_report() -> None:
+    """The gate must still fail below 95% lines, and must leave the report `branch-check` reads.
+
+    `--cov-fail-under=0` disarms pytest-cov's combined-metric check; `coverage_floor.py` replaces
+    it with the line-metric one. Dropping the second line would silently un-gate `just check`.
+    """
+    step = _dry_run("test-cov")
+
+    assert "--cov-fail-under=0" in step
+    assert "--cov-report=json:coverage.json" in step
+    assert "scripts/coverage_floor.py" in step
+
+
+def test_the_per_bead_branch_gate_is_runnable_from_a_worktree() -> None:
+    """Criterion 4: a developer must be able to run it against the files their bead touched."""
+    assert "scripts/branch_coverage_check.py" in _dry_run("branch-check")
