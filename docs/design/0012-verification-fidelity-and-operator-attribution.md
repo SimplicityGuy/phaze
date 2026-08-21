@@ -317,6 +317,41 @@ The general form, of which "a mocked essentia cannot hold this line" is one inst
 | `phaze-b2qs9` / `u1n7j` | **Would have caught.** The consumer is real essentia's streaming network; `test_analysis_long_file.py` measured a mock. ADR-0007 §8 states the outcome in its own table: *"it proves that of a **mocked** essentia. On real essentia the same comparison moves **gigabytes**."* |
 | `phaze-3ea41` | **Would have caught — and only this rule would.** The consumer of `extract_audio_track`'s output is `analyze_file` → `_probe_duration_sec`. No test crossed that boundary; the real-`ffmpeg` tests stopped at `probe_audio_streams`, i.e. at `ffprobe` checking `ffmpeg`'s own output. `tests/analyze/services/pipeline/test_extraction_analysis_handoff.py` is what G3 demands, and `phaze-l832u.3` records that every test in it fails against the pre-fix code. |
 
+#### The seam inventory G3 is owed
+
+`phaze-l832u.3` closed one seam. **§7 R4's inventory of the rest is
+[`docs/spikes/phaze-d2hgv.6-artifact-seam-inventory-2026-08-20.md`](../spikes/phaze-d2hgv.6-artifact-seam-inventory-2026-08-20.md)**
+— 30 producer→consumer seams across six clusters, each with a producer, an artifact, a named real
+consumer, the boundary crossed, and a crossed / proxy / not-crossed verdict. Read it before applying
+G3 to a change in any of those clusters; the row for the seam you are touching says what is already
+held and what is not.
+
+Three things in it bear on how G3 itself should be read:
+
+- **It found one live instance of the `phaze-3ea41` shape**, on a path serving the whole archive:
+  COMPANION `FileRecord` rows have **no producer at all**, so the companion chain — LLM naming
+  context, `.cue` tracklist candidates, `POST /associate` — is dead corpus-wide, while every test
+  that exercises a companion consumer inserts the row by hand. Ingestion's filter and the
+  association query were written eight weeks apart and have never met. (§5 of the inventory.)
+- **"A mock is present" is not the test.** The inventory records a seam crossed by a suite full of
+  mocks and seams left uncrossed by suites full of real infrastructure — real `moto`, real Kubernetes
+  client shapes — because the real thing was on the wrong side of the boundary. G3 asks whether the
+  artifact reaches its real consumer, and nothing else.
+- **Static reading is not always enough to render a G3 verdict.** Two verdicts in the first pass were
+  wrong in the pessimistic direction and were only corrected by measurement — running the suite under
+  `redis-cli monitor` and matching observed `EVALSHA` digests against the scripts' source hashes.
+  Where indirection hides the seam, measure it. (§6 of the inventory.)
+- **A seam can have no seam *code*.** This is the sub-case a future auditor is least equipped to find,
+  and the inventory found one: a tag write rewrites the file's bytes, so `FileRecord.sha256_hash` goes
+  stale, and the consumer that verifies bytes against that column then fails permanently
+  (`phaze-2zeu0`). Producer and consumer were written in different phases and **share only a database
+  column** — there is no call site to grep for, so a search *for* the seam cannot find it. It surfaced
+  only by asking what the producer changes about the artifact **besides the payload**. Read that as
+  the third shape alongside the other two: `phaze-3ea41` is a **producer writing the wrong thing**,
+  `phaze-j8hjn` is a **producer that does not exist**, and this is a **producer and consumer that were
+  never introduced**. G3's question — what does the consumer read that the producer never writes — has
+  to be asked of side effects, not just of the artifact the change was about.
+
 ### G4 — A change to a working production path owes a blast-radius statement
 
 Before submit, the bead or PR contains three sentences, with the population **measured, not
@@ -498,6 +533,11 @@ ______________________________________________________________________
   another reads across a process or format boundary — cloud staging push/pull into analysis, tag
   writes read back by `mutagen`, CUE generation. Enumerate them and record, per seam, whether a
   test crosses it with the real consumer. Investigation first; guards filed from the result. **P2.**
+  **Done** — `phaze-d2hgv.6`,
+  [`docs/spikes/phaze-d2hgv.6-artifact-seam-inventory-2026-08-20.md`](../spikes/phaze-d2hgv.6-artifact-seam-inventory-2026-08-20.md).
+  30 seams; the three named above are all uncrossed or proxy-only, and the sweep additionally found
+  a **live** whole-archive instance of the `phaze-3ea41` shape that the three candidates did not
+  point at. §7 of the inventory lists the guards it proposes filing.
 - **R5 — `bh work submit` names a test per acceptance criterion.** Mechanizing G1: submit prompts
   for, or refuses without, a criterion→test (or criterion→operator-amendment) mapping. Lowest
   confidence of the five — it touches the `bh` toolchain rather than this repo, and a mapping that
