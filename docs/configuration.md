@@ -107,6 +107,7 @@ silently unreachable.
 | `PHAZE_TRACKLIST_RENDER_SELECTOR_TIMEOUT_SECONDS` (or `tracklist_render_selector_timeout_seconds`) | No | `20.0` | Per-attempt wait for the track container to appear before the attempt is judged interstitial-or-empty. |
 | `PHAZE_TRACKLIST_RENDER_RETRY_BACKOFF_SECONDS` (or `tracklist_render_retry_backoff_seconds`) | No | `5.0` | Base for the exponential backoff added on top of the shared crawl-delay pacing between Turnstile retries. Zero disables the extra backoff; the crawl-delay floor still applies. |
 | `PHAZE_TRACKLIST_RENDER_XVFB` (or `tracklist_render_xvfb`) | No | `auto` | Whether to start an Xvfb virtual display for the headful browser: `auto` \| `always` \| `never`. `auto` starts one only on Linux with no `DISPLAY` already set — exactly the headless-worker case. |
+| `PHAZE_TRACKLIST_DRAIN_COOLDOWN_SEC` (or `tracklist_drain_cooldown_sec`) | No | `600` | Seconds the continuous-drain cron waits after one **armed** slice finishes before enqueueing the next (phaze-6nrrf). Operator-tunable pacing, **distinct from** the whole-host politeness budget enforced in `reserve_host_request_slot` — this one leaves headroom for other controller-queue work between slices, without a redeploy. It is also what `clear_stale_in_flight` measures a stuck `in_flight` slice against, and what `tracklist_drain_arm_state.next_eligible_at` records. Surfaced live in the drain-status partial. Bounded `gt=0, lt=86400`, so a misconfigured value fails fast at startup rather than reaching the cron. |
 
 ## Worker / task queue settings (all roles)
 
