@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -1255,13 +1256,41 @@ def _recipe_commands(name: str) -> str:
 def test_test_db_for_delegates_allocation_to_the_registry_script() -> None:
     """The recipe must not carry a second, drifting copy of the allocator.
 
-    ``derive-seat-name.sh`` and ``ensure-pg-database.sh`` already established this: the recipe
-    orchestrates, the scripts decide, and the scripts are what the tests can drive.
+    ``derive-seat-name.sh`` and ``ensure-pg-database.sh`` established this: the recipe orchestrates,
+    the scripts decide, and the scripts are what the tests can drive.
+
+    phaze-bk9el.23 took the same step once more. ``just test-validate`` gained a second caller that
+    must provision an IDENTICAL seat -- it used to fall back to the SHARED ``phaze_test`` pair and
+    Redis DB 0 -- so the whole provisioning body moved into ``scripts/provision-test-seat.sh`` and
+    BOTH callers run it. The property this test is about is unchanged and is if anything stronger:
+    there is now exactly one copy of the allocation call in the repo, reachable from the recipe by
+    one documented hop. So the assertion follows the hop rather than pinning the old location.
     """
     body = _recipe_commands("test-db-for name:")
+    provisioner = Path(__file__).resolve().parents[2] / "scripts" / "provision-test-seat.sh"
 
-    assert "scripts/redis-seat-registry.sh allocate" in body
+    assert "scripts/provision-test-seat.sh" in body, "test-db-for must reach the shared provisioner"
+    assert provisioner.is_file(), f"the provisioning script the recipe delegates to is missing: {provisioner}"
+    # The script resolves its siblings via "${script_dir}/...", so match the basename + subcommand
+    # rather than a literal path that only ever held for the in-recipe copy.
+    assert re.search(r'redis-seat-registry\.sh"? allocate', body + provisioner.read_text(encoding="utf-8"))
     assert "INCR" not in body, "the monotonic counter is the defect; it must not survive in the recipe"
+
+
+def test_test_validate_provisions_through_the_same_script_as_test_db_for() -> None:
+    """phaze-bk9el.23: the gate's seat and an operator's seat for one worktree cannot diverge.
+
+    ``just test-validate`` is what ``just check`` / ``just check-all`` -- and therefore
+    ``bh work check`` and ``bh work submit`` -- ultimately run. When it provisions for itself it
+    must use the same normalization (phaze-fmfk), the same database pair and the same Redis
+    registry allocation the operator gets from ``just test-db-for``. A second copy of that body is
+    exactly how the two would silently drift apart.
+    """
+    validate = _recipe_commands("test-validate:")
+
+    assert "scripts/provision-test-seat.sh" in validate
+    assert "scripts/derive-validate-seat-name.sh" in validate
+    assert "/phaze_test" not in validate, "the shared-seat fallback is the defect; it must not come back"
 
 
 def test_the_non_destructive_recipes_exist_and_do_not_tear_anything_down() -> None:

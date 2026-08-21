@@ -110,6 +110,13 @@ def test_test_db_for_emits_a_redis_url_export() -> None:
     recipe = justfile.split("test-db-for name:", 1)
     assert len(recipe) == 2, "could not locate the `test-db-for` recipe in the justfile"
     body = recipe[1].split("\n[doc(", 1)[0]
+    # phaze-bk9el.23 moved the provisioning body -- including the three export lines this recipe
+    # prints -- into scripts/provision-test-seat.sh, so `just test-validate` could provision an
+    # IDENTICAL seat instead of falling back to the shared phaze_test pair and Redis DB 0. What the
+    # engineer SEES is unchanged: the recipe reprints the script's stdout indented. The assertion
+    # therefore reads recipe + script, which is what actually reaches the terminal.
+    assert "scripts/provision-test-seat.sh" in body, "test-db-for must reach the shared provisioner"
+    body += (_JUSTFILE.parent / "scripts" / "provision-test-seat.sh").read_text(encoding="utf-8")
 
     assert "PHAZE_REDIS_URL" in body, "`just test-db-for` must print a PHAZE_REDIS_URL export, not just the Postgres ones"
     # Allocation must come from the atomic registry, not a hash of the name: `hash(name) % 16`
@@ -119,7 +126,9 @@ def test_test_db_for_emits_a_redis_url_export() -> None:
     # past the logical-DB cap and then refused every new seat). The property this line has always
     # been about — a real allocator, not a hash of the name — is unchanged, and the allocator's own
     # behaviour is pinned by tests/shared/test_redis_seat_registry.py against a throwaway Redis.
-    assert "scripts/redis-seat-registry.sh allocate" in body, (
+    # phaze-bk9el.23: the script resolves its siblings via "${script_dir}/...", so match the
+    # basename + subcommand rather than a literal path that only held for the in-recipe copy.
+    assert re.search(r'redis-seat-registry\.sh"? allocate', body), (
         "Redis DB allocation must go through the atomic seat registry, not a hash-and-hope scheme"
     )
 

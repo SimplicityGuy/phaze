@@ -98,20 +98,28 @@ dependencies = [
 phaze = "phaze.cli:main"
 
 [tool.coverage.report]
-# RETAINED AS A BACKSTOP, NOT AS THE GATE (phaze-bk9el.21). Read this before changing the number.
+# phaze-bk9el.21 -- THIS NUMBER DID NOT CHANGE, BUT WHAT IT MEASURES DID. Read before editing.
 #
-# Under `branch = true` above, coverage.py's own `fail_under` measures the COMBINED figure --
-# `(covered_lines + covered_branches) / (num_statements + num_branches)` -- not lines. There is
-# no coverage.py option to make it line-only (verified against coverage 7.15.4: `coverage report`
-# offers --fail-under, --format and --precision, and nothing that selects the metric).
+# With `branch = true` set under the tool.coverage.run section below, coverage.py's `fail_under` measures the
+# COMBINED figure -- `(covered_lines + covered_branches) / (num_statements + num_branches)` -- not
+# lines. There is no coverage.py option to make it line-only (verified against coverage 7.15.4:
+# `coverage report` offers --fail-under, --format and --precision, and nothing that selects the
+# metric). `coverage xml`, `coverage json` and pytest-cov all read this same value.
 #
-# The operator's decision is that the repo-wide gate stays on LINES at 95%, so the AUTHORITATIVE
-# repo-wide floor is enforced by `scripts/coverage_floor.py` against `percent_statements_covered`,
-# and that is what `just test-cov` and `just coverage-combine` run. This key stays because
-# deleting it would silently un-gate every ad-hoc `uv run pytest --cov=phaze` a developer types
-# outside those recipes; combined coverage sits below line coverage, so as a backstop it can only
-# ever be more conservative than the gate, never laxer. Do not read a failure HERE as the
-# repo-wide gate failing -- read the coverage_floor.py report, which names the metric.
+# MEASURED on the full suite, 2026-08-21:
+#     statements 17554/17771 = 98.7789%
+#     branches    3684/3866  = 95.2923%
+#     combined   21238/21637 = 98.1559%   <- what this key now checks
+# 3.16 points of headroom, so this stays ARMED. It also has to: `just coverage-combine` passes
+# `--fail-under=95` on the CLI, a CLI value silently overrides this config value, and
+# `tests/shared/test_coverage_gate.py` fails the build if the two sites ever disagree.
+#
+# The operator's decision that the repo-wide gate stays on LINES at 95% is satisfied separately and
+# explicitly by `scripts/coverage_floor.py`, which reads `percent_statements_covered` and enforces
+# 95% repo-wide plus 90% per module. That separation is load-bearing at the per-module level: ONE
+# module reads differently under the two metrics (`src/phaze/routers/duplicates.py` -- 91.20%
+# statements, 75.00% branches, 88.59% combined), so a per-module floor left on the combined number
+# would fail a module that has regressed nothing. Neither gate is disarmed; both name their metric.
 fail_under = 95
 precision = 2
 show_missing = true

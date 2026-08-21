@@ -112,37 +112,42 @@ def test_branch_coverage_is_enabled_repo_wide() -> None:
     assert re.search(r"^branch = true$", run_section, re.MULTILINE), run_section
 
 
-def test_the_repo_wide_gate_reads_lines_not_the_combined_branch_figure() -> None:
+def test_the_repo_wide_line_floor_is_enforced_explicitly_not_via_fail_under() -> None:
     """Criterion 3, asserted where it can actually regress: the recipes.
 
     With `branch = true`, coverage.py's own `fail_under` measures
     `(covered_lines + covered_branches) / (num_statements + num_branches)` and offers no option to
-    select lines (coverage 7.15.4). Leaving it armed in these recipes would convert phaze's
-    repo-wide gate into a branch gate without anyone changing a number -- the operator's decision
-    on phaze-bk9el.21 is explicitly that it stays on lines at 95%. So the reporting steps are
-    disarmed and `scripts/coverage_floor.py`, which reads `percent_statements_covered`, is the gate.
+    select lines (coverage 7.15.4). It is deliberately left ARMED: the combined figure measured
+    98.1559% against the 95 floor (statements 98.7789%, branches 95.2923%), and
+    `test_coverage_gate.py` requires the pyproject and CLI sites to stay in lockstep because a CLI
+    `--fail-under` silently overrides the config value. Disarming one site to "protect" the metric
+    would trip that guard and leave a dead placeholder behind.
 
-    `--fail-under=0` is asserted on `xml` and `json` too, not just `report`: all three honour it,
-    and both run BEFORE `report` here, so an arming there aborts the combine before the real gate
-    is ever reached.
+    What satisfies "the repo-wide gate stays on LINES at 95%" is `scripts/coverage_floor.py`, which
+    reads `percent_statements_covered` explicitly and enforces 95% repo-wide plus 90% per module.
+    Dropping it from either recipe would leave the repo with no line-metric gate at all -- and the
+    distinction is not academic per module: `src/phaze/routers/duplicates.py` reads 91.20% on
+    statements, 75.00% on branches and 88.59% combined, so a per-module floor on the combined
+    number fails a module that has regressed nothing.
     """
     combine = _dry_run("coverage-combine")
 
     assert "scripts/coverage_floor.py" in combine
-    assert "--fail-under=95" not in combine, combine
-    for step in ("xml", "json", "report"):
-        assert re.search(rf"coverage {step} --fail-under=0", combine), combine
+    assert "coverage json" in combine, "coverage_floor.py's input must still be produced"
+    assert "scripts/coverage_floor.py" in _dry_run("test-cov")
 
 
 def test_the_validation_test_step_enforces_the_line_floor_and_writes_a_json_report() -> None:
-    """The gate must still fail below 95% lines, and must leave the report `branch-check` reads.
+    """The gate must fail below 95% lines, and must leave the report `branch-check` reads.
 
-    `--cov-fail-under=0` disarms pytest-cov's combined-metric check; `coverage_floor.py` replaces
-    it with the line-metric one. Dropping the second line would silently un-gate `just check`.
+    Two gates run on this path and both are armed: pytest-cov enforces pyproject's `fail_under`
+    (the combined figure since branch coverage went on), then `coverage_floor.py` enforces the LINE
+    floors. Dropping the second line would leave `just check` with no line-metric gate; dropping
+    the json report would make `just branch-check` cost a second full suite.
     """
     step = _dry_run("test-cov")
 
-    assert "--cov-fail-under=0" in step
+    assert "--cov-fail-under=0" not in step, "pytest-cov's floor must stay armed on the gate path"
     assert "--cov-report=json:coverage.json" in step
     assert "scripts/coverage_floor.py" in step
 

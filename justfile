@@ -252,14 +252,13 @@ test:
 #   * `--cov=phaze` -- bead acceptance criteria in this repo routinely ask for a coverage
 #     figure alongside "run the full hive validation". Without this the criterion is
 #     structurally unsatisfiable and every developer paid a second full-suite pass to
-#     recover the number. The 95% repo-wide floor IS enforced here: sub-95 line coverage
-#     exits nonzero. It is enforced by `scripts/coverage_floor.py` rather than by
-#     pytest-cov's own `fail_under`, and phaze-bk9el.21 is why -- `branch = true` makes
-#     coverage.py's native total the COMBINED line+branch figure, with no option to keep it
-#     line-only, and the operator's decision is that the repo-wide gate stays on LINES.
-#     Hence `--cov-fail-under=0` (disarm the combined check) plus the explicit line-metric
-#     gate on the next line. Both floors -- repo-wide 95% and per-module 90% -- live there
-#     now, and every line it prints names the metric it measured.
+#     recover the number. pyproject's `[tool.coverage.report] fail_under = 95` means
+#     pytest-cov ENFORCES a 95% floor here: sub-95 coverage exits nonzero. Since
+#     phaze-bk9el.21 turned `branch = true` on, the figure pytest-cov checks is the
+#     COMBINED line+branch one -- measured at 98.1559% against the 95 floor, so it stays
+#     armed. The LINE floors (95% repo-wide, 90% per module) are enforced explicitly by
+#     `scripts/coverage_floor.py` on the next line, which names the metric in every line it
+#     prints. Two gates, both armed, neither ambiguous.
 #   * no `-x` -- a gate exists to characterise the WHOLE suite. Complete failure counts
 #     beat a truncated prefix.
 #   * no `-q` -- `-q` suppresses pytest_report_header, and that header
@@ -278,7 +277,7 @@ test:
 [doc('Run tests with coverage report -- the validation-grade invocation (no -x, no -q, 95% line floor + 90% per-module line floor enforced)')]
 [group('test')]
 test-cov:
-    uv run pytest --cov=phaze --cov-report=term-missing --cov-report=json:coverage.json --cov-fail-under=0
+    uv run pytest --cov=phaze --cov-report=term-missing --cov-report=json:coverage.json
     uv run python scripts/coverage_floor.py
 
 # `test-cov` plus the seat provisioning `check` used to carry inline, factored out here so
@@ -423,17 +422,26 @@ vulture:
 test-bucket NAME PATHS XDIST="":
     COVERAGE_FILE=.coverage.{{NAME}} uv run pytest {{PATHS}} {{XDIST}} --cov=phaze --cov-context=test --cov-report= --cov-fail-under=0 --junitxml=junit.xml -o junit_family=legacy -q
 
-# phaze-bk9el.21: every reporting step here now carries `--fail-under=0`, and `coverage_floor.py`
-# on the last line is the sole gate. Under `branch = true`, coverage.py's `fail_under` measures the
-# COMBINED line+branch total rather than lines, with no option to keep it line-only -- so leaving
-# it armed would have quietly converted this repo-wide gate into a branch gate, which is exactly
-# what the operator's decision on phaze-bk9el.21 rules out. `--fail-under=0` is needed on `xml` and
-# `json` too, not just `report`: all three honour it, and `xml`/`json` running before `report` in
-# this recipe means an arming there would abort the combine before the real gate was ever reached.
-# `coverage_floor.py` enforces BOTH repo-wide floors explicitly against `percent_statements_covered`
-# (95% total, 90% per module) and prints the branch total alongside for visibility. The gate did not
-# move or weaken; it stopped being ambiguous about which number it was reading. `coverage report`
-# still prints the full combined table, now with Branch/BrPart columns.
+# phaze-bk9el.21 -- READ THIS BEFORE CHANGING EITHER `--fail-under` HERE OR IN pyproject.
+#
+# `branch = true` changed what `coverage report --fail-under=95` MEASURES, without changing the
+# number. With branches on, coverage.py's total is the COMBINED
+# `(covered_lines + covered_branches) / (num_statements + num_branches)`, and there is no option to
+# make it line-only (verified against coverage 7.15.4). `coverage xml` and `coverage json` honour
+# the same config value, so all three steps read the combined figure.
+#
+# MEASURED on the full suite, 2026-08-21, so this is not left to inference:
+#     statements 17554/17771 = 98.7789%   branches 3684/3866 = 95.2923%   combined 21238/21637 = 98.1559%
+# The combined figure clears the 95 floor by 3.16 points, so leaving this armed costs nothing and
+# keeps the two gate sites in lockstep -- which `tests/shared/test_coverage_gate.py` requires,
+# because a `--fail-under` on the CLI silently overrides pyproject's config value.
+#
+# What criterion 3's "the repo-wide gate stays on LINES at 95%" is satisfied by is the NEXT line:
+# `coverage_floor.py` reads `percent_statements_covered` explicitly and enforces 95% repo-wide plus
+# 90% per module on lines. That distinction is not academic at the per-module level -- measured, ONE
+# module differs between the two metrics (`src/phaze/routers/duplicates.py`: 91.20% statements,
+# 75.00% branches, 88.59% combined), so a per-module floor left on the combined number would fail a
+# module that has regressed nothing. Nothing here is disarmed; the line gate is simply explicit.
 # THE PER-BEAD BRANCH GATE (phaze-bk9el.21). Run it from your bead's worktree after any
 # coverage-producing run -- `just check`, `just test-validate` and `just coverage-combine` all
 # leave the `coverage.json` it reads, so it costs seconds rather than a second full suite.
@@ -465,9 +473,9 @@ branch-check *flags:
 [group('test')]
 coverage-combine:
     uv run coverage combine
-    uv run coverage xml --fail-under=0
-    uv run coverage json --fail-under=0
-    uv run coverage report --fail-under=0
+    uv run coverage xml
+    uv run coverage json
+    uv run coverage report --fail-under=95
     uv run python scripts/coverage_floor.py
 
 # phaze-2rgq2: refreshing the coverage repowise folds into its health scores is a FIVE-command

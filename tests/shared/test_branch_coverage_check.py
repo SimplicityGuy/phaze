@@ -2,8 +2,12 @@
 
 ``scripts/branch_coverage_check.py`` is what `just branch-check` runs, and it is the ONLY place
 branch coverage is gated in this repo: the repo-wide floors stay on lines (95% total, 90% per
-module -- ``scripts/coverage_floor.py``) by operator decision, because branch coverage sits below
-the line figure on most files here and a repo-wide branch gate would fail on day one.
+module -- ``scripts/coverage_floor.py``). That narrow scope is an operator decision recorded on
+bead phaze-bk9el.21, 2026-08-21. Question as put: "Branch coverage is off, and runs 4-8 points
+under line coverage on the refactor targets. What should this epic do about it?" Answer as given
+(selected option label, verbatim): "Enable it, gate the refactor targets only (Recommended)".
+The reasoning behind it: branch coverage sits below the line figure on most files here, so a
+repo-wide branch gate would fail on day one and the backfill would dwarf the epic.
 
 That makes this script's failure modes load-bearing in a specific way. A refactor keeps every LINE
 executing and changes only the branch combinations, so if this check reports green for the wrong
