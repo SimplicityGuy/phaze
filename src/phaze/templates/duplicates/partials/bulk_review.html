@@ -22,7 +22,15 @@
         {% for group in dedupe_groups %}<input type="hidden" name="plan_ids" value="{{ group.plan_id }}">{% endfor %}
         <button type="button" onclick="this.closest('#dedupe-bulk-response').replaceChildren()"
                 class="h-9 rounded-lg border border-gray-300 px-3 text-sm text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-phaze-border dark:text-gray-300">Cancel</button>
-        <button type="submit" hx-disabled-elt="this"
+        {# phaze-tckiy: this form declares no method/action and this button ALSO carries the form's
+           hx-confirm, so it is the phaze-5i74w shape at its worst -- a click landing before htmx has
+           PROCESSED the node (interception + confirm prompt are wired in htmx's deferred settle task,
+           not synchronously on swap) both skips the confirmation dialog AND falls through to a native
+           GET, silently no-opping a DESTRUCTIVE bulk archive of every reviewed group. `disabled` +
+           `data-hx-guard` close that window; shell.html's one htmx:load listener (see the comment
+           there) enables the button only once htmx has finished wiring this element up, which is what
+           makes the hx-confirm prompt guaranteed rather than probable. #}
+        <button type="submit" disabled data-hx-guard hx-disabled-elt="this"
                 class="h-9 rounded-lg bg-amber-700 px-3 font-jura text-xs font-medium uppercase tracking-wider text-white hover:bg-amber-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50">Confirm {{ dedupe_groups | length }} resolutions</button>
     </form>
     {% else %}
