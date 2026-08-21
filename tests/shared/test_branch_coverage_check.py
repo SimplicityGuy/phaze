@@ -235,8 +235,15 @@ def test_touched_files_are_named_in_the_report(tmp_path: Path, capsys: pytest.Ca
     assert "src/phaze/a.py" in out
 
 
-def test_write_baseline_records_only_files_with_branches(tmp_path: Path) -> None:
-    """The baseline is a comparison table; a branchless file has no comparable number to store."""
+def test_write_baseline_records_every_module_under_all_three_metrics(tmp_path: Path) -> None:
+    """The baseline is phaze-bk9el.1's published per-module split, not just this gate's input.
+
+    All three metrics are stored because they are three different numbers once branch coverage is
+    on, and because .1 should not have to re-derive them from a second 20-minute suite. A module
+    with no branches is still recorded -- it has statement coverage worth publishing -- but its
+    branch figure is null rather than 0% or 100%, so the comparison skips it instead of reading a
+    fabricated number.
+    """
     module = _load()
     coverage = _write_coverage(
         tmp_path,
@@ -248,6 +255,19 @@ def test_write_baseline_records_only_files_with_branches(tmp_path: Path) -> None
     baseline = tmp_path / "written.json"
 
     assert _run(module, coverage, "--baseline", str(baseline), "--write-baseline") == 0
-    recorded = json.loads(baseline.read_text(encoding="utf-8"))["files"]
-    assert set(recorded) == {"src/phaze/a.py"}
-    assert recorded["src/phaze/a.py"]["percent_branches_covered"] == pytest.approx(90.0)
+    recorded = json.loads(baseline.read_text(encoding="utf-8"))
+    assert set(recorded["files"]) == {"src/phaze/a.py", "src/phaze/constants.py"}
+    assert recorded["files"]["src/phaze/a.py"]["percent_branches_covered"] == pytest.approx(90.0)
+    assert recorded["files"]["src/phaze/constants.py"]["percent_branches_covered"] is None
+    assert recorded["files"]["src/phaze/constants.py"]["percent_statements_covered"] == pytest.approx(100.0)
+    assert recorded["totals"] is not None
+
+
+def test_a_branchless_baseline_entry_does_not_read_as_a_regression(tmp_path: Path) -> None:
+    """A null branch figure in the baseline must not be compared against as if it were a number."""
+    module = _load()
+    coverage = _write_coverage(tmp_path, {"src/phaze/constants.py": {"summary": _summary(num_branches=0, covered=0), "missing_branches": []}})
+    baseline = tmp_path / "b.json"
+    baseline.write_text(json.dumps({"files": {"src/phaze/constants.py": {"percent_branches_covered": None}}}), encoding="utf-8")
+
+    assert _run(module, coverage, "--baseline", str(baseline), "--file", "src/phaze/constants.py") == 0

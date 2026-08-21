@@ -193,23 +193,42 @@ def _files_of(data: dict[str, object]) -> dict[str, dict[str, object]]:
     return files
 
 
+def _module_row(summary: dict[str, float]) -> dict[str, float | None]:
+    """One module's full metric triple, with the counts each percentage was computed from.
+
+    All THREE metrics are recorded, not just the branch column the comparison needs, because
+    phaze-bk9el.1 has to publish exactly this per-module split and should not have to re-derive it
+    from a second full-suite run. They are genuinely three different numbers once ``branch = true``
+    is on: ``percent_covered`` is the COMBINED
+    ``(covered_lines + covered_branches) / (num_statements + num_branches)``, which is what
+    coverage.py's own ``fail_under`` reads and what makes a module look like it moved when nothing
+    about it changed.
+    """
+    return {
+        "percent_statements_covered": summary.get("percent_statements_covered"),
+        "percent_branches_covered": branch_percent(summary),
+        "percent_covered_combined": summary.get("percent_covered"),
+        "num_statements": summary.get("num_statements", 0),
+        "covered_lines": summary.get("covered_lines", 0),
+        "num_branches": summary.get("num_branches", 0),
+        "covered_branches": summary.get("covered_branches", 0),
+    }
+
+
 def write_baseline(data: dict[str, object], baseline_path: Path, base_ref: str) -> int:
     files = _files_of(data)
-    payload = {
-        "_comment": "Branch-coverage baseline (phaze-bk9el.21 criterion 5). Regenerate with `just branch-check --write-baseline` after a FULL-suite coverage run; a partial run records partial numbers and would fail every later bead for the wrong reason.",
+    totals = data.get("totals")
+    rows: dict[str, dict[str, float | None]] = {path: _module_row(_summary_of(info)) for path, info in sorted(files.items())}
+    payload: dict[str, object] = {
+        "_comment": "Coverage baseline (phaze-bk9el.21 criterion 5, consumed by phaze-bk9el.1). Regenerate with `just branch-check --write-baseline` after a FULL-suite coverage run; a partial run records partial numbers and would fail every later bead for the wrong reason. Every module carries all three metrics; the per-bead gate compares only percent_branches_covered, which is null for a module with no branches (not measurable, and neither 0% nor 100%).",
         "commit": _git("rev-parse", "HEAD").strip(),
         "base_ref": base_ref,
-        "files": {
-            path: {
-                "percent_branches_covered": branch_percent(_summary_of(info)),
-                "num_branches": _summary_of(info).get("num_branches", 0),
-            }
-            for path, info in sorted(files.items())
-            if branch_percent(_summary_of(info)) is not None
-        },
+        "totals": _module_row(totals) if isinstance(totals, dict) else None,
+        "files": rows,
     }
     baseline_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"✅ Wrote branch-coverage baseline for {len(payload['files'])} files to {baseline_path}")  # noqa: T201
+    measurable = sum(1 for row in rows.values() if row["percent_branches_covered"] is not None)
+    print(f"✅ Wrote coverage baseline for {len(rows)} modules ({measurable} with branches) to {baseline_path}")  # noqa: T201
     return 0
 
 
