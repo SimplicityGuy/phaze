@@ -54,10 +54,6 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-class TagWriteDispatchError(RuntimeError):
-    """The tag write could not be handed to the owning agent (broker/enqueue failure)."""
-
-
 class TagWriteAlreadyQueuedError(RuntimeError):
     """A tag write is already ``queued`` for this file -- refuse a second concurrent dispatch.
 
