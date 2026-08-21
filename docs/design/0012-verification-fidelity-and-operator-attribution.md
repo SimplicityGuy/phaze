@@ -426,7 +426,10 @@ The general form, of which "a mocked essentia cannot hold this line" is one inst
 - A claim about **real multi-hour durations** is not discharged by a short synthetic fixture.
 - **A claim about the archive's distribution is discharged against the archive's distribution** —
   a query, not a test. This clause is an addition to the version drafted in `phaze-u8qj0`, and §4.1
-  below is the argument for adding it.
+  below is the argument for adding it. `just corpus-distribution <duration-sec> [size-bytes]`
+  (`scripts/corpus_distribution.py`, `phaze-d2hgv.5`) is that query, made one command: it reports
+  the population it measured and the fraction of it exceeding a duration and/or size bound, read
+  against the real `files`/`metadata` tables. Run it at the moment a bound is being picked.
 
 | incident | verdict |
 | --- | --- |
@@ -724,6 +727,8 @@ unfiled.*
 - **R3 — A corpus-distribution helper for bounds.** A `just` recipe or `scripts/` probe answering
   *"what fraction of the corpus exceeds \<duration | size\>"* against `files.duration`, so G3's
   distribution clause costs one command. `phaze-1b39` is the entire justification. **P3.**
+  Delivered by `phaze-d2hgv.5` as `just corpus-distribution` / `scripts/corpus_distribution.py`
+  (referenced from G3's distribution clause above).
 - **R4 — Inventory the remaining producer→consumer artifact seams.** `phaze-l832u.3` closed the
   extraction → analysis seam. The same shape exists wherever one component writes an artifact
   another reads across a process or format boundary — cloud staging push/pull into analysis, tag

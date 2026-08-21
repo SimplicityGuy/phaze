@@ -1149,6 +1149,21 @@ db-downgrade:
 db-history:
     uv run alembic history
 
+[doc('Corpus-distribution probe (ADR-0012 SS7 R3 / guardrail G3): fraction of the archive exceeding a duration and/or size bound (phaze-d2hgv.5)')]
+[group('db')]
+corpus-distribution duration='' size='' dsn='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z "{{duration}}" ] && [ -z "{{size}}" ]; then
+        echo "usage: just corpus-distribution DURATION_SEC [SIZE_BYTES] [DSN]  (e.g. just corpus-distribution 6600)" >&2
+        exit 1
+    fi
+    cmd=(uv run python scripts/corpus_distribution.py)
+    [ -n "{{duration}}" ] && cmd+=(--duration-sec "{{duration}}")
+    [ -n "{{size}}" ] && cmd+=(--size-bytes "{{size}}")
+    [ -n "{{dsn}}" ] && cmd+=(--dsn "{{dsn}}")
+    "${cmd[@]}"
+
 [doc('Start a DEDICATED ephemeral Postgres for the PERF-02 bench (own port, never wiped by test-db recreates)')]
 [group('db')]
 perf-db-up:
