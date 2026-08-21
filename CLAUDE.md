@@ -548,14 +548,84 @@ prime suspect. The synthetic long-file test
 essentia only and always did — the guards that hold it now are in
 `test_analysis_streaming_decode.py`, on the real network.
 
+## Acceptance criteria, attribution, and verification fidelity
+
+Five rules that bind every bead changing a production path. They exist because three production
+incidents — `phaze-1b39` (2026-07-28), `phaze-b2qs9`/`phaze-u1n7j` (2026-08-12/13) and
+`phaze-3ea41` (2026-08-14) — shipped through a green suite by the same mechanism: a change is
+justified by an **argument** about equivalence or bounds; the argument is verified against a
+**proxy that structurally cannot exhibit the failure**; green CI is then read as confirmation of
+the argument rather than of the proxy; and production is the first place the real input class ever
+meets the code. Each rule below is checkable against a diff, and
+[ADR-0012](docs/design/0012-verification-fidelity-and-operator-attribution.md) argues each one
+against all three incidents with an explicit would-have-caught / would-**not**-have-caught verdict.
+Read the verdicts before applying a rule: none of the five catches all three, and knowing which
+one is doing the work on a given change is the point.
+
+**1. An acceptance criterion is discharged by a test or by the operator — never by prose.** For
+every criterion on the bead, name the test that exercises it, or the recorded operator amendment
+that changed it. A criterion you reasoned about in a decision record is not met. Ambiguity goes
+back to the operator as a question. **Narrowing a criterion is allowed and sometimes right** — it
+is an operator action, recorded before submit, with the remainder filed as its own bead
+(`phaze-tzy6s.13` → `phaze-fk1ww` is the worked example). Narrowing it silently and calling it
+satisfied is what broke `phaze-3ea41`: its criterion *"existing audio-file analysis is unchanged"*
+was replaced in prose with the narrower *"the audio stream is bit-identical"*, which was **true,
+verified, and about the wrong quantity** — the container had changed to Matroska, TagLib reads no
+duration from Matroska, and zero duration produced zero windows for all 11,428 files in the corpus.
+
+**2. "Operator decision" is a citation, not an emphasis marker.** Any text claiming one — commit
+message, PR body, decision record, bead, code comment — carries **the question as it was put, the
+answer as it was given (quoted), the date, and a pointer to the durable record**. The durable
+record is a bead comment or an ADR section; a commit message and a PR body are neither, because
+both are written by the implementer at submit time and read by nobody afterwards. The attribution
+extends no further than the question asked: when implementation reveals a second decision inside
+the first, that is a **new question for the operator, not a corollary**. The symmetric rule also
+holds — a decision may not be narrowed past the conditions attached to it. A claim that fails any
+of the four is not deleted, it is **relabelled as the implementer's decision**, which is a
+perfectly good thing for a decision to be and which invites the review the operator label
+suppresses. `ADR-0007` §7 and the operator-decision comment on `phaze-b62ri` are the models to
+copy. ADR-0012 §5 inventories every such claim currently in the tree.
+
+**3. Verify with the artifact's real consumer, not with the tool that produced it.** A change that
+produces a new artifact — a file, a container format, an intermediate, a serialized payload —
+names its real consumer, and the test calls that consumer. Validating an artifact with the tool
+that produced it proves round-tripping, not compatibility. `phaze-3ea41` **did** ship
+real-`ffmpeg`, real-container tests; they asserted the extracted `.mka` was *"decodable by
+ffprobe"* — and `ffprobe` reads Matroska duration correctly. `es.MetadataReader`, the consumer that
+could not, was never handed the file. The general form of the lesson `D-09` recorded narrowly:
+
+- a claim about **real essentia** is not discharged by a mocked one;
+- a claim about a **container format** is not discharged by probing it with the muxer's own tooling;
+- a claim about **real multi-hour durations** is not discharged by a short synthetic fixture;
+- a claim about **the archive's distribution** is discharged against the archive's distribution —
+  a query, not a test. One query over `files.duration` would have stopped `phaze-1b39`.
+
+**4. A change to a working production path owes a blast-radius statement.** Three sentences in the
+bead or PR before submit, with the population **measured, not adjectival**: *"This changes the path
+for `<population>`. What currently works that this could break: `<X>`. The test that proves it still
+works: `<T>`."* "Some files" does not satisfy it; "all 11,428 files in the corpus" does. If no test
+`T` exists, that is the finding — escalate rather than write a weaker sentence. `phaze-3ea41` was
+scoped as "analyze video containers" and silently rewrote the analysis path for the whole archive;
+nothing in the bead or the review forced that sentence to be written.
+
+**5. A lesson recorded at one site states its general form, or states why it has none.** When a fix's
+decision record or test docstring says *"X cannot be verified by Y"*, the merging seat either names
+the general form and where it is now written down, or says why the lesson is genuinely specific to
+that call site. One sentence, not optional. This exists because the most expensive component of the
+pattern was not a missing lesson but a **captured, correct, un-generalized** one: `CLAUDE.md`
+recorded that the long-file test *"proves the claim of a mocked essentia only and always did"* and
+scoped it to memory, so three weeks later the same class of gap shipped a container change verified
+at the producer's own seam.
+
 ## Beadhive Workflow Enforcement
 
 All work in this repo flows through beadhive. Do not make direct repo edits outside this workflow unless the user explicitly asks to bypass it.
+The five rules in **Acceptance criteria, attribution, and verification fidelity** directly above bind every step below — they are what the review gate in step 7 is checking, and they are not advisory.
 
 1. **Every piece of work has a bead.** Larger work is an epic with specific stories/tasks/bugs as children. File epics through the planner (`bh plan file`), never by hand — hand-rolled epics fail the molecule convention check.
 2. **Exploring a new idea?** Use the planner: invoke the `bh:planner` skill (`/bh:plan <idea>`) to drive ideate → research → decompose → file.
 3. **When filing a new bead, ask clarifying questions** — scope, priority, acceptance — before writing the description.
-4. **Before starting execution on a bead**, if there is any ambiguity about what must be delivered, keep asking clarifying questions until the work is clear.
+4. **Before starting execution on a bead**, if there is any ambiguity about what must be delivered, keep asking clarifying questions until the work is clear. An acceptance criterion that looks wrong or ambiguous is a question for the operator, never something to reinterpret in prose — see rule 1 above, and `phaze-3ea41` for what reinterpreting one costs.
 5. **Once work starts, the dispatching session occupies the dispatcher seat itself** — load the `bh:dispatcher` skill and drive the molecule from that session; do NOT spawn a `bh:dispatcher` sub-agent (a sub-agent surrenders mid-flight visibility and leaves the session inferring state from git, which misreads both uncommitted work and evidence-only spike beads). From that seat, **dispatch a team of developer sub-agents**, each working in its own worktree (`wt/bead/issue/<id>`) branched off the bead's integration branch. Never share a worktree or a test database between concurrent agents.
 6. **Fix pushes get the adversarial treatment.** Before a `fixgroup:*` integration branch merges — a molecule whose children are bug beads from a bug hunt — run a **diff-scoped adversarial verification pass over the fix diff**: the same different-model, default-to-refuted verifier the hunt used to confirm its findings, with the fix itself as the claim under refutation. Findings become new beads, never silent edits. Rationale, the measurements behind it, and an explicit list of what the pass does **not** catch: [ADR-0011](docs/design/0011-bug-hunt-cadence.md). The same ADR sets the hunting cadence — routine lens passes are scoped to the diff since the last hunt; whole-tree passes are reduced in frequency, **not** retired.
 7. **When all children of the bead are done:** land the molecule (merge commit, never squash), then close the bead(s) with comments explaining the outcome. **A code molecule needs no PR** — `bh work finish <epic>` onto local main, then push `main` to origin directly; CI runs after the fact, so the full `just check` on an isolated seat is what actually gated it. **A docs molecule does**: open a PR, invoke a code review, and wait for green CI. If anything fails, investigate and fix — do not bypass. See "Workflow: Features and PRs" for which changes count as docs.
