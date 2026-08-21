@@ -10,18 +10,32 @@ env:
 
   # phaze-m3qte: the ffmpeg CI toolchain, pinned.
   #
-  # ⚠ CI AND THE IMAGES ARE ON DIFFERENT ffmpeg MAJORS, DELIBERATELY AND TEMPORARILY
-  # (phaze-b62ri, 2026-08-20). This block pins BtbN 8.1; the runtime images now pin Debian
+  # ⚠ CI AND THE IMAGES ARE ON DIFFERENT ffmpeg MAJORS, BY OPERATOR DECISION
+  # (phaze-b62ri, 2026-08-20). This block pins BtbN 8.1.x; the runtime images pin Debian
   # trixie's 7:7.1.5-0+deb13u1, because that is the line the essentia-tensorflow wheel
   # statically links and therefore the one that keeps the CLI and the analysis library from
   # skewing across the extract-then-decode seam. So CI does NOT test the ffmpeg production
-  # ships, and that is a real gap — it is the gap phaze-b62ri exists to close.
+  # ships.
   #
-  # It is recorded rather than silently tolerated: the resolution is an OPEN OPERATOR
-  # DECISION, argued with options and a recommendation in docs/design/0013-ffmpeg-pin.md §8.
+  # THIS IS SETTLED, NOT A TODO. Asked whether CI should move to 7.1.5 (the ADR's own
+  # recommendation), the operator answered: "leave CI on 8.1.x and the containers on 7.1.5.
+  # Yes, this is a discrepancy, but for CI ffmpeg is used only for the audio extract path.
+  # this is sufficiently isolated that this discrepancy is fine." Verified before recording:
+  # test_analysis_probe_duration.py — where the measured 7.1.5-vs-8.1.2 mp3 duration
+  # difference would land — is FULLY MOCKED and never runs a real ffprobe, so that
+  # difference cannot reach it. The one real-binary consumer,
+  # test_extraction_analysis_handoff.py, is the extract path itself.
+  #
+  # WHAT THE SPLIT COSTS, so nobody has to re-derive it: CI's ongoing coverage of the
+  # extract-then-decode seam runs 8.1, while production runs 7.1.5. A regression specific to
+  # 7.1.5's extraction output would not be caught here. That combination was measured
+  # directly instead — docs/design/0013-ffmpeg-pin.md §4a checked 7.1.5's output at its real
+  # consumer (es.MetadataReader) and found byte-identical decoded audio.
+  #
+  # Options and the declined recommendation are argued in docs/design/0013-ffmpeg-pin.md §8.
   # `tests/agents/deployment/test_ffmpeg_pin.py::test_ci_image_ffmpeg_divergence_is_recorded`
-  # fails if this explanation is deleted. Do not "fix" the split by editing this block alone —
-  # moving CI is the decision being put to the operator, not a tidy-up.
+  # fails if this explanation is deleted. Do not "fix" the split by aligning this block with
+  # the images — the split is the decision, not an oversight.
   #
   # THE VERSION IS NO LONGER CHANGED ONLY HERE. The images carry their own pin as
   # `ARG FFMPEG_APT_VERSION` in Dockerfile and Dockerfile.agent-arm64. Docker has no include

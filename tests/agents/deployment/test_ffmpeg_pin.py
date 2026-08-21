@@ -191,9 +191,11 @@ def test_ci_image_ffmpeg_divergence_is_recorded() -> None:
 
     CI downloads a pinned BtbN **8.1** build; the images now ship Debian **7.1.5**. A CI that tests
     a different ffmpeg major than production ships is precisely the gap this bead is about, so it is
-    not allowed to be implicit — whichever way it is eventually resolved. This asserts the workflow
-    still explains the split; it deliberately does NOT assert the two versions match, because the
-    resolution is an open operator decision (ADR-0013 §8), not something a test should pre-empt.
+    not allowed to be implicit. This asserts the workflow still explains the split; it deliberately
+    does NOT assert the two versions match, because the operator DECIDED on 2026-08-20 that they
+    should not — CI stays on 8.1.x, the containers on 7.1.5, on the verified grounds that CI's only
+    real-binary ffmpeg consumer is the extract path (ADR-0013 §8). A future test asserting the two
+    agree would encode the opposite of the decision.
     """
     text = _dockerfile_text(TESTS_WORKFLOW)
     # Each of these is load-bearing and hard to satisfy by accident: the bead that owns the

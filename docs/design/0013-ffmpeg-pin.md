@@ -234,13 +234,37 @@ four compose files, the justfile, any hand-run `docker build`) would trade one v
 for a silent-default failure at whichever site was missed. The guard converts "one source of
 truth", which is unreachable, into "two copies, mechanically proven identical".
 
-## 8. CI still tests 8.1 — the open decision, and the recommendation
+## 8. CI still tests 8.1 — DECIDED: the split stands
 
-After this change **CI tests a different ffmpeg major than production ships**: `tests.yml` pins
-BtbN 8.1, the images ship Debian 7.1.5. That is precisely the class of gap this bead exists to
-close, so it is recorded in `tests.yml` and guarded, not left implicit.
+**DECISION (operator, 2026-08-20): leave CI on 8.1.x and the containers on 7.1.5.** The
+recommendation below was put to the operator and **declined, with reasons**. This section is a
+closed decision, not an open question — do not re-open it as a cleanup task.
 
-**Recommendation: move CI to 7.1.5.** The divergence is not theoretical — §4a measured 7.1.5 and
+> "leave CI on 8.1.x and the containers on 7.1.5. Yes, this is a discrepancy, but for CI ffmpeg is
+> used only for the audio extract path. this is sufficiently isolated that this discrepancy is fine."
+
+**The rationale was verified before being recorded**, because it is what justifies accepting a
+measured difference. Eleven test files reference `ffmpeg`/`ffprobe`; two could have falsified it:
+
+- `test_analysis_probe_duration.py` — where the 7.1.5-vs-8.1.2 mp3 duration difference would land —
+  is **fully mocked** and never invokes a real `ffprobe`. The difference cannot reach it. This is
+  the strongest support for the operator's claim.
+- `test_extraction_analysis_handoff.py` runs **real** ffmpeg and essentia, and is the extract path
+  itself — consistent with the rationale.
+
+The claim is accurate as stated.
+
+**What the split actually costs**, drawn explicitly so nobody re-derives it: in CI the handoff test
+extracts with 8.1 and analyses with the wheel's static 7.1; in production it extracts with 7.1.5 and
+analyses with 7.1. CI's *ongoing* coverage of that seam is therefore on the wrong producer version,
+and a regression specific to 7.1.5's extraction output would not be caught. That residual is already
+discharged, just not by CI: §4a checked 7.1.5's extraction output at its real consumer
+(`es.MetadataReader`) and found byte-identical decoded audio. The production combination is verified
+by direct measurement in this bead rather than by ongoing regression coverage.
+
+---
+
+**The declined recommendation, preserved for the record: move CI to 7.1.5.** The divergence is not theoretical — §4a measured 7.1.5 and
 8.1.2 differing on mp3 duration (5.041633 vs 5.000000) and on the presence of `stream_groups`. A
 duration-sensitive regression could pass CI on 8.1 and behave differently in production.
 
@@ -250,9 +274,11 @@ duration-sensitive regression could pass CI on 8.1 and behave differently in pro
 | B — run the suite in a trixie job container and apt-pin | **Byte-identical** to production | Restructures the test job's Python/uv/service-container plumbing |
 | C — leave split | Nothing | Keeps the gap this bead is about |
 
-Ubuntu 24.04 (`ubuntu-latest`) serves only ffmpeg 6.1.1, so runner apt is not an option. **This is
-put to the operator and not taken here** — the bead's instruction was to decide and state it, not
-to rewrite CI unilaterally.
+Ubuntu 24.04 (`ubuntu-latest`) serves only ffmpeg 6.1.1, so runner apt is not an option.
+
+**Outcome: option C.** If this is ever revisited, the trigger to watch for is a regression that
+reproduces on 7.1.5 extraction output but not on 8.1 — that is the specific failure the split
+leaves uncovered, and it is the evidence that would change the decision.
 
 ## What this does **not** cover
 
