@@ -187,12 +187,11 @@ KNOWN_ORPHANS: dict[str, str] = {
     # filter/sort/pager hx-get", files_workspace.html:7) -- stale comments, not callers,
     # which is what made this invisible. Owned by another agent on this branch.
     "GET /pipeline/files": "superseded by GET /s/files when FILES_SORT was re-homed -- decide: redirect it, or delete it",
-    # Renders `duplicates/partials/*` comparison HTML. The v7 dedupe workspace resolves and
-    # reviews groups inline (`/duplicates/{hash}/resolve`, `/review`) and never links to the
-    # standalone comparison, so it is reachable only by typing the URL. Heavily tested
-    # directly (tests/review/routers/test_duplicates.py, test_duplicate_comparison_plan.py) --
-    # the exact "green tests, unreachable feature" shape.
-    "GET /duplicates/{group_hash}/compare": "no live caller since the v7 dedupe workspace went inline -- decide: wire it up or delete it",
+    # (phaze-ur8o3 resolved this module's `GET /duplicates/{group_hash}/compare` entry by taking
+    # the "delete it" branch: the route, `duplicates/partials/comparison_table.html`, and the
+    # compare-only tests are gone, so the ledger line went with them. That is the self-cleaning
+    # property working -- `test_findings_ledger_has_no_stale_entries` fails on an entry whose route
+    # no longer exists, which is what forces the decision to actually be recorded.)
     # Row-expansion detail fragment for the legacy proposals table, whose host templates were
     # deleted in the cutover; the v7 propose workspace renders `_diff_row.html` instead.
     "GET /proposals/{proposal_id}/detail": "host table deleted in the v7 cutover -- decide: wire it up or delete it",

@@ -113,5 +113,11 @@ def test_every_method_less_htmx_form_guards_its_submit_controls() -> None:
                 continue
             unguarded += [f"{where}: submit control declares no data-hx-guard: {tag.strip()[:120]}" for tag in submits if "data-hx-guard" not in tag]
 
-    assert scanned >= 11, f"the scan found only {scanned} method-less htmx forms; phaze-tckiy left 11 — the survey itself has regressed"
+    # phaze-tckiy counted 11. phaze-ur8o3 removed ONE of them with its template --
+    # duplicates/partials/comparison_table.html's "Review decision" form, verified unreachable (its
+    # sole host, GET /duplicates/{hash}/compare, had had no caller since the v7 cutover deleted
+    # group_card.html) -- so the counted population is 10, not 10 because a guard went missing.
+    # This number is EVIDENCE OF A COUNTED POPULATION, not a magic constant: lower it only alongside
+    # the removal of a specific form you can name here, never to make a red run go green.
+    assert scanned >= 10, f"the scan found only {scanned} method-less htmx forms; phaze-ur8o3 left 10 — the survey itself has regressed"
     assert not unguarded, "method-less htmx <form>s can fall through to a native GET:\n  " + "\n  ".join(unguarded)

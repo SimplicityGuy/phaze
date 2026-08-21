@@ -57,50 +57,6 @@ templates.env.filters["filesizeformat"] = _filesizeformat
 router = APIRouter(prefix="/duplicates", tags=["duplicates"])
 
 
-# (column, prefer, positive_only) -- the four numeric columns the duplicate table marks a
-# "best" value for, in render order. ``prefer`` is the selector applied to the surviving
-# (file_id, value) pairs: ``min`` for file_size (smallest wins), ``max`` for the rest.
-# ``positive_only`` additionally drops non-positive values, which bitrate and duration treat
-# as "absent" rather than as a genuine low reading.
-_BEST_VALUE_COLUMNS: tuple[tuple[str, Any, bool], ...] = (
-    ("file_size", min, False),
-    ("bitrate", max, True),
-    ("duration", max, True),
-    ("tag_filled", max, False),
-)
-
-
-def _best_file_for_column(files: list[dict[str, Any]], column: str, prefer: Any, positive_only: bool) -> Any:
-    """The id of the file holding the best value for ``column``, or None when there is no best.
-
-    "No best" covers both degenerate cases the table must not mark a winner for: nothing has a
-    usable value, and everything that does shares the SAME value (a highlight would then be
-    arbitrary among ties).
-    """
-    valid = [(f["id"], f[column]) for f in files if f.get(column) is not None and (not positive_only or f[column] > 0)]
-    if not valid or len({value for _, value in valid}) < 2:
-        return None
-    return prefer(valid, key=lambda pair: pair[1])[0]
-
-
-def _compute_best_values(group: dict[str, Any]) -> dict[str, str]:
-    """Compute which file has the best value for each numeric column.
-
-    Returns {column_name: file_id} for columns where a best exists.
-    For file_size: smallest is best.
-    For bitrate: highest is best.
-    For duration: longest is best.
-    For tag_filled: most is best.
-    """
-    files = group["files"]
-    best: dict[str, str] = {}
-    for column, prefer, positive_only in _BEST_VALUE_COLUMNS:
-        winner = _best_file_for_column(files, column, prefer, positive_only)
-        if winner is not None:
-            best[column] = winner
-    return best
-
-
 @router.get("/", response_class=RedirectResponse)
 async def list_duplicates() -> RedirectResponse:
     """SHELL-05 (D-03): resolve a legacy ``/duplicates/`` bookmark into the v7.0 shell.
@@ -160,39 +116,6 @@ async def load_more_groups(
             "page_size": GROUP_PAGE_SIZE,
             "has_more": rendered_through < total,
             "subcount_text": dedupe_subcount_text(rendered_through, total),
-        },
-    )
-
-
-@router.get("/{group_hash}/compare", response_class=HTMLResponse)
-async def compare_group(
-    request: Request,
-    group_hash: str,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """Return the comparison table partial for a single duplicate group."""
-    # phaze-m7ya: a LOOKUP by hash, not a paged read. This used to fetch a hardcoded first 1000
-    # groups and linear-scan them, so any group past that arbitrary boundary answered "Group not
-    # found" forever while the list page still offered it a Compare button.
-    #
-    # phaze-i0jqu: skip the query entirely if group_hash carries a NUL/lone surrogate PostgreSQL
-    # cannot bind in a UTF8 text parameter (asyncpg raises CharacterNotInRepertoireError and aborts
-    # the transaction). No group could ever be keyed on such a hash, so it degrades to the SAME
-    # "Group not found" answer as a hash that is merely unknown, rather than an unhandled 500.
-    group = None if contains_pg_invalid_chars(group_hash) else await find_duplicate_group_by_hash(session, group_hash)
-    if group is None:
-        return HTMLResponse(content="<p class='text-sm text-muted'>Group not found.</p>", status_code=200)
-
-    score_group(group)
-    best_values = _compute_best_values(group)
-
-    return templates.TemplateResponse(
-        request=request,
-        name="duplicates/partials/comparison_table.html",
-        context={
-            "request": request,
-            "group": group,
-            "best_values": best_values,
         },
     )
 
@@ -344,8 +267,11 @@ async def undo_resolve_endpoint(
     await session.commit()  # `get_session` does not commit; without this the undo is rolled back.
 
     # Re-fetch group data after undo
-    # phaze-m7ya: keyed lookup, same reason as compare_group -- the capped scan silently dropped the
-    # restored card (group=None) for any group outside the first 1000, so undo appeared to erase it.
+    # phaze-m7ya: keyed lookup, not a capped scan -- the old fetch-first-1000-then-scan silently
+    # dropped the restored card (group=None) for any group outside that arbitrary boundary, so undo
+    # appeared to erase the group instead of restoring it. (This comment used to point at
+    # compare_group for the shared rationale; phaze-ur8o3 deleted that route, so the reason is
+    # spelled out here and in services/dedup.find_duplicate_group_by_hash.)
     group = None if contains_pg_invalid_chars(group_hash) else await find_duplicate_group_by_hash(session, group_hash)
     dupe_group_card = None
     if group:

@@ -706,7 +706,7 @@ def _alpine_class_alternatives(expr: str) -> list[str]:
 
     A `cond ? 'a' : 'b'` ternary applies exactly ONE side, so its literals are alternatives -- reading
     them as one concatenated string is a false positive, and the shape is common enough in this tree
-    (rail.html, header.html, comparison_table.html) to matter. The object/array forms
+    (rail.html, header.html, _dupe_group.html) to matter. The object/array forms
     (`{'a': x, 'b': y}`) can apply several literals at once, so there they stay concatenated.
     """
     return _expression_alternatives(expr) if "?" in expr else [expr]

@@ -316,12 +316,12 @@ async def find_duplicate_group_by_hash(session: AsyncSession, group_hash: str) -
     :mod:`phaze.services.pagination` (phaze-m7ya). Locating a single known group is an indexed
     ``WHERE sha256_hash = :group_hash`` query whose cost and correctness are independent of where that
     group happens to sort among all the others. Paging a lookup would preserve the original defect in a
-    nicer costume: ``compare_group`` and ``undo_resolve_endpoint`` used to fetch a hardcoded first 1000
-    groups and linear-scan them, so any group past that arbitrary boundary reported "Group not found"
-    and could never be reviewed or resolved through the UI -- even though the list page happily rendered
-    it with a Compare button. Widening the cap, or walking pages until the hash turns up, would only
-    move the boundary; removing the scan removes the class of bug. It also drops an O(all groups)
-    metadata fetch that ran on EVERY single card expand.
+    nicer costume: ``undo_resolve_endpoint`` (and the since-deleted ``compare_group``, phaze-ur8o3) used
+    to fetch a hardcoded first 1000 groups and linear-scan them, so any group past that arbitrary
+    boundary reported "Group not found" and could never be reviewed or resolved through the UI. Widening
+    the cap, or walking pages until the hash turns up, would only move the boundary; removing the scan
+    removes the class of bug. It also drops an O(all groups) metadata fetch that ran on EVERY mutation
+    that has to re-render one group's card.
 
     Returns ``None`` for a hash that is unknown, already resolved, or no longer a duplicate (down to a
     single remaining file) -- all of which are ordinary states a stale card can ask about, not errors.

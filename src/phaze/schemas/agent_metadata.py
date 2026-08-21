@@ -32,8 +32,9 @@ class MetadataWriteRequest(BaseModel):
     #     has always stored in bps). 0-50,000,000 comfortably covers even absurd multichannel
     #     hi-res PCM (e.g. 8ch/24-bit/192kHz = 36,864,000 bps) while still rejecting nonsense,
     #     well inside the int4 column ceiling. Display call sites (services/review.py,
-    #     services/dedup.py, templates/duplicates/partials/comparison_table.html) divide by
-    #     1000 to render kbps -- the STORED unit is bps, not kbps.
+    #     services/dedup.py) divide by 1000 to render kbps -- the STORED unit is bps, not kbps.
+    #     (templates/duplicates/partials/comparison_table.html was a third such site until
+    #     phaze-ur8o3 deleted it as unreachable; the stored unit is unchanged by that.)
     year: int | None = Field(default=None, ge=0, le=9999)
     genre: str | None = None
     track_number: int | None = Field(default=None, ge=0, le=9999)

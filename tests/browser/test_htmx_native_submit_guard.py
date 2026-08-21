@@ -126,21 +126,24 @@ async def test_approving_bulk_tag_writes_the_instant_the_form_swaps_in_still_con
         assert "tag write" in toast_text and "queued" in toast_text, f"attempt {attempt}: the approval did not actually queue a write: {toast_text!r}"
 
 
-# --- phaze-tckiy: the remaining nine forms --------------------------------------------------
+# --- phaze-tckiy: the remaining eight forms -------------------------------------------------
 #
 # phaze-5i74w asserted the two forms above were the only method-less htmx forms in the templates.
 # They were not: a multi-line-aware scan across hx-post/hx-patch/hx-put/hx-delete found ELEVEN, and
 # the survey that missed nine of them was a single-line `grep -o '<form[^>]*hx-post[^>]*>'` which
 # cannot match a <form> tag whose attributes wrap across lines and never looked for hx-patch at all.
-# tests/shared/core/test_htmx_native_submit_guard_coverage.py is that scan made permanent, so a
-# TWELFTH form cannot be added unguarded. What follows is the runtime half it cannot supply: that
-# the guard is actually released, on the paths where "released" is not obvious.
+# tests/shared/core/test_htmx_native_submit_guard_coverage.py is that scan made permanent, so an
+# unguarded ADDITION cannot land. Nine of that eleven were phaze-tckiy's; eight remain, because
+# phaze-ur8o3 deleted comparison_table.html (and the compare route that was its only host) after
+# verifying it unreachable, which is also why that scan's counted population is now 10 rather than
+# 11. What follows is the runtime half it cannot supply: that the guard is actually released, on the
+# paths where "released" is not obvious.
 #
-# Not every one of the nine gets a race here, and that is deliberate rather than an omission of
-# convenience. Four of them (comparison_table.html's Review-decision table, _force_skip_dialog.html's
-# skip confirm, empty_state.html's per-root Scan, trigger_scan_card.html's Start Scan) sit behind the
-# SAME shell.html listener on the SAME kind of primary swap already proven above and by the two races
-# below, and reaching them costs multi-step setup that would test the setup more than the guard. The
+# Not every one of the eight gets a race here, and that is deliberate rather than an omission of
+# convenience. Three of them (_force_skip_dialog.html's skip confirm, empty_state.html's per-root
+# Scan, trigger_scan_card.html's Start Scan) sit behind the SAME shell.html listener on the SAME kind
+# of primary swap already proven above and by the two races below, and reaching them costs multi-step
+# setup that would test the setup more than the guard. The
 # four raced here each answer a question the others do not: the dedupe group card, raced against a
 # rail swap, is the plain case and the control; the resolve-all is destructive AND its hx-confirm is
 # itself htmx-provided, so a won race skipped the prompt as well as the write; the hx-patch form has
@@ -381,7 +384,7 @@ async def test_bulk_approving_changes_the_instant_the_list_swaps_in_still_patche
 async def test_every_guarded_button_on_its_own_route_is_released_by_htmx(page: Any, seed: Any) -> None:
     """The three forms not raced above, each reached the way an operator reaches it.
 
-    A race test is not the only thing the four unraced forms are owed. Their guards are inert markup
+    A race test is not the only thing the three unraced forms are owed. Their guards are inert markup
     until shell.html's listener sees them, and "the same listener handles them" is an argument, not
     an observation -- the class of claim that keeps shipping through green suites here. So each is
     driven to its real route by a real htmx swap and asserted to come out USABLE: ``data-hx-guard``
@@ -393,10 +396,11 @@ async def test_every_guarded_button_on_its_own_route_is_released_by_htmx(page: A
     is RELEASED on these routes, not that the pre-release window is closed on them. That second claim
     rests on the shared listener, which the four races do exercise.
 
-    ``comparison_table.html``'s "Review decision" form is the fourth, and it is absent here because
-    it is unreachable: nothing in the v7 shell links to ``GET /duplicates/{hash}/compare``, so there
-    is no operator route to drive. Stated rather than papered over with a synthesized request that
-    would prove only that the template renders.
+    ``comparison_table.html``'s "Review decision" form used to be a fourth, listed here as absent
+    because it was unreachable -- nothing in the v7 shell linked to ``GET /duplicates/{hash}/compare``,
+    so there was no operator route to drive. phaze-ur8o3 verified that and deleted the route and the
+    template, which is why only three remain. Recording the unreachable form here rather than papering
+    over it with a synthesized request is what made that removal an evidenced decision.
 
     The barrier is a wait for the guard to clear, never ``settled()`` plus a read. ``settled()``
     polls for zero in-flight requests and returns BEFORE htmx's deferred settle task has run, so a
