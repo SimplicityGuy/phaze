@@ -26,16 +26,65 @@ case EXPLICIT and cheap, ahead of essentia ever running:
        then runs completely unchanged against the extracted audio path -- this module never
        imports ``phaze.services.analysis`` or essentia.
 
-**Format scope: probe-based, any container -- operator decision, no extension whitelist
-(phaze-3ea41).** An earlier draft of this module gated extraction on a static
-``VIDEO_FILE_TYPES`` set derived from ``EXTENSION_MAP``/``FileCategory.VIDEO``, extracting
-ONLY for a fixed list of recognized video extensions. The operator decision replacing that:
-:func:`extract_audio_track` runs for EVERY file the callers hand it, regardless of
-extension -- ``ffprobe`` is the sole authority on whether a given file has an audio stream at
-all, not a maintained extension list. This is why :func:`extract_audio_track` takes no
-file-type parameter and callers (``tasks/functions.py::process_file``,
-``job_runner.py::run``) no longer branch on ``payload.file_type``/``audio_ext`` before
-calling it. Two consequences worth being explicit about:
+**OPERATOR DECISIONS OF RECORD (phaze-3ea41, 2026-08-12).** This block is the durable record
+for this module: three of its design choices are the OPERATOR's and the rest are the
+IMPLEMENTER's, and every other site in the tree that cites an operator decision for phaze-3ea41
+points HERE rather than restating the question. All three were put in a single question at
+2026-08-12T00:30:59Z and answered at 2026-08-12T00:31:36Z (Claude Code session 60b8bf47).
+Recovered from that primary record on 2026-08-20 by phaze-d2hgv -- which is why ADR-0012 section
+5, swept before the recovery, lists them as untraceable and why its section 7 R1 prescribes
+stripping them. Read this block, not that prescription.
+
+  1. **Which VIDEO containers the analyze lane accepts.** Question as put: *"phaze-3ea41: which video
+     containers should the analyze lane accept?"* Answer, quoted: *"Probe-based, any
+     container"*, chosen over *"Common concert formats"* and *"mkv + avi only"*. **Scope limit,
+     and it is the whole of ADR-0012's Finding 1:** the question is about VIDEO containers, so
+     the answer licenses deleting the video-extension whitelist and making ``ffprobe`` the
+     authority on which containers are accepted. It does not license offering bare audio files
+     to extraction as well. That was the implementer's generalization -- see "Format scope"
+     below.
+  2. **Where extraction runs.** Question as put: *"phaze-3ea41: where should audio extraction
+     run?"* Answer, quoted: *"Both lanes"*. Carried by "Cloud lane vs local lane" below, and
+     that is the WHOLE of it. The dispatch that accompanied the question left the adjacent
+     disk-headroom question to the implementer in as many words -- *"Disk-headroom handling for
+     long sets remains yours to design"* -- and liveness during extraction was never put to the
+     operator at all. So "Disk headroom" and "Liveness during extraction" below are the
+     implementer's decisions and must not be re-stamped as the operator's.
+  3. **Which audio track gets analyzed.** Question as put: *"phaze-3ea41: when a container
+     carries multiple audio tracks, which one gets analyzed?"* What the operator AUTHORED is the
+     selection of the option LABELLED *"Default/first track"*. Beside that label stood a
+     DESCRIPTION, written by the dispatcher and not by the operator, reading *"Take the
+     container's default-flagged audio stream (falling back to the first), log the others'
+     existence in the analysis record."* The two are cited separately below because they do not
+     carry the same authority: default-then-first is what the operator selected BY NAME on
+     2026-08-12, whereas
+     logging the other streams is ACCOMPANYING CONTEXT that the operator accepted by selecting
+     that option -- it was never put as its own question and the operator never wrote the
+     sentence. Treat it as decided, and as the weaker of the two registers. Neither fixes the
+     logging MECHANISM -- that it is a structured INFO line keyed by ``file_id`` rather than a
+     row on the analysis record is the implementer's reading of "the analysis record", and is
+     open to challenge as such.
+
+**Format scope: probe-based container acceptance, no extension whitelist -- operator decision
+2026-08-12 (phaze-3ea41, record 1 above).** An earlier draft of this module gated extraction on a
+static ``VIDEO_FILE_TYPES`` set derived from ``EXTENSION_MAP``/``FileCategory.VIDEO``,
+extracting ONLY for a fixed list of recognized video extensions. ``ffprobe`` replaced that
+whitelist and is the sole authority on whether a given file has an audio stream at all, not a
+maintained extension list. This is why :func:`extract_audio_track` takes no file-type parameter
+and callers (``tasks/functions.py::process_file``, ``job_runner.py::run``) no longer branch on
+``payload.file_type``/``audio_ext`` before calling it.
+
+**NOT an operator decision: widening that from video containers to EVERY file.** The
+operator decision of 2026-08-12 covered video containers (phaze-3ea41, record 1). phaze-3ea41
+shipped ":func:`extract_audio_track` runs for EVERY file the callers hand it, regardless of
+extension" -- remuxing bare audio through ffmpeg into ``.mka`` as well -- and this docstring
+recorded the widening as the operator's. It was the IMPLEMENTER's: record 1 was asked and
+answered about video containers only, and the two propositions were fused. The distinction is
+not academic. The unconditional remux is what put a Matroska intermediate in front of the whole
+archive and stopped the pipeline dead for 11.5 hours; D-10 below is the narrowing that removed
+it, so the CODE no longer behaves this way. This paragraph exists so the widening cannot come
+back wearing an authority it never had. Two consequences of probe-based scope worth being
+explicit about:
 
   * ``-c:a copy`` is a lossless stream copy (never a re-encode), so where a remux DOES happen
     it produces bit-identical audio to what essentia would have decoded from the original --
@@ -65,7 +114,8 @@ whitelist phaze-3ea41 removed stays removed. What changes for CALLERS is the ret
 :class:`AudioSource`, which exists because a skip branch cannot express itself as a bare
 "scratch path you own and delete" without deleting the operator's archive original.
 
-**Disk headroom (``-c:a copy``, never a decode-to-PCM/WAV intermediate).** A multi-hour
+**Disk headroom (``-c:a copy``, never a decode-to-PCM/WAV intermediate) -- the
+IMPLEMENTER's decision, explicitly left to the developer (record 2 above).** A multi-hour
 concert set decoded to raw PCM would be the multi-GiB-per-hour blowup ``services/analysis.py``
 D-07's chunking exists to avoid for the ESSENTIA side; producing that same blowup one step
 earlier, as the extraction intermediate, would just move the disk-pressure problem rather than
@@ -80,9 +130,10 @@ not just recognized video extensions -- and such a scratch file is gone within t
 attempt, so the aggregate scratch footprint at any instant is O(concurrent in-flight files),
 never O(archive size). A file that skips extraction contributes nothing to it at all.
 
-**Cloud lane vs local lane (both extract locally, no audio-push plumbing) -- operator
-decision (phaze-3ea41).** ``ffmpeg`` is already installed in both the app/agent images AND
-the burst-lane job-runner image (stack notes), and ``-c:a copy`` extraction is cheap (bounded
+**Cloud lane vs local lane (both extract locally, no audio-push plumbing) --
+operator decision, answered "Both lanes" 2026-08-12 (phaze-3ea41; question as put in
+record 2 above).** ``ffmpeg`` is already installed in both the app/agent images AND the burst-lane
+job-runner image (stack notes), and ``-c:a copy`` extraction is cheap (bounded
 by disk I/O, not audio decode). Piping the ORIGINAL file through the existing push/pull cloud
 pipeline unmodified and extracting on whichever side ends up holding the bytes -- rather than
 inventing a THIRD artifact (the extracted audio) that would need its own S3 upload/download
@@ -97,7 +148,8 @@ the cloud lane) before handing the (possibly-rewritten) read path to the shared 
 driver -- symmetric with how ``read_path = payload.scratch_path or payload.original_path``
 already makes the analyzer path-agnostic between the two sources.
 
-**Liveness during extraction (phaze-w55w1 discipline, extended).** ``ffmpeg -progress
+**Liveness during extraction (phaze-w55w1 discipline, extended) -- the IMPLEMENTER's
+decision; never put to the operator (record 2 above).** ``ffmpeg -progress
 pipe:1`` emits a periodic ``key=value`` progress block to stdout while it runs -- requested
 ONLY when a caller supplies ``heartbeat_cb`` (a no-op caller gets a plain ``DEVNULL`` stdout,
 no pipe, no pump); this module treats EVERY such block as a liveness tick and SPAWNS the
@@ -242,12 +294,13 @@ async def probe_container_streams(file_path: str) -> list[dict[str, Any]]:
     stack. Each entry carries at least ``index`` (the file's absolute stream index, directly
     usable as ffmpeg's ``-map 0:<index>``), ``codec_name``, ``codec_type``, and a nested
     ``disposition`` dict whose ``default`` key is the track-selection signal (phaze-3ea41
-    operator decision: prefer the container's DEFAULT-flagged stream) and whose
+    operator decision, answered "Default/first track" 2026-08-12: prefer the container's
+    DEFAULT-flagged stream -- record 3 of this module's docstring) and whose
     ``attached_pic`` key marks a cover-art "video" stream (phaze-l832u: what separates an mp3
     with embedded artwork from a real video container).
 
     This is ALSO the sole authority for whether ``file_path`` is analyzable at all (the
-    format-scope operator decision in this module's docstring) and for whether it needs
+    probe-based format scope in this module's docstring) and for whether it needs
     extracting at all (:func:`_is_already_plain_audio`) -- regardless of what the file's
     extension claims. **phaze-l832u widened this from ``-select_streams a`` to the whole
     container**: "does this file have audio" can be answered from the audio streams alone, but
@@ -297,9 +350,11 @@ def _is_already_plain_audio(streams: list[dict[str, Any]]) -> bool:
     the corpus from the hot path -- correctness is decision 1's job (the ffprobe duration probe,
     ``services/analysis.py`` D-10), this is cost.
 
-    ffprobe remains the SOLE authority (phaze-3ea41's format-scope operator decision is
-    narrowed here, not reverted): the predicate reads what the container actually holds, never
-    the suffix or ``FileRecord.file_type``. Two shapes are deliberately still EXTRACTED:
+    ffprobe remains the SOLE authority (phaze-3ea41's format scope is narrowed here, not
+    reverted -- and what D-10 narrows is the implementer's every-file REMUX, not the operator's
+    probe-based container acceptance; this module's docstring keeps the two apart): the
+    predicate reads what the container actually holds, never the suffix or
+    ``FileRecord.file_type``. Two shapes are deliberately still EXTRACTED:
 
     * **More than one audio stream** -- which track essentia would pick is exactly the opacity
       this module exists to remove; :func:`_select_track` must make that choice explicitly.
@@ -328,7 +383,9 @@ def _is_already_plain_audio(streams: list[dict[str, Any]]) -> bool:
 def _select_track(streams: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Pick the container's DEFAULT-flagged audio stream, falling back to the first.
 
-    Track-selection operator decision (phaze-3ea41): prefer whichever stream ffprobe reports
+    Track-selection operator decision (phaze-3ea41), answered "Default/first track"
+    2026-08-12 -- the question as put, and the label/description split it turns on, are in
+    record 3 of this module's docstring: prefer whichever stream ffprobe reports
     with ``disposition.default == 1`` -- the container's own author-declared primary track --
     over blindly taking the lowest ffprobe index. Falls back to the first-listed stream when
     NONE carries the default flag (common: many encoders never set it). Returns
@@ -372,8 +429,13 @@ async def extract_audio_track(
     ``job_runner.py::run``'s outer ``finally``, which delete it on every terminal exit, success
     or failure alike.
 
-    ``file_id`` is OPTIONAL and purely for log attribution (the "log the other streams'
-    existence in the analysis record" operator decision) -- callers that have one (both real
+    ``file_id`` is OPTIONAL and purely for log attribution. "Log the others' existence in the
+    analysis record" carries the operator decision of 2026-08-12 (phaze-3ea41) -- but in its
+    weaker register: it is dispatcher-written ACCOMPANYING CONTEXT in the DESCRIPTION beside the
+    option label the operator actually chose, "Default/first track". Record 3 of this module's
+    docstring keeps the two apart rather than flattening them. That the log
+    is a structured INFO line keyed by ``file_id``, rather than a row on the analysis record, is
+    the implementer's reading of "the analysis record" -- callers that have one (both real
     lanes do) pass it so a multi-track pick is attributable to the file it was made for in the
     structured log stream without threading a DB write through an essentia/DB-free module.
     """

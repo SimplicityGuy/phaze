@@ -16,8 +16,9 @@ same self-resolving files are what the convention was learned FROM.
    nothing into the LLM context and nothing into the proposal's ``context_used``, so proposals are
    byte-identical to the pre-phaze-5fta behavior; that fail-closed path is still one env var away
    (``PHAZE_CONVENTION_DATE_FALLBACK_ENABLED=false``). It shipped off and was flipped on by operator
-   decision after phaze-5fta.5 validated derived dates against independent published event dates
-   with 0 contradictions. The permission question that validation deliberately left open was
+   decision (2026-08-04, see config.py's ROLLOUT HISTORY comment for the dated citation) after
+   phaze-5fta.5 validated derived dates against independent published event dates with 0
+   contradictions. The permission question that validation deliberately left open was
    answered narrowly: a derived date reaches a rename PROPOSAL, never the filesystem, and the
    approval workflow still gates every move.
 2. **The evidence bar** (``convention_date_min_supporting``) -- a group whose convention rests on a

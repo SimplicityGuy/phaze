@@ -342,7 +342,7 @@ class TestRegistration:
         assert refresh_tracklists in controller_settings["functions"]
 
     async def test_has_no_cron_job(self) -> None:
-        """Operator decision (2026-08-03): refresh is on-demand and is NEVER scheduled.
+        """Operator decision (2026-08-03, phaze-2akf): refresh is on-demand and is NEVER scheduled.
 
         A cron here would re-open exactly the contradiction the drain's cache was built to close --
         "a published tracklist does not change, so never re-fetch" -- as an unbounded background

@@ -63,10 +63,14 @@ def _patch_agent_settings() -> Any:
 def _patch_extract_audio_track() -> Any:
     """Default extraction stub: fabricates a DISTINCT synthetic extracted path.
 
-    phaze-3ea41 operator decision: extraction now runs for EVERY file (format-scope decision,
-    no extension whitelist). This module's tests exercise the scratch-copy read/cleanup path
-    and have no interest in extraction itself -- patching it here keeps them oblivious to it.
-    Deliberately NOT the phaze-l832u SKIP shape (``AudioSource(read_path, None)``): these tests
+    phaze-3ea41, IMPLEMENTER's decision (format scope): extraction is offered EVERY file,
+    not just recognized video containers -- the operator decided probe-based acceptance for
+    VIDEO containers ("Probe-based, any container", 2026-08-12) and the widening was not asked;
+    see services/video_audio.py's D-09 "operator decisions of record".
+
+    This module's tests exercise the scratch-copy read/cleanup path and have no interest in
+    extraction itself -- patching it here keeps them oblivious to it. Deliberately NOT the
+    phaze-l832u SKIP shape (``AudioSource(read_path, None)``): these tests
     are about the EXTRACTION branch's interaction with the pushed scratch copy, where the outer
     ``finally`` unlinks ``cleanup_path`` and several tests here assert the REAL scratch copy at
     ``payload.scratch_path`` survives a retryable failure. Returning a distinct scratch file

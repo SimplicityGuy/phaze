@@ -138,9 +138,9 @@ def test_cron_does_not_regress_existing_jobs() -> None:
     a decision rather than as a relaxation. The monthly ``refresh_tracklists`` cron re-fetched every
     tracklist older than 90 days, which directly contradicts the drain's cache ("a published
     tracklist does not change, so never re-fetch") and made a second, unbounded consumer of a
-    whole-host budget of ~1 request / 8 s. The operator decision was: the drain keeps never
-    re-fetching, and refresh becomes on-demand and targeted. Re-adding the cron re-opens that,
-    which is why the absence is asserted rather than merely un-asserted.
+    whole-host budget of ~1 request / 8 s. The operator decision (2026-08-03, phaze-2akf) was: the
+    drain keeps never re-fetching, and refresh becomes on-demand and targeted. Re-adding the cron
+    re-opens that, which is why the absence is asserted rather than merely un-asserted.
     """
     from phaze.tasks import controller
     from phaze.tasks.scan_reaper import reap_stalled_scans

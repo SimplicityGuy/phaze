@@ -92,8 +92,12 @@ def _patch_agent_settings() -> Any:
 def _patch_extract_audio_track() -> Any:
     """Default extraction stub: fabricates a DISTINCT synthetic extracted path.
 
-    phaze-3ea41 operator decision: extraction now runs for EVERY file (format-scope decision,
-    no extension whitelist), so every ``process_file`` call reaches ``extract_audio_track``.
+    phaze-3ea41, IMPLEMENTER's decision (format scope): extraction is offered EVERY file,
+    not just recognized video containers, so every ``process_file`` call reaches
+    ``extract_audio_track``. The operator's answer covered VIDEO containers only
+    ("Probe-based, any container", 2026-08-12) -- see services/video_audio.py's D-09
+    "operator decisions of record".
+
     Most tests in this module exercise process_file's OTHER behavior and have no interest in
     extraction at all -- patching it here keeps them oblivious to it, exactly as they were
     before this bead.
@@ -459,8 +463,10 @@ async def test_process_file_video_analyzes_the_extracted_audio_path_not_the_orig
 @patch("phaze.tasks.functions.extract_audio_track", new_callable=AsyncMock)
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_process_file_audio_also_goes_through_extraction(mock_pool: AsyncMock, mock_extract: AsyncMock) -> None:
-    """phaze-3ea41 operator decision (format scope): extraction runs for EVERY file, audio
-    included -- there is no ``payload.file_type`` gate any more. ``ffprobe`` is the sole
+    """phaze-3ea41, IMPLEMENTER's decision (format scope): extraction is offered EVERY file,
+    audio included -- there is no ``payload.file_type`` gate any more. The operator was asked
+    which VIDEO containers to accept and answered "Probe-based, any container" (2026-08-12);
+    see services/video_audio.py's D-09 "operator decisions of record". ``ffprobe`` is the sole
     authority on whether a file has an audio stream, so plain audio types reach
     ``extract_audio_track`` exactly like video ones (a lossless stream copy for an
     already-bare-audio file, per the module's decision record)."""
