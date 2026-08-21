@@ -96,11 +96,27 @@ WORKDIR /app
 # DL3008: versions are intentionally unpinned — Debian-slim apt package versions
 # shift on every base-image refresh and pinning them would break builds on each
 # security update. The base image tag controls the package snapshot instead.
-# hadolint ignore=DL3008
+# ffmpeg IS version-controlled here, by the BASE IMAGE TAG rather than by an apt pin
+# (phaze-b62ri). Debian locks the upstream MAJOR.MINOR line for the life of a release, so
+# `python:3.14-slim` (trixie) means ffmpeg 7.1.x and cannot mean anything else; only the
+# patch and Debian revision float, and those are security backports. An explicit
+# `ffmpeg=7:7.1.5-0+deb13u1` would be WORSE THAN NOTHING: it pins security updates OUT.
+# Measured on bullseye, which currently carries two versions at once -- bullseye/main has
+# 7:4.3.7-0+deb11u1 while bullseye-security/main has the 7:4.3.9-0+deb11u2 candidate -- so a
+# pin at the base version resolves AWAY from the security update, and a pin at the security
+# version breaks the build the day the next one lands. 7.1 is also the line the
+# essentia-tensorflow wheel statically links, so this base keeps the CLI and the analysis
+# library on one line by construction. See docs/design/0013-ffmpeg-pin.md.
+# DL4006: the two `-version | head -1` lines are a build-log assertion, not a pipeline whose
+# failure must propagate.
+# hadolint ignore=DL3008,DL4006
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libatomic1 ffmpeg libsndfile1 libchromaprint-tools libpq5 rsync openssh-client xvfb \
+    && apt-get install -y --no-install-recommends \
+        libatomic1 ffmpeg libsndfile1 libchromaprint-tools libpq5 rsync openssh-client xvfb \
     && rm -rf /var/lib/apt/lists/* \
-    && command -v rsync ssh Xvfb
+    && command -v rsync ssh Xvfb \
+    && ffmpeg -version | head -1 \
+    && ffprobe -version | head -1
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /uvx /bin/

@@ -311,22 +311,29 @@ async def test_bulk_approving_changes_the_instant_the_list_swaps_in_still_patche
     Why ``htmx.ajax`` rather than clicking a facet tab
     ==================================================
 
-    The natural operator gesture -- check a row, then click a facet tab -- cannot serve as the swap
-    here, because the selection does not survive it. ``sync()`` rewrites each ``[data-changes-nav]``
-    element's ``hx-get`` to carry ``selected=<id>``, and the attribute really does change, but htmx
-    captures a verb's path in the trigger-handler closure at ``processNode`` time (htmx 2.0.10
-    ``processVerbs``) and never re-reads the attribute at request time. The tab therefore requests
-    the URL it was SERVER-RENDERED with -- ``selected=`` empty -- and the swapped-in list comes back
-    with an empty selection, leaving the fieldset correctly disabled and nothing to race.
+    The natural operator gesture -- check a row, then click a facet tab -- could not serve as the
+    swap when this was written, because the selection did not survive it. ``sync()`` rewrites each
+    ``[data-changes-nav]`` element's ``hx-get`` to carry ``selected=<id>``, and the attribute really
+    did change, but htmx captures a verb's path in the trigger-handler closure at ``processNode``
+    time (htmx 2.0.10 ``processVerbs``) and never re-read the attribute at request time. The tab
+    therefore requested the URL it was SERVER-RENDERED with -- ``selected=`` empty -- and the
+    swapped-in list came back with an empty selection, leaving the fieldset correctly disabled and
+    nothing to race.
 
-    That is a real defect in the selection-carrying behaviour, found while writing this test and
-    handed back for its own bead rather than fixed here -- it changes a write's scope and deserves
-    its own review. It is emphatically NOT this guard: instrumenting the same swap showed
-    ``htmx:load`` firing on the new list and the guard releasing correctly. Rather than couple this
-    regression test to a bug it does not own, the swap is issued directly: the same
-    ``htmx.ajax`` -> deferred settle -> ``htmx:load`` path, with a URL that carries the selection.
-    ``htmx.ajax``'s promise is deliberately NOT awaited -- awaiting it would settle the swap and
-    dissolve the very race this exists to lose.
+    That was a real defect in the selection-carrying behaviour, found while writing this test and
+    handed back for its own bead rather than fixed here, because it changes a write's scope.
+    **phaze-tp52f has since fixed it** (``sync()`` now ends each rewrite with ``htmx.process``) and
+    measured the consequence; ``tests/browser/test_changes_facet_selection_wire.py`` is that bead's
+    coverage. It was emphatically never this guard: instrumenting the same swap showed ``htmx:load``
+    firing on the new list and the guard releasing correctly.
+
+    This test nonetheless still issues the swap directly, and that is a deliberate choice rather
+    than a leftover. Routing it through a facet tab would couple a guard regression test to the
+    selection-carrying behaviour of a different bead -- a future change there would turn this red
+    for a reason that has nothing to do with the guard. ``htmx.ajax`` reaches the same
+    ``htmx.ajax`` -> deferred settle -> ``htmx:load`` path with a URL that carries the selection, and
+    its promise is deliberately NOT awaited -- awaiting it would settle the swap and dissolve the
+    very race this exists to lose.
     """
     target = await seed.proposal(status=ProposalStatus.PENDING, filename="<set-01>.mp3")
 
