@@ -397,21 +397,27 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
-  # phaze-tzy6s.14: the real-browser suite. Its own job on purpose, and NON-BLOCKING to start with
-  # (`continue-on-error`), per the bead's "separate job, not blocking the unit matrix initially".
-  # A brand-new browser suite has no flake record; gating merges on it before that record exists
-  # would train everyone to re-run CI on red, which is exactly how a real failure gets waved
-  # through. Promote it to blocking once it has a clean run of 10 (tracked on phaze-8p1uq).
+  # phaze-tzy6s.14: the real-browser suite. Its own job on purpose. It started NON-BLOCKING
+  # (`continue-on-error: true`), per the bead's "separate job, not blocking the unit matrix
+  # initially": a brand-new browser suite has no flake record, and gating merges on it before that
+  # record exists trains everyone to re-run CI on red, which is exactly how a real failure gets
+  # waved through.
   #
-  # phaze-8p1uq: the record and the promotion procedure live in tests/browser/FLAKE_RECORD.md.
-  # Status there is 0 of 10 -- this job cannot accumulate post-merge runs until epic phaze-tzy6s
-  # merges to main, so the count starts then. Record each run in that file rather than deciding
-  # from memory; the file also lists what to suspect first when a CI-only failure appears.
+  # phaze-8p1uq: that bar was 10 consecutive clean post-merge runs of THIS JOB on main, and it was
+  # met on 2026-08-21 -- 14 consecutive green executions from run 32404559677 (`827052af`) through
+  # 32451444163 (`ebae0f4`). `continue-on-error` is gone, so this job now fails the build. The
+  # ranked list of what to suspect first when a CI-only failure appears moved to ADR-0009
+  # (docs/design/0009-responsive-accessibility-baseline.md, § "The browser contract suite"); the
+  # promotion scaffolding it lived alongside (tests/browser/FLAKE_RECORD.md) was deleted with this
+  # change, and its per-run history stays readable in git history and phaze-8p1uq's comments.
+  #
+  # A red run here is a real defect until proven otherwise -- the one failure this suite caught on
+  # main (a `scrollbar-gutter` arithmetic bug) reproduced 10/10 in CI and 0/10 on macOS. Check the
+  # rendering axis before the timing axis; the trace artifact below is what makes that possible.
   browser:
     name: Browser contract (non-blocking)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    continue-on-error: true
     services:
       postgres:
         image: postgres:18-alpine
@@ -545,9 +551,10 @@ jobs:
       # ignore` covers that case too rather than needing a second condition.
       #
       # Retention is 14 days, chosen deliberately rather than left at the repo/org default: long
-      # enough to cover the promotion window this job is on (FLAKE_RECORD.md's 10-consecutive-green
-      # bar), short enough that a suite with real, if rare, failures does not accumulate zip files
-      # indefinitely.
+      # enough that a failure surfacing over a weekend is still diagnosable when someone gets to it
+      # (it was originally sized to cover phaze-8p1uq's 10-consecutive-green promotion window,
+      # now met), short enough that a suite with real, if rare, failures does not accumulate zip
+      # files indefinitely.
       - name: 📤 Upload browser test artifacts
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1

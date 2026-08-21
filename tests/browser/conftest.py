@@ -20,7 +20,7 @@ Playwright is NOT a project dependency (only Patchright is, because the 1001Trac
 needs a browser at runtime, in production). This suite runs under the ephemeral
 ``uv run --with playwright`` idiom, the same one ``scripts/analyze_browser_soak.py`` uses, and is
 excluded from the default pytest run by the ``browser`` marker. ``just test-browser`` is the entry
-point; CI runs it as a separate non-blocking job.
+point; CI runs it as a separate job, blocking since 2026-08-21 (phaze-8p1uq).
 
 Fixture scoping -- why the server fixture is SYNCHRONOUS
 ========================================================
@@ -75,7 +75,8 @@ Before this, a failing browser test in CI left nothing behind but the pytest ass
 trace, no screenshot, no artifact upload. The state that produced the failure was gone with the
 runner the moment the job ended -- and this suite is exactly the kind that produces hard-to-
 reproduce failures (an htmx settle race that vanished under instrumentation, a documented
-``reset()`` deadlock seen once in 124 runs; see ``FLAKE_RECORD.md``).
+``reset()`` deadlock seen once in 124 runs; recorded in the since-deleted
+``tests/browser/FLAKE_RECORD.md`` -- see ADR-0009 § "The browser contract suite").
 
 Every context created by ``_browser_pages`` now starts a `Playwright trace
 <https://playwright.dev/python/docs/trace-viewer>`_ (``screenshots=True, snapshots=True,
@@ -589,8 +590,9 @@ def pytest_collection_modifyitems(items: list[Any]) -> None:
 # chosen by its author specifically to signal "ignore me") collected into three consecutive
 # ``just test-browser`` runs before a reviewer noticed the pass count did not match the baseline
 # (162 -> 202 -> 202 -> 202; three of four runs had to be discarded). That is worse than an ordinary
-# failure: a contaminated run LOOKS healthier than a clean one, and this suite is the only source of
-# the 10-consecutive-clean-run evidence phaze-8p1uq's promotion gate needs.
+# failure: a contaminated run LOOKS healthier than a clean one. That mattered when this suite was
+# the only source of the 10-consecutive-clean-run evidence phaze-8p1uq's promotion gate needed, and
+# it matters more now that the gate is met and a red run here stops the build.
 #
 # AC1 choice: loud failure, not silent exclusion (option (a), preferred explicitly by the bead). A
 # naming convention was rejected on the evidence above -- the author already tried exactly that

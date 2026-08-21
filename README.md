@@ -196,8 +196,8 @@ just test-browser
 ```
 
 The suite is excluded from default pytest, boots the real app against PostgreSQL and Redis, and
-requires the compiled Tailwind bundle. CI treats it as non-blocking but uploads traces, screenshots,
-and logs on failure.
+requires the compiled Tailwind bundle. CI runs it as a blocking job (promoted 2026-08-21,
+`phaze-8p1uq`) and uploads traces, screenshots, and logs on failure.
 
 To refresh Repowise with both line coverage and per-test coverage contexts:
 
