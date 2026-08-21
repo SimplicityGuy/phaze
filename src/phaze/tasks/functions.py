@@ -326,9 +326,13 @@ async def _extract_and_analyze(
 ) -> _ExtractionOutcome:
     """Extract the audio track, then run analysis, mapping terminal errors to a response.
 
-    phaze-3ea41 (operator decision, format scope): pre-analysis audio-track extraction is
+    phaze-3ea41 (probe-based format scope): pre-analysis audio-track extraction is
     offered EVERY file (probed, then extracted only if it is not already plain audio), not
-    just recognized video extensions -- see services/video_audio.py's decision record.
+    just recognized video extensions. Offering it to EVERY file rather than only to video
+    containers is the IMPLEMENTER's decision, not the operator's: the operator was asked which
+    VIDEO containers to accept and answered "Probe-based, any container" (2026-08-12) -- see
+    services/video_audio.py's D-09 "operator decisions of record", which is the durable record.
+    That this lane extracts at all IS the operator's ("Both lanes", same answer set, record 2).
     ffprobe is the sole authority on whether read_path has an audio stream at all. Runs
     INSIDE the concurrency semaphore, same as the analysis it feeds, so a burst of files
     cannot spawn unbounded concurrent ffmpeg extractions alongside the essentia-bounded pool.
