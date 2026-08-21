@@ -10,6 +10,13 @@ The responsive console shell. `shell.py` owns the application root (`GET /`) and
 | GET    | `/`               | Console shell root with the actionable Summary selected                 |
 | GET    | `/s/{stage}`      | Single rail-node stage workspace (`stage` whitelisted via `STAGE_PARTIALS`; unknown stage 404s) |
 | GET    | `/record/{file_id}` | Per-file full-record read-only detail fragment (typed `uuid.UUID`, strictly `file_id`-scoped) |
+| GET    | `/files/{file_id}`  | Addressable full-record **page** for one file (same canonical record context, `record_presentation="page"`) |
+
+`/record/{file_id}` and `/files/{file_id}` are the same record behind two presentations, both served by
+`record.py` off one `build_file_record_context` call: `/record/` returns the drawer *fragment* the shell
+swaps in place (`record_body.html`, `record_presentation="drawer"`), while `/files/` returns the
+standalone, linkable *document* (`record_page.html`, `record_presentation="page"`). Both 404 into their
+own presentation's not-found rendering rather than raising.
 
 A direct/bookmark navigation to `/` or `/s/{stage}` renders the full shell chrome; an `HX-Request` rail swap returns a bare content fragment. `stage` is never interpolated into a template path — the partial name always comes from the static `STAGE_PARTIALS` dict (template-path-injection mitigation, T-57-01).
 
@@ -46,7 +53,7 @@ Each stage has a JSON trigger (`/api/v1/*`) and an HTMX twin (`/pipeline/*`) tha
 
 **Complete payloads (Phase 30 / 35).** The two agent-task triggers build and enqueue the *full* validated payload, never a bare `file_id`:
 
-- `analyze` → `process_file` enqueues a 5-field `ProcessFilePayload` (`file_id`, `original_path`, `file_type`, `agent_id`, models path) via the shared `services.analysis_enqueue.enqueue_process_file` producer.
+- `analyze` → `process_file` enqueues a 5-field `ProcessFilePayload` (`file_id`, `original_path`, `file_type`, `agent_id`, models path) via the shared `services.analysis_enqueue.enqueue_process_file` producer. The model carries two FURTHER fields that this local bulk path deliberately omits — `expected_sha256` and `scratch_path` (Phase 50, D-11), both defaulting to `None` so the local producer stays byte-identical under `extra="forbid"`. They are set only on the cloud push path: `expected_sha256` pins `FileRecord.sha256_hash` so the compute agent can verify the rsync'd copy before analysis, and `scratch_path is not None` is ITSELF the compute-read/ephemeral signal — there is no separate boolean flag.
 - `extract-metadata` → `extract_file_metadata` enqueues `ExtractMetadataPayload` (`file_id`, `original_path`, `file_type`, `agent_id`).
 
 The agent worker validates each payload with `extra="forbid"`, so a `file_id`-only enqueue would dead-letter every job. The per-file deterministic SAQ key (e.g. `process_file:<file_id>`) is applied centrally by the `before_enqueue` hook (35-01), letting a repeat enqueue of an in-flight file collapse to a no-op.
@@ -150,7 +157,7 @@ Admin-UI endpoints that drive the user-initiated scan flow on the pipeline dashb
 | GET    | `/pipeline/scans/{batch_id}`   | Scan-batch progress (HTMX poll partial)            |
 | DELETE | `/pipeline/scans/{batch_id}`   | Delete a terminal scan + all associated DB data (HTMX) |
 
-Only **terminal** scans (`completed` / `failed`) are deletable; the delete runs an ordered transactional cascade that removes the `ScanBatch` and every row that hangs off its files (metadata, analysis, proposals + execution log, tracklists → versions → tracks → discogs links, tag-write log, file companions, files), scoped strictly to that batch. A `running` scan or the `live` watcher sentinel returns **409** and is never deleted. On success the endpoint returns the re-rendered Recent Scans table for an HTMX `outerHTML` swap into `#recent-scans`.
+Only **terminal** scans (`completed` / `failed`) are deletable; the delete runs an ordered transactional cascade that removes the `ScanBatch` and every row that hangs off its files (metadata, analysis, proposals + execution log, tracklists → versions → tracks → discogs links, tag-write log, file companions, files), scoped strictly to that batch. A `running` scan or the `live` watcher sentinel is never deleted. It does **not** return 409: the endpoint answers **200** (`response_shape.RENDERABLE_ALERT_STATUS`) and swaps in the refreshed table carrying an `alert_message` — "Cannot delete a running scan; wait for it to complete or fail." or "The live watcher batch cannot be deleted." (an already-gone batch likewise renders "That scan is already gone — table refreshed."). This is deliberate and is contract rule 3 in `routers/response_shape.py`: htmx 2.x's default `responseHandling` does not swap 4xx/5xx bodies, so a 409 here would fetch the `role="alert"` markup and then discard it — the operator would see the spinner flash and no indication the delete was refused. The error semantics live in the BODY, not the status line. This is not a general "errors are 200" rule: an unparseable request is still 422 (`request_guards.MALFORMED_PAYLOAD_STATUS`). On success the endpoint returns the re-rendered Recent Scans table for an HTMX `outerHTML` swap into `#recent-scans`.
 
 ## Proposals (`/proposals`)
 
@@ -184,17 +191,40 @@ Only **terminal** scans (`completed` / `failed`) are deletable; the delete runs 
 | GET    | `/execution/progress/{batch_id}`  | SSE stream with real-time progress   |
 | GET    | `/execution/agents-table`         | Per-agent execution table re-sorted by a header-chosen column (`?batch_id=&sort=&order=`, HTMX partial) |
 | GET    | `/audit/`                         | Audit log (HTML, filterable)         |
+| GET    | `/audit/{log_id}/detail`          | Expanded per-entry drill-down: which file, which proposal, and a failed entry's actual error text |
 
 ## Duplicates (`/duplicates`)
 
 | Method | Path                          | Description                        |
 |--------|-------------------------------|------------------------------------|
 | GET    | `/duplicates/`                | Legacy route: 302-redirects into the v7.0 shell's Dedupe workspace (`/s/dedupe`) |
-| GET    | `/duplicates/{group_hash}/compare`  | Comparison table for a group       |
-| POST   | `/duplicates/{group_hash}/resolve`  | Mark non-canonical as duplicates   |
+| GET    | `/duplicates/groups`          | HTMX "Load more" fragment: the next `GROUP_PAGE_SIZE` duplicate groups (`?offset=`) |
+| POST   | `/duplicates/{group_hash}/review`   | Build an opaque review plan for one group without resolving it |
+| POST   | `/duplicates/{group_hash}/resolve`  | Commit exactly one reviewed plan (`plan_id`); marks non-canonical as duplicates |
 | POST   | `/duplicates/{group_hash}/undo`     | Undo resolution                    |
+| POST   | `/duplicates/review-all`      | Build the bulk review plan over the selected groups without resolving any |
 | POST   | `/duplicates/resolve-all`     | Bulk resolve all groups            |
 | POST   | `/duplicates/undo-all`        | Undo bulk resolution               |
+
+**Dedupe is two-phase: review builds a plan, resolve commits it.** `POST /{group_hash}/review`
+(and its bulk twin `POST /review-all`) persists a `DedupReviewPlan` and renders the keeper
+selection for confirmation; it changes no file state. `POST /{group_hash}/resolve` takes that
+plan's `plan_id` and is the only endpoint that mutates, rejecting a stale, replayed, or forged
+plan. Every zero-resolved shape — invalid `group_hash`, a resubmit of an already-resolved card, a
+concurrent resolve that already claimed the canonical, a group member deleted mid-flight — renders
+the group's current state with an honest "nothing changed" response rather than an error, because
+`resolved_count` is the single honest signal for all four.
+
+`GET /duplicates/groups` is the Dedupe workspace's paging seam. `services/review.get_dedupe_groups`
+renders `GROUP_PAGE_SIZE` groups at a time; this endpoint supplies the offset override, swapping the
+next page's cards in via `hx-swap-oob="beforeend:"` alongside the refreshed subcount. It is the only
+live caller of the offset plumbing in `services/dedup.py` — do not delete that plumbing on a
+"no live caller" reading without checking here first (`phaze-4iq5t`).
+
+> **Removed:** `GET /duplicates/{group_hash}/compare` (commit `053997bf`, 2026-08-20). The
+> standalone comparison table and its template were deleted; the live Dedupe workspace
+> (`pipeline/partials/dedupe_workspace.html`) renders each group's files inline on the card, so
+> there was no caller left for a separate compare view.
 
 ## Tracklists (`/tracklists`)
 
