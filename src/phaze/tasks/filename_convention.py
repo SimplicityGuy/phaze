@@ -3,8 +3,9 @@
 One job = ONE full refresh of the ``(scope='release_group', convention_kind='date_order')`` rows in
 ``filename_convention``. There is deliberately **no CronJob** for this task, for the same reason the
 epic calls the learner operator-triggered: it sweeps the WHOLE corpus, and its output is the input
-to a gate that can change rename proposals. When that recomputation happens is an operator
-decision, not a timer's -- and because the table is a pure cache with full-refresh semantics
+to a gate that can change rename proposals. When that recomputation happens is left to the
+operator to invoke at runtime, not a timer's -- and because the table is a pure cache with
+full-refresh semantics
 (``services/filename_convention_learner``), running it late costs staleness and never corruption.
 
 Registered in ``tasks.controller.settings["functions"]`` and in

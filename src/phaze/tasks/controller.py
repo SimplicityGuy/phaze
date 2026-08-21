@@ -397,9 +397,9 @@ settings = {
         continue_armed_tracklist_drain,
         # phaze-5fta.3: one full refresh of the corpus-learned release-group date-order
         # conventions. Operator-enqueueable with NO CronJob, deliberately (see the task module):
-        # it sweeps the whole corpus and its output gates rename proposals, so WHEN it recomputes
-        # is an operator decision. The table is a pure cache, so staleness is the only cost of
-        # never running it.
+        # it sweeps the whole corpus and its output gates rename proposals, so recompute timing is
+        # left to the operator to invoke at runtime, not automated. The table is a pure cache, so
+        # staleness is the only cost of never running it.
         learn_filename_conventions,
         reap_stalled_scans,
         # phaze-e57w: every-minute reaper for SAQ rows stuck in status='aborting'; deletes them to
