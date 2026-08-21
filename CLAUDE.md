@@ -24,7 +24,11 @@ uv run ruff format .       # Format
 uv run mypy .              # Type check
 uv run pre-commit run --all-files # Run all pre-commit hooks
 
-just check                 # Lint + typecheck + the full test suite (the hive validation)
+just test                  # Fast LOCAL ITERATION only: -x -q. Not a gate — see below
+just check                 # THE per-bead gate: lint + typecheck + the full suite WITH
+                           # coverage (95% floor enforced). What `bh work check`/`submit` run
+just check-all             # THE molecule / merge-to-main gate: every pre-commit hook + the
+                           # same suite. What `bh work finish` runs
 just test-db               # Bring up the shared test Postgres (5433) + Redis (6380) harness
 just test-db-for <name>    # Carve an isolated seat out of that harness — REQUIRED for
                            # concurrent worktrees; prints three exports to set
@@ -33,6 +37,64 @@ just test-db-for <name>    # Carve an isolated seat out of that harness — REQU
 > Bare `uv run pytest` needs the harness up (`just test-db`); without it the integration tests
 > skip, so a green run means less than it looks like. Check the database line in the pytest
 > header before trusting any result.
+
+### Which commands are gates, and which only look like one (phaze-jnj90 / phaze-nqawu)
+
+Read this before citing any command as evidence in a bead. Before 2026-08-21 `just check` ran no
+coverage and `bh work check`/`submit` ran no tests at all, and that gap produced epic
+phaze-1i0h6's four-of-four unevidenced validation claims.
+
+| Command | ruff | mypy | tests | coverage | pytest header | |
+|---------|------|------|-------|----------|---------------|---|
+| `just test` | — | — | yes, **`-x`: stops at the first failure** | no | **no (`-q`)** | M |
+| `just test-cov` / `just test-validate` | — | — | whole suite | yes, 95% floor | yes | M |
+| `just check` | yes | yes | whole suite | yes, 95% floor | yes | M |
+| `just check-all` | yes (via pre-commit) | yes (via pre-commit) | whole suite | yes, 95% floor | yes | M |
+| `bh work check <id>` | yes | yes | whole suite | yes, 95% floor | yes | M |
+| `bh work submit <id>` | yes | yes | whole suite | yes, 95% floor | yes | M |
+| `bh work finish <epic>` (= `merge --molecule`) | via pre-commit | via pre-commit | whole suite | yes, 95% floor | yes | I |
+| `bh work merge --group <ids>` | yes | yes | whole suite | yes, 95% floor | yes | I |
+| `bh work merge <id>` (single bead → molecule) | **no — see below** | no | no | no | no | I |
+
+**M** = measured on 2026-08-21 by running the command and reading its transcript. **I** = inferred
+from the phaze block in `~/.beadhive/config.yaml` plus `bh`'s documented phase model
+(`bh work merge --help`), **not** executed. Treat an **I** row as a claim to re-measure the first
+time you hit that boundary, not as established fact — this repo's ADR-0012 exists because an
+argument verified against the wrong proxy reads exactly like a verified one.
+
+**`bh work merge <id>` re-validates nothing**, and that is by design rather than by oversight:
+`work.validation` defaults to `relaxed`, which re-tests at submit and at assembled-molecule
+pre-land only, on the reasoning that submit already validated this exact tip. What it does not
+cover is a bead that was green in isolation and red once combined — `finish` is the boundary that
+catches that, and it is why the `molecule` override exists. Set `validation: conservative` in the
+phaze block if a molecule ever needs re-testing after every per-bead merge.
+
+`bh work check` / `submit` / `finish` run tests **because** `~/.beadhive/config.yaml` gives the
+phaze rig its own `work.validate_cmd: just check` and a `work.validate` block pointing the
+`molecule` and `merge-main` boundaries at `just check-all`. That file is **outside this repo and
+shared by every hive on the machine**; the global default at the bottom of it is still
+`sh -c "just lint && just typecheck"`, which runs no tests. If phaze's own block is ever removed,
+every row above silently reverts to lint+typecheck while `submit` keeps printing "validated from
+a pristine checkout" — so a green submit on a machine whose config you have not checked is not
+evidence. `tests/shared/test_validation_gate_recipes.py` guards the justfile half of this; nothing
+in this repo can guard the config half.
+
+**`just test` is deliberately retained and is deliberately not a gate.** `-x` gives a tight
+edit/run loop, and `-q` gives dot-density. Both cost evidence — a red `-x` run characterises only
+the prefix of the suite before the first failure, and `-q` suppresses the pytest header entirely.
+Use it while iterating; cite `just check`.
+
+**Consequence: a submit now costs a full suite run.** Export a per-worktree seat
+(`just test-db-for <name>`) before submitting, or the gate falls back to the shared `phaze_test`
+seat and two concurrent submits collide on the session advisory lock described below.
+
+**Evidencing seat isolation.** The gate now prints its own header, so the transcript of the gate
+run is the evidence — no separate invocation is needed. Two older techniques still work when you
+need the header from a command that suppresses it, and are recorded here because three agents
+independently reinvented the first one: `uv run pytest --collect-only` is exempt from the session
+lock (it never opens the schema) and prints the header, and launching a second pytest against the
+same DSN mid-run and capturing its refusal (`already owned by phaze-pytest-session-lock pid=...`)
+is stronger evidence still. Both prove the **seat**; only the gate's own header proves the **run**.
 
 ### Test databases
 
@@ -288,10 +350,12 @@ Use frozen SHAs (not just tags) for all hooks. Required hooks:
 - **A change touching both is a docs change** for this purpose: open the PR.
 - **One PR per feature**, wherever a PR is opened at all — no mixing unrelated changes.
 - **On a direct push, CI runs after the fact — nothing gates `main`.** The bead's own validation is
-  therefore the real gate, and it must be a genuine one: run the full `just check` on an isolated
-  seat, not merely `bh work check` (which this hive resolves to `just lint && just typecheck` and
-  which runs no tests at all). Treat a red post-merge CI run as a fix-forward P0, not a routine
-  failure to triage later.
+  therefore the real gate, and it must be a genuine one: the full `just check` on an isolated seat.
+  Since phaze-nqawu (2026-08-21) `bh work check` and `bh work submit` **are** that command, so the
+  gate and the manual run are no longer two different things — but confirm the header line in the
+  submit transcript names your own seat, and see "Which commands are gates" above for what still
+  does not re-test. Treat a red post-merge CI run as a fix-forward P0, not a routine failure to
+  triage later.
 
 ## CI (GitHub Actions)
 
@@ -718,11 +782,12 @@ The lifecycle is `bh work`; raw `git` is only for the change *inside* the worktr
 
 ```bash
 bh work claim <id>       # provision the wt/bead/issue/<id> worktree + identity, → in_progress
-bh work check <id>       # run the hive validation against the worktree
+bh work check <id>       # run the hive validation (`just check` — FULL SUITE) against the worktree
 bh work submit <id>      # verify clean conventional history, re-validate from a
-                         # pristine checkout, open the review gate
+                         # pristine checkout (FULL SUITE), open the review gate
 bh work approve <id>     # resolve the review gate
 bh work merge <id>       # serialize a --no-ff merge onto the integration branch, close the bead
+                         # (re-validates nothing — see "Which commands are gates" above)
 bh work resume <id>      # re-attach after changes-requested
 bh work abandon <id>     # release the claim; --rm also removes the worktree
 ```
