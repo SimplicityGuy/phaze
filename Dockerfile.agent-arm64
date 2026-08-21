@@ -29,7 +29,27 @@
 # Revisit when TensorFlow ships cp314 aarch64. Then this line, TF_VERSION below, and the
 # essentia commit pin move together and the whole recipe is re-proven on a native arm64 host --
 # they are one combination, not three independent knobs (see the TF_VERSION note).
-FROM python:3.13-slim-bookworm
+
+# TRIXIE, NOT BOOKWORM, AND THE SUITE IS THE ffmpeg VERSION CONTROL (phaze-b62ri).
+# Debian locks the upstream MAJOR.MINOR line for the life of a release, so the base tag --
+# not an apt pin -- is what fixes the ffmpeg this image runs AND the libav*-dev the essentia
+# source build below compiles against. Both come from one Debian source package, so the tag
+# moves them together or not at all, which is precisely the property this image needs: the
+# CLI extracts an audio artifact that essentia's libav then decodes, and letting those two
+# skew is the defect. Measured: bookworm 5.1.9, trixie 7.1.5 -- so the move off bookworm is
+# what puts this image on the same 7.1 line as the x86 app image and as the ffmpeg 7.1 the
+# essentia-tensorflow wheel statically links there.
+#
+# THE MOVE IS NOT COSMETIC AND WAS VERIFIED AT RUNTIME, not by a green build. It carries
+# system gcc 12 -> 14, and this image requires system gcc and the pip manylinux wheels to
+# share one libstdc++ CXX11 ABI (essentia #977, `undefined symbol: _ZTINSt6thread6_StateE`)
+# -- a RUNTIME symbol failure a successful build cannot detect. essentia also recompiles
+# against libav 7.1 rather than 5.1, and TagLib 2.x rather than 1.x. All three cleared on a
+# native arm64 host: import succeeds, no unresolved symbols, and a real decode produced real
+# descriptors byte-identical to the bookworm image's apart from a 2.9e-08 spectral-centroid
+# drift (~3450x inside the 47-04 parity gate's abs_tol=1e-4). See
+# docs/design/0013-ffmpeg-pin.md.
+FROM python:3.13-slim-trixie
 
 # TF version (override with --build-arg). 2.20.0 is the spike-proven combo: 2.19 has
 # NO cp313 aarch64 wheel — only 2.20.0 / 2.21.0 do; 2.20.0 is the one essentia's glue
@@ -151,11 +171,22 @@ RUN mkdir -p /models
 # the x86 wheel to link it for real; treat this runtime package as unverified either way,
 # not confirmed unnecessary, until someone runs the same ldd/import-smoke check here.
 # import-smoke validation owned by plan 47-02.
-# DL3008: see the rationale on the source-build apt layer above (intentionally unpinned).
-# hadolint ignore=DL3008
+# DL3008: see the rationale on the source-build apt layer above (intentionally unpinned) --
+# and note it applies with FULL force to ffmpeg here. The BASE IMAGE TAG is the version
+# control: trixie means ffmpeg 7.1.x and libav 7.1.x, for the life of the release. An
+# explicit apt pin would be worse than nothing (it pins security updates out) and it would
+# also have to be repeated for the libav*-dev set above, since both come from the SAME
+# Debian source package -- which is exactly why the base tag is the right lever: it moves
+# the CLI and the libraries essentia links together, or not at all.
+# DL4006: the trailing `-version | head -1` lines are a build-log assertion, not a pipeline
+# whose failure must propagate.
+# hadolint ignore=DL3008,DL4006
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libatomic1 ffmpeg libsndfile1 libchromaprint-tools libpq5 \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends \
+        libatomic1 ffmpeg libsndfile1 libchromaprint-tools libpq5 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ffmpeg -version | head -1 \
+    && ffprobe -version | head -1
 
 WORKDIR /app
 
