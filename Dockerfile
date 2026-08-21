@@ -1,3 +1,34 @@
+# ── The pinned ffmpeg release line (phaze-b62ri) ─────────────────────────────
+# The `ffmpeg`/`ffprobe` CLI binaries phaze shells out to -- video-container audio
+# extraction (services/video_audio.py) and the analysis duration probe
+# (services/analysis.py::_probe_duration_sec, D-10). Since phaze-3ea41 ffprobe is the
+# SOLE authority on whether a file has an audio stream and which track is the
+# container's default, so its version is a correctness input, not a packaging detail.
+#
+# WHY 7.1.5 SPECIFICALLY, AND WHY THIS IS A PIN RATHER THAN AN UPGRADE. This base
+# (python:3.14-slim, Debian trixie) ALREADY serves 7:7.1.5-0+deb13u1 -- so on this
+# image the pin changes no version at all; it only stops the version from moving on a
+# future base refresh. And 7.1 is the RIGHT line to freeze on, not merely the
+# incumbent: the essentia-tensorflow x86_64 wheel STATICALLY LINKS ffmpeg 7.1
+# (libavformat 61.7.100), and that is what actually decodes audio for ANALYSIS here.
+# For video containers the CLI extracts an audio artifact that essentia's libav then
+# decodes, so CLI and library sit on either side of a live producer/consumer seam --
+# the same seam that cost 11.5 hours in phaze-3ea41. Pinning the CLI to 8.x would have
+# INTRODUCED a skew across it that did not previously exist. 7.1.5 keeps both sides on
+# one release line, which is what this bead is for.
+#
+# WHY apt AND NOT A DOWNLOADED BUILD. First-party, security-updated within the
+# -0+deb13uN line, no download step, no checksum to maintain, no third-party host.
+# `apt-get install ffmpeg=<version>` is itself an assertion: it FAILS if the pinned
+# version is not what the base image's suite serves, so a base-image bump that moves
+# ffmpeg cannot pass silently -- it breaks the build, loudly, at the layer that named it.
+#
+# This value is duplicated in Dockerfile.agent-arm64 (which also drives its libav*-dev
+# set from it) and named again in Dockerfile.job's comment. Docker has no include
+# directive, so the copies are irreducible; tests/agents/deployment/test_ffmpeg_pin.py
+# is the mechanical proof that they still agree. Change it in all of them together.
+ARG FFMPEG_APT_VERSION=7:7.1.5-0+deb13u1
+
 # ── CSS build stage ──────────────────────────────────────────────────────────
 # Compiles assets/src/app.css → src/phaze/static/css/app.css with the pinned
 # standalone Tailwind v4 binary (NO Node). Replaces the former in-browser
@@ -96,11 +127,21 @@ WORKDIR /app
 # DL3008: versions are intentionally unpinned — Debian-slim apt package versions
 # shift on every base-image refresh and pinning them would break builds on each
 # security update. The base image tag controls the package snapshot instead.
-# hadolint ignore=DL3008
+# ffmpeg IS pinned (phaze-b62ri) -- see FFMPEG_APT_VERSION at the top of this file. The
+# DL3008 exemption covers the OTHER packages on this line only.
+# DL4006: the two `-version | head -1` lines below are a build-time assertion, not a
+# pipeline whose failure must propagate -- the pinned `apt-get install` above is what
+# actually enforces the version; these only surface it in the build log.
+ARG FFMPEG_APT_VERSION
+# hadolint ignore=DL3008,DL4006
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libatomic1 ffmpeg libsndfile1 libchromaprint-tools libpq5 rsync openssh-client xvfb \
+    && apt-get install -y --no-install-recommends \
+        libatomic1 libsndfile1 libchromaprint-tools libpq5 rsync openssh-client xvfb \
+        "ffmpeg=${FFMPEG_APT_VERSION}" \
     && rm -rf /var/lib/apt/lists/* \
-    && command -v rsync ssh Xvfb
+    && command -v rsync ssh Xvfb \
+    && ffmpeg -version | head -1 \
+    && ffprobe -version | head -1
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /uvx /bin/

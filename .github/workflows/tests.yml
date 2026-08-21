@@ -8,7 +8,25 @@ env:
   CI: true
   PYTHON_VERSION: "3.14"
 
-  # phaze-m3qte: the ffmpeg CI toolchain, pinned. Change the version HERE and nowhere else.
+  # phaze-m3qte: the ffmpeg CI toolchain, pinned.
+  #
+  # ⚠ CI AND THE IMAGES ARE ON DIFFERENT ffmpeg MAJORS, DELIBERATELY AND TEMPORARILY
+  # (phaze-b62ri, 2026-08-20). This block pins BtbN 8.1; the runtime images now pin Debian
+  # trixie's 7:7.1.5-0+deb13u1, because that is the line the essentia-tensorflow wheel
+  # statically links and therefore the one that keeps the CLI and the analysis library from
+  # skewing across the extract-then-decode seam. So CI does NOT test the ffmpeg production
+  # ships, and that is a real gap — it is the gap phaze-b62ri exists to close.
+  #
+  # It is recorded rather than silently tolerated: the resolution is an OPEN OPERATOR
+  # DECISION, argued with options and a recommendation in docs/design/0013-ffmpeg-pin.md §8.
+  # `tests/agents/deployment/test_ffmpeg_pin.py::test_ci_image_ffmpeg_divergence_is_recorded`
+  # fails if this explanation is deleted. Do not "fix" the split by editing this block alone —
+  # moving CI is the decision being put to the operator, not a tidy-up.
+  #
+  # THE VERSION IS NO LONGER CHANGED ONLY HERE. The images carry their own pin as
+  # `ARG FFMPEG_APT_VERSION` in Dockerfile and Dockerfile.agent-arm64. Docker has no include
+  # directive and Actions cannot read a Dockerfile ARG, so the copies are irreducible; the
+  # guard above is what proves they still agree.
   #
   # THESE THREE VALUES NAME ONE BUILD AND MUST BE UPDATED TOGETHER. Bumping FFMPEG_VERSION
   # alone leaves the tag and checksum pointing at the old asset -- the download would still
