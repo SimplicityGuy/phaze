@@ -31,6 +31,7 @@ from phaze.models.metadata import FileMetadata
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.routers.request_guards import execute_guarding_vanished_file
 from phaze.schemas.agent_metadata import MetadataFailurePayload, MetadataFailureResponse, MetadataWriteRequest, MetadataWriteResponse
+from phaze.services.agent_upsert import build_field_lww_set_clause
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.scheduling_ledger import clear_ledger_entry
 
@@ -98,19 +99,10 @@ async def put_metadata(
         # successful retry reads FAILED forever. `failed_at`/`error_message` sit OUTSIDE
         # `exclude_unset` (the wire body never carries them). Excludes file_id AND id from
         # the SET clause (both are conflict-target / immutable PK).
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["file_id"],
-            set_={
-                **{k: stmt.excluded[k] for k in dumped},
-                "failed_at": None,
-                "error_message": None,
-                # TimestampMixin.updated_at's ORM onupdate=func.now() never fires on this Core ON
-                # CONFLICT DO UPDATE path -- stamp it explicitly so a re-extraction bumps
-                # updated_at instead of freezing it at first write (phaze-c8nz). created_at stays
-                # pinned.
-                "updated_at": func.now(),
-            },
-        )
+        # build_field_lww_set_clause (services/agent_upsert.py, phaze-bk9el.9) is the shared shape
+        # with agent_analysis.put_analysis -- this was the pair's worst clone (32 lines, co-changed
+        # 3x) before the extraction.
+        stmt = stmt.on_conflict_do_update(index_elements=["file_id"], set_=build_field_lww_set_clause(stmt, dumped))
     else:
         # Empty body -- no user field to UPDATE, but STILL clear the failure marker on an
         # existing row (D-13 sharp edge): an empty-body success PUT after a failure means
