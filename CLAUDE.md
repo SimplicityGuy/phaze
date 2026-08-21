@@ -586,6 +586,20 @@ perfectly good thing for a decision to be and which invites the review the opera
 suppresses. `ADR-0007` §7 and the operator-decision comment on `phaze-b62ri` are the models to
 copy. ADR-0012 §5 inventories every such claim currently in the tree.
 
+**Before writing "operator decision" from memory, check `scripts/recover_operator_decisions.py`.**
+The question-as-put and answer-as-given this rule requires are frequently NOT in anything a normal
+grep finds: an `AskUserQuestion` exchange is recorded as an assistant `tool_use` (the question, every
+option) matched to a `tool_result` (the selection) — neither is a `user` turn, so both are invisible
+to a grep of bead comments or of user messages. That blind spot is why ADR-0012 §5 first read six
+genuine decisions as untraceable (`phaze-d2hgv`, 2026-08-21). The script recovers both that shape and
+plain human-typed turns from local session transcripts, given a date range or a bead id, in output
+quotable directly into the durable record — read its module docstring for what it can and cannot
+prove (local-only, unversioned, and a null result means "not found here", never "never decided").
+**In an `AskUserQuestion` result, quote only the selected option LABEL as the operator's decision —
+never an option's DESCRIPTION**, which is the assistant's framing of the choice, not the operator's
+words; this exact conflation has produced real citation defects more than once in this repo's
+history. The script's own output keeps the two apart under separate headings for this reason.
+
 **3. Verify with the artifact's real consumer, not with the tool that produced it.** A change that
 produces a new artifact — a file, a container format, an intermediate, a serialized payload —
 names its real consumer, and the test calls that consumer. Validating an artifact with the tool
