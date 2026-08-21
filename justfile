@@ -233,15 +233,73 @@ tailwind:
     fi
     ./bin/tailwindcss -i assets/src/app.css -o src/phaze/static/css/app.css --minify
 
-[doc('Run all tests')]
+# LOCAL ITERATION ONLY -- deliberately fail-fast and quiet, and deliberately NOT the gate
+# (phaze-jnj90). `-x` stops at the first failure, so a red run here characterises only the
+# prefix of the suite before it; `-q` suppresses pytest_report_header, so it prints no
+# `phaze test database: ...` line and CLAUDE.md's "check the database line before trusting a
+# green run" is un-followable against its output. Both are fine for a tight edit/run loop and
+# were NOT fine for `just check`, which is what `test-validate` below exists for. Do not
+# re-point `check` at this recipe.
+[doc('Fast local iteration: fail-fast (-x) and quiet (-q). NOT the validation gate -- use `just check`.')]
 [group('test')]
 test:
     uv run pytest tests/ -x -q
 
-[doc('Run tests with coverage report')]
+# The validation-grade pytest invocation (phaze-jnj90), and what `just check` /
+# `just check-all` ultimately run. Three properties are load-bearing and each one is the
+# fix for a defect that shipped:
+#
+#   * `--cov=phaze` -- bead acceptance criteria in this repo routinely ask for a coverage
+#     figure alongside "run the full hive validation". Without this the criterion is
+#     structurally unsatisfiable and every developer paid a second full-suite pass to
+#     recover the number. pyproject's `[tool.coverage.report] fail_under = 95` means
+#     pytest-cov ENFORCES the 95% floor here: sub-95 coverage exits nonzero.
+#   * no `-x` -- a gate exists to characterise the WHOLE suite. Complete failure counts
+#     beat a truncated prefix.
+#   * no `-q` -- `-q` suppresses pytest_report_header, and that header
+#     (`phaze test database: '<db>' on localhost:5433 (from TEST_DATABASE_URL, exclusive)`)
+#     is the documented proof that a run used its own isolated seat. tests/conftest.py's
+#     hook promises it "on every run ... unconditionally"; under `-q` that promise was false
+#     for the one command CLAUDE.md named as the real gate. Three separate agents
+#     independently reinvented the same `--collect-only` workaround to recover it, which
+#     proves the seat but is not a transcript of the gate's own session.
+#
+# tests/shared/test_validation_gate_recipes.py fails the build if any of the three regress.
+[doc('Run tests with coverage report -- the validation-grade invocation (no -x, no -q, 95% floor enforced)')]
 [group('test')]
 test-cov:
     uv run pytest --cov=phaze --cov-report=term-missing
+
+# `test-cov` plus the seat provisioning `check` used to carry inline, factored out here so
+# that BOTH gates (`check`, `check-all`) run the identical test step (phaze-nqawu). A fresh
+# worktree has no Postgres/Redis of its own -- a bare `uv run pytest` then dies at fixture
+# setup dialing tests/db_guard.py's resolve_test_dsn() default (localhost:5433, the local
+# ephemeral harness -- NOT the same as CI, which always exports its own TEST_DATABASE_URL
+# against its 5432 service container and never relies on this default) with nothing
+# listening there yet. This provisions the SHARED test harness (idempotently, via the
+# existing `test-db` recipe) and exports the matching env here, but never tears it down --
+# unlike `integration-test`, which runs against its own DEDICATED containers with an
+# auto-teardown EXIT trap (phaze-pik6), a gate must leave phaze-test-db/phaze-test-redis
+# running for other concurrent worktrees/sessions relying on them; explicit teardown is
+# `just test-db-down`.
+#
+# If the caller already exported TEST_DATABASE_URL (CI, another `just` recipe, a per-seat
+# `just test-db-for <name>` rig), respect it verbatim and skip provisioning. Concurrent
+# agents MUST take that path: the fallback below is the shared `phaze_test` seat, and two
+# suites on one database is the phaze-ieqg defect (the session advisory lock refuses the
+# second run rather than corrupting both, so this fails loudly, but it still fails).
+[doc('The full test suite as a gate runs it: coverage on, no fail-fast, header printed; auto-provisions the shared harness only when no TEST_DATABASE_URL is exported')]
+[group('test')]
+test-validate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z "${TEST_DATABASE_URL:-}" ]; then
+        just test-db
+        export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:{{test_db_port}}/phaze_test"
+        export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:{{test_db_port}}/phaze_migrations_test"
+        export PHAZE_REDIS_URL="redis://localhost:{{test_redis_port}}/0"
+    fi
+    just test-cov
 
 [doc('Run tests with coverage XML output (for CI)')]
 [group('test')]
@@ -894,32 +952,35 @@ typecheck:
 pre-commit:
     uv run pre-commit run --all-files
 
-[doc('Run all quality checks (lint + typecheck + test); auto-provisions the ephemeral test-db when no TEST_DATABASE_URL override is already exported (e.g. a fresh worktree)')]
+# THE per-bead gate. `~/.beadhive/config.yaml` points the phaze rig's `work.validate_cmd`
+# here, so this is what `bh work check` and `bh work submit` actually run (phaze-nqawu).
+# Before that it ran the machine-wide default `sh -c "just lint && just typecheck"`, which
+# executes ZERO tests -- a bead could pass submit against a completely red suite while
+# submit's "validated from a pristine checkout" output read as though the suite had run.
+# That is the root cause of epic phaze-1i0h6's four-of-four unevidenced validation claims;
+# no developer was dishonest, the gate told them it had validated.
+#
+# The test step is `test-validate`, not `test`: coverage on, no fail-fast, header printed.
+# See its comment for why each of those three matters.
+[doc('THE per-bead gate (`bh work check` / `bh work submit` run this): lint + typecheck + the full suite with coverage; auto-provisions the ephemeral test-db when no TEST_DATABASE_URL override is already exported (e.g. a fresh worktree)')]
 [group('lint')]
-check: lint typecheck
-    #!/usr/bin/env bash
-    set -euo pipefail
-    # A fresh worktree has no Postgres/Redis of its own -- `test` (bare `uv run
-    # pytest`) then dies at fixture setup dialing tests/db_guard.py's resolve_test_dsn()
-    # default (localhost:5433, the local ephemeral harness -- NOT the same as CI, which
-    # always exports its own TEST_DATABASE_URL against its 5432 service container and
-    # never relies on this default) with nothing listening there yet. `check` provisions
-    # the SHARED test harness
-    # (idempotently, via the existing `test-db` recipe) and exports the matching env
-    # here, but never tears it down -- unlike `integration-test`, which runs against
-    # its own DEDICATED containers with an auto-teardown EXIT trap (phaze-pik6),
-    # `check` must leave phaze-test-db/phaze-test-redis running for other concurrent
-    # worktrees/sessions relying on them; explicit teardown is `just test-db-down`. If
-    # the caller already exported TEST_DATABASE_URL (CI, another `just` recipe, a
-    # shared multi-worktree rig with per-worktree database names), respect it
-    # verbatim and skip provisioning.
-    if [ -z "${TEST_DATABASE_URL:-}" ]; then
-        just test-db
-        export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:{{test_db_port}}/phaze_test"
-        export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:{{test_db_port}}/phaze_migrations_test"
-        export PHAZE_REDIS_URL="redis://localhost:{{test_redis_port}}/0"
-    fi
-    just test
+check: lint typecheck test-validate
+
+# THE molecule / merge-to-main gate, wired to `work.validate` `molecule:` and `merge-main:`
+# for the phaze rig in `~/.beadhive/config.yaml` (phaze-nqawu). The config shipped that
+# override commented out and naming `just check-all`, a recipe that had never existed in
+# this justfile; this is that recipe, made real rather than deleted, so the pre-land
+# boundary can be strictly stronger than the per-bead one.
+#
+# The delta over `check` is `pre-commit` instead of `lint typecheck`: the full hook set is a
+# superset (it runs the same ruff check and the same `uv run mypy .`, and adds ruff-format,
+# bandit, shellcheck, shfmt, yamllint, actionlint, hadolint, check-jsonschema and the
+# secret/large-file hooks). Those are the checks a single bead's diff can pass individually
+# while the assembled molecule fails, which is exactly what a pre-land boundary is for.
+# The test step is identical, so this costs one full suite run, not two.
+[doc('THE molecule / merge-to-main gate (`bh work finish`): every pre-commit hook + the full suite with coverage. Strict superset of `just check`.')]
+[group('lint')]
+check-all: pre-commit test-validate
 
 [doc('Run pip-audit for dependency vulnerability scanning')]
 [group('security')]
