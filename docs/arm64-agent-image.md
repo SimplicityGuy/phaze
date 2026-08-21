@@ -62,7 +62,7 @@ The agent role is `phaze.tasks.agent_worker.settings` (D-25: must **not** import
 
 | Knob | Value | Why |
 |------|-------|-----|
-| Base | `python:3.13-slim-bookworm` | only `cp313` has aarch64 TF wheels |
+| Base | `python:3.13-slim-trixie` | only `cp313` has aarch64 TF wheels; **trixie** (not bookworm) because Debian fixes the ffmpeg line per release and bookworm is 5.1.x — the tag is this image's only ffmpeg version control (phaze-b62ri) |
 | TensorFlow | **`2.20.0`** (exact, `--build-arg TF_VERSION`) | 2.19 has **no** `cp313` aarch64 wheel; 2.20.0 is the spike-proven glue combo |
 | essentia | pinned commit `b9fa6cb674ca43dfb94d28d293aeda441c6745db` | hardcoded SHA — **no** floating `master`/`HEAD`, **no** build-time remote SHA resolution (T-47-01). MTG/essentia master resolved 2026-06-24, the spike-era state the TF-2.20.0 glue was proven against |
 
@@ -119,8 +119,32 @@ Everything needed is prebuilt; the friction is all in essentia's `setup_from_pyt
 
 The final image **must** carry these runtime native libs or the agent crash-loops on
 import (the v4.0.9 / v4.1.1 incident class): `libatomic1` (essentia's `_essentia` links
-`libatomic.so.1` — confirmed by `ldd`), `ffmpeg` (decode + `ffprobe`), `libsndfile1`, and
-`libpq5` (backs psycopg's SAQ `PostgresQueue` broker). `libchromaprint-tools` (the runtime
+`libatomic.so.1` — confirmed by `ldd`), `ffmpeg` (`ffprobe` plus the `-c:a copy`
+extraction), `libsndfile1`, and `libpq5` (backs psycopg's SAQ `PostgresQueue` broker).
+
+**Nothing here carries an apt version pin, and the base image tag is why it does not need
+one** (phaze-b62ri). Debian locks the upstream MAJOR.MINOR line for the life of a release, so
+`python:3.13-slim-trixie` *means* ffmpeg 7.1.x — and it means it for the CLI **and** for the
+`libav*-dev` set the source build compiles against, because both come from one Debian source
+package. That single lever is exactly what this image needs: the CLI extracts an audio
+artifact that essentia's libav then decodes, a live producer/consumer seam, so the two must
+move together or not at all. An explicit `ffmpeg=<version>` would be worse than nothing here
+— it selects away from Debian's security updates, and it would have to be repeated for every
+`libav*-dev` package to keep the seam aligned. See `docs/design/0013-ffmpeg-pin.md` §3.
+
+**The base is trixie, and that is the entire mechanism.** bookworm serves ffmpeg 5.1.x, so
+reverting the base silently reverts this image's ffmpeg two majors — with no version string
+anywhere in the diff to notice. That is why `test_arm64_agent_base_is_trixie` guards the
+`FROM` line. The move was verified at **runtime on native arm64**, not by a
+green build, because the risk it carries is a runtime one: system gcc goes 12 → 14, and this
+image requires system gcc and the pip manylinux wheels to share one libstdc++ CXX11 ABI (the
+essentia #977 `undefined symbol: _ZTINSt6thread6_StateE` failure). essentia also recompiles
+against libav 7.1 instead of 5.1, and against TagLib 2.x instead of 1.x. All three cleared:
+`import essentia.standard` succeeds, `_essentia` links `libstdc++.so.6.0.33` and the trixie
+7.1.5 sonames with zero unresolved symbols, and a real decode produced real descriptors —
+byte-identical decoded PCM and identical BPM/key/RMS/loudness against the bookworm image over
+byte-identical fixtures, with a single 2.9e-08 spectral-centroid drift from the compiler
+change, ~3450× inside the 47-04 parity gate's `abs_tol=1e-4`. `libchromaprint-tools` (the runtime
 `fpcalc` binary, paired with the `-dev` headers the source build links against above) is
 also installed, but **not confirmed** to belong in the "or it crash-loops" list:
 phaze-0jpe.6 (2026-07-28) found no chromaprint link and a clean `import essentia` on the
