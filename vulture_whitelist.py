@@ -19,8 +19,8 @@ rotted. vulture assigns a fixed confidence per finding KIND, not per symbol:
   * unused function / method / class / property / attribute ----- 60%
 
 The recipe pins `--min-confidence 80`, so the ENTIRE 60% tier is already filtered out before the
-whitelist is consulted. Measured on `src/phaze` at the time of writing: 212 findings at
-confidence 0, of which 197 are 60% and never reach the sweep. Only the 12 unused-import and
+whitelist is consulted. Measured on `src/phaze` at ebae0f45 (2026-08-21): 134 findings at
+confidence 0, of which 119 are 60% and never reach the sweep. Only the 12 unused-import and
 3 unused-variable findings below are live.
 
 That is a real difference from how the file was originally seeded. It was built with
@@ -69,9 +69,10 @@ confidence the recipe actually uses:
 """
 
 # --- unused import (90%): string-form `cast("CursorResult[Any]", ...)` only ---
+# Inventory verified against the sweep at ebae0f45 (2026-08-21); 12 modules, unchanged in count.
 # src/phaze/routers/agent_analysis.py:48          src/phaze/services/scan_deletion.py:32
 # src/phaze/routers/agent_push.py:66              src/phaze/services/stage_control.py:41
-# src/phaze/routers/agent_s3.py:44                src/phaze/services/tracklist_lookup_cache.py:20
+# src/phaze/services/agent_s3_reports.py:51       src/phaze/services/tracklist_lookup_cache.py:20
 # src/phaze/services/backends/admission.py:25     src/phaze/tasks/ledger_reaper.py:92
 # src/phaze/services/companion.py:7               src/phaze/tasks/submit_cloud_job.py:37
 # src/phaze/services/filename_convention_learner.py:86   src/phaze/tasks/tracklist.py:66
