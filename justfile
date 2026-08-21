@@ -284,20 +284,52 @@ test-cov:
 # `just test-db-down`.
 #
 # If the caller already exported TEST_DATABASE_URL (CI, another `just` recipe, a per-seat
-# `just test-db-for <name>` rig), respect it verbatim and skip provisioning. Concurrent
-# agents MUST take that path: the fallback below is the shared `phaze_test` seat, and two
-# suites on one database is the phaze-ieqg defect (the session advisory lock refuses the
-# second run rather than corrupting both, so this fails loudly, but it still fails).
-[doc('The full test suite as a gate runs it: coverage on, no fail-fast, header printed; auto-provisions the shared harness only when no TEST_DATABASE_URL is exported')]
+# `just test-db-for <name>` rig), respect it VERBATIM and provision nothing. CI depends on
+# that: it exports its own DSN against a 5432 service container and must not be re-pointed
+# at the local 5433 harness.
+#
+# WHAT THE FALLBACK USED TO DO, AND WHY IT WAS A BUG (phaze-bk9el.23). It exported the
+# SHARED `phaze_test` / `phaze_migrations_test` pair and Redis logical DB 0. That directly
+# contradicts CLAUDE.md's standing rule -- "Never share Postgres OR Redis between concurrent
+# agents" -- for the one command every bead is now required to run, because phaze-nqawu
+# wired BOTH gates (and therefore `bh work check` and `bh work submit`) to this recipe.
+# Any concurrent seat that forgot to export its own rig landed on that shared pair, where
+# phaze-ieqg's session advisory lock refuses the SECOND pytest: a red run that passes on
+# isolated re-run, which CLAUDE.md names as the worst possible shape because it trains
+# reviewers to dismiss reds.
+#
+# IT DERIVES; IT DOES NOT REFUSE. Refusing when TEST_DATABASE_URL is unset was proposed and
+# rejected: the auto-provision exists deliberately so a FRESH WORKTREE WITH NO SEAT still
+# works, and a hard refusal fixes the concurrent case by breaking the solo case. So the
+# fallback provisions a seat DERIVED from this worktree (branch name for legibility, a digest
+# of the absolute worktree root for uniqueness -- see scripts/derive-validate-seat-name.sh),
+# through the SAME scripts/provision-test-seat.sh that `just test-db-for` runs, so the gate's
+# seat and an operator's seat for one worktree can never disagree. Solo still just works;
+# concurrent seats get real isolation; the silent shared-seat path no longer exists.
+#
+# The derived seat is a normal registry allocation with an `--origin`, so it is visible in
+# `just test-db-seats` (prefixed `auto_`, marking it gate-provisioned rather than typed by an
+# operator) and reclaimable by `just test-db-reclaim` -- whose O1 rule frees it as soon as the
+# worktree that minted it is removed, which is the normal end of `bh work merge`.
+[doc('The full test suite as a gate runs it: coverage on, no fail-fast, header printed; auto-provisions a seat DERIVED from this worktree only when no TEST_DATABASE_URL is exported')]
 [group('test')]
 test-validate:
     #!/usr/bin/env bash
     set -euo pipefail
     if [ -z "${TEST_DATABASE_URL:-}" ]; then
         just test-db
-        export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:{{test_db_port}}/phaze_test"
-        export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:{{test_db_port}}/phaze_migrations_test"
-        export PHAZE_REDIS_URL="redis://localhost:{{test_redis_port}}/0"
+        seat="$(bash scripts/derive-validate-seat-name.sh)"
+        echo "🪑 No TEST_DATABASE_URL exported; provisioning this worktree's own seat '${seat}'." >&2
+        # `eval` is safe here by contract: provision-test-seat.sh prints the three
+        # `export KEY="value"` lines on stdout and every human-readable line on stderr.
+        eval "$(bash scripts/provision-test-seat.sh \
+            --seat "$seat" \
+            --pg-container "{{test_db_container}}" \
+            --pg-port "{{test_db_port}}" \
+            --redis-container "{{test_redis_container}}" \
+            --redis-port "{{test_redis_port}}" \
+            --redis-capacity "{{test_redis_databases}}" \
+            --origin "$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")")"
     fi
     just test-cov
 
@@ -676,55 +708,24 @@ test-db-for name:
     # `tests/db_guard.py`, but this recipe emits the canonical `phaze_<name>_test` pair and,
     # more importantly, prints the exact exports to use. Requires `just test-db` first.
     just test-db
-    container="{{test_db_container}}"
-    port="{{test_db_port}}"
-    raw_name="{{name}}"
-    # phaze-fmfk: a raw Postgres unquoted identifier can't contain a hyphen, but this repo's own
-    # worktree convention IS hyphenated (`wt/bead/issue/phaze-fq9h-1`), so naming a seat after the
-    # worktree -- the obvious, natural thing to do -- used to blow up with a raw
-    # `syntax error at or near "-"` and no hint at the cause. `derive-seat-name.sh` is the single
-    # place that decides what a raw name normalizes to (validation rule + collision-safe hashing);
-    # see its header for the full rationale. Shared with this script's own regression tests so the
-    # justfile recipe and the tests can never drift apart.
-    name="$(bash scripts/derive-seat-name.sh "$raw_name")"
-    echo "Seat '${raw_name}' -> identifier '${name}' (stable across re-runs of the same seat name)."
-    main_db="phaze_${name}_test"
-    migrations_db="phaze_${name}_migrations_test"
-    # phaze-hk8r: ensure-pg-database.sh tolerates a lost create race -- see its header for why
-    # a plain SELECT-then-CREATE is a check-then-act TOCTOU that used to kill this recipe under
-    # `set -e` when a concurrent invocation (e.g. a dispatcher and an agent both recovering
-    # exports for one worktree at once) won the CREATE first.
-    bash scripts/ensure-pg-database.sh "$container" "$main_db" "$migrations_db"
-    # Redis isolation. Postgres-only isolation was the phaze-fwo7 defect: every worktree landed on
-    # the same logical Redis DB 0, where fixtures run global `scan_iter`+`delete` sweeps over
-    # `exec:*` / `tracklist_req:*` and assertions count the global keyspace. One seat's cleanup then
-    # deletes another seat's live keys mid-test, producing failures indistinguishable from a real
-    # regression. Allocation is an atomic registry in DB 0, NOT a hash of the name: hash % N collides
-    # ~35% of the time across 8 seats, which would reintroduce the bug intermittently.
-    redis_container="{{test_redis_container}}"
-    redis_port="{{test_redis_port}}"
-    redis_databases="{{test_redis_databases}}"
-    # phaze-68wky: allocation lives in `scripts/redis-seat-registry.sh` (one atomic server-side
-    # script; see its header for the liveness rules). It used to be an `INCR` counter inline here,
-    # which never reclaimed: every seat that ever ran this recipe burned an index forever, so the
-    # counter walked past the cap (68/73/74/80 seen in the wild) and refused every new seat, with
-    # `just test-db-down` -- the one thing CLAUDE.md forbids mid-round -- as the only remedy on
-    # offer. Allocation now takes the LOWEST FREE index, and `just test-db-release` /
-    # `just test-db-reclaim` hand indices back without touching the shared containers.
-    #
-    # Keyed on the DERIVED `name` (not `raw_name`), so the registry, the Postgres pair above and
-    # the exports below can never disagree about what this seat is called. Stdout is the index and
-    # nothing else; the script's human-readable lines go to stderr and reach the terminal directly.
-    redis_db="$(bash scripts/redis-seat-registry.sh allocate \
-        --redis-container "$redis_container" \
-        --seat "$name" \
-        --capacity "$redis_databases" \
+    # phaze-bk9el.23: the provisioning body used to live inline here. It moved to
+    # `scripts/provision-test-seat.sh` when `test-validate` gained a second, gate-driven caller
+    # that must provision an IDENTICAL seat -- same normalization (phaze-fmfk), same database
+    # pair, same Redis registry allocation. Two copies of this body is precisely how the gate's
+    # seat and the operator's seat for one worktree would silently diverge, so there is one copy
+    # and both callers run it. The script prints the three exports on stdout and everything else
+    # on stderr; this recipe is the human-facing caller, so it reprints them indented.
+    exports="$(bash scripts/provision-test-seat.sh \
+        --seat "{{name}}" \
+        --pg-container "{{test_db_container}}" \
+        --pg-port "{{test_db_port}}" \
+        --redis-container "{{test_redis_container}}" \
+        --redis-port "{{test_redis_port}}" \
+        --redis-capacity "{{test_redis_databases}}" \
         --origin "$PWD")"
     echo ""
     echo "Export these before running pytest in this worktree:"
-    echo "  export TEST_DATABASE_URL=\"postgresql+asyncpg://phaze:phaze@localhost:${port}/${main_db}\""
-    echo "  export MIGRATIONS_TEST_DATABASE_URL=\"postgresql+asyncpg://phaze:phaze@localhost:${port}/${migrations_db}\""
-    echo "  export PHAZE_REDIS_URL=\"redis://localhost:${redis_port}/${redis_db}\""
+    printf '%s\n' "$exports" | sed 's/^/  /'
     echo ""
     echo "When this worktree is finished: just test-db-release {{name}}  (frees its Redis index; no teardown)"
 
