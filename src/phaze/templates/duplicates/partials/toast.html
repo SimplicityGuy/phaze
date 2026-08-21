@@ -40,7 +40,14 @@
         {% for hash in (undo_group_hashes if undo_group_hashes is defined else []) %}
         <input type="hidden" name="group_hashes" value="{{ hash }}">
         {% endfor %}
-        <button type="submit"
+        {# phaze-tckiy: no method/action, and this toast arrives by OOB swap -- htmx runs the same
+           deferred settle task for OOB-inserted content as for a primary swap (insertNodesBefore
+           queues makeAjaxLoadTask, which processNodes then fires htmx:load), so the identical
+           native-GET window exists here. It matters more than the stakes suggest: the toast IS the
+           only affordance that makes a bulk archive reversible, and it self-destructs after 10s, so a
+           lost Undo click is unrecoverable rather than merely repeatable. `disabled` +
+           `data-hx-guard`; released by shell.html's htmx:load listener. #}
+        <button type="submit" disabled data-hx-guard
                 class="text-blue-300 hover:text-blue-100 font-semibold underline">
             Undo All
         </button>
@@ -64,7 +71,8 @@
           @htmx:after-request="if ($event.detail.successful) { show = false } else { undoFailed = true }"
           class="inline">
         <input type="hidden" name="file_states" value="{{ undo_file_states }}">
-        <button type="submit"
+        {# phaze-tckiy: same native-GET window as the bulk Undo above, same 10s deadline. #}
+        <button type="submit" disabled data-hx-guard
                 class="text-blue-300 hover:text-blue-100 font-semibold underline">
             Undo
         </button>
