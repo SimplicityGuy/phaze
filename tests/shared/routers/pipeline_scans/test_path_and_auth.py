@@ -115,7 +115,7 @@ async def test_post_scans_subpath_rejects_nul_via_direct_handler_invocation(
     ac, mock_router = smoke
     pre_count = await _count_batches(session)
 
-    from phaze.routers import pipeline_scans as ps_mod
+    from phaze.routers import scan as ps_mod
 
     original_normalize = ps_mod.unicodedata.normalize
 
@@ -327,7 +327,7 @@ async def test_post_scans_prefix_mismatch_via_direct_handler_invocation(
     """
     ac, mock_router = smoke
 
-    from phaze.routers import pipeline_scans as ps_mod
+    from phaze.routers import scan as ps_mod
 
     original_normalize = ps_mod.unicodedata.normalize
 
@@ -471,7 +471,7 @@ async def test_post_scans_path_outside_root_is_a_swappable_alert(
     """
     ac, mock_router = smoke
 
-    from phaze.routers import pipeline_scans as ps_mod
+    from phaze.routers import scan as ps_mod
 
     original_normalize = ps_mod.unicodedata.normalize
 
