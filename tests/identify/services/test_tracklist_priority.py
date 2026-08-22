@@ -31,6 +31,7 @@ from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.tracklist_candidates import CandidateSignals, group_unique_sets, set_key
 from phaze.services.tracklist_lookup_cache import record_outcome
 from phaze.services.tracklist_priority import (
+    _signals_for,
     clear_flags,
     flag_file_for_lookup,
     flag_files_for_lookup,
@@ -69,6 +70,65 @@ async def _set_key_for(session: AsyncSession, file: FileRecord, *, duration: flo
     unique_sets = group_unique_sets([signals])
     assert unique_sets, "the file must classify as a live set for this helper to make sense"
     return unique_sets[0].key
+
+
+class TestSignalsFor:
+    """phaze-bk9el.28: the pure file -> ``CandidateSignals`` mapping lifted out of
+    ``_lookup_status_without_a_tracklist``.
+
+    It carried seven of that function's thirteen decision points and expresses no decision, so it
+    is tested here directly -- without a session, which is the point of having separated it.
+    """
+
+    def _file(self, **overrides: object):  # type: ignore[no-untyped-def]
+        from phaze.models.file import FileRecord
+
+        defaults: dict[str, object] = {
+            "id": uuid.uuid4(),
+            "original_filename": LIVE_SET_FILENAME,
+            "original_filename_repaired": None,
+            "sha256_hash": "a" * 64,
+            "original_path": f"/archive/{LIVE_SET_FILENAME}",
+            "file_type": "mp3",
+            "file_size": 123_456,
+        }
+        return FileRecord(**(defaults | overrides))  # type: ignore[arg-type]
+
+    def test_every_metadata_field_is_none_when_there_is_no_metadata_row(self) -> None:
+        """A file with no ``FileMetadata`` row is ordinary, not exceptional -- ``classify`` copes
+        with an absent duration, so the mapping must yield None rather than raise."""
+        signals = _signals_for(self._file(), None)
+
+        assert signals.duration_seconds is None
+        assert signals.bitrate is None
+        assert signals.track_number is None
+        assert signals.artist is None
+        assert signals.title is None
+        assert signals.album is None
+        assert signals.filename == LIVE_SET_FILENAME
+
+    def test_every_metadata_field_is_carried_through_when_the_row_exists(self) -> None:
+        file = self._file()
+        metadata = FileMetadata(file_id=file.id, duration=7200.0, bitrate=320, track_number=3, artist="Nightwave", title="Late Signal", album="Live")
+
+        signals = _signals_for(file, metadata)
+
+        assert (signals.duration_seconds, signals.bitrate, signals.track_number) == (7200.0, 320, 3)
+        assert (signals.artist, signals.title, signals.album) == ("Nightwave", "Late Signal", "Live")
+        assert signals.file_id == file.id
+        assert (signals.sha256_hash, signals.original_path, signals.file_type, signals.file_size) == (
+            file.sha256_hash,
+            file.original_path,
+            file.file_type,
+            file.file_size,
+        )
+
+    def test_the_repaired_filename_wins_when_one_exists(self) -> None:
+        """phaze-x4ux: ``original_filename_repaired`` is the best-known-clean text, and the whole
+        query-derivation chain downstream reads ``signals.filename``."""
+        file = self._file(original_filename="Sven VÃ¤th-Live.mp3", original_filename_repaired="Sven Väth-Live.mp3")
+
+        assert _signals_for(file, None).filename == "Sven Väth-Live.mp3"
 
 
 class TestFlagPersistence:

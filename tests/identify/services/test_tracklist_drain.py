@@ -457,6 +457,10 @@ class TestPersistence:
         assert len(stored) == 1
         assert stored[0].file_id == file.id
         assert stored[0].propagated_from_set_key is None, "a directly-scraped row is never marked propagated"
+        # phaze-bk9el.28: the two provenance columns are meaningful only together, which `_Propagation`
+        # now makes structural (`None` IS the canonical row). Assert BOTH sides of "neither" so a
+        # regression that set one without the other could not pass on the set_key check alone.
+        assert stored[0].propagation_confidence is None, "and carries no propagation confidence either"
         assert await _tracks_for(session, stored[0]) == ANCHOR_TRACKS
         assert result.tracks_written == ANCHOR_TRACKS
 
@@ -565,7 +569,7 @@ class TestPropagation:
         assert rows[candidate.unique_set.canonical_file_id].propagated_from_set_key is None
         propagated = rows[duplicate]
         assert propagated.propagated_from_set_key == candidate.set_key
-        assert propagated.propagation_confidence == DuplicateConfidence.EXACT.value
+        assert propagated.propagation_confidence == DuplicateConfidence.EXACT.value, "phaze-bk9el.28: the `_Propagation` pair travels intact"
         assert await _tracks_for(session, propagated) == ANCHOR_TRACKS, "a projection is a complete tracklist, not a stub"
 
     async def test_a_heuristic_duplicate_is_withheld_and_counted(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
