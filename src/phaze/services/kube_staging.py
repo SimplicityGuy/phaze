@@ -601,30 +601,42 @@ def _dead_before_start_reason(pod: Any) -> str | None:
     return None
 
 
+def _node_lost_by_status_reason(status: dict[str, Any]) -> str | None:
+    """Signal 1 of :func:`_node_lost_reason`: ``status.reason`` in :data:`NODE_LOSS_POD_STATUS_REASONS`.
+
+    The node-lifecycle controller's / kubelet's own vocabulary for "this pod is gone because of
+    its node".
+    """
+    reason = status.get("reason")
+    return reason if isinstance(reason, str) and reason in NODE_LOSS_POD_STATUS_REASONS else None
+
+
+def _node_lost_by_disruption_condition(status: dict[str, Any]) -> str | None:
+    """Signal 2 of :func:`_node_lost_reason`: a ``DisruptionTarget`` condition with ``status=True``.
+
+    The k8s>=1.26 reason-agnostic form of the same statement. Its ``reason``
+    (``DeletionByTaintManager`` / ``TerminationByKubelet`` / ``DeletionByPodGC`` /
+    ``PreemptionByScheduler`` / ...) is reported for the operator log but is NOT filtered on: every
+    value of it means the control plane, not the analysis, ended the pod.
+    """
+    for cond in status.get("conditions", []) or []:
+        if cond.get("type") == _DISRUPTION_TARGET_CONDITION and cond.get("status") == "True":
+            return f"{_DISRUPTION_TARGET_CONDITION}/{cond.get('reason') or 'unknown'}"
+    return None
+
+
 def _node_lost_reason(pod: Any) -> str | None:
     """Return a short reason when ``pod`` died WITH ITS NODE, else None (phaze-1q4g).
 
-    Two independent signals, either of which is sufficient:
-
-    * ``status.reason`` in :data:`NODE_LOSS_POD_STATUS_REASONS` -- the node-lifecycle controller's /
-      kubelet's own vocabulary for "this pod is gone because of its node".
-    * a ``DisruptionTarget`` condition with ``status=True`` -- the k8s>=1.26 reason-agnostic form of
-      the same statement. Its ``reason`` (``DeletionByTaintManager`` / ``TerminationByKubelet`` /
-      ``DeletionByPodGC`` / ``PreemptionByScheduler`` / ...) is reported for the operator log but is
-      NOT filtered on: every value of it means the control plane, not the analysis, ended the pod.
+    Two independent signals, either of which is sufficient -- see
+    :func:`_node_lost_by_status_reason` and :func:`_node_lost_by_disruption_condition`.
 
     Deliberately reads ONLY node-scoped fields. A container that exited 137 under its own
     ``resources.limits.memory`` (ADR-0005) is the analyze overrunning its budget -- an ordinary
     failure that must keep charging ``attempts`` -- and is not matched here.
     """
     status = getattr(pod, "status", None) or {}
-    reason = status.get("reason")
-    if isinstance(reason, str) and reason in NODE_LOSS_POD_STATUS_REASONS:
-        return reason
-    for cond in status.get("conditions", []) or []:
-        if cond.get("type") == _DISRUPTION_TARGET_CONDITION and cond.get("status") == "True":
-            return f"{_DISRUPTION_TARGET_CONDITION}/{cond.get('reason') or 'unknown'}"
-    return None
+    return _node_lost_by_status_reason(status) or _node_lost_by_disruption_condition(status)
 
 
 def _unschedulable_since(pod: Any) -> datetime | None:

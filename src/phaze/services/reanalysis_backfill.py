@@ -290,6 +290,112 @@ def compute_exit_code(outcomes: Sequence[ReanalysisOutcome]) -> int:
     return 0 if any(o.outcome in _PRODUCTIVE_OUTCOMES for o in outcomes) else 1
 
 
+def _split_cloud_pipeline_candidates(
+    candidates: list[tuple[FileRecord, float | None]],
+    active_cloud_ids: set[uuid.UUID],
+    record: Callable[[ReanalysisOutcome], None],
+) -> list[tuple[FileRecord, float | None]]:
+    """Split off every candidate already carrying an ACTIVE ``cloud_job`` (T-82-A1 double-dispatch
+    guard, module docstring). Each is reported ``"in_cloud_pipeline"`` via ``record`` and routed no
+    further; everything else is returned for the caller to route.
+    """
+    routable: list[tuple[FileRecord, float | None]] = []
+    for f, duration in candidates:
+        if f.id in active_cloud_ids:
+            record(ReanalysisOutcome(f.id, f.original_path, "in_cloud_pipeline"))
+            continue
+        routable.append((f, duration))
+    return routable
+
+
+def _split_by_duration_threshold(
+    routable: list[tuple[FileRecord, float | None]],
+    *,
+    cloud_enabled: bool,
+    threshold: int,
+) -> tuple[list[FileRecord], list[FileRecord]]:
+    """Apply the SAME duration-threshold decision ``_route_discovered_by_duration`` does (module
+    docstring, "CLOUD ROUTING"): ``(long_candidates, local_candidates)``.
+    """
+    long_candidates: list[FileRecord] = []
+    local_candidates: list[FileRecord] = []
+    for f, duration in routable:
+        is_long = cloud_enabled and duration is not None and duration >= threshold
+        (long_candidates if is_long else local_candidates).append(f)
+    return long_candidates, local_candidates
+
+
+async def _hold_long_candidates_for_cloud(
+    session: AsyncSession,
+    long_candidates: list[FileRecord],
+    record: Callable[[ReanalysisOutcome], None],
+) -> None:
+    """Hold every long candidate for the bounded cloud drain via ``hold_awaiting_cloud``, then
+    commit once (module docstring, "CLOUD ROUTING" -- mirrors ``_route_discovered_by_duration``'s
+    own commit placement). A concurrent delete during the hold is reported ``"vanished"``, mirroring
+    that helper's own ``IntegrityError`` guard.
+    """
+    held = 0
+    for f in long_candidates:
+        try:
+            async with session.begin_nested():
+                await hold_awaiting_cloud(session, f)
+        except IntegrityError:
+            logger.info("enqueue_incomplete_reanalysis: file deleted before hold could commit; skipping", file_id=str(f.id))
+            record(ReanalysisOutcome(f.id, f.original_path, "vanished"))
+            continue
+        held += 1
+        record(ReanalysisOutcome(f.id, f.original_path, "awaiting_cloud"))
+    if held:
+        # Commit the AWAITING_CLOUD holds BEFORE the local enqueues (mirrors
+        # _route_discovered_by_duration: get_session-style callers never auto-commit).
+        await session.commit()
+
+
+async def _enqueue_local_candidates(
+    routed_groups: Sequence[tuple[Any, list[FileRecord]]],
+    skipped: Sequence[FileRecord],
+    models_path: Any,
+    record: Callable[[ReanalysisOutcome], None],
+) -> None:
+    """Enqueue every short/null-duration candidate through the standard per-agent-routed funnel
+    (module docstring, "ENQUEUE"). Both the enqueue call (phaze-4ter) and the collision-
+    classification probe (phaze-p2qvv) are individually contained so one file's failure cannot
+    abort the rest of the run.
+    """
+    for f in skipped:
+        record(ReanalysisOutcome(f.id, f.original_path, "no_active_agent"))
+
+    for routed, group in routed_groups:
+        agent_id = cast("str", routed.agent_id)
+        for f in group:
+            try:
+                job = await enqueue_process_file(routed.queue, f, agent_id, models_path)
+            except Exception:
+                # phaze-4ter containment: a transient broker/pool error at file N must not abort
+                # every remaining file in this run.
+                logger.exception("enqueue_incomplete_reanalysis: failed to enqueue process_file job", file_id=str(f.id))
+                record(ReanalysisOutcome(f.id, f.original_path, "enqueue_error"))
+                continue
+            if job is not None:
+                record(ReanalysisOutcome(f.id, f.original_path, "queued"))
+                continue
+            try:
+                collision = classify_process_file_collision(await routed.queue.job(process_file_job_key(f.id)))
+            except Exception:
+                # phaze-p2qvv containment: the diagnostic probe is a SECOND await against the
+                # broker and can independently raise; its failure must degrade to "unknown" for
+                # this one file, never abort the run.
+                logger.warning(
+                    "enqueue_incomplete_reanalysis: collision-classification probe failed -- outcome unknown, enqueue outcome unaffected",
+                    file_id=str(f.id),
+                    key=process_file_job_key(f.id),
+                )
+                record(ReanalysisOutcome(f.id, f.original_path, "unknown"))
+                continue
+            record(ReanalysisOutcome(f.id, f.original_path, collision))
+
+
 async def enqueue_incomplete_reanalysis(
     session: AsyncSession,
     app_state: Any,
@@ -349,12 +455,7 @@ async def enqueue_incomplete_reanalysis(
         (await session.scalars(select(CloudJob.file_id).where(CloudJob.file_id.in_(file_ids), CloudJob.status.in_(_ACTIVE_CLOUD_STATUSES)))).all()
     )
 
-    routable: list[tuple[FileRecord, float | None]] = []
-    for f, duration in candidates:
-        if f.id in active_cloud_ids:
-            _record(ReanalysisOutcome(f.id, f.original_path, "in_cloud_pipeline"))
-            continue
-        routable.append((f, duration))
+    routable = _split_cloud_pipeline_candidates(candidates, active_cloud_ids, _record)
     if not routable:
         return outcomes
 
@@ -364,27 +465,9 @@ async def enqueue_incomplete_reanalysis(
     cloud_enabled = settings.cloud_enabled and not await get_route_control(session)
     threshold = settings.cloud_route_threshold_sec
 
-    long_candidates: list[FileRecord] = []
-    local_candidates: list[FileRecord] = []
-    for f, duration in routable:
-        is_long = cloud_enabled and duration is not None and duration >= threshold
-        (long_candidates if is_long else local_candidates).append(f)
+    long_candidates, local_candidates = _split_by_duration_threshold(routable, cloud_enabled=cloud_enabled, threshold=threshold)
 
-    held = 0
-    for f in long_candidates:
-        try:
-            async with session.begin_nested():
-                await hold_awaiting_cloud(session, f)
-        except IntegrityError:
-            logger.info("enqueue_incomplete_reanalysis: file deleted before hold could commit; skipping", file_id=str(f.id))
-            _record(ReanalysisOutcome(f.id, f.original_path, "vanished"))
-            continue
-        held += 1
-        _record(ReanalysisOutcome(f.id, f.original_path, "awaiting_cloud"))
-    if held:
-        # Commit the AWAITING_CLOUD holds BEFORE the local enqueues below (mirrors
-        # _route_discovered_by_duration: get_session-style callers never auto-commit).
-        await session.commit()
+    await _hold_long_candidates_for_cloud(session, long_candidates, _record)
 
     if not local_candidates:
         return outcomes
@@ -396,36 +479,5 @@ async def enqueue_incomplete_reanalysis(
             _record(ReanalysisOutcome(f.id, f.original_path, "no_active_agent"))
         return outcomes
 
-    for f in skipped:
-        _record(ReanalysisOutcome(f.id, f.original_path, "no_active_agent"))
-
-    models_path = settings.models_path
-    for routed, group in routed_groups:
-        agent_id = cast("str", routed.agent_id)
-        for f in group:
-            try:
-                job = await enqueue_process_file(routed.queue, f, agent_id, models_path)
-            except Exception:
-                # phaze-4ter containment: a transient broker/pool error at file N must not abort
-                # every remaining file in this run.
-                logger.exception("enqueue_incomplete_reanalysis: failed to enqueue process_file job", file_id=str(f.id))
-                _record(ReanalysisOutcome(f.id, f.original_path, "enqueue_error"))
-                continue
-            if job is not None:
-                _record(ReanalysisOutcome(f.id, f.original_path, "queued"))
-                continue
-            try:
-                collision = classify_process_file_collision(await routed.queue.job(process_file_job_key(f.id)))
-            except Exception:
-                # phaze-p2qvv containment: the diagnostic probe is a SECOND await against the
-                # broker and can independently raise; its failure must degrade to "unknown" for
-                # this one file, never abort the run.
-                logger.warning(
-                    "enqueue_incomplete_reanalysis: collision-classification probe failed -- outcome unknown, enqueue outcome unaffected",
-                    file_id=str(f.id),
-                    key=process_file_job_key(f.id),
-                )
-                _record(ReanalysisOutcome(f.id, f.original_path, "unknown"))
-                continue
-            _record(ReanalysisOutcome(f.id, f.original_path, collision))
+    await _enqueue_local_candidates(routed_groups, skipped, settings.models_path, _record)
     return outcomes
