@@ -157,7 +157,11 @@ def _malloc_trim(trim: Callable[[int], int] | None, logger: logging.Logger) -> N
         return
     try:
         trim(0)
-    except Exception:  # pragma: no cover -- defensive; an optimisation cannot fail a file
+    except Exception:  # defensive; an optimisation must never fail an already-decoded chunk -- NOT a D-09 guard (bk9el.29)
+        # phaze-wbxi2 removed a `# pragma: no cover` from this line. It was already stale -- `test_malloc_trim_never_raises`
+        # injected an OSError here -- and it is now exercised for nine exception types by
+        # `test_the_trim_never_fails_a_chunk_for_any_exception_type`. An excluded line whose behaviour IS asserted reports a
+        # gap that does not exist, which is the same class of untrue claim this bead exists to close.
         logger.debug("malloc_trim(0) failed; continuing", exc_info=True)
 
 
