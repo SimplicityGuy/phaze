@@ -1,0 +1,3146 @@
+{
+  "APP_ROUTE_TABLE": [
+    "DELETE /pipeline/scans/{batch_id}",
+    "GET /",
+    "GET /admin/agents",
+    "GET /admin/agents/_table",
+    "GET /admin/agents/compute-lanes/{backend_id}",
+    "GET /admin/agents/{agent_id}/_activity",
+    "GET /api/internal/agent/whoami",
+    "GET /api/v1/duplicates",
+    "GET /audit/",
+    "GET /audit/{log_id}/detail",
+    "GET /cue/",
+    "GET /duplicates/",
+    "GET /duplicates/groups",
+    "GET /execution/agents-table",
+    "GET /execution/progress/{batch_id}",
+    "GET /files/{file_id}",
+    "GET /health",
+    "GET /pipeline/",
+    "GET /pipeline/analyze-files",
+    "GET /pipeline/files",
+    "GET /pipeline/files/{file_id}/trace/{stage}",
+    "GET /pipeline/lanes/{backend_id}",
+    "GET /pipeline/pending-files",
+    "GET /pipeline/recover/status",
+    "GET /pipeline/scans/agent-roots",
+    "GET /pipeline/scans/recent",
+    "GET /pipeline/scans/{batch_id}",
+    "GET /pipeline/stats",
+    "GET /pipeline/tracklist-drain-status",
+    "GET /pipeline/tracklist-sets",
+    "GET /preview/",
+    "GET /proposals/",
+    "GET /proposals/{proposal_id}/detail",
+    "GET /proposals/{proposal_id}/timeline",
+    "GET /record/{file_id}",
+    "GET /s/{stage}",
+    "GET /search/",
+    "GET /tags/",
+    "GET /tracklists/",
+    "PATCH /api/internal/agent/execution-log/{execution_log_id}",
+    "PATCH /api/internal/agent/proposals/{proposal_id}/state",
+    "PATCH /api/internal/agent/scan-batches/{batch_id}",
+    "PATCH /api/internal/agent/tag-writes/{log_id}",
+    "PATCH /api/internal/agent/tag-writes/{log_id}/before-snapshot",
+    "PATCH /proposals/bulk",
+    "PATCH /proposals/{proposal_id}/approve",
+    "PATCH /proposals/{proposal_id}/edit",
+    "PATCH /proposals/{proposal_id}/reject",
+    "PATCH /proposals/{proposal_id}/undo",
+    "POST /api/internal/agent/analysis/{file_id}/failed",
+    "POST /api/internal/agent/analysis/{file_id}/progress",
+    "POST /api/internal/agent/exec-batches/{batch_id}/progress",
+    "POST /api/internal/agent/execution-log",
+    "POST /api/internal/agent/files",
+    "POST /api/internal/agent/files/{file_id}/presign-download",
+    "POST /api/internal/agent/heartbeat",
+    "POST /api/internal/agent/metadata/{file_id}/failed",
+    "POST /api/internal/agent/push/{file_id}/failed",
+    "POST /api/internal/agent/push/{file_id}/mismatch",
+    "POST /api/internal/agent/push/{file_id}/pushed",
+    "POST /api/internal/agent/s3/{file_id}/failed",
+    "POST /api/internal/agent/s3/{file_id}/uploaded",
+    "POST /api/internal/agent/scratch/live",
+    "POST /api/v1/analyze",
+    "POST /api/v1/associate",
+    "POST /api/v1/extract-metadata",
+    "POST /api/v1/proposals/generate",
+    "POST /cue/{tracklist_id}/generate",
+    "POST /duplicates/resolve-all",
+    "POST /duplicates/review-all",
+    "POST /duplicates/undo-all",
+    "POST /duplicates/{group_hash}/resolve",
+    "POST /duplicates/{group_hash}/review",
+    "POST /duplicates/{group_hash}/undo",
+    "POST /execution/start",
+    "POST /pipeline/analysis-failed/retry",
+    "POST /pipeline/analyze",
+    "POST /pipeline/arm-tracklist-drain",
+    "POST /pipeline/backfill-cloud",
+    "POST /pipeline/disarm-tracklist-drain",
+    "POST /pipeline/extract-metadata",
+    "POST /pipeline/files/{file_id}/analysis-failed/retry",
+    "POST /pipeline/files/{file_id}/metadata-failed/retry",
+    "POST /pipeline/files/{file_id}/skip/{stage}",
+    "POST /pipeline/match-tracklists",
+    "POST /pipeline/metadata-failed/retry",
+    "POST /pipeline/proposals",
+    "POST /pipeline/recover",
+    "POST /pipeline/routing/force-local",
+    "POST /pipeline/run-tracklist-drain",
+    "POST /pipeline/scans",
+    "POST /pipeline/stages/{stage}/pause",
+    "POST /pipeline/stages/{stage}/priority",
+    "POST /pipeline/stages/{stage}/resume",
+    "POST /pipeline/tracklists/{file_id}/prioritize",
+    "POST /pipeline/tracklists/{file_id}/refresh",
+    "POST /pipeline/tracklists/{file_id}/unprioritize",
+    "POST /tags/bulk-write-no-discrepancies",
+    "POST /tags/{file_id}/undo",
+    "POST /tags/{file_id}/write",
+    "PUT /api/internal/agent/analysis/{file_id}",
+    "PUT /api/internal/agent/metadata/{file_id}"
+  ],
+  "CONTAINER_IDS": {
+    "CHANGES_LIST_CONTAINER_ID": "changes-workspace-list",
+    "PROPOSE_LIST_CONTAINER_ID": "propose-workspace-list",
+    "_EMPTY_STATE_PARTIAL": "pipeline/partials/empty_state.html"
+  },
+  "DOCUMENT_RENDERS": {
+    "GET /": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": true,
+      "status": 200,
+      "templates": [
+        "shell/shell.html"
+      ],
+      "title": "Summary | Phaze"
+    },
+    "GET /s/agents": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": true,
+      "status": 200,
+      "templates": [
+        "shell/shell.html"
+      ],
+      "title": "Agents and compute lanes | Phaze"
+    },
+    "GET /s/analyze": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": true,
+      "status": 200,
+      "templates": [
+        "shell/shell.html"
+      ],
+      "title": "Analyze | Phaze"
+    },
+    "GET /s/apply": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": true,
+      "status": 200,
+      "templates": [
+        "shell/shell.html"
+      ],
+      "title": "Execute approved | Phaze"
+    },
+    "GET /s/audit": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": true,
+      "status": 200,
+      "templates": [
+        "shell/shell.html"
+      ],
+      "title": "Audit log | Phaze"
+    },
+    "GET /s/cue": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": true,
+      "status": 200,
+      "templates": [
+        "shell/shell.html"
+      ],
+      "title": "Cue sheets | Phaze"
+    },
+    "GET /s/dedupe": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": true,
+      "status": 200,
+      "templates": [
+        "shell/shell.html"
+      ],
+      "title": "Duplicates | Phaze"
+    },
+    "GET /s/discover": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": true,
+      "status": 200,
+      "templates": [
+        "shell/shell.html"
+      ],
+      "title": "Discover | Phaze"
+    },
+    "GET /s/files": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": true,
+      "status": 200,
+      "templates": [
+        "shell/shell.html"
+      ],
+      "title": "Files | Phaze"
+    },
+    "GET /s/metadata": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": true,
+      "status": 200,
+      "templates": [
+        "shell/shell.html"
+      ],
+      "title": "Metadata | Phaze"
+    },
+    "GET /s/move": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": true,
+      "status": 200,
+      "templates": [
+        "shell/shell.html"
+      ],
+      "title": "Changes Review | Phaze"
+    },
+    "GET /s/operations": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": true,
+      "status": 200,
+      "templates": [
+        "shell/shell.html"
+      ],
+      "title": "Routing operations | Phaze"
+    },
+    "GET /s/propose": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": true,
+      "status": 200,
+      "templates": [
+        "shell/shell.html"
+      ],
+      "title": "Propose changes | Phaze"
+    },
+    "GET /s/rename": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": true,
+      "status": 200,
+      "templates": [
+        "shell/shell.html"
+      ],
+      "title": "Changes Review | Phaze"
+    },
+    "GET /s/summary": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": true,
+      "status": 200,
+      "templates": [
+        "shell/shell.html"
+      ],
+      "title": "Summary | Phaze"
+    },
+    "GET /s/tagwrite": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": true,
+      "status": 200,
+      "templates": [
+        "shell/shell.html"
+      ],
+      "title": "Changes Review | Phaze"
+    },
+    "GET /s/tracklist": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": true,
+      "status": 200,
+      "templates": [
+        "shell/shell.html"
+      ],
+      "title": "Tracklists | Phaze"
+    }
+  },
+  "DOCUMENT_TITLES": [
+    [
+      "summary",
+      "Summary"
+    ],
+    [
+      "files",
+      "Files"
+    ],
+    [
+      "discover",
+      "Discover"
+    ],
+    [
+      "metadata",
+      "Metadata"
+    ],
+    [
+      "analyze",
+      "Analyze"
+    ],
+    [
+      "tracklist",
+      "Tracklists"
+    ],
+    [
+      "propose",
+      "Propose changes"
+    ],
+    [
+      "rename",
+      "Changes Review"
+    ],
+    [
+      "tagwrite",
+      "Changes Review"
+    ],
+    [
+      "move",
+      "Changes Review"
+    ],
+    [
+      "dedupe",
+      "Duplicates"
+    ],
+    [
+      "cue",
+      "Cue sheets"
+    ],
+    [
+      "apply",
+      "Execute approved"
+    ],
+    [
+      "operations",
+      "Routing operations"
+    ],
+    [
+      "audit",
+      "Audit log"
+    ],
+    [
+      "agents",
+      "Agents and compute lanes"
+    ]
+  ],
+  "FRAGMENT_RENDERS": {
+    "GET /": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": false,
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "GET /s/agents": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": false,
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "GET /s/analyze": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": false,
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "GET /s/apply": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": false,
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "GET /s/audit": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": false,
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "GET /s/cue": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": false,
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "GET /s/dedupe": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": false,
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "GET /s/discover": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": false,
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "GET /s/files": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": false,
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "GET /s/metadata": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": false,
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "GET /s/move": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": false,
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "GET /s/operations": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": false,
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "GET /s/propose": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": false,
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "GET /s/rename": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": false,
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "GET /s/summary": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": false,
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "GET /s/tagwrite": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": false,
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "GET /s/tracklist": {
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "text/html; charset=utf-8",
+        "vary": "HX-Request, HX-History-Restore-Request, HX-Target"
+      },
+      "is_document": false,
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    }
+  },
+  "HISTORY_RESTORE": {
+    "is_document": true,
+    "status": 200,
+    "templates": [
+      "shell/shell.html"
+    ]
+  },
+  "HX_BINDINGS": {
+    "GET /": [
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/audit\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/cue\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/dedupe\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/operations\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/tracklist\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "div",
+        "pipeline-stats",
+        "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
+      ],
+      [
+        "input",
+        "",
+        "{\"hx-get\": \"/search/\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#cmdk-results\", \"hx-trigger\": \"load, input changed delay:200ms\"}"
+      ]
+    ],
+    "GET /s/agents": [
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/audit\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/cue\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/dedupe\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/operations\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/tracklist\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-get\": \"/admin/agents/_table?sort=kind&order=asc\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#agents-table-section\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-get\": \"/admin/agents/_table?sort=last_seen&order=asc\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#agents-table-section\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-get\": \"/admin/agents/_table?sort=name&order=asc\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#agents-table-section\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-get\": \"/admin/agents/_table?sort=queue&order=asc\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#agents-table-section\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-get\": \"/admin/agents/_table?sort=scan_roots&order=asc\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#agents-table-section\"}"
+      ],
+      [
+        "button",
+        "agent-trigger-test-fileserver-details",
+        "{\"hx-get\": \"/admin/agents/_table?sort=last_seen&order=desc\", \"hx-push-url\": \"/s/agents?agent=test-fileserver&sort=last_seen&order=desc\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#agents-table-section\", \"hx-vals\": \"{\\\"agent\\\": \\\"test-fileserver\\\", \\\"clane\\\": \\\"\\\"}\"}"
+      ],
+      [
+        "div",
+        "pipeline-stats",
+        "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
+      ],
+      [
+        "input",
+        "",
+        "{\"hx-get\": \"/search/\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#cmdk-results\", \"hx-trigger\": \"load, input changed delay:200ms\"}"
+      ],
+      [
+        "section",
+        "agents-table-section",
+        "{\"hx-get\": \"/admin/agents/_table?sort=last_seen&order=desc\", \"hx-swap\": \"outerHTML\", \"hx-trigger\": \"every 5s\", \"hx-vals\": \"js:{agent: new URLSearchParams(location.search).get(\\\"agent\\\") || \\\"\\\", clane: new URLSearchParams(location.search).get(\\\"clane\\\") || \\\"\\\"}\"}"
+      ]
+    ],
+    "GET /s/analyze": [
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/audit\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/cue\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/dedupe\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/operations\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/tracklist\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "div",
+        "pipeline-stats",
+        "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
+      ],
+      [
+        "input",
+        "",
+        "{\"hx-get\": \"/search/\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#cmdk-results\", \"hx-trigger\": \"load, input changed delay:200ms\"}"
+      ]
+    ],
+    "GET /s/apply": [
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/audit\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/cue\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/dedupe\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/operations\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/tracklist\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "div",
+        "pipeline-stats",
+        "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
+      ],
+      [
+        "input",
+        "",
+        "{\"hx-get\": \"/search/\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#cmdk-results\", \"hx-trigger\": \"load, input changed delay:200ms\"}"
+      ]
+    ],
+    "GET /s/audit": [
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/audit\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/cue\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/dedupe\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/operations\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/tracklist\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-get\": \"/audit/?status=all&sort=executed_at&order=desc\", \"hx-push-url\": \"true\", \"hx-target\": \"#audit-content\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-get\": \"/audit/?status=completed&sort=executed_at&order=desc\", \"hx-push-url\": \"true\", \"hx-target\": \"#audit-content\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-get\": \"/audit/?status=failed&sort=executed_at&order=desc\", \"hx-push-url\": \"true\", \"hx-target\": \"#audit-content\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-get\": \"/audit/?status=in_progress&sort=executed_at&order=desc\", \"hx-push-url\": \"true\", \"hx-target\": \"#audit-content\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-get\": \"/audit/?status=pending&sort=executed_at&order=desc\", \"hx-push-url\": \"true\", \"hx-target\": \"#audit-content\"}"
+      ],
+      [
+        "div",
+        "pipeline-stats",
+        "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
+      ],
+      [
+        "input",
+        "",
+        "{\"hx-get\": \"/search/\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#cmdk-results\", \"hx-trigger\": \"load, input changed delay:200ms\"}"
+      ]
+    ],
+    "GET /s/cue": [
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/audit\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/cue\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/dedupe\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/operations\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/tracklist\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "div",
+        "pipeline-stats",
+        "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
+      ],
+      [
+        "input",
+        "",
+        "{\"hx-get\": \"/search/\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#cmdk-results\", \"hx-trigger\": \"load, input changed delay:200ms\"}"
+      ]
+    ],
+    "GET /s/dedupe": [
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/audit\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/cue\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/dedupe\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/operations\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/tracklist\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-disabled-elt\": \"this\", \"hx-include\": \"#dedupe-group-hash-inputs\", \"hx-post\": \"/duplicates/review-all\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#dedupe-bulk-response\"}"
+      ],
+      [
+        "div",
+        "pipeline-stats",
+        "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
+      ],
+      [
+        "input",
+        "",
+        "{\"hx-get\": \"/search/\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#cmdk-results\", \"hx-trigger\": \"load, input changed delay:200ms\"}"
+      ]
+    ],
+    "GET /s/discover": [
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/audit\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/cue\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/dedupe\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/operations\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/tracklist\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-confirm\": \"No orphaned enrich work is currently reported. Run recovery across all pipeline stages anyway?\", \"hx-indicator\": \"#discover-recover-spinner-idle\", \"hx-post\": \"/pipeline/recover\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#discover-recover-response\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-confirm\": \"Re-enqueue orphaned work across all pipeline stages?\", \"hx-indicator\": \"#discover-recover-spinner\", \"hx-post\": \"/pipeline/recover\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#discover-recover-response\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-get\": \"/pipeline/scans/recent?poll=0&sort=started&order=desc\", \"hx-indicator\": \"#recent-scans-refresh-status\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#recent-scans\"}"
+      ],
+      [
+        "div",
+        "pipeline-stats",
+        "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-indicator\": \"#scan-submit-spinner\", \"hx-post\": \"/pipeline/scans\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#scan-submit-result\"}"
+      ],
+      [
+        "input",
+        "",
+        "{\"hx-get\": \"/search/\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#cmdk-results\", \"hx-trigger\": \"load, input changed delay:200ms\"}"
+      ],
+      [
+        "select",
+        "scan-agent",
+        "{\"hx-get\": \"/pipeline/scans/agent-roots\", \"hx-include\": \"this\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#scan-path-picker\", \"hx-trigger\": \"change\"}"
+      ]
+    ],
+    "GET /s/files": [
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/audit\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/cue\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/dedupe\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/operations\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/tracklist\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "div",
+        "pipeline-stats",
+        "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
+      ],
+      [
+        "form",
+        "status-filter-bar",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#files-table-view\", \"hx-trigger\": \"change\"}"
+      ],
+      [
+        "input",
+        "",
+        "{\"hx-get\": \"/search/\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#cmdk-results\", \"hx-trigger\": \"load, input changed delay:200ms\"}"
+      ]
+    ],
+    "GET /s/metadata": [
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/audit\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/cue\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/dedupe\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/operations\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/tracklist\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-confirm\": \"Enqueue metadata extraction for all pending files?\", \"hx-indicator\": \"#metadata-trigger-spinner\", \"hx-post\": \"/pipeline/extract-metadata\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#metadata-trigger-response\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-post\": \"/pipeline/stages/metadata/pause\", \"hx-swap\": \"none\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-post\": \"/pipeline/stages/metadata/priority\", \"hx-swap\": \"none\", \"hx-vals\": \"{\\\"delta\\\": -10}\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-post\": \"/pipeline/stages/metadata/priority\", \"hx-swap\": \"none\", \"hx-vals\": \"{\\\"delta\\\": 10}\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-post\": \"/pipeline/stages/metadata/resume\", \"hx-swap\": \"none\"}"
+      ],
+      [
+        "div",
+        "metadata-files-view",
+        "{\"hx-get\": \"/pipeline/pending-files?stage=metadata\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"load\"}"
+      ],
+      [
+        "div",
+        "pipeline-stats",
+        "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
+      ],
+      [
+        "input",
+        "",
+        "{\"hx-get\": \"/search/\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#cmdk-results\", \"hx-trigger\": \"load, input changed delay:200ms\"}"
+      ]
+    ],
+    "GET /s/move": [
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/audit\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/cue\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/dedupe\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/operations\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename?status=all&q=&page=1&page_size=25&sort=confidence&order=asc&selected=\", \"hx-push-url\": \"true\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#changes-workspace-list\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename?status=approved&q=&page=1&page_size=25&sort=confidence&order=asc&selected=\", \"hx-push-url\": \"true\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#changes-workspace-list\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename?status=blocked&q=&page=1&page_size=25&sort=confidence&order=asc&selected=\", \"hx-push-url\": \"true\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#changes-workspace-list\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename?status=needs_review&q=&page=1&page_size=25&sort=confidence&order=asc&selected=\", \"hx-push-url\": \"true\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#changes-workspace-list\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename?status=rejected&q=&page=1&page_size=25&sort=confidence&order=asc&selected=\", \"hx-push-url\": \"true\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#changes-workspace-list\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/tracklist\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-disabled-elt\": \"this\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-disabled-elt\": \"this\"}"
+      ],
+      [
+        "div",
+        "pipeline-stats",
+        "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-confirm\": \"Approve the eligible tag changes visible on this reviewed page?\", \"hx-disabled-elt\": \"find button\", \"hx-post\": \"/tags/bulk-write-no-discrepancies\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-bulk-result\"}"
+      ],
+      [
+        "form",
+        "changes-bulk-form",
+        "{\"hx-patch\": \"/proposals/bulk?status=needs_review&q=&page=1&page_size=25&sort=confidence&order=asc\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#changes-workspace-list\"}"
+      ],
+      [
+        "input",
+        "",
+        "{\"hx-get\": \"/search/\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#cmdk-results\", \"hx-trigger\": \"load, input changed delay:200ms\"}"
+      ]
+    ],
+    "GET /s/operations": [
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/audit\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/cue\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/dedupe\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/operations\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/tracklist\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "button",
+        "force-local-pill",
+        "{\"hx-confirm\": \"Force all analysis routing to local? Cloud and Kueue backends will be bypassed until an operator restores normal routing.\", \"hx-post\": \"/pipeline/routing/force-local\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"this\", \"hx-vals\": \"{\\\"engage\\\": true}\"}"
+      ],
+      [
+        "div",
+        "pipeline-stats",
+        "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
+      ],
+      [
+        "input",
+        "",
+        "{\"hx-get\": \"/search/\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#cmdk-results\", \"hx-trigger\": \"load, input changed delay:200ms\"}"
+      ]
+    ],
+    "GET /s/propose": [
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/audit\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/cue\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/dedupe\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/operations\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/tracklist\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-get\": \"/s/propose?status=all&q=&page=1&page_size=25&sort=confidence&order=asc\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#propose-workspace-list\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-get\": \"/s/propose?status=approved&q=&page=1&page_size=25&sort=confidence&order=asc\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#propose-workspace-list\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-get\": \"/s/propose?status=executed&q=&page=1&page_size=25&sort=confidence&order=asc\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#propose-workspace-list\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-get\": \"/s/propose?status=failed&q=&page=1&page_size=25&sort=confidence&order=asc\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#propose-workspace-list\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-get\": \"/s/propose?status=pending&q=&page=1&page_size=25&sort=confidence&order=asc\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#propose-workspace-list\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-get\": \"/s/propose?status=rejected&q=&page=1&page_size=25&sort=confidence&order=asc\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#propose-workspace-list\"}"
+      ],
+      [
+        "button",
+        "propose-generate",
+        "{\"hx-confirm\": \"Generate AI proposals for all 0 pending files? This enqueues 0 litellm jobs.\", \"hx-disabled-elt\": \"this\", \"hx-indicator\": \"#propose-trigger-spinner\", \"hx-post\": \"/pipeline/proposals\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#propose-trigger-response\"}"
+      ],
+      [
+        "div",
+        "pipeline-stats",
+        "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
+      ],
+      [
+        "input",
+        "",
+        "{\"hx-get\": \"/search/\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#cmdk-results\", \"hx-trigger\": \"load, input changed delay:200ms\"}"
+      ],
+      [
+        "input",
+        "propose-search",
+        "{\"hx-get\": \"/s/propose\", \"hx-include\": \"this, #propose-workspace-list-search-state\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#propose-workspace-list\", \"hx-trigger\": \"keyup changed delay:300ms\"}"
+      ]
+    ],
+    "GET /s/rename": [
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/audit\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/cue\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/dedupe\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/operations\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename?status=all&q=&page=1&page_size=25&sort=confidence&order=asc&selected=\", \"hx-push-url\": \"true\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#changes-workspace-list\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename?status=approved&q=&page=1&page_size=25&sort=confidence&order=asc&selected=\", \"hx-push-url\": \"true\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#changes-workspace-list\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename?status=blocked&q=&page=1&page_size=25&sort=confidence&order=asc&selected=\", \"hx-push-url\": \"true\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#changes-workspace-list\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename?status=needs_review&q=&page=1&page_size=25&sort=confidence&order=asc&selected=\", \"hx-push-url\": \"true\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#changes-workspace-list\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename?status=rejected&q=&page=1&page_size=25&sort=confidence&order=asc&selected=\", \"hx-push-url\": \"true\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#changes-workspace-list\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/tracklist\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-disabled-elt\": \"this\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-disabled-elt\": \"this\"}"
+      ],
+      [
+        "div",
+        "pipeline-stats",
+        "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-confirm\": \"Approve the eligible tag changes visible on this reviewed page?\", \"hx-disabled-elt\": \"find button\", \"hx-post\": \"/tags/bulk-write-no-discrepancies\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-bulk-result\"}"
+      ],
+      [
+        "form",
+        "changes-bulk-form",
+        "{\"hx-patch\": \"/proposals/bulk?status=needs_review&q=&page=1&page_size=25&sort=confidence&order=asc\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#changes-workspace-list\"}"
+      ],
+      [
+        "input",
+        "",
+        "{\"hx-get\": \"/search/\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#cmdk-results\", \"hx-trigger\": \"load, input changed delay:200ms\"}"
+      ]
+    ],
+    "GET /s/summary": [
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/audit\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/cue\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/dedupe\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/operations\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/tracklist\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "div",
+        "pipeline-stats",
+        "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
+      ],
+      [
+        "input",
+        "",
+        "{\"hx-get\": \"/search/\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#cmdk-results\", \"hx-trigger\": \"load, input changed delay:200ms\"}"
+      ]
+    ],
+    "GET /s/tagwrite": [
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/audit\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/cue\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/dedupe\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/operations\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename?status=all&q=&page=1&page_size=25&sort=confidence&order=asc&selected=\", \"hx-push-url\": \"true\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#changes-workspace-list\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename?status=approved&q=&page=1&page_size=25&sort=confidence&order=asc&selected=\", \"hx-push-url\": \"true\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#changes-workspace-list\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename?status=blocked&q=&page=1&page_size=25&sort=confidence&order=asc&selected=\", \"hx-push-url\": \"true\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#changes-workspace-list\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename?status=needs_review&q=&page=1&page_size=25&sort=confidence&order=asc&selected=\", \"hx-push-url\": \"true\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#changes-workspace-list\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename?status=rejected&q=&page=1&page_size=25&sort=confidence&order=asc&selected=\", \"hx-push-url\": \"true\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#changes-workspace-list\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/tracklist\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-disabled-elt\": \"this\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-disabled-elt\": \"this\"}"
+      ],
+      [
+        "div",
+        "pipeline-stats",
+        "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
+      ],
+      [
+        "form",
+        "",
+        "{\"hx-confirm\": \"Approve the eligible tag changes visible on this reviewed page?\", \"hx-disabled-elt\": \"find button\", \"hx-post\": \"/tags/bulk-write-no-discrepancies\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#changes-bulk-result\"}"
+      ],
+      [
+        "form",
+        "changes-bulk-form",
+        "{\"hx-patch\": \"/proposals/bulk?status=needs_review&q=&page=1&page_size=25&sort=confidence&order=asc\", \"hx-swap\": \"outerHTML\", \"hx-target\": \"#changes-workspace-list\"}"
+      ],
+      [
+        "input",
+        "",
+        "{\"hx-get\": \"/search/\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#cmdk-results\", \"hx-trigger\": \"load, input changed delay:200ms\"}"
+      ]
+    ],
+    "GET /s/tracklist": [
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/agents\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/analyze\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/apply\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/audit\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/cue\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/dedupe\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/discover\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/files\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/metadata\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/operations\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/propose\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/rename\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/summary\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "a",
+        "",
+        "{\"hx-get\": \"/s/tracklist\", \"hx-push-url\": \"true\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#stage-workspace\"}"
+      ],
+      [
+        "button",
+        "",
+        "{\"hx-confirm\": \"Enqueue matching for all pending tracklists?\", \"hx-post\": \"/pipeline/match-tracklists\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#match-trigger-response\"}"
+      ],
+      [
+        "div",
+        "pipeline-stats",
+        "{\"hx-get\": \"/pipeline/stats\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"every 5s [document.visibilityState === 'visible'], refresh\", \"hx-vals\": \"js:{lane: new URLSearchParams(location.search).get(\\\"lane\\\")}\"}"
+      ],
+      [
+        "div",
+        "tracklist-drain-status-view",
+        "{\"hx-get\": \"/pipeline/tracklist-drain-status\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"load, drain-refresh from:body\"}"
+      ],
+      [
+        "div",
+        "tracklist-sets-view",
+        "{\"hx-get\": \"/pipeline/tracklist-sets\", \"hx-swap\": \"innerHTML\", \"hx-trigger\": \"load\"}"
+      ],
+      [
+        "input",
+        "",
+        "{\"hx-get\": \"/search/\", \"hx-swap\": \"innerHTML\", \"hx-target\": \"#cmdk-results\", \"hx-trigger\": \"load, input changed delay:200ms\"}"
+      ]
+    ]
+  },
+  "HX_TARGET_MATRIX": {
+    "agents|": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "agents|changes-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "agents|files-table-view": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "agents|propose-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "agents|stage-workspace": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "analyze|": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "analyze|changes-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "analyze|files-table-view": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "analyze|propose-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "analyze|stage-workspace": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "apply|": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "apply|changes-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "apply|files-table-view": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "apply|propose-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "apply|stage-workspace": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "audit|": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "audit|changes-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "audit|files-table-view": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "audit|propose-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "audit|stage-workspace": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "cue|": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "cue|changes-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "cue|files-table-view": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "cue|propose-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "cue|stage-workspace": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "dedupe|": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "dedupe|changes-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "dedupe|files-table-view": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "dedupe|propose-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "dedupe|stage-workspace": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "discover|": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "discover|changes-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "discover|files-table-view": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "discover|propose-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "discover|stage-workspace": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "files|": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "files|changes-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "files|files-table-view": {
+      "status": 200,
+      "templates": [
+        "pipeline/partials/files_table_view.html"
+      ]
+    },
+    "files|propose-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "files|stage-workspace": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "metadata|": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "metadata|changes-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "metadata|files-table-view": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "metadata|propose-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "metadata|stage-workspace": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "move|": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "move|changes-workspace-list": {
+      "status": 200,
+      "templates": [
+        "pipeline/partials/_changes_list.html"
+      ]
+    },
+    "move|files-table-view": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "move|propose-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "move|stage-workspace": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "operations|": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "operations|changes-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "operations|files-table-view": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "operations|propose-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "operations|stage-workspace": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "propose|": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "propose|changes-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "propose|files-table-view": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "propose|propose-workspace-list": {
+      "status": 200,
+      "templates": [
+        "pipeline/partials/_propose_list.html"
+      ]
+    },
+    "propose|stage-workspace": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "rename|": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "rename|changes-workspace-list": {
+      "status": 200,
+      "templates": [
+        "pipeline/partials/_changes_list.html"
+      ]
+    },
+    "rename|files-table-view": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "rename|propose-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "rename|stage-workspace": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "summary|": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "summary|changes-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "summary|files-table-view": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "summary|propose-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "summary|stage-workspace": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "tagwrite|": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "tagwrite|changes-workspace-list": {
+      "status": 200,
+      "templates": [
+        "pipeline/partials/_changes_list.html"
+      ]
+    },
+    "tagwrite|files-table-view": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "tagwrite|propose-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "tagwrite|stage-workspace": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "tracklist|": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "tracklist|changes-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "tracklist|files-table-view": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "tracklist|propose-workspace-list": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    },
+    "tracklist|stage-workspace": {
+      "status": 200,
+      "templates": [
+        "shell/_stage_fragment.html"
+      ]
+    }
+  },
+  "SHELL_ROUTES": [
+    [
+      "/",
+      "GET",
+      "shell_home"
+    ],
+    [
+      "/s/{stage}",
+      "GET",
+      "shell_stage"
+    ]
+  ],
+  "STAGE_CONTEXT_BUILDERS": [
+    [
+      "agents",
+      "_agents_stage_context"
+    ],
+    [
+      "analyze",
+      "_analyze_stage_context"
+    ],
+    [
+      "apply",
+      "<lambda>"
+    ],
+    [
+      "audit",
+      "<lambda>"
+    ],
+    [
+      "cue",
+      "<lambda>"
+    ],
+    [
+      "dedupe",
+      "<lambda>"
+    ],
+    [
+      "discover",
+      "<lambda>"
+    ],
+    [
+      "files",
+      "_files_stage_context"
+    ],
+    [
+      "metadata",
+      "<lambda>"
+    ],
+    [
+      "move",
+      "<lambda>"
+    ],
+    [
+      "propose",
+      "<lambda>"
+    ],
+    [
+      "rename",
+      "<lambda>"
+    ],
+    [
+      "summary",
+      "<lambda>"
+    ],
+    [
+      "tagwrite",
+      "<lambda>"
+    ],
+    [
+      "tracklist",
+      "<lambda>"
+    ]
+  ],
+  "STAGE_PARTIALS": [
+    [
+      "summary",
+      "shell/partials/summary_overview.html"
+    ],
+    [
+      "files",
+      "pipeline/partials/files_workspace.html"
+    ],
+    [
+      "discover",
+      "pipeline/partials/discover_workspace.html"
+    ],
+    [
+      "metadata",
+      "pipeline/partials/metadata_workspace.html"
+    ],
+    [
+      "analyze",
+      "pipeline/partials/analyze_workspace.html"
+    ],
+    [
+      "tracklist",
+      "pipeline/partials/tracklist_workspace.html"
+    ],
+    [
+      "propose",
+      "pipeline/partials/propose_workspace.html"
+    ],
+    [
+      "rename",
+      "pipeline/partials/changes_workspace.html"
+    ],
+    [
+      "tagwrite",
+      "pipeline/partials/changes_workspace.html"
+    ],
+    [
+      "move",
+      "pipeline/partials/changes_workspace.html"
+    ],
+    [
+      "dedupe",
+      "pipeline/partials/dedupe_workspace.html"
+    ],
+    [
+      "cue",
+      "pipeline/partials/cue_workspace.html"
+    ],
+    [
+      "apply",
+      "pipeline/partials/apply_workspace.html"
+    ]
+  ],
+  "UNKNOWN_STAGE": {
+    "status": 404
+  },
+  "UTILITY_PANES": [
+    [
+      "operations",
+      "shell/partials/operations.html"
+    ],
+    [
+      "audit",
+      "execution/audit_log.html"
+    ],
+    [
+      "agents",
+      "admin/agents.html"
+    ]
+  ]
+}
