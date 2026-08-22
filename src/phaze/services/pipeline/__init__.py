@@ -40,6 +40,20 @@ Omitting them turns both into a loud ``AttributeError`` instead. Patch and read 
 module (``phaze.services.pipeline.stages`` / ``phaze.services.pipeline.orphans``).
 
 The import order below is dependency order; it is what keeps the intra-package imports acyclic.
+
+**Duplication ruling (phaze-bk9el.11, implementer decision, 2026-08-21).** This file's import block
++ ``__all__`` list was measured as a 55-line structural clone of
+:mod:`phaze.routers.pipeline`'s facade -- the two highest ``duplication_pct`` readings in all of
+``src/phaze`` (epic phaze-bk9el §A). RULED barrel boilerplate, not debt: the two facades re-export
+DISJOINT symbol sets for two unrelated packages, so there is no shared *content* to fold into one
+source of truth -- only the shared *mechanical shape* every re-export facade in this split takes
+(one ``from .submodule import (...)`` block per submodule, followed by an alphabetized ``__all__``),
+which a clone detector reads as duplication because it is structurally repetitive by construction.
+That shape is forced by the facade discipline documented above (preserve every existing
+``from phaze.services.pipeline import <name>`` import site). Collapsing it into fewer, denser lines
+would trade this file's readability for a duplication-metric win with no behavioural benefit. The
+full ruling and its rationale live on the sibling facade (``routers/pipeline/__init__.py``); this
+note exists so a reader landing here first does not re-litigate it.
 """
 
 from __future__ import annotations

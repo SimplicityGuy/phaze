@@ -1,4 +1,20 @@
-"""Pipeline file matrix + per-stage file fragments."""
+"""Pipeline file matrix + per-stage file fragments.
+
+**Duplication ruling (phaze-bk9el.11, implementer decision, 2026-08-21).** repowise measured this
+file at 22.1% duplication, driven by the ``page: int = Query(1, ge=1)`` /
+``page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE)`` /
+``session: AsyncSession = Depends(get_session)`` triple repeated across
+:func:`pipeline_files`, :func:`pending_files_fragment`, :func:`analyze_files_fragment` and
+:func:`tracklist_sets_fragment` (plus ``sort``/``order`` on the latter two), and echoed again by
+``routers/search.py::search_page``. RULED acceptable boilerplate, not debt: this is FastAPI's own
+idiom for a route's query-parameter contract -- each ``Query(...)`` call is the validation AND the
+OpenAPI schema for that one parameter, read at the call site with no indirection, which is exactly
+why FastAPI expects it declared per-route rather than centralized. Folding it into a shared
+``Depends()``-injected params object would trade that directness for a handful of saved lines,
+would touch a file outside this bead's ``routers/pipeline/*`` scope (``routers/search.py``), and
+risks a "no behaviour change" bead reshaping every affected route's OpenAPI parameter grouping.
+Left as a real but low-value future opportunity if the pattern grows a fifth or sixth call site.
+"""
 
 from __future__ import annotations
 
