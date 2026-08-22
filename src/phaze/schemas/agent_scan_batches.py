@@ -18,13 +18,13 @@ comes from the bearer-token resolver, never from the wire.
 from typing import Literal
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from phaze.schemas.wire_bounds import INT32_MAX
-from phaze.services.pg_text import sanitize_pg_text
+from phaze.schemas.wire_mixins import SanitizedErrorMessageMixin
 
 
-class ScanBatchPatch(BaseModel):
+class ScanBatchPatch(SanitizedErrorMessageMixin):
     """Partial-update body for PATCH /scan-batches/{id}.
 
     Status transitions (enforced by the router, mirroring Phase 25 D-15):
@@ -32,6 +32,11 @@ class ScanBatchPatch(BaseModel):
     a 200 no-op; the LIVE sentinel state is the watcher's terminal own-state and
     is intentionally NOT in this Literal — attempting `status="live"` on the
     wire yields 422 at validation time (D-10 schema-layer guard).
+
+    `error_message` (sink: `ScanBatch.error_message`, Text) and its sanitize-on-write validator
+    come from `SanitizedErrorMessageMixin` (phaze-bk9el.14). Before that bead this was the ONE
+    agent PATCH endpoint whose sanitize copy diverged in comment only (phaze-hvve5 site 1) from
+    the byte-identical copies in `schemas/agent_execution.py` -- the clone `get_health` flagged.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -44,19 +49,6 @@ class ScanBatchPatch(BaseModel):
     total_files: int | None = Field(default=None, ge=0, le=INT32_MAX)
     processed_files: int | None = Field(default=None, ge=0, le=INT32_MAX)
     status: Literal["running", "completed", "failed"] | None = None
-    error_message: str | None = None
-
-    # phaze-hvve5 (site 1): this is the ONE agent PATCH endpoint that did not sanitize
-    # `error_message` before the router's generic `setattr(batch, field, value)` loop writes it
-    # into `ScanBatch.error_message` (Text) and commits -- unlike agent_metadata.py:162,
-    # agent_analysis.py:456, agent_tag_writes.py:109. A NUL/lone-surrogate 500s the commit and
-    # permanently loses the terminal FAILED report (the batch stays RUNNING with no way to
-    # retry -- the identical PATCH replay 500s forever). Sanitize at the wire boundary so the
-    # router's shared setattr loop needs no special-casing per field.
-    @field_validator("error_message", mode="after")
-    @classmethod
-    def _sanitize_error_message(cls, v: str | None) -> str | None:
-        return sanitize_pg_text(v) if v is not None else v
 
     @model_validator(mode="after")
     def _reject_explicit_null_for_non_nullable_fields(self) -> "ScanBatchPatch":
