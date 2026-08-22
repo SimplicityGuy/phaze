@@ -206,6 +206,30 @@ def test_settings_env_var_universe_is_unchanged() -> None:
     assert sorted(_env_universe()) == _golden()["ENV_UNIVERSE"]
 
 
+# phaze-bk9el CI fix: `lane_analyze_concurrency` is the ONE field in these goldens whose
+# default is HOST-DERIVED (`default_factory=lambda: derive_sizing().concurrency`, phaze-rvcn)
+# rather than a literal. A golden captured on one machine therefore pins that machine's core
+# count as well as the code, and the comparison failed on CI while passing locally. Every
+# other field in both goldens is a literal and is still compared exactly.
+#
+# We assert the DERIVATION instead of the recorded number: whatever this host derives is what
+# the setting must resolve to. That keeps the pin honest about what it can and cannot claim --
+# it still catches a reordered or dropped validator, which is what the docstring promises.
+_HOST_DERIVED_FIELDS = ("lane_analyze_concurrency",)
+
+
+def _without_host_derived(resolved: dict[str, Any]) -> dict[str, Any]:
+    """The resolved mapping minus fields whose default is derived from this host."""
+    return {k: v for k, v in resolved.items() if k not in _HOST_DERIVED_FIELDS}
+
+
+def _assert_host_derived_fields(resolved: dict[str, Any]) -> None:
+    """Each host-derived field equals what this host actually derives, not a recorded literal."""
+    from phaze.services.analysis_sizing import derive_sizing
+
+    assert resolved["lane_analyze_concurrency"] == derive_sizing().concurrency
+
+
 @pytest.mark.usefixtures("scrubbed_env")
 def test_control_settings_resolve_to_recorded_defaults() -> None:
     """Every ControlSettings field's RESOLVED value in a scrubbed environment.
@@ -216,7 +240,9 @@ def test_control_settings_resolve_to_recorded_defaults() -> None:
     any of those validators changes a value here even when every ``Field(default=...)``
     literal survives the move untouched.
     """
-    assert _resolved(ControlSettings()) == _golden()["CONTROL_DEFAULTS"]
+    resolved = _resolved(ControlSettings())
+    _assert_host_derived_fields(resolved)
+    assert _without_host_derived(resolved) == _without_host_derived(_golden()["CONTROL_DEFAULTS"])
 
 
 @pytest.mark.usefixtures("scrubbed_env")
@@ -229,7 +255,9 @@ def test_agent_settings_resolve_to_recorded_defaults(monkeypatch: pytest.MonkeyP
     """
     for name, value in _AGENT_MIN_ENV.items():
         monkeypatch.setenv(name, value)
-    assert _resolved(AgentSettings()) == _golden()["AGENT_DEFAULTS"]
+    resolved = _resolved(AgentSettings())
+    _assert_host_derived_fields(resolved)
+    assert _without_host_derived(resolved) == _without_host_derived(_golden()["AGENT_DEFAULTS"])
 
 
 @pytest.mark.usefixtures("scrubbed_env")

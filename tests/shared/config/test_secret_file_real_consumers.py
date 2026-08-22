@@ -189,7 +189,7 @@ def test_push_ssh_key_from_secret_file_is_accepted_by_openssh(monkeypatch: pytes
 
     ``phaze.tasks.push`` materializes ``push_ssh_key`` to a 0600 temp file and hands the path to
     ``ssh``, so ``ssh-keygen -y -f`` parses the exact artifact production produces. The second
-    half is the control: the same key minus its final newline is rejected ``invalid format``,
+    half is the control: the same key minus its final newline is rejected by ssh-keygen,
     which is the failure WR-01 exists to prevent and the reason
     ``SECRET_FILE_PRESERVE_WHITESPACE`` must keep listing this field after the split.
     """
@@ -220,4 +220,9 @@ def test_push_ssh_key_from_secret_file_is_accepted_by_openssh(monkeypatch: pytes
     stripped.chmod(0o600)
     rejected = subprocess.run(["ssh-keygen", "-y", "-f", str(stripped)], capture_output=True, text=True, check=False)  # noqa: S603, S607
     assert rejected.returncode != 0
-    assert "invalid format" in rejected.stderr
+    # The REJECTION is the contract; the wording is not. OpenSSH's message depends on the
+    # libcrypto it was built against -- macOS/LibreSSL says "invalid format", the GitHub
+    # runner's OpenSSL build says "error in libcrypto". Asserting one spelling pinned the
+    # build rather than the behaviour and failed CI while passing locally. Match either,
+    # and keep the returncode assertion above as the real check.
+    assert "invalid format" in rejected.stderr or "error in libcrypto" in rejected.stderr, rejected.stderr
