@@ -212,13 +212,27 @@ def test_enrich_workspaces_render_no_file_rows_inline() -> None:
         assert "{% for f in" not in body, f"{name} re-introduced an inline per-file row loop"
 
 
+def _shell_router_src() -> str:
+    """Concatenated source of the whole ``routers/shell`` package.
+
+    phaze-bk9el.16: this used to be ``Path("src/phaze/routers/shell.py").read_text()``. That file
+    is now a PACKAGE, and the render path the two guards below cover is spread across
+    ``stage_context.py`` and ``summary.py``. Reading the package as one blob keeps the guards
+    indifferent to which submodule owns a reader, so a later re-seam cannot quietly move a render
+    path out from under its own guard. Same shape as ``_pipeline_router_src`` above, for the same
+    reason (phaze-oau1o).
+    """
+    root = pathlib.Path("src/phaze/routers/shell")
+    return "\n".join(f.read_text() for f in sorted(root.rglob("*.py")))
+
+
 def test_shell_router_does_not_read_unbounded_pending_sets() -> None:
     """phaze-5462: the shell must not seed the unbounded ``get_*_pending_files`` reads into a render.
 
     That reader stays UNBOUNDED on purpose (contract rule 7 -- it is the ENQUEUE set), so the
     guard is that the RENDER path no longer calls it, not that it gained a LIMIT.
     """
-    shell_src = pathlib.Path("src/phaze/routers/shell.py").read_text()
+    shell_src = _shell_router_src()
     assert "get_metadata_pending_files(" not in shell_src, "the shell render path must use the bounded get_pending_files_page"
 
 
@@ -250,7 +264,7 @@ def test_shell_router_does_not_read_the_unbounded_identify_sets() -> None:
     It was RENDER-ONLY (verified by call graph -- no enqueue consumed it), so unlike the pending
     set it was bounded in place rather than split; the old name must not come back.
     """
-    shell_src = pathlib.Path("src/phaze/routers/shell.py").read_text()
+    shell_src = _shell_router_src()
     assert "get_tracklist_set_rows(" not in shell_src, "the shell render path must use the bounded get_tracklist_sets_page"
 
 
