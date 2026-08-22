@@ -12,6 +12,30 @@ deliberately narrower than the tier orchestration that consumes it:
 Essentia dependencies are supplied by ``analysis`` at the compatibility seam.  Besides making
 the boundary explicit, that preserves the load-bearing environment-before-TensorFlow import
 order and the existing test/instrumentation patches on ``phaze.services.analysis``.
+
+Every ``except Exception`` in this module is BROAD BY REVIEW, not by omission (phaze-bk9el.29)
+-------------------------------------------------------------------------------------------
+All seven were reviewed individually and all seven were kept broad; each carries an inline
+comment naming the specific failure its breadth prevents and the test that exercises it.  Two
+things about that review are worth having here rather than only at the call sites:
+
+* **Only two of the seven are D-09 leak guards** -- the pair inside :func:`_disconnect_network`.
+  The other five prevent different, individually named failures (an optimisation failing an
+  already-decoded chunk; a dead liveness thread; the decode ladder refusing to degrade; a single
+  window taking a whole chunk with it).  Labelling all seven "D-09" would be tidier and wrong,
+  and a wrong attribution here reads as authoritative to whoever audits this next.
+* **Narrowing any of them is currently unverifiable, and that is measured rather than asserted.**
+  Every failure this module's suite injects is a ``RuntimeError`` (eleven sites) or an ``OSError``
+  (one).  A narrowing to those types would therefore leave the entire suite green while changing
+  production behaviour for every other exception type -- ADR-0012 rule 3's "verified against a
+  proxy that structurally cannot exhibit the failure", exactly.  Closing that gap means widening
+  the injected type set first; it is not a comment-only change and is not this bead's scope.
+
+Also seen and deliberately left: :func:`_disconnect_network` carries this file's largest single
+health finding (nested_complexity, nests 4, deduction 0.938 -- nearly twice the entire seven-site
+error_handling bucket).  It is not missed and it is not scope here.  Its nesting is the shape that
+makes the teardown defensive per-algorithm and per-edge, it IS D-09, and it is guarded by two
+tests that CLAUDE.md records as unsatisfiable by a mocked essentia.
 """
 
 from __future__ import annotations
@@ -157,6 +181,14 @@ def _malloc_trim(trim: Callable[[int], int] | None, logger: logging.Logger) -> N
         return
     try:
         trim(0)
+    # phaze-bk9el.29: BROAD BY REVIEW, and explicitly NOT a D-09 leak guard -- the honest label matters.
+    # CLAUDE.md records that ``malloc_trim`` CANNOT fix D-09's leak (those pages were live-referenced, not
+    # merely un-returned); this only hands back pages the teardown already freed.  What the breadth buys is
+    # that a pure optimisation cannot fail a file: ``_release_decode_network`` runs at the tail of EVERY
+    # ``_decode_windows``, so an escape here would abort a chunk that had already decoded successfully.
+    # Nothing narrower is meaningful -- ``trim`` is a ctypes foreign-function pointer, so its raise surface
+    # is whatever the C library and ctypes between them produce.  Exercised (but pragma-excluded, so it
+    # shows as neither covered nor missed) by ``test_malloc_trim_never_raises``, which injects OSError.
     except Exception:  # pragma: no cover -- defensive; an optimisation cannot fail a file
         logger.debug("malloc_trim(0) failed; continuing", exc_info=True)
 
@@ -168,12 +200,24 @@ def _disconnect_network(algos: Sequence[Any], logger: logging.Logger) -> None:
             edges = [
                 (connector, target) for connector, targets in list((getattr(algo, "connections", None) or {}).items()) for target in list(targets)
             ]
+        # phaze-bk9el.29: BROAD BY REVIEW -- a D-09 leak guard, and the load-bearing one.  ``continue`` costs
+        # exactly ONE algorithm's network; an escape would abort the whole loop and leave every REMAINING
+        # algorithm's C++ edges and implicit ``PoolStorage`` sink allocated, which is the duration-linear
+        # +0.31 GiB-per-fine-chunk growth that OOMKilled every file past ~3 h against the 4 GiB limit.  This
+        # runs inside ``_decode_windows_streaming``'s ``finally``, so an escape would also REPLACE the
+        # decode's real exception and the ungated retry rung below would never be reached.
+        # Covered by ``test_an_unreadable_connections_map_is_survived_too``.
         except Exception:
             logger.warning("could not read a streaming algorithm's connections; its network will leak", exc_info=True)
             continue
         for connector, target in edges:
             try:
                 connector.disconnect(target)
+            # phaze-bk9el.29: BROAD BY REVIEW -- the same D-09 guard, applied per EDGE rather than per
+            # algorithm.  One edge essentia refuses to sever is allowed to leak its own network; it is not
+            # allowed to stop the siblings from being severed, which is what keeps teardown's coverage
+            # independent of WHICH edge sticks.
+            # Covered by ``test_a_stuck_disconnect_never_masks_the_callers_exception``.
             except Exception:
                 logger.warning("failed to disconnect a streaming edge; this chunk's network will leak", exc_info=True)
 
@@ -297,6 +341,16 @@ def _streaming_with_watchdog(
         while not stopped.wait(runtime.heartbeat_interval_sec):
             try:
                 on_beat()
+            # phaze-bk9el.29: BROAD BY REVIEW, and NOT a D-09 leak guard -- it prevents the phaze-1b39 class
+            # instead.  ``on_beat`` is caller-supplied (-> ``AnalysisSignals.beat`` -> an injected
+            # ``heartbeat_cb`` doing IPC), so this module does not own its raise surface and cannot enumerate
+            # it on behalf of every future caller.  An escape kills this daemon thread SILENTLY: the beats
+            # stop, and D-08's stall watchdog (``analysis_stall_timeout_sec``, 1800 s of silence) then
+            # SIGTERMs an analysis that is running perfectly well -- on a multi-hour set, hours in.
+            # THIS HANDLER IS THE ONLY UNCOVERED CODE IN THIS MODULE (measured, phaze-bk9el.29: the two
+            # lines below are the module's sole coverage misses).  Per CLAUDE.md rule 4 that absence
+            # FORBIDS narrowing it rather than excusing it -- there is no test T to prove a narrowed set
+            # still degrades, and "no test exists" is the finding, not a reason to write a weaker sentence.
             except Exception:
                 runtime.logger.warning("decode heartbeat callback failed; continuing", exc_info=True)
 
@@ -321,11 +375,26 @@ def _try_streaming_ladder(
     if stop_at_sec is not None:
         try:
             return _streaming_with_watchdog(target, stop_at_sec, on_beat, runtime, watchdog_enabled=watchdog_enabled)
+        # phaze-bk9el.29: BROAD BY REVIEW -- the ladder's entire contract is that ANY failure of the gated
+        # pass degrades to the ungated one rather than failing the file, and "any" is the substance of it:
+        # the raise crosses real essentia plus two ``finally`` blocks (this module's teardown and the
+        # watchdog join), and under the 4 GiB cgroup this is precisely where a MemoryError is plausible
+        # rather than exotic.  NARROWING IS UNVERIFIABLE HERE, which is the decisive reason and not a
+        # stylistic one: every failure the suite injects at this rung is a RuntimeError, so narrowing to
+        # RuntimeError would leave all of those tests green while changing production behaviour for every
+        # other type -- ADR-0012 rule 3's proxy-that-cannot-exhibit-the-failure, verbatim.
+        # Covered by ``test_a_failing_gate_retries_ungated_before_the_per_window_fallback`` and
+        # ``test_a_failing_gated_attempt_beats_before_the_ungated_retry``.
         except Exception:
             runtime.logger.warning("gated streaming decode failed at %d Hz; retrying ungated", target.sample_rate, exc_info=True)
             on_beat()
     try:
         return _streaming_with_watchdog(target, None, on_beat, runtime, watchdog_enabled=watchdog_enabled)
+    # phaze-bk9el.29: BROAD BY REVIEW -- the last streaming rung, and the same reasoning as the gated rung
+    # above: a streaming failure of any kind must degrade to the per-window loader instead of taking the
+    # file, and the suite injects only RuntimeError here too, so a narrowing could not be verified by it.
+    # Covered by ``test_a_network_failure_falls_back_to_the_per_window_decode`` and
+    # ``test_the_per_window_fallback_beats_once_per_window``.
     except Exception:
         runtime.logger.warning("streaming decode pass failed at %d Hz; falling back to per-window EasyLoader", target.sample_rate, exc_info=True)
         return None
@@ -342,6 +411,12 @@ def _decode_per_window(
     for idx, start, end in target.windows:
         try:
             decoded[idx] = runtime.easy_loader(filename=target.file_path, sampleRate=target.sample_rate, startTime=start, endTime=end)()
+        # phaze-bk9el.29: BROAD BY REVIEW -- the module docstring's "isolate failures per window on that
+        # final fallback", and this is the LAST rung: there is nothing below it to degrade to.  Narrowing
+        # would let one undecodable window abort the whole chunk instead of being skipped via ``on_skip``,
+        # converting a partial result into no result.  Same unverifiable-narrowing problem as the ladder.
+        # Covered by ``test_a_network_failure_falls_back_to_the_per_window_decode`` and
+        # ``test_the_per_window_fallback_beats_once_per_window``.
         except Exception:
             on_skip(idx, start, end, True)
         on_beat()
