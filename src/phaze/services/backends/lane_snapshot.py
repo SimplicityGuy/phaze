@@ -63,6 +63,26 @@ _PROBE_TIMEOUT_SEC = 1.5
 _ZERO_ADMISSION: dict[str, int] = {"quota_wait": 0, "inadmissible": 0}
 
 
+async def _rollback_and_log(session: AsyncSession, event: str, **log_kwargs: Any) -> None:
+    """Roll back ``session``, logging (never raising) if the rollback itself fails (bead phaze-bk9el.2).
+
+    Shared by every degrade-safe except-branch in this module: a cleanup failure must never mask the
+    real failure the caller is already reporting, so this always returns normally regardless of what
+    ``session.rollback()`` raises. Deliberately broad (``except Exception``, not narrowed to
+    ``SQLAlchemyError``): ``test_admission_degrades_when_rollback_also_fails``,
+    ``test_probe_one_swallows_a_rollback_failure_after_a_failed_probe`` and
+    ``test_snapshot_degrades_when_rollback_also_fails`` (``tests/shared/services/test_lane_snapshot.py``)
+    all pin a GENERIC (non-SQLAlchemy) rollback failure being swallowed here, not just a DB-layer one --
+    narrowing the except type would break those tests and, more importantly, would reopen a path for a
+    cleanup-time bug to propagate into the hot 5s ``/pipeline/stats`` poll (T-71-03), which every caller
+    of this helper exists specifically to prevent.
+    """
+    try:
+        await session.rollback()
+    except Exception:
+        logger.warning(event, exc_info=True, **log_kwargs)
+
+
 async def _admission_by_backend_id(session: AsyncSession) -> dict[str, dict[str, int]]:
     """Return per-``backend_id`` admission counts ``{quota_wait, inadmissible}`` via one ``GROUP BY`` (D-03).
 
@@ -91,11 +111,11 @@ async def _admission_by_backend_id(session: AsyncSession) -> dict[str, dict[str,
         )
         rows = (await session.execute(stmt)).all()
     except Exception:
+        # Broad by design (T-71-03): test_admission_degrades_to_empty_on_db_error pins a GENERIC
+        # exception -- not just a SQLAlchemy one -- degrading this to {} rather than raising into the
+        # hot poll, so this stays an unnarrowed catch-all.
         logger.warning("backend_lane_admission_degraded", exc_info=True)
-        try:
-            await session.rollback()
-        except Exception:
-            logger.warning("backend_lane_admission_rollback_failed", exc_info=True)
+        await _rollback_and_log(session, "backend_lane_admission_rollback_failed")
         return {}
     return {backend_id: {"quota_wait": int(quota_wait or 0), "inadmissible": int(inadmissible or 0)} for backend_id, quota_wait, inadmissible in rows}
 
@@ -129,11 +149,11 @@ async def _probe_one(session: AsyncSession, backend: Backend) -> tuple[str, bool
     try:
         available = await asyncio.wait_for(backend.is_available(session), _PROBE_TIMEOUT_SEC)
     except Exception:
+        # Broad by design: `backend.is_available` fans out to heterogeneous impls (kube client,
+        # compute-agent DB lookup, ...) that can raise almost anything, plus asyncio.wait_for's own
+        # TimeoutError -- see the docstring above for the full session-poisoning rationale (phaze-ntr8s).
         logger.info("backend_lane_probe_offline", backend_id=backend.id)
-        try:
-            await session.rollback()
-        except Exception:
-            logger.warning("backend_lane_probe_rollback_failed", backend_id=backend.id, exc_info=True)
+        await _rollback_and_log(session, "backend_lane_probe_rollback_failed", backend_id=backend.id)
         return (backend.id, False)
     return (backend.id, bool(available))
 
@@ -245,11 +265,10 @@ async def get_backend_lane_snapshot(session: AsyncSession, app_state: Any = None
             )
         lanes.sort(key=lambda lane: (lane["rank"], lane["id"]))
     except Exception:
+        # Broad by design (T-71-03, SP-1) -- see the docstring above: any top-level exception, from any
+        # of the several DB reads and pluggable-backend calls above, degrades the WHOLE snapshot to [].
         logger.warning("backend_lane_snapshot_degraded", exc_info=True)
-        try:
-            await session.rollback()
-        except Exception:
-            logger.warning("backend_lane_snapshot_rollback_failed", exc_info=True)
+        await _rollback_and_log(session, "backend_lane_snapshot_rollback_failed")
         return []
     return lanes
 
@@ -334,6 +353,9 @@ async def derive_cloud_hold_reason(session: AsyncSession) -> str:
 
         return f"queued — {free_slots} free slots, dispatching on next drain tick (~5 min)"
     except Exception:
+        # Broad by design -- see the docstring above: ANY unexpected exception here (including one from
+        # get_settings() or the fileserver probe) collapses to the neutral, no-causal-claim copy so the
+        # hot 5s poll can never 500 on a hiccup (mirrors the T-71-03 idiom this module applies throughout).
         logger.warning("cloud_hold_reason_degraded", exc_info=True)
         return _HOLD_REASON_DEGRADED
 
@@ -353,6 +375,9 @@ async def get_analysis_live_count(session: AsyncSession, app_state: Any) -> int 
             (backend, kind) for backend in resolve_backends(cast("ControlSettings", get_settings())) if (kind := _kind_of(backend)) != "local"
         ]
     except Exception:
+        # Broad by design: get_settings()/resolve_backends() can fail on a malformed config in ways not
+        # limited to a DB/SQLAlchemy error, and this aggregate's contract ("unknown" beats a fabricated
+        # count) is the same degrade-safe posture the rest of this module applies to the hot poll.
         logger.warning("analysis_live_count_degraded", exc_info=True)
         return None
     if any(kind != "kueue" for _, kind in cloud_backends):
@@ -392,9 +417,9 @@ async def _get_backend_routing_snapshot(session: AsyncSession, cfg: ControlSetti
             for backend in backends
         ]
     except Exception:
+        # Broad by design, mirrors get_backend_lane_snapshot's identical top-level guard: resolve_backends
+        # + the pluggable-backend probe/in_flight_count calls above can raise heterogeneous errors, and
+        # this feeds derive_cloud_hold_reason's own hot-poll degrade path (T-71-03).
         logger.warning("backend_routing_snapshot_degraded", exc_info=True)
-        try:
-            await session.rollback()
-        except Exception:
-            logger.warning("backend_routing_snapshot_rollback_failed", exc_info=True)
+        await _rollback_and_log(session, "backend_routing_snapshot_rollback_failed")
         return None

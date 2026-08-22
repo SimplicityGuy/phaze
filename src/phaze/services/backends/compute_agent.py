@@ -321,6 +321,9 @@ class ComputeAgentBackend(_BaseBackend):
                     attempts=attempts,
                 )
             except Exception:
+                # Per-row guard (reaper loop, mirrors KueueBackend._reap_stranded_staging's per-row except):
+                # one bad row's unexpected failure must never abort the whole sweep, so this stays broad
+                # by design.
                 await session.rollback()
                 logger.warning(
                     "ComputeAgentBackend.reconcile: stranded SUBMITTED reap failed; continuing", cloud_job_id=str(cloud_job_id), exc_info=True
