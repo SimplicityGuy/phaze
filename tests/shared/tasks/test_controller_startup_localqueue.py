@@ -40,7 +40,7 @@ def _stub_collaborators(monkeypatch: pytest.MonkeyPatch, fake_redis: AsyncMock) 
     separate from the ``get_settings`` stub so a test may instead supply a REAL ``ControlSettings``
     (the registry-log test drives the actual ``log_effective_registry`` projection through it).
     """
-    monkeypatch.setattr("phaze.tasks.controller.create_async_engine", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr("phaze.database.create_async_engine", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.DiscogsographyClient", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.load_prompt_template", lambda: "stub")
