@@ -676,6 +676,46 @@ did not move is a finding to report, not to hide."
 
 ## 10. Things bearing on these figures that this bead did not chase
 
+> **ADDENDUM, added by disp/quality 2026-08-22, AFTER this bead closed.** The failures below were
+> subsequently chased and fixed on the epic branch, and one root cause in the table is wrong.
+> Nothing here changes a health figure; §10 is context, not measurement.
+>
+> **The `.mka` failure is NOT the runner's ffmpeg.** Measured inside
+> `ghcr.io/simplicityguy/phaze:latest` — the deployed image, ffmpeg 7.1.5, real
+> `essentia-tensorflow` — and reproduced in `ghcr.io/actions/actions-runner`:
+>
+> ```
+> .mka  MetadataReader duration = 0   samplerate = 0
+> .mp3  MetadataReader duration = 3   samplerate = 44100
+> .m4a  MetadataReader duration = 2   samplerate = 44100
+> ```
+>
+> Ruled out by measurement: the ffmpeg version (7.1.5, 8.1.2 and 9.0.1 all mux a `.mka` that the
+> macOS wheel reads as duration 2) and codec support (`.mp3`/`.m4a` read fine in the same
+> container, same binary, same run). The variable is the **essentia wheel**: linux x86_64 cannot
+> read Matroska metadata, macOS arm64 can — and *both CI and production run the linux one*.
+>
+> **So the test was not "doing precisely what it was written to do".** It asserted that
+> `es.MetadataReader` reads a real duration from the `.mka`, which is the OPPOSITE of decision
+> record D-10 (`phaze-l832u`) and of what production does. `grep` confirms `src/` contains no
+> `MetadataReader` call site at all — every mention is a comment explaining why it is not used;
+> `analyze_file` resolves duration via `_probe_duration_sec` → `ffprobe`. The test passed locally
+> only because this dev machine is macOS, the one platform where the abandoned behaviour still
+> works. It now asserts the production contract and pins `MetadataReader == 0` on linux.
+>
+> Disposition of all five:
+>
+> | Check | Outcome |
+> | --- | --- |
+> | `security / Semgrep CE Scan` | fixed — `sqlalchemy.*` rule firing on a `sqlite3` call; `nosemgrep` marker added |
+> | `test / Tests (shared-rest)` | fixed — assertion now accepts either libcrypto wording; the returncode is the contract |
+> | `test / Tests (analyze-svc-pipeline)` | fixed — now asserts the D-10 ffprobe contract |
+> | `test / Tests (shared-core)` | partially fixed — `lane_analyze_concurrency` (host-derived) excluded; the test now REPORTS which fields differ, since pytest elides them |
+> | `aggregate-results` | downstream of the above |
+>
+> The rest of this section is preserved as written, including the two rows whose mechanism it
+> identified correctly.
+
 **Five CI checks fail on PR #513 and all five pass locally at the same commit.** Recorded because
 a reader comparing this ledger against CI will otherwise conclude the tree is red:
 
