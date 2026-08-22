@@ -1,0 +1,146 @@
+{
+  "exact_windows_90s_120bpm_a220": {
+    "bpm": 120.0,
+    "coarse_windows_analyzed": 0,
+    "coarse_windows_total": 1,
+    "danceability": null,
+    "features": {},
+    "fine_windows_analyzed": 3,
+    "fine_windows_total": 3,
+    "mood": null,
+    "musical_key": "A minor",
+    "style": null,
+    "windows": [
+      {
+        "bpm": 120.0,
+        "end_sec": 30.0,
+        "musical_key": "A minor",
+        "start_sec": 0.0,
+        "tier": "fine",
+        "window_index": 0
+      },
+      {
+        "bpm": 120.0,
+        "end_sec": 60.0,
+        "musical_key": "A minor",
+        "start_sec": 30.0,
+        "tier": "fine",
+        "window_index": 1
+      },
+      {
+        "bpm": 120.0,
+        "end_sec": 90.0,
+        "musical_key": "A minor",
+        "start_sec": 60.0,
+        "tier": "fine",
+        "window_index": 2
+      }
+    ]
+  },
+  "kept_trailing_105s_150bpm_e330": {
+    "bpm": 150.0,
+    "coarse_windows_analyzed": 0,
+    "coarse_windows_total": 1,
+    "danceability": null,
+    "features": {},
+    "fine_windows_analyzed": 4,
+    "fine_windows_total": 4,
+    "mood": null,
+    "musical_key": "E minor",
+    "style": null,
+    "windows": [
+      {
+        "bpm": 150.0,
+        "end_sec": 30.0,
+        "musical_key": "E minor",
+        "start_sec": 0.0,
+        "tier": "fine",
+        "window_index": 0
+      },
+      {
+        "bpm": 150.0,
+        "end_sec": 60.0,
+        "musical_key": "E minor",
+        "start_sec": 30.0,
+        "tier": "fine",
+        "window_index": 1
+      },
+      {
+        "bpm": 150.0,
+        "end_sec": 90.0,
+        "musical_key": "E minor",
+        "start_sec": 60.0,
+        "tier": "fine",
+        "window_index": 2
+      },
+      {
+        "bpm": 150.1,
+        "end_sec": 105.0,
+        "musical_key": "E minor",
+        "start_sec": 90.0,
+        "tier": "fine",
+        "window_index": 3
+      }
+    ]
+  },
+  "short_trailing_dropped_100s_90bpm_c262": {
+    "bpm": 90.0,
+    "coarse_windows_analyzed": 0,
+    "coarse_windows_total": 1,
+    "danceability": null,
+    "features": {},
+    "fine_windows_analyzed": 3,
+    "fine_windows_total": 3,
+    "mood": null,
+    "musical_key": "C minor",
+    "style": null,
+    "windows": [
+      {
+        "bpm": 90.0,
+        "end_sec": 30.0,
+        "musical_key": "C minor",
+        "start_sec": 0.0,
+        "tier": "fine",
+        "window_index": 0
+      },
+      {
+        "bpm": 90.0,
+        "end_sec": 60.0,
+        "musical_key": "C minor",
+        "start_sec": 30.0,
+        "tier": "fine",
+        "window_index": 1
+      },
+      {
+        "bpm": 90.0,
+        "end_sec": 90.0,
+        "musical_key": "C minor",
+        "start_sec": 60.0,
+        "tier": "fine",
+        "window_index": 2
+      }
+    ]
+  },
+  "single_window_25s_120bpm_a220": {
+    "bpm": 120.0,
+    "coarse_windows_analyzed": 0,
+    "coarse_windows_total": 1,
+    "danceability": null,
+    "features": {},
+    "fine_windows_analyzed": 1,
+    "fine_windows_total": 1,
+    "mood": null,
+    "musical_key": "A minor",
+    "style": null,
+    "windows": [
+      {
+        "bpm": 120.0,
+        "end_sec": 25.0,
+        "musical_key": "A minor",
+        "start_sec": 0.0,
+        "tier": "fine",
+        "window_index": 0
+      }
+    ]
+  }
+}
