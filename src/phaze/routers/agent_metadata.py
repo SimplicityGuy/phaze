@@ -5,12 +5,15 @@ bare ``ForeignKey("files.id")`` with NO ``ondelete``, and ``services/scan_deleti
 delete_scan_cascade`` can remove a file's row (and cascade its metadata row) while an
 ``extract_file_metadata`` run is still in flight -- the exact race ``agent_analysis.py``
 (phaze-wn1l) and ``agent_push.py`` (phaze-zdej) already guard against. Both writers here
-(``put_metadata``, ``report_metadata_failed``) now wrap their ``pg_insert`` in a
-``session.begin_nested()`` SAVEPOINT and map a caught ``IntegrityError`` to a clean 200 hold --
+(``put_metadata``, ``report_metadata_failed``) now run their ``pg_insert`` through
+``request_guards.execute_guarding_vanished_file``, which wraps it in a
+``session.begin_nested()`` SAVEPOINT and maps a caught ``IntegrityError`` to a clean 200 hold --
 mirroring those siblings byte-for-byte -- rather than letting an unhandled 500 propagate and
 burn the agent client's retry budget on a request that can never succeed. The deleting cascade
 already purges this file's ``extract_file_metadata:<file_id>`` ledger row (phaze-u5dn), so
-nothing else needs clearing on the hold path.
+nothing else needs clearing on the hold path. (phaze-bk9el.9: this was previously duplicated
+try/except, byte-for-byte, against ``agent_analysis.py``'s five call sites; both now share the
+one helper.)
 """
 
 from typing import Annotated
@@ -19,7 +22,6 @@ import uuid
 from fastapi import APIRouter, Depends, status
 from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
@@ -27,7 +29,9 @@ from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.metadata import FileMetadata
 from phaze.routers.agent_auth import get_authenticated_agent
+from phaze.routers.request_guards import execute_guarding_vanished_file
 from phaze.schemas.agent_metadata import MetadataFailurePayload, MetadataFailureResponse, MetadataWriteRequest, MetadataWriteResponse
+from phaze.services.agent_upsert import build_field_lww_set_clause
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.scheduling_ledger import clear_ledger_entry
 
@@ -95,19 +99,10 @@ async def put_metadata(
         # successful retry reads FAILED forever. `failed_at`/`error_message` sit OUTSIDE
         # `exclude_unset` (the wire body never carries them). Excludes file_id AND id from
         # the SET clause (both are conflict-target / immutable PK).
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["file_id"],
-            set_={
-                **{k: stmt.excluded[k] for k in dumped},
-                "failed_at": None,
-                "error_message": None,
-                # TimestampMixin.updated_at's ORM onupdate=func.now() never fires on this Core ON
-                # CONFLICT DO UPDATE path -- stamp it explicitly so a re-extraction bumps
-                # updated_at instead of freezing it at first write (phaze-c8nz). created_at stays
-                # pinned.
-                "updated_at": func.now(),
-            },
-        )
+        # build_field_lww_set_clause (services/agent_upsert.py, phaze-bk9el.9) is the shared shape
+        # with agent_analysis.put_analysis -- this was the pair's worst clone (32 lines, co-changed
+        # 3x) before the extraction.
+        stmt = stmt.on_conflict_do_update(index_elements=["file_id"], set_=build_field_lww_set_clause(stmt, dumped))
     else:
         # Empty body -- no user field to UPDATE, but STILL clear the failure marker on an
         # existing row (D-13 sharp edge): an empty-body success PUT after a failure means
@@ -118,16 +113,12 @@ async def put_metadata(
             set_={"failed_at": None, "error_message": None, "updated_at": func.now()},
         )
     # phaze-1lnzo: a concurrent scan deletion can remove this file's FileRecord between the
-    # worker starting its extraction and this callback landing. Run the upsert inside a
-    # SAVEPOINT so a caught IntegrityError (ForeignKeyViolation) unwinds only the nested scope,
-    # leaving the session usable, and hold with a clean 200 rather than letting the 500
-    # propagate and burn a wasted re-extraction retry (module docstring; mirrors
-    # agent_analysis.put_analysis, phaze-wn1l).
-    try:
-        async with session.begin_nested():
-            await session.execute(stmt)
-    except IntegrityError:
-        logger.warning("put_metadata file vanished mid-write; holding with a no-op 200", file_id=str(file_id), agent_id=agent.id)
+    # worker starting its extraction and this callback landing. Run the upsert through the
+    # shared guard (request_guards.py rules 4-5, module docstring) so a caught IntegrityError
+    # (ForeignKeyViolation) unwinds only its own SAVEPOINT, leaving the session usable, and
+    # holds with a clean 200 rather than letting the 500 propagate and burn a wasted
+    # re-extraction retry (mirrors agent_analysis.put_analysis, phaze-wn1l).
+    if await execute_guarding_vanished_file(session, stmt, logger=logger, handler_name="put_metadata", file_id=file_id, agent_id=agent.id) is None:
         return MetadataWriteResponse(agent_id=agent.id, file_id=file_id)
     # Phase 90 (D-09): the DISCOVERED -> METADATA_EXTRACTED FileRecord.state CAS advance was removed
     # here. The `metadata` marker upserted above is now the sole idempotency + progress authority --
@@ -225,11 +216,10 @@ async def report_metadata_failed(
     # ack; mirrors agent_analysis.report_analysis_failed, phaze-wn1l). `cleared=True` still holds
     # on the hold path: the cascade already made the row gone, matching the response's documented
     # "the row is gone now" ack semantics.
-    try:
-        async with session.begin_nested():
-            await session.execute(stmt)
-    except IntegrityError:
-        logger.warning("report_metadata_failed file vanished mid-write; holding with a no-op 200", file_id=str(file_id), agent_id=agent.id)
+    if (
+        await execute_guarding_vanished_file(session, stmt, logger=logger, handler_name="report_metadata_failed", file_id=file_id, agent_id=agent.id)
+        is None
+    ):
         return MetadataFailureResponse(agent_id=agent.id, file_id=file_id, cleared=True)
     # CR-02: clear the ledger row in the SAME transaction. Key from the PATH file_id ONLY (T-45-05).
     await clear_ledger_entry(session, f"extract_file_metadata:{file_id}")

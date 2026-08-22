@@ -639,8 +639,11 @@ async def get_tagwrite_review_page(session: AsyncSession) -> TagwriteReviewPage:
                 )
                 rows.extend(new_rows)
                 if len(rows) >= _MAX_REVIEW_ROWS:
-                    if row_cap_hit_mid_batch or len(batch) == _REVIEW_SCAN_BATCH:
-                        partial = True
+                    # phaze-bk9el.4: `partial` starts False and is never set True before this point
+                    # in this branch, so unconditionally assigning the mid-batch/full-batch signal is
+                    # equivalent to the nested `if ...: partial = True` this replaced -- one fewer
+                    # nesting level, same result either way.
+                    partial = row_cap_hit_mid_batch or len(batch) == _REVIEW_SCAN_BATCH
                     break
                 if len(batch) < _REVIEW_SCAN_BATCH:
                     break  # candidate set exhausted
@@ -815,6 +818,32 @@ async def count_cue_review_candidates(session: AsyncSession) -> int:
         return 0
 
 
+def _cue_card(
+    tracklist: Tracklist,
+    file_record: FileRecord,
+    *,
+    eligible: bool,
+    build_error: bool = False,
+    cue_text: str | None = None,
+    version_id: uuid.UUID | None = None,
+) -> dict[str, Any]:
+    """Build one Cue-workspace card dict (phaze-bk9el.4): the shape shared by all three card sites --
+    the per-card-degraded card, the eligible/built card, and the gated card -- factored out of what
+    was previously a 9-line clone (``_build_eligible_cue_card``'s degraded return duplicated
+    ``_gated_cue_cards``'s literal verbatim). Callers still decide eligibility, degrade state, and
+    cue text/version -- this only owns the dict shape all three already agreed on.
+    """
+    return {
+        "tracklist_id": tracklist.id,
+        "file_id": file_record.id,
+        "set_name": Path(file_record.current_path).stem,
+        "eligible": eligible,
+        "build_error": build_error,
+        "cue_text": cue_text,
+        "version_id": version_id,
+    }
+
+
 def _build_eligible_cue_card(
     tracklist: Tracklist,
     file_record: FileRecord,
@@ -844,27 +873,11 @@ def _build_eligible_cue_card(
         logger.warning("cue_review_card_build_failed", tracklist_id=str(tracklist.id), exc_info=True)
         # Degrade this ONE card to the gated shape (no approve control, no stale/partial preview)
         # instead of dropping the whole render.
-        return {
-            "tracklist_id": tracklist.id,
-            "file_id": file_record.id,
-            "set_name": Path(file_record.current_path).stem,
-            "eligible": False,
-            "build_error": True,
-            "cue_text": None,
-            "version_id": None,
-        }
-    return {
-        "tracklist_id": tracklist.id,
-        "file_id": file_record.id,
-        "set_name": Path(file_record.current_path).stem,
-        "eligible": True,
-        "build_error": False,
-        "cue_text": cue_text,
-        # phaze-ce65s: the version THIS preview's cue_text was actually built from -- carried back
-        # on APPROVE (hx-vals) so the route can refuse a write if `latest_version_id` moved before
-        # the click.
-        "version_id": tracklist.latest_version_id,
-    }
+        return _cue_card(tracklist, file_record, eligible=False, build_error=True)
+    # phaze-ce65s: `version_id` is the version THIS preview's cue_text was actually built from --
+    # carried back on APPROVE (hx-vals) so the route can refuse a write if `latest_version_id` moved
+    # before the click.
+    return _cue_card(tracklist, file_record, eligible=True, cue_text=cue_text, version_id=tracklist.latest_version_id)
 
 
 async def _gated_cue_cards(session: AsyncSession) -> list[dict[str, Any]]:
@@ -876,18 +889,7 @@ async def _gated_cue_cards(session: AsyncSession) -> list[dict[str, Any]]:
     SQL-bounded).
     """
     gated_stmt = gated_tracklist_stmt().order_by(Tracklist.artist, Tracklist.event).limit(_MAX_REVIEW_ROWS)
-    return [
-        {
-            "tracklist_id": tracklist.id,
-            "file_id": file_record.id,
-            "set_name": Path(file_record.current_path).stem,
-            "eligible": False,
-            "build_error": False,
-            "cue_text": None,
-            "version_id": None,
-        }
-        for tracklist, file_record in (await session.execute(gated_stmt)).tuples().all()
-    ]
+    return [_cue_card(tracklist, file_record, eligible=False) for tracklist, file_record in (await session.execute(gated_stmt)).tuples().all()]
 
 
 async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:

@@ -15,8 +15,13 @@ from sqlalchemy import text
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.metadata import FileMetadata
-from phaze.routers import shell as shell_mod
-from phaze.routers.shell import SummaryOverviewInputs, _derive_summary_overview, _get_summary_aggregates
+
+# phaze-bk9el.16: the summary derivation moved from routers/shell.py to the routers/shell
+# PACKAGE's `summary` submodule. Every setattr below substitutes a name `_build_summary_context`
+# resolves from ITS OWN module globals, so the patch target has to be the module that now
+# defines it -- patching the package would rebind a re-export nothing reads.
+from phaze.routers.shell import summary as shell_mod
+from phaze.routers.shell.summary import SummaryOverviewInputs, _derive_summary_overview, _get_summary_aggregates
 from phaze.services.backends import get_analysis_activity_counts
 from phaze.services.proposal_queries import ProposalStats
 

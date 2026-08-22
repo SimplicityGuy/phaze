@@ -1,9 +1,27 @@
-"""Audio analysis service: model registry, essentia analysis, mood/style derivation."""
+"""Audio analysis service: the essentia analysis pipeline and its decision records.
+
+This module owns the parts that touch essentia and the three invariants the analysis path is
+held to -- **D-07** (exhaustive coverage, bounded by CHUNK and never by a cap), **D-08**
+(liveness is progress-based, never a wall clock) and **D-09** (a chunk's streaming network is
+DISCONNECTED, not merely dropped). All three, and every function that implements them, stayed
+here through the phaze-bk9el.15 split; what left were declarations and pure reductions that
+import no essentia and carry no invariant logic:
+
+* :mod:`phaze.services.analysis_models` -- the 34-model registry and the TF batch-size policy;
+* :mod:`phaze.services.analysis_derive` -- mood / style / danceability derivation;
+* :mod:`phaze.services.analysis_windows` -- window geometry, the two per-window records, and
+  the aggregate reductions;
+* :mod:`phaze.services.analysis_probe` -- the D-10 ``ffprobe`` duration probe;
+* :mod:`phaze.services.analysis_decoder` -- the streaming decoder (phaze-1i0h6.1).
+
+Every name any of them owns is re-exported below, so ``phaze.services.analysis`` remains the
+one import site for dependents and tests -- see the note on the import block.
+"""
 
 from __future__ import annotations
 
 import ctypes
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import gc
 import json
 import logging
@@ -11,14 +29,52 @@ import os
 from pathlib import Path
 import platform
 import resource
-from statistics import mean, median
-import subprocess  # nosec B404  # ffprobe duration probe (D-10); fixed argv, no shell
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+# THE `analysis_*` MODULES BELOW ARE AN INTERNAL SPLIT OF THIS ONE (phaze-bk9el.15), not a
+# new public surface: `phaze.services.analysis` stays the import site for every dependent and
+# every test. Names those files own but this module no longer calls itself are therefore
+# re-exported here anyway (marked F401-exempt), and the re-export is not cosmetic -- because the
+# pipeline below resolves `_probe_duration_sec`, `derive_mood` and friends through THIS
+# module's globals, `patch("phaze.services.analysis.<name>")` and
+# `monkeypatch.setattr(analysis, ...)` still reach the pipeline's own call sites, which is
+# what the 20+ tests patching `_probe_duration_sec` rely on. Import from here, not from the
+# split files. None of the four imports essentia, and none carries D-07/D-08/D-09 logic.
 from phaze.services import analysis_decoder
+from phaze.services.analysis_derive import (
+    _positive_class_prediction,  # re-export only; see the note above  # noqa: F401
+    derive_danceability,
+    derive_mood,
+    derive_style,
+)
+from phaze.services.analysis_models import (
+    _DEFAULT_TF_BATCH_SIZE,  # re-export only; see the note above  # noqa: F401
+    _FIXED_BATCH_SIZE,  # re-export only; see the note above  # noqa: F401
+    _TF_BATCH_SIZE_ENV,  # re-export only; see the note above  # noqa: F401
+    GENRE_MODEL,
+    MODEL_SETS,
+    ModelConfig,
+    ModelSetConfig,  # re-export only; see the note above  # noqa: F401
+    _resolve_tf_batch_size,
+)
+from phaze.services.analysis_probe import (
+    AnalysisProbeError,  # re-export only; see the note above  # noqa: F401
+    _duration_from_ffprobe_payload,  # re-export only; see the note above  # noqa: F401
+    _probe_duration_sec,
+)
 from phaze.services.analysis_sizing import apply_thread_env
+from phaze.services.analysis_windows import (
+    CoarseWindow,
+    FineWindow,
+    _iter_windows,
+    _representative_features,
+    aggregate_bpm,
+    aggregate_danceability,
+    aggregate_dominant,
+    aggregate_key,
+)
 
 
 if TYPE_CHECKING:
@@ -55,30 +111,12 @@ import essentia.streaming as ess  # noqa: E402
 log = logging.getLogger(__name__)
 
 
-# Bound on the ffprobe stderr excerpt carried in an AnalysisProbeError message. The error text
-# is stored (truncated again by the callers' own _ERROR_DETAIL_MAX) and read by an operator --
-# enough for ffprobe's actual complaint, never an unbounded string.
-_PROBE_STDERR_MAX = 500
-
 # A streaming chunk decode is one blocking ``essentia.run`` call, so Python cannot
 # report progress from the decoding thread until it returns.  A small watchdog thread
 # emits truthful liveness while that call is still running.  Sixty seconds is 30x
 # inside D-08's 1 800 s silence bound, leaving ample scheduling slack without making
 # heartbeat traffic meaningful at archive scale.
 _DECODE_HEARTBEAT_INTERVAL_SEC = 60.0
-
-
-class AnalysisProbeError(RuntimeError):
-    """``ffprobe`` could not read a usable duration for the file (phaze-l832u, D-10).
-
-    Raised by :func:`_probe_duration_sec` when ffprobe cannot be run, exits nonzero, emits
-    unparseable output, or reports no positive duration for any audio stream or for the
-    container. FATAL by design and NOT caught anywhere below :func:`analyze_file`: this probe is
-    the reason a mis-suffixed or undecodable download fails loudly with a stored
-    ``error_message`` instead of recording a NULL-everything "success". Distinct from
-    :class:`AnalysisDecodeError` (headers readable, every WINDOW undecodable) so the stored
-    failure text says which of the two happened without re-running anything.
-    """
 
 
 class AnalysisDecodeError(RuntimeError):
@@ -105,76 +143,6 @@ class AnalysisDecodeError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# Type definitions for model registry
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class ModelConfig:
-    """Configuration for a single ML model file."""
-
-    name: str  # e.g., "mood_acoustic"
-    variant: str  # e.g., "musicnn_msd", "musicnn_mtt", "vggish"
-    filename: str  # e.g., "mood_acoustic-musicnn-msd-2" (no extension)
-    classifier_type: str  # "musicnn", "vggish", "effnet_discogs"
-
-
-@dataclass(frozen=True)
-class ModelSetConfig:
-    """A set of model variants for one characteristic."""
-
-    name: str
-    models: tuple[ModelConfig, ...]
-
-
-# ---------------------------------------------------------------------------
-# Model registry: 11 characteristic model sets (33 models) per D-02
-# ---------------------------------------------------------------------------
-
-
-def _make_standard_set(name: str, filename_prefix: str) -> ModelSetConfig:
-    """Create a model set with the standard 3 variants (musicnn_msd-2, musicnn_mtt-2, vggish-1)."""
-    return ModelSetConfig(
-        name=name,
-        models=(
-            ModelConfig(name=name, variant="musicnn_msd", filename=f"{filename_prefix}-musicnn-msd-2", classifier_type="musicnn"),
-            ModelConfig(name=name, variant="musicnn_mtt", filename=f"{filename_prefix}-musicnn-mtt-2", classifier_type="musicnn"),
-            ModelConfig(name=name, variant="vggish", filename=f"{filename_prefix}-vggish-audioset-1", classifier_type="vggish"),
-        ),
-    )
-
-
-MODEL_SETS: tuple[ModelSetConfig, ...] = (
-    _make_standard_set("mood_acoustic", "mood_acoustic"),
-    _make_standard_set("mood_electronic", "mood_electronic"),
-    _make_standard_set("mood_aggressive", "mood_aggressive"),
-    _make_standard_set("mood_relaxed", "mood_relaxed"),
-    _make_standard_set("mood_happy", "mood_happy"),
-    _make_standard_set("mood_sad", "mood_sad"),
-    _make_standard_set("mood_party", "mood_party"),
-    _make_standard_set("danceability", "danceability"),
-    _make_standard_set("gender", "gender"),
-    _make_standard_set("tonality", "tonal_atonal"),
-    # voice_instrumental uses musicnn-msd-1 (not -2), per prototype
-    ModelSetConfig(
-        name="voice_instrumental",
-        models=(
-            ModelConfig(name="voice_instrumental", variant="musicnn_msd", filename="voice_instrumental-musicnn-msd-1", classifier_type="musicnn"),
-            ModelConfig(name="voice_instrumental", variant="musicnn_mtt", filename="voice_instrumental-musicnn-mtt-2", classifier_type="musicnn"),
-            ModelConfig(name="voice_instrumental", variant="vggish", filename="voice_instrumental-vggish-audioset-1", classifier_type="vggish"),
-        ),
-    ),
-)
-
-GENRE_MODEL = ModelConfig(
-    name="discogs_genre",
-    variant="effnet",
-    filename="discogs-effnet-bs64-1",
-    classifier_type="effnet_discogs",
-)
-
-
-# ---------------------------------------------------------------------------
 # Module-level caches for lazy loading in ProcessPoolExecutor workers
 # ---------------------------------------------------------------------------
 
@@ -197,89 +165,6 @@ _essentia_logging_suppressed = False
 # The streaming decode's sink-key namespace and its chunk-gate margin live with the decoder
 # that uses them, in `analysis_decoder`. They were duplicated here during the extraction; two
 # copies of a load-bearing constant can silently diverge, so this module has none.
-
-
-# ---------------------------------------------------------------------------
-# TensorFlow inference batch size (phaze-0582)
-# ---------------------------------------------------------------------------
-
-# `TensorflowPredict*` batches patches before feeding the graph, and its `batchSize`
-# DEFAULTS to 64. phaze passed no override until phaze-0582, so every inference stood up
-# a `[64, patch, bands]` input and -- far more expensively -- 64x the intermediate
-# activations of a musicnn / VGGish / EfficientNet forward pass. Spike phaze-mqq5 measured
-# that default as the dominant remaining term in the analysis peak.
-#
-# 32 is the KNEE of the curve, not an arbitrary pick. Re-measured for phaze-0582 end to end
-# through the real `analyze_file` on the burst node, host-side `VmHWM`, synthetic audio,
-# node otherwise idle -- one arm per process, the two arms differing ONLY in this file:
-#
-#   60 min, fine cap saturated (60 fine + 20 coarse):  2.4445 -> 1.6206 GiB (-33.71%),
-#                                                      3039.97 -> 3052.09 s (+0.40%)
-#   10 min (20 fine + 4 coarse):                       2.1743 -> 1.4111 GiB (-35.10%),
-#                                                      344.27 -> 345.72 s  (+0.42%)
-#
-# Below 32 the memory curve is FLAT -- phaze-mqq5 measured batch 16 and batch 8 at ~-34%
-# each -- because what is left is the graph plus the allocator floor, not the batch; and
-# batch 1 buys only ~8 more points of peak for +55.7% WALL CLOCK, which is the wrong trade
-# on a node measured CPU-bound. So going lower costs time and returns nothing.
-#
-# This is NOT a byte-identical change and must not be described as one. Regrouping patches
-# into different batches changes float32 summation order, so the last ulp moves. Measured
-# over the whole serialized result (3702 leaves, 1922 numeric) on the 60-minute file: max
-# |delta| 1.79e-7 (~1.5 float32 ulp at 1.0), 0/714 top-1 flips, every categorical field
-# (bpm/key/mood/style) and every window count identical, `danceability` moving 2.98e-9 in
-# the float64. The bar this change is held to is that tolerance (aggregated |delta| <= 1e-3,
-# zero top-1 flips), NOT bit-exactness -- an equivalence test written against a sha256 will
-# fail for the right reason and be deleted for the wrong one.
-#
-# The batch value is also the ONLY thing that moved: the same patched code run with
-# `PHAZE_ANALYSIS_TF_BATCH_SIZE=64` reproduces the pre-change output **byte-identically**
-# (max |delta| exactly 0.0 across all 918 leaves), so the whole delta above is attributable
-# to the batch and none of it to the plumbing.
-_DEFAULT_TF_BATCH_SIZE = 32
-
-# Deployment override. Read from the ENVIRONMENT at classifier construction, deliberately
-# not plumbed through the per-job windowing kwargs (`fine_window_sec` / `coarse_window_sec` /
-# `fine_min_sec`): those are per-FILE knobs the enqueue path varies per request, while this is
-# a per-HOST sizing knob.
-# phaze-rvcn will make thread/concurrency sizing host-derived; when it does, the derivation
-# belongs in `_resolve_tf_batch_size` -- this one function is the seam.
-_TF_BATCH_SIZE_ENV = "PHAZE_ANALYSIS_TF_BATCH_SIZE"
-
-# `discogs-effnet-bs64-1`'s input Placeholder is `[64, 128, 96]` -- a batch of 64 baked into
-# the graph, which is literally what the `bs64` in the filename means. The batch lever
-# CANNOT move it from the caller: any other value is a configuration error, not a data
-# point, and it is also why `lastBatchMode` exists on that algorithm at all. It therefore
-# keeps its own arena and the measured saving is delivered by the other 33 graphs.
-_FIXED_BATCH_SIZE: dict[str, int] = {GENRE_MODEL.filename: 64}
-
-
-def _resolve_tf_batch_size(model: ModelConfig) -> int:
-    """Resolve the `TensorflowPredict*` ``batchSize`` for one model.
-
-    Models whose graph fixes the batch in the Placeholder (:data:`_FIXED_BATCH_SIZE`)
-    always get that value and ignore the override entirely. Everything else takes
-    ``PHAZE_ANALYSIS_TF_BATCH_SIZE`` when it parses as a positive int, else
-    :data:`_DEFAULT_TF_BATCH_SIZE`. A malformed or non-positive override is logged and
-    ignored rather than raised: a typo in a deployment env var must not turn every
-    analysis into a hard failure.
-    """
-    fixed = _FIXED_BATCH_SIZE.get(model.filename)
-    if fixed is not None:
-        return fixed
-
-    raw = os.environ.get(_TF_BATCH_SIZE_ENV)
-    if raw is None or not raw.strip():
-        return _DEFAULT_TF_BATCH_SIZE
-    try:
-        value = int(raw)
-    except ValueError:
-        log.warning("%s=%r is not a positive int; using %d", _TF_BATCH_SIZE_ENV, raw, _DEFAULT_TF_BATCH_SIZE)
-        return _DEFAULT_TF_BATCH_SIZE
-    if value < 1:
-        log.warning("%s=%r is not a positive int; using %d", _TF_BATCH_SIZE_ENV, raw, _DEFAULT_TF_BATCH_SIZE)
-        return _DEFAULT_TF_BATCH_SIZE
-    return value
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +233,7 @@ def _get_classifier(model: ModelConfig, models_dir: str) -> Any:
     Construction now passes an explicit ``batchSize`` (phaze-0582) instead of inheriting
     essentia's default of 64 -- see :func:`_resolve_tf_batch_size` and
     :data:`_DEFAULT_TF_BATCH_SIZE` for the measurement behind the value, and
-    :data:`_FIXED_BATCH_SIZE` for the one model that cannot take it.
+    :data:`~phaze.services.analysis_models._FIXED_BATCH_SIZE` for the one model that cannot take it.
 
     What changed before that (phaze-15sw) is the LIFETIME of what this caches. Under
     model-major iteration the caller sweeps one model across every window before calling
@@ -367,7 +252,7 @@ def _get_classifier(model: ModelConfig, models_dir: str) -> Any:
     elif model.classifier_type == "vggish":
         classifier = es.TensorflowPredictVGGish(graphFilename=graph_path, batchSize=batch_size)
     elif model.classifier_type == "effnet_discogs":
-        # batchSize stays 64 here (via _FIXED_BATCH_SIZE) because the graph's Placeholder
+        # batchSize stays 64 here (via analysis_models._FIXED_BATCH_SIZE) because the graph's Placeholder
         # is fixed at 64, and `lastBatchMode` stays unpassed at its default "same" --
         # zero-pad the final batch, then erase exactly the padded predictions -- which is
         # the behaviour phaze-rc1q 3d flagged as batch-coupled.
@@ -509,206 +394,6 @@ def _log_job_peak_rss() -> None:
     if peak_gib is None:
         return
     log.info("analyze job peak RSS (high-water mark): %.3f GiB", peak_gib)
-
-
-# ---------------------------------------------------------------------------
-# Mood / style derivation
-# ---------------------------------------------------------------------------
-
-_MOOD_SET_NAMES = frozenset(
-    {
-        "mood_acoustic",
-        "mood_electronic",
-        "mood_aggressive",
-        "mood_relaxed",
-        "mood_happy",
-        "mood_sad",
-        "mood_party",
-    }
-)
-
-
-def _positive_class_prediction(predictions: list[dict[str, Any]]) -> float:
-    """Return the POSITIVE-class probability from a binary classifier's prediction list.
-
-    essentia's binary-classifier metadata orders classes ALPHABETICALLY, not
-    positive-first, so ``predictions[0]`` is the positive class for only SOME model
-    sets. e.g. ``mood_relaxed`` = ``['non_relaxed', 'relaxed']`` and ``mood_sad`` /
-    ``mood_party`` put the NEGATIVE class first — indexing ``[0]`` there scored the
-    mood with P(non_relaxed) and systematically inverted relaxed/sad/party.
-
-    Select the positive class by LABEL: it is the entry whose label does NOT start
-    with a negation prefix (``non_`` / ``not_``). Falls back to the first entry when
-    no label qualifies (defensive — preserves behavior for unexpected label shapes).
-    Callers guard ``if predictions`` so the list is non-empty here.
-    """
-    positive: dict[str, Any] | None = None
-    for entry in predictions:
-        if not str(entry.get("label", "")).startswith(("non_", "not_")):
-            positive = entry
-            break
-    if positive is None:
-        positive = predictions[0]
-    return float(positive["prediction"])
-
-
-def derive_mood(features: dict[str, Any]) -> str:
-    """Derive dominant mood from feature predictions.
-
-    For each mood model set, average the positive-class prediction (selected by
-    label, not list position) across the 3 variants. Return the mood name (without
-    'mood_' prefix) with the highest averaged confidence.
-    """
-    best_mood = ""
-    best_score = -1.0
-
-    for set_name in _MOOD_SET_NAMES:
-        if set_name not in features:
-            continue
-
-        variant_scores: list[float] = []
-        for _variant_name, predictions in features[set_name].items():
-            if predictions:
-                variant_scores.append(_positive_class_prediction(predictions))
-
-        if variant_scores:
-            avg_score = sum(variant_scores) / len(variant_scores)
-            if avg_score > best_score:
-                best_score = avg_score
-                best_mood = set_name
-
-    # Strip "mood_" prefix
-    return best_mood.removeprefix("mood_")
-
-
-def derive_style(genre_features: dict[str, Any]) -> str:
-    """Derive top style/genre from genre model predictions.
-
-    Returns the label of the highest-confidence genre prediction.
-    Defensively replaces '---' with '/' in labels.
-    """
-    predictions = genre_features.get("predictions", [])
-    if not predictions:
-        return "unknown"
-
-    top = max(predictions, key=lambda p: p["confidence"])
-    return str(top["label"]).replace("---", "/")
-
-
-def derive_danceability(features: dict[str, Any]) -> float | None:
-    """Derive a scalar danceability from the danceability model set.
-
-    Averages the positive-class ('danceable') prediction across the 3 variants,
-    selected by label (robust to class order) rather than list position. Returns
-    None if the danceability set is absent/empty.
-    """
-    set_data = features.get("danceability")
-    if not set_data:
-        return None
-
-    scores: list[float] = []
-    for _variant_name, predictions in set_data.items():
-        if predictions:
-            scores.append(_positive_class_prediction(predictions))
-
-    return sum(scores) / len(scores) if scores else None
-
-
-# ---------------------------------------------------------------------------
-# Windowed time-series: per-window value containers + aggregate reductions
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class FineWindow:
-    """A single fine-tier (BPM/key) analysis window."""
-
-    window_index: int
-    start_sec: float
-    end_sec: float
-    bpm: float | None
-    musical_key: str | None
-    confidence: float = 0.0
-
-    def as_payload_dict(self) -> dict[str, Any]:
-        """Serialize to a plain dict ready for AnalysisWindowPayload(**w)."""
-        return {
-            "tier": "fine",
-            "window_index": self.window_index,
-            "start_sec": self.start_sec,
-            "end_sec": self.end_sec,
-            "bpm": self.bpm,
-            "musical_key": self.musical_key,
-        }
-
-
-@dataclass(frozen=True)
-class CoarseWindow:
-    """A single coarse-tier (mood/style/danceability) analysis window."""
-
-    window_index: int
-    start_sec: float
-    end_sec: float
-    mood: str | None
-    style: str | None
-    danceability: float | None
-    features: dict[str, Any] = field(default_factory=dict)
-
-    def as_payload_dict(self) -> dict[str, Any]:
-        """Serialize to a plain dict ready for AnalysisWindowPayload(**w)."""
-        return {
-            "tier": "coarse",
-            "window_index": self.window_index,
-            "start_sec": self.start_sec,
-            "end_sec": self.end_sec,
-            "mood": self.mood,
-            "style": self.style,
-            "danceability": self.danceability,
-            "features": self.features,
-        }
-
-
-def aggregate_bpm(fine: list[FineWindow]) -> float | None:
-    """Representative BPM = median of fine-window BPMs (rounded to 0.1).
-
-    Excludes windows with ``confidence == 0.0`` (unreliable BPM on short/silent
-    audio per RESEARCH Pitfall 2) and windows with no BPM. Returns None if empty.
-    """
-    vals = [w.bpm for w in fine if w.bpm is not None and w.confidence != 0.0]
-    return round(median(vals), 1) if vals else None
-
-
-def _max_by_duration(weights: dict[str, float]) -> str | None:
-    """Return the key with the greatest accumulated duration (stable on ties)."""
-    if not weights:
-        return None
-    # max() is stable: on a tie it returns the first-inserted key.
-    return max(weights, key=lambda k: weights[k])
-
-
-def aggregate_key(fine: list[FineWindow]) -> str | None:
-    """Representative key = duration-weighted modal key across fine windows."""
-    weights: dict[str, float] = {}
-    for w in fine:
-        if w.musical_key:
-            weights[w.musical_key] = weights.get(w.musical_key, 0.0) + (w.end_sec - w.start_sec)
-    return _max_by_duration(weights)
-
-
-def aggregate_dominant(coarse: list[CoarseWindow], attr: str) -> str | None:
-    """Time-weighted dominant label (mood/style) across coarse windows."""
-    weights: dict[str, float] = {}
-    for w in coarse:
-        label = getattr(w, attr)
-        if label:
-            weights[label] = weights.get(label, 0.0) + (w.end_sec - w.start_sec)
-    return _max_by_duration(weights)
-
-
-def aggregate_danceability(coarse: list[CoarseWindow]) -> float | None:
-    """Representative danceability = mean across coarse windows; None if empty."""
-    vals = [w.danceability for w in coarse if w.danceability is not None]
-    return mean(vals) if vals else None
 
 
 # ---------------------------------------------------------------------------
@@ -968,140 +653,6 @@ def _chunked(windows: list[tuple[int, float, float]], size: int) -> list[list[tu
     An empty input yields no chunks, so a zero-window tier does no decode work at all.
     """
     return analysis_decoder._chunked(windows, size)
-
-
-def _probe_duration_sec(file_path: str) -> float:
-    """Return total audio duration in seconds WITHOUT materializing PCM, via ``ffprobe``.
-
-    D-10 DECISION RECORD -- ffprobe, not ``es.MetadataReader`` (phaze-l832u)
-    ----------------------------------------------------------------------
-    This probe used to read ``es.MetadataReader`` output index 8. MetadataReader is TagLib,
-    and **TagLib cannot read a duration out of Matroska**: it returns ``0``. That was harmless
-    while every file reaching :func:`analyze_file` was the archive's own mp3/m4a/ogg, and fatal
-    the moment phaze-3ea41 put an unconditional pre-analysis remux to ``.mka`` in front of it --
-    ``total_sec == 0`` makes :func:`_iter_windows` yield nothing, both ``*_total`` counts land on
-    0, and the zero-window guard fails the file after "analyzing" it in ~4 s. Measured inside the
-    deployed 2026.8.3 agent image, on one file, three ways::
-
-        original .mp3   MetadataReader duration = 90
-        remuxed  .mka   MetadataReader duration = 0
-        remuxed  .mka   ffprobe        duration = 90.044000
-
-    Only the metadata probe was ever broken -- essentia DECODES the ``.mka`` correctly (the same
-    measurement got 2/2 windows out of it). So the fix is the probe, not the container: ffprobe
-    reads a duration out of every container the pipeline can produce, including the ``.mka``
-    extraction intermediate a VIDEO container still legitimately goes through (which is why
-    merely gating the remux would have left phaze-3ea41's actual feature broken in exactly the
-    same way -- see the epic's design note).
-
-    ffprobe is the sanctioned tool here (never the abandoned ``ffmpeg-python``) and is already
-    how ``services/video_audio.py::probe_container_streams`` talks to the same binary; this is the
-    established invocation shape, not a third style. Like MetadataReader it reads container and
-    stream headers only -- it never decodes PCM.
-
-    The longest AUDIO STREAM's own ``duration`` is preferred, with the container-level
-    ``format.duration`` as the fallback -- see :func:`_duration_from_ffprobe_payload` for why
-    that order and not the other. A failure here stays FATAL and propagates as
-    :class:`AnalysisProbeError` -- this function is the reason a mis-suffixed or undecodable
-    download fails loudly instead of recording a NULL-everything success.
-
-    Deliberately UNBOUNDED (no ``timeout=``), matching the MetadataReader call it replaces and
-    ``video_audio.py``'s own ffprobe: a header read is not a wall clock to bound (D-01 /
-    phaze-1b39), and a genuinely wedged probe is already covered by the analysis child's
-    progress-based stall watchdog (D-08) in the lane above.
-    """
-    argv = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-print_format",
-        "json",
-        "-show_entries",
-        "format=duration:stream=duration",
-        "-select_streams",
-        "a",
-        file_path,
-    ]
-    try:
-        # Fixed argv, never a shell, no interpolation (services/analysis_sizing.py convention).
-        proc = subprocess.run(argv, capture_output=True, text=True, check=False)  # noqa: S603  # nosec B603
-    except OSError as exc:
-        msg = f"ffprobe could not be run to probe the duration of {file_path!r}: {exc}"
-        raise AnalysisProbeError(msg) from exc
-    if proc.returncode != 0:
-        msg = f"ffprobe failed (exit {proc.returncode}) probing the duration of {file_path!r}: {proc.stderr.strip()[:_PROBE_STDERR_MAX]}"
-        raise AnalysisProbeError(msg)
-    try:
-        payload = json.loads(proc.stdout or "{}")
-    except ValueError as exc:
-        msg = f"ffprobe produced non-JSON output probing the duration of {file_path!r}"
-        raise AnalysisProbeError(msg) from exc
-    duration = _duration_from_ffprobe_payload(payload)
-    if duration is None:
-        msg = f"ffprobe reported no readable audio duration for {file_path!r}"
-        raise AnalysisProbeError(msg)
-    return duration
-
-
-def _duration_from_ffprobe_payload(payload: Any) -> float | None:
-    """Pull a duration (seconds) out of ffprobe's JSON, or ``None`` when it carries none.
-
-    The caller's argv selects AUDIO streams only, so ``streams[].duration`` is the length of
-    the material :func:`analyze_file` will actually window -- preferred over the container-level
-    ``format.duration``, which on a container carrying anything besides that audio (a video
-    track running past the end of the audio, a trailing chapter/attachment) describes the
-    CONTAINER's span rather than the audio's, and would hand ``_iter_windows`` windows that lie
-    past the last sample. ``format.duration`` is the fallback because Matroska -- the very
-    container the extraction step produces -- routinely records its duration at container level
-    and reports ``N/A`` per stream, which is precisely the case that must not come back 0.
-
-    ffprobe writes the literal ``"N/A"`` for an unknown duration: any entry that fails to parse,
-    or is not strictly positive, is skipped rather than allowed to become a silent 0.0 (the
-    exact shape this whole function exists to stop returning). ``None`` means every candidate
-    was unusable, which the caller turns into a hard failure.
-    """
-
-    def _longest(values: list[Any]) -> float | None:
-        best: float | None = None
-        for raw in values:
-            try:
-                value = float(raw)
-            except (TypeError, ValueError):
-                continue
-            if value > 0 and (best is None or value > best):
-                best = value
-        return best
-
-    if not isinstance(payload, dict):
-        return None
-    streams = payload.get("streams")
-    stream_durations = [s.get("duration") for s in streams if isinstance(s, dict)] if isinstance(streams, list) else []
-    from_streams = _longest(stream_durations)
-    if from_streams is not None:
-        return from_streams
-    fmt = payload.get("format")
-    return _longest([fmt.get("duration")]) if isinstance(fmt, dict) else None
-
-
-def _iter_windows(total_sec: float, win_sec: int, min_sec: int, *, drop_short_trailing: bool) -> list[tuple[int, float, float]]:
-    """Yield ``(index, start_sec, end_sec)`` for fixed-duration windows over a file.
-
-    When ``drop_short_trailing`` is True (FINE tier), a trailing window shorter
-    than ``min_sec`` is dropped — EXCEPT window 0, so very short tracks still
-    produce one window. When False (COARSE tier) every window with audio is
-    emitted (no minimum-length floor; RESEARCH Open Q3 RESOLVED).
-    """
-    windows: list[tuple[int, float, float]] = []
-    start = 0.0
-    idx = 0
-    while start < total_sec:
-        end = min(start + win_sec, total_sec)
-        if drop_short_trailing and (end - start) < min_sec and idx > 0:
-            break
-        windows.append((idx, start, end))
-        start = end
-        idx += 1
-    return windows
 
 
 def _decode_windows_streaming(
@@ -1607,19 +1158,6 @@ def _analyze_coarse_windows(
                 continue
         signals.beat("coarse", len(coarse_windows), total)
     return coarse_windows, total
-
-
-def _representative_features(coarse: list[CoarseWindow]) -> dict[str, Any]:
-    """Pick a representative full-features dict for the aggregate ``analysis`` row.
-
-    Returns the longest-duration coarse window's features (ties → first). Keeps
-    the existing ``features`` JSONB structure (all model sets + genre) populated
-    for downstream consumers; empty dict when there are no coarse windows.
-    """
-    if not coarse:
-        return {}
-    longest = max(coarse, key=lambda w: w.end_sec - w.start_sec)
-    return longest.features
 
 
 def analyze_file(

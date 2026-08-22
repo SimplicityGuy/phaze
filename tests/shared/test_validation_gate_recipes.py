@@ -16,10 +16,14 @@ These assertions are on the recipes, not on a live run, so they are cheap and th
 build the moment ``-x``/``-q`` or a lint-only test step comes back.
 """
 
+import json
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
+
+import coverage
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -99,3 +103,142 @@ def test_the_fail_fast_recipe_is_retained_and_labelled_as_local_iteration() -> N
 
     assert "-x" in recipe_body and "-q" in recipe_body
     assert "NOT the validation gate" in doc_line
+
+
+# --- phaze-bk9el.21: branch coverage is MEASURED everywhere and GATED per bead, not repo-wide ---
+
+
+def test_branch_coverage_is_enabled_repo_wide() -> None:
+    """Criterion 1. Without `branch = true` the number is invisible and every later check is moot."""
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    run_section = pyproject.split("[tool.coverage.run]", 1)[1].split("\n[", 1)[0]
+
+    assert re.search(r"^branch = true$", run_section, re.MULTILINE), run_section
+
+
+def test_the_repo_wide_line_floor_is_enforced_explicitly_not_via_fail_under() -> None:
+    """Criterion 3, asserted where it can actually regress: the recipes.
+
+    With `branch = true`, coverage.py's own `fail_under` measures
+    `(covered_lines + covered_branches) / (num_statements + num_branches)` and offers no option to
+    select lines (coverage 7.15.4). It is deliberately left ARMED: the combined figure measured
+    98.1559% against the 95 floor (statements 98.7789%, branches 95.2923%), and
+    `test_coverage_gate.py` requires the pyproject and CLI sites to stay in lockstep because a CLI
+    `--fail-under` silently overrides the config value. Disarming one site to "protect" the metric
+    would trip that guard and leave a dead placeholder behind.
+
+    What satisfies "the repo-wide gate stays on LINES at 95%" is `scripts/coverage_floor.py`, which
+    reads `percent_statements_covered` explicitly and enforces 95% repo-wide plus 90% per module.
+    Dropping it from either recipe would leave the repo with no line-metric gate at all -- and the
+    distinction is not academic per module: `src/phaze/routers/duplicates.py` reads 91.20% on
+    statements, 75.00% on branches and 88.59% combined, so a per-module floor on the combined
+    number fails a module that has regressed nothing.
+    """
+    combine = _dry_run("coverage-combine")
+
+    assert "scripts/coverage_floor.py" in combine
+    assert "coverage json" in combine, "coverage_floor.py's input must still be produced"
+    assert "scripts/coverage_floor.py" in _dry_run("test-cov")
+
+
+def test_the_validation_test_step_enforces_the_line_floor_and_writes_a_json_report() -> None:
+    """The gate must fail below 95% lines, and must leave the report `branch-check` reads.
+
+    Two gates run on this path and both are armed: pytest-cov enforces pyproject's `fail_under`
+    (the combined figure since branch coverage went on), then `coverage_floor.py` enforces the LINE
+    floors. Dropping the second line would leave `just check` with no line-metric gate; dropping
+    the json report would make `just branch-check` cost a second full suite.
+    """
+    step = _dry_run("test-cov")
+
+    assert "--cov-fail-under=0" not in step, "pytest-cov's floor must stay armed on the gate path"
+    assert "--cov-report=json:coverage.json" in step
+    assert "scripts/coverage_floor.py" in step
+
+
+def test_the_per_bead_branch_gate_is_runnable_from_a_worktree() -> None:
+    """Criterion 4: a developer must be able to run it against the files their bead touched."""
+    assert "scripts/branch_coverage_check.py" in _dry_run("branch-check")
+
+
+# --- Operator directive 2026-08-21: branch data in EVERY coverage recipe (phaze-bk9el.21) -------
+#
+# Question as put to the operator during phaze-bk9el.21, 2026-08-21: what should this epic do about
+# branch coverage being off? Answer as given (selected option label, verbatim): "Enable it, gate the
+# refactor targets only (Recommended)", followed by the directive "do enable branch coverage data in
+# all of the 'coverage' just recipes". Durable record: bead phaze-bk9el.21.
+#
+# The IMPLEMENTATION of that is one line -- `branch = true` in [tool.coverage.run] -- which every
+# recipe inherits: `test-cov`, `test-ci`, `test-bucket` (each CI shard) and `coverage-combine`. One
+# place, not four. But the whole thing then rests on a single config line, and a `branch = false`, a
+# stray `--no-branch`, or a recipe pointed at a different rcfile would take branch data out of every
+# recipe at once with NO visible failure -- the same shape as the `-x`/`-q` regression phaze-jnj90
+# exists to prevent. Hence these guards, and hence the last one, which checks the ARTIFACTS rather
+# than the config that is supposed to produce them.
+
+_COVERAGE_RECIPES = ("test-cov", "test-ci", "test-bucket", "coverage-combine")
+
+
+def test_no_coverage_recipe_disables_branch_measurement() -> None:
+    """No recipe may switch branch data off, or bypass the config that switches it on.
+
+    ``--no-branch`` turns it off directly. An ``--rcfile`` / ``COVERAGE_RCFILE`` pointed elsewhere
+    turns it off indirectly and far less visibly, because the recipe still reads as a normal
+    coverage invocation while silently sourcing a config that never set ``branch``.
+    """
+    justfile = JUSTFILE_PATH.read_text(encoding="utf-8")
+    for name in _COVERAGE_RECIPES:
+        body = re.search(rf"^{re.escape(name)}\b[^\n]*:\n((?:[ \t]+.*\n?)*)", justfile, re.MULTILINE)
+        assert body is not None, f"coverage recipe {name!r} not found"
+        commands = "\n".join(line for line in body.group(1).splitlines() if not line.strip().startswith("#"))
+
+        assert "--no-branch" not in commands, f"{name} disables branch measurement:\n{commands}"
+        assert "--rcfile" not in commands, f"{name} bypasses pyproject's coverage config:\n{commands}"
+        assert "COVERAGE_RCFILE" not in commands, f"{name} bypasses pyproject's coverage config:\n{commands}"
+
+
+def test_the_coverage_artifacts_actually_carry_branch_data(tmp_path: Path) -> None:
+    """The claim is about the ARTIFACTS, so measure one rather than reading the config back.
+
+    ``branch = true`` in the config is what the previous test asserts; this one proves the config
+    actually yields branch-carrying reports in BOTH formats the repo consumes -- ``coverage.json``,
+    which `scripts/coverage_floor.py` and `just branch-check` read, and ``coverage.xml``, which CI
+    uploads to Codecov. A config that set branch coverage but produced reports without
+    ``num_branches`` would leave `just branch-check` unable to compare anything while every recipe
+    still looked correct.
+
+    The repo's own ``pyproject.toml`` supplies the config (so a ``branch = false`` there fails this
+    test); only ``source`` is overridden, to the throwaway module below.
+    """
+    module = tmp_path / "branchy.py"
+    module.write_text("def f(x):\n    if x:\n        return 1\n    return 0\n", encoding="utf-8")
+    cov = coverage.Coverage(
+        config_file=str(REPO_ROOT / "pyproject.toml"),
+        data_file=str(tmp_path / ".coverage"),
+        source=[str(tmp_path)],
+    )
+    assert cov.get_option("run:branch") is True, "pyproject no longer enables branch coverage"
+
+    sys.path.insert(0, str(tmp_path))
+    try:
+        cov.start()
+        import branchy
+
+        branchy.f(1)  # only ONE arm, so a partial branch genuinely exists to be reported
+        cov.stop()
+    finally:
+        sys.path.remove(str(tmp_path))
+        sys.modules.pop("branchy", None)
+
+    json_path = tmp_path / "coverage.json"
+    xml_path = tmp_path / "coverage.xml"
+    cov.json_report(outfile=str(json_path))
+    cov.xml_report(outfile=str(xml_path))
+
+    totals = json.loads(json_path.read_text(encoding="utf-8"))["totals"]
+    assert totals.get("num_branches"), f"coverage.json carries no branch data: {totals}"
+    assert totals["missing_branches"] >= 1, f"the untaken arm was not reported as missing: {totals}"
+
+    xml = xml_path.read_text(encoding="utf-8")
+    assert re.search(r'branches-valid="[1-9]', xml), "coverage.xml carries no branches-valid"
+    assert 'branches-covered="' in xml, "coverage.xml carries no branches-covered"

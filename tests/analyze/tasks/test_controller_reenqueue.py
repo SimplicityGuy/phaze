@@ -28,7 +28,7 @@ async def _fake_session_cm() -> Any:
 
 def _patch_startup_constructors(monkeypatch: pytest.MonkeyPatch) -> None:
     """Patch the heavyweight startup constructors so no real connections open."""
-    monkeypatch.setattr("phaze.tasks.controller.create_async_engine", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr("phaze.database.create_async_engine", lambda *_a, **_kw: MagicMock())
     # async_sessionmaker(...) must return a CALLABLE that yields an async-cm session: the Phase-45
     # startup ledger backfill opens `async with ctx["async_session"]() as session`.
     monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: lambda *_a2, **_kw2: _fake_session_cm())

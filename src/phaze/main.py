@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator
 import contextlib
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 import redis.asyncio as redis_async
 from sqlalchemy import select, text
 import structlog
@@ -41,6 +41,7 @@ from phaze.routers import (
     proposals,
     record,
     routing,
+    scan,
     search,
     shell,
     tags,
@@ -233,69 +234,87 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     await engine.dispose()
 
 
-def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
-    app = FastAPI(title="Phaze", version="0.1.0", lifespan=lifespan)
-    app.include_router(health.router)
-    app.include_router(companion.router)
-    app.include_router(proposals.router)
-    app.include_router(execution.router)
-    app.include_router(preview.router)
-    app.include_router(duplicates.router)
-    app.include_router(tracklists.router)
-    app.include_router(pipeline.router)
+# phaze-bk9el.12: the ordered router registration list, extracted out of a run of ~24
+# near-identical `app.include_router(X.router)` calls in create_app() (repowise flagged a
+# 71-line self-clone spanning that block -- structurally near-duplicate shape, differing
+# only by router name). A single loop over this tuple removes the duplication while every
+# per-router rationale comment survives verbatim, inline, next to the router it explains.
+# ORDER IS LOAD-BEARING: FastAPI/Starlette match routes in registration order, and
+# `shell.router` deliberately claims the root path ahead of `pipeline.router`'s legacy
+# redirect -- this tuple preserves the EXACT original registration order.
+_ROUTERS: tuple[APIRouter, ...] = (
+    health.router,
+    companion.router,
+    proposals.router,
+    execution.router,
+    preview.router,
+    duplicates.router,
+    tracklists.router,
+    pipeline.router,
     # Phase 57 (SHELL-01): the v7.0 shell router owns GET / (Analyze default) + GET
     # /s/{stage}. Prefix-less (like pipeline.router) so it can claim the root path; the
     # legacy /pipeline/ now 302-redirects here. NO extra prefix= (required by
     # tests/_route_introspection.iter_effective_routes).
-    app.include_router(shell.router)
+    shell.router,
     # Phase 61 (61-02, RECORD-01 / D-01): the per-file full-record read-only fragment
     # route (GET /record/{file_id}). Typed uuid.UUID path param + strictly file_id-scoped
     # reads (T-61-03); a missing file renders the friendly 404 fragment (T-61-05).
-    app.include_router(record.router)
+    record.router,
     # Phase 37: per-stage control-plane endpoints (POST /pipeline/stages/{stage}/
     # {priority,pause,resume}). Distinct from `pipeline.router` (dashboard + triggers);
     # mutates the pipeline_stage_control intent row + the live saq_jobs backlog together.
-    app.include_router(pipeline_stages.router)
+    pipeline_stages.router,
     # Phase 71 (71-04, BEUI-02): the force-local master routing override thin write endpoint
     # (POST /pipeline/routing/force-local). Mirrors the pipeline_stages thin-endpoint pattern;
     # flips the durable route_control 'global' row + returns the header pill (swapped in place).
-    app.include_router(routing.router)
-    app.include_router(search.router)
-    app.include_router(tags.router)
-    app.include_router(cue.router)
+    routing.router,
+    search.router,
+    tags.router,
+    cue.router,
     # Phase 25 internal-agent routers (D-10)
-    app.include_router(agent_files.router)
-    app.include_router(agent_metadata.router)
-    app.include_router(agent_execution.router)
-    app.include_router(agent_heartbeat.router)
+    agent_files.router,
+    agent_metadata.router,
+    agent_execution.router,
+    agent_heartbeat.router,
     # Phase 26 internal-agent routers (D-15, D-26, D-27, D-28)
-    app.include_router(agent_identity.router)
-    app.include_router(agent_analysis.router)
-    app.include_router(agent_push.router)
-    app.include_router(agent_s3.router)
-    app.include_router(agent_proposals.router)
+    agent_identity.router,
+    agent_analysis.router,
+    agent_push.router,
+    agent_s3.router,
+    agent_proposals.router,
     # Phase 27 internal-agent router (D-10).
-    app.include_router(agent_scan_batches.router)
+    agent_scan_batches.router,
     # phaze-5cvbz: compute-scratch janitor liveness probe -- the agent-side startup sweep asks
     # here before deleting an age-eligible scratch entry a durable queued/active job still claims.
-    app.include_router(agent_scratch.router)
+    agent_scratch.router,
     # Phase 28 internal-agent router (D-05): per-proposal terminal-state progress reporting
     # — the single mutation point for exec:{batch_id} Redis hash (D-02).
-    app.include_router(agent_exec_batches.router)
+    agent_exec_batches.router,
     # phaze-6bkk internal-agent router (DIST-01): terminal outcome of an on-agent tag write. The
     # api container has no media mount, so the mutagen write runs on the owning agent's meta lane
     # and its result reaches the tag_write_log audit table only through this callback.
-    app.include_router(agent_tag_writes.router)
-    # Phase 27 admin-UI router (D-05..D-08): POST /pipeline/scans + the HTMX
-    # poll partial + the agent-roots swap. Distinct from `pipeline.router`,
+    agent_tag_writes.router,
+    # Phase 27 admin-UI router (D-05..D-08): the HTMX poll partial, the Recent
+    # Scans table and the agent-roots swap. Distinct from `pipeline.router`,
     # which serves the dashboard page and existing pipeline-stage triggers.
-    app.include_router(pipeline_scans.router)
+    pipeline_scans.router,
+    # phaze-bk9el.17 split the POST /pipeline/scans trigger out of `pipeline_scans`
+    # into its own module; both carry the same `/pipeline/scans` prefix and neither
+    # shadows the other (distinct method+path pairs), so registration order is free.
+    scan.router,
     # Phase 29 admin-UI router (D-11..D-14): GET /admin/agents (operator-facing
     # liveness page) + GET /admin/agents/_table (HTMX 5s poll partial). The
     # router is read-only and does NOT use get_authenticated_agent (consistent
     # with other admin-UI routers on the private LAN).
-    app.include_router(admin_agents.router)
+    admin_agents.router,
+)
+
+
+def create_app() -> FastAPI:
+    """Create and configure the FastAPI application."""
+    app = FastAPI(title="Phaze", version="0.1.0", lifespan=lifespan)
+    for router in _ROUTERS:
+        app.include_router(router)
     # phaze-315t (supersedes phaze-mw9l): fingerprinted, cache-forever static serving.
     # /static/css/app.css used to sit at a stable, unfingerprinted URL with stock StaticFiles
     # sending no Cache-Control -- browsers then cached it heuristically ACROSS DEPLOYS, which

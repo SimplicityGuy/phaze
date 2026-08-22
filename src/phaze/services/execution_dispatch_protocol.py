@@ -42,7 +42,7 @@ and so the route stays the single place that names them.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 import json
@@ -70,7 +70,6 @@ if TYPE_CHECKING:
     RedisValue = bytes | bytearray | memoryview[int] | str | int | float
     RedisFieldMapping = Mapping[RedisValue, RedisValue]
     ChunkPlan = dict[str, list[list[ExecuteBatchProposalItem]]]
-    PendingChunks = list[tuple[str, int, list[ExecuteBatchProposalItem]]]
 
 
 logger = structlog.get_logger(__name__)
@@ -132,13 +131,75 @@ class DispatchScripts:
     """``_get_promote_status_script`` -- re-run the terminal-status promotion after a reconcile."""
 
 
+@dataclass(frozen=True, slots=True)
+class DispatchDeps:
+    """The Redis client, task router, and Lua scripts this dispatch talks to the outside world through.
+
+    phaze-bk9el.14: these three primitives travelled together, unbundled, through every helper past
+    the seed step -- a `primitive_obsession` finding on this file. Grouping them means a call site
+    can no longer pass one without the others, and a helper that only needs part of the trio (e.g.
+    :func:`_reconcile_undispatched`, which never enqueues) still names the whole bundle rather than
+    re-deriving its own subset of the same three names.
+    """
+
+    redis_client: Redis
+    task_router: AgentTaskRouter
+    scripts: DispatchScripts
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchTally:
+    """The batch id and the size figures that travel together from planning through to the outcome.
+
+    ``total`` (proposals) and ``subjobs_expected`` (chunks) are two plain ints whose call-site
+    meanings are easy to transpose; ``n_agents`` is the third figure the D-11 dispatch line reports
+    alongside them. All three are fixed once the plan is built, except ``subjobs_expected`` on the
+    PARTIAL path, which :func:`dispatch_approved_batch` re-derives via :func:`dataclasses.replace`
+    rather than constructing a fresh, easy-to-miswire tally by hand.
+    """
+
+    batch_id: uuid.UUID
+    total: int
+    subjobs_expected: int
+    n_agents: int
+
+
+@dataclass(frozen=True, slots=True)
+class PendingChunk:
+    """One (agent, chunk) enqueue unit -- the concept the raw ``(str, int, list[...])`` tuple modeled.
+
+    :func:`_pending_chunks` materializes the whole plan into a list of these BEFORE the first await
+    (phaze-0t2c), so a crash part-way through the enqueue loop can still name, by attribute rather
+    than by easy-to-miscount tuple position, the chunk that was in flight or never started.
+    """
+
+    agent_id: str
+    chunk_index: int
+    chunk: list[ExecuteBatchProposalItem]
+
+
+@dataclass(frozen=True, slots=True)
+class EnqueueResult:
+    """What the enqueue loop actually landed -- the ``(enqueued_ok, undispatched_by_agent)`` pair.
+
+    Both counts are produced together by :func:`_enqueue_all_chunks` and consumed together by
+    :func:`_reconcile_undispatched`; a bare ``tuple[int, dict[str, int]]`` return type gave neither
+    half a name at the call site. ``total_undispatched`` is the batch-wide scalar
+    :func:`_reconcile_undispatched` writes into the ``failed`` counter and the outcome reports.
+    """
+
+    enqueued_ok: int
+    undispatched_by_agent: dict[str, int]
+
+    @property
+    def total_undispatched(self) -> int:
+        return sum(self.undispatched_by_agent.values())
+
+
 def _dispatched(
     kind: DispatchOutcomeKind,
+    tally: DispatchTally,
     *,
-    batch_id: uuid.UUID,
-    total: int,
-    subjobs_expected: int,
-    n_agents: int,
     undispatched: int = 0,
     status: str = "running",
 ) -> DispatchOutcome:
@@ -160,13 +221,20 @@ def _dispatched(
     """
     logger.info(
         "dispatch batch_id=%s total=%d n_agents=%d subjobs_expected=%d undispatched=%d",
-        batch_id,
-        total,
-        n_agents,
-        subjobs_expected,
+        tally.batch_id,
+        tally.total,
+        tally.n_agents,
+        tally.subjobs_expected,
         undispatched,
     )
-    return DispatchOutcome(kind=kind, batch_id=batch_id, total=total, subjobs_expected=subjobs_expected, undispatched=undispatched, status=status)
+    return DispatchOutcome(
+        kind=kind,
+        batch_id=tally.batch_id,
+        total=tally.total,
+        subjobs_expected=tally.subjobs_expected,
+        undispatched=undispatched,
+        status=status,
+    )
 
 
 def _build_chunk_plan(groups: dict[str, list[ExecuteBatchProposalItem]]) -> ChunkPlan:
@@ -178,13 +246,13 @@ def _build_chunk_plan(groups: dict[str, list[ExecuteBatchProposalItem]]) -> Chun
     return {agent_id: chunk_proposals(items) for agent_id, items in groups.items()}
 
 
-def _pending_chunks(plan: ChunkPlan) -> PendingChunks:
-    """Flatten the plan into the ``(agent_id, chunk_index, chunk)`` list the enqueue loop walks.
+def _pending_chunks(plan: ChunkPlan) -> list[PendingChunk]:
+    """Flatten the plan into the :class:`PendingChunk` list the enqueue loop walks.
 
     phaze-0t2c: materialized in full BEFORE the first await so a crash part-way through the loop
     can still name the chunks that never landed.
     """
-    return [(agent_id, chunk_index, chunk) for agent_id, chunks in plan.items() for chunk_index, chunk in enumerate(chunks)]
+    return [PendingChunk(agent_id, chunk_index, chunk) for agent_id, chunks in plan.items() for chunk_index, chunk in enumerate(chunks)]
 
 
 def _init_fields(
@@ -192,8 +260,7 @@ def _init_fields(
     groups: dict[str, list[ExecuteBatchProposalItem]],
     agent_names: dict[str, str],
     plan: ChunkPlan,
-    total: int,
-    subjobs_expected: int,
+    tally: DispatchTally,
 ) -> dict[str, str]:
     """Build the full ``exec:{batch_id}`` seed mapping, including the per-agent rollup fields.
 
@@ -210,14 +277,14 @@ def _init_fields(
         for agent_id, items in groups.items()
     ]
     fields: dict[str, str] = {
-        "total": str(total),
+        "total": str(tally.total),
         "completed": "0",
         "failed": "0",
         "copied": "0",
         "verified": "0",
         "deleted": "0",
         "subjobs_completed": "0",
-        "subjobs_expected": str(subjobs_expected),
+        "subjobs_expected": str(tally.subjobs_expected),
         "status": "running",
         "started_at": datetime.now(UTC).isoformat(),
         "dispatch_summary": json.dumps(dispatch_summary),
@@ -287,11 +354,9 @@ async def _claim_active_sentinel(
 
 
 async def _reconcile_undispatched(
-    redis_client: Redis,
+    deps: DispatchDeps,
     batch_id: uuid.UUID,
-    enqueued_ok: int,
-    undispatched_by_agent: dict[str, int],
-    scripts: DispatchScripts,
+    result: EnqueueResult,
 ) -> str:
     """Reconcile ``subjobs_expected`` with what ACTUALLY landed, and settle the sentinel. Returns the render status.
 
@@ -307,46 +372,47 @@ async def _reconcile_undispatched(
     mid-enqueue is the same situation as an enqueue exception -- some chunks landed, some never
     will -- and it previously left the batch and the sentinel wedged precisely because only the
     exception path knew how to reconcile.
+
+    phaze-bk9el.14: takes ``deps`` (only ``.redis_client``/``.scripts`` are used -- ``.task_router``
+    never enqueues from here) rather than the two primitives separately, for the same reason every
+    other helper in this module now takes the bundle: one name for the trio at every seam.
     """
     key = f"{BATCH_KEY_PREFIX}{batch_id}"
-    undispatched_proposals = sum(undispatched_by_agent.values())
-    async with redis_client.pipeline(transaction=True) as pipe:
-        pipe.hset(key, "subjobs_expected", str(enqueued_ok))
+    async with deps.redis_client.pipeline(transaction=True) as pipe:
+        pipe.hset(key, "subjobs_expected", str(result.enqueued_ok))
         # phaze-1h6j: roll each affected agent's undispatched proposals into that agent's
         # per-agent failed counter (seeded at dispatch, still 0) so completed+failed reaches the
         # agent's total and the row renders a terminal ERRORS/COMPLETE pill instead of freezing
         # on RUNNING. Applied BEFORE the batch-level "failed" hincrby so the batch counter stays
         # the last hincrby for callers that read it positionally.
-        for affected_agent_id, agent_undispatched in undispatched_by_agent.items():
+        for affected_agent_id, agent_undispatched in result.undispatched_by_agent.items():
             pipe.hincrby(key, f"agent:{affected_agent_id}:failed", agent_undispatched)
-        pipe.hincrby(key, "failed", undispatched_proposals)
-        if enqueued_ok == 0:
+        pipe.hincrby(key, "failed", result.total_undispatched)
+        if result.enqueued_ok == 0:
             pipe.hset(key, "status", "complete_with_errors")
         await pipe.execute()
 
-    if enqueued_ok == 0:
+    if result.enqueued_ok == 0:
         # phaze-fa2p: nothing landed -> this batch is terminal right here and no sub-job will ever
         # POST to release the sentinel via the promote script, so release the claim now.
         # phaze-0t2c: via the CAS release, NOT an unconditional DEL. On the crash path this can run
         # long after the claim was taken, and an unconditional delete would happily drop a LATER
         # dispatch's claim -- re-opening the double-move hazard the sentinel exists to close.
-        release = scripts.release(redis_client)
-        await release(keys=[ACTIVE_DISPATCH_KEY], args=[str(batch_id)], client=redis_client)
+        release = deps.scripts.release(deps.redis_client)
+        await release(keys=[ACTIVE_DISPATCH_KEY], args=[str(batch_id)], client=deps.redis_client)
         return "complete_with_errors"
 
-    promote_status = scripts.promote(redis_client)
+    promote_status = deps.scripts.promote(deps.redis_client)
     # phaze-fa2p: pass the sentinel key + batch_id so, if a landed sub-job already reported
     # terminal, the promotion also releases the single-dispatch claim atomically.
-    await promote_status(keys=[key, ACTIVE_DISPATCH_KEY], args=[str(batch_id)], client=redis_client)
+    await promote_status(keys=[key, ACTIVE_DISPATCH_KEY], args=[str(batch_id)], client=deps.redis_client)
     return "running"
 
 
 async def _enqueue_one_chunk(
     task_router: AgentTaskRouter,
     batch_id: uuid.UUID,
-    agent_id: str,
-    chunk_index: int,
-    chunk: list[ExecuteBatchProposalItem],
+    pending: PendingChunk,
 ) -> bool:
     """Enqueue ONE (agent, chunk) sub-job. Returns True if it counts inside ``subjobs_expected``.
 
@@ -370,13 +436,13 @@ async def _enqueue_one_chunk(
     """
     try:
         await task_router.enqueue_for_agent(
-            agent_id=agent_id,
+            agent_id=pending.agent_id,
             task_name="execute_approved_batch",
             payload=ExecuteApprovedBatchPayload(
                 batch_id=batch_id,
-                agent_id=agent_id,
-                proposals=chunk,
-                sub_batch_index=chunk_index,
+                agent_id=pending.agent_id,
+                proposals=pending.chunk,
+                sub_batch_index=pending.chunk_index,
             ),
         )
     except AmbiguousEnqueueError:
@@ -384,16 +450,16 @@ async def _enqueue_one_chunk(
             "dispatch: enqueue ambiguous for agent=%s chunk=%s batch_id=%s -- broker "
             "connection was live, chunk may have landed; keeping it inside "
             "subjobs_expected rather than risking a duplicate dispatch",
-            agent_id,
-            chunk_index,
+            pending.agent_id,
+            pending.chunk_index,
             batch_id,
             exc_info=True,
         )
     except Exception:
         logger.exception(
             "dispatch: enqueue failed for agent=%s chunk=%s batch_id=%s",
-            agent_id,
-            chunk_index,
+            pending.agent_id,
+            pending.chunk_index,
             batch_id,
         )
         return False
@@ -402,13 +468,11 @@ async def _enqueue_one_chunk(
 
 async def _enqueue_all_chunks(
     *,
-    redis_client: Redis,
-    task_router: AgentTaskRouter,
+    deps: DispatchDeps,
     batch_id: uuid.UUID,
-    pending: PendingChunks,
-    scripts: DispatchScripts,
-) -> tuple[int, dict[str, int]]:
-    """Drive the whole per-(agent, chunk) enqueue plan. Returns ``(enqueued_ok, undispatched_by_agent)``.
+    pending: list[PendingChunk],
+) -> EnqueueResult:
+    """Drive the whole per-(agent, chunk) enqueue plan. Returns the landed/undispatched counts.
 
     phaze-1h6j: undispatched proposals are tracked PER AGENT, not as a batch-wide scalar, so the
     reconcile can roll them into each affected agent's per-agent failed counter -- otherwise that
@@ -429,11 +493,11 @@ async def _enqueue_all_chunks(
     undispatched_by_agent: dict[str, int] = {}
     attempted = 0
     try:
-        for agent_id, chunk_index, chunk in pending:
-            if await _enqueue_one_chunk(task_router, batch_id, agent_id, chunk_index, chunk):
+        for item in pending:
+            if await _enqueue_one_chunk(deps.task_router, batch_id, item):
                 enqueued_ok += 1
             else:
-                undispatched_by_agent[agent_id] = undispatched_by_agent.get(agent_id, 0) + len(chunk)
+                undispatched_by_agent[item.agent_id] = undispatched_by_agent.get(item.agent_id, 0) + len(item.chunk)
             attempted += 1
     except BaseException:
         # phaze-19u7g: ``attempted`` is only incremented AFTER a chunk's attempt returns, so a
@@ -447,22 +511,22 @@ async def _enqueue_all_chunks(
         # terminal and release the sentinel while that phantom sub-job is still executing. Only
         # the chunks strictly AFTER it were genuinely never attempted at all.
         if attempted < len(pending):
-            in_flight_agent_id, in_flight_chunk_index, _in_flight_chunk = pending[attempted]
+            in_flight = pending[attempted]
             logger.error(
                 "dispatch: enqueue ambiguous (interrupted mid-await) for agent=%s chunk=%s "
                 "batch_id=%s -- keeping it inside subjobs_expected rather than risking a "
                 "duplicate dispatch",
-                in_flight_agent_id,
-                in_flight_chunk_index,
+                in_flight.agent_id,
+                in_flight.chunk_index,
                 batch_id,
             )
             enqueued_ok += 1
             attempted += 1
-        for agent_id, _chunk_index, chunk in pending[attempted:]:
-            undispatched_by_agent[agent_id] = undispatched_by_agent.get(agent_id, 0) + len(chunk)
-        await asyncio.shield(_reconcile_undispatched(redis_client, batch_id, enqueued_ok, undispatched_by_agent, scripts))
+        for item in pending[attempted:]:
+            undispatched_by_agent[item.agent_id] = undispatched_by_agent.get(item.agent_id, 0) + len(item.chunk)
+        await asyncio.shield(_reconcile_undispatched(deps, batch_id, EnqueueResult(enqueued_ok, undispatched_by_agent)))
         raise
-    return enqueued_ok, undispatched_by_agent
+    return EnqueueResult(enqueued_ok, undispatched_by_agent)
 
 
 async def dispatch_approved_batch(
@@ -483,28 +547,40 @@ async def dispatch_approved_batch(
     -> reconcile (phaze-kxsb). An empty ``groups`` short-circuits before any of it: seeding a
     status="running" hash with a TTL and no sub-jobs would mislead the SSE reader, and there is
     nothing to double-dispatch, so there is nothing to guard.
+
+    phaze-bk9el.14: this function keeps its five keyword parameters as the module's stable
+    external call boundary -- ``routers/execution.py`` and the protocol-level tests in
+    ``tests/review/services/test_execution_dispatch_protocol.py`` all call it this way. The first
+    thing it does is fold ``redis_client``/``task_router``/``scripts`` into :class:`DispatchDeps`;
+    every helper below this point takes that bundle (plus :class:`DispatchTally`,
+    :class:`PendingChunk` and :class:`EnqueueResult`) instead of the loose primitives that used to
+    fan out through the whole module -- that internal fan-out is where this file's
+    `primitive_obsession` findings actually lived.
     """
+    deps = DispatchDeps(redis_client=redis_client, task_router=task_router, scripts=scripts)
     batch_id = uuid.uuid4()
     total = sum(len(items) for items in groups.values())
     if not groups:
-        return _dispatched(DispatchOutcomeKind.EMPTY, batch_id=batch_id, total=total, subjobs_expected=0, n_agents=0)
+        empty_tally = DispatchTally(batch_id=batch_id, total=total, subjobs_expected=0, n_agents=0)
+        return _dispatched(DispatchOutcomeKind.EMPTY, empty_tally)
 
     plan = _build_chunk_plan(groups)
     subjobs_expected = sum(len(chunks) for chunks in plan.values())
+    tally = DispatchTally(batch_id=batch_id, total=total, subjobs_expected=subjobs_expected, n_agents=len(groups))
     key = f"{BATCH_KEY_PREFIX}{batch_id}"
 
     await _seed_batch_hash(
-        redis_client,
+        deps.redis_client,
         key,
-        _init_fields(groups=groups, agent_names=agent_names, plan=plan, total=total, subjobs_expected=subjobs_expected),
+        _init_fields(groups=groups, agent_names=agent_names, plan=plan, tally=tally),
     )
 
-    claim_result = await _claim_active_sentinel(redis_client, key, batch_id, scripts)
+    claim_result = await _claim_active_sentinel(deps.redis_client, key, batch_id, deps.scripts)
     if claim_result == 0:
         # Refused. Drop the hash seeded above -- this batch_id is never returned to anyone, so
         # the hash would otherwise sit unread for 24h and, worse, look like a live 'running'
         # batch to anything that enumerates the namespace.
-        await redis_client.delete(key)
+        await deps.redis_client.delete(key)
         # Built directly, NOT through _dispatched: no D-11 line, because nothing was dispatched.
         return DispatchOutcome(kind=DispatchOutcomeKind.REFUSED, batch_id=batch_id, total=total, subjobs_expected=subjobs_expected)
     if claim_result == 2:
@@ -515,25 +591,16 @@ async def dispatch_approved_batch(
             batch_id,
         )
 
-    enqueued_ok, undispatched_by_agent = await _enqueue_all_chunks(
-        redis_client=redis_client,
-        task_router=task_router,
-        batch_id=batch_id,
-        pending=_pending_chunks(plan),
-        scripts=scripts,
-    )
+    result = await _enqueue_all_chunks(deps=deps, batch_id=batch_id, pending=_pending_chunks(plan))
 
-    undispatched = sum(undispatched_by_agent.values())
-    if not undispatched:
-        return _dispatched(DispatchOutcomeKind.STARTED, batch_id=batch_id, total=total, subjobs_expected=subjobs_expected, n_agents=len(groups))
+    if not result.total_undispatched:
+        return _dispatched(DispatchOutcomeKind.STARTED, tally)
 
-    status = await _reconcile_undispatched(redis_client, batch_id, enqueued_ok, undispatched_by_agent, scripts)
+    status = await _reconcile_undispatched(deps, batch_id, result)
+    partial_tally = replace(tally, subjobs_expected=result.enqueued_ok)
     return _dispatched(
         DispatchOutcomeKind.PARTIAL,
-        batch_id=batch_id,
-        total=total,
-        subjobs_expected=enqueued_ok,
-        n_agents=len(groups),
-        undispatched=undispatched,
+        partial_tally,
+        undispatched=result.total_undispatched,
         status=status,
     )

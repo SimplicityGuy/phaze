@@ -195,7 +195,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 import contextlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import tempfile
@@ -398,6 +398,203 @@ def _select_track(streams: list[dict[str, Any]]) -> tuple[dict[str, Any], list[d
     return streams[0], streams[1:]
 
 
+def _log_multi_track_selection(file_path: str, file_id: str | None, selected: dict[str, Any], others: list[dict[str, Any]]) -> None:
+    """Log which track was picked, and which others existed, for a multi-audio-stream container.
+
+    Split out of :func:`extract_audio_track` (phaze-bk9el.3, CCN cleanup) -- pure logging, no
+    branch on ``others`` itself; the caller only calls this when ``others`` is non-empty.
+    """
+    logger.info(
+        "video_audio_extraction_multi_track",
+        file=file_path,
+        file_id=file_id,
+        selected_index=selected.get("index"),
+        selected_codec=selected.get("codec_name"),
+        selected_is_default=bool((selected.get("disposition") or {}).get("default")),
+        other_track_count=len(others),
+        other_tracks=[{"index": s.get("index"), "codec_name": s.get("codec_name")} for s in others],
+    )
+
+
+def _resolve_dest_path(scratch_dir: str | Path | None) -> Path:
+    """Where the extracted-audio scratch file lands (review correction, phaze-3ea41 -- naming
+    the exact mechanism here since a prior report described it only in prose elsewhere):
+    ``scratch_dir``, when the caller passes one, else ``tempfile.gettempdir()``. Both real
+    callers DO pass one explicitly (neither relies on this fallback in production):
+
+    * ``tasks/functions.py::process_file`` passes ``cfg.cloud_scratch_dir`` (AgentSettings) --
+      the SAME directory ``push_file`` already rsyncs large pushed containers into on a
+      compute agent, so it is provisioned for exactly this file-size class. ``None`` only on
+      an agent that never participates in the cloud push pipeline (pure local fileserver-only
+      role), where ``tempfile.gettempdir()`` is the honest fallback -- such an agent has no
+      OTHER configured large-file scratch location to fall back to instead.
+    * ``job_runner.py::run`` passes ``tmp_path.parent`` explicitly (the SAME directory its own
+      downloaded original already lives in) -- this pod has no separate configured scratch
+      setting of its own (``cloud_scratch_dir`` names a DIFFERENT host's rsync landing zone,
+      not this pod's ephemeral filesystem), so co-locating with the already-larger download is
+      the only self-consistent choice, and it happens to equal ``tempfile.gettempdir()`` today
+      since that is where ``tmp_path`` itself lands.
+
+    WITHIN the resolved directory: a random ``uuid4().hex`` filename (never derived from
+    ``file_path``, which could collide across concurrent extractions of files sharing a
+    directory).
+    """
+    dest_dir = Path(scratch_dir) if scratch_dir is not None else Path(tempfile.gettempdir())
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    return dest_dir / f"{uuid.uuid4().hex}{_EXTRACTED_AUDIO_SUFFIX}"
+
+
+def _build_ffmpeg_argv(file_path: str, selected_index: Any, dest_path: Path, *, want_progress: bool) -> list[str]:
+    """The ``-c:a copy`` extraction argv (disk-headroom decision, this module's docstring).
+
+    Review correction (phaze-3ea41): ``-progress pipe:1`` is requested ONLY when
+    ``want_progress`` holds -- with no consumer for it, the extra pipe/pump is pure overhead,
+    and ffmpeg writes nothing to stdout without ``-progress`` (everything else already routes
+    to stderr via ``-loglevel error -nostats``).
+    """
+    argv = [
+        "ffmpeg",
+        "-y",
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-nostats",
+        "-i",
+        file_path,
+        "-map",
+        f"0:{selected_index}",
+        "-vn",
+        "-sn",
+        "-dn",
+        "-c:a",
+        "copy",
+    ]
+    if want_progress:
+        argv.extend(("-progress", "pipe:1"))
+    argv.append(str(dest_path))
+    return argv
+
+
+async def _spawn_ffmpeg(argv: list[str], *, want_progress: bool) -> asyncio.subprocess.Process:
+    """Start the extraction ffmpeg with the pipes the pump loops need, or raise cleanly.
+
+    Raises :class:`AudioExtractionError` for a missing binary or for a spawn that somehow
+    yields ``None`` pipes despite requesting them (defensive; not a real runtime path -- see
+    the guard's own comment below).
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.PIPE if want_progress else asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        msg = "ffmpeg binary not found on PATH"
+        raise AudioExtractionError(msg) from exc
+
+    if proc.stderr is None or (want_progress and proc.stdout is None):  # pragma: no cover - PIPEs requested above
+        proc.kill()
+        msg = "ffmpeg extraction spawned without stdout/stderr pipes"
+        raise AudioExtractionError(msg)
+    return proc
+
+
+def _check_ffmpeg_result(returncode: int | None, dest_path: Path, stderr_tail: deque[str], file_path: str) -> None:
+    """Raise :class:`AudioExtractionError` for a failed or empty extraction, cleaning up first.
+
+    Review correction (phaze-3ea41): do NOT re-truncate the already-bounded joined tail
+    (<=20 lines * 500 chars) down to 500 chars -- that discarded everything but the EARLIEST
+    lines, exactly backwards: ffmpeg's real error is on the LAST line(s). The per-line cap
+    already bounds total size sanely (~10 KiB ceiling); the join itself needs no further
+    truncation.
+    """
+    if returncode == 0 and dest_path.exists() and dest_path.stat().st_size > 0:
+        return
+    dest_path.unlink(missing_ok=True)
+    detail = " | ".join(stderr_tail) or "no stderr output"
+    msg = f"ffmpeg audio extraction failed (exit {returncode}) for {file_path!r}: {detail}"
+    raise AudioExtractionError(msg)
+
+
+@dataclass
+class _ExtractionPump:
+    """Mutable state shared by one extraction's stdout/stderr readers and heartbeat spawner.
+
+    Pulled out of :func:`extract_audio_track`'s own closures (phaze-bk9el.3, CCN cleanup) so
+    the pump loops are ordinary module-level functions instead of nested ones -- the behaviour
+    is unchanged, this just gives the shared, mutating state (``pending``, ``stderr_tail``,
+    ``last_touch``) one home instead of five closures over the same locals.
+    """
+
+    proc: asyncio.subprocess.Process
+    heartbeat_cb: Callable[[], Awaitable[None]] | None
+    heartbeat_interval_sec: float
+    want_progress: bool
+    pending: set[asyncio.Task[None]] = field(default_factory=set)
+    stderr_tail: deque[str] = field(default_factory=lambda: deque(maxlen=_STDERR_TAIL_LINES))
+    last_touch: float = field(default_factory=time.monotonic)
+
+
+async def _safe_heartbeat(heartbeat_cb: Callable[[], Awaitable[None]] | None) -> None:
+    # Genuinely can't happen -- only ever called from _spawn_heartbeat, which is only ever
+    # called from _pump_stdout, which itself returns immediately when want_progress
+    # (== heartbeat_cb is not None) is False (bandit B101: no `assert` in production code; a
+    # silent no-op return is the honest translation of an invariant this defensive, not a real
+    # runtime possibility).
+    if heartbeat_cb is None:
+        return
+    with contextlib.suppress(Exception):
+        await heartbeat_cb()
+
+
+def _spawn_heartbeat(pump: _ExtractionPump) -> None:
+    task = asyncio.get_running_loop().create_task(_safe_heartbeat(pump.heartbeat_cb))
+    pump.pending.add(task)
+    task.add_done_callback(pump.pending.discard)
+
+
+async def _pump_stdout(pump: _ExtractionPump) -> None:
+    # -progress pipe:1 (D-08-style liveness, extended to extraction): treat any line as a
+    # tick and throttle the caller's heartbeat_cb the same way the analysis side does.
+    # A no-op when want_progress is False -- checked explicitly (not merely inferred from
+    # proc.stdout is None) so this never depends on the real subprocess machinery's DEVNULL
+    # behavior to keep heartbeat_cb unreachable when the caller asked for none.
+    if not pump.want_progress or pump.proc.stdout is None:
+        return
+    async for raw in pump.proc.stdout:
+        if not raw.strip():
+            continue
+        now = time.monotonic()
+        if (now - pump.last_touch) < pump.heartbeat_interval_sec:
+            continue
+        pump.last_touch = now
+        _spawn_heartbeat(pump)
+
+
+async def _pump_stderr(pump: _ExtractionPump) -> None:
+    # Mirrors _pump_stdout's own guard above (bandit B101: no `assert` in production code).
+    # proc.stderr is None only in the already-raised PIPE-guard branch (_spawn_ffmpeg), so
+    # this never actually returns early in practice -- it is defense-in-depth, not a real path.
+    if pump.proc.stderr is None:
+        return
+    async for raw in pump.proc.stderr:
+        line = raw.decode("utf-8", errors="replace").rstrip()
+        if not line:
+            continue
+        pump.stderr_tail.append(line[:_STDERR_LINE_MAX])
+
+
+async def _settle_pending(pump: _ExtractionPump) -> None:
+    """Cancel + await every still-pending heartbeat task (analysis_exec.py's ``_settle``
+    discipline): a cancelled-but-unawaited task is still scheduled and would resume on a
+    later loop iteration, touching a job nobody is waiting on any more."""
+    for task in pump.pending:
+        if not task.done():
+            task.cancel()
+    if pump.pending:
+        await asyncio.gather(*pump.pending, return_exceptions=True)
+
+
 async def extract_audio_track(
     file_path: str,
     *,
@@ -459,164 +656,39 @@ async def extract_audio_track(
 
     selected, others = _select_track(streams)
     if others:
-        logger.info(
-            "video_audio_extraction_multi_track",
-            file=file_path,
-            file_id=file_id,
-            selected_index=selected.get("index"),
-            selected_codec=selected.get("codec_name"),
-            selected_is_default=bool((selected.get("disposition") or {}).get("default")),
-            other_track_count=len(others),
-            other_tracks=[{"index": s.get("index"), "codec_name": s.get("codec_name")} for s in others],
-        )
+        _log_multi_track_selection(file_path, file_id, selected, others)
 
-    # WHERE the extracted-audio scratch file lands (review correction, phaze-3ea41 -- naming
-    # the exact mechanism here since a prior report described it only in prose elsewhere):
-    # ``scratch_dir``, when the caller passes one, else ``tempfile.gettempdir()``. Both real
-    # callers DO pass one explicitly (neither relies on this fallback in production):
-    #   - tasks/functions.py::process_file passes ``cfg.cloud_scratch_dir`` (AgentSettings) --
-    #     the SAME directory ``push_file`` already rsyncs large pushed containers into on a
-    #     compute agent, so it is provisioned for exactly this file-size class. ``None`` only
-    #     on an agent that never participates in the cloud push pipeline (pure local
-    #     fileserver-only role), where tempfile.gettempdir() is the honest fallback -- such an
-    #     agent has no OTHER configured large-file scratch location to fall back to instead.
-    #   - job_runner.py::run passes ``tmp_path.parent`` explicitly (the SAME directory its own
-    #     downloaded original already lives in) -- this pod has no separate configured scratch
-    #     setting of its own (``cloud_scratch_dir`` names a DIFFERENT host's rsync landing
-    #     zone, not this pod's ephemeral filesystem), so co-locating with the already-larger
-    #     download is the only self-consistent choice, and it happens to equal
-    #     tempfile.gettempdir() today since that is where tmp_path itself lands.
-    # WITHIN dest_dir: a random ``uuid4().hex`` filename (never derived from file_path, which
-    # could collide across concurrent extractions of files sharing a directory).
-    #
     # CLEANUP GUARANTEE: this function deletes dest_path on every ONE OF ITS OWN failure exits
-    # (ffmpeg nonzero exit / empty output below, and the exceptional-exit branch above) --
-    # never hands a partial file to a caller. On the SUCCESS return, ownership transfers to the
+    # (ffmpeg nonzero exit / empty output, and the exceptional-exit branch below) -- never
+    # hands a partial file to a caller. On the SUCCESS return, ownership transfers to the
     # caller: both ``tasks/functions.py::process_file`` and ``job_runner.py::run`` unlink the
     # returned path in their own outer ``finally`` on every terminal exit (success or later
     # failure), unconditionally and independent of the pushed-original scratch copy's
     # retry-preserving cleanup (see each lane's own comment on why that copy differs).
-    dest_dir = Path(scratch_dir) if scratch_dir is not None else Path(tempfile.gettempdir())
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest_path = dest_dir / f"{uuid.uuid4().hex}{_EXTRACTED_AUDIO_SUFFIX}"
-
-    # Review correction (phaze-3ea41): request -progress pipe:1 -- and open the stdout PIPE at
-    # all -- ONLY when a caller actually wants liveness ticks. With no consumer for it, the
-    # extra pipe/pump is pure overhead, and ffmpeg writes nothing to stdout without -progress
-    # (everything else already routes to stderr via -loglevel error -nostats).
+    dest_path = _resolve_dest_path(scratch_dir)
     want_progress = heartbeat_cb is not None
-    argv = [
-        "ffmpeg",
-        "-y",
-        "-nostdin",
-        "-loglevel",
-        "error",
-        "-nostats",
-        "-i",
-        file_path,
-        "-map",
-        f"0:{selected['index']}",
-        "-vn",
-        "-sn",
-        "-dn",
-        "-c:a",
-        "copy",
-    ]
-    if want_progress:
-        argv.extend(("-progress", "pipe:1"))
-    argv.append(str(dest_path))
+    argv = _build_ffmpeg_argv(file_path, selected["index"], dest_path, want_progress=want_progress)
+    proc = await _spawn_ffmpeg(argv, want_progress=want_progress)
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdout=asyncio.subprocess.PIPE if want_progress else asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-    except FileNotFoundError as exc:
-        msg = "ffmpeg binary not found on PATH"
-        raise AudioExtractionError(msg) from exc
-
-    if proc.stderr is None or (want_progress and proc.stdout is None):  # pragma: no cover - PIPEs requested above
-        proc.kill()
-        msg = "ffmpeg extraction spawned without stdout/stderr pipes"
-        raise AudioExtractionError(msg)
-
-    stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
-    last_touch = time.monotonic()
-    # Review correction (phaze-3ea41): heartbeat_cb is now FIRE-AND-FORGET (spawned, never
-    # awaited inline by the pump), mirroring _run_analysis_with_progress's own _spawn pattern.
-    # Awaiting it inline made a hung job.update() stop draining proc.stdout entirely; once
-    # ffmpeg fills the OS pipe buffer writing -progress lines nobody is reading, ffmpeg itself
-    # blocks and the whole extraction wedges with NO watchdog to save it (extraction runs
-    # before run_analysis_subprocess arms the inner stall watchdog). Spawning keeps the pump
-    # reading regardless of how slow/stuck any single touch is; ``pending`` holds a strong ref
-    # so a spawned task is never GC'd mid-flight, and every touch swallows its own errors
+    # Review correction (phaze-3ea41): heartbeat_cb is FIRE-AND-FORGET (spawned, never awaited
+    # inline by the pump), mirroring _run_analysis_with_progress's own _spawn pattern. Awaiting
+    # it inline made a hung job.update() stop draining proc.stdout entirely; once ffmpeg fills
+    # the OS pipe buffer writing -progress lines nobody is reading, ffmpeg itself blocks and the
+    # whole extraction wedges with NO watchdog to save it (extraction runs before
+    # run_analysis_subprocess arms the inner stall watchdog). Spawning keeps the pump reading
+    # regardless of how slow/stuck any single touch is; ``pump.pending`` holds a strong ref so a
+    # spawned task is never GC'd mid-flight, and every touch swallows its own errors
     # (best-effort, matching the analysis-side heartbeat's contract).
-    pending: set[asyncio.Task[None]] = set()
-
-    async def _safe_heartbeat() -> None:
-        # Genuinely can't happen -- _spawn_heartbeat is only ever called from _pump_stdout,
-        # which itself returns immediately when want_progress (== heartbeat_cb is not None)
-        # is False (bandit B101: no `assert` in production code; a silent no-op return is the
-        # honest translation of an invariant this defensive, not a real runtime possibility).
-        if heartbeat_cb is None:
-            return
-        with contextlib.suppress(Exception):
-            await heartbeat_cb()
-
-    def _spawn_heartbeat() -> None:
-        task = asyncio.get_running_loop().create_task(_safe_heartbeat())
-        pending.add(task)
-        task.add_done_callback(pending.discard)
-
-    async def _pump_stdout() -> None:
-        # -progress pipe:1 (D-08-style liveness, extended to extraction): treat any line as a
-        # tick and throttle the caller's heartbeat_cb the same way the analysis side does.
-        # A no-op when want_progress is False -- checked explicitly (not merely inferred from
-        # proc.stdout is None) so this never depends on the real subprocess machinery's DEVNULL
-        # behavior to keep heartbeat_cb unreachable when the caller asked for none.
-        nonlocal last_touch
-        if not want_progress or proc.stdout is None:
-            return
-        async for raw in proc.stdout:
-            if not raw.strip():
-                continue
-            now = time.monotonic()
-            if (now - last_touch) < heartbeat_interval_sec:
-                continue
-            last_touch = now
-            _spawn_heartbeat()
-
-    async def _pump_stderr() -> None:
-        # Mirrors _pump_stdout's own guard above (bandit B101: no `assert` in production code).
-        # proc.stderr is None only in the already-raised PIPE-guard branch further up, so this
-        # never actually returns early in practice -- it is defense-in-depth, not a real path.
-        if proc.stderr is None:
-            return
-        async for raw in proc.stderr:
-            line = raw.decode("utf-8", errors="replace").rstrip()
-            if not line:
-                continue
-            stderr_tail.append(line[:_STDERR_LINE_MAX])
-
-    async def _settle_pending() -> None:
-        """Cancel + await every still-pending heartbeat task (analysis_exec.py's ``_settle``
-        discipline): a cancelled-but-unawaited task is still scheduled and would resume on a
-        later loop iteration, touching a job nobody is waiting on any more."""
-        for task in pending:
-            if not task.done():
-                task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+    pump = _ExtractionPump(proc=proc, heartbeat_cb=heartbeat_cb, heartbeat_interval_sec=heartbeat_interval_sec, want_progress=want_progress)
 
     try:
-        await asyncio.gather(_pump_stdout(), _pump_stderr())
+        await asyncio.gather(_pump_stdout(pump), _pump_stderr(pump))
         returncode = await proc.wait()
-        # Deliberately NOT draining ``pending`` here (review correction, phaze-3ea41): a
+        # Deliberately NOT draining ``pump.pending`` here (review correction, phaze-3ea41): a
         # touch is fire-and-forget precisely so a slow/hung ``heartbeat_cb`` cannot add ITS
         # OWN latency on top of a now-finished extraction -- ffmpeg is done, the caller gets
         # its result immediately, and any still-running touch keeps going in the background
-        # (strong-refed by ``pending`` via each task's own done-callback closure, so it is
+        # (strong-refed by ``pump.pending`` via each task's own done-callback closure, so it is
         # never GC'd mid-flight even though this function has already returned). Blocking the
         # return on a drain here would silently reintroduce the exact hang this fix removes,
         # just moved one line later -- a heartbeat_cb with no bound of its own would then wedge
@@ -628,20 +700,11 @@ async def extract_audio_track(
             proc.kill()
         with contextlib.suppress(Exception):
             await proc.wait()
-        await _settle_pending()
+        await _settle_pending(pump)
         dest_path.unlink(missing_ok=True)
         raise
 
-    if returncode != 0 or not dest_path.exists() or dest_path.stat().st_size == 0:
-        dest_path.unlink(missing_ok=True)
-        # Review correction (phaze-3ea41): do NOT re-truncate the already-bounded joined tail
-        # (<=20 lines * 500 chars) down to 500 chars -- that discarded everything but the
-        # EARLIEST lines, exactly backwards: ffmpeg's real error is on the LAST line(s). The
-        # per-line cap above already bounds total size sanely (~10 KiB ceiling); the join
-        # itself needs no further truncation.
-        detail = " | ".join(stderr_tail) or "no stderr output"
-        msg = f"ffmpeg audio extraction failed (exit {returncode}) for {file_path!r}: {detail}"
-        raise AudioExtractionError(msg)
+    _check_ffmpeg_result(returncode, dest_path, pump.stderr_tail, file_path)
 
     # Extraction branch: analysis_path IS the scratch file, so cleanup_path is the same path --
     # the caller deletes exactly what this call created, and never its input.

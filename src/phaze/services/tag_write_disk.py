@@ -191,6 +191,59 @@ _SEMANTIC_COMPARE_FIELDS: dict[str, Callable[[Any], int | None]] = {
 }
 
 
+def _verify_deleted_field(actual_val: Any) -> dict[str, str | None] | None:
+    """One field of :func:`verify_write`'s ``expected_val is None`` branch (phaze-52qd).
+
+    The field was meant to be absent (a deletion). It is a discrepancy only if a value
+    survives on disk.
+    """
+    if actual_val is None:
+        return None
+    return {"expected": None, "actual": unicodedata.normalize("NFC", str(actual_val))}
+
+
+def _verify_genre_list_field(expected_val: list[str], actual_tags: Any) -> dict[str, str | None] | None:
+    """One field of :func:`verify_write`'s multi-value ``genre`` branch (phaze-z2u08).
+
+    Compared against the re-read file's OWN raw multi-value list (``ExtractedTags.raw_genre``),
+    not the single-value normalized ``genre`` field -- the latter is always just the first entry,
+    which would report every multi-value write as a false discrepancy.
+    """
+    actual_raw = actual_tags.raw_genre
+    actual_list = actual_raw if isinstance(actual_raw, list) else ([actual_raw] if actual_raw is not None else [])
+    expected_norm_list = [unicodedata.normalize("NFC", str(item)) for item in expected_val]
+    actual_norm_list = [unicodedata.normalize("NFC", str(item)) for item in actual_list]
+    if expected_norm_list == actual_norm_list:
+        return None
+    return {
+        "expected": "; ".join(expected_norm_list),
+        "actual": "; ".join(actual_norm_list) if actual_norm_list else None,
+    }
+
+
+def _verify_semantic_field(normalizer: Callable[[Any], int | None], expected_val: Any, actual_val: Any) -> dict[str, str | None] | None:
+    """One field of :func:`verify_write`'s ``year``/``track_number`` branch (phaze-2zl7).
+
+    Compared through the extractor's OWN normalization rule (:data:`_SEMANTIC_COMPARE_FIELDS`),
+    not raw NFC text -- see that mapping's docstring.
+    """
+    if normalizer(expected_val) == actual_val:
+        return None
+    return {
+        "expected": unicodedata.normalize("NFC", str(expected_val)),
+        "actual": unicodedata.normalize("NFC", str(actual_val)) if actual_val is not None else None,
+    }
+
+
+def _verify_nfc_field(expected_val: Any, actual_val: Any) -> dict[str, str | None] | None:
+    """One field of :func:`verify_write`'s default branch: plain NFC-normalized comparison."""
+    expected_norm = unicodedata.normalize("NFC", str(expected_val))
+    actual_norm = unicodedata.normalize("NFC", str(actual_val)) if actual_val is not None else None
+    if expected_norm == actual_norm:
+        return None
+    return {"expected": expected_norm, "actual": actual_norm}
+
+
 def verify_write(file_path: str, expected: dict[str, str | int | list[str] | None]) -> dict[str, dict[str, str | None]]:
     """Verify written tags by re-reading and comparing with NFC normalization.
 
@@ -209,65 +262,29 @@ def verify_write(file_path: str, expected: dict[str, str | int | list[str] | Non
             instead of an all-field ``actual=None`` false discrepancy. A file that opens cleanly
             but has no tags still returns a normal (all-field) discrepancy dict.
 
-    Note (phaze-52qd): an ``expected`` value of ``None`` means the field should have been
-    DELETED (an undo removing a tag a prior write added). Such a field is a discrepancy iff
-    it is still present on disk -- verifying deletions, not skipping them.
-
-    Note (phaze-2zl7): ``year``/``track_number`` are compared through the extractor's OWN
-    normalization rule (see :data:`_SEMANTIC_COMPARE_FIELDS`), not raw NFC text -- see that
-    mapping's docstring.
-
-    Note (phaze-z2u08): a ``list[str]`` expected ``genre`` (a multi-value undo snapshot) is
-    compared against the re-read file's OWN raw multi-value list (``ExtractedTags.raw_genre``),
-    not the single-value normalized ``genre`` field -- the latter is always just the first entry,
-    which would report every multi-value write as a false discrepancy.
+    Per-field comparison dispatches to one of four helpers, in order -- see each for the decision
+    it encodes: :func:`_verify_deleted_field` (phaze-52qd), :func:`_verify_genre_list_field`
+    (phaze-z2u08), :func:`_verify_semantic_field` (phaze-2zl7), :func:`_verify_nfc_field` (default).
     """
     actual_tags = extract_tags(file_path, strict=True)
     discrepancies: dict[str, dict[str, str | None]] = {}
 
     for field, expected_val in expected.items():
         actual_val = getattr(actual_tags, field, None)
-
-        if expected_val is None:
-            # The field was meant to be absent (a deletion). It is a discrepancy only if a
-            # value survives on disk.
-            if actual_val is not None:
-                discrepancies[field] = {
-                    "expected": None,
-                    "actual": unicodedata.normalize("NFC", str(actual_val)),
-                }
-            continue
-
-        if field == "genre" and isinstance(expected_val, list):
-            actual_raw = actual_tags.raw_genre
-            actual_list = actual_raw if isinstance(actual_raw, list) else ([actual_raw] if actual_raw is not None else [])
-            expected_norm_list = [unicodedata.normalize("NFC", str(item)) for item in expected_val]
-            actual_norm_list = [unicodedata.normalize("NFC", str(item)) for item in actual_list]
-            if expected_norm_list != actual_norm_list:
-                discrepancies[field] = {
-                    "expected": "; ".join(expected_norm_list),
-                    "actual": "; ".join(actual_norm_list) if actual_norm_list else None,
-                }
-            continue
-
         normalizer = _SEMANTIC_COMPARE_FIELDS.get(field)
-        if normalizer is not None:
-            if normalizer(expected_val) == actual_val:
-                continue
-            discrepancies[field] = {
-                "expected": unicodedata.normalize("NFC", str(expected_val)),
-                "actual": unicodedata.normalize("NFC", str(actual_val)) if actual_val is not None else None,
-            }
-            continue
 
-        expected_norm = unicodedata.normalize("NFC", str(expected_val))
-        actual_norm = unicodedata.normalize("NFC", str(actual_val)) if actual_val is not None else None
+        entry: dict[str, str | None] | None
+        if expected_val is None:
+            entry = _verify_deleted_field(actual_val)
+        elif field == "genre" and isinstance(expected_val, list):
+            entry = _verify_genre_list_field(expected_val, actual_tags)
+        elif normalizer is not None:
+            entry = _verify_semantic_field(normalizer, expected_val, actual_val)
+        else:
+            entry = _verify_nfc_field(expected_val, actual_val)
 
-        if expected_norm != actual_norm:
-            discrepancies[field] = {
-                "expected": expected_norm,
-                "actual": actual_norm,
-            }
+        if entry is not None:
+            discrepancies[field] = entry
 
     return discrepancies
 

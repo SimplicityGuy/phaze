@@ -253,7 +253,12 @@ test:
 #     figure alongside "run the full hive validation". Without this the criterion is
 #     structurally unsatisfiable and every developer paid a second full-suite pass to
 #     recover the number. pyproject's `[tool.coverage.report] fail_under = 95` means
-#     pytest-cov ENFORCES the 95% floor here: sub-95 coverage exits nonzero.
+#     pytest-cov ENFORCES a 95% floor here: sub-95 coverage exits nonzero. Since
+#     phaze-bk9el.21 turned `branch = true` on, the figure pytest-cov checks is the
+#     COMBINED line+branch one -- measured at 98.1559% against the 95 floor, so it stays
+#     armed. The LINE floors (95% repo-wide, 90% per module) are enforced explicitly by
+#     `scripts/coverage_floor.py` on the next line, which names the metric in every line it
+#     prints. Two gates, both armed, neither ambiguous.
 #   * no `-x` -- a gate exists to characterise the WHOLE suite. Complete failure counts
 #     beat a truncated prefix.
 #   * no `-q` -- `-q` suppresses pytest_report_header, and that header
@@ -265,10 +270,15 @@ test:
 #     proves the seat but is not a transcript of the gate's own session.
 #
 # tests/shared/test_validation_gate_recipes.py fails the build if any of the three regress.
-[doc('Run tests with coverage report -- the validation-grade invocation (no -x, no -q, 95% floor enforced)')]
+#   * a json report -- `scripts/coverage_floor.py` reads `coverage.json`, and so does
+#     `just branch-check`, which is how a bead proves it did not lower branch coverage on a
+#     file it touched (phaze-bk9el.21). Writing it here means the per-bead branch check is
+#     free after any gate run instead of costing a second 20-minute suite.
+[doc('Run tests with coverage report -- the validation-grade invocation (no -x, no -q, 95% line floor + 90% per-module line floor enforced)')]
 [group('test')]
 test-cov:
-    uv run pytest --cov=phaze --cov-report=term-missing
+    uv run pytest --cov=phaze --cov-report=term-missing --cov-report=json:coverage.json
+    uv run python scripts/coverage_floor.py
 
 # `test-cov` plus the seat provisioning `check` used to carry inline, factored out here so
 # that BOTH gates (`check`, `check-all`) run the identical test step (phaze-nqawu). A fresh
@@ -284,20 +294,52 @@ test-cov:
 # `just test-db-down`.
 #
 # If the caller already exported TEST_DATABASE_URL (CI, another `just` recipe, a per-seat
-# `just test-db-for <name>` rig), respect it verbatim and skip provisioning. Concurrent
-# agents MUST take that path: the fallback below is the shared `phaze_test` seat, and two
-# suites on one database is the phaze-ieqg defect (the session advisory lock refuses the
-# second run rather than corrupting both, so this fails loudly, but it still fails).
-[doc('The full test suite as a gate runs it: coverage on, no fail-fast, header printed; auto-provisions the shared harness only when no TEST_DATABASE_URL is exported')]
+# `just test-db-for <name>` rig), respect it VERBATIM and provision nothing. CI depends on
+# that: it exports its own DSN against a 5432 service container and must not be re-pointed
+# at the local 5433 harness.
+#
+# WHAT THE FALLBACK USED TO DO, AND WHY IT WAS A BUG (phaze-bk9el.23). It exported the
+# SHARED `phaze_test` / `phaze_migrations_test` pair and Redis logical DB 0. That directly
+# contradicts CLAUDE.md's standing rule -- "Never share Postgres OR Redis between concurrent
+# agents" -- for the one command every bead is now required to run, because phaze-nqawu
+# wired BOTH gates (and therefore `bh work check` and `bh work submit`) to this recipe.
+# Any concurrent seat that forgot to export its own rig landed on that shared pair, where
+# phaze-ieqg's session advisory lock refuses the SECOND pytest: a red run that passes on
+# isolated re-run, which CLAUDE.md names as the worst possible shape because it trains
+# reviewers to dismiss reds.
+#
+# IT DERIVES; IT DOES NOT REFUSE. Refusing when TEST_DATABASE_URL is unset was proposed and
+# rejected: the auto-provision exists deliberately so a FRESH WORKTREE WITH NO SEAT still
+# works, and a hard refusal fixes the concurrent case by breaking the solo case. So the
+# fallback provisions a seat DERIVED from this worktree (branch name for legibility, a digest
+# of the absolute worktree root for uniqueness -- see scripts/derive-validate-seat-name.sh),
+# through the SAME scripts/provision-test-seat.sh that `just test-db-for` runs, so the gate's
+# seat and an operator's seat for one worktree can never disagree. Solo still just works;
+# concurrent seats get real isolation; the silent shared-seat path no longer exists.
+#
+# The derived seat is a normal registry allocation with an `--origin`, so it is visible in
+# `just test-db-seats` (prefixed `auto_`, marking it gate-provisioned rather than typed by an
+# operator) and reclaimable by `just test-db-reclaim` -- whose O1 rule frees it as soon as the
+# worktree that minted it is removed, which is the normal end of `bh work merge`.
+[doc('The full test suite as a gate runs it: coverage on, no fail-fast, header printed; auto-provisions a seat DERIVED from this worktree only when no TEST_DATABASE_URL is exported')]
 [group('test')]
 test-validate:
     #!/usr/bin/env bash
     set -euo pipefail
     if [ -z "${TEST_DATABASE_URL:-}" ]; then
         just test-db
-        export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:{{test_db_port}}/phaze_test"
-        export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:{{test_db_port}}/phaze_migrations_test"
-        export PHAZE_REDIS_URL="redis://localhost:{{test_redis_port}}/0"
+        seat="$(bash scripts/derive-validate-seat-name.sh)"
+        echo "🪑 No TEST_DATABASE_URL exported; provisioning this worktree's own seat '${seat}'." >&2
+        # `eval` is safe here by contract: provision-test-seat.sh prints the three
+        # `export KEY="value"` lines on stdout and every human-readable line on stderr.
+        eval "$(bash scripts/provision-test-seat.sh \
+            --seat "$seat" \
+            --pg-container "{{test_db_container}}" \
+            --pg-port "{{test_db_port}}" \
+            --redis-container "{{test_redis_container}}" \
+            --redis-port "{{test_redis_port}}" \
+            --redis-capacity "{{test_redis_databases}}" \
+            --origin "$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")")"
     fi
     just test-cov
 
@@ -380,7 +422,54 @@ vulture:
 test-bucket NAME PATHS XDIST="":
     COVERAGE_FILE=.coverage.{{NAME}} uv run pytest {{PATHS}} {{XDIST}} --cov=phaze --cov-context=test --cov-report= --cov-fail-under=0 --junitxml=junit.xml -o junit_family=legacy -q
 
-[doc('Combine per-bucket .coverage.* shards into coverage.xml and enforce the gate')]
+# phaze-bk9el.21 -- READ THIS BEFORE CHANGING EITHER `--fail-under` HERE OR IN pyproject.
+#
+# `branch = true` changed what `coverage report --fail-under=95` MEASURES, without changing the
+# number. With branches on, coverage.py's total is the COMBINED
+# `(covered_lines + covered_branches) / (num_statements + num_branches)`, and there is no option to
+# make it line-only (verified against coverage 7.15.4). `coverage xml` and `coverage json` honour
+# the same config value, so all three steps read the combined figure.
+#
+# MEASURED on the full suite, 2026-08-21, so this is not left to inference:
+#     statements 17554/17771 = 98.7789%   branches 3684/3866 = 95.2923%   combined 21238/21637 = 98.1559%
+# The combined figure clears the 95 floor by 3.16 points, so leaving this armed costs nothing and
+# keeps the two gate sites in lockstep -- which `tests/shared/test_coverage_gate.py` requires,
+# because a `--fail-under` on the CLI silently overrides pyproject's config value.
+#
+# What criterion 3's "the repo-wide gate stays on LINES at 95%" is satisfied by is the NEXT line:
+# `coverage_floor.py` reads `percent_statements_covered` explicitly and enforces 95% repo-wide plus
+# 90% per module on lines. That distinction is not academic at the per-module level -- measured, ONE
+# module differs between the two metrics (`src/phaze/routers/duplicates.py`: 91.20% statements,
+# 75.00% branches, 88.59% combined), so a per-module floor left on the combined number would fail a
+# module that has regressed nothing. Nothing here is disarmed; the line gate is simply explicit.
+# THE PER-BEAD BRANCH GATE (phaze-bk9el.21). Run it from your bead's worktree after any
+# coverage-producing run -- `just check`, `just test-validate` and `just coverage-combine` all
+# leave the `coverage.json` it reads, so it costs seconds rather than a second full suite.
+#
+# It checks ONLY the `src/phaze/**.py` files your bead changed against `--base-ref` (committed,
+# staged and unstaged changes all count, so it is useful mid-flight and not just at submit), and
+# it names every file it checked. The rule is one-directional: raising branch coverage is welcome,
+# holding it steady is fine, LOWERING it against the recorded baseline fails. It reports the
+# uncovered branch LINE NUMBERS, not just a percentage, so the answer is actionable.
+#
+# It FAILS CLOSED on a missing baseline: if the check could not perform a comparison, it did not
+# pass. The baseline is written by phaze-bk9el.1 (`just branch-check --write-baseline`), and that
+# one bead -- which cannot be blocked by a check consuming the artifact it exists to produce --
+# passes `--allow-missing-baseline` explicitly. Nothing else should: an exemption at the call site
+# is auditable, one baked into the default is invisible to the twelve wave-2 beads downstream, and
+# "exit 0 having measured nothing" is the same defect class as phaze-jnj90 and phaze-nqawu.
+#
+# Why this and not a repo-wide branch floor: branch coverage sits below the line figure on most of
+# this repo, so a repo-wide branch gate fails on day one and the backfill dwarfs the work it was
+# protecting. Per-bead is where a refactor can actually regress branches -- decomposing a function
+# or flattening a nest keeps every LINE executing and changes only the branch combinations, which
+# is the one regression class line coverage structurally cannot see.
+[doc('Per-bead branch-coverage gate: fail if this bead LOWERED branch coverage on any src/phaze file it touched')]
+[group('test')]
+branch-check *flags:
+    uv run python scripts/branch_coverage_check.py {{flags}}
+
+[doc('Combine per-bucket .coverage.* shards into coverage.xml and enforce the gate (95% line total + 90% per-module lines)')]
 [group('test')]
 coverage-combine:
     uv run coverage combine
@@ -676,55 +765,24 @@ test-db-for name:
     # `tests/db_guard.py`, but this recipe emits the canonical `phaze_<name>_test` pair and,
     # more importantly, prints the exact exports to use. Requires `just test-db` first.
     just test-db
-    container="{{test_db_container}}"
-    port="{{test_db_port}}"
-    raw_name="{{name}}"
-    # phaze-fmfk: a raw Postgres unquoted identifier can't contain a hyphen, but this repo's own
-    # worktree convention IS hyphenated (`wt/bead/issue/phaze-fq9h-1`), so naming a seat after the
-    # worktree -- the obvious, natural thing to do -- used to blow up with a raw
-    # `syntax error at or near "-"` and no hint at the cause. `derive-seat-name.sh` is the single
-    # place that decides what a raw name normalizes to (validation rule + collision-safe hashing);
-    # see its header for the full rationale. Shared with this script's own regression tests so the
-    # justfile recipe and the tests can never drift apart.
-    name="$(bash scripts/derive-seat-name.sh "$raw_name")"
-    echo "Seat '${raw_name}' -> identifier '${name}' (stable across re-runs of the same seat name)."
-    main_db="phaze_${name}_test"
-    migrations_db="phaze_${name}_migrations_test"
-    # phaze-hk8r: ensure-pg-database.sh tolerates a lost create race -- see its header for why
-    # a plain SELECT-then-CREATE is a check-then-act TOCTOU that used to kill this recipe under
-    # `set -e` when a concurrent invocation (e.g. a dispatcher and an agent both recovering
-    # exports for one worktree at once) won the CREATE first.
-    bash scripts/ensure-pg-database.sh "$container" "$main_db" "$migrations_db"
-    # Redis isolation. Postgres-only isolation was the phaze-fwo7 defect: every worktree landed on
-    # the same logical Redis DB 0, where fixtures run global `scan_iter`+`delete` sweeps over
-    # `exec:*` / `tracklist_req:*` and assertions count the global keyspace. One seat's cleanup then
-    # deletes another seat's live keys mid-test, producing failures indistinguishable from a real
-    # regression. Allocation is an atomic registry in DB 0, NOT a hash of the name: hash % N collides
-    # ~35% of the time across 8 seats, which would reintroduce the bug intermittently.
-    redis_container="{{test_redis_container}}"
-    redis_port="{{test_redis_port}}"
-    redis_databases="{{test_redis_databases}}"
-    # phaze-68wky: allocation lives in `scripts/redis-seat-registry.sh` (one atomic server-side
-    # script; see its header for the liveness rules). It used to be an `INCR` counter inline here,
-    # which never reclaimed: every seat that ever ran this recipe burned an index forever, so the
-    # counter walked past the cap (68/73/74/80 seen in the wild) and refused every new seat, with
-    # `just test-db-down` -- the one thing CLAUDE.md forbids mid-round -- as the only remedy on
-    # offer. Allocation now takes the LOWEST FREE index, and `just test-db-release` /
-    # `just test-db-reclaim` hand indices back without touching the shared containers.
-    #
-    # Keyed on the DERIVED `name` (not `raw_name`), so the registry, the Postgres pair above and
-    # the exports below can never disagree about what this seat is called. Stdout is the index and
-    # nothing else; the script's human-readable lines go to stderr and reach the terminal directly.
-    redis_db="$(bash scripts/redis-seat-registry.sh allocate \
-        --redis-container "$redis_container" \
-        --seat "$name" \
-        --capacity "$redis_databases" \
+    # phaze-bk9el.23: the provisioning body used to live inline here. It moved to
+    # `scripts/provision-test-seat.sh` when `test-validate` gained a second, gate-driven caller
+    # that must provision an IDENTICAL seat -- same normalization (phaze-fmfk), same database
+    # pair, same Redis registry allocation. Two copies of this body is precisely how the gate's
+    # seat and the operator's seat for one worktree would silently diverge, so there is one copy
+    # and both callers run it. The script prints the three exports on stdout and everything else
+    # on stderr; this recipe is the human-facing caller, so it reprints them indented.
+    exports="$(bash scripts/provision-test-seat.sh \
+        --seat "{{name}}" \
+        --pg-container "{{test_db_container}}" \
+        --pg-port "{{test_db_port}}" \
+        --redis-container "{{test_redis_container}}" \
+        --redis-port "{{test_redis_port}}" \
+        --redis-capacity "{{test_redis_databases}}" \
         --origin "$PWD")"
     echo ""
     echo "Export these before running pytest in this worktree:"
-    echo "  export TEST_DATABASE_URL=\"postgresql+asyncpg://phaze:phaze@localhost:${port}/${main_db}\""
-    echo "  export MIGRATIONS_TEST_DATABASE_URL=\"postgresql+asyncpg://phaze:phaze@localhost:${port}/${migrations_db}\""
-    echo "  export PHAZE_REDIS_URL=\"redis://localhost:${redis_port}/${redis_db}\""
+    printf '%s\n' "$exports" | sed 's/^/  /'
     echo ""
     echo "When this worktree is finished: just test-db-release {{name}}  (frees its Redis index; no teardown)"
 

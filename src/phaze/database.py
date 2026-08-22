@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from alembic.config import Config
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 import structlog
 
 from alembic import command
@@ -17,30 +17,46 @@ from phaze.config import settings
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    from phaze.config import BaseSettings
+
 
 logger = structlog.get_logger(__name__)
 
 
-# quick-260707-ryn: every pool kwarg is sourced from config (the module-level `settings`
-# singleton is ControlSettings, which inherits the BaseSettings db_* knobs) so an operator
-# can re-tune without a code change. max_overflow drops from a hardcoded 10 to the config
-# default 5, and the three hygiene kwargs (pool_timeout / pool_recycle / pool_pre_ping) are
-# NEW. INCIDENT: phaze reaches Postgres through PgBouncer in SESSION mode, where every client
-# connection pins one upstream server connection for its whole lifetime; the shared
-# (phaze,phaze) session pool (cap ~55) deadlocked under normal multi-worker load and /health
-# hung behind the exhausted pool. pool_pre_ping drops dead server conns before checkout,
-# pool_recycle=1800 frees an idle server slot after 30 min instead of pinning it, and
-# pool_timeout=10 bounds the acquire wait so a saturated pool fails fast. Homelab raises the
-# pooler cap to ~80 in parallel, so these app-side reductions are HEADROOM, not a hard fit.
-engine = create_async_engine(
-    str(settings.database_url),
-    echo=settings.debug,
-    pool_size=settings.db_pool_size,
-    max_overflow=settings.db_max_overflow,
-    pool_timeout=settings.db_pool_timeout,
-    pool_recycle=settings.db_pool_recycle,
-    pool_pre_ping=settings.db_pool_pre_ping,
-)
+def build_async_engine(cfg: BaseSettings) -> AsyncEngine:
+    """Build an async SQLAlchemy engine from ``cfg``'s pool knobs (quick-260707-ryn).
+
+    Shared (phaze-bk9el.12) by this module's own ``engine`` below (bound to the
+    process-wide ``settings`` singleton) AND the control worker's per-process task engine
+    (``tasks/controller.py::startup``, bound to its own ``get_settings()`` result) -- the
+    two engines are built identically because they read the SAME ``BaseSettings`` db_*
+    knobs, just against two different config instances that can diverge at runtime (api
+    vs. control role). Extracted from a 25-line clone between the two call sites.
+
+    Every pool kwarg is sourced from config so an operator can re-tune without a code
+    change. max_overflow drops from a hardcoded 10 to the config default 5, and the
+    three hygiene kwargs (pool_timeout / pool_recycle / pool_pre_ping) exist because
+    phaze reaches Postgres through PgBouncer in SESSION mode, where every client
+    connection pins one upstream server connection for its whole lifetime; the shared
+    (phaze,phaze) session pool (cap ~55) deadlocked under normal multi-worker load and
+    /health hung behind the exhausted pool. ``pool_pre_ping`` drops dead server conns
+    before checkout, ``pool_recycle=1800`` frees an idle server slot after 30 min
+    instead of pinning it, and ``pool_timeout=10`` bounds the acquire wait so a
+    saturated pool fails fast. Homelab raises the pooler cap to ~80 in parallel, so
+    these app-side reductions are HEADROOM, not a hard fit.
+    """
+    return create_async_engine(
+        str(cfg.database_url),
+        echo=cfg.debug,
+        pool_size=cfg.db_pool_size,
+        max_overflow=cfg.db_max_overflow,
+        pool_timeout=cfg.db_pool_timeout,
+        pool_recycle=cfg.db_pool_recycle,
+        pool_pre_ping=cfg.db_pool_pre_ping,
+    )
+
+
+engine = build_async_engine(settings)
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -113,6 +129,7 @@ async def run_migrations() -> None:
 
 __all__ = [
     "async_session",
+    "build_async_engine",
     "engine",
     "get_session",
     "run_migrations",

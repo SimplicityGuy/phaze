@@ -307,15 +307,15 @@ async def test_workspace_renders_selection_and_saq_states_without_execution_clai
     )
     recent = MetadataActivitySummary(unique_files_24h=7, latest_successful_at=datetime.now(UTC), available=True)
     monkeypatch.setattr(
-        "phaze.routers.shell.get_metadata_selection_summary",
+        "phaze.routers.shell.stage_context.get_metadata_selection_summary",
         AsyncMock(return_value=MetadataSelectionSummary(eligible_count=3, available=True)),
     )
     monkeypatch.setattr(
-        "phaze.routers.shell.get_metadata_status_snapshot",
+        "phaze.routers.shell.stage_context.get_metadata_status_snapshot",
         AsyncMock(return_value=MetadataStatusSnapshot(done=5, failed=1, total=9, available=True)),
     )
-    monkeypatch.setattr("phaze.routers.shell.get_stage_activity_snapshot", AsyncMock(return_value=queue))
-    monkeypatch.setattr("phaze.routers.shell.get_metadata_activity_summary", AsyncMock(return_value=recent))
+    monkeypatch.setattr("phaze.routers.shell.stage_context.get_stage_activity_snapshot", AsyncMock(return_value=queue))
+    monkeypatch.setattr("phaze.routers.shell.stage_context.get_metadata_activity_summary", AsyncMock(return_value=recent))
 
     response = await client.get("/s/metadata", headers={"HX-Request": "true"})
 
@@ -343,10 +343,10 @@ async def test_workspace_renders_unknown_for_degraded_measurements(
         counts={"metadata": {"queued": 0, "active": 0}, "analyze": {"queued": 0, "active": 0}},
         available=False,
     )
-    monkeypatch.setattr("phaze.routers.shell.get_metadata_selection_summary", AsyncMock(return_value=MetadataSelectionSummary()))
-    monkeypatch.setattr("phaze.routers.shell.get_metadata_status_snapshot", AsyncMock(return_value=MetadataStatusSnapshot()))
-    monkeypatch.setattr("phaze.routers.shell.get_stage_activity_snapshot", AsyncMock(return_value=unknown_queue))
-    monkeypatch.setattr("phaze.routers.shell.get_metadata_activity_summary", AsyncMock(return_value=MetadataActivitySummary()))
+    monkeypatch.setattr("phaze.routers.shell.stage_context.get_metadata_selection_summary", AsyncMock(return_value=MetadataSelectionSummary()))
+    monkeypatch.setattr("phaze.routers.shell.stage_context.get_metadata_status_snapshot", AsyncMock(return_value=MetadataStatusSnapshot()))
+    monkeypatch.setattr("phaze.routers.shell.stage_context.get_stage_activity_snapshot", AsyncMock(return_value=unknown_queue))
+    monkeypatch.setattr("phaze.routers.shell.stage_context.get_metadata_activity_summary", AsyncMock(return_value=MetadataActivitySummary()))
 
     response = await client.get("/s/metadata", headers={"HX-Request": "true"})
 
@@ -397,11 +397,11 @@ async def test_shell_rail_marks_metadata_status_unavailable(
         counts={"metadata": {"queued": 0, "active": 0}, "analyze": {"queued": 0, "active": 0}},
         available=True,
     )
-    monkeypatch.setattr("phaze.routers.shell.get_metadata_selection_summary", AsyncMock(return_value=MetadataSelectionSummary(0, True)))
-    monkeypatch.setattr("phaze.routers.shell.get_metadata_status_snapshot", AsyncMock(return_value=MetadataStatusSnapshot()))
-    monkeypatch.setattr("phaze.routers.shell.get_stage_activity_snapshot", AsyncMock(return_value=queue))
+    monkeypatch.setattr("phaze.routers.shell.stage_context.get_metadata_selection_summary", AsyncMock(return_value=MetadataSelectionSummary(0, True)))
+    monkeypatch.setattr("phaze.routers.shell.stage_context.get_metadata_status_snapshot", AsyncMock(return_value=MetadataStatusSnapshot()))
+    monkeypatch.setattr("phaze.routers.shell.stage_context.get_stage_activity_snapshot", AsyncMock(return_value=queue))
     monkeypatch.setattr(
-        "phaze.routers.shell.get_metadata_activity_summary",
+        "phaze.routers.shell.stage_context.get_metadata_activity_summary",
         AsyncMock(return_value=MetadataActivitySummary(0, None, True)),
     )
 

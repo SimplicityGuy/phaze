@@ -90,6 +90,71 @@ def _log_settings_validation_error(exc: ValidationError) -> None:
     logger.debug("phaze.agent_watcher: full pydantic ValidationError follows", exc_info=exc)
 
 
+async def _post_ready_paths(poster: Poster, ready: list[str]) -> None:
+    """POST each settled path; one path's failure must not stop the others.
+
+    DECISION (phaze-bk9el.13, implementer): ``except Exception`` here is
+    intentionally broad, not narrowed to :class:`Poster`'s documented error
+    types. ``Poster.post_one`` already contracts that "no exception escapes
+    this method" (poster.py), so this handler exists as a guard against a
+    *violation* of that contract, not against its normal failure modes --
+    narrowing it to Poster's own exception types would defeat the purpose.
+    The watcher is unattended (runs on fileserver hosts with no operator
+    watching stdout), so keeping the sweep loop alive across a bug in the
+    poster is worth more than a stack trace surfacing at the loop boundary;
+    the ``logger.exception`` call preserves the trace either way.
+    """
+    for path in ready:
+        try:
+            await poster.post_one(path)
+        except Exception:
+            logger.exception("watcher: post failed; entry already removed from debouncer path=%s", path)
+
+
+def _log_evicted_paths(evicted: list[str]) -> None:
+    """Log each path the debouncer dropped for exceeding ``max_pending`` uncleared.
+
+    phaze-kw36: Debouncer.sweep only reaches eviction after giving the entry one
+    full extra max_pending window to settle (see debouncer.py), so by the time we
+    get here the path has failed to go quiet across two consecutive cap windows --
+    do not assert "mtime still changing" as the cause, since sweep cannot actually
+    distinguish continued churn from an unusually long single stall.
+    """
+    for path in evicted:
+        logger.warning(
+            "watcher: dropping path=%s; did not settle within max_pending cap even after one grace extension",
+            path,
+        )
+
+
+async def _run_sweep_iteration(
+    debouncer: Debouncer,
+    poster: Poster,
+    settle_period: float,
+    max_pending: float,
+) -> None:
+    """Run one sweep: drain ready/evicted entries, post/log them, never raise.
+
+    Pitfall 1: a single post raising MUST NOT crash the loop; the entry has
+    already been removed from the debouncer (sweep returns by-value).
+
+    DECISION (phaze-bk9el.13, implementer): the outer ``except Exception`` is
+    intentionally broad. This is the top-level guard for one unattended sweep
+    tick -- ``debouncer.sweep`` itself is not documented as exception-free the
+    way ``Poster.post_one`` is, so an unanticipated failure here (a future
+    Debouncer bug, a logging backend error, anything) must not take the whole
+    watcher process down; the container has no supervisor watching for "still
+    posting files" versus "crashed", only for "process exited". Losing one
+    sweep tick and retrying on the next is always preferable to that.
+    """
+    try:
+        ready, evicted = debouncer.sweep(settle_period=settle_period, max_pending=max_pending)
+        await _post_ready_paths(poster, ready)
+        _log_evicted_paths(evicted)
+    except Exception:
+        logger.exception("watcher: sweep iteration failed")
+
+
 async def _sweep_loop(
     debouncer: Debouncer,
     poster: Poster,
@@ -101,32 +166,12 @@ async def _sweep_loop(
     """Drain settled / stuck entries from the debouncer until shutdown.
 
     Pattern (RESEARCH §Pattern 2):
-        - Sweep, post readies, log evictions.
+        - Sweep, post readies, log evictions (:func:`_run_sweep_iteration`).
         - ``await asyncio.wait_for(shutdown_event.wait(), timeout=sweep_interval)``
           either returns early (shutdown) or raises TimeoutError (regular tick).
-        - Pitfall 1: a single post raising MUST NOT crash the loop; the entry
-          has already been removed from the debouncer (sweep returns by-value).
     """
     while not shutdown_event.is_set():
-        try:
-            ready, evicted = debouncer.sweep(settle_period=settle_period, max_pending=max_pending)
-            for path in ready:
-                try:
-                    await poster.post_one(path)
-                except Exception:
-                    logger.exception("watcher: post failed; entry already removed from debouncer path=%s", path)
-            for path in evicted:
-                # phaze-kw36: Debouncer.sweep only reaches eviction after giving the entry one
-                # full extra max_pending window to settle (see debouncer.py), so by the time we
-                # get here the path has failed to go quiet across two consecutive cap windows --
-                # do not assert "mtime still changing" as the cause, since sweep cannot actually
-                # distinguish continued churn from an unusually long single stall.
-                logger.warning(
-                    "watcher: dropping path=%s; did not settle within max_pending cap even after one grace extension",
-                    path,
-                )
-        except Exception:
-            logger.exception("watcher: sweep iteration failed")
+        await _run_sweep_iteration(debouncer, poster, settle_period, max_pending)
         with contextlib.suppress(TimeoutError):
             # Regular tick: TimeoutError means shutdown_event not yet set; loop again.
             await asyncio.wait_for(shutdown_event.wait(), timeout=sweep_interval)

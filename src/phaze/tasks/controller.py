@@ -29,10 +29,11 @@ from typing import TYPE_CHECKING, Any, cast
 import redis.asyncio as redis_async
 from saq import CronJob
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 import structlog
 
 from phaze.config import export_llm_api_keys, get_settings
+from phaze.database import build_async_engine
 from phaze.logging_config import configure_logging
 from phaze.services import kube_staging, s3_staging
 from phaze.services.agent_task_router import AgentTaskRouter
@@ -216,25 +217,12 @@ async def startup(ctx: dict[str, Any]) -> None:
     cfg.log_effective_registry()  # type: ignore[attr-defined]
 
     # Shared async engine pool for all fileless task functions (INFRA-01 from v1.0).
-    # quick-260707-ryn: source every pool kwarg from config (cfg == get_settings(), which
-    # inherits the BaseSettings db_* knobs). pool_size drops from a hardcoded 10 to the config
-    # default 5 and the three hygiene kwargs (pool_timeout / pool_recycle / pool_pre_ping) are
-    # NEW. INCIDENT: phaze reaches Postgres through PgBouncer in SESSION mode, where every
-    # client connection pins one upstream server connection for its whole lifetime; the shared
-    # (phaze,phaze) session pool (cap ~55) deadlocked under normal multi-worker load and /health
-    # hung behind the exhausted pool. pool_pre_ping drops dead server conns before checkout,
-    # pool_recycle=1800 frees an idle server slot after 30 min instead of pinning it, and
-    # pool_timeout=10 bounds the acquire wait so a saturated pool fails fast. Homelab raises the
-    # pooler cap to ~80 in parallel, so these app-side reductions are HEADROOM, not a hard fit.
-    task_engine = create_async_engine(
-        str(cfg.database_url),
-        echo=cfg.debug,
-        pool_size=cfg.db_pool_size,
-        max_overflow=cfg.db_max_overflow,
-        pool_timeout=cfg.db_pool_timeout,
-        pool_recycle=cfg.db_pool_recycle,
-        pool_pre_ping=cfg.db_pool_pre_ping,
-    )
+    # phaze-bk9el.12: engine construction (the PgBouncer session-mode pool tuning --
+    # quick-260707-ryn) is now the single shared ``build_async_engine`` in phaze.database
+    # -- see its docstring for the pool-kwarg rationale. This module's own database.py
+    # counterpart (the api process's module-level ``engine``) builds the SAME way, from
+    # the api's ``settings`` singleton; this was a 25-line clone between the two.
+    task_engine = build_async_engine(cfg)
     ctx["async_session"] = async_sessionmaker(task_engine, class_=AsyncSession, expire_on_commit=False)
     ctx["task_engine"] = task_engine
 

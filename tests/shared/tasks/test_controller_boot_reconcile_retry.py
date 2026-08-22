@@ -154,7 +154,7 @@ def _stub_controller_for_boot_log(monkeypatch: pytest.MonkeyPatch) -> None:
     constructors, an all-local/no-bucket config (skips the LocalQueue probe and the lifecycle-TTL
     loop), and a Redis client stub.
     """
-    monkeypatch.setattr("phaze.tasks.controller.create_async_engine", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr("phaze.database.create_async_engine", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.DiscogsographyClient", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.load_prompt_template", lambda: "stub")

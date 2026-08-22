@@ -98,11 +98,50 @@ dependencies = [
 phaze = "phaze.cli:main"
 
 [tool.coverage.report]
+# phaze-bk9el.21 -- THIS NUMBER DID NOT CHANGE, BUT WHAT IT MEASURES DID. Read before editing.
+#
+# With `branch = true` set under the tool.coverage.run section below, coverage.py's `fail_under` measures the
+# COMBINED figure -- `(covered_lines + covered_branches) / (num_statements + num_branches)` -- not
+# lines. There is no coverage.py option to make it line-only (verified against coverage 7.15.4:
+# `coverage report` offers --fail-under, --format and --precision, and nothing that selects the
+# metric). `coverage xml`, `coverage json` and pytest-cov all read this same value.
+#
+# MEASURED on the full suite, 2026-08-21:
+#     statements 17554/17771 = 98.7789%
+#     branches    3684/3866  = 95.2923%
+#     combined   21238/21637 = 98.1559%   <- what this key now checks
+# 3.16 points of headroom, so this stays ARMED. It also has to: `just coverage-combine` passes
+# `--fail-under=95` on the CLI, a CLI value silently overrides this config value, and
+# `tests/shared/test_coverage_gate.py` fails the build if the two sites ever disagree.
+#
+# The operator's decision that the repo-wide gate stays on LINES at 95% is satisfied separately and
+# explicitly by `scripts/coverage_floor.py`, which reads `percent_statements_covered` and enforces
+# 95% repo-wide plus 90% per module. That separation is load-bearing at the per-module level: ONE
+# module reads differently under the two metrics (`src/phaze/routers/duplicates.py` -- 91.20%
+# statements, 75.00% branches, 88.59% combined), so a per-module floor left on the combined number
+# would fail a module that has regressed nothing. Neither gate is disarmed; both name their metric.
 fail_under = 95
 precision = 2
 show_missing = true
 
 [tool.coverage.run]
+# phaze-bk9el.21, operator decision 2026-08-21. Question as put: "Branch coverage is off, and
+# runs 4-8 points under line coverage on the refactor targets. What should this epic do about
+# it?" Answer as given (selected option label, verbatim): "Enable it, gate the refactor targets
+# only (Recommended)". Durable record: bead phaze-bk9el.21.
+#
+# ON REPO-WIDE, GATE-NARROW. `branch = true` makes every coverage run in this repo MEASURE
+# branches, so the number is visible everywhere. It deliberately does NOT move the repo-wide
+# gate onto branches: branch coverage runs below the line figure on most files, so a repo-wide
+# branch gate would fail on day one and the backfill would dwarf the epic it was meant to
+# protect. The repo-wide floors stay on LINES -- see scripts/coverage_floor.py, which is now
+# where BOTH of them are enforced, and its header for why that had to move.
+#
+# WHY IT MATTERS AT ALL: decomposing a long function, flattening a nest, or splitting a file
+# are all operations where every line still executes and only the BRANCH COMBINATIONS change.
+# Line coverage is structurally unable to detect the regression a refactor is most likely to
+# introduce, which is exactly the change class epic phaze-bk9el consists of.
+branch = true
 concurrency = ["greenlet", "thread"]
 omit = ["tests/*"]
 relative_files = true

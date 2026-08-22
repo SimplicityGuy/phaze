@@ -15,16 +15,21 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from phaze.enums.execution import ExecutionStatus
-from phaze.services.pg_text import contains_pg_invalid_chars, sanitize_pg_text
+from phaze.schemas.wire_mixins import SanitizedErrorMessageMixin
+from phaze.services.pg_text import contains_pg_invalid_chars
 
 
-class ExecutionLogCreate(BaseModel):
+class ExecutionLogCreate(SanitizedErrorMessageMixin):
     """Agent-supplied ExecutionLog row to insert.
 
     Per D-13, the agent generates `id` (uuid.uuid4 on the agent) and persists
     it in SAQ job state. Server does `INSERT ... ON CONFLICT (id) DO NOTHING`
     so retries are silent no-ops. `agent_id` is NEVER part of the body --
     handlers source it from `Depends(get_authenticated_agent)` only (AUTH-01).
+
+    `error_message` (sink: `ExecutionLog.error_message`, Text) and its sanitize-on-write
+    validator come from `SanitizedErrorMessageMixin` (phaze-bk9el.14) -- see that class's
+    docstring for the `CharacterNotInRepertoireError` this guards against.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -36,7 +41,6 @@ class ExecutionLogCreate(BaseModel):
     destination_path: str = Field(min_length=1)
     sha256_verified: bool
     status: ExecutionStatus
-    error_message: str | None = None
 
     # phaze-hvve5 (site 3): `source_path`/`destination_path` land straight into
     # `ExecutionLog.{source_path,destination_path}` (Text, NOT NULL) via `pg_insert(...).values(...)`
@@ -52,19 +56,8 @@ class ExecutionLogCreate(BaseModel):
             raise ValueError(f"{info.field_name} must not contain a NUL byte or a lone Unicode surrogate")
         return v
 
-    # phaze-hvve5 (site 3) / phaze-d55hu (additional site): `error_message` lands in
-    # `ExecutionLog.error_message` (Text) via the same `pg_insert(...).values(...)` -- a NUL/lone
-    # surrogate passes Pydantic (only lone surrogates are rejected there) but aborts the INSERT at
-    # `session.commit()` with `CharacterNotInRepertoireError`. Sanitize (strip), not reject: unlike
-    # a path, free text losing an invalid byte does not change its meaning -- mirrors the sibling
-    # writers (agent_metadata.py:162, agent_analysis.py:456, agent_tag_writes.py:109).
-    @field_validator("error_message", mode="after")
-    @classmethod
-    def _sanitize_error_message(cls, v: str | None) -> str | None:
-        return sanitize_pg_text(v) if v is not None else v
 
-
-class ExecutionLogPatch(BaseModel):
+class ExecutionLogPatch(SanitizedErrorMessageMixin):
     """Partial-update body for PATCH /execution-log/{id}.
 
     Status transitions enforced monotonic per D-15: PENDING(0) < IN_PROGRESS(1)
@@ -72,22 +65,16 @@ class ExecutionLogPatch(BaseModel):
     backward transitions return 409 with detail `"execution-log status would
     regress"`; PATCH against a terminal row returns 409 with detail
     `"execution-log status is terminal"`.
+
+    `error_message` and its sanitize-on-write validator come from
+    `SanitizedErrorMessageMixin` (phaze-bk9el.14) -- see `ExecutionLogCreate` and that class's
+    docstring; `patch_execution_log`'s `setattr` loop applies the same sink.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     status: ExecutionStatus
-    error_message: str | None = None
     sha256_verified: bool | None = None
-
-    # phaze-hvve5 (site 3) / phaze-d55hu (additional site): same sink, same sanitize -- see
-    # `ExecutionLogCreate._sanitize_error_message`. `patch_execution_log`'s `setattr` loop applies
-    # `body.model_dump(exclude_unset=True)` verbatim, so an unsanitized value here 500s the PATCH
-    # identically to the POST path.
-    @field_validator("error_message", mode="after")
-    @classmethod
-    def _sanitize_error_message(cls, v: str | None) -> str | None:
-        return sanitize_pg_text(v) if v is not None else v
 
     # phaze-e2b36: `bool | None = None` is Pydantic's idiom for an OPTIONAL field (may be absent),
     # not a NULLABLE one -- but `ExecutionLog.sha256_verified` is `Boolean, nullable=False`. The

@@ -1365,7 +1365,7 @@ async def test_startup_backfills_ledger_before_recovery(monkeypatch: pytest.Monk
     from unittest.mock import AsyncMock, MagicMock
 
     # Patch the heavyweight startup constructors so no real connections open.
-    monkeypatch.setattr("phaze.tasks.controller.create_async_engine", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr("phaze.database.create_async_engine", lambda *_a, **_kw: MagicMock())
 
     # async_session() must return an async-context-manager session so the backfill's
     # `async with ctx["async_session"]() as session` works against the spy.
@@ -1430,7 +1430,7 @@ async def test_startup_survives_raising_backfill(monkeypatch: pytest.MonkeyPatch
     import contextlib as _contextlib
     from unittest.mock import AsyncMock, MagicMock
 
-    monkeypatch.setattr("phaze.tasks.controller.create_async_engine", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr("phaze.database.create_async_engine", lambda *_a, **_kw: MagicMock())
 
     @_contextlib.asynccontextmanager
     async def _fake_session_cm() -> Any:

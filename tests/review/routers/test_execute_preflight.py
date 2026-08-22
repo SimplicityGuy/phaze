@@ -319,7 +319,9 @@ async def test_rendering_execute_never_calls_the_saturating_list_readers(
     Both readers stay correct and in use for their OWN workspaces (``/s/dedupe``, ``/s/cue``); it is
     only Execute, which needs a scalar rather than the rows, that must not call them.
     """
-    import phaze.routers.shell as shell_module
+    # phaze-bk9el.16: `_apply_stage_context` moved into the routers/shell package's
+    # `stage_context` submodule and resolves these two readers from there.
+    import phaze.routers.shell.stage_context as shell_module
 
     async def _explode_dedupe(*_args: object, **_kwargs: object) -> list[object]:
         raise AssertionError("GET /s/apply must count duplicate groups, not page them")

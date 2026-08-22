@@ -318,6 +318,43 @@ jobs:
       - name: 📦 Install dependencies
         run: just install
 
+      # phaze-bk9el: DIAGNOSTIC, never blocking. Records what this runner can actually decode and
+      # what essentia can actually READ, because those are two different things and the difference
+      # is invisible from a red test.
+      #
+      # Why it exists: test_real_extraction_output_is_readable_by_the_real_consumer_es_metadatareader
+      # failed only in CI. It was NOT the ffmpeg version (7.1.5, 8.1.2 and 9.0.1 all mux a .mka this
+      # repo's macOS essentia reads fine) and NOT codec support (the same ffmpeg's .mp3 reads fine in
+      # the same run). It is the essentia WHEEL: the linux x86_64 build returns duration 0 / sr 0 for
+      # Matroska while the macOS arm64 build returns real values for a byte-identical file.
+      # Reproduced in ghcr.io/actions/actions-runner. That is D-10's claim, and it holds for the
+      # DEPLOYED platform -- so the macOS dev box is the outlier, not CI.
+      - name: 🔎 Record ffmpeg and essentia capability (diagnostic)
+        continue-on-error: true
+        run: |
+          echo "::group::ffmpeg build"
+          ffmpeg -version | head -3
+          echo "::endgroup::"
+          echo "::group::matroska + aac support"
+          ffmpeg -hide_banner -formats 2>/dev/null | grep -i matroska || true
+          ffmpeg -hide_banner -codecs 2>/dev/null | grep -iE '\baac\b' || true
+          echo "::endgroup::"
+          echo "::group::essentia metadata capability"
+          uv run python - <<'PYEOF'
+          import subprocess, tempfile, pathlib, essentia, essentia.standard as es
+          print("essentia", essentia.__version__)
+          d = pathlib.Path(tempfile.mkdtemp())
+          def ff(*a): subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *a], check=True)
+          ff("-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-c:a", "aac", str(d / "s.m4a"))
+          ff("-i", str(d / "s.m4a"), "-c:a", "copy", str(d / "s.mka"))
+          ff("-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-c:a", "libmp3lame", str(d / "s.mp3"))
+          for label in ("s.mka", "s.mp3", "s.m4a"):
+              out = es.MetadataReader(filename=str(d / label))()
+              print(f"  {label:8s} duration={out[8]} samplerate={out[10]}")
+          print("  (duration 0 for .mka is the known linux-wheel behaviour -- see D-10)")
+          PYEOF
+          echo "::endgroup::"
+
       - name: 🧪 Run shard tests with coverage
         # Every shard contains DB-fixture (integration-marked) tests — verified empirically at
         # execution: `pytest <paths> -m integration --collect-only` returns >0 for all shards.

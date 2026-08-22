@@ -262,6 +262,35 @@ def _parse_cpu_list(raw: str) -> set[int]:
     return cpus
 
 
+def _parse_cpuinfo_processor(value: str) -> int | None:
+    """Parse a ``"processor"`` line's value, treating malformed input as absent."""
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _parse_cpuinfo_block(block: str) -> tuple[int | None, str | None, str | None]:
+    """Pull ``(processor, physical id, core id)`` out of one blank-line-delimited block.
+
+    Split out of :func:`_physical_cores_from_proc_cpuinfo` (phaze-bk9el.3) purely to keep
+    that function's nesting shallow -- this is ordinary malformed-input tolerance, not the
+    Darwin-vs-Linux dispatch that :func:`_peak_rss_gib`-style nesting must stay whole for
+    (see `detect_physical_cores`'s platform branch, which IS left alone for that reason).
+    """
+    processor = physical_id = core_id = None
+    for line in block.splitlines():
+        key, _, value = line.partition(":")
+        key, value = key.strip(), value.strip()
+        if key == "processor":
+            processor = _parse_cpuinfo_processor(value)
+        elif key == "physical id":
+            physical_id = value
+        elif key == "core id":
+            core_id = value
+    return processor, physical_id, core_id
+
+
 def _physical_cores_from_proc_cpuinfo(schedulable: set[int]) -> int | None:
     """Second, independent Linux source: distinct ``(physical id, core id)`` pairs.
 
@@ -276,19 +305,7 @@ def _physical_cores_from_proc_cpuinfo(schedulable: set[int]) -> int | None:
         return None
     pairs: set[tuple[str, str]] = set()
     for block in re.split(r"\n\s*\n", text):
-        processor = physical_id = core_id = None
-        for line in block.splitlines():
-            key, _, value = line.partition(":")
-            key, value = key.strip(), value.strip()
-            if key == "processor":
-                try:
-                    processor = int(value)
-                except ValueError:
-                    processor = None
-            elif key == "physical id":
-                physical_id = value
-            elif key == "core id":
-                core_id = value
+        processor, physical_id, core_id = _parse_cpuinfo_block(block)
         if processor is None or processor not in schedulable:
             continue
         if physical_id is None or core_id is None:

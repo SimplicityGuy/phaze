@@ -164,6 +164,16 @@ async def generate_cue(
         # The old advice ("Check filesystem permissions on the destination directory") was the exact
         # wrong diagnosis for the failure that actually fired in production -- the directory was not
         # mounted at all. A dispatch failure is a control-plane/broker problem, so say so.
+        #
+        # phaze-bk9el.10 (error_handling finding, left broad on purpose): `enqueue_for_file` can
+        # fail before the broker connection exists (network/DB errors of whatever type asyncpg or
+        # the redis client raise out of `queue.connect()`) or after it (wrapped as
+        # `AmbiguousEnqueueError` by `AgentTaskRouter.enqueue_for_agent`, agent_task_router.py:230).
+        # From this handler's perspective every one of those is the SAME outcome -- the write was
+        # never queued -- and gets the SAME operator-facing toast (retry after checking the agent
+        # and the broker). Narrowing to a specific exception type would silently 500 on whichever
+        # failure mode was left out, which is a worse operator experience than the broad catch this
+        # comment is defending; the log line keeps the real traceback for triage either way.
         logger.warning("cue dispatch failed", tracklist_id=str(tracklist.id), agent_id=file_record.agent_id, exc_info=True)
         toast_msg = (
             f"Could not queue the CUE write for agent {file_record.agent_id}: {exc}. "

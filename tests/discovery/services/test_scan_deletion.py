@@ -52,6 +52,15 @@ if TYPE_CHECKING:
 # Per-table seeded cardinality for one ``_seed_full_graph`` call. Each batch gets
 # two files (a media file carrying the full descendant chain + a companion file)
 # linked by one file_companions row.
+#
+# RULING (phaze-bk9el.6, epic design rule 2): repowise reports this dict as an 18-line/40.9%
+# duplication clone against services/scan_deletion.py's own ``ordered`` cascade list. That is the
+# test deliberately restating the production shape, not debt -- a characterization test that
+# asserts an exact per-table rowcount MUST enumerate the same tablenames the cascade deletes from,
+# in the same order, or it cannot catch a step being silently dropped/reordered. Coupling this dict
+# to the implementation (e.g. deriving it from ``ordered`` at import time) would make the test
+# incapable of catching exactly the regression it exists to catch -- a table quietly falling out of
+# the cascade. Left as-is; not fixed.
 _EXPECTED_COUNTS = {
     "discogs_links": 1,
     "tracklist_tracks": 1,

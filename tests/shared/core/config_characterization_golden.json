@@ -1,0 +1,1355 @@
+{
+  "AGENT_DEFAULTS": {
+    "aborting_reap_slack_seconds": 300,
+    "active_reap_slack_seconds": 900,
+    "agent_api_url": "http://app.characterization.invalid:8000",
+    "agent_ca_file": "/certs/phaze-ca.crt",
+    "agent_env": "dev",
+    "agent_file_chunk_max": 1000,
+    "agent_heartbeat_enabled": true,
+    "agent_token": "SecretStr(len=41)",
+    "agent_token_prefix": "phaze_agent_",
+    "analysis_coarse_window_sec": 180,
+    "analysis_fine_min_sec": 15,
+    "analysis_fine_window_sec": 30,
+    "analysis_progress_interval_sec": 5.0,
+    "analysis_stall_timeout_sec": 1800,
+    "api_host": "0.0.0.0",
+    "api_port": 8000,
+    "api_tls_sans": "localhost,127.0.0.1,api",
+    "auto_migrate": true,
+    "cloud_scratch_dir": null,
+    "database_url": "postgresql+asyncpg://phaze:phaze@postgres:5432/phaze",
+    "db_max_overflow": 5,
+    "db_pool_pre_ping": true,
+    "db_pool_recycle": 1800,
+    "db_pool_size": 5,
+    "db_pool_timeout": 10,
+    "debug": false,
+    "dev_agent_token": null,
+    "dev_seed_agent": false,
+    "discogsography_url": "http://discogsography:8000",
+    "dispatch_queue_max_size": 2,
+    "dispatch_queue_min_size": 0,
+    "enable_saq_ui": true,
+    "kind": "fileserver",
+    "lane_analyze_concurrency": 2,
+    "lane_io_concurrency": 4,
+    "lane_meta_concurrency": 2,
+    "log_json": null,
+    "log_level": "INFO",
+    "models_path": "/models",
+    "output_path": "/data/output",
+    "push_connect_timeout_sec": 30,
+    "push_known_hosts": null,
+    "push_ssh_host": null,
+    "push_ssh_key": null,
+    "push_ssh_user": null,
+    "push_timeout_sec": 600,
+    "queue_url": "postgresql://phaze:phaze@app.characterization.invalid:5432/phaze",
+    "redis_password": null,
+    "redis_url": "redis://redis:6379/0",
+    "scan_chunk_size": 500,
+    "scan_path": "/data/music",
+    "scan_roots": [
+      "/data/music",
+      "/data/videos"
+    ],
+    "scan_stall_seconds": 86400,
+    "scraper_contact_url": "https://github.com/SimplicityGuy/phaze",
+    "tracklist_render_browser_channel": "chrome",
+    "tracklist_render_page_timeout_seconds": 90.0,
+    "tracklist_render_retry_backoff_seconds": 5.0,
+    "tracklist_render_selector_timeout_seconds": 20.0,
+    "tracklist_render_turnstile_attempts": 4,
+    "tracklist_render_xvfb": "auto",
+    "watcher_max_pending_seconds": 3600,
+    "watcher_polling_mode": false,
+    "watcher_settle_seconds": 10,
+    "watcher_sweep_interval_seconds": 2,
+    "worker_health_check_interval": 60,
+    "worker_job_timeout": 600,
+    "worker_keep_result": 3600,
+    "worker_max_jobs": 8,
+    "worker_max_retries": 4,
+    "worker_process_pool_size": 4
+  },
+  "AgentSettings_ALIASES": {
+    "aborting_reap_slack_seconds": [
+      "PHAZE_ABORTING_REAP_SLACK_SECONDS",
+      "aborting_reap_slack_seconds"
+    ],
+    "active_reap_slack_seconds": [
+      "PHAZE_ACTIVE_REAP_SLACK_SECONDS",
+      "active_reap_slack_seconds"
+    ],
+    "agent_api_url": [
+      "PHAZE_AGENT_API_URL",
+      "agent_api_url"
+    ],
+    "agent_ca_file": [
+      "PHAZE_AGENT_CA_FILE",
+      "agent_ca_file"
+    ],
+    "agent_env": [
+      "PHAZE_AGENT_ENV",
+      "agent_env"
+    ],
+    "agent_file_chunk_max": [
+      "agent_file_chunk_max"
+    ],
+    "agent_heartbeat_enabled": [
+      "PHAZE_AGENT_HEARTBEAT",
+      "agent_heartbeat_enabled"
+    ],
+    "agent_token": [
+      "PHAZE_AGENT_TOKEN",
+      "agent_token"
+    ],
+    "agent_token_prefix": [
+      "agent_token_prefix"
+    ],
+    "analysis_coarse_window_sec": [
+      "PHAZE_ANALYSIS_COARSE_WINDOW_SEC",
+      "analysis_coarse_window_sec"
+    ],
+    "analysis_fine_min_sec": [
+      "PHAZE_ANALYSIS_FINE_MIN_SEC",
+      "analysis_fine_min_sec"
+    ],
+    "analysis_fine_window_sec": [
+      "PHAZE_ANALYSIS_FINE_WINDOW_SEC",
+      "analysis_fine_window_sec"
+    ],
+    "analysis_progress_interval_sec": [
+      "PHAZE_ANALYSIS_PROGRESS_INTERVAL_SEC",
+      "analysis_progress_interval_sec"
+    ],
+    "analysis_stall_timeout_sec": [
+      "PHAZE_ANALYSIS_STALL_TIMEOUT_SEC",
+      "analysis_stall_timeout_sec"
+    ],
+    "api_host": [
+      "api_host"
+    ],
+    "api_port": [
+      "api_port"
+    ],
+    "api_tls_sans": [
+      "PHAZE_API_TLS_SANS",
+      "api_tls_sans"
+    ],
+    "auto_migrate": [
+      "PHAZE_AUTO_MIGRATE",
+      "auto_migrate"
+    ],
+    "cloud_scratch_dir": [
+      "PHAZE_CLOUD_SCRATCH_DIR",
+      "cloud_scratch_dir"
+    ],
+    "database_url": [
+      "PHAZE_DATABASE_URL",
+      "DATABASE_URL",
+      "database_url"
+    ],
+    "db_max_overflow": [
+      "PHAZE_DB_MAX_OVERFLOW",
+      "db_max_overflow"
+    ],
+    "db_pool_pre_ping": [
+      "PHAZE_DB_POOL_PRE_PING",
+      "db_pool_pre_ping"
+    ],
+    "db_pool_recycle": [
+      "PHAZE_DB_POOL_RECYCLE",
+      "db_pool_recycle"
+    ],
+    "db_pool_size": [
+      "PHAZE_DB_POOL_SIZE",
+      "db_pool_size"
+    ],
+    "db_pool_timeout": [
+      "PHAZE_DB_POOL_TIMEOUT",
+      "db_pool_timeout"
+    ],
+    "debug": [
+      "debug"
+    ],
+    "dev_agent_token": [
+      "PHAZE_DEV_AGENT_TOKEN",
+      "dev_agent_token"
+    ],
+    "dev_seed_agent": [
+      "PHAZE_DEV_SEED_AGENT",
+      "dev_seed_agent"
+    ],
+    "discogsography_url": [
+      "discogsography_url"
+    ],
+    "dispatch_queue_max_size": [
+      "PHAZE_DISPATCH_QUEUE_MAX_SIZE",
+      "dispatch_queue_max_size"
+    ],
+    "dispatch_queue_min_size": [
+      "PHAZE_DISPATCH_QUEUE_MIN_SIZE",
+      "dispatch_queue_min_size"
+    ],
+    "enable_saq_ui": [
+      "PHAZE_ENABLE_SAQ_UI",
+      "enable_saq_ui"
+    ],
+    "kind": [
+      "PHAZE_AGENT_KIND",
+      "kind"
+    ],
+    "lane_analyze_concurrency": [
+      "PHAZE_LANE_ANALYZE_CONCURRENCY",
+      "lane_analyze_concurrency"
+    ],
+    "lane_io_concurrency": [
+      "PHAZE_LANE_IO_CONCURRENCY",
+      "lane_io_concurrency"
+    ],
+    "lane_meta_concurrency": [
+      "PHAZE_LANE_META_CONCURRENCY",
+      "lane_meta_concurrency"
+    ],
+    "log_json": [
+      "PHAZE_LOG_JSON",
+      "log_json"
+    ],
+    "log_level": [
+      "PHAZE_LOG_LEVEL",
+      "log_level"
+    ],
+    "models_path": [
+      "models_path"
+    ],
+    "output_path": [
+      "output_path"
+    ],
+    "push_connect_timeout_sec": [
+      "PHAZE_PUSH_CONNECT_TIMEOUT_SEC",
+      "push_connect_timeout_sec"
+    ],
+    "push_known_hosts": [
+      "PHAZE_PUSH_KNOWN_HOSTS",
+      "push_known_hosts"
+    ],
+    "push_ssh_host": [
+      "PHAZE_PUSH_SSH_HOST",
+      "push_ssh_host"
+    ],
+    "push_ssh_key": [
+      "PHAZE_PUSH_SSH_KEY",
+      "push_ssh_key"
+    ],
+    "push_ssh_user": [
+      "PHAZE_PUSH_SSH_USER",
+      "push_ssh_user"
+    ],
+    "push_timeout_sec": [
+      "PHAZE_PUSH_TIMEOUT_SEC",
+      "push_timeout_sec"
+    ],
+    "queue_url": [
+      "PHAZE_QUEUE_URL",
+      "queue_url"
+    ],
+    "redis_password": [
+      "REDIS_PASSWORD",
+      "redis_password"
+    ],
+    "redis_url": [
+      "PHAZE_REDIS_URL",
+      "REDIS_URL",
+      "redis_url"
+    ],
+    "scan_chunk_size": [
+      "PHAZE_SCAN_CHUNK_SIZE",
+      "scan_chunk_size"
+    ],
+    "scan_path": [
+      "scan_path"
+    ],
+    "scan_roots": [
+      "PHAZE_AGENT_SCAN_ROOTS",
+      "scan_roots"
+    ],
+    "scan_stall_seconds": [
+      "PHAZE_SCAN_STALL_SECONDS",
+      "SCAN_STALL_SECONDS",
+      "scan_stall_seconds"
+    ],
+    "scraper_contact_url": [
+      "PHAZE_SCRAPER_CONTACT_URL",
+      "scraper_contact_url"
+    ],
+    "tracklist_render_browser_channel": [
+      "PHAZE_TRACKLIST_RENDER_BROWSER_CHANNEL",
+      "tracklist_render_browser_channel"
+    ],
+    "tracklist_render_page_timeout_seconds": [
+      "PHAZE_TRACKLIST_RENDER_PAGE_TIMEOUT_SECONDS",
+      "tracklist_render_page_timeout_seconds"
+    ],
+    "tracklist_render_retry_backoff_seconds": [
+      "PHAZE_TRACKLIST_RENDER_RETRY_BACKOFF_SECONDS",
+      "tracklist_render_retry_backoff_seconds"
+    ],
+    "tracklist_render_selector_timeout_seconds": [
+      "PHAZE_TRACKLIST_RENDER_SELECTOR_TIMEOUT_SECONDS",
+      "tracklist_render_selector_timeout_seconds"
+    ],
+    "tracklist_render_turnstile_attempts": [
+      "PHAZE_TRACKLIST_RENDER_TURNSTILE_ATTEMPTS",
+      "tracklist_render_turnstile_attempts"
+    ],
+    "tracklist_render_xvfb": [
+      "PHAZE_TRACKLIST_RENDER_XVFB",
+      "tracklist_render_xvfb"
+    ],
+    "watcher_max_pending_seconds": [
+      "PHAZE_WATCHER_MAX_PENDING_SECONDS",
+      "watcher_max_pending_seconds"
+    ],
+    "watcher_polling_mode": [
+      "PHAZE_WATCHER_POLLING_MODE",
+      "watcher_polling_mode"
+    ],
+    "watcher_settle_seconds": [
+      "PHAZE_WATCHER_SETTLE_SECONDS",
+      "watcher_settle_seconds"
+    ],
+    "watcher_sweep_interval_seconds": [
+      "PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS",
+      "watcher_sweep_interval_seconds"
+    ],
+    "worker_health_check_interval": [
+      "worker_health_check_interval"
+    ],
+    "worker_job_timeout": [
+      "worker_job_timeout"
+    ],
+    "worker_keep_result": [
+      "worker_keep_result"
+    ],
+    "worker_max_jobs": [
+      "worker_max_jobs"
+    ],
+    "worker_max_retries": [
+      "worker_max_retries"
+    ],
+    "worker_process_pool_size": [
+      "worker_process_pool_size"
+    ]
+  },
+  "AgentSettings_FILE_ENV": {
+    "agent_token": [
+      "PHAZE_AGENT_TOKEN_FILE",
+      "AGENT_TOKEN_FILE"
+    ],
+    "database_url": [
+      "PHAZE_DATABASE_URL_FILE",
+      "DATABASE_URL_FILE",
+      "DATABASE_URL_FILE"
+    ],
+    "push_known_hosts": [
+      "PHAZE_PUSH_KNOWN_HOSTS_FILE",
+      "PUSH_KNOWN_HOSTS_FILE"
+    ],
+    "push_ssh_key": [
+      "PHAZE_PUSH_SSH_KEY_FILE",
+      "PUSH_SSH_KEY_FILE"
+    ],
+    "queue_url": [
+      "PHAZE_QUEUE_URL_FILE",
+      "QUEUE_URL_FILE"
+    ],
+    "redis_url": [
+      "PHAZE_REDIS_URL_FILE",
+      "REDIS_URL_FILE",
+      "REDIS_URL_FILE"
+    ]
+  },
+  "AgentSettings_PRESERVE_WS": [
+    "push_known_hosts",
+    "push_ssh_key"
+  ],
+  "AgentSettings_SECRET_FILE_FIELDS": [
+    "agent_token",
+    "database_url",
+    "push_known_hosts",
+    "push_ssh_key",
+    "queue_url",
+    "redis_url"
+  ],
+  "BaseSettings_ALIASES": {
+    "aborting_reap_slack_seconds": [
+      "PHAZE_ABORTING_REAP_SLACK_SECONDS",
+      "aborting_reap_slack_seconds"
+    ],
+    "active_reap_slack_seconds": [
+      "PHAZE_ACTIVE_REAP_SLACK_SECONDS",
+      "active_reap_slack_seconds"
+    ],
+    "agent_file_chunk_max": [
+      "agent_file_chunk_max"
+    ],
+    "agent_heartbeat_enabled": [
+      "PHAZE_AGENT_HEARTBEAT",
+      "agent_heartbeat_enabled"
+    ],
+    "agent_token_prefix": [
+      "agent_token_prefix"
+    ],
+    "analysis_stall_timeout_sec": [
+      "PHAZE_ANALYSIS_STALL_TIMEOUT_SEC",
+      "analysis_stall_timeout_sec"
+    ],
+    "api_host": [
+      "api_host"
+    ],
+    "api_port": [
+      "api_port"
+    ],
+    "api_tls_sans": [
+      "PHAZE_API_TLS_SANS",
+      "api_tls_sans"
+    ],
+    "auto_migrate": [
+      "PHAZE_AUTO_MIGRATE",
+      "auto_migrate"
+    ],
+    "database_url": [
+      "PHAZE_DATABASE_URL",
+      "DATABASE_URL",
+      "database_url"
+    ],
+    "db_max_overflow": [
+      "PHAZE_DB_MAX_OVERFLOW",
+      "db_max_overflow"
+    ],
+    "db_pool_pre_ping": [
+      "PHAZE_DB_POOL_PRE_PING",
+      "db_pool_pre_ping"
+    ],
+    "db_pool_recycle": [
+      "PHAZE_DB_POOL_RECYCLE",
+      "db_pool_recycle"
+    ],
+    "db_pool_size": [
+      "PHAZE_DB_POOL_SIZE",
+      "db_pool_size"
+    ],
+    "db_pool_timeout": [
+      "PHAZE_DB_POOL_TIMEOUT",
+      "db_pool_timeout"
+    ],
+    "debug": [
+      "debug"
+    ],
+    "dev_agent_token": [
+      "PHAZE_DEV_AGENT_TOKEN",
+      "dev_agent_token"
+    ],
+    "dev_seed_agent": [
+      "PHAZE_DEV_SEED_AGENT",
+      "dev_seed_agent"
+    ],
+    "discogsography_url": [
+      "discogsography_url"
+    ],
+    "dispatch_queue_max_size": [
+      "PHAZE_DISPATCH_QUEUE_MAX_SIZE",
+      "dispatch_queue_max_size"
+    ],
+    "dispatch_queue_min_size": [
+      "PHAZE_DISPATCH_QUEUE_MIN_SIZE",
+      "dispatch_queue_min_size"
+    ],
+    "enable_saq_ui": [
+      "PHAZE_ENABLE_SAQ_UI",
+      "enable_saq_ui"
+    ],
+    "lane_analyze_concurrency": [
+      "PHAZE_LANE_ANALYZE_CONCURRENCY",
+      "lane_analyze_concurrency"
+    ],
+    "lane_io_concurrency": [
+      "PHAZE_LANE_IO_CONCURRENCY",
+      "lane_io_concurrency"
+    ],
+    "lane_meta_concurrency": [
+      "PHAZE_LANE_META_CONCURRENCY",
+      "lane_meta_concurrency"
+    ],
+    "log_json": [
+      "PHAZE_LOG_JSON",
+      "log_json"
+    ],
+    "log_level": [
+      "PHAZE_LOG_LEVEL",
+      "log_level"
+    ],
+    "models_path": [
+      "models_path"
+    ],
+    "output_path": [
+      "output_path"
+    ],
+    "queue_url": [
+      "PHAZE_QUEUE_URL",
+      "queue_url"
+    ],
+    "redis_password": [
+      "REDIS_PASSWORD",
+      "redis_password"
+    ],
+    "redis_url": [
+      "PHAZE_REDIS_URL",
+      "REDIS_URL",
+      "redis_url"
+    ],
+    "scan_path": [
+      "scan_path"
+    ],
+    "scan_stall_seconds": [
+      "PHAZE_SCAN_STALL_SECONDS",
+      "SCAN_STALL_SECONDS",
+      "scan_stall_seconds"
+    ],
+    "scraper_contact_url": [
+      "PHAZE_SCRAPER_CONTACT_URL",
+      "scraper_contact_url"
+    ],
+    "tracklist_render_browser_channel": [
+      "PHAZE_TRACKLIST_RENDER_BROWSER_CHANNEL",
+      "tracklist_render_browser_channel"
+    ],
+    "tracklist_render_page_timeout_seconds": [
+      "PHAZE_TRACKLIST_RENDER_PAGE_TIMEOUT_SECONDS",
+      "tracklist_render_page_timeout_seconds"
+    ],
+    "tracklist_render_retry_backoff_seconds": [
+      "PHAZE_TRACKLIST_RENDER_RETRY_BACKOFF_SECONDS",
+      "tracklist_render_retry_backoff_seconds"
+    ],
+    "tracklist_render_selector_timeout_seconds": [
+      "PHAZE_TRACKLIST_RENDER_SELECTOR_TIMEOUT_SECONDS",
+      "tracklist_render_selector_timeout_seconds"
+    ],
+    "tracklist_render_turnstile_attempts": [
+      "PHAZE_TRACKLIST_RENDER_TURNSTILE_ATTEMPTS",
+      "tracklist_render_turnstile_attempts"
+    ],
+    "tracklist_render_xvfb": [
+      "PHAZE_TRACKLIST_RENDER_XVFB",
+      "tracklist_render_xvfb"
+    ],
+    "worker_health_check_interval": [
+      "worker_health_check_interval"
+    ],
+    "worker_job_timeout": [
+      "worker_job_timeout"
+    ],
+    "worker_keep_result": [
+      "worker_keep_result"
+    ],
+    "worker_max_jobs": [
+      "worker_max_jobs"
+    ],
+    "worker_max_retries": [
+      "worker_max_retries"
+    ],
+    "worker_process_pool_size": [
+      "worker_process_pool_size"
+    ]
+  },
+  "BaseSettings_FILE_ENV": {
+    "database_url": [
+      "PHAZE_DATABASE_URL_FILE",
+      "DATABASE_URL_FILE",
+      "DATABASE_URL_FILE"
+    ],
+    "queue_url": [
+      "PHAZE_QUEUE_URL_FILE",
+      "QUEUE_URL_FILE"
+    ],
+    "redis_url": [
+      "PHAZE_REDIS_URL_FILE",
+      "REDIS_URL_FILE",
+      "REDIS_URL_FILE"
+    ]
+  },
+  "BaseSettings_PRESERVE_WS": [],
+  "BaseSettings_SECRET_FILE_FIELDS": [
+    "database_url",
+    "queue_url",
+    "redis_url"
+  ],
+  "CONTROL_DEFAULTS": {
+    "aborting_reap_slack_seconds": 300,
+    "active_reap_slack_seconds": 900,
+    "agent_file_chunk_max": 1000,
+    "agent_heartbeat_enabled": true,
+    "agent_token_prefix": "phaze_agent_",
+    "analysis_stall_timeout_sec": 1800,
+    "anthropic_api_key": null,
+    "api_host": "0.0.0.0",
+    "api_port": 8000,
+    "api_tls_sans": "localhost,127.0.0.1,api",
+    "auto_migrate": true,
+    "backends": [
+      {
+        "cap": 2,
+        "id": "local",
+        "kind": "local",
+        "rank": 99
+      }
+    ],
+    "buckets": [],
+    "cloud_budget_cooldown_days": 14.0,
+    "cloud_budget_max_chains": 3,
+    "cloud_budget_max_node_loss": 3,
+    "cloud_node_loss_max_redrives": 1,
+    "cloud_route_threshold_sec": 5400,
+    "cloud_spill_to_local_after_seconds": 900,
+    "cloud_submit_max_attempts": 3,
+    "cloud_submitted_stale_after_sec": 21600,
+    "cloud_uploaded_stale_after_sec": 900,
+    "cloud_uploading_stale_after_sec": 21600,
+    "control_env": "dev",
+    "convention_date_fallback_enabled": true,
+    "convention_date_min_purity": 1.0,
+    "convention_date_min_supporting": 50,
+    "database_url": "postgresql+asyncpg://phaze:phaze@postgres:5432/phaze",
+    "db_max_overflow": 5,
+    "db_pool_pre_ping": true,
+    "db_pool_recycle": 1800,
+    "db_pool_size": 5,
+    "db_pool_timeout": 10,
+    "debug": false,
+    "dev_agent_token": null,
+    "dev_seed_agent": false,
+    "discogs_match_concurrency": 5,
+    "discogsography_url": "http://discogsography:8000",
+    "dispatch_queue_max_size": 2,
+    "dispatch_queue_min_size": 0,
+    "enable_saq_ui": true,
+    "lane_analyze_concurrency": 2,
+    "lane_io_concurrency": 4,
+    "lane_meta_concurrency": 2,
+    "llm_batch_size": 10,
+    "llm_max_companion_chars": 3000,
+    "llm_max_rpm": 30,
+    "llm_model": "claude-sonnet-4-20250514",
+    "log_json": null,
+    "log_level": "INFO",
+    "models_path": "/models",
+    "openai_api_key": null,
+    "output_path": "/data/output",
+    "push_max_attempts": 3,
+    "queue_url": "postgresql://phaze:phaze@postgres:5432/phaze",
+    "redis_password": null,
+    "redis_url": "redis://redis:6379/0",
+    "s3_client_timeout_sec": 30,
+    "s3_lifecycle_ttl_days": 2,
+    "s3_multipart_part_size_bytes": 67108864,
+    "s3_presign_get_ttl_sec": 900,
+    "s3_presign_put_ttl_sec": 3600,
+    "scan_path": "/data/music",
+    "scan_stall_seconds": 86400,
+    "scraper_contact_url": "https://github.com/SimplicityGuy/phaze",
+    "tracklist_drain_cooldown_sec": 600,
+    "tracklist_render_browser_channel": "chrome",
+    "tracklist_render_page_timeout_seconds": 90.0,
+    "tracklist_render_retry_backoff_seconds": 5.0,
+    "tracklist_render_selector_timeout_seconds": 20.0,
+    "tracklist_render_turnstile_attempts": 4,
+    "tracklist_render_xvfb": "auto",
+    "worker_health_check_interval": 60,
+    "worker_job_timeout": 600,
+    "worker_keep_result": 3600,
+    "worker_max_jobs": 8,
+    "worker_max_retries": 4,
+    "worker_process_pool_size": 4
+  },
+  "ControlSettings_ALIASES": {
+    "aborting_reap_slack_seconds": [
+      "PHAZE_ABORTING_REAP_SLACK_SECONDS",
+      "aborting_reap_slack_seconds"
+    ],
+    "active_reap_slack_seconds": [
+      "PHAZE_ACTIVE_REAP_SLACK_SECONDS",
+      "active_reap_slack_seconds"
+    ],
+    "agent_file_chunk_max": [
+      "agent_file_chunk_max"
+    ],
+    "agent_heartbeat_enabled": [
+      "PHAZE_AGENT_HEARTBEAT",
+      "agent_heartbeat_enabled"
+    ],
+    "agent_token_prefix": [
+      "agent_token_prefix"
+    ],
+    "analysis_stall_timeout_sec": [
+      "PHAZE_ANALYSIS_STALL_TIMEOUT_SEC",
+      "analysis_stall_timeout_sec"
+    ],
+    "anthropic_api_key": [
+      "anthropic_api_key"
+    ],
+    "api_host": [
+      "api_host"
+    ],
+    "api_port": [
+      "api_port"
+    ],
+    "api_tls_sans": [
+      "PHAZE_API_TLS_SANS",
+      "api_tls_sans"
+    ],
+    "auto_migrate": [
+      "PHAZE_AUTO_MIGRATE",
+      "auto_migrate"
+    ],
+    "backends": [
+      "backends"
+    ],
+    "buckets": [
+      "buckets"
+    ],
+    "cloud_budget_cooldown_days": [
+      "PHAZE_CLOUD_BUDGET_COOLDOWN_DAYS",
+      "cloud_budget_cooldown_days"
+    ],
+    "cloud_budget_max_chains": [
+      "PHAZE_CLOUD_BUDGET_MAX_CHAINS",
+      "cloud_budget_max_chains"
+    ],
+    "cloud_budget_max_node_loss": [
+      "PHAZE_CLOUD_BUDGET_MAX_NODE_LOSS",
+      "cloud_budget_max_node_loss"
+    ],
+    "cloud_node_loss_max_redrives": [
+      "PHAZE_CLOUD_NODE_LOSS_MAX_REDRIVES",
+      "cloud_node_loss_max_redrives"
+    ],
+    "cloud_route_threshold_sec": [
+      "PHAZE_CLOUD_ROUTE_THRESHOLD_SEC",
+      "cloud_route_threshold_sec"
+    ],
+    "cloud_spill_to_local_after_seconds": [
+      "PHAZE_CLOUD_SPILL_TO_LOCAL_AFTER_SECONDS",
+      "cloud_spill_to_local_after_seconds"
+    ],
+    "cloud_submit_max_attempts": [
+      "PHAZE_CLOUD_SUBMIT_MAX_ATTEMPTS",
+      "cloud_submit_max_attempts"
+    ],
+    "cloud_submitted_stale_after_sec": [
+      "PHAZE_CLOUD_SUBMITTED_STALE_AFTER_SEC",
+      "cloud_submitted_stale_after_sec"
+    ],
+    "cloud_uploaded_stale_after_sec": [
+      "PHAZE_CLOUD_UPLOADED_STALE_AFTER_SEC",
+      "cloud_uploaded_stale_after_sec"
+    ],
+    "cloud_uploading_stale_after_sec": [
+      "PHAZE_CLOUD_UPLOADING_STALE_AFTER_SEC",
+      "cloud_uploading_stale_after_sec"
+    ],
+    "control_env": [
+      "PHAZE_CONTROL_ENV",
+      "control_env"
+    ],
+    "convention_date_fallback_enabled": [
+      "PHAZE_CONVENTION_DATE_FALLBACK_ENABLED",
+      "convention_date_fallback_enabled"
+    ],
+    "convention_date_min_purity": [
+      "PHAZE_CONVENTION_DATE_MIN_PURITY",
+      "convention_date_min_purity"
+    ],
+    "convention_date_min_supporting": [
+      "PHAZE_CONVENTION_DATE_MIN_SUPPORTING",
+      "convention_date_min_supporting"
+    ],
+    "database_url": [
+      "PHAZE_DATABASE_URL",
+      "DATABASE_URL",
+      "database_url"
+    ],
+    "db_max_overflow": [
+      "PHAZE_DB_MAX_OVERFLOW",
+      "db_max_overflow"
+    ],
+    "db_pool_pre_ping": [
+      "PHAZE_DB_POOL_PRE_PING",
+      "db_pool_pre_ping"
+    ],
+    "db_pool_recycle": [
+      "PHAZE_DB_POOL_RECYCLE",
+      "db_pool_recycle"
+    ],
+    "db_pool_size": [
+      "PHAZE_DB_POOL_SIZE",
+      "db_pool_size"
+    ],
+    "db_pool_timeout": [
+      "PHAZE_DB_POOL_TIMEOUT",
+      "db_pool_timeout"
+    ],
+    "debug": [
+      "debug"
+    ],
+    "dev_agent_token": [
+      "PHAZE_DEV_AGENT_TOKEN",
+      "dev_agent_token"
+    ],
+    "dev_seed_agent": [
+      "PHAZE_DEV_SEED_AGENT",
+      "dev_seed_agent"
+    ],
+    "discogs_match_concurrency": [
+      "discogs_match_concurrency"
+    ],
+    "discogsography_url": [
+      "discogsography_url"
+    ],
+    "dispatch_queue_max_size": [
+      "PHAZE_DISPATCH_QUEUE_MAX_SIZE",
+      "dispatch_queue_max_size"
+    ],
+    "dispatch_queue_min_size": [
+      "PHAZE_DISPATCH_QUEUE_MIN_SIZE",
+      "dispatch_queue_min_size"
+    ],
+    "enable_saq_ui": [
+      "PHAZE_ENABLE_SAQ_UI",
+      "enable_saq_ui"
+    ],
+    "lane_analyze_concurrency": [
+      "PHAZE_LANE_ANALYZE_CONCURRENCY",
+      "lane_analyze_concurrency"
+    ],
+    "lane_io_concurrency": [
+      "PHAZE_LANE_IO_CONCURRENCY",
+      "lane_io_concurrency"
+    ],
+    "lane_meta_concurrency": [
+      "PHAZE_LANE_META_CONCURRENCY",
+      "lane_meta_concurrency"
+    ],
+    "llm_batch_size": [
+      "llm_batch_size"
+    ],
+    "llm_max_companion_chars": [
+      "llm_max_companion_chars"
+    ],
+    "llm_max_rpm": [
+      "llm_max_rpm"
+    ],
+    "llm_model": [
+      "llm_model"
+    ],
+    "log_json": [
+      "PHAZE_LOG_JSON",
+      "log_json"
+    ],
+    "log_level": [
+      "PHAZE_LOG_LEVEL",
+      "log_level"
+    ],
+    "models_path": [
+      "models_path"
+    ],
+    "openai_api_key": [
+      "openai_api_key"
+    ],
+    "output_path": [
+      "output_path"
+    ],
+    "push_max_attempts": [
+      "PHAZE_PUSH_MAX_ATTEMPTS",
+      "push_max_attempts"
+    ],
+    "queue_url": [
+      "PHAZE_QUEUE_URL",
+      "queue_url"
+    ],
+    "redis_password": [
+      "REDIS_PASSWORD",
+      "redis_password"
+    ],
+    "redis_url": [
+      "PHAZE_REDIS_URL",
+      "REDIS_URL",
+      "redis_url"
+    ],
+    "s3_client_timeout_sec": [
+      "PHAZE_S3_CLIENT_TIMEOUT_SEC",
+      "s3_client_timeout_sec"
+    ],
+    "s3_lifecycle_ttl_days": [
+      "PHAZE_S3_LIFECYCLE_TTL_DAYS",
+      "s3_lifecycle_ttl_days"
+    ],
+    "s3_multipart_part_size_bytes": [
+      "PHAZE_S3_MULTIPART_PART_SIZE_BYTES",
+      "s3_multipart_part_size_bytes"
+    ],
+    "s3_presign_get_ttl_sec": [
+      "PHAZE_S3_PRESIGN_GET_TTL_SEC",
+      "s3_presign_get_ttl_sec"
+    ],
+    "s3_presign_put_ttl_sec": [
+      "PHAZE_S3_PRESIGN_PUT_TTL_SEC",
+      "s3_presign_put_ttl_sec"
+    ],
+    "scan_path": [
+      "scan_path"
+    ],
+    "scan_stall_seconds": [
+      "PHAZE_SCAN_STALL_SECONDS",
+      "SCAN_STALL_SECONDS",
+      "scan_stall_seconds"
+    ],
+    "scraper_contact_url": [
+      "PHAZE_SCRAPER_CONTACT_URL",
+      "scraper_contact_url"
+    ],
+    "tracklist_drain_cooldown_sec": [
+      "PHAZE_TRACKLIST_DRAIN_COOLDOWN_SEC",
+      "tracklist_drain_cooldown_sec"
+    ],
+    "tracklist_render_browser_channel": [
+      "PHAZE_TRACKLIST_RENDER_BROWSER_CHANNEL",
+      "tracklist_render_browser_channel"
+    ],
+    "tracklist_render_page_timeout_seconds": [
+      "PHAZE_TRACKLIST_RENDER_PAGE_TIMEOUT_SECONDS",
+      "tracklist_render_page_timeout_seconds"
+    ],
+    "tracklist_render_retry_backoff_seconds": [
+      "PHAZE_TRACKLIST_RENDER_RETRY_BACKOFF_SECONDS",
+      "tracklist_render_retry_backoff_seconds"
+    ],
+    "tracklist_render_selector_timeout_seconds": [
+      "PHAZE_TRACKLIST_RENDER_SELECTOR_TIMEOUT_SECONDS",
+      "tracklist_render_selector_timeout_seconds"
+    ],
+    "tracklist_render_turnstile_attempts": [
+      "PHAZE_TRACKLIST_RENDER_TURNSTILE_ATTEMPTS",
+      "tracklist_render_turnstile_attempts"
+    ],
+    "tracklist_render_xvfb": [
+      "PHAZE_TRACKLIST_RENDER_XVFB",
+      "tracklist_render_xvfb"
+    ],
+    "worker_health_check_interval": [
+      "worker_health_check_interval"
+    ],
+    "worker_job_timeout": [
+      "worker_job_timeout"
+    ],
+    "worker_keep_result": [
+      "worker_keep_result"
+    ],
+    "worker_max_jobs": [
+      "worker_max_jobs"
+    ],
+    "worker_max_retries": [
+      "worker_max_retries"
+    ],
+    "worker_process_pool_size": [
+      "worker_process_pool_size"
+    ]
+  },
+  "ControlSettings_FILE_ENV": {
+    "anthropic_api_key": [
+      "ANTHROPIC_API_KEY_FILE"
+    ],
+    "database_url": [
+      "PHAZE_DATABASE_URL_FILE",
+      "DATABASE_URL_FILE",
+      "DATABASE_URL_FILE"
+    ],
+    "openai_api_key": [
+      "OPENAI_API_KEY_FILE"
+    ],
+    "queue_url": [
+      "PHAZE_QUEUE_URL_FILE",
+      "QUEUE_URL_FILE"
+    ],
+    "redis_url": [
+      "PHAZE_REDIS_URL_FILE",
+      "REDIS_URL_FILE",
+      "REDIS_URL_FILE"
+    ]
+  },
+  "ControlSettings_PRESERVE_WS": [],
+  "ControlSettings_SECRET_FILE_FIELDS": [
+    "anthropic_api_key",
+    "database_url",
+    "openai_api_key",
+    "queue_url",
+    "redis_url"
+  ],
+  "ENV_UNIVERSE": [
+    "ABORTING_REAP_SLACK_SECONDS",
+    "ABORTING_REAP_SLACK_SECONDS_FILE",
+    "ACTIVE_REAP_SLACK_SECONDS",
+    "ACTIVE_REAP_SLACK_SECONDS_FILE",
+    "AGENT_API_URL",
+    "AGENT_API_URL_FILE",
+    "AGENT_CA_FILE",
+    "AGENT_CA_FILE_FILE",
+    "AGENT_ENV",
+    "AGENT_ENV_FILE",
+    "AGENT_FILE_CHUNK_MAX",
+    "AGENT_FILE_CHUNK_MAX_FILE",
+    "AGENT_HEARTBEAT_ENABLED",
+    "AGENT_HEARTBEAT_ENABLED_FILE",
+    "AGENT_TOKEN",
+    "AGENT_TOKEN_FILE",
+    "AGENT_TOKEN_PREFIX",
+    "AGENT_TOKEN_PREFIX_FILE",
+    "ANALYSIS_COARSE_WINDOW_SEC",
+    "ANALYSIS_COARSE_WINDOW_SEC_FILE",
+    "ANALYSIS_FINE_MIN_SEC",
+    "ANALYSIS_FINE_MIN_SEC_FILE",
+    "ANALYSIS_FINE_WINDOW_SEC",
+    "ANALYSIS_FINE_WINDOW_SEC_FILE",
+    "ANALYSIS_PROGRESS_INTERVAL_SEC",
+    "ANALYSIS_PROGRESS_INTERVAL_SEC_FILE",
+    "ANALYSIS_STALL_TIMEOUT_SEC",
+    "ANALYSIS_STALL_TIMEOUT_SEC_FILE",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_API_KEY_FILE",
+    "API_HOST",
+    "API_HOST_FILE",
+    "API_PORT",
+    "API_PORT_FILE",
+    "API_TLS_SANS",
+    "API_TLS_SANS_FILE",
+    "AUTO_MIGRATE",
+    "AUTO_MIGRATE_FILE",
+    "BACKENDS",
+    "BACKENDS_FILE",
+    "BUCKETS",
+    "BUCKETS_FILE",
+    "CLOUD_BUDGET_COOLDOWN_DAYS",
+    "CLOUD_BUDGET_COOLDOWN_DAYS_FILE",
+    "CLOUD_BUDGET_MAX_CHAINS",
+    "CLOUD_BUDGET_MAX_CHAINS_FILE",
+    "CLOUD_BUDGET_MAX_NODE_LOSS",
+    "CLOUD_BUDGET_MAX_NODE_LOSS_FILE",
+    "CLOUD_NODE_LOSS_MAX_REDRIVES",
+    "CLOUD_NODE_LOSS_MAX_REDRIVES_FILE",
+    "CLOUD_ROUTE_THRESHOLD_SEC",
+    "CLOUD_ROUTE_THRESHOLD_SEC_FILE",
+    "CLOUD_SCRATCH_DIR",
+    "CLOUD_SCRATCH_DIR_FILE",
+    "CLOUD_SPILL_TO_LOCAL_AFTER_SECONDS",
+    "CLOUD_SPILL_TO_LOCAL_AFTER_SECONDS_FILE",
+    "CLOUD_SUBMITTED_STALE_AFTER_SEC",
+    "CLOUD_SUBMITTED_STALE_AFTER_SEC_FILE",
+    "CLOUD_SUBMIT_MAX_ATTEMPTS",
+    "CLOUD_SUBMIT_MAX_ATTEMPTS_FILE",
+    "CLOUD_UPLOADED_STALE_AFTER_SEC",
+    "CLOUD_UPLOADED_STALE_AFTER_SEC_FILE",
+    "CLOUD_UPLOADING_STALE_AFTER_SEC",
+    "CLOUD_UPLOADING_STALE_AFTER_SEC_FILE",
+    "CONTROL_ENV",
+    "CONTROL_ENV_FILE",
+    "CONVENTION_DATE_FALLBACK_ENABLED",
+    "CONVENTION_DATE_FALLBACK_ENABLED_FILE",
+    "CONVENTION_DATE_MIN_PURITY",
+    "CONVENTION_DATE_MIN_PURITY_FILE",
+    "CONVENTION_DATE_MIN_SUPPORTING",
+    "CONVENTION_DATE_MIN_SUPPORTING_FILE",
+    "DATABASE_URL",
+    "DATABASE_URL_FILE",
+    "DB_MAX_OVERFLOW",
+    "DB_MAX_OVERFLOW_FILE",
+    "DB_POOL_PRE_PING",
+    "DB_POOL_PRE_PING_FILE",
+    "DB_POOL_RECYCLE",
+    "DB_POOL_RECYCLE_FILE",
+    "DB_POOL_SIZE",
+    "DB_POOL_SIZE_FILE",
+    "DB_POOL_TIMEOUT",
+    "DB_POOL_TIMEOUT_FILE",
+    "DEBUG",
+    "DEBUG_FILE",
+    "DEV_AGENT_TOKEN",
+    "DEV_AGENT_TOKEN_FILE",
+    "DEV_SEED_AGENT",
+    "DEV_SEED_AGENT_FILE",
+    "DISCOGSOGRAPHY_URL",
+    "DISCOGSOGRAPHY_URL_FILE",
+    "DISCOGS_MATCH_CONCURRENCY",
+    "DISCOGS_MATCH_CONCURRENCY_FILE",
+    "DISPATCH_QUEUE_MAX_SIZE",
+    "DISPATCH_QUEUE_MAX_SIZE_FILE",
+    "DISPATCH_QUEUE_MIN_SIZE",
+    "DISPATCH_QUEUE_MIN_SIZE_FILE",
+    "ENABLE_SAQ_UI",
+    "ENABLE_SAQ_UI_FILE",
+    "KIND",
+    "KIND_FILE",
+    "LANE_ANALYZE_CONCURRENCY",
+    "LANE_ANALYZE_CONCURRENCY_FILE",
+    "LANE_IO_CONCURRENCY",
+    "LANE_IO_CONCURRENCY_FILE",
+    "LANE_META_CONCURRENCY",
+    "LANE_META_CONCURRENCY_FILE",
+    "LLM_BATCH_SIZE",
+    "LLM_BATCH_SIZE_FILE",
+    "LLM_MAX_COMPANION_CHARS",
+    "LLM_MAX_COMPANION_CHARS_FILE",
+    "LLM_MAX_RPM",
+    "LLM_MAX_RPM_FILE",
+    "LLM_MODEL",
+    "LLM_MODEL_FILE",
+    "LOG_JSON",
+    "LOG_JSON_FILE",
+    "LOG_LEVEL",
+    "LOG_LEVEL_FILE",
+    "MODELS_PATH",
+    "MODELS_PATH_FILE",
+    "OPENAI_API_KEY",
+    "OPENAI_API_KEY_FILE",
+    "OUTPUT_PATH",
+    "OUTPUT_PATH_FILE",
+    "PHAZE_ABORTING_REAP_SLACK_SECONDS",
+    "PHAZE_ABORTING_REAP_SLACK_SECONDS_FILE",
+    "PHAZE_ACTIVE_REAP_SLACK_SECONDS",
+    "PHAZE_ACTIVE_REAP_SLACK_SECONDS_FILE",
+    "PHAZE_AGENT_API_URL",
+    "PHAZE_AGENT_API_URL_FILE",
+    "PHAZE_AGENT_CA_FILE",
+    "PHAZE_AGENT_CA_FILE_FILE",
+    "PHAZE_AGENT_ENV",
+    "PHAZE_AGENT_ENV_FILE",
+    "PHAZE_AGENT_HEARTBEAT",
+    "PHAZE_AGENT_HEARTBEAT_FILE",
+    "PHAZE_AGENT_KIND",
+    "PHAZE_AGENT_KIND_FILE",
+    "PHAZE_AGENT_SCAN_ROOTS",
+    "PHAZE_AGENT_SCAN_ROOTS_FILE",
+    "PHAZE_AGENT_TOKEN",
+    "PHAZE_AGENT_TOKEN_FILE",
+    "PHAZE_ANALYSIS_COARSE_WINDOW_SEC",
+    "PHAZE_ANALYSIS_COARSE_WINDOW_SEC_FILE",
+    "PHAZE_ANALYSIS_FINE_MIN_SEC",
+    "PHAZE_ANALYSIS_FINE_MIN_SEC_FILE",
+    "PHAZE_ANALYSIS_FINE_WINDOW_SEC",
+    "PHAZE_ANALYSIS_FINE_WINDOW_SEC_FILE",
+    "PHAZE_ANALYSIS_PROGRESS_INTERVAL_SEC",
+    "PHAZE_ANALYSIS_PROGRESS_INTERVAL_SEC_FILE",
+    "PHAZE_ANALYSIS_STALL_TIMEOUT_SEC",
+    "PHAZE_ANALYSIS_STALL_TIMEOUT_SEC_FILE",
+    "PHAZE_API_TLS_SANS",
+    "PHAZE_API_TLS_SANS_FILE",
+    "PHAZE_AUTO_MIGRATE",
+    "PHAZE_AUTO_MIGRATE_FILE",
+    "PHAZE_BACKENDS_CONFIG_FILE",
+    "PHAZE_CLOUD_BUDGET_COOLDOWN_DAYS",
+    "PHAZE_CLOUD_BUDGET_COOLDOWN_DAYS_FILE",
+    "PHAZE_CLOUD_BUDGET_MAX_CHAINS",
+    "PHAZE_CLOUD_BUDGET_MAX_CHAINS_FILE",
+    "PHAZE_CLOUD_BUDGET_MAX_NODE_LOSS",
+    "PHAZE_CLOUD_BUDGET_MAX_NODE_LOSS_FILE",
+    "PHAZE_CLOUD_NODE_LOSS_MAX_REDRIVES",
+    "PHAZE_CLOUD_NODE_LOSS_MAX_REDRIVES_FILE",
+    "PHAZE_CLOUD_ROUTE_THRESHOLD_SEC",
+    "PHAZE_CLOUD_ROUTE_THRESHOLD_SEC_FILE",
+    "PHAZE_CLOUD_SCRATCH_DIR",
+    "PHAZE_CLOUD_SCRATCH_DIR_FILE",
+    "PHAZE_CLOUD_SPILL_TO_LOCAL_AFTER_SECONDS",
+    "PHAZE_CLOUD_SPILL_TO_LOCAL_AFTER_SECONDS_FILE",
+    "PHAZE_CLOUD_SUBMITTED_STALE_AFTER_SEC",
+    "PHAZE_CLOUD_SUBMITTED_STALE_AFTER_SEC_FILE",
+    "PHAZE_CLOUD_SUBMIT_MAX_ATTEMPTS",
+    "PHAZE_CLOUD_SUBMIT_MAX_ATTEMPTS_FILE",
+    "PHAZE_CLOUD_UPLOADED_STALE_AFTER_SEC",
+    "PHAZE_CLOUD_UPLOADED_STALE_AFTER_SEC_FILE",
+    "PHAZE_CLOUD_UPLOADING_STALE_AFTER_SEC",
+    "PHAZE_CLOUD_UPLOADING_STALE_AFTER_SEC_FILE",
+    "PHAZE_CONTROL_ENV",
+    "PHAZE_CONTROL_ENV_FILE",
+    "PHAZE_CONVENTION_DATE_FALLBACK_ENABLED",
+    "PHAZE_CONVENTION_DATE_FALLBACK_ENABLED_FILE",
+    "PHAZE_CONVENTION_DATE_MIN_PURITY",
+    "PHAZE_CONVENTION_DATE_MIN_PURITY_FILE",
+    "PHAZE_CONVENTION_DATE_MIN_SUPPORTING",
+    "PHAZE_CONVENTION_DATE_MIN_SUPPORTING_FILE",
+    "PHAZE_DATABASE_URL",
+    "PHAZE_DATABASE_URL_FILE",
+    "PHAZE_DB_MAX_OVERFLOW",
+    "PHAZE_DB_MAX_OVERFLOW_FILE",
+    "PHAZE_DB_POOL_PRE_PING",
+    "PHAZE_DB_POOL_PRE_PING_FILE",
+    "PHAZE_DB_POOL_RECYCLE",
+    "PHAZE_DB_POOL_RECYCLE_FILE",
+    "PHAZE_DB_POOL_SIZE",
+    "PHAZE_DB_POOL_SIZE_FILE",
+    "PHAZE_DB_POOL_TIMEOUT",
+    "PHAZE_DB_POOL_TIMEOUT_FILE",
+    "PHAZE_DEV_AGENT_TOKEN",
+    "PHAZE_DEV_AGENT_TOKEN_FILE",
+    "PHAZE_DEV_SEED_AGENT",
+    "PHAZE_DEV_SEED_AGENT_FILE",
+    "PHAZE_DISPATCH_QUEUE_MAX_SIZE",
+    "PHAZE_DISPATCH_QUEUE_MAX_SIZE_FILE",
+    "PHAZE_DISPATCH_QUEUE_MIN_SIZE",
+    "PHAZE_DISPATCH_QUEUE_MIN_SIZE_FILE",
+    "PHAZE_ENABLE_SAQ_UI",
+    "PHAZE_ENABLE_SAQ_UI_FILE",
+    "PHAZE_LANE_ANALYZE_CONCURRENCY",
+    "PHAZE_LANE_ANALYZE_CONCURRENCY_FILE",
+    "PHAZE_LANE_IO_CONCURRENCY",
+    "PHAZE_LANE_IO_CONCURRENCY_FILE",
+    "PHAZE_LANE_META_CONCURRENCY",
+    "PHAZE_LANE_META_CONCURRENCY_FILE",
+    "PHAZE_LOG_JSON",
+    "PHAZE_LOG_JSON_FILE",
+    "PHAZE_LOG_LEVEL",
+    "PHAZE_LOG_LEVEL_FILE",
+    "PHAZE_PUSH_CONNECT_TIMEOUT_SEC",
+    "PHAZE_PUSH_CONNECT_TIMEOUT_SEC_FILE",
+    "PHAZE_PUSH_KNOWN_HOSTS",
+    "PHAZE_PUSH_KNOWN_HOSTS_FILE",
+    "PHAZE_PUSH_MAX_ATTEMPTS",
+    "PHAZE_PUSH_MAX_ATTEMPTS_FILE",
+    "PHAZE_PUSH_SSH_HOST",
+    "PHAZE_PUSH_SSH_HOST_FILE",
+    "PHAZE_PUSH_SSH_KEY",
+    "PHAZE_PUSH_SSH_KEY_FILE",
+    "PHAZE_PUSH_SSH_USER",
+    "PHAZE_PUSH_SSH_USER_FILE",
+    "PHAZE_PUSH_TIMEOUT_SEC",
+    "PHAZE_PUSH_TIMEOUT_SEC_FILE",
+    "PHAZE_QUEUE_URL",
+    "PHAZE_QUEUE_URL_FILE",
+    "PHAZE_REDIS_URL",
+    "PHAZE_REDIS_URL_FILE",
+    "PHAZE_ROLE",
+    "PHAZE_S3_CLIENT_TIMEOUT_SEC",
+    "PHAZE_S3_CLIENT_TIMEOUT_SEC_FILE",
+    "PHAZE_S3_LIFECYCLE_TTL_DAYS",
+    "PHAZE_S3_LIFECYCLE_TTL_DAYS_FILE",
+    "PHAZE_S3_MULTIPART_PART_SIZE_BYTES",
+    "PHAZE_S3_MULTIPART_PART_SIZE_BYTES_FILE",
+    "PHAZE_S3_PRESIGN_GET_TTL_SEC",
+    "PHAZE_S3_PRESIGN_GET_TTL_SEC_FILE",
+    "PHAZE_S3_PRESIGN_PUT_TTL_SEC",
+    "PHAZE_S3_PRESIGN_PUT_TTL_SEC_FILE",
+    "PHAZE_SCAN_CHUNK_SIZE",
+    "PHAZE_SCAN_CHUNK_SIZE_FILE",
+    "PHAZE_SCAN_STALL_SECONDS",
+    "PHAZE_SCAN_STALL_SECONDS_FILE",
+    "PHAZE_SCRAPER_CONTACT_URL",
+    "PHAZE_SCRAPER_CONTACT_URL_FILE",
+    "PHAZE_TRACKLIST_DRAIN_COOLDOWN_SEC",
+    "PHAZE_TRACKLIST_DRAIN_COOLDOWN_SEC_FILE",
+    "PHAZE_TRACKLIST_RENDER_BROWSER_CHANNEL",
+    "PHAZE_TRACKLIST_RENDER_BROWSER_CHANNEL_FILE",
+    "PHAZE_TRACKLIST_RENDER_PAGE_TIMEOUT_SECONDS",
+    "PHAZE_TRACKLIST_RENDER_PAGE_TIMEOUT_SECONDS_FILE",
+    "PHAZE_TRACKLIST_RENDER_RETRY_BACKOFF_SECONDS",
+    "PHAZE_TRACKLIST_RENDER_RETRY_BACKOFF_SECONDS_FILE",
+    "PHAZE_TRACKLIST_RENDER_SELECTOR_TIMEOUT_SECONDS",
+    "PHAZE_TRACKLIST_RENDER_SELECTOR_TIMEOUT_SECONDS_FILE",
+    "PHAZE_TRACKLIST_RENDER_TURNSTILE_ATTEMPTS",
+    "PHAZE_TRACKLIST_RENDER_TURNSTILE_ATTEMPTS_FILE",
+    "PHAZE_TRACKLIST_RENDER_XVFB",
+    "PHAZE_TRACKLIST_RENDER_XVFB_FILE",
+    "PHAZE_WATCHER_MAX_PENDING_SECONDS",
+    "PHAZE_WATCHER_MAX_PENDING_SECONDS_FILE",
+    "PHAZE_WATCHER_POLLING_MODE",
+    "PHAZE_WATCHER_POLLING_MODE_FILE",
+    "PHAZE_WATCHER_SETTLE_SECONDS",
+    "PHAZE_WATCHER_SETTLE_SECONDS_FILE",
+    "PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS",
+    "PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS_FILE",
+    "PUSH_CONNECT_TIMEOUT_SEC",
+    "PUSH_CONNECT_TIMEOUT_SEC_FILE",
+    "PUSH_KNOWN_HOSTS",
+    "PUSH_KNOWN_HOSTS_FILE",
+    "PUSH_MAX_ATTEMPTS",
+    "PUSH_MAX_ATTEMPTS_FILE",
+    "PUSH_SSH_HOST",
+    "PUSH_SSH_HOST_FILE",
+    "PUSH_SSH_KEY",
+    "PUSH_SSH_KEY_FILE",
+    "PUSH_SSH_USER",
+    "PUSH_SSH_USER_FILE",
+    "PUSH_TIMEOUT_SEC",
+    "PUSH_TIMEOUT_SEC_FILE",
+    "QUEUE_URL",
+    "QUEUE_URL_FILE",
+    "REDIS_PASSWORD",
+    "REDIS_PASSWORD_FILE",
+    "REDIS_URL",
+    "REDIS_URL_FILE",
+    "S3_CLIENT_TIMEOUT_SEC",
+    "S3_CLIENT_TIMEOUT_SEC_FILE",
+    "S3_LIFECYCLE_TTL_DAYS",
+    "S3_LIFECYCLE_TTL_DAYS_FILE",
+    "S3_MULTIPART_PART_SIZE_BYTES",
+    "S3_MULTIPART_PART_SIZE_BYTES_FILE",
+    "S3_PRESIGN_GET_TTL_SEC",
+    "S3_PRESIGN_GET_TTL_SEC_FILE",
+    "S3_PRESIGN_PUT_TTL_SEC",
+    "S3_PRESIGN_PUT_TTL_SEC_FILE",
+    "SCAN_CHUNK_SIZE",
+    "SCAN_CHUNK_SIZE_FILE",
+    "SCAN_PATH",
+    "SCAN_PATH_FILE",
+    "SCAN_ROOTS",
+    "SCAN_ROOTS_FILE",
+    "SCAN_STALL_SECONDS",
+    "SCAN_STALL_SECONDS_FILE",
+    "SCRAPER_CONTACT_URL",
+    "SCRAPER_CONTACT_URL_FILE",
+    "TRACKLIST_DRAIN_COOLDOWN_SEC",
+    "TRACKLIST_DRAIN_COOLDOWN_SEC_FILE",
+    "TRACKLIST_RENDER_BROWSER_CHANNEL",
+    "TRACKLIST_RENDER_BROWSER_CHANNEL_FILE",
+    "TRACKLIST_RENDER_PAGE_TIMEOUT_SECONDS",
+    "TRACKLIST_RENDER_PAGE_TIMEOUT_SECONDS_FILE",
+    "TRACKLIST_RENDER_RETRY_BACKOFF_SECONDS",
+    "TRACKLIST_RENDER_RETRY_BACKOFF_SECONDS_FILE",
+    "TRACKLIST_RENDER_SELECTOR_TIMEOUT_SECONDS",
+    "TRACKLIST_RENDER_SELECTOR_TIMEOUT_SECONDS_FILE",
+    "TRACKLIST_RENDER_TURNSTILE_ATTEMPTS",
+    "TRACKLIST_RENDER_TURNSTILE_ATTEMPTS_FILE",
+    "TRACKLIST_RENDER_XVFB",
+    "TRACKLIST_RENDER_XVFB_FILE",
+    "WATCHER_MAX_PENDING_SECONDS",
+    "WATCHER_MAX_PENDING_SECONDS_FILE",
+    "WATCHER_POLLING_MODE",
+    "WATCHER_POLLING_MODE_FILE",
+    "WATCHER_SETTLE_SECONDS",
+    "WATCHER_SETTLE_SECONDS_FILE",
+    "WATCHER_SWEEP_INTERVAL_SECONDS",
+    "WATCHER_SWEEP_INTERVAL_SECONDS_FILE",
+    "WORKER_HEALTH_CHECK_INTERVAL",
+    "WORKER_HEALTH_CHECK_INTERVAL_FILE",
+    "WORKER_JOB_TIMEOUT",
+    "WORKER_JOB_TIMEOUT_FILE",
+    "WORKER_KEEP_RESULT",
+    "WORKER_KEEP_RESULT_FILE",
+    "WORKER_MAX_JOBS",
+    "WORKER_MAX_JOBS_FILE",
+    "WORKER_MAX_RETRIES",
+    "WORKER_MAX_RETRIES_FILE",
+    "WORKER_PROCESS_POOL_SIZE",
+    "WORKER_PROCESS_POOL_SIZE_FILE"
+  ]
+}
