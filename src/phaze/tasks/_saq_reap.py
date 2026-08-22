@@ -18,6 +18,29 @@ that had NEVER been analyzed). The two reapers differ ONLY in which status they 
 slack that status earns; the three load-bearing guards are IDENTICAL, so they are written once here
 rather than copied. A guard fixed in one reaper and not the other is the exact drift this prevents.
 
+WHAT IS DELIBERATELY *NOT* SHARED, AND WHY (phaze-bk9el.27)
+-----------------------------------------------------------
+The two reaper modules still read as ~24% / ~18% duplicated, and that residue is examined and KEPT.
+Diffed line-for-line, the flagged clone (``aborting_reaper`` 64-86 against ``active_reaper`` 95-116) is
+``from __future__ import annotations``, ``from typing import Any``, ``import structlog``, the two
+shared imports off THIS module, the ``logger = structlog.get_logger(__name__)`` line, the module-local
+SQL alias and the ``async def`` signature. Nineteen of those twenty-three lines are identical because
+they are Python module boilerplate; the four that differ are the two alias names and the two function
+names, i.e. exactly the lines that MUST differ. There is no import block to extract.
+
+The part that genuinely had to stay in lockstep -- the statement and its four guards -- is already
+extracted, into this module, by phaze-o0n6, for the stated reason at the top of this docstring. What is
+left in each reaper is ~10 lines of body that differ in four places (the settings attribute, the SQL
+alias, the ``:status`` bind, and the log event/message). Folding THAT into a shared
+``_reap(ctx, sql, status, slack, log_event, log_message)`` would trade a duplication finding for a
+six-argument primitive-obsession one, hand ten lines of body six lines of configuration, and break the
+property both reapers document and rely on: the module-local alias exists so each reaper's degrade test
+can monkeypatch ITS statement without touching the sibling's. The log messages are also not copy-paste
+-- the ``'active'`` one carries the ledger-rows-kept clause that is the whole phaze-o0n6 acceptance
+item 3 -- and the clone pair's co-change count in this repo's history is ZERO: these two files have
+never had to change together. Structural similarity by design is not debt, and coupling them to move a
+metric would make a genuinely healthy pair worse.
+
 FOUR GUARDS, all load-bearing:
 
 - **Age bound on the FROZEN ``started``, NOT ``touched``.** SAQ's sweeper bumps ``touched`` on every
@@ -52,6 +75,19 @@ FOUR GUARDS, all load-bearing:
   stolen. Under READ COMMITTED the DELETE re-checks the ``status = :status`` qualification after
   locking a concurrently-updated row, so a row that flips to a terminal status first wins the race and
   is left alone.
+
+WHY EACH CALLER'S ``except Exception`` IS BROAD (phaze-bk9el.27)
+----------------------------------------------------------------
+Both reapers wrap this statement in a SAVEPOINT under a bare ``except Exception``, and both are kept
+that way. The contract is categorical -- a reaper hiccup must never abort the controller cron tick that
+runs it -- and it is enforced at a CRON BOUNDARY, where a raise takes down a tick that also carries
+unrelated work. The failure modes are open-ended by nature: a pre-migration environment with no
+``saq_jobs`` table, a malformed ``job`` blob failing the ``convert_from(...)::jsonb`` cast, a driver- or
+pool-level error. Narrowing to an enumerated set would honour the never-raise contract only for the
+modes someone thought of in advance and would convert every other one into the tick-aborting raise the
+contract exists to forbid. Each handler is already narrow where it counts: it wraps one statement,
+catches ``Exception`` rather than ``BaseException`` (cancellation still propagates), logs with
+``exc_info=True``, and returns the explicit ``{"reaped": 0}`` rather than swallowing silently.
 
 The status is a BIND PARAMETER, not interpolated -- one prepared statement serves both callers and no
 caller can widen the reaper's blast radius by passing SQL.
