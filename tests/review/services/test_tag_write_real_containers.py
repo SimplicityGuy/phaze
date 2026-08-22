@@ -384,7 +384,17 @@ def test_phaze_can_read_back_what_phaze_wrote(tmp_path: Path, ext: str) -> None:
     Distinct from ``verify_write``: this calls ``extract_tags`` the way INGEST does. A format phaze
     can write but not read back is a file whose catalog metadata silently goes empty at the next
     scan -- the read-side half of the ASF defect, where ``metadata_parsing.py``'s ``_VORBIS_MAP``
-    fallback serves ASF too and returns ``None`` for all six fields on a correctly-tagged ``.wma``.
+    fallback served ASF too and returned ``None`` for all six fields on a correctly-tagged ``.wma``.
+
+    **The ``wma`` parameter's coupling is deliberate and load-bearing. Do not decouple it.** This
+    test PASSED against pre-fix code, because the writer wrote Vorbis keys and the reader read
+    Vorbis keys -- self-consistently wrong, which is the defect in one sentence. It therefore goes
+    RED against a half-fix that corrects the writer alone and leaves ``_VORBIS_MAP`` serving ASF.
+
+    That is the guard working, not a broken test. It mechanically forces the read-map fix to
+    accompany the write-map fix, instead of relying on someone remembering that the defect had two
+    halves. If you are mid-change and see this red on ``wma``, land the other half rather than
+    adjusting the assertion.
     """
     path = _make_container(tmp_path, ext)
     write_tags(str(path), dict(_TAGS))

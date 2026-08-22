@@ -302,7 +302,22 @@ class TestExtractTagsID3:
 
 
 class TestExtractTagsVorbis:
-    """Tests for extract_tags with Vorbis-tagged (OGG/FLAC) files."""
+    """Tests for extract_tags with Vorbis-tagged (OGG/FLAC) files.
+
+    phaze-wt9vw: both tests in this class were GREEN ON THE STRENGTH OF THE BUG. They built a
+    ``MagicMock`` wearing a class literally named ``"VorbisComment"`` and were read as Vorbis only
+    because the format dispatch ended in an unguarded "anything that isn't ID3 or MP4 must be
+    Vorbis" arm -- the same fallback that let ``.wma`` files be written with Vorbis keys and then
+    verified against those same keys. Removing the fallback turned both red. They now build a real
+    ``VCommentDict``; the resolver was NOT relaxed to accommodate them, which would have
+    reinstated the defect in order to preserve a test of it.
+
+    **The general form, because this will recur wherever a default branch is removed:** a wrong
+    fallback branch can make tests pass that assert the wrong thing, so removing it surfaces them
+    as failures. A red test after deleting a default is evidence about the TEST first, and only
+    then about the fix -- check what the test was actually relying on before concluding the change
+    is wrong.
+    """
 
     @patch("phaze.services.metadata.mutagen.File")
     def test_extracts_vorbis_tags(self, mock_file):
