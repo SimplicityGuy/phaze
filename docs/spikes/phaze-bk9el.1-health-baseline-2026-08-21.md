@@ -6,6 +6,10 @@
 - **Baseline commit:** `65e5af46e5812969445b1d6c4aaf09a8b1a4b5d7` (`wt/bead/epic/phaze-bk9el`, the branch every wave-2
   bead forked from) — this is the fixed point `phaze-bk9el.19`'s ledger diffs against.
 - **Status:** measurement only. No file under `src/` is modified by this bead.
+- **Provenance:** every health figure here is a direct sqlite read of `.repowise/wiki.db`, written
+  by this bead's own `repowise health` fold. Nothing came from the MCP tools. Cross-checked against
+  two other routes with zero mismatches — see §9, which also *measures* why the staleness
+  `phaze-bk9el.9` reported is not an MCP cache.
 
 ## What this is, and what it is for
 
@@ -482,3 +486,92 @@ records, and an optional merge of authoritative coverage from a `coverage json` 
 diffable on their shared keys; byte-reproducing the vu88k artifact needs that commit's copy of the
 script (`git show ef1ef7d2:scripts/health_baseline.py`) and, more importantly, its index state,
 which the re-ingest above has deliberately replaced.
+
+## 9. Provenance: which tool produced each figure, and why it is not stale
+
+`phaze-bk9el.9` reported that repowise served **byte-identical numbers across two commits and two
+`repowise update` runs**, with a frozen `health_analyzed_at` and a frozen `nloc`, and read that as
+an MCP-layer cache. Since this bead *is* the measurement every downstream comparison is made
+against, "some of these numbers might describe an earlier tree" is the one defect it cannot ship.
+So the route behind every figure is recorded here, and the freshness is established rather than
+assumed.
+
+### Route table
+
+| Figures | Route | Cached? |
+| --- | --- | --- |
+| Statement / branch / combined coverage, per module and repo-wide; `.coverage-baseline.json` | `coverage.json` from coverage.py, this bead's own suite run | no — not a repowise artifact at all |
+| Ingest counts (31150 records, 258 files) | `repowise coverage add` stdout + `scripts/repowise_coverage_gate.py` re-reading `repowise coverage status --format json` / `repowise status --format json` | no — CLI, in-process, and the gate re-reads stored state rather than trusting an exit code |
+| `score`, `maintainability_score`, `performance_score`, `max_ccn`, `max_nesting`, `nloc`, `duplication_pct`, `line_coverage_pct`, `branch_coverage_pct` | `scripts/health_baseline.py` → **direct sqlite read** of `.repowise/wiki.db` (`health_file_metrics`) | no — reads the stored rows themselves, below any tool layer |
+| Every finding, its `health_impact`, its `details_json` (including the DRY clone partners) | same, `health_findings` | same |
+
+**No figure in this artifact came from the MCP tools.** `get_health`, `get_context` and `get_risk`
+were not used to produce any of it.
+
+### Why the stored rows are fresh
+
+The rows this artifact reads were written by **this bead's own `repowise health` run**, as step 5
+of the five-step refresh:
+
+```console
+$ sqlite3 .repowise/wiki.db "SELECT min(updated_at), max(updated_at) FROM health_file_metrics"
+2026-08-22 00:20:45.607060|2026-08-22 00:20:45.677882      -- 2342 rows
+$ sqlite3 .repowise/wiki.db "SELECT min(created_at), max(created_at) FROM health_findings"
+2026-08-22 00:20:45.892728|2026-08-22 00:20:46.053056      -- 3290 rows
+$ sqlite3 .repowise/wiki.db "SELECT max(ingested_at) FROM coverage_files"
+2026-08-22 00:19:59.060313                                  -- 258 rows
+```
+
+Every findings row has `created_at == updated_at` at that instant: the fold did not update rows in
+place, it **recreated** them. That is a stronger statement than "not cached".
+
+### Three independent routes agree exactly
+
+The same values were re-taken through the non-cached CLI path and through the MCP path and compared
+field by field against the committed JSON:
+
+| Cross-check | Scope | Mismatches |
+| --- | --- | ---: |
+| `repowise health --file <path> --format json` | 22 files × 9 fields (`score`, `max_ccn`, `max_nesting`, `nloc`, `duplication_pct`, `line_coverage_pct`, `branch_coverage_pct`, total deduction, finding count) = **198 values** | **0** |
+| MCP `get_health` | 3 files × the same 9 fields = **27 values** | **0** |
+
+The 22 files span the score range: the 12 worst, the four wave-3 refactor targets,
+`routers/duplicates.py` (the one module whose coverage verdict differs between metrics),
+`routers/agent_analysis.py` (the file `phaze-bk9el.9` measured), three mid-range and three
+top-scoring files. MCP `get_health`'s `_meta.health_analyzed_at` came back as
+`2026-08-22T00:20:45.677882` — **exactly this bead's fold timestamp** — with
+`indexed_commit: 8d1bf08cf1bd`, `index_behind: false`, and
+`coverage.summary.ingested_commit_sha: 8d1bf08cf1bdb7a6075784872c45404c09cbe897`.
+
+### The mechanism is not an MCP cache — measured
+
+Running `repowise update` on an unchanged tree leaves **all three tables byte-identical**:
+
+```console
+$ # before
+health_file_metrics max(updated_at) = 2026-08-22 00:20:45.677882
+health_findings     max(created_at) = 2026-08-22 00:20:46.053056
+coverage_files      max(ingested_at)= 2026-08-22 00:19:59.060313
+$ repowise update          # exit 0
+$ # after — identical, to the microsecond
+health_file_metrics max(updated_at) = 2026-08-22 00:20:45.677882
+health_findings     max(created_at) = 2026-08-22 00:20:46.053056
+coverage_files      max(ingested_at)= 2026-08-22 00:19:59.060313
+```
+
+So `repowise update` **does not run the health fold at all** — it advances the structural index and
+nothing else. A frozen `health_analyzed_at` across two updates is therefore the correct, faithful
+behaviour of a tool reporting rows that nobody recomputed; the numbers were stale because
+`repowise health` had not been run, not because a cache served old ones.
+
+This matters for the workaround the epic adopts. **"Avoid the MCP tool" does not fix it** — the MCP
+tool, the CLI dashboard and a direct sqlite read all serve the same stored rows, and this artifact's
+three-way agreement above is the demonstration. What fixes it is running the fold: `repowise health`,
+or `just repowise-coverage`, which runs all five steps and fails closed if any of them silently
+no-ops. `repowise health --file <path>` gave `phaze-bk9el.9` a genuinely different answer because it
+recomputes that one file in-process, which is a real and useful property — but it is a recompute, not
+a cache bypass, and it does not refresh what anyone else subsequently reads.
+
+This is the same defect family as criterion 1 of this very bead: `repowise update` does not
+re-ingest coverage either. Two halves of one gap — the structural index refreshes on its own, and
+neither coverage nor health does.
