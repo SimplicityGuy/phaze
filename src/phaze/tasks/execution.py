@@ -124,6 +124,35 @@ becomes "completed_with_errors" in the returned batch dict (no schema field for 
 
 This module MUST NOT import phaze.database, phaze.models.*, or sqlalchemy.
 Enforced by tests/shared/core/test_task_split.py (Plan 10).
+
+ERROR-HANDLING REVIEW (phaze-bk9el.7, 2026-08-21): repowise flagged 10 broad-except findings in
+this file. Reviewed individually; this is a file-move module, and per the epic's own rule 2 a
+broad ``except`` is sometimes correct -- narrowing one here risks abandoning a partially-moved
+file mid-flight, which is worse than the noise.
+
+- ONE (`_atomic_cross_fs_copy`'s tmp-cleanup) was never actually a swallow -- it always
+  re-raised -- so `except BaseException: cleanup(); raise` is now `finally: cleanup()`, which
+  says the same thing without reading as a hidden handler. See that function's inline comment.
+  The finding is gone, not just narrowed.
+- EIGHT are HTTP-reporting catches AFTER the file op already committed (`_ensure_start_log`,
+  `_report_success`, `_report_failure`, `_report_progress_failure`'s caller): the module
+  docstring above (Phase 28 bullets, D-16) already records why each must log-and-continue rather
+  than raise -- the move is done, only the AUDIT TRAIL write failed, and crashing the job over a
+  reporting 5xx would misreport a successfully-moved file as failed. Left broad, unchanged.
+- ONE (``_execute_one``'s own outer ``except Exception``) is the per-proposal isolation boundary
+  this module's docstring calls out explicitly ("cross-proposal failures are isolated") --
+  narrowing it would let one proposal's unexpected error crash the whole batch instead of being
+  recorded against that proposal alone. Left broad, unchanged.
+
+PRIMITIVE-OBSESSION REVIEW (phaze-bk9el.7, 2026-08-21): repowise flagged `_execute_one` (8 params)
+and `_reclaim_or_refuse_existing_destination` (5, one keyword-only) on param count alone. Neither
+is a primitive-obsession smell in the usual sense -- no cluster of same-typed primitives (e.g.
+three raw strings that are really one address) is being passed positionally. `_execute_one`'s
+params are the SAQ per-proposal call boundary (client, item, roots, payload, position flag, two
+retry-stable UUIDs, job); its own body is 15 lines after this bead's extract_method split, so a
+parameter object here would relocate the count onto a new type without shrinking either function.
+`_reclaim_or_refuse_existing_destination` already keyword-only-guards its one flag (`same_fs`).
+Left as-is; not fixed.
 """
 
 from __future__ import annotations
@@ -489,13 +518,22 @@ def _atomic_cross_fs_copy(src: Path, dst: Path) -> None:
             # which is still atomic -- it just cannot detect a late occupant. Documented, narrow,
             # and strictly better than refusing to move files on such a mount at all.
             tmp.replace(dst)
-    except BaseException:
+    finally:
         # phaze-otoqj: safe to unconditionally clean up now that `tmp` is unique to THIS
         # attempt (`_unique_tmp_path`) -- pre-fix, with a deterministic tmp name, this same
         # line let a losing concurrent writer delete a WINNING writer's still-live staging
         # file out from under it, mid-copy.
+        #
+        # phaze-bk9el.7 (error_handling review): this used to be `except BaseException: ...;
+        # raise` -- a catch-cleanup-reraise that never actually handled anything, so it read as
+        # a swallow-risk finding even though it swallowed nothing. `finally` says the same thing
+        # the code always meant (clean up `tmp` no matter how the block exits) without the
+        # except clause implying a handled error. Behaviorally identical on both paths: on
+        # success `tmp` is already gone (unlinked directly, or consumed by `tmp.replace(dst)`),
+        # so `missing_ok=True` makes the now-redundant unlink here a no-op; on any raise --
+        # including BaseException-only signals like CancelledError -- it still fires before
+        # propagating, exactly as the broad except did.
         tmp.unlink(missing_ok=True)
-        raise
 
 
 def _atomic_same_fs_move(src: Path, dst: Path) -> None:
@@ -1012,6 +1050,87 @@ async def _report_failure(
         _report_progress_failure(ctx.item, ctx.is_last, progress_exc)
 
 
+async def _compute_proposed(
+    item: ExecuteBatchProposalItem,
+    scan_roots: list[str],
+    job: Any | None,
+    step: _MoveStep,
+) -> Path:
+    """Resolve the destination for one proposal, applying the move if it is not already done.
+
+    Split out of ``_execute_one`` (phaze-bk9el.7 extract_method plan, source biomarker
+    ``complex_method`` on ``_execute_one``, suggested name ``compute_proposed``) -- same order,
+    same ``step`` tracking, same ``job.meta`` persistence as before the split; a pure
+    decomposition, not a behavior change. ``step`` is the same ``_MoveStep`` instance the caller
+    holds, so mutations here (``step.current = "verify"`` etc.) are visible to the caller's
+    ``except Exception`` handler exactly as they were inline; a raise from any awaited call below
+    propagates through this function unchanged, same as it did inline.
+
+    Returns ``proposed`` -- the only value ``_execute_one`` still needs from this block afterward.
+    """
+    # 2. Path-traversal guard for original_path + construct/guard the
+    # destination. step.current="copy" (the default) covers path-resolve (a
+    # failure here means "the copy couldn't begin" -- matches operator
+    # intuition). proposed_path is a RELATIVE dir under the owning
+    # scan_root; the destination is owning_root/proposed_path/proposed_filename
+    # (empty proposed_path == in-place rename).
+    original, owning_root = _resolve_and_check_containment(item.original_path, scan_roots)
+    proposed = _resolve_destination(item, original, owning_root, scan_roots)
+
+    already_moved = _check_replay_corroborated(original, proposed, item, job)
+    if already_moved and item.sha256_hash is not None:
+        # Confirm `proposed` is actually the expected file before trusting the
+        # replay -- a hash mismatch means this isn't the already-moved file (e.g.
+        # an unrelated file landed at the destination), so treat it as a genuine
+        # verify failure instead of silently reporting success.
+        step.current = "verify"
+        await _verify_hash_or_raise(
+            proposed,
+            item.sha256_hash,
+            label=item.original_path,
+            suffix=f" (already-moved replay check against {proposed})",
+        )
+
+    if already_moved:
+        # phaze-v3b1e: a confirmed replay means the move is durably done, so THIS
+        # proposal's cross-fs commit marker (if any) has no further job to do. The two
+        # sites that normally unlink it (inside `_reclaim_or_refuse_existing_destination`
+        # and `_move_across_filesystem`) both require `original` to still exist, so a
+        # crash between `original.unlink()` and the marker's own unlink there permanently
+        # skips them on every subsequent replay -- `already_moved` is now True and
+        # corroborated by the very marker file this call would otherwise never clean up,
+        # orphaning `<dest>.phaze-committed.<proposal_id>` in the archive forever. Cleaning
+        # it up here, once, on every already-moved replay closes that window regardless of
+        # which crash edge produced it.
+        _committed_copy_marker_path(proposed, item.proposal_id).unlink(missing_ok=True)
+
+    if not already_moved:
+        # 3. Optional sha256 verify (caller may supply None to skip)
+        if item.sha256_hash is not None:
+            step.current = "verify"
+            await _verify_hash_or_raise(original, item.sha256_hash, label=item.original_path)
+
+        # 4. Move original -> proposed.
+        await _apply_file_move(original, proposed, item, step)
+
+        # phaze-ebb46: persist THIS proposal's own "moved" corroboration flag now that
+        # its move is fully committed -- retry-stable in job.meta, same idempotent
+        # convention as `log_id:`/`req_id:` (D-15). This is the fresh-execution half of
+        # the corroboration check above: a same-fs move is one atomic syscall with no
+        # cross-fs-style residue window to inspect on replay, so this flag is what lets
+        # a LATER SAQ retry of this same job tell "my own prior move" apart from a
+        # different proposal's already-completed move that happens to sit at this exact
+        # destination (the phaze-i7jo insufficiency this bead closes for the same-fs
+        # path too). Only reached on a FRESH commit -- an already-moved replay skips
+        # this whole block, so the flag is never redundantly re-persisted.
+        if job is not None:
+            updated_job_meta = dict(getattr(job, "meta", None) or {})
+            updated_job_meta[_moved_flag_key(item.proposal_id)] = "1"
+            await job.update(meta=updated_job_meta)
+
+    return proposed
+
+
 async def _execute_one(
     api: PhazeAgentClient,
     item: ExecuteBatchProposalItem,
@@ -1047,6 +1166,12 @@ async def _execute_one(
     failed-step tracking that used to be a bare local (`current_step`) is now `_MoveStep`,
     threaded through the extracted helpers so a raise inside any of them still leaves the right
     value for the `except Exception` block below to read (see `_MoveStep`'s docstring).
+
+    phaze-bk9el.7: the path-resolve / already-moved-check / verify / move / persist-flag block
+    that used to sit inline here is now `_compute_proposed` -- the repowise extract_method plan
+    on this function (span 1091-1143 at measurement time, suggested name `compute_proposed`).
+    Same steps, same order, same `step`/`job` mutation visible to this function exactly as
+    before; `proposed` is the only value this function still needed from that block.
     """
     sha_verified = item.sha256_hash is not None
     # Relative destination for the audit trail (source_path is absolute, but the
@@ -1082,65 +1207,7 @@ async def _execute_one(
     # handler can map exception -> failed_at_step without inspecting types.
     step = _MoveStep()
     try:
-        # 2. Path-traversal guard for original_path + construct/guard the
-        # destination. step.current="copy" (the default) covers path-resolve (a
-        # failure here means "the copy couldn't begin" -- matches operator
-        # intuition). proposed_path is a RELATIVE dir under the owning
-        # scan_root; the destination is owning_root/proposed_path/proposed_filename
-        # (empty proposed_path == in-place rename).
-        original, owning_root = _resolve_and_check_containment(item.original_path, scan_roots)
-        proposed = _resolve_destination(item, original, owning_root, scan_roots)
-
-        already_moved = _check_replay_corroborated(original, proposed, item, job)
-        if already_moved and item.sha256_hash is not None:
-            # Confirm `proposed` is actually the expected file before trusting the
-            # replay -- a hash mismatch means this isn't the already-moved file (e.g.
-            # an unrelated file landed at the destination), so treat it as a genuine
-            # verify failure instead of silently reporting success.
-            step.current = "verify"
-            await _verify_hash_or_raise(
-                proposed,
-                item.sha256_hash,
-                label=item.original_path,
-                suffix=f" (already-moved replay check against {proposed})",
-            )
-
-        if already_moved:
-            # phaze-v3b1e: a confirmed replay means the move is durably done, so THIS
-            # proposal's cross-fs commit marker (if any) has no further job to do. The two
-            # sites that normally unlink it (inside `_reclaim_or_refuse_existing_destination`
-            # and `_move_across_filesystem`) both require `original` to still exist, so a
-            # crash between `original.unlink()` and the marker's own unlink there permanently
-            # skips them on every subsequent replay -- `already_moved` is now True and
-            # corroborated by the very marker file this call would otherwise never clean up,
-            # orphaning `<dest>.phaze-committed.<proposal_id>` in the archive forever. Cleaning
-            # it up here, once, on every already-moved replay closes that window regardless of
-            # which crash edge produced it.
-            _committed_copy_marker_path(proposed, item.proposal_id).unlink(missing_ok=True)
-
-        if not already_moved:
-            # 3. Optional sha256 verify (caller may supply None to skip)
-            if item.sha256_hash is not None:
-                step.current = "verify"
-                await _verify_hash_or_raise(original, item.sha256_hash, label=item.original_path)
-
-            # 4. Move original -> proposed.
-            await _apply_file_move(original, proposed, item, step)
-
-            # phaze-ebb46: persist THIS proposal's own "moved" corroboration flag now that
-            # its move is fully committed -- retry-stable in job.meta, same idempotent
-            # convention as `log_id:`/`req_id:` (D-15). This is the fresh-execution half of
-            # the corroboration check above: a same-fs move is one atomic syscall with no
-            # cross-fs-style residue window to inspect on replay, so this flag is what lets
-            # a LATER SAQ retry of this same job tell "my own prior move" apart from a
-            # different proposal's already-completed move that happens to sit at this exact
-            # destination (the phaze-i7jo insufficiency this bead closes for the same-fs
-            # path too). Only reached on a FRESH commit -- an already-moved replay skips
-            # this whole block, so the flag is never redundantly re-persisted.
-            if job is not None:
-                updated_job_meta = dict(getattr(job, "meta", None) or {})
-                updated_job_meta[_moved_flag_key(item.proposal_id)] = "1"
-                await job.update(meta=updated_job_meta)
+        proposed = await _compute_proposed(item, scan_roots, job, step)
 
         await _report_success(
             ctx,

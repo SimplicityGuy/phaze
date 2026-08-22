@@ -113,6 +113,38 @@ The per-stage tally therefore distinguishes ``unreplayable`` (knowingly skipped 
 re-enqueued and needs another owner) from ``skipped`` (deterministic-key dedup -- the work is already
 live), and ``POST /pipeline/recover`` surfaces the difference instead of always reading "Recovery
 started".
+
+ERROR-HANDLING REVIEW (phaze-bk9el.7, 2026-08-21): repowise flagged 5 broad-except findings here.
+Reviewed individually; all five stay broad, unchanged.
+
+- THREE are per-row isolation catches in the replay/regenerate loops (`_replay_row`'s caller,
+  `_regenerate_row_isolated`'s caller, `_replay_owner_group`'s caller): each is already commented
+  at its site as deliberate -- "a poison row here must never abort the run" / "isolate it exactly
+  like a failed `_replay_row`". This is a recovery sweep over an unbounded, partly-external-owned
+  row set; narrowing any of them to a specific exception type turns one bad row into a run-ending
+  crash instead of a `tally["errored"] += 1` the next pass retries.
+- ONE (`backfill_ledger_from_saq_jobs`'s SAVEPOINT read) is the T-45-14 degrade-safe path,
+  documented in that function's own docstring: "NEVER raises -- a backfill failure must not abort
+  controller boot." A pre-migration environment's missing `saq_jobs` table must not be
+  distinguished by exception type from any other reason the read could fail; either way the
+  correct response is the same empty tally.
+- ONE (`_regenerate_s3_upload`'s `except BaseException`) is NOT a swallow -- unlike the
+  `finally`-eligible case fixed in `tasks/execution.py::_atomic_cross_fs_copy` under this same
+  bead, this one cannot become a `finally`: the success path deliberately skips the
+  rollback+drop_pending it performs, falling through to flush the pending enqueue instead. The
+  broad catch buys one thing a typed catch can't: whatever fails here (including a
+  BaseException-only signal), the half-started multipart's parked enqueue is dropped and the
+  session is rolled back before re-raising as-is, so the next row in the same recovery loop still
+  gets a clean session. Left broad, unchanged.
+
+PRIMITIVE-OBSESSION REVIEW (phaze-bk9el.7, 2026-08-21): repowise flagged `_is_orphaned` and
+`_replay_agent_rows_by_owner` (5 params each) on count alone. Neither is a primitive cluster:
+`_is_orphaned`'s four keyword-only params are independently-computed lookup sets
+(`live`/`done_sets`/`in_flight`/`awaiting_cloud`), each built once per recovery pass and threaded
+into several pure predicates -- bundling them into one struct would just relocate the parameter
+count into a type with no shared invariant of its own. `_replay_agent_rows_by_owner`'s params are
+heterogeneous infra handles and data (session, task_router, rows, stages) plus one keyword-only
+flag, not primitives. Left as-is; not fixed.
 """
 
 from __future__ import annotations
