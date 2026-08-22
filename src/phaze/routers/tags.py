@@ -309,9 +309,15 @@ async def _validate_tag_review_token(
     current = _tag_review_payload(file_record, tracklist, discogs_link, proposed)
     if reviewed != current:
         raise HTTPException(status_code=409, detail="Tag metadata or enrichment changed after review; refresh before approving")
-    after = reviewed.get("after")
-    if not isinstance(after, dict):
-        raise HTTPException(status_code=400, detail="Invalid reviewed tag payload")
+    # phaze-bk9el.10: the equality check above already requires `reviewed` to structurally equal
+    # `current`, and `_tag_review_payload`'s own "after" is always the dict comprehension
+    # `{field: proposed.get(field) for field in CORE_FIELDS}` (tag_comparison.py) -- never
+    # anything else. So `reviewed["after"]` is provably a dict here for any token, real or
+    # hand-crafted: a non-dict "after" already fails the equality check and 409s above. A
+    # defensive `isinstance` guard used to sit here for exactly that unreachable case; removed
+    # (dead code, not a coverage gap to paper over -- see the bead) rather than documented. The
+    # `{}` default below is mypy's `dict.get` `V | None` -> `V` narrowing, not a runtime fallback.
+    after = reviewed.get("after", {})
     return reviewed, {field: cast("str | int | None", after.get(field)) for field in CORE_FIELDS}
 
 
@@ -714,6 +720,15 @@ async def _dispatch_bulk_candidate(
         # phaze-k7g6: roll back only this file's uncommitted work (prior per-file commits stand)
         # and keep going. A raised ValueError/TagWriteAlreadyQueuedError/DB error is a failed
         # file, not a batch abort.
+        #
+        # phaze-bk9el.10 (error_handling finding, left broad on purpose): this is a per-candidate
+        # step inside `_run_bulk_candidates`' loop over up to `_MAX_BULK_TAG_WRITE` files. Narrowing
+        # the catch to the three types the comment above names would leave any OTHER exception --
+        # an unexpected DB driver error, a bug in a future edit to this branch -- propagating out of
+        # one candidate and aborting the whole batch, silently dropping every outcome already tallied
+        # for the candidates before it. Broad-and-tallied-as-"failed" is the deliberate choice: one
+        # bad file never costs the operator the rest of the submit, and the traceback is still
+        # logged for triage.
         await session.rollback()
         logger.warning("bulk_tag_write_file_skipped", file_id=str(file_id), exc_info=True)
         return "failed"

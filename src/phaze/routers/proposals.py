@@ -408,6 +408,34 @@ async def proposal_timeline(
     )
 
 
+def _reject_if_invalid_common(value: str) -> None:
+    """Shared guard for both facets: non-empty, no control chars, no ``..`` traversal (T-60-02).
+
+    phaze-bk9el.10: split out of ``_validate_proposed_value`` (flagged ``complex_method``, CCN 9)
+    so the two facets' checks are no longer one function's branches -- a pure extraction, every
+    check byte-identical to the code it replaces.
+    """
+    if not value:
+        raise HTTPException(status_code=400, detail="Proposed value must not be empty")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+        raise HTTPException(status_code=400, detail="Proposed value must not contain control characters")
+    if ".." in value:
+        raise HTTPException(status_code=400, detail="Proposed value must not contain '..'")
+
+
+def _normalize_proposed_path(value: str) -> str:
+    """The path facet's own normalization: mirror ``services/proposal.py``'s ``store_proposals``
+    sanitize (``strip('/')`` + collapse ``//``). Split out of ``_validate_proposed_value``
+    alongside :func:`_reject_if_invalid_common` (phaze-bk9el.10) -- same behavior, its own name.
+    """
+    value = value.strip("/")
+    while "//" in value:
+        value = value.replace("//", "/")
+    if not value:
+        raise HTTPException(status_code=400, detail="Proposed path must not be empty")
+    return value
+
+
 def _validate_proposed_value(proposed: str, *, is_path: bool) -> str:
     """Validate + normalize an operator-edited ``proposed`` value (D-05, T-60-02).
 
@@ -417,23 +445,12 @@ def _validate_proposed_value(proposed: str, *, is_path: bool) -> str:
     violation so a hostile edit can never reach the persisted row a later physical move consumes.
     """
     value = proposed.strip()
-    if not value:
-        raise HTTPException(status_code=400, detail="Proposed value must not be empty")
-    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
-        raise HTTPException(status_code=400, detail="Proposed value must not contain control characters")
-    if ".." in value:
-        raise HTTPException(status_code=400, detail="Proposed value must not contain '..'")
+    _reject_if_invalid_common(value)
     if not is_path:
         if "/" in value:
             raise HTTPException(status_code=400, detail="Proposed filename must not contain '/'")
         return value
-    # Path facet: mirror services/proposal.py store_proposals sanitize (strip('/') + collapse '//').
-    value = value.strip("/")
-    while "//" in value:
-        value = value.replace("//", "/")
-    if not value:
-        raise HTTPException(status_code=400, detail="Proposed path must not be empty")
-    return value
+    return _normalize_proposed_path(value)
 
 
 @router.patch("/{proposal_id}/edit", response_class=HTMLResponse)

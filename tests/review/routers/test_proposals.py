@@ -15,6 +15,7 @@ import phaze
 from phaze.models.analysis import AnalysisWindow
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.routers.proposals import _diff_facet_fields
 from phaze.services.analysis_timeline import BpmSpark, bpm_spark
 from phaze.services.proposal_queries import proposal_review_digest
 
@@ -228,6 +229,22 @@ async def test_approve_proposal_without_review_token_is_rejected(client: AsyncCl
     """A bare API PATCH cannot bypass the version reviewed by the operator."""
     proposal = await create_test_proposal(session)
     response = await client.patch(f"/proposals/{proposal.id}/approve")
+    assert response.status_code == 400
+
+    updated = await session.get(RenameProposal, proposal.id)
+    assert updated is not None
+    assert updated.status == ProposalStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_approve_proposal_with_malformed_token_is_rejected(client: AsyncClient, session: AsyncSession) -> None:
+    """A token that fails ``datetime.fromisoformat`` is treated the SAME as no token (phaze-exivg /
+    phaze-bk9el.10): ``_parse_updated_at_token`` folds a ``ValueError`` to ``None`` rather than
+    500ing, so the request still hits the pre-existing "a reviewed version is required" 400 --
+    never a bare unhandled exception.
+    """
+    proposal = await create_test_proposal(session)
+    response = await client.patch(f"/proposals/{proposal.id}/approve", data={"expected_updated_at": "not-a-real-timestamp"})
     assert response.status_code == 400
 
     updated = await session.get(RenameProposal, proposal.id)
@@ -507,6 +524,26 @@ async def test_bulk_reject(client: AsyncClient, session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
+async def test_bulk_reject_skips_malformed_proposal_id(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-3st0: the ``proposal_ids`` (non-token) id list gets the same malformed-entry skip as
+    ``review_tokens`` -- reject only takes the ``proposal_ids`` form field, so this is the branch
+    that exercises ``for pid in proposal_ids: ... except ValueError: continue``.
+    """
+    p1 = await create_test_proposal(session, original_filename="br-mal1.mp3")
+
+    response = await client.patch(
+        "/proposals/bulk",
+        data={"action": "reject", "proposal_ids": [str(p1.id), "not-a-uuid"]},
+    )
+    assert response.status_code == 200
+    assert "1 proposal rejected." in response.text
+
+    updated1 = await session.get(RenameProposal, p1.id)
+    assert updated1 is not None
+    assert updated1.status == ProposalStatus.REJECTED
+
+
+@pytest.mark.asyncio
 async def test_timeline_with_windows(client: AsyncClient, session: AsyncSession) -> None:
     """GET /proposals/{id}/timeline returns a 200 SVG fragment with BPM polyline + ribbons."""
     proposal = await create_test_proposal(session)
@@ -674,6 +711,53 @@ def test_bpm_spark_empty() -> None:
     assert result.window_count == 0
 
 
+def test_diff_facet_fields_path_facet() -> None:
+    """``_diff_facet_fields``'s path branch (phaze-bk9el.10 coverage finding).
+
+    No LIVE route reaches this branch today: ``_row_target`` (and its ``_V7_ROW_FACETS`` map)
+    only ever resolves to the "filename" facet post phaze-tzy6s.11/ADR-0008, since the path/move
+    workspace was retired and Changes Review authorizes filename + destination through one row.
+    The function itself still takes a ``facet`` argument and is kept for the day a path-facet row
+    is reintroduced (see its own docstring), so this exercises it directly rather than declaring
+    the branch permanently dead.
+    """
+    file_record = FileRecord(
+        agent_id="test-fileserver",
+        id=uuid.uuid4(),
+        sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+        original_path="/music/orig/Original.mp3",
+        original_filename="Original.mp3",
+        current_path="/music/current/Original.mp3",
+        file_type="music",
+        file_size=1_000_000,
+    )
+    proposal = RenameProposal(
+        id=uuid.uuid4(),
+        file_id=file_record.id,
+        proposed_filename="New Name.mp3",
+        proposed_path="Artist/Event",
+        confidence=0.9,
+        status=ProposalStatus.PENDING,
+    )
+
+    before, after, edit_facet, extra_context = _diff_facet_fields(proposal, file_record, "path")
+
+    assert before == file_record.current_path
+    assert after == "Artist/Event"
+    assert edit_facet == "path"
+    assert extra_context == {
+        "diff_label": "Destination",
+        "secondary_label": "Filename",
+        "secondary_before": file_record.original_filename,
+        "secondary_after": proposal.proposed_filename,
+    }
+
+    # The ``proposed_path is None`` sub-branch of the path facet (``after = "" `` fallback).
+    proposal.proposed_path = None
+    _before, after_empty, _edit_facet, _extra = _diff_facet_fields(proposal, file_record, "path")
+    assert after_empty == ""
+
+
 # ---------------------------------------------------------------------------
 # State-machine guard on the review-UI status routes (phaze-uu17)
 # ---------------------------------------------------------------------------
@@ -828,6 +912,65 @@ async def test_edit_on_pending_proposal_succeeds(client: AsyncClient, session: A
     )
     assert response.status_code == 200
     assert "Renamed Track.mp3" in response.text
+
+
+@pytest.mark.asyncio
+async def test_edit_rejects_whitespace_only_value(client: AsyncClient, session: AsyncSession) -> None:
+    """T-60-02: a value that strips to empty is rejected the same as a genuinely empty one."""
+    proposal = await create_test_proposal(session, proposed_filename="Original.mp3")
+    response = await client.patch(
+        f"/proposals/{proposal.id}/edit",
+        data={"proposed": "   ", "facet": "filename"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Proposed value must not be empty"
+
+    updated = await session.get(RenameProposal, proposal.id)
+    assert updated is not None
+    assert updated.proposed_filename == "Original.mp3"
+
+
+@pytest.mark.asyncio
+async def test_edit_path_facet_collapses_double_slashes(client: AsyncClient, session: AsyncSession) -> None:
+    """The path facet mirrors store_proposals normalization: strip('/') + collapse '//' (T-60-02)."""
+    proposal = await create_test_proposal(session, proposed_path="Artist/Event")
+    response = await client.patch(
+        f"/proposals/{proposal.id}/edit",
+        data={"proposed": "//New Artist//New Event//", "facet": "path"},
+    )
+    assert response.status_code == 200
+
+    updated = await session.get(RenameProposal, proposal.id)
+    assert updated is not None
+    assert updated.proposed_path == "New Artist/New Event"
+
+
+@pytest.mark.asyncio
+async def test_edit_path_facet_all_slashes_is_rejected(client: AsyncClient, session: AsyncSession) -> None:
+    """A path facet value that normalizes away to nothing (all slashes) is rejected, not persisted
+    as an empty path.
+    """
+    proposal = await create_test_proposal(session, proposed_path="Artist/Event")
+    response = await client.patch(
+        f"/proposals/{proposal.id}/edit",
+        data={"proposed": "///", "facet": "path"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Proposed path must not be empty"
+
+    updated = await session.get(RenameProposal, proposal.id)
+    assert updated is not None
+    assert updated.proposed_path == "Artist/Event"
+
+
+@pytest.mark.asyncio
+async def test_edit_not_found_returns_404(client: AsyncClient) -> None:
+    """PATCH /proposals/{random_uuid}/edit returns 404, mirroring approve/reject/undo."""
+    response = await client.patch(
+        f"/proposals/{uuid.uuid4()}/edit",
+        data={"proposed": "Something.mp3", "facet": "filename"},
+    )
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio
