@@ -3,15 +3,18 @@
 Split out of `routers/pipeline_scans.py` by phaze-bk9el.17: that module carried the
 trigger *and* every read/render/delete endpoint on the same prefix. This module is the
 write path only; `pipeline_scans.py` keeps the HTMX poll partial, the recent-scans
-table, the agent-roots swap and the delete endpoint. The code below is a verbatim move
--- no behaviour, ordering, message or status changed.
+table, the agent-roots swap and the delete endpoint. The code below was a verbatim move
+at the time of that split -- no behaviour, ordering, message or status changed. The one
+deliberate change since is phaze-4jvy1, which tightened `_authorize_scan_root`'s containment
+gate to the SUBMITTED root; see that function's docstring.
 
 The operator picks an agent + scan_root + optional subpath from the Trigger Scan card on
 the `/pipeline/` dashboard, and `trigger_scan`:
 
 1. Validates the form server-side (T-27-03): joins root + subpath, NFC-normalizes,
    rejects literal `..` as a path *component* (see `_normalize_and_validate_scan_path`),
-   enforces prefix-against `agent.scan_roots`, and verifies the agent is not revoked.
+   requires the submitted root to be one of `agent.scan_roots` and the resolved path to be
+   contained by THAT root (phaze-4jvy1), and verifies the agent is not revoked.
 2. Creates a RUNNING `ScanBatch` row.
 3. Enqueues `scan_directory(scan_path, batch_id)` via the lifespan-wired
    `AgentTaskRouter.enqueue_for_agent` (Phase 26 D-19) to the chosen agent's
@@ -147,9 +150,22 @@ async def _authorize_scan_root(request: Request, session: AsyncSession, form: Tr
     partial match like ``scan_root="/data"`` + ``subpath="music/foo"`` to authorize
     ``/data/music/foo`` even though ``/data`` itself was never configured.
 
-    D-06 prefix validation then confirms `joined` matches (or descends from) one of the
-    agent's configured scan_roots, stripping the trailing slash on roots so
-    `"/data/music"` matches both `"/data/music"` and `"/data/music/2026"`.
+    D-06 prefix validation then confirms `joined` matches (or descends from) the SUBMITTED
+    root, stripping its trailing slash so `"/data/music"` matches both `"/data/music"` and
+    `"/data/music/2026"`.
+
+    phaze-4jvy1: that containment check used to iterate `scan_roots_nfc` -- EVERY configured
+    root -- and so answered "is this path under SOME configured root" while its name and its
+    only call site both promise "is this path under THE root you named". A `joined` under
+    `/data/videos` authorised a submission whose `scan_root` was `/data/music`. It was never
+    reachable through `POST /pipeline/scans`, because `trigger_scan` derives `joined` FROM the
+    submitted root and the two arguments therefore cannot disagree -- but that made the pairing
+    load-bearing and invisible, with nothing in the signature to say so, one refactor away from
+    a live authorization bypass. The check now names `scan_root_nfc`, which WR-05 directly above
+    has ALREADY proven to be a member of `scan_roots_nfc`: the tightening swaps an iteration over
+    that list for the single element already validated out of it, so on the reachable input class
+    it accepts exactly the same set, and a mismatched pair is now rejected rather than trusted.
+    THE PAIRING IS NO LONGER LOAD-BEARING -- do not widen this back to `scan_roots_nfc`.
 
     Returns the authorized `Agent`, or a rendered alert on rejection.
     """
@@ -163,7 +179,7 @@ async def _authorize_scan_root(request: Request, session: AsyncSession, form: Tr
     if scan_root_nfc not in scan_roots_nfc:
         return _render_scan_alert(request, "Selected scan root is not configured for this agent.")
 
-    if not any(joined == r or joined.startswith(r.rstrip("/") + "/") for r in scan_roots_nfc):
+    if not (joined == scan_root_nfc or joined.startswith(scan_root_nfc.rstrip("/") + "/")):
         return _render_scan_alert(request, "Resolved path is outside the selected scan root.")
 
     return agent
@@ -332,7 +348,8 @@ async def trigger_scan(
     1. :func:`_normalize_and_validate_scan_path` -- NFC-normalize, reject NUL/invalid
        Unicode (phaze-jpji), reject `..` traversal (WR-01), canonicalize (phaze-0wme).
     2. :func:`_authorize_scan_root` -- look up the agent (reject missing/revoked),
-       enforce literal `scan_root` membership (WR-05) and D-06 prefix containment.
+       enforce literal `scan_root` membership (WR-05) and D-06 prefix containment of
+       `joined` within the SUBMITTED root (phaze-4jvy1).
     3. :func:`_insert_running_scan_batch` -- create + commit a RUNNING ScanBatch,
        translating the partial-unique duplicate guard (phaze-1a71) into an alert.
     4. :func:`_enqueue_scan_or_mark_failed` -- enqueue `scan_directory`, reconciling an

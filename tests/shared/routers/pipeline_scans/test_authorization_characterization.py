@@ -15,12 +15,17 @@ asserts the exact returned value -- the canonical path string on accept, and the
 checkable: two different rejections render into the same alert envelope, so a split that swaps
 which branch fires is invisible from outside and obvious here.
 
-CHARACTERIZED, NOT ENDORSED. Several rows below record behaviour that is surprising rather than
-ideal -- most notably ``test_authorize_scan_root_accepts_a_path_under_a_DIFFERENT_configured_root``.
-A characterization test's job is to record what the code does today so a refactor can be checked
-against it. Where a row looks like a latent weakness it is called out in its own docstring; none
-of them is changed here, and none should be changed as a side effect of the split. If one should
-change, that is a bead of its own with its own review.
+CHARACTERIZED, NOT ENDORSED -- AND THE PROCESS WORKED. A characterization test's job is to record
+what the code does today so a refactor can be checked against it, which means recording behaviour
+that is surprising rather than ideal and saying so. The headline example was
+``test_authorize_scan_root_accepts_a_path_under_a_DIFFERENT_configured_root``: the containment gate
+iterated EVERY configured root instead of the submitted one. It was pinned as-is and left alone
+through the phaze-bk9el.17 split, filed as its own bead, and tightened there -- phaze-4jvy1. The row
+is now ``test_authorize_scan_root_rejects_a_path_under_a_DIFFERENT_configured_root`` and asserts the
+tightened verdict; it is kept rather than deleted because it is the only test that distinguishes
+"under the root you named" from "under some root you configured", which is the whole content of that
+gate. No other row here carries a NOT-ENDORSED caveat. If one ever should change, that is again a
+bead of its own with its own review -- not an edit made in passing.
 
 THE ORDER IS PART OF THE CONTRACT. ``_normalize_and_validate_scan_path``'s docstring pins a
 four-step order -- NFC-normalize, reject NUL/surrogates, reject ``..`` as a COMPONENT, THEN
@@ -256,6 +261,19 @@ _AUTHORIZE_CORPUS: list[tuple[str, list[str] | None, bool, str, str, str, Any]] 
     # trailing separator during a split turns this row green and opens the hole.
     ("sibling-directory-sharing-a-string-prefix", ["/data/music"], False, "/data/music", "/data/musicXX", "reject", _MSG_OUTSIDE_ROOT),
     ("sibling-file-sharing-a-string-prefix", ["/data/music"], False, "/data/music", "/data/music.bak", "reject", _MSG_OUTSIDE_ROOT),
+    # phaze-4jvy1: containment is measured against the SUBMITTED root, not against any configured
+    # root. `/data/videos/a` is inside a root this agent legitimately has -- and is still rejected,
+    # because the operator named `/data/music`. See the dedicated test below for why this row is
+    # the one that carries the gate's actual meaning.
+    (
+        "joined-under-a-DIFFERENT-configured-root",
+        ["/data/music", "/data/videos"],
+        False,
+        "/data/music",
+        "/data/videos/a",
+        "reject",
+        _MSG_OUTSIDE_ROOT,
+    ),
 ]
 
 
@@ -284,23 +302,41 @@ async def test_authorize_scan_root_corpus(
 
 
 @pytest.mark.asyncio
-async def test_authorize_scan_root_accepts_a_path_under_a_DIFFERENT_configured_root(session: AsyncSession) -> None:
-    """CHARACTERIZED, NOT ENDORSED: the prefix gate accepts ANY configured root, not the selected one.
+async def test_authorize_scan_root_rejects_a_path_under_a_DIFFERENT_configured_root(session: AsyncSession) -> None:
+    """phaze-4jvy1: containment is measured against the SUBMITTED root, not against any configured one.
 
-    The literal-membership gate checks the SUBMITTED ``scan_root``, but the containment gate
-    that follows is ``any(joined == r or joined.startswith(r + "/") for r in scan_roots)`` --
-    over every configured root, not over the one the operator selected. So a ``joined`` under
-    ``/data/videos`` is authorised even when the submitted root was ``/data/music``.
+    THE ONE ASSERTION THAT DISTINGUISHES THE TWO READINGS OF THIS GATE. Every other row in the
+    corpus is satisfied by both the old predicate and the new one, because in every other row a
+    rejected ``joined`` is outside *all* the agent's roots -- so "outside the root you named" and
+    "outside every root you configured" give the same verdict. Here they do not: ``/data/videos/a``
+    is inside a root this agent legitimately holds, and is nevertheless refused, because the
+    operator selected ``/data/music``. Delete this test and the gate can silently widen back to
+    ``any(... for r in scan_roots_nfc)`` with the whole suite green.
 
-    Not reachable through ``POST /pipeline/scans`` today, because ``trigger_scan`` always
-    derives ``joined`` from the submitted ``scan_root`` -- the two arguments cannot disagree.
-    It is recorded here precisely BECAUSE it is unreachable: it is exactly the kind of latent
-    coupling a split can turn into a reachable one, and a pin that only covered reachable inputs
-    would not notice.
+    ITS HISTORY, WHICH IS THE POINT. It was written by phaze-bk9el.22 asserting the OPPOSITE
+    verdict, labelled CHARACTERIZED, NOT ENDORSED: the containment gate then read
+    ``any(joined == r or joined.startswith(r + "/") for r in scan_roots)``, so it answered "is this
+    under SOME configured root" while its name and its only call site both promise "is this under
+    THE root you named". That was never reachable through ``POST /pipeline/scans`` -- ``trigger_scan``
+    derives ``joined`` FROM the submitted root, so the two arguments cannot disagree there -- and it
+    was pinned precisely BECAUSE it was unreachable, since an unreachable coupling is exactly what a
+    refactor turns into a reachable one. phaze-4jvy1 tightened the predicate to the submitted root;
+    this row flipping from accept to reject was the intended signal that it had.
 
-    This test asserts today's behaviour. It is not an endorsement of it, and it is not a
-    licence to change it here -- tightening the gate is a behaviour change and belongs in its
-    own bead with its own review.
+    WHY THE TIGHTENING BREAKS NOTHING ELSE. WR-05 has already proven the submitted root is a member
+    of ``scan_roots`` by the time containment runs, so the new predicate tests the one element the
+    old one was iterating a list to find. The verdict can therefore only differ for a ``joined`` not
+    derived from ``scan_root`` -- a pair no request can construct.
+
+    The positive control below is what makes the rejection meaningful: the SAME agent, the SAME
+    ``joined``, submitted under the root it actually belongs to, is still accepted. So this test
+    fails if the gate stops honouring the pairing, and it also fails if someone "fixes" it by
+    refusing ``/data/videos`` outright.
     """
     outcome = await _authorize(session, scan_roots=["/data/music", "/data/videos"], revoked=False, scan_root="/data/music", joined="/data/videos/a")
-    assert outcome == ("accept", _ANY_AGENT)
+    assert outcome == ("reject", _MSG_OUTSIDE_ROOT)
+
+    positive_control = await _authorize(
+        session, scan_roots=["/data/music", "/data/videos"], revoked=False, scan_root="/data/videos", joined="/data/videos/a"
+    )
+    assert positive_control == ("accept", _ANY_AGENT), "the path is refused for the pairing, not because /data/videos is unscannable"
