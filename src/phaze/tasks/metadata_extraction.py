@@ -30,6 +30,33 @@ logger = structlog.get_logger(__name__)
 _EXTRACTABLE_CATEGORIES = frozenset({FileCategory.MUSIC, FileCategory.VIDEO})
 
 
+async def _ack_terminal_failure(api: PhazeAgentClient, file_id: Any, exc: Exception, ctx: dict[str, Any]) -> None:
+    """Phase 45 (L-02/CR-02) terminal-attempt ack: best-effort, never masks the original error.
+
+    Called only when the SAQ job in ``ctx`` is present and NOT retryable -- a retryable attempt
+    (or job absent in a pure unit test) re-raises silently so the one real retry can run (T-45-06);
+    the row survives for it. Mirrors process_file's generic guard (functions.py:179-189). Without
+    this ack a terminally-failed metadata file stays in get_metadata_pending_files forever, so
+    is_domain_completed can never fire and recover_orphaned_work re-enqueues it on every pass.
+    """
+    job = ctx.get("job")
+    if job is None or job.retryable:
+        return
+    # Phase 81 (FAIL-02): compose a triage payload so control persists a durable metadata failure
+    # marker (failed_at set) with the exception detail. `reason="error"` -- the SAQ terminal ack
+    # does not distinguish timeout/crash here. Truncate to the payload's `error` bound
+    # (max_length=2000) BEFORE construction so a very long exception string can't raise a
+    # ValidationError that would clobber the original error E1.
+    failure = MetadataFailurePayload(reason="error", error=str(exc)[:2000])
+    # Best-effort ack: if report_metadata_failed ALSO raises (E2) while handling the original
+    # failure (E1), swallow + log E2 so the caller's bare `raise` always re-raises E1 -- SAQ must
+    # record the real task error, not the ack error (WR-01).
+    try:
+        await api.report_metadata_failed(file_id, failure)
+    except Exception:
+        logger.warning("extract_file_metadata terminal-ack failed", file_id=str(file_id), exc_info=True)
+
+
 async def extract_file_metadata(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     """Extract audio tags from a file on disk and PUT them via HTTP."""
     payload = ExtractMetadataPayload.model_validate(kwargs)
@@ -69,27 +96,10 @@ async def extract_file_metadata(ctx: dict[str, Any], **kwargs: Any) -> dict[str,
         )
         await api.put_metadata(payload.file_id, body)
     except Exception as exc:
-        # Phase 45 (L-02 / CR-02): clear the scheduling-ledger row on the TERMINAL attempt only,
-        # then re-raise so SAQ records the failed attempt. A retryable attempt (or job absent in a
-        # pure unit test) re-raises silently so the one real retry can run -- the row survives for
-        # it (T-45-06). Mirrors process_file's generic guard (functions.py:179-189). Without this
-        # ack a terminally-failed metadata file stays in get_metadata_pending_files forever, so
-        # is_domain_completed can never fire and recover_orphaned_work re-enqueues it on every pass.
-        job = ctx.get("job")
-        if job is not None and not job.retryable:
-            # Phase 81 (FAIL-02): compose a triage payload so control persists a durable metadata
-            # failure marker (failed_at set) with the exception detail. `reason="error"` -- the
-            # SAQ terminal ack does not distinguish timeout/crash here. Truncate to the payload's
-            # `error` bound (max_length=2000) BEFORE construction so a very long exception string
-            # can't raise a ValidationError that would clobber the original error E1.
-            failure = MetadataFailurePayload(reason="error", error=str(exc)[:2000])
-            # Best-effort ack: if report_metadata_failed ALSO raises (E2) while handling the
-            # original failure (E1), swallow + log E2 so the bare `raise` below always re-raises
-            # E1 -- SAQ must record the real task error, not the ack error (WR-01).
-            try:
-                await api.report_metadata_failed(payload.file_id, failure)
-            except Exception:
-                logger.warning("extract_file_metadata terminal-ack failed", file_id=str(payload.file_id), exc_info=True)
+        # Phase 45 (L-02 / CR-02): ack the terminal attempt only, then re-raise so SAQ records the
+        # failed attempt -- see _ack_terminal_failure for the retryable/job-absent skip and the
+        # best-effort E1-vs-E2 discipline.
+        await _ack_terminal_failure(api, payload.file_id, exc, ctx)
         raise
     logger.info("metadata extraction completed", file_id=str(payload.file_id), status="extracted")
     return {"file_id": str(payload.file_id), "status": "extracted"}
