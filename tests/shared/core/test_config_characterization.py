@@ -215,7 +215,11 @@ def test_settings_env_var_universe_is_unchanged() -> None:
 # We assert the DERIVATION instead of the recorded number: whatever this host derives is what
 # the setting must resolve to. That keeps the pin honest about what it can and cannot claim --
 # it still catches a reordered or dropped validator, which is what the docstring promises.
-_HOST_DERIVED_FIELDS = ("lane_analyze_concurrency",)
+# `backends` is here for the same reason, one level down: the local backend's `cap` is the same
+# derive_sizing().concurrency surfaced through the registry (config_backends.py -- "derive_sizing
+# chooses both halves together"). Measured: cap=2 on a 10-core dev box, cap=1 on the CI runner.
+# The rest of the entry (kind/id/rank) is fixed and IS still asserted, in _assert_host_derived_fields.
+_HOST_DERIVED_FIELDS = ("lane_analyze_concurrency", "backends")
 
 
 def _diff_report(actual: dict[str, Any], golden: dict[str, Any]) -> str:
@@ -244,7 +248,15 @@ def _assert_host_derived_fields(resolved: dict[str, Any]) -> None:
     """Each host-derived field equals what this host actually derives, not a recorded literal."""
     from phaze.services.analysis_sizing import derive_sizing
 
-    assert resolved["lane_analyze_concurrency"] == derive_sizing().concurrency
+    derived = derive_sizing().concurrency
+    assert resolved["lane_analyze_concurrency"] == derived
+
+    # The registry's shape is fixed and asserted exactly; only `cap` is host-derived.
+    # AgentSettings carries no `backends` field -- only ControlSettings does.
+    if "backends" in resolved:
+        backends = resolved["backends"]
+        assert [{k: v for k, v in b.items() if k != "cap"} for b in backends] == [{"kind": "local", "id": "local", "rank": 99}]
+        assert [b["cap"] for b in backends] == [derived]
 
 
 @pytest.mark.usefixtures("scrubbed_env")
