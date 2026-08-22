@@ -4,11 +4,15 @@ repos:
     rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
     hooks:
       - id: check-added-large-files
+        # The vendored Kubernetes JSON schemas are 683 KB of upstream artifact (phaze-frq98) --
+        # over the 500 KB default, and deliberately NOT minified: the whole point of a vendored
+        # schema is that `curl ... | shasum -a 256` re-verifies it byte for byte against upstream.
         exclude: |
           (?x)^(
             \.planning/graphs/graph\.json|
             \.planning/graphs/\.last-build-snapshot\.json|
-            graphify-out/graph\.json
+            graphify-out/graph\.json|
+            tests/vendor/kubernetes-json-schema/.*\.json
           )$
       - id: check-executables-have-shebangs
       - id: check-json
@@ -31,15 +35,21 @@ repos:
         # (phaze-han03): a patch file is a CHECKSUMMED-BY-CONTEXT format. Diff context
         # lines legitimately carry trailing whitespace and the trailer ends "-- ", so
         # stripping either makes `git am` fail to apply — verified, it did.
-        exclude: &byte-identical ^(src/phaze/static/vendor/|tests/identify/fixtures/tracklist_render/|docs/spikes/[^/]+/patches/)
+        # Same rule once more for the vendored Kubernetes JSON schemas (phaze-frq98,
+        # tests/vendor/): they are the upstream `yannh/kubernetes-json-schema` artifacts, checked
+        # against a recorded sha256, and they ship with NO trailing newline -- so this hook WOULD
+        # rewrite them and break that check.
+        exclude: &byte-identical ^(src/phaze/static/vendor/|tests/identify/fixtures/tracklist_render/|docs/spikes/[^/]+/patches/|tests/vendor/)
       - id: mixed-line-ending
         exclude: *byte-identical
       - id: trailing-whitespace
         exclude: *byte-identical
       - id: pretty-format-json
         args: [--autofix, --indent=2]
-        # Skip generated artifacts (planning graphs, graphify output)
-        exclude: ^(\.planning/|graphify-out/)
+        # Skip generated artifacts (planning graphs, graphify output) and the byte-identical
+        # vendored Kubernetes JSON schemas (tests/vendor/, phaze-frq98) -- reformatting an upstream
+        # artifact destroys the sha256 that proves it IS the upstream artifact.
+        exclude: ^(\.planning/|graphify-out/|tests/vendor/)
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: 65dbdb59d2f2d9c3bdc343c566821ad3319ddaa3  # frozen: v0.16.3
