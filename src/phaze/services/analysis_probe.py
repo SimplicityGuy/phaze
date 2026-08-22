@@ -42,8 +42,8 @@ def _probe_duration_sec(file_path: str) -> float:
 
     D-10 DECISION RECORD -- ffprobe, not ``es.MetadataReader`` (phaze-l832u)
     ----------------------------------------------------------------------
-    This probe used to read ``es.MetadataReader`` output index 8. MetadataReader is TagLib,
-    and **TagLib cannot read a duration out of Matroska**: it returns ``0``. That was harmless
+    This probe used to read ``es.MetadataReader`` output index 8, and **``es.MetadataReader``
+    returns ``0`` for Matroska on the platform this ships on**. That was harmless
     while every file reaching :func:`analyze_file` was the archive's own mp3/m4a/ogg, and fatal
     the moment phaze-3ea41 put an unconditional pre-analysis remux to ``.mka`` in front of it --
     ``total_sec == 0`` makes :func:`_iter_windows` yield nothing, both ``*_total`` counts land on
@@ -53,6 +53,45 @@ def _probe_duration_sec(file_path: str) -> float:
         original .mp3   MetadataReader duration = 90
         remuxed  .mka   MetadataReader duration = 0
         remuxed  .mka   ffprobe        duration = 90.044000
+
+    WHAT MAKES ``MetadataReader`` RETURN 0 HERE -- CORRECTED 2026-08-22 (phaze-gppj2)
+    ..................................................................................
+    This record used to say "MetadataReader is TagLib, and TagLib cannot read a duration out of
+    Matroska". **The conclusion is correct and is confirmed by measurement; that mechanism was
+    never verified and is not what the evidence shows.** It is recorded here because a decision
+    record that explains an incident by an unverified mechanism is worse than one that says the
+    mechanism is unknown -- it stops anyone looking further.
+
+    Measured inside ``ghcr.io/simplicityguy/phaze:latest`` -- the deployed image, ffmpeg 7.1.5,
+    real essentia-tensorflow -- and reproduced identically in ``ghcr.io/actions/actions-runner``::
+
+        .mka   MetadataReader duration = 0   samplerate = 0
+        .mp3   MetadataReader duration = 3   samplerate = 44100
+        .m4a   MetadataReader duration = 2   samplerate = 44100
+
+    Two candidate mechanisms were RULED OUT by measurement, not by argument:
+
+    * **Not the ffmpeg version.** 7.1.5, 8.1.2 and 9.0.1 all mux a ``.mka`` that macOS reads
+      fine. (This matters because the CI/production ffmpeg split in ADR-0013 section 7 was
+      briefly suspected of causing this. It does not, and that decision needs no amendment on
+      account of this finding.)
+    * **Not codec support.** ``.mp3`` and ``.m4a`` read fine in the same container, same binary,
+      same run -- only the Matroska metadata read fails.
+
+    **The variable is the essentia WHEEL.** The linux x86_64 wheel cannot read Matroska metadata;
+    the macOS arm64 wheel can. BOTH CI and production run the linux one, which is why a developer
+    on macOS sees the opposite of what production does. WHICH COMPONENT INSIDE THAT WHEEL IS
+    RESPONSIBLE WAS NOT ESTABLISHED -- TagLib is a plausible suspect and nothing more. Do not
+    re-assert it without measuring it.
+
+    ARE phaze-3ea41's GUARDS STILL LOAD-BEARING? **YES.** MetadataReader reads 0 from a ``.mka``
+    on the deployed platform TODAY, so the zero-duration shape remains reachable for any path
+    that trusts it. Nothing here weakens the ADR-0012 rule 3 lesson either; that lesson -- verify
+    with the artifact's REAL consumer, not the tool that produced it -- is what surfaced this
+    misattribution in the first place.
+
+    The real consumer of the ``.mka`` is ``ffprobe``, and ``src/`` contains NO ``MetadataReader``
+    call site at all: every remaining mention is a comment explaining why it is not used.
 
     Only the metadata probe was ever broken -- essentia DECODES the ``.mka`` correctly (the same
     measurement got 2/2 windows out of it). So the fix is the probe, not the container: ffprobe

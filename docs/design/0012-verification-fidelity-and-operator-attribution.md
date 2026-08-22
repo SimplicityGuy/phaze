@@ -350,9 +350,11 @@ verified, and the criterion was declared satisfied.
 that sentence is false.
 
 But the **container** changed, from MP3 to Matroska, and analysis reads the container. `analyze_file`
-takes its duration from `_probe_duration_sec`, which at the time read `es.MetadataReader` — TagLib.
-TagLib returns no duration for Matroska. Zero duration makes `_iter_windows` yield nothing, both
-`*_total` counts land on 0, and the zero-window guard fails the file.
+takes its duration from `_probe_duration_sec`, which at the time read `es.MetadataReader` — and
+`es.MetadataReader` returns no duration for Matroska on the deployed platform. Zero duration makes
+`_iter_windows` yield nothing, both `*_total` counts land on 0, and the zero-window guard fails the
+file. (This record previously named TagLib as the mechanism. That attribution was never verified;
+see the platform note below, added by `phaze-gppj2`.)
 
 Measured inside the deployed 2026.8.3 agent image on 2026-08-14 (`phaze-l832u`):
 
@@ -363,6 +365,38 @@ Measured inside the deployed 2026.8.3 agent image on 2026-08-14 (`phaze-l832u`):
 | `_decode_windows` | — | 2/2 windows, 1,323,000 samples each |
 
 The audio was intact and essentia decoded it correctly, exactly as the equivalence argument said.
+
+### Correction 2026-08-22 (`phaze-gppj2`): the mechanism above was misattributed
+
+This section previously explained the zero duration by "MetadataReader is TagLib, and TagLib returns
+no duration for Matroska". **The incident, the numbers, and this section's whole argument are
+unaffected** — the container really did change, the duration really did read 0, and 11,428 files
+really were broken by a substituted claim that was true and about the wrong quantity. What was wrong
+is the *mechanism*, and it is corrected here because rule 3 below is stated on the strength of it.
+
+Measured inside the deployed image (ffmpeg 7.1.5, real essentia-tensorflow) and reproduced in a CI
+runner image: `.mka` → duration 0 / samplerate 0, while `.mp3` and `.m4a` read correctly in the same
+container, same binary, same run. The ffmpeg major was ruled out (7.1.5, 8.1.2 and 9.0.1 all mux a
+`.mka` that macOS reads fine), and so was codec support. **The variable is the essentia wheel** — the
+linux x86_64 build cannot read Matroska metadata and the macOS arm64 build can, and both CI and
+production run the linux one. Which component *inside* that wheel is responsible was never
+established; TagLib is a suspect, not a finding.
+
+Two things worth keeping from how this was caught, both of which are this ADR's own rules turned on
+its own text:
+
+- It surfaced because a bead was required to verify against the artifact's **real consumer**. A
+  developer on macOS measured `es.MetadataReader` reading the `.mka` duration *correctly* — the exact
+  opposite of what this record claimed — and filed the contradiction instead of quietly trusting the
+  document. Rule 3 caught an error in the section that argues for rule 3.
+- The fix that followed did **not** make the test tolerant of duration 0. It asserts the production
+  contract (`ffprobe` reads the duration) *and* pins `MetadataReader == 0` on linux, so a future
+  essentia wheel that gains Matroska support fails loudly and D-10 is revisited deliberately rather
+  than silently.
+
+`es.MetadataReader` still returns 0 for Matroska on the deployed platform, so the guards this
+incident produced remain load-bearing.
+
 **The argument answered a question nobody needed answered.** An argument that is true and about the
 wrong quantity is indistinguishable, at review, from an argument that is true and about the right
 one — which is why the rule below is that a criterion is discharged by a test or by the operator,

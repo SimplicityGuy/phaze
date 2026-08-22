@@ -100,9 +100,14 @@ explicit about:
 **D-10 NARROWING (phaze-l832u): every file is still PROBED, but a file that is already plain
 audio is no longer REMUXED.** phaze-3ea41's decision above was "extraction runs on every file";
 2026.8.3 shipped it alongside phaze-w55w1's exhaustive analysis and the pair stopped the
-pipeline dead for 11.5 hours -- the ``.mka`` intermediate is Matroska, ``es.MetadataReader`` is
-TagLib, and TagLib reads duration 0 out of Matroska, so every file produced zero natural
-windows. The CORRECTNESS half of the fix is in ``services/analysis.py`` (D-10: probe duration
+pipeline dead for 11.5 hours -- the ``.mka`` intermediate is Matroska, and ``es.MetadataReader``
+returns duration 0 for Matroska ON THE DEPLOYED PLATFORM, so every file produced zero natural
+windows. (This was originally recorded as "MetadataReader is TagLib and TagLib cannot read
+Matroska". The CONCLUSION is right and measured; that MECHANISM was never verified and is not
+what the evidence shows -- see :func:`_probe_duration_sec`'s D-10 record in
+``services/analysis_probe.py`` for what was actually measured, phaze-gppj2.)
+
+The CORRECTNESS half of the fix is in ``services/analysis.py`` (D-10: probe duration
 with ffprobe, which reads the ``.mka`` correctly -- gating the remux alone would have left
 phaze-3ea41's actual feature, video containers, broken in exactly the same way, since a video's
 extracted ``.mka`` hits the identical gap). This module carries the COST half, and only that:
