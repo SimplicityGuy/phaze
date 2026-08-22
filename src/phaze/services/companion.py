@@ -122,11 +122,12 @@ async def _insert_links(session: AsyncSession, rows: list[dict[str, uuid.UUID]])
     still cross this bound even with batch_size bounding the companion count, so chunking stays
     regardless of the outer paging.
 
-    The chunks MUST run serially, and gathering them would be a defect, not an optimisation: they
-    all execute on ONE AsyncSession, whose single underlying asyncpg connection cannot carry two
-    concurrent statements -- a ``gather`` here raises ``another operation is in progress``. Serial
-    execution is also what keeps them inside one transaction, which is the atomicity guarantee
-    below.
+    The chunks MUST run serially, and gathering them would buy nothing: they all execute on ONE
+    AsyncSession, whose concurrent use upstream does not support and which -- measured on the
+    pinned 2.0.52 -- does not overlap statements anyway. The RULING block below, immediately before
+    :func:`associate_companions`, carries the measurement and is explicit that gather does NOT
+    raise here. Serial execution is also what keeps every chunk inside one transaction, which is
+    the atomicity guarantee below.
 
     The unlinked read in the caller is a snapshot: a concurrent run computes the same pairs, and
     whichever commits second would violate uq_file_companions_pair. ON CONFLICT DO NOTHING makes
@@ -153,10 +154,34 @@ async def _insert_links(session: AsyncSession, rows: list[dict[str, uuid.UUID]])
 # loop is the unit of work, and here it always is.
 #
 # The mechanical bar first, because it disposes of the whole class: all four awaits run on ONE
-# AsyncSession over ONE asyncpg connection. asyncpg cannot carry two concurrent statements on a
-# connection -- an ``asyncio.gather`` over any pair raises "another operation is in progress". No
-# await in this module is convertible to a concurrent one without also giving each branch its own
-# session, which would break the transaction the page's atomicity depends on.
+# AsyncSession, and no await here is convertible to a concurrent one without giving each branch its
+# own session -- which would break the transaction the page's atomicity depends on.
+#
+# BE PRECISE ABOUT WHY, because the obvious phrasing is FALSE and stood in this very comment until
+# phaze-bk9el.25's review caught it. It is tempting to write that ``asyncio.gather`` over these
+# raises "another operation is in progress". IT DOES NOT. Measured 2026-08-22 against this repo's
+# harness on the pinned SQLAlchemy 2.0.52: six ``select pg_sleep(0.1)`` on one AsyncSession took
+# 0.636 s serially and 0.628 s under ``asyncio.gather`` -- 1.01x, where genuine overlap would be
+# ~6x -- and NO exception was raised. gather SILENTLY SERIALIZES. Reproduced independently twice
+# more the same day: dev/w3-26 on phaze-bk9el.26 (0.745 s serial / 0.659 s gathered, plus eight
+# concurrent ORM ``session.execute`` calls returning eight results and no error) and the dispatcher
+# seat on this worktree's own database.
+#
+# Two things are established, and BOTH are reasons not to gather:
+#   * SQLAlchemy DOCUMENTS AsyncSession as unsafe for concurrent use. That is upstream's stated
+#     contract, it has not changed, and it is sufficient on its own.
+#   * On 2.0.52 the observed behaviour is silent serialization, so a gather is not even a failed
+#     optimisation -- it is a no-op that LOOKS like one. That is worse than an exception, because
+#     the "fix" appears to have worked while buying nothing.
+# The second must NOT be leant on: silent serialization is undocumented behaviour upstream is free
+# to change, and a release that started raising would turn any code depending on it into a live
+# defect. "Unsupported" and "does not raise today" are both true; neither licenses a gather.
+#
+# Related trap, since it is what routes beads to this module in the first place: a static
+# serial_await_in_loop finding carrying ``dataflow_verified: true`` is NOT a green light. Absence of
+# a data dependence is NECESSARY AND NEVER SUFFICIENT for a gather -- the flag says nothing about
+# session sharing, which is the binding constraint here. (phaze-4tch9 owns writing that general
+# form somewhere greppable, and correcting the same false premise at proposal.py:415-421.)
 #
 #   unlinked-companion page read   The keyset walk's cursor. Page N+1's ``id > after`` bound is not
 #     (in associate_companions)    known until page N has been read. Sequencing IS the algorithm;
@@ -212,11 +237,12 @@ async def associate_companions(session: AsyncSession, *, batch_size: int = DEFAU
 
     SERIAL AWAITS (phaze-bk9el.25): every ``await`` in the loop below is deliberately serial and
     none may be converted to ``asyncio.gather``. The page read, the media read, the chunked insert
-    and the commit all run on ONE ``AsyncSession`` over ONE asyncpg connection, which cannot carry
-    two concurrent statements -- gathering any pair raises ``another operation is in progress``.
-    Beyond that mechanical bar, the loop is a keyset walk: page N+1's ``id > after`` bound is not
-    known until page N has been read, and page N's ``commit()`` is what makes its links visible to
-    page N+1's ``NOT IN`` subquery. The serialization IS the paging.
+    and the commit all run on ONE ``AsyncSession``, whose concurrent use upstream does not support
+    and which, measured, does not overlap statements anyway -- see the RULING block directly above
+    for the numbers and for why "it raises" is the wrong reason to give.
+    Beyond that, the loop is a keyset walk: page N+1's ``id > after`` bound is not known until page
+    N has been read, and page N's ``commit()`` is what makes its links visible to page N+1's
+    ``NOT IN`` subquery. The serialization IS the paging.
 
     Returns the number of new links created across every page.
     """
