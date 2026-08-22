@@ -232,6 +232,41 @@ def looks_like_interstitial(html: str) -> bool:
     return any(marker in lowered for marker in _INTERSTITIAL_MARKERS)
 
 
+def _xvfb_required(mode: str, *, platform: str, environ: dict[str, str] | None = None) -> bool:
+    """Decide whether to start a virtual display.
+
+    `auto` -- the default -- means "only where a headful browser would otherwise have no
+    screen": Linux with no DISPLAY already exported. That leaves a developer's macOS laptop
+    (real screen) and a Linux desktop session (real X) alone, and covers the worker container,
+    which is the only place the answer is non-obvious.
+
+    Module-level rather than a method on `XvfbDisplay` (repowise low_cohesion finding,
+    phaze-bk9el.5): it is a pure classification over `(mode, platform, environ)` -- it never reads
+    or writes an `XvfbDisplay` instance's own state, which is exactly the LCOM4 split the finding
+    named. Exposed as `XvfbDisplay.is_required` for API-compatible external callers.
+    """
+    env = os.environ if environ is None else environ
+    if mode == "always":
+        return True
+    if mode == "never":
+        return False
+    return platform.startswith("linux") and not env.get("DISPLAY")
+
+
+def _terminate_process(process: Any) -> None:
+    """Best-effort stop of a spawned Xvfb process.
+
+    Module-level for the same reason as `_xvfb_required` above: it operates entirely on the
+    `process` handle passed in, touching no `XvfbDisplay` field, so it was the other half of that
+    class's LCOM4=2 split.
+    """
+    try:
+        process.terminate()
+        process.wait(timeout=5)
+    except Exception:  # pragma: no cover - defensive
+        logger.warning("Failed to terminate Xvfb cleanly", exc_info=True)
+
+
 class XvfbDisplay:
     """A virtual X display for the headful browser on a headless worker (phaze-fq9h.1).
 
@@ -272,21 +307,9 @@ class XvfbDisplay:
         """The `:N` display name once started, else None."""
         return self._display
 
-    @staticmethod
-    def is_required(mode: str, *, platform: str, environ: dict[str, str] | None = None) -> bool:
-        """Decide whether to start a virtual display.
-
-        `auto` -- the default -- means "only where a headful browser would otherwise have no
-        screen": Linux with no DISPLAY already exported. That leaves a developer's macOS laptop
-        (real screen) and a Linux desktop session (real X) alone, and covers the worker container,
-        which is the only place the answer is non-obvious.
-        """
-        env = os.environ if environ is None else environ
-        if mode == "always":
-            return True
-        if mode == "never":
-            return False
-        return platform.startswith("linux") and not env.get("DISPLAY")
+    #: Kept as `XvfbDisplay.is_required(...)` for callers/tests -- see `_xvfb_required` above for
+    #: why the implementation itself lives at module scope.
+    is_required = staticmethod(_xvfb_required)
 
     async def start(self) -> str:
         """Start Xvfb and return its display name.
@@ -316,7 +339,7 @@ class XvfbDisplay:
                 self._display = f":{number}"
                 logger.info("Started Xvfb virtual display for the render browser", display=self._display)
                 return self._display
-            self._terminate(process)
+            _terminate_process(process)
 
         raise XvfbError(f"Could not start Xvfb on any display in :{self.BASE_DISPLAY}-:{self.BASE_DISPLAY + self.MAX_DISPLAY_PROBES - 1}")
 
@@ -334,19 +357,10 @@ class XvfbDisplay:
             await asyncio.sleep(self.STARTUP_POLL_SECONDS)
         return False
 
-    @staticmethod
-    def _terminate(process: Any) -> None:
-        """Best-effort stop of an Xvfb process."""
-        try:
-            process.terminate()
-            process.wait(timeout=5)
-        except Exception:  # pragma: no cover - defensive
-            logger.warning("Failed to terminate Xvfb cleanly", exc_info=True)
-
     def stop(self) -> None:
         """Stop the display, if one is running. Safe to call more than once."""
         if self._process is not None:
-            self._terminate(self._process)
+            _terminate_process(self._process)
             self._process = None
         self._display = None
 
@@ -407,6 +421,11 @@ class PatchrightLauncher:
             )
             self._user_agent = await self._derive_user_agent()
         except BaseException:
+            # `BaseException`, not `Exception`, is deliberate (phaze-ccm02): this must also roll
+            # back on `asyncio.CancelledError` -- itself a `BaseException` since 3.11 -- or a
+            # cancelled launch leaves the just-started Xvfb process and Node driver orphaned, one
+            # per candidate, exactly as it did before this handler existed. `raise` below means
+            # nothing is swallowed; every exception, including cancellation, still propagates.
             await self.shutdown()
             raise
         return self._browser
@@ -444,7 +463,14 @@ class PatchrightLauncher:
         return f"{base} {honest_user_agent_token()}"
 
     async def shutdown(self) -> None:
-        """Close the browser and the driver, and stop the virtual display. Idempotent."""
+        """Close the browser and the driver, and stop the virtual display. Idempotent.
+
+        Both `except Exception` blocks below are deliberately broad and non-fatal: this is a
+        teardown path called from `launch()`'s own rollback (above) and from `TracklistRenderer`'s
+        `__aexit__`, so a failure closing one handle must never raise over a failure closing the
+        other, or prevent `self._display.stop()` from still running -- it is logged and swallowed
+        instead, and the caller's own exception (if any) is what actually propagates.
+        """
         if self._browser is not None:
             try:
                 await self._browser.close()
@@ -563,7 +589,7 @@ class TracklistRenderer:
             logger.warning("Detail-page render failed to navigate", url=url, attempts=len(attempt_outcomes), error=error)
         finally:
             if context is not None:
-                await self._close_context(context)
+                await _close_context(context)
 
         result = RenderResult(
             url=url,
@@ -618,17 +644,17 @@ class TracklistRenderer:
 
         for attempt in range(1, max_attempts + 1):
             if attempt > 1:
-                await self._wait(self._backoff_seconds(attempt), hard_deadline)
-            await self._paced(hard_deadline)
+                await _wait(self._backoff_seconds(attempt), hard_deadline)
+            await _paced(hard_deadline)
 
             if attempt == 1:
                 await page.goto(url, wait_until="domcontentloaded", timeout=navigation_timeout_ms)
             else:
                 await page.reload(wait_until="domcontentloaded", timeout=navigation_timeout_ms)
 
-            container_found = await self._wait_for_container(page, selector_timeout_ms)
+            container_found = await _wait_for_container(page, selector_timeout_ms)
             html = await page.content()
-            outcome = self._classify(html, container_found=container_found)
+            outcome = _classify(html, container_found=container_found)
             attempt_outcomes.append(outcome)
 
             if outcome is not RenderOutcome.INTERSTITIAL_PERSISTED:
@@ -644,37 +670,6 @@ class TracklistRenderer:
         logger.warning("Turnstile interstitial persisted through every attempt", url=url, attempts=max_attempts)
         return RenderOutcome.INTERSTITIAL_PERSISTED, html
 
-    @staticmethod
-    def _classify(html: str, *, container_found: bool) -> RenderOutcome:
-        """Turn one attempt's page state into an outcome.
-
-        The container check comes FIRST and wins outright: a cleared detail page still carries
-        Turnstile widget markup, so consulting the markers first would misreport successful
-        renders as blocked. Only when there is no container does the challenge-page marker set
-        decide between "we never got in" (retryable) and "this set has no tracklist" (a real,
-        cacheable negative).
-        """
-        if container_found:
-            return RenderOutcome.OK
-        if looks_like_interstitial(html):
-            return RenderOutcome.INTERSTITIAL_PERSISTED
-        return RenderOutcome.NO_TRACKLIST
-
-    @staticmethod
-    async def _wait_for_container(page: RenderPage, timeout_ms: float) -> bool:
-        """Wait for the track container; False if it never appeared within `timeout_ms`.
-
-        A timeout here is an ordinary, expected result (interstitial, or a page with no
-        tracklist), not an error -- which is why it is converted to a bool instead of propagating.
-        """
-        try:
-            await page.wait_for_selector(TRACK_CONTAINER_SELECTOR, timeout=timeout_ms, state="attached")
-        except Exception as exc:
-            if _is_browser_timeout(exc):
-                return False
-            raise
-        return True
-
     def _backoff_seconds(self, attempt: int) -> float:
         """Exponential backoff before retry `attempt` (attempt 2 is the first retry).
 
@@ -685,40 +680,98 @@ class TracklistRenderer:
         base = self._settings.tracklist_render_retry_backoff_seconds
         return float(base * (2 ** (attempt - 2))) if base > 0 else 0.0
 
-    @staticmethod
-    async def _wait(seconds: float, hard_deadline: asyncio.Timeout) -> None:
-        """Sleep, then push the hard deadline out by the time slept.
 
-        Waiting politely is correct behavior, not a hang, so it must not eat the budget that
-        exists to catch a wedged browser. Without the reschedule, a page whose 4 attempts each
-        wait out an 8-12s crawl delay would consume ~40s of a 90s hang budget doing exactly what
-        robots.txt asked of it.
-        """
-        if seconds <= 0:
-            return
-        await asyncio.sleep(seconds)
-        _extend_deadline(hard_deadline, seconds)
+# ---------------------------------------------------------------------------------------------
+# Module-level render primitives.
+#
+# These five were `TracklistRenderer` staticmethods until phaze-bk9el.5: a repowise low_cohesion
+# finding (LCOM4=2) split the class's 15 methods into exactly two groups -- the ones reading
+# `self._settings` / `self._launcher` / `self._browser`, and these, which take only a page,
+# HTML, a context or a deadline and never touch instance state. Moving the second group to module
+# scope (unchanged bodies, `self` never referenced) makes that split literal instead of a metric,
+# and every one of `TracklistRenderer`'s remaining methods now shares its instance state.
+# `TracklistRenderer._paced` / `._wait` are exercised directly by
+# tests/identify/services/test_tracklist_render.py; they moved with everything else, so those
+# call sites now read `_paced(...)` / `_wait(...)` off this module instead.
+# ---------------------------------------------------------------------------------------------
 
-    @staticmethod
-    async def _paced(hard_deadline: asyncio.Timeout) -> None:
-        """Take a slot from the shared whole-host schedule before a navigation.
 
-        `reserve_host_request_slot` is the SAME schedule `TracklistScraper` draws from: the
-        crawl-delay is a per-host budget, so a search fetch and a browser navigation compete for
-        one ceiling. See its docstring for why this is not a second, independent limiter.
-        """
-        loop = asyncio.get_running_loop()
-        before = loop.time()
-        await reserve_host_request_slot()
-        _extend_deadline(hard_deadline, loop.time() - before)
+def _classify(html: str, *, container_found: bool) -> RenderOutcome:
+    """Turn one attempt's page state into an outcome.
 
-    @staticmethod
-    async def _close_context(context: RenderContext) -> None:
-        """Close a context, never letting cleanup failure mask the render's own outcome."""
-        try:
-            await context.close()
-        except Exception:
-            logger.warning("Failed to close the render context cleanly", exc_info=True)
+    The container check comes FIRST and wins outright: a cleared detail page still carries
+    Turnstile widget markup, so consulting the markers first would misreport successful
+    renders as blocked. Only when there is no container does the challenge-page marker set
+    decide between "we never got in" (retryable) and "this set has no tracklist" (a real,
+    cacheable negative).
+    """
+    if container_found:
+        return RenderOutcome.OK
+    if looks_like_interstitial(html):
+        return RenderOutcome.INTERSTITIAL_PERSISTED
+    return RenderOutcome.NO_TRACKLIST
+
+
+async def _wait_for_container(page: RenderPage, timeout_ms: float) -> bool:
+    """Wait for the track container; False if it never appeared within `timeout_ms`.
+
+    A timeout here is an ordinary, expected result (interstitial, or a page with no
+    tracklist), not an error -- which is why it is converted to a bool instead of propagating.
+
+    The `except Exception` below stays broad rather than naming a Playwright/Patchright timeout
+    type directly: those types are only reachable through the lazy `_browser_error_types()` import
+    (patchright costs ~0.5s to import and most phaze processes never render a page), so the
+    handler filters programmatically via `_is_browser_timeout` and re-raises anything it does not
+    recognize -- narrowing the `except` clause itself would force the same eager import this
+    module exists to avoid.
+    """
+    try:
+        await page.wait_for_selector(TRACK_CONTAINER_SELECTOR, timeout=timeout_ms, state="attached")
+    except Exception as exc:
+        if _is_browser_timeout(exc):
+            return False
+        raise
+    return True
+
+
+async def _wait(seconds: float, hard_deadline: asyncio.Timeout) -> None:
+    """Sleep, then push the hard deadline out by the time slept.
+
+    Waiting politely is correct behavior, not a hang, so it must not eat the budget that
+    exists to catch a wedged browser. Without the reschedule, a page whose 4 attempts each
+    wait out an 8-12s crawl delay would consume ~40s of a 90s hang budget doing exactly what
+    robots.txt asked of it.
+    """
+    if seconds <= 0:
+        return
+    await asyncio.sleep(seconds)
+    _extend_deadline(hard_deadline, seconds)
+
+
+async def _paced(hard_deadline: asyncio.Timeout) -> None:
+    """Take a slot from the shared whole-host schedule before a navigation.
+
+    `reserve_host_request_slot` is the SAME schedule `TracklistScraper` draws from: the
+    crawl-delay is a per-host budget, so a search fetch and a browser navigation compete for
+    one ceiling. See its docstring for why this is not a second, independent limiter.
+    """
+    loop = asyncio.get_running_loop()
+    before = loop.time()
+    await reserve_host_request_slot()
+    _extend_deadline(hard_deadline, loop.time() - before)
+
+
+async def _close_context(context: RenderContext) -> None:
+    """Close a context, never letting cleanup failure mask the render's own outcome.
+
+    Broad `except Exception` by design, matching `TracklistRenderer.shutdown()`'s own two cleanup
+    blocks: a context that fails to close cleanly is logged, not raised, so it can never mask the
+    render outcome this call's `finally` block is protecting.
+    """
+    try:
+        await context.close()
+    except Exception:
+        logger.warning("Failed to close the render context cleanly", exc_info=True)
 
 
 def _extend_deadline(hard_deadline: asyncio.Timeout, seconds: float) -> None:
