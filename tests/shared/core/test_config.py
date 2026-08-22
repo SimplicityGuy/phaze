@@ -48,11 +48,15 @@ from phaze.config import (
     Role,
     Settings,
     _build_default_settings,
-    _direct_env_names,
-    _resolution_env,
     get_settings,
     settings,
 )
+
+# phaze-bk9el.18 moved these two module-private helpers, unchanged, to `phaze.config_secrets`
+# alongside the `<VAR>_FILE` resolution they exist to serve. `config.py` still imports
+# `_resolution_env` (its `_load_backend_registry` uses it), so both spellings resolve; this
+# file imports from the defining module rather than through the re-export.
+from phaze.config_secrets import _direct_env_names, _resolution_env
 
 
 # --------------------------------------------------------------------------- #

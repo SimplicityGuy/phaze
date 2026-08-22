@@ -13,19 +13,18 @@ import os
 from pathlib import Path
 import tomllib
 from typing import Annotated, Any, ClassVar, Literal
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import urlparse
 
-from dotenv import dotenv_values
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings as PydanticBaseSettings, NoDecode, SettingsConfigDict
+from pydantic_settings import NoDecode, SettingsConfigDict
 import structlog
 
 from phaze.config_backends import (
     BackendConfig,
     BucketConfig,
     _default_local_registry,
-    _read_secret_file,
 )
+from phaze.config_redis import RedisPasswordSettingsMixin
 from phaze.config_registry_policies import (
     validate_backend_bucket_lists,
     validate_cluster_specific_sharing,
@@ -33,50 +32,11 @@ from phaze.config_registry_policies import (
     validate_unique_compute_agent_refs,
     validate_unique_registry_ids,
 )
+from phaze.config_secrets import SecretFileSettingsMixin, _resolution_env
 from phaze.services.analysis_sizing import derive_sizing
 
 
 logger = structlog.get_logger(__name__)
-
-
-def _direct_env_names(field_name: str, field_info: Any) -> list[str]:
-    """Return the env-var names a field accepts directly: its ``validation_alias``
-    string choices, plus the bare field name when not already covered.
-
-    The ``<VAR>_FILE`` sibling names are derived from this set so the file-secret
-    convention stays consistent with whatever aliases a field already honors.
-    """
-    alias = field_info.validation_alias
-    if isinstance(alias, AliasChoices):
-        names = [choice for choice in alias.choices if isinstance(choice, str)]
-    elif isinstance(alias, str):
-        names = [alias]
-    else:
-        names = []
-    if field_name not in names:
-        names.append(field_name)
-    return names
-
-
-def _resolution_env(model_config: SettingsConfigDict) -> dict[str, str]:
-    """Build the case-insensitive name->value map used to resolve `_FILE` secrets.
-
-    Mirrors pydantic-settings' own precedence: values from the process environment
-    win over values declared in the configured `.env` file(s). Both layers are
-    consulted so a `<VAR>_FILE` (or its direct sibling) declared in `.env` — the
-    way every other documented var in `.env.example` is consumed — is honored, not
-    just process-env vars injected by Docker/Kubernetes.
-    """
-    merged: dict[str, str] = {}
-    env_file = model_config.get("env_file")
-    if env_file:
-        encoding = model_config.get("env_file_encoding") or "utf-8"
-        paths = [env_file] if isinstance(env_file, (str, os.PathLike)) else list(env_file)
-        for path in paths:
-            if path and Path(path).is_file():
-                merged.update({key: value for key, value in dotenv_values(path, encoding=encoding).items() if value is not None})
-    merged.update(os.environ)  # process env wins over .env
-    return {key.upper(): value for key, value in merged.items()}
 
 
 class Role(StrEnum):
@@ -92,108 +52,16 @@ class Role(StrEnum):
 _ANALYSIS_OUTER_HEARTBEAT_MULTIPLIER = 2
 
 
-class BaseSettings(PydanticBaseSettings):
-    """Fields shared by both roles. Every existing call site `settings.<field>` resolves here unless overridden below."""
+class BaseSettings(SecretFileSettingsMixin, RedisPasswordSettingsMixin):
+    """Fields shared by both roles. Every existing call site `settings.<field>` resolves here unless overridden below.
+
+    phaze-bk9el.18 split the two cohesion groups this class used to also carry out into bases
+    (`SecretFileSettingsMixin`, `RedisPasswordSettingsMixin`); they are BASES rather than
+    separate collaborator objects so that field resolution, validator ordering and every
+    `settings.<field>` / `<Class>.SECRET_FILE_FIELDS` access are byte-for-byte what they were.
+    """
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
-
-    # v4.0.1: secret-bearing fields that honor the `<VAR>_FILE` convention
-    # (Docker/Swarm secrets, Kubernetes mounts, SOPS). Subclasses extend this set;
-    # the shared `_resolve_secret_files` before-validator reads each field's
-    # `<ALIAS>_FILE` siblings when the direct env var is unset. `database_url` and
-    # `redis_url` live here because both carry credentials and exist on both roles.
-    SECRET_FILE_FIELDS: ClassVar[frozenset[str]] = frozenset({"database_url", "redis_url", "queue_url"})
-
-    # WR-01: secret fields whose file contents must be preserved VERBATIM (NOT ``.strip()``-ed).
-    # Every other `<VAR>_FILE` secret is stripped so a heredoc/echo trailing newline hashes/parses
-    # identically to an operator-typed env var -- but key material (an OpenSSH private key, a
-    # known_hosts file) REQUIRES its trailing newline: OpenSSH's parser rejects a key without a
-    # final newline ("invalid format" / "error in libcrypto"), so stripping it broke every push that
-    # provisioned its key via PHAZE_PUSH_SSH_KEY_FILE. Subclasses extend this set; the shared
-    # `_resolve_secret_files` validator consults it to decide strip-vs-verbatim per field.
-    SECRET_FILE_PRESERVE_WHITESPACE: ClassVar[frozenset[str]] = frozenset()
-
-    @classmethod
-    def _resolve_secret_file_for_field(
-        cls,
-        data: dict[str, Any],
-        field_name: str,
-        env_upper: dict[str, str],
-        present_upper: set[str],
-    ) -> None:
-        """Resolve one `SECRET_FILE_FIELDS` entry's `<ALIAS>_FILE` sibling into `data`, in place.
-
-        Split out of `_resolve_secret_files` (one field per call, from the same per-field loop)
-        so the field/alias search is legible on its own. Pure extraction: same precedence, same
-        env-name search order, same early-outs (`return` here where the loop body used
-        `continue`/`break`) -- no behavior change.
-        """
-        field_info = cls.model_fields.get(field_name)
-        if field_info is None:
-            return
-
-        env_names = _direct_env_names(field_name, field_info)
-        # Precedence: an explicitly-set direct env var (or a value already
-        # merged from another source into `data`) always wins over `_FILE`.
-        if any(name.upper() in present_upper or name.upper() in env_upper for name in env_names):
-            return
-
-        for env_name in env_names:
-            file_var = f"{env_name.upper()}_FILE"
-            if file_var not in env_upper:
-                continue
-            path = env_upper[file_var]
-            # Inject under the field name; every in-scope field is matched
-            # either by name (no alias) or by an AliasChoices that includes
-            # the bare field name, so this key always resolves. The shared
-            # `_read_secret_file` helper (config_backends) applies the single
-            # strip-vs-verbatim rule both this env-`_FILE` path and the inline
-            # TOML `*_file` reader adopt (D-06: one rule, two call sites). Key
-            # material (SECRET_FILE_PRESERVE_WHITESPACE) is kept verbatim so its
-            # required trailing newline survives (WR-01); everything else is stripped.
-            try:
-                data[field_name] = _read_secret_file(path, preserve_whitespace=field_name in cls.SECRET_FILE_PRESERVE_WHITESPACE)
-            except ValueError as exc:
-                # Re-raise with the `<VAR>_FILE` name so the operator-facing message
-                # still names the variable that pointed at the unreadable path.
-                msg = f"{file_var} points to {path!r} which could not be read: {exc}"
-                raise ValueError(msg) from exc
-            break
-
-    @model_validator(mode="before")
-    @classmethod
-    def _resolve_secret_files(cls, data: Any) -> Any:
-        """Resolve `<VAR>_FILE` secrets before any required-field / production guard.
-
-        For each field in `SECRET_FILE_FIELDS`, if no direct env var (or value from
-        another already-merged source) is present but a `<ALIAS>_FILE` sibling is
-        set, read the secret from that path. The file's surrounding whitespace is
-        stripped (`.strip()`) so a heredoc/echo-created secret with a trailing
-        newline hashes identically to an operator-typed env var — critical for
-        `PHAZE_AGENT_TOKEN`, whose entire wire string is hashed by `hash_token`.
-
-        Runs as `mode="before"` so the resolved value flows through field
-        validation (SecretStr coercion) and into the `mode="after"` guards
-        (`_enforce_required_agent_fields`, the production validators). A missing or
-        unreadable `<ALIAS>_FILE` path raises `ValueError` (surfaced as a
-        `ValidationError`) naming the variable and path — never a silent fallback.
-
-        The `<ALIAS>_FILE` vars are read from the process env and the configured
-        `.env` file (they are not model fields, so `extra="ignore"` never sees
-        them) and matched case-insensitively to mirror pydantic-settings' default
-        env handling; the process env wins over `.env`. The per-field search itself is
-        `_resolve_secret_file_for_field`; this method just owns the field iteration order.
-        """
-        if not isinstance(data, dict):
-            return data
-
-        env_upper = _resolution_env(cls.model_config)
-        present_upper = {str(key).upper() for key in data}
-
-        for field_name in cls.SECRET_FILE_FIELDS:
-            cls._resolve_secret_file_for_field(data, field_name, env_upper, present_upper)
-
-        return data
 
     # Database
     # Phase 29 CR-02: bind PHAZE_DATABASE_URL via validation_alias so the operator-
@@ -203,64 +71,6 @@ class BaseSettings(PydanticBaseSettings):
         default="postgresql+asyncpg://phaze:phaze@postgres:5432/phaze",
         validation_alias=AliasChoices("PHAZE_DATABASE_URL", "DATABASE_URL", "database_url"),
     )
-
-    # Redis
-    # Phase 29 CR-02: bind PHAZE_REDIS_URL via validation_alias so the agent-side
-    # `_enforce_redis_password_in_production` validator actually sees operator-supplied
-    # credentials. Without the alias the env var is silently ignored and the
-    # production agent fails to start with the misleading "requires a password" error.
-    redis_url: str = Field(
-        default="redis://redis:6379/0",
-        validation_alias=AliasChoices("PHAZE_REDIS_URL", "REDIS_URL", "redis_url"),
-    )
-
-    # phaze-1g89i: the RAW (un-encoded) Redis AUTH password. Mirrors the SAME env var that
-    # docker-compose.yml's `redis-server --requirepass "${REDIS_PASSWORD}"` and its
-    # `redis-cli -a "${REDIS_PASSWORD}"` healthcheck consume verbatim -- both accept ANY byte
-    # sequence, no URL parsing involved. `redis.asyncio.Redis.from_url(redis_url)`, by
-    # contrast, RFC-3986-parses the DSN and percent-DECODES the userinfo: a password
-    # containing `/`, `#`, or `?` used to break compose's raw string interpolation into
-    # `redis://default:${REDIS_PASSWORD}@redis:6379/0` (truncated netloc -> `ValueError: Port
-    # could not be cast to integer`), and one containing a `%XX` sequence parsed cleanly but
-    # decoded to the WRONG bytes, so every AUTH silently sent the wrong password. Setting
-    # REDIS_PASSWORD here (instead of pre-assembling the URL in compose) lets
-    # `_apply_redis_password` below `urllib.parse.quote` it into `redis_url`'s userinfo AFTER
-    # Python -- not a shell -- has the full, unmangled byte string.
-    redis_password: SecretStr | None = Field(
-        default=None,
-        validation_alias=AliasChoices("REDIS_PASSWORD", "redis_password"),
-        description="Raw Redis AUTH password; percent-encoded into redis_url by _apply_redis_password.",
-    )
-
-    @model_validator(mode="after")
-    def _apply_redis_password(self) -> "BaseSettings":
-        """phaze-1g89i: safely inject `redis_password` into `redis_url`'s userinfo.
-
-        Runs whenever `redis_password` is set, regardless of what `redis_url` already
-        contains -- mirroring the precedence compose's own interpolation used to have
-        (`REDIS_URL=redis://default:${REDIS_PASSWORD}@redis:6379/0` always overrode the
-        passwordless `.env` default). The password is percent-encoded with
-        `safe=""` so every RFC-3986 reserved byte (`/`, `#`, `?`, `%`, `@`, `:`, ...) round-trips
-        through `Redis.from_url`'s parser exactly, instead of corrupting the URL shape or
-        silently decoding to different bytes.
-
-        A `redis_url` that fails to parse (e.g. still carries a raw-embedded special-character
-        password from an old-style `${REDIS_PASSWORD}` interpolation) is left untouched --
-        this validator repairs the DSN going forward, it does not attempt to recover an
-        already-mangled one.
-        """
-        if self.redis_password is None:
-            return self
-        parsed = urlparse(self.redis_url)
-        if not parsed.hostname:
-            return self
-        user = parsed.username or "default"
-        encoded_password = quote(self.redis_password.get_secret_value(), safe="")
-        netloc = f"{quote(user, safe='')}:{encoded_password}@{parsed.hostname}"
-        if parsed.port is not None:
-            netloc += f":{parsed.port}"
-        self.redis_url = urlunparse(parsed._replace(netloc=netloc))
-        return self
 
     # Phase 36: PostgresQueue broker DSN. psycopg3's AsyncConnectionPool needs a RAW
     # libpq DSN (`postgresql://`), NOT the SQLAlchemy dialect form (`postgresql+asyncpg://`)
