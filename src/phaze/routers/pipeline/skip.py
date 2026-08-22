@@ -249,6 +249,59 @@ async def _has_approved_proposal(session: AsyncSession, file_id: uuid.UUID) -> b
     return row is not None
 
 
+def _eligibility_upstream_verdict(stage: Stage, upstreams: tuple[Stage, ...], statuses: dict[Stage, Status], has_approved: bool) -> tuple[bool, str]:
+    """Named ``upstream met?`` conjunct for one stage (extracted from :func:`_eligibility_trace_context`).
+
+    Three shapes, STRICTLY mirroring ``eligible()``'s own upstream check:
+
+    - ``apply`` is gated on an APPROVED proposal (ELIG-02), NOT on bare done(review).
+    - a downstream enrich/propose/review stage requires every upstream DONE. Under the OQ-1
+      SCOPE-MINIMAL resolution a force-skipped upstream does NOT unblock its downstream (Phase 90), so
+      a SKIPPED upstream is named as still-gating rather than satisfied.
+    - an enrich stage (no upstream) is vacuously met (ELIG-01 independence).
+    """
+    if stage is Stage.APPLY:
+        return has_approved, ("approved proposal exists" if has_approved else "no approved proposal")
+    if not upstreams:
+        return True, "no upstream (enrich stage)"
+    unmet = [u for u in upstreams if statuses[u] != Status.DONE]
+    if not unmet:
+        return True, "all upstream done"
+    if statuses[unmet[0]] == Status.SKIPPED:
+        return False, f"{unmet[0].value} skipped — downstream stays gated (Phase 90)"
+    return False, f"{unmet[0].value} not done"
+
+
+def _eligibility_blocker(
+    *, is_eligible: bool, is_done: bool, is_skipped: bool, is_in_flight: bool, is_terminal_fail: bool, upstream_met: bool
+) -> str:
+    """The single named blocker, following ``eligible()``'s own short-circuit order.
+
+    ``skipped`` folds onto the settled ``done?`` line (a force-skip is a settled state, not a block in
+    its own right). Empty string means eligible -- no conjunct is highlighted.
+    """
+    if is_eligible:
+        return ""
+    if is_done or is_skipped:
+        return "done"
+    if is_in_flight:
+        return "inflight"
+    if is_terminal_fail:
+        return "terminal"
+    if not upstream_met:
+        return "upstream"
+    return ""
+
+
+def _eligibility_done_verdict(is_done: bool, is_skipped: bool) -> tuple[bool, str]:
+    """Named ``done?`` conjunct: distinguishes genuine completion from a force-skip (⊘, not done)."""
+    if is_done:
+        return True, "already done"
+    if is_skipped:
+        return True, "force-skipped (⊘) — recorded as skipped, not done"
+    return False, "not done"
+
+
 async def _eligibility_trace_context(session: AsyncSession, file_id: uuid.UUID, stage: Stage) -> dict[str, Any]:
     """Evaluate ``eligible()`` for ONE file/stage and build the named-conjunct trace context (UI-03, D-06/D-07).
 
@@ -259,7 +312,9 @@ async def _eligibility_trace_context(session: AsyncSession, file_id: uuid.UUID, 
     resolution a force-skipped enrich upstream does NOT unblock its downstream (Phase 90), so a SKIPPED
     upstream is rendered as still-gating — a lenient "skipped = met" display would make the trace claim a
     downstream is eligible when the scheduler permanently gates it (the deadlock UI-03 exists to expose).
-    NOT a corpus query (T-87-23).
+    NOT a corpus query (T-87-23). The per-conjunct verdicts are named helpers
+    (:func:`_eligibility_upstream_verdict`, :func:`_eligibility_blocker`, :func:`_eligibility_done_verdict`)
+    so this function reads as composition of the four conjuncts rather than one flat branch tree.
     """
     label = _STAGE_TRACE_LABELS.get(stage, stage.value)
     upstreams = ELIGIBILITY_DAG[stage]
@@ -274,49 +329,21 @@ async def _eligibility_trace_context(session: AsyncSession, file_id: uuid.UUID, 
     is_skipped = target == Status.SKIPPED
     is_terminal_fail = stage in ELIGIBLE_AFTER_FAILURE and target == Status.FAILED and not ELIGIBLE_AFTER_FAILURE[stage]
 
-    if stage is Stage.APPLY:
-        # apply is gated on an APPROVED proposal (ELIG-02), NOT on bare done(review).
-        upstream_met = has_approved
-        upstream_phrase = "approved proposal exists" if has_approved else "no approved proposal"
-    elif upstreams:
-        # STRICT mirror of eligible()'s downstream check (upstream must be DONE). Under the OQ-1
-        # SCOPE-MINIMAL resolution a force-skipped enrich upstream does NOT unblock its downstream
-        # (deferred to Phase 90), so a SKIPPED upstream stays gating — the trace names it honestly
-        # rather than claiming a downstream is eligible when the scheduler permanently gates it.
-        unmet = [u for u in upstreams if statuses[u] != Status.DONE]
-        upstream_met = not unmet
-        if upstream_met:
-            upstream_phrase = "all upstream done"
-        elif statuses[unmet[0]] == Status.SKIPPED:
-            upstream_phrase = f"{unmet[0].value} skipped — downstream stays gated (Phase 90)"
-        else:
-            upstream_phrase = f"{unmet[0].value} not done"
-    else:  # enrich: empty upstream is vacuously met (ELIG-01 independence)
-        upstream_met = True
-        upstream_phrase = "no upstream (enrich stage)"
+    upstream_met, upstream_phrase = _eligibility_upstream_verdict(stage, upstreams, statuses, has_approved)
 
     # Verdict is the REAL eligible() — the single source of truth the scheduler uses. A diagnostic that
     # diverged from it would hide the very deadlock UI-03 exists to expose.
     is_eligible = eligible(statuses, stage, has_approved_proposal=has_approved)
 
-    # The single blocker follows eligible()'s short-circuit order (skipped folds onto the settled done? line).
-    blocker = ""
-    if not is_eligible:
-        if is_done or is_skipped:
-            blocker = "done"
-        elif is_in_flight:
-            blocker = "inflight"
-        elif is_terminal_fail:
-            blocker = "terminal"
-        elif not upstream_met:
-            blocker = "upstream"
-
-    if is_done:
-        done_ok, done_phrase = True, "already done"
-    elif is_skipped:
-        done_ok, done_phrase = True, "force-skipped (⊘) — recorded as skipped, not done"
-    else:
-        done_ok, done_phrase = False, "not done"
+    blocker = _eligibility_blocker(
+        is_eligible=is_eligible,
+        is_done=is_done,
+        is_skipped=is_skipped,
+        is_in_flight=is_in_flight,
+        is_terminal_fail=is_terminal_fail,
+        upstream_met=upstream_met,
+    )
+    done_ok, done_phrase = _eligibility_done_verdict(is_done, is_skipped)
 
     conjuncts = [
         {"question": "done?", "ok": done_ok, "phrase": done_phrase, "blocker": blocker == "done"},

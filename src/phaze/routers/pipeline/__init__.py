@@ -20,6 +20,21 @@ longer reaches the code under test -- it must name the owning submodule, e.g.
 deliberately NOT re-exported here so that a stale target of that form raises ``AttributeError``
 instead of silently patching a name nothing reads. The re-exports below are only names this package
 DEFINES; patching one of those on the facade is still a silent no-op, so patch the submodule.
+
+**Duplication ruling (phaze-bk9el.11, implementer decision, 2026-08-21).** This file's import block
++ ``__all__`` list was measured as a 55-line structural clone of
+:mod:`phaze.services.pipeline`'s facade -- the two highest ``duplication_pct`` readings in all of
+``src/phaze`` (epic phaze-bk9el §A). RULED barrel boilerplate, not debt: the two facades re-export
+DISJOINT symbol sets for two unrelated packages, so there is no shared *content* to fold into one
+source of truth -- only the shared *mechanical shape* every re-export facade in this split takes
+(one ``from .submodule import (...)`` block per submodule, followed by an alphabetized ``__all__``),
+which a clone detector reads as duplication because it is structurally repetitive by construction.
+That shape is forced by the facade discipline documented above (preserve every existing
+``from phaze.routers.pipeline import <name>`` import site; keep patch targets pointing at the owning
+submodule) -- collapsing it into fewer, denser lines would trade this file's readability for a
+duplication-metric win with no behavioural benefit. The only real DRY move available here is a
+shared codegen/lint helper that GENERATES this shape from each submodule's public names, which is
+out of this bead's scope; left as a future opportunity, not a defect.
 """
 
 from __future__ import annotations
@@ -55,6 +70,7 @@ from phaze.routers.pipeline.dashboard_stats import (
     _derive_stats,
     _read_pipeline_counters,
     _reconciled_done,
+    _shared_stats_context,
     build_dashboard_context,
     dashboard,
     pipeline_stats_partial,
@@ -93,7 +109,10 @@ from phaze.routers.pipeline.recovery import (
 )
 from phaze.routers.pipeline.skip import (
     _STAGE_TRACE_LABELS,
+    _eligibility_blocker,
+    _eligibility_done_verdict,
     _eligibility_trace_context,
+    _eligibility_upstream_verdict,
     _force_skip_file_exists,
     _force_skip_no_op_toast,
     _has_approved_proposal,
@@ -104,6 +123,7 @@ from phaze.routers.pipeline.skip import (
 from phaze.routers.pipeline.tracklists import (
     _enqueue_match_jobs,
     _render_drain_status,
+    _vanished_file_review_response,
     arm_tracklist_drain_ui,
     disarm_tracklist_drain_ui,
     prioritize_tracklist_lookup_ui,
@@ -130,7 +150,10 @@ __all__ = [
     "_background_tasks",
     "_build_dag_context",
     "_derive_stats",
+    "_eligibility_blocker",
+    "_eligibility_done_verdict",
     "_eligibility_trace_context",
+    "_eligibility_upstream_verdict",
     "_enqueue_analysis_jobs",
     "_enqueue_extraction_jobs",
     "_enqueue_match_jobs",
@@ -148,7 +171,9 @@ __all__ = [
     "_route_discovered_by_duration",
     "_run_recovery",
     "_scheduling_ledger_cas_delete_stmt",
+    "_shared_stats_context",
     "_stage_pill_oob",
+    "_vanished_file_review_response",
     "analyze_files_fragment",
     "arm_tracklist_drain_ui",
     "build_dashboard_context",

@@ -320,6 +320,56 @@ async def _build_dag_context(
     return {"dag": dag}
 
 
+def _shared_stats_context(
+    *,
+    stats: dict[str, int],
+    analysis_failed_count: int,
+    analysis_stalled_count: int,
+    awaiting_cloud_count: int,
+    awaiting_hold_reason: str,
+    pushing_count: int,
+    analyzing_cloud_count: int,
+    inadmissible_count: int,
+    localqueue_unreachable: bool,
+    cloud_phase_counts: dict[str, int],
+    lanes: list[dict[str, Any]],
+    analyze_queue_totals: dict[str, int | None],
+    activity: dict[str, int],
+    dag_ctx: dict[str, Any],
+    queue_progress: int,
+) -> dict[str, Any]:
+    """The ~17-key context slice :func:`build_dashboard_context` and :func:`pipeline_stats_partial` MUST
+    seed identically (the OOB swap contract, called out at every card's read site below and in both
+    callers) -- extracted as a single source of truth (phaze-bk9el.11) rather than the two hand-copied
+    dicts this used to be, which repowise's duplication scan measured at 57 shared lines. Every value
+    the two callers derive differently (which reads run sequential vs. ``asyncio.gather``-fanned-out, and
+    each caller's own page-only or poll-only extras) stays in the caller; only the assembled dict shape
+    that must agree between them lives here.
+    """
+    return {
+        "stats": stats,
+        "settings_batch_size": settings.llm_batch_size,
+        "analysis_failed_count": analysis_failed_count,
+        "analysis_stalled_count": analysis_stalled_count,
+        "awaiting_cloud_count": awaiting_cloud_count,
+        "awaiting_hold_reason": awaiting_hold_reason,
+        "pushing_count": pushing_count,
+        "analyzing_cloud_count": analyzing_cloud_count,
+        "inadmissible_count": inadmissible_count,
+        "localqueue_unreachable": localqueue_unreachable,
+        "queued_behind_quota_count": cloud_phase_counts["queued_behind_quota"],
+        "admitted_count": cloud_phase_counts["admitted"],
+        "running_count": cloud_phase_counts["running"],
+        "finished_count": cloud_phase_counts["finished"],
+        "lanes": lanes,
+        "total_queued_analyze": analyze_queue_totals["total_queued"],
+        "unrouted_queued_analyze": analyze_queue_totals["unrouted_queued"],
+        **activity,
+        **dag_ctx,
+        "queue_progress_percent": queue_progress,
+    }
+
+
 async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict[str, Any]:
     """Build the pipeline-dashboard render context, shared by ``/pipeline/`` and the shell ``/`` Analyze node.
 
@@ -460,36 +510,32 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     awaiting_hold_reason = await derive_cloud_hold_reason(session)
 
     return {
-        "stats": stats,
+        **_shared_stats_context(
+            stats=stats,
+            analysis_failed_count=analysis_failed_count,
+            analysis_stalled_count=analysis_stalled_count,
+            awaiting_cloud_count=awaiting_cloud_count,
+            awaiting_hold_reason=awaiting_hold_reason,
+            pushing_count=pushing_count,
+            analyzing_cloud_count=analyzing_cloud_count,
+            inadmissible_count=inadmissible_count,
+            localqueue_unreachable=localqueue_unreachable,
+            cloud_phase_counts=cloud_phase_counts,
+            # Phase 71 (71-03, BEUI-01 / D-04): the N-lane grid snapshot (seeded above, mirrored
+            # identically in pipeline_stats_partial via the shared helper).
+            lanes=lanes,
+            # phaze-5c6i2 (acceptance rule 2): the global TOTAL QUEUED (analyze) figure + its unrouted
+            # remainder (seeded above, mirrored identically in pipeline_stats_partial).
+            analyze_queue_totals=analyze_queue_totals,
+            activity=activity,
+            dag_ctx=dag_ctx,
+            queue_progress=queue_progress,
+        ),
         "current_page": "pipeline",
-        "settings_batch_size": settings.llm_batch_size,
         "agents": agents,
         "recent_scans": recent_scans_rows,
-        "analysis_failed_count": analysis_failed_count,
-        "analysis_stalled_count": analysis_stalled_count,
-        "awaiting_cloud_count": awaiting_cloud_count,
-        "awaiting_hold_reason": awaiting_hold_reason,
-        "pushing_count": pushing_count,
-        "analyzing_cloud_count": analyzing_cloud_count,
-        "inadmissible_count": inadmissible_count,
-        "localqueue_unreachable": localqueue_unreachable,
-        "queued_behind_quota_count": cloud_phase_counts["queued_behind_quota"],
-        "admitted_count": cloud_phase_counts["admitted"],
-        "running_count": cloud_phase_counts["running"],
-        "finished_count": cloud_phase_counts["finished"],
         "reconcile_scanned": recon["scanned"],
         "reconcile_deduped": recon["deduped"],
-        # Phase 58 (58-04): the all-in-stage Analyze file list (D-03).
-        # Phase 71 (71-03, BEUI-01 / D-04): the N-lane grid snapshot (seeded above, mirrored identically
-        # in pipeline_stats_partial). Retires the transitional single non-local lane-kind context key.
-        "lanes": lanes,
-        # phaze-5c6i2 (acceptance rule 2): the global TOTAL QUEUED (analyze) figure + its unrouted
-        # remainder (seeded above, mirrored identically in pipeline_stats_partial).
-        "total_queued_analyze": analyze_queue_totals["total_queued"],
-        "unrouted_queued_analyze": analyze_queue_totals["unrouted_queued"],
-        **activity,
-        **dag_ctx,
-        "queue_progress_percent": queue_progress,
     }
 
 
@@ -655,31 +701,28 @@ async def pipeline_stats_partial(
         # hx-swap-oob and the ids would collide with the DAG canvas seeds).
         context={
             "request": request,
-            "stats": stats,
-            "settings_batch_size": settings.llm_batch_size,
             "oob_counts": True,
-            "analysis_failed_count": analysis_failed_count,
-            "analysis_stalled_count": analysis_stalled_count,
-            "awaiting_cloud_count": awaiting_cloud_count,
-            "awaiting_hold_reason": awaiting_hold_reason,
-            "pushing_count": pushing_count,
-            "analyzing_cloud_count": analyzing_cloud_count,
-            "inadmissible_count": inadmissible_count,
-            "localqueue_unreachable": localqueue_unreachable,
-            "queued_behind_quota_count": cloud_phase_counts["queued_behind_quota"],
-            "admitted_count": cloud_phase_counts["admitted"],
-            "running_count": cloud_phase_counts["running"],
-            "finished_count": cloud_phase_counts["finished"],
-            "lanes": lanes,
+            **_shared_stats_context(
+                stats=stats,
+                analysis_failed_count=analysis_failed_count,
+                analysis_stalled_count=analysis_stalled_count,
+                awaiting_cloud_count=awaiting_cloud_count,
+                awaiting_hold_reason=awaiting_hold_reason,
+                pushing_count=pushing_count,
+                analyzing_cloud_count=analyzing_cloud_count,
+                inadmissible_count=inadmissible_count,
+                localqueue_unreachable=localqueue_unreachable,
+                cloud_phase_counts=cloud_phase_counts,
+                lanes=lanes,
+                analyze_queue_totals=analyze_queue_totals,
+                activity=activity,
+                dag_ctx=dag_ctx,
+                queue_progress=queue_progress,
+            ),
             "selected_lane": selected_lane,
             "lanes_hash": lanes_hash,
-            "total_queued_analyze": analyze_queue_totals["total_queued"],
-            "unrouted_queued_analyze": analyze_queue_totals["unrouted_queued"],
             "summary_recent_live": analysis_live,
             "summary_recent_today": analysis_activity["today"],
             "summary_recent_lifetime": analysis_activity["lifetime"],
-            **activity,
-            **dag_ctx,
-            "queue_progress_percent": queue_progress,
         },
     )

@@ -33,6 +33,7 @@ import uuid
 
 import pytest
 
+from phaze.enums.stage import Stage, Status
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
@@ -61,6 +62,91 @@ async def _seed_file(session: AsyncSession) -> uuid.UUID:
     )
     await session.commit()
     return file_id
+
+
+# --------------------------------------------------------------------------------------------------
+# Direct unit coverage for the three pure conjunct helpers extracted from
+# ``_eligibility_trace_context`` (phaze-bk9el.11, CCN 22 -> below 15). Each one is DB-free, so these
+# run as plain sync tests rather than through the router -- the async/DB tests above and below still
+# exercise the composed function end-to-end; these pin down every branch of the extraction itself.
+# --------------------------------------------------------------------------------------------------
+
+
+def test_upstream_verdict_apply_gated_on_approved_proposal() -> None:
+    """apply's upstream conjunct is ELIG-02 (an APPROVED proposal), not a DAG walk, in both verdicts."""
+    assert skip_mod._eligibility_upstream_verdict(Stage.APPLY, (), {}, has_approved=True) == (True, "approved proposal exists")
+    assert skip_mod._eligibility_upstream_verdict(Stage.APPLY, (), {}, has_approved=False) == (False, "no approved proposal")
+
+
+def test_upstream_verdict_enrich_stage_is_vacuously_met() -> None:
+    """A stage with no ``ELIGIBILITY_DAG`` entry (enrich) is vacuously met (ELIG-01 independence)."""
+    assert skip_mod._eligibility_upstream_verdict(Stage.METADATA, (), {}, has_approved=False) == (True, "no upstream (enrich stage)")
+
+
+def test_upstream_verdict_all_upstream_done() -> None:
+    statuses = {Stage.METADATA: Status.DONE, Stage.ANALYZE: Status.DONE}
+    verdict = skip_mod._eligibility_upstream_verdict(Stage.PROPOSE, (Stage.METADATA, Stage.ANALYZE), statuses, has_approved=False)
+    assert verdict == (True, "all upstream done")
+
+
+def test_upstream_verdict_names_the_skipped_upstream_as_still_gating() -> None:
+    """OQ-1 SCOPE-MINIMAL: a SKIPPED upstream stays gating, named honestly (not reported as met)."""
+    statuses = {Stage.METADATA: Status.SKIPPED, Stage.ANALYZE: Status.DONE}
+    verdict = skip_mod._eligibility_upstream_verdict(Stage.PROPOSE, (Stage.METADATA, Stage.ANALYZE), statuses, has_approved=False)
+    assert verdict == (False, "metadata skipped — downstream stays gated (Phase 90)")
+
+
+def test_upstream_verdict_names_the_unfinished_upstream() -> None:
+    statuses = {Stage.METADATA: Status.NOT_STARTED, Stage.ANALYZE: Status.DONE}
+    verdict = skip_mod._eligibility_upstream_verdict(Stage.PROPOSE, (Stage.METADATA, Stage.ANALYZE), statuses, has_approved=False)
+    assert verdict == (False, "metadata not done")
+
+
+def test_blocker_is_empty_when_eligible() -> None:
+    """No conjunct is highlighted once the stage is eligible -- ``is_eligible`` short-circuits first."""
+    blocker = skip_mod._eligibility_blocker(
+        is_eligible=True, is_done=True, is_skipped=True, is_in_flight=True, is_terminal_fail=True, upstream_met=False
+    )
+    assert blocker == ""
+
+
+def test_blocker_folds_skipped_onto_done() -> None:
+    """A force-skip is a settled state, so it reports as the ``done`` blocker line, not its own."""
+    blocker = skip_mod._eligibility_blocker(
+        is_eligible=False, is_done=False, is_skipped=True, is_in_flight=False, is_terminal_fail=False, upstream_met=True
+    )
+    assert blocker == "done"
+
+
+def test_blocker_orders_inflight_before_terminal_and_upstream() -> None:
+    """Mirrors ``eligible()``'s own short-circuit order: in-flight wins over a terminal failure."""
+    blocker = skip_mod._eligibility_blocker(
+        is_eligible=False, is_done=False, is_skipped=False, is_in_flight=True, is_terminal_fail=True, upstream_met=False
+    )
+    assert blocker == "inflight"
+
+
+def test_blocker_names_terminal_failure() -> None:
+    blocker = skip_mod._eligibility_blocker(
+        is_eligible=False, is_done=False, is_skipped=False, is_in_flight=False, is_terminal_fail=True, upstream_met=False
+    )
+    assert blocker == "terminal"
+
+
+def test_blocker_names_upstream_last() -> None:
+    blocker = skip_mod._eligibility_blocker(
+        is_eligible=False, is_done=False, is_skipped=False, is_in_flight=False, is_terminal_fail=False, upstream_met=False
+    )
+    assert blocker == "upstream"
+
+
+def test_done_verdict_distinguishes_done_skipped_and_neither() -> None:
+    assert skip_mod._eligibility_done_verdict(is_done=True, is_skipped=False) == (True, "already done")
+    assert skip_mod._eligibility_done_verdict(is_done=False, is_skipped=True) == (
+        True,
+        "force-skipped (⊘) — recorded as skipped, not done",
+    )
+    assert skip_mod._eligibility_done_verdict(is_done=False, is_skipped=False) == (False, "not done")
 
 
 # --------------------------------------------------------------------------- per-stage trace arms
