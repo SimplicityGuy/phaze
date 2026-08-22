@@ -3,7 +3,7 @@
 **Nothing in the suite caught a change that broke every audio file in the corpus.** 2026.8.3
 shipped phaze-w55w1 (exhaustive analysis) alongside phaze-3ea41 (unconditional pre-analysis
 audio extraction). Extraction remuxes to Matroska; ``_probe_duration_sec`` read duration from
-``es.MetadataReader``; TagLib cannot read a duration out of Matroska and returns 0; zero
+``es.MetadataReader``, which returns 0 for Matroska on the deployed platform; zero
 duration yields zero natural windows; the zero-window guard failed every file. The pipeline was
 dead for 11.5 hours and the suite stayed green throughout, because phaze-3ea41's own acceptance
 criterion ("existing audio-file analysis is unchanged") was tested against MOCKS on both sides
@@ -198,7 +198,7 @@ async def test_the_path_extraction_hands_analysis_probes_a_real_duration(tmp_pat
     """THE regression guard: whatever extraction hands forward, the duration probe reads it.
 
     This is the single assertion 2026.8.3 needed and did not have. It fails against the
-    pre-fix code on every shape — the extracted ``.mka`` probes 0 through TagLib, and pre-fix
+    pre-fix code on every shape — the extracted ``.mka`` probes 0 through MetadataReader, and pre-fix
     EVERY shape produced an ``.mka`` because extraction was unconditional.
     """
     source = builder(tmp_path)
@@ -274,11 +274,15 @@ async def test_the_duration_probe_never_goes_through_taglib(tmp_path: Path) -> N
     """The probe must not be ``es.MetadataReader`` — asserted by MECHANISM, not by outcome.
 
     **This is the test that fails against pre-fix code on every platform**, and it exists
-    because the outage does NOT reproduce everywhere. The TagLib that essentia bundles reads a
-    Matroska duration on some builds and returns 0 on others; the deployed linux image is one of
-    the latter (measured: ``.mka`` → 0 through MetadataReader, 90.044 through ffprobe on the
-    same file), while a developer's macOS wheel can happily return the right answer and leave
-    every outcome-based test above GREEN on pre-fix code. A guard that only holds on the
+    because the outage does NOT reproduce everywhere. The essentia WHEEL is the variable: the
+    linux x86_64 build cannot read Matroska metadata and the macOS arm64 build can, and both CI
+    and production run the linux one (measured 2026-08-22 in the deployed image: ``.mka`` → 0
+    through MetadataReader, 90.044 through ffprobe on the same file; ``.mp3``/``.m4a`` read fine
+    in the same run, and ffmpeg 7.1.5/8.1.2/9.0.1 all mux a ``.mka`` macOS reads). So a
+    developer's macOS wheel happily returns the right answer and leaves every outcome-based test
+    above GREEN on pre-fix code. This test's NAME says "taglib" for historical reasons —
+    phaze-gppj2 established that TagLib is a suspect, not a verified mechanism; the name is kept
+    only so cross-references keep resolving. A guard that only holds on the
     platform where the bug happens to reproduce is how this shipped in the first place.
 
     So this one pins the mechanism: ``MetadataReader`` is replaced by something that raises if
@@ -295,9 +299,13 @@ async def test_the_duration_probe_never_goes_through_taglib(tmp_path: Path) -> N
     audio_source = await extract_audio_track(source)
     assert audio_source.cleanup_path is not None, "a video container must still be extracted"
     try:
-        assert Path(audio_source.analysis_path).suffix == ".mka", "the extraction intermediate is Matroska — the container TagLib cannot measure"
+        assert Path(audio_source.analysis_path).suffix == ".mka", (
+            "the extraction intermediate is Matroska — the container MetadataReader cannot measure here"
+        )
 
-        tripwire = MagicMock(side_effect=AssertionError("the duration probe reached es.MetadataReader (TagLib reads 0 from Matroska)"))
+        tripwire = MagicMock(
+            side_effect=AssertionError("the duration probe reached es.MetadataReader (it reads 0 from Matroska on the deployed platform)")
+        )
         with patch.object(analysis_mod.es, "MetadataReader", tripwire):
             duration = _probe_duration_sec(audio_source.analysis_path)
 

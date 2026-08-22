@@ -734,8 +734,11 @@ is an operator action, recorded before submit, with the remainder filed as its o
 (`phaze-tzy6s.13` → `phaze-fk1ww` is the worked example). Narrowing it silently and calling it
 satisfied is what broke `phaze-3ea41`: its criterion *"existing audio-file analysis is unchanged"*
 was replaced in prose with the narrower *"the audio stream is bit-identical"*, which was **true,
-verified, and about the wrong quantity** — the container had changed to Matroska, TagLib reads no
-duration from Matroska, and zero duration produced zero windows for all 11,428 files in the corpus.
+verified, and about the wrong quantity** — the container had changed to Matroska, `es.MetadataReader`
+reads no duration from Matroska on the deployed platform, and zero duration produced zero windows for
+all 11,428 files in the corpus. (This sentence used to attribute that to TagLib; `phaze-gppj2`
+measured that the responsible component is the platform's essentia wheel, not a verified TagLib
+behaviour. The lesson is untouched — it is what caught the misattribution.)
 
 **2. "Operator decision" is a citation, not an emphasis marker.** Any text claiming one — commit
 message, PR body, decision record, bead, code comment — carries **the question as it was put, the
