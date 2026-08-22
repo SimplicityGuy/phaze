@@ -8,7 +8,7 @@ the thing carried across it: every one of those tests hands the child
 floats, and a ``features`` dict of a single entry. ``_emit`` is ``json.dumps(obj)`` with **no**
 ``default=`` — deliberately strict, per its docstring — and ``_result`` is structurally
 incapable of testing that strictness. It cannot exhibit a numpy scalar leaf, a non-finite
-float, or a line large enough for a 64 KiB pipe to matter.
+float, or a line large enough for the pipe's 64 KiB refill granularity to matter.
 
 So these tests carry the real artifact (``tests/analyze/_real_result.py``, produced by real
 essentia + the real 68-file model set over a real archive track) across the same real boundary,
@@ -48,10 +48,23 @@ _REPO_ROOT = Path(__file__).resolve().parents[4]
 # outputs. `bool` rides along as a subclass of `int` and is listed for the reader, not the check.
 _JSON_LEAF_TYPES = (str, int, float, bool, type(None))
 
-# The OS pipe buffer `_emit`'s line has to cross. 64 KiB on both Linux and macOS: a write past
-# it BLOCKS until the reader drains, so a multi-mebibyte line is delivered in ~40+ refills that
-# the parent's `_pump_stdout` has to reassemble into one `readline`. This is a different failure
-# mechanism from serialization, which is why it gets its own case (bead AC 5).
+# The OS pipe buffer `_emit`'s line has to cross. 64 KiB on both Linux and macOS: a write past it
+# BLOCKS until the reader drains, so a multi-mebibyte line arrives in dozens of refills that the
+# parent's `_pump_stdout` has to reassemble into one `readline`. Different failure mechanism from
+# serialization, which is why it gets its own case (bead AC 5).
+#
+# CORRECTING THE RECORD (phaze-qiwdk). The seam inventory row A3, the bead, and the dispatch brief
+# all describe this as "a multi-MB line through a 64 KiB pipe" in a way that reads as though the
+# 64 KiB were the LIMIT that would reject the line. It is not, and no line has ever been rejected
+# at 64 KiB: `analysis_exec._STREAM_LIMIT` is 32 MiB, so the parent's `StreamReader` was never the
+# binding constraint. What 64 KiB actually is, is the OS buffer's REFILL GRANULARITY -- the reason
+# one logical line becomes dozens of physical reads that must be reassembled. Both facts are worth
+# holding: the reassembly is the mechanism under test here, and 32 MiB is the ceiling that would
+# genuinely reject a line. At the measured 122 144 B per hour of audio (115.0 B/fine window at
+# 30 s + 5 417.2 B/coarse at 180 s) that ceiling needs 274.7 HOURS of continuous audio, so no real
+# file approaches it -- 11x past the 24 h the product calls its concert-set ceiling.
+# Three documents said the same wrong thing, which is why this comment says the right one at the
+# call site rather than only on the bead.
 _PIPE_BUFFER_BYTES = 64 * 1024
 
 # What "multi-MB" has to clear for the framing case to be the thing it claims to be.
@@ -190,7 +203,7 @@ async def test_a_nan_leaf_crosses_emit_and_the_pump_silently_rather_than_failing
 
 
 # ---------------------------------------------------------------------------
-# Framing: a multi-mebibyte line through a 64 KiB pipe (bead AC 5)
+# Framing: a multi-mebibyte line reassembled across 64 KiB pipe refills (bead AC 5)
 # ---------------------------------------------------------------------------
 
 
@@ -217,9 +230,10 @@ async def test_a_multi_mebibyte_result_line_crosses_the_64_kib_pipe_intact(monke
     the product's stated concert-set ceiling and the point at which "multi-MB" becomes literally
     true, so it is the scale built here.
 
-    Both bounds this exercises are real and neither is a wall clock: ``_STREAM_LIMIT`` (32 MiB,
-    the parent's ``StreamReader`` line cap) and the 64 KiB pipe buffer. D-08 liveness is
-    untouched — this test arms no ``stall_timeout`` at all.
+    On which bound is doing the work, see the note at ``_PIPE_BUFFER_BYTES``: the 64 KiB pipe is
+    the reassembly granularity this test exercises, NOT a limit that rejects the line, and
+    ``_STREAM_LIMIT`` (32 MiB) is the real ceiling — unreachable by any real file. Neither is a
+    wall clock; D-08 liveness is untouched and this test arms no ``stall_timeout`` at all.
     """
     _point_child_at(monkeypatch, "long_recording_analyze")
 
