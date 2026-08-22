@@ -824,6 +824,9 @@ async def _write_row(
     propagation: _Propagation | None,
 ) -> Tracklist:
     """Insert one tracklist row and its first version -- ``propagation=None`` writes the canonical."""
+    # ONE guard rather than a ternary per column: the pair is all-or-nothing (see ``_Propagation``),
+    # and evaluating the same predicate twice is where a later edit sets one column without the other.
+    set_key, confidence_value = (propagation.set_key, propagation.confidence.value) if propagation is not None else (None, None)
     tracklist = Tracklist(
         external_id=attempt.external_id or "",
         source_url=attempt.source_url or "",
@@ -834,8 +837,8 @@ async def _write_row(
         event=attempt.event,
         date=attempt.date,
         source=TRACKLIST_SOURCE,
-        propagated_from_set_key=propagation.set_key if propagation is not None else None,
-        propagation_confidence=propagation.confidence.value if propagation is not None else None,
+        propagated_from_set_key=set_key,
+        propagation_confidence=confidence_value,
     )
     session.add(tracklist)
     await session.flush()
