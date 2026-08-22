@@ -288,7 +288,7 @@ async def build_drain_queue(
     requested file disappears or becomes ineligible before the worker starts, the slice spends
     zero requests instead of silently looking up an unrelated flagged set.
     """
-    moment = now or datetime.now(UTC)
+    moment = _compute_moment(now)
     raw_signals = await load_candidate_signals(session, agent_id=agent_id)
 
     derived_by_file: dict[uuid.UUID, DerivedQuery] = {}
@@ -327,6 +327,16 @@ async def build_drain_queue(
     if targets:
         cached = tuple(entry for entry in cached if any(member.file_id in targets for member in entry.unique_set.members))
     return DrainQueue(entries=tuple(candidates), stats=queue.stats, cached=cached)
+
+
+def _compute_moment(now: datetime | None) -> datetime:
+    """Resolve ``build_drain_queue``'s reference instant, defaulting to "now" in UTC.
+
+    Pulled out of ``build_drain_queue`` (repowise extract_method plan, phaze-bk9el.5): the
+    fallback ``or`` was the one branch in that function's own body contributing to its CCN that
+    had nothing to do with loading, deriving, deduping or ordering the queue.
+    """
+    return now or datetime.now(UTC)
 
 
 async def _load_added_at(session: AsyncSession, file_ids: set[uuid.UUID]) -> dict[uuid.UUID, datetime]:

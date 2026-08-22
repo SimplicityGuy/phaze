@@ -29,6 +29,8 @@ from phaze.services.tracklist_render import (
     TracklistRenderer,
     XvfbDisplay,
     XvfbError,
+    _paced,
+    _wait,
     looks_like_interstitial,
 )
 from phaze.services.tracklist_scraper import DisallowedScrapeHostError, honest_user_agent_token
@@ -504,7 +506,7 @@ class TestHostPacing:
 
         async with asyncio.timeout(10.0) as deadline:
             before = deadline.when()
-            await TracklistRenderer._paced(deadline)
+            await _paced(deadline)
             after = deadline.when()
 
         assert before is not None
@@ -526,9 +528,9 @@ class TestHostPacing:
 
         async with asyncio.timeout(10.0) as deadline:
             before = deadline.when()
-            await TracklistRenderer._wait(0.2, deadline)
+            await _wait(0.2, deadline)
             after = deadline.when()
-            await TracklistRenderer._wait(0.0, deadline)
+            await _wait(0.0, deadline)
             unchanged = deadline.when()
 
         assert before is not None
