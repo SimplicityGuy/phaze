@@ -27,6 +27,30 @@ is ACCEPTED: ``enqueued`` is a NON-AUTHORITATIVE soft hint only -- the UI render
 em-dash ``-`` as the real denominator and ``get_stage_progress`` (DB-truth, 35-03) owns
 every rendered ``done``. Do NOT add pre-dedup detection to "fix" this.
 
+NOTE -- WHY ALL FOUR ``except Exception`` HANDLERS HERE ARE DELIBERATELY BROAD (phaze-bk9el.27).
+Reviewed one by one against the concern that a broad handler in a KEY-COMPUTING module could degrade
+to a safe-looking non-deterministic path. It cannot, and the reason is structural rather than a
+judgement call: **not one of the four is on the key path**. :func:`apply_deterministic_key` assigns
+``job.key`` unconditionally, from a pure in-memory builder, BEFORE it opens any ``try``; every handler
+below that line wraps BOOKKEEPING ONLY -- the best-effort ``enqueued`` / ``completed`` counter INCR
+(a Redis cache) and the scheduling-ledger upsert / clear (Postgres). A failure in any of them leaves
+the key exactly as computed, so the degraded state is "counter drifted" or "ledger row not written /
+not cleared", both of which the surrounding design already owns (the counter is explicitly
+NON-AUTHORITATIVE per W3 above; an unwritten or uncleared ledger row is recovered by the Plan-04
+backfill / the next recovery pass).
+
+NARROWING THEM WOULD BE THE REGRESSION, not the improvement. The contract these handlers implement is
+T-45-03, and it is CATEGORICAL: a bookkeeping hiccup must NEVER block an enqueue or a job teardown.
+A narrowed ``except (RedisError, SQLAlchemyError)`` would honour that contract only for the failure
+modes someone enumerated in advance, and would convert every unanticipated one -- a DNS failure, a
+pool exhaustion that does not subclass what was named, a fake queue in a test whose handle raises
+something else entirely -- into a raise that propagates INTO SAQ's enqueue path. That is precisely the
+outcome the contract forbids, reached by way of making the code look more careful. The handles are also
+duck-typed (``getattr(job.queue, "cache_redis", None)`` / ``ledger_sessionmaker``), so no concrete
+client exception taxonomy is even knowable here. Each handler is kept narrow in the way that actually
+matters -- it wraps a few statements, catches ``Exception`` and not ``BaseException`` (so cancellation
+and ``KeyboardInterrupt`` still propagate), and logs with ``exc_info=True`` rather than swallowing.
+
 NOTE -- intent of the ``completed`` counter (plan-checker W4): :func:`increment_completed`
 maintains ``phaze:pipeline:completed:<function>`` to satisfy D-02's mandate for MAINTAINED
 per-function counters. No node renders it directly (every ``done`` renders from DB-truth
@@ -216,6 +240,47 @@ async def apply_deterministic_key(job: Job) -> None:
         logger.warning("scheduling-ledger upsert failed", function=job.function, key=job.key, exc_info=True)
 
 
+async def _bump_completed_counter(job: Job) -> None:
+    """Best-effort ``completed`` counter INCR for one COMPLETE job (never raises).
+
+    Extracted from :func:`increment_completed` so that hook reads as the two independent actions its
+    docstring describes. Purely a move: the guard, the handle lookup, the catch and the log line are
+    byte-equivalent to what ran inline. See the module docstring for why the catch is broad.
+    """
+    try:
+        redis = getattr(job.queue, "cache_redis", None)
+        if redis is not None:
+            await incr_completed(redis, job.function)
+    except Exception:
+        # Counter is a cache; never block job teardown on a Redis hiccup.
+        logger.warning("pipeline completed-counter increment failed", function=job.function, exc_info=True)
+
+
+async def _clear_ledger_entry_for(job: Job) -> None:
+    """Best-effort scheduling-ledger CLEAR for one job that reached a terminal status (never raises).
+
+    Extracted from :func:`increment_completed` alongside :func:`_bump_completed_counter`; likewise a
+    pure move. The function-LOCAL import is part of what moved and is still load-bearing: it keeps
+    ``phaze.services.scheduling_ledger`` (and thus ``phaze.models`` / ``sqlalchemy.ext.asyncio``) out of
+    this ``_shared`` module's import graph on the agent path (``test_task_split``), and it executes only
+    when a control-side ``ledger_sessionmaker`` is present.
+    """
+    try:
+        sm = getattr(job.queue, "ledger_sessionmaker", None)
+        if sm is not None:
+            # INTENTIONAL function-local import (see apply_deterministic_key; PLC0415 suppressed
+            # on the import line): keeps the ledger service out of the agent's _shared import
+            # graph; runs only when a control-side ledger_sessionmaker is present.
+            from phaze.services.scheduling_ledger import clear_ledger_entry  # noqa: PLC0415
+
+            async with sm() as session:
+                await clear_ledger_entry(session, job.key)
+                await session.commit()
+    except Exception:
+        # Best-effort: a clear hiccup leaves the row for the next recovery; never raise (T-45-03).
+        logger.warning("scheduling-ledger clear failed", function=job.function, key=job.key, exc_info=True)
+
+
 async def increment_completed(ctx: dict[str, Any]) -> None:
     """SAQ ``after_process`` hook -- bump ``completed`` on COMPLETE + clear the ledger on terminal.
 
@@ -246,32 +311,14 @@ async def increment_completed(ctx: dict[str, Any]) -> None:
     if job is None or job.function not in _KEY_BUILDERS:
         return
 
+    # phaze-bk9el.27: the two actions are independent and each owns its own never-raise guard, so the
+    # hook itself is now just the status dispatch its docstring has always described. Both remain
+    # unconditionally best-effort and neither can raise into SAQ's after_process ``finally``.
     if job.status == Status.COMPLETE:
-        try:
-            redis = getattr(job.queue, "cache_redis", None)
-            if redis is not None:
-                await incr_completed(redis, job.function)
-        except Exception:
-            # Counter is a cache; never block job teardown on a Redis hiccup.
-            logger.warning("pipeline completed-counter increment failed", function=job.function, exc_info=True)
+        await _bump_completed_counter(job)
 
     if job.status in TERMINAL_STATUSES:
-        # Function-LOCAL import (mirrors the WRITE hook) so the agent import graph stays
-        # Postgres-free; it executes only when ledger_sessionmaker is present (control-side).
-        try:
-            sm = getattr(job.queue, "ledger_sessionmaker", None)
-            if sm is not None:
-                # INTENTIONAL function-local import (see apply_deterministic_key; PLC0415 suppressed
-                # on the import line): keeps the ledger service out of the agent's _shared import
-                # graph; runs only when a control-side ledger_sessionmaker is present.
-                from phaze.services.scheduling_ledger import clear_ledger_entry  # noqa: PLC0415
-
-                async with sm() as session:
-                    await clear_ledger_entry(session, job.key)
-                    await session.commit()
-        except Exception:
-            # Best-effort: a clear hiccup leaves the row for the next recovery; never raise (T-45-03).
-            logger.warning("scheduling-ledger clear failed", function=job.function, key=job.key, exc_info=True)
+        await _clear_ledger_entry_for(job)
 
 
 __all__ = ["apply_deterministic_key", "increment_completed"]
