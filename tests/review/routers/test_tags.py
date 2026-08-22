@@ -26,13 +26,20 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.tags import (
+    _bulk_write_toast,
+    _dispatch_bulk_candidate,
     _encode_tag_review_token,
     _get_accepted_discogs_link,
     _get_file_with_metadata,
     _get_tag_stats,
     _get_tracklist_for_file,
     _has_terminal_tagwrite,
+    _load_bulk_candidates,
+    _parse_bulk_review_tokens,
+    _run_bulk_candidates,
+    _snapshot_bulk_candidate,
     _tag_review_payload,
+    bulk_write_no_discrepancies,
 )
 from phaze.services.tag_proposal import compute_proposed_tags
 from tests._queue_fakes import install_fake_queues
@@ -1250,6 +1257,259 @@ async def test_undo_dispatch_records_a_queued_undo_audit_row(client: AsyncClient
     assert len(undo_rows) == 1
     assert undo_rows[0].status == TagWriteStatus.QUEUED
     assert undo_rows[0].after_tags == {"artist": "Original Artist"}
+
+
+# ---------------------------------------------------------------------------
+# phaze-bk9el.10: coverage-floor findings on the review token / bulk-write paths.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_write_tags_malformed_review_token_is_rejected(client: AsyncClient, session: AsyncSession) -> None:
+    """A ``review_token`` that isn't valid base64 fails to decode -- 400, not a 500 (T-60-02 sibling)."""
+    file_record, _ = await _create_executed_file(session)
+    install_fake_queues(client)
+
+    response = await client.post(f"/tags/{file_record.id}/write", data={"review_token": "not-a-real-token!!"})
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid reviewed tag payload"
+
+
+@pytest.mark.asyncio
+async def test_write_tags_non_dict_review_token_payload_is_rejected(client: AsyncClient, session: AsyncSession) -> None:
+    """A well-formed base64/JSON token that decodes to something other than a dict is rejected."""
+    file_record, _ = await _create_executed_file(session)
+    install_fake_queues(client)
+    token = _encode_tag_review_token_from_value(["not", "a", "dict"])
+
+    response = await client.post(f"/tags/{file_record.id}/write", data={"review_token": token})
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Reviewed tag payload does not match the file"
+
+
+@pytest.mark.asyncio
+async def test_write_tags_already_queued_redraws_row_instead_of_double_dispatch(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-lwqk: a second write while one is already queued for this file is refused by
+    ``enqueue_tag_write`` itself (not the router's own idempotency check, which only guards
+    undo-vs-undo) -- the route catches ``TagWriteAlreadyQueuedError`` and redraws "queued" instead
+    of dispatching a second concurrent job.
+    """
+    file_record, _ = await _create_executed_file(session, artist="Original Artist")
+    await _add_write_log(
+        session, file_record.id, status=TagWriteStatus.QUEUED, source="proposal", before_tags={}, written_at=datetime(2026, 8, 1, 12, 0, 0)
+    )
+    _controller_queue, router = install_fake_queues(client)
+    token = await _review_token(session, file_record.id)
+
+    response = await client.post(f"/tags/{file_record.id}/write", data={"review_token": token})
+
+    assert response.status_code == 200
+    assert "already queued" in response.text.lower()
+    assert not router.captures, "no second dispatch was made"
+
+
+@pytest.mark.asyncio
+async def test_undo_already_queued_by_a_concurrent_write_redraws_row(client: AsyncClient, session: AsyncSession) -> None:
+    """The undo-route sibling of the write-route case above (phaze-lwqk): the row's newest log is a
+    forward write (not itself an undo), so ``_already_reverted_response`` steps aside, but a
+    QUEUED row elsewhere for the same file still makes ``enqueue_tag_write`` refuse -- exercising
+    the route's OWN ``except TagWriteAlreadyQueuedError`` branch, distinct from the double-undo
+    idempotency short-circuit ``test_second_undo_is_idempotent_no_op`` covers.
+    """
+    from sqlalchemy import select
+
+    file_record, _ = await _create_executed_file(session, artist="Original Artist")
+    base = datetime(2026, 8, 1, 12, 0, 0)
+    await _add_write_log(session, file_record.id, status=TagWriteStatus.COMPLETED, source="proposal", before_tags={}, written_at=base)
+    await _add_write_log(
+        session, file_record.id, status=TagWriteStatus.QUEUED, source="proposal", before_tags={}, written_at=base + timedelta(seconds=30)
+    )
+    _controller_queue, router = install_fake_queues(client)
+
+    response = await client.post(f"/tags/{file_record.id}/undo")
+
+    assert response.status_code == 200
+    assert "already queued" in response.text.lower()
+    assert not router.captures, "no reversal was dispatched"
+    undo_rows = (
+        (await session.execute(select(TagWriteLog).where(TagWriteLog.file_id == file_record.id, TagWriteLog.source == "undo"))).scalars().all()
+    )
+    assert undo_rows == []
+
+
+def _encode_tag_review_token_from_value(value: object) -> str:
+    """Encode an arbitrary (non-dict) JSON value the same way ``_encode_tag_review_token`` does,
+    to reach ``_decode_tag_review_token``'s "not a dict" branch (a hand-crafted token, not one a
+    live workspace render could ever produce).
+    """
+    import base64
+    import json
+
+    return base64.urlsafe_b64encode(json.dumps(value).encode()).decode()
+
+
+@pytest.mark.asyncio
+async def test_bulk_write_toast_reports_noop_and_failed_together(session: AsyncSession) -> None:
+    """``_bulk_write_toast``'s ``noop``/``failed`` extras, direct unit coverage.
+
+    The live route only ever drives this through real dispatch outcomes (queued/noop/failed each
+    require a distinct DB/queue state to produce), so covering every combination through
+    ``client.post`` would mean standing up three separate files per test; the function is pure, so
+    a direct call is the more honest test of its own branches.
+    """
+    assert _bulk_write_toast(0, 0, 0) == "Nothing matched -- no executed files qualify for a no-discrepancy bulk write right now."
+    assert _bulk_write_toast(1, 0, 0) == "1 tag write queued on the file server. Outcomes land in the audit log as each agent reports back."
+    noop_only = _bulk_write_toast(0, 2, 0)
+    assert "2 already correct (nothing to write)" in noop_only
+    mixed = _bulk_write_toast(1, 2, 3)
+    assert "2 already correct (nothing to write)" in mixed
+    assert "3 could not be dispatched" in mixed
+
+
+@pytest.mark.asyncio
+async def test_parse_bulk_review_tokens_rejects_invalid_file_id(session: AsyncSession) -> None:
+    """A token whose ``file_id`` isn't a parseable UUID is rejected -- the router-level 400 that
+    wraps ``uuid.UUID``'s ``ValueError`` (:func:`_parse_bulk_review_tokens`).
+    """
+    from fastapi import HTTPException
+
+    token = _encode_tag_review_token_from_value({"file_id": "not-a-uuid"})
+    with pytest.raises(HTTPException) as exc_info:
+        _parse_bulk_review_tokens([token])
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Invalid reviewed tag payload"
+
+
+@pytest.mark.asyncio
+async def test_bulk_write_no_discrepancies_rejects_too_many_tokens(session: AsyncSession) -> None:
+    """``len(review_tokens) > _MAX_BULK_TAG_WRITE`` 400s (D-03's own cap, defense-in-depth behind
+    the ``Form(..., max_length=...)`` constraint FastAPI already enforces at the HTTP boundary --
+    calling the handler directly, as this test does, is the only way to reach the router's own
+    check rather than pydantic's).
+    """
+    from fastapi import HTTPException
+
+    from phaze.routers.tags import _MAX_BULK_TAG_WRITE
+
+    with pytest.raises(HTTPException) as exc_info:
+        await bulk_write_no_discrepancies(request=MagicMock(), review_tokens=["x"] * (_MAX_BULK_TAG_WRITE + 1), session=session)
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_bulk_write_no_discrepancies_rejects_empty_selection(session: AsyncSession) -> None:
+    """An empty (but present) ``review_tokens`` list 400s with "select at least one" rather than
+    silently no-opping. Reachable at the HTTP layer only via a client that omits every entry from a
+    required multi-value form field, which FastAPI already treats as "missing" (422) before this
+    handler runs -- calling it directly proves the router's own guard independent of that.
+    """
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc_info:
+        await bulk_write_no_discrepancies(request=MagicMock(), review_tokens=[], session=session)
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Select at least one reviewed tag decision"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_bulk_candidate_skips_a_toctou_terminal_file(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-u28m: a candidate that picked up a terminal write AFTER the bulk SELECT (between the
+    anti-join and this per-candidate re-check) is skipped, not double-written. Exercised directly:
+    reproducing the race through two real concurrent requests is exactly the flake this per-file
+    lock-scoped re-check exists to make impossible.
+    """
+    file_record, _metadata = await _create_executed_file(session, artist="Old Artist", title="Old Title")
+    await _add_write_log(
+        session, file_record.id, status=TagWriteStatus.COMPLETED, source="proposal", before_tags={}, written_at=datetime(2026, 8, 1, 12, 0, 0)
+    )
+    loaded = await _get_file_with_metadata(session, file_record.id)
+    assert loaded is not None
+    candidate = _snapshot_bulk_candidate(loaded)
+    reviewed = {"before": {}, "sources": {}}
+    proposed = {"artist": "New Artist"}
+
+    outcome = await _dispatch_bulk_candidate(session, MagicMock(), candidate, {file_record.id: (reviewed, proposed)})
+
+    assert outcome == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_bulk_candidate_skips_a_blanking_change(client: AsyncClient, session: AsyncSession) -> None:
+    """The router's own defensive mirror of ``_qualifies_for_bulk_write``'s blank-tag clause
+    (routers/tags.py, "never bulk-written" branch): a >=1-change comparison that would blank an
+    existing tag is skipped. ``compute_proposed_tags`` never actually produces this shape (the
+    invariant is asserted directly at the service unit level per that function's own docstring),
+    so reaching the ROUTER's mirror of the guard means handing ``_dispatch_bulk_candidate`` a
+    hand-built ``proposed`` mapping directly, the same way the route would if that invariant were
+    ever violated upstream.
+    """
+    file_record, _metadata = await _create_executed_file(session, artist="Old Artist", title="Old Title")
+    loaded = await _get_file_with_metadata(session, file_record.id)
+    assert loaded is not None
+    candidate = _snapshot_bulk_candidate(loaded)
+    reviewed = {"before": {}, "sources": {}}
+    proposed: dict[str, str | int | None] = {"artist": None}  # blanks the existing "Old Artist" tag
+
+    outcome = await _dispatch_bulk_candidate(session, MagicMock(), candidate, {file_record.id: (reviewed, proposed)})
+
+    assert outcome == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_bulk_candidate_persists_a_noop_marker_for_a_zero_change_file(client: AsyncClient, session: AsyncSession) -> None:
+    """WR-01: a candidate whose comparison has zero changed fields gets a terminal NO_OP marker
+    committed immediately, and reports "noop" rather than dispatching anything.
+    """
+    from sqlalchemy import select
+
+    file_record, _metadata = await _create_executed_file(session, artist="Old Artist", title="Old Title")
+    loaded = await _get_file_with_metadata(session, file_record.id)
+    assert loaded is not None
+    candidate = _snapshot_bulk_candidate(loaded)
+    reviewed = {"before": {}, "sources": {}}
+    proposed = {"artist": "Old Artist", "title": "Old Title"}  # matches current metadata exactly
+
+    outcome = await _dispatch_bulk_candidate(session, MagicMock(), candidate, {file_record.id: (reviewed, proposed)})
+
+    assert outcome == "noop"
+    rows = (await session.execute(select(TagWriteLog).where(TagWriteLog.file_id == file_record.id))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].status == TagWriteStatus.NO_OP.value
+    assert rows[0].source == "bulk_noop"
+
+
+@pytest.mark.asyncio
+async def test_run_bulk_candidates_tallies_noop_outcomes(client: AsyncClient, session: AsyncSession) -> None:
+    """:func:`_run_bulk_candidates`'s own "noop" tally branch: the count increments and the file's
+    id lands in ``resolved_ids`` (phaze-gwe1 -- it is now terminal, so the caller's response must
+    OOB-remove its still-pending row).
+    """
+    file_record, _metadata = await _create_executed_file(session, artist="Old Artist", title="Old Title")
+    loaded = await _get_file_with_metadata(session, file_record.id)
+    assert loaded is not None
+    candidate = _snapshot_bulk_candidate(loaded)
+    reviewed = {"before": {}, "sources": {}}
+    proposed = {"artist": "Old Artist", "title": "Old Title"}
+
+    queued, noop, failed, resolved_ids = await _run_bulk_candidates(session, MagicMock(), [candidate], {file_record.id: (reviewed, proposed)})
+
+    assert (queued, noop, failed) == (0, 1, 0)
+    assert resolved_ids == [file_record.id]
+
+
+@pytest.mark.asyncio
+async def test_load_bulk_candidates_snapshots_the_selected_files(session: AsyncSession) -> None:
+    """:func:`_load_bulk_candidates` direct coverage: re-queries exactly the submitted, non-terminal
+    applied files and validates each against its own review token.
+    """
+    file_record, _ = await _create_executed_file(session, artist="Old Artist")
+    token = await _review_token(session, file_record.id)
+    reviewed_by_id = _parse_bulk_review_tokens([token])
+
+    candidates, validated = await _load_bulk_candidates(session, reviewed_by_id)
+
+    assert [c.id for c in candidates] == [file_record.id]
+    assert file_record.id in validated
 
 
 # ---------------------------------------------------------------------------
