@@ -377,6 +377,78 @@ def test_mp4_delete_branch_removes_atoms_from_real_container(tmp_path: Path) -> 
     assert _essentia_read(path)[_ES_ARTIST] == "", "artist still readable after delete"
 
 
+def test_asf_delete_branch_removes_attributes_from_real_container(tmp_path: Path) -> None:
+    """Undo's mechanism for the format this bead ADDED -- ``_write_asf``'s ``del audio[asf_key]``.
+
+    Caught by ``just branch-check`` rather than by inspection: the first draft of this module gave
+    the delete branch its own test for Vorbis and for MP4 and left ASF -- the one newly-written
+    writer -- with only the scalar-write path exercised. A new format's destructive path is
+    precisely where the absence of a test costs most, and precisely where "it's the same shape as
+    the others" is least convincing, since the whole reason ``_write_asf`` is a separate function
+    is that ASF is NOT the same as Vorbis.
+    """
+    path = _make_container(tmp_path, "wma")
+    write_tags(str(path), dict(_TAGS))
+    assert _essentia_read(path)[_ES_ARTIST] == "Test Artist", "setup write did not land"
+
+    write_tags(str(path), dict.fromkeys(_TAGS))
+
+    remaining = set(mutagen.File(str(path)).tags.keys())
+    assert not set(_WRITE_ASF_MAP.values()) & remaining, f"undo left ASF attributes on disk: {sorted(remaining)}"
+
+    after = _essentia_read(path)
+    assert after[_ES_ARTIST] == "", f"artist still readable after delete: {after!r}"
+    assert after[_ES_TITLE] == "", f"title still readable after delete: {after!r}"
+
+
+def test_asf_delete_of_an_absent_attribute_is_a_no_op(tmp_path: Path) -> None:
+    """Deleting a field the file never carried must not raise -- the ``asf_key in audio`` guard.
+
+    This is the undo-of-an-untagged-file case (phaze-52qd): ``_extract_before_tags`` records every
+    core field, mapping an absent tag to an explicit ``None``, so re-applying that snapshot asks
+    ``_write_asf`` to delete attributes that were never written. Without the containment guard
+    mutagen raises ``KeyError`` and the undo fails partway, having already deleted the fields it
+    reached.
+    """
+    path = _make_container(tmp_path, "wma")
+
+    write_tags(str(path), dict.fromkeys(_TAGS))
+
+    assert _essentia_read(path)[_ES_ARTIST] == "", "a delete-only write on an untagged file should leave it untagged"
+
+
+def test_asf_multi_value_genre_writes_one_attribute_per_entry(tmp_path: Path) -> None:
+    """``_write_asf``'s ``list`` branch -- the multi-value undo snapshot shape (phaze-z2u08).
+
+    A genre captured from a file carrying two genre values comes back as a real ``list[str]``, and
+    every writer must put each entry back verbatim instead of collapsing them into one joined
+    value. Pinned for ASF for the same reason the delete branch is: it is a new writer, and this
+    branch had no test.
+    """
+    path = _make_container(tmp_path, "wma")
+
+    write_tags(str(path), {"genre": ["Rock", "Alternative"]})
+
+    values = [str(v) for v in mutagen.File(str(path))["WM/Genre"]]
+    assert values == ["Rock", "Alternative"], f"multi-value genre was not written verbatim: {values!r}"
+
+
+def test_asf_ignores_a_field_it_has_no_key_for(tmp_path: Path) -> None:
+    """A field absent from ``_WRITE_ASF_MAP`` is skipped, not written under a guessed name.
+
+    The ``asf_key is None: continue`` arm. Guessing a key for an unmapped field would be the same
+    class of defect as this whole bead -- inventing an attribute name a real reader does not look
+    for -- so the writer must decline the field and leave the rest of the write intact.
+    """
+    path = _make_container(tmp_path, "wma")
+
+    write_tags(str(path), {"artist": "Test Artist", "comment": "not a mapped field"})
+
+    keys = set(mutagen.File(str(path)).tags.keys())
+    assert "Author" in keys, "the mapped field must still be written"
+    assert "comment" not in keys, f"an unmapped field was written anyway: {sorted(keys)}"
+
+
 @pytest.mark.parametrize("ext", _TAGGABLE)
 def test_phaze_can_read_back_what_phaze_wrote(tmp_path: Path, ext: str) -> None:
     """The write path and the READ path must agree on a real container, for every taggable format.
