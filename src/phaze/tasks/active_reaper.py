@@ -91,7 +91,8 @@ owned by SAQ's own heartbeat-based ``Job.stuck`` sweep instead -- the division o
 
 Degrade-safe: the whole statement runs in a SAVEPOINT; a missing/unreadable ``saq_jobs`` table (a
 pre-migration env, or a malformed blob) rolls the nested scope back alone and returns ``reaped=0``. A
-reaper hiccup must never abort a controller cron tick.
+reaper hiccup must never abort a controller cron tick. That handler is deliberately broad;
+see :mod:`phaze.tasks._saq_reap` for why narrowing it would break the contract it implements.
 """
 
 from __future__ import annotations

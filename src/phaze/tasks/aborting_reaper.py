@@ -53,7 +53,8 @@ THREE GUARDS, all load-bearing:
 
 Degrade-safe: the whole statement runs in a SAVEPOINT; a missing/unreadable ``saq_jobs`` table (a
 pre-migration env, or a malformed blob) rolls the nested scope back alone and returns ``reaped=0``.
-A reaper hiccup must never abort a controller cron tick.
+A reaper hiccup must never abort a controller cron tick. That handler is deliberately broad;
+see :mod:`phaze.tasks._saq_reap` for why narrowing it would break the contract it implements.
 
 SIBLING (phaze-o0n6): ``'aborting'`` is not the only status outside SAQ's overwrite allowlist --
 ``'active'`` has the identical blocking property and gets the identical three guards in

@@ -65,6 +65,31 @@ def tag_completeness(file_dict: dict[str, Any]) -> tuple[str, int, int]:
     return label, filled, total
 
 
+def _canonical_rationale(winner: dict[str, Any], runner_up: dict[str, Any] | None) -> str:
+    """Name the criterion on which ``winner`` beat the next-best file in its duplicate group.
+
+    Mirrors :func:`score_group`'s ranking order (highest bitrate -> most complete tags -> shortest
+    path) and reports the FIRST criterion on which the winner strictly beat the runner-up. When it
+    beat the runner-up on neither, the sort was decided by the remaining key, so "shortest path" is
+    the honest label -- including for a single-file group, where ``runner_up`` is ``None`` and both
+    runner-up values read as 0. ``bitrate`` is stored in BITS per second (phaze-iw2k); the division
+    by 1000 here is display-only and does not affect the ranking, which is unit-independent because
+    every stored value shares the same unit.
+    """
+    winner_bitrate = winner.get("bitrate") or 0
+    winner_tags = winner.get("tag_filled", 0)
+    winner_tag_total = winner.get("tag_total", len(TAG_FIELDS))
+
+    runner_bitrate = (runner_up.get("bitrate") or 0) if runner_up else 0
+    runner_tags = (runner_up.get("tag_filled", 0)) if runner_up else 0
+
+    if winner_bitrate > 0 and winner_bitrate > runner_bitrate:
+        return f"highest bitrate ({winner_bitrate // 1000}kbps)"
+    if winner_tags > 0 and winner_tags > runner_tags:
+        return f"most complete tags ({winner_tags}/{winner_tag_total})"
+    return "shortest path"
+
+
 def score_group(group: dict[str, Any]) -> None:
     """Select canonical file and generate rationale string.
 
@@ -87,21 +112,8 @@ def score_group(group: dict[str, Any]) -> None:
     winner = files[0]
     group["canonical_id"] = winner["id"]
 
-    winner_bitrate = winner.get("bitrate") or 0
-    winner_tags = winner.get("tag_filled", 0)
-    winner_tag_total = winner.get("tag_total", len(TAG_FIELDS))
-
     # Determine what actually differentiated the winner from the runner-up
-    runner_up = files[1] if len(files) > 1 else None
-    runner_bitrate = (runner_up.get("bitrate") or 0) if runner_up else 0
-    runner_tags = (runner_up.get("tag_filled", 0)) if runner_up else 0
-
-    if winner_bitrate > 0 and winner_bitrate > runner_bitrate:
-        group["rationale"] = f"highest bitrate ({winner_bitrate // 1000}kbps)"
-    elif winner_tags > 0 and winner_tags > runner_tags:
-        group["rationale"] = f"most complete tags ({winner_tags}/{winner_tag_total})"
-    else:
-        group["rationale"] = "shortest path"
+    group["rationale"] = _canonical_rationale(winner, files[1] if len(files) > 1 else None)
 
 
 def _dup_hash_subquery(limit: int, offset: int) -> Subquery:
@@ -179,6 +191,37 @@ def _select_capped_group_members(hash_filter: ColumnElement[bool], cap: int = _M
     )
 
 
+def _group_member_dict(file_record: FileRecord, metadata: FileMetadata | None) -> dict[str, Any]:
+    """Build one duplicate-group member dict from a ``(FileRecord, FileMetadata | None)`` row.
+
+    ``metadata`` is ``None`` for a file whose tag extraction has not run (the readers all
+    ``outerjoin`` FileMetadata), so every metadata-derived key degrades to ``None`` rather than the
+    row being dropped -- a file with no tags is still a duplicate and must still be rankable by
+    :func:`score_group`, which treats a missing bitrate as 0. The three ``tag_*`` keys are derived
+    from the dict itself via :func:`tag_completeness` so the "Full/Partial/None" label and the
+    numeric tag count a group's ranking uses can never disagree.
+    """
+    file_dict: dict[str, Any] = {
+        "id": str(file_record.id),
+        "original_path": file_record.original_path,
+        "file_size": file_record.file_size,
+        "file_type": file_record.file_type,
+        "bitrate": metadata.bitrate if metadata else None,
+        "duration": metadata.duration if metadata else None,
+        "artist": metadata.artist if metadata else None,
+        "title": metadata.title if metadata else None,
+        "album": metadata.album if metadata else None,
+        "genre": metadata.genre if metadata else None,
+        "year": metadata.year if metadata else None,
+        "track_number": metadata.track_number if metadata else None,
+    }
+    label, filled, total = tag_completeness(file_dict)
+    file_dict["tag_label"] = label
+    file_dict["tag_filled"] = filled
+    file_dict["tag_total"] = total
+    return file_dict
+
+
 def _build_metadata_groups(rows: Iterable[Sequence[Any]], cap: int | None = None) -> list[dict[str, Any]]:
     """Group ``(FileRecord, FileMetadata | None)`` rows into the duplicate-group dict shape.
 
@@ -196,25 +239,7 @@ def _build_metadata_groups(rows: Iterable[Sequence[Any]], cap: int | None = None
     """
     groups_map: dict[str, list[dict[str, Any]]] = {}
     for file_record, metadata in rows:
-        file_dict: dict[str, Any] = {
-            "id": str(file_record.id),
-            "original_path": file_record.original_path,
-            "file_size": file_record.file_size,
-            "file_type": file_record.file_type,
-            "bitrate": metadata.bitrate if metadata else None,
-            "duration": metadata.duration if metadata else None,
-            "artist": metadata.artist if metadata else None,
-            "title": metadata.title if metadata else None,
-            "album": metadata.album if metadata else None,
-            "genre": metadata.genre if metadata else None,
-            "year": metadata.year if metadata else None,
-            "track_number": metadata.track_number if metadata else None,
-        }
-        label, filled, total = tag_completeness(file_dict)
-        file_dict["tag_label"] = label
-        file_dict["tag_filled"] = filled
-        file_dict["tag_total"] = total
-        groups_map.setdefault(file_record.sha256_hash, []).append(file_dict)
+        groups_map.setdefault(file_record.sha256_hash, []).append(_group_member_dict(file_record, metadata))
 
     groups: list[dict[str, Any]] = []
     for h, members in groups_map.items():
@@ -433,6 +458,71 @@ class StaleDuplicateReviewError(Exception):
     """The unresolved group no longer exactly matches its reviewed snapshot."""
 
 
+async def _assert_reviewed_snapshot(
+    session: AsyncSession,
+    group_hash: str,
+    canonical_id: uuid_mod.UUID,
+    reviewed_member_ids: set[uuid_mod.UUID],
+) -> None:
+    """Freeze ``group_hash``'s membership and refuse the resolve unless it still matches the review.
+
+    Raises :class:`StaleDuplicateReviewError` when ``canonical_id`` was not among the reviewed
+    members, or when the group's currently-unresolved membership differs in ANY direction from
+    ``reviewed_member_ids`` -- a member added or removed since the operator looked at the card means
+    they approved a different group than the one about to be resolved.
+
+    Duplicate review is rare and destructive, so the ``LOCK TABLE files IN SHARE MODE`` is taken
+    BEFORE the read and held through the caller's COMMIT: SHARE permits concurrent readers but
+    blocks files-table INSERT/UPDATE/DELETE writers, so a scan cannot insert an unseen member after
+    the exact-set check nor delete a reviewed member before the markers are inserted. Called only on
+    the reviewed path -- :func:`resolve_group` with ``reviewed_member_ids=None`` (every internal
+    caller) never takes this lock.
+    """
+    await session.execute(text("LOCK TABLE files IN SHARE MODE"))
+    current_result = await session.execute(
+        select(FileRecord.id).where(FileRecord.sha256_hash == group_hash, ~dedup_resolved_clause()).order_by(FileRecord.id)
+    )
+    current_member_ids = set(current_result.scalars().all())
+    if canonical_id not in reviewed_member_ids or current_member_ids != reviewed_member_ids:
+        raise StaleDuplicateReviewError
+
+
+async def _insert_resolution_markers(session: AsyncSession, files: Sequence[FileRecord], canonical_id: uuid_mod.UUID) -> bool:
+    """Insert one ``DedupResolution`` marker per non-canonical ``files`` row. False on a lost race.
+
+    D-01/D-02/D-03/D-07: the go-forward dedup_resolution writer that has not existed since 032's
+    one-shot backfill. One bulk pg_insert per chunk, ON CONFLICT (file_id) DO NOTHING (idempotent
+    under an HTMX double-submit -- first-writer-wins), inside the caller-owned txn (flush, never
+    commit). Each row stamps the operator's actual ``canonical_id`` (strictly better than 032's
+    ``ORDER BY c.id LIMIT 1`` guess) and an explicit id -- pg_insert bypasses ``DedupResolution.id``'s
+    Python-side ``default=uuid.uuid4``, so omitting it is a NULL-PK failure (agent_analysis.py:204
+    precedent). ``resolved_at`` rides its server_default.
+
+    phaze-p3qr: chunk_rows guards the same 32767-bind-parameter cap as the companion.py sibling
+    finding, even though a realistic byte-identical-duplicate group is nowhere near the >10,922-row
+    break in practice; the guard is one line, so it costs nothing to apply here too rather than
+    leave the shape unchunked (bulk_insert.py's atomicity rule holds -- every chunk lands on this
+    session, and the caller still owns the single commit/flush).
+
+    phaze-a3if1: the whole insert runs inside ONE SAVEPOINT (not per-chunk) so a mid-loop FK failure
+    unwinds every chunk of THIS resolve atomically, never a partial marker set, and leaves the
+    caller's outer transaction usable for the rest of the request (request_guards.py contract rule 5
+    -- a nested rollback, never ``session.rollback()``, which would expire every already-loaded ORM
+    object on the session). An ``IntegrityError`` means a member of ``files`` (or ``canonical_id``
+    itself) was deleted by a concurrent scan-batch cascade between the caller's SELECT and this
+    INSERT -- contract rule 4: catch the race, not the typo. Returning False lets the caller report
+    the same 0-resolved shape every other no-op in :func:`resolve_group` already returns.
+    """
+    rows = [{"id": uuid_mod.uuid4(), "file_id": f.id, "canonical_file_id": canonical_id} for f in files]
+    try:
+        async with session.begin_nested():
+            for chunk in chunk_rows(rows):
+                await session.execute(pg_insert(DedupResolution).values(chunk).on_conflict_do_nothing(index_elements=["file_id"]))
+    except IntegrityError:
+        return False
+    return True
+
+
 async def resolve_group(
     session: AsyncSession,
     group_hash: str,
@@ -494,16 +584,7 @@ async def resolve_group(
     await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(group_hash))))
 
     if reviewed_member_ids is not None:
-        # Duplicate review is rare and destructive. Freeze membership through COMMIT so a scan cannot
-        # insert an unseen member after the exact-set check or delete a reviewed member before marker
-        # insertion. SHARE permits readers but blocks files-table INSERT/UPDATE/DELETE writers.
-        await session.execute(text("LOCK TABLE files IN SHARE MODE"))
-        current_result = await session.execute(
-            select(FileRecord.id).where(FileRecord.sha256_hash == group_hash, ~dedup_resolved_clause()).order_by(FileRecord.id)
-        )
-        current_member_ids = set(current_result.scalars().all())
-        if canonical_id not in reviewed_member_ids or current_member_ids != reviewed_member_ids:
-            raise StaleDuplicateReviewError
+        await _assert_reviewed_snapshot(session, group_hash, canonical_id, reviewed_member_ids)
 
     canonical_membership_stmt = select(FileRecord.id).where(
         FileRecord.sha256_hash == group_hash,
@@ -534,36 +615,10 @@ async def resolve_group(
     # with -- see undo_resolve's docstring for why file_id alone is not a safe CAS anchor.
     file_states: list[dict[str, Any]] = [{"id": str(f.id), "canonical_id": str(canonical_id)} for f in files]
 
-    # D-01/D-02/D-03/D-07: the go-forward dedup_resolution writer that has not existed since 032's
-    # one-shot backfill. One bulk pg_insert for every non-canonical file in the group, ON CONFLICT
-    # (file_id) DO NOTHING (idempotent under an HTMX double-submit — first-writer-wins), inside the
-    # caller-owned txn (flush, never commit). Each row stamps the operator's actual canonical_id
-    # (strictly better than 032's ORDER BY c.id LIMIT 1 guess) and an explicit id — pg_insert bypasses
-    # DedupResolution.id's Python-side default=uuid.uuid4, so omitting it is a NULL-PK failure
-    # (agent_analysis.py:204 precedent). resolved_at rides its server_default.
-    if files:
-        rows = [{"id": uuid_mod.uuid4(), "file_id": f.id, "canonical_file_id": canonical_id} for f in files]
-        # phaze-p3qr: chunk_rows guards the same 32767-bind-parameter cap as the companion.py
-        # sibling finding, even though a realistic byte-identical-duplicate group is nowhere near
-        # the >10,922-row break in practice; the guard is one line, so it costs nothing to apply
-        # here too rather than leave the shape unchunked (bulk_insert.py's atomicity rule holds --
-        # every chunk lands on this session, and the caller still owns the single commit/flush).
-        #
-        # phaze-a3if1: the whole insert runs inside ONE SAVEPOINT (not per-chunk) so a mid-loop FK
-        # failure unwinds every chunk of THIS resolve atomically, never a partial marker set, and
-        # leaves the caller's outer transaction usable for the rest of the request (contract rule 5
-        # -- a nested rollback, never session.rollback(), which would expire every already-loaded
-        # ORM object on the session).
-        try:
-            async with session.begin_nested():
-                for chunk in chunk_rows(rows):
-                    await session.execute(pg_insert(DedupResolution).values(chunk).on_conflict_do_nothing(index_elements=["file_id"]))
-        except IntegrityError:
-            # A member of `files` (or `canonical_id` itself) was deleted by a concurrent scan-batch
-            # cascade between the SELECT above and this INSERT -- request_guards.py contract rule 4:
-            # catch the race, not the typo. Report the same 0-resolved shape every other no-op in
-            # this function already returns.
-            return 0, []
+    if files and not await _insert_resolution_markers(session, files, canonical_id):
+        # Lost the race with a concurrent scan-batch delete -- same 0-resolved shape as every other
+        # no-op above. See _insert_resolution_markers for the full phaze-a3if1 rationale.
+        return 0, []
 
     await session.flush()
     return len(file_states), file_states
