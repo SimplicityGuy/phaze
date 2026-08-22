@@ -24,7 +24,7 @@ can resolve `Annotated[AsyncSession, Depends(get_session)]` at app-build time
 """
 
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Any
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -66,43 +66,17 @@ def _row_to_response(batch: ScanBatch) -> ScanBatchPatchResponse:
     )
 
 
-@router.patch("/{batch_id}", status_code=status.HTTP_200_OK, response_model=ScanBatchPatchResponse)
-async def patch_scan_batch(
-    batch_id: uuid.UUID,
-    body: ScanBatchPatch,
-    agent: Annotated[Agent, Depends(get_authenticated_agent)],
-    session: Annotated[AsyncSession, Depends(get_session)],
-) -> ScanBatchPatchResponse:
-    """Update a ScanBatch row. Cross-tenant guard runs BEFORE state-machine evaluation (T-27-01)."""
-    # 1. 404 if batch_id is unknown.
-    #
-    # phaze-bnvx: load under a row-level write lock, mirroring the two sibling PATCH handlers
-    # (agent_execution.patch_execution_log, phaze-6zxs; agent_proposals.patch_proposal_state,
-    # phaze-jlu6). ScanBatch has no version_id_col and the engine runs at READ COMMITTED, so a
-    # plain PK read here is a TOCTOU: two concurrent PATCHes (e.g. the control-side stall reaper
-    # racing an in-flight agent PATCH, or the agent client's own tenacity retry landing after a
-    # prior attempt already committed) can both read the same RUNNING snapshot, both pass the
-    # step-2b terminal guard and the step-5 transition guard against that stale read, and the
-    # last committer wins blindly -- overwriting a just-committed COMPLETED/FAILED outcome, or
-    # re-stamping a fresh heartbeat onto an already-terminal row. FOR UPDATE serializes the two:
-    # the second PATCH blocks on the row lock until the first commits, then re-evaluates every
-    # guard below against the now-committed status.
-    batch = await session.get(ScanBatch, batch_id, with_for_update=True)
-    if batch is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="scan batch not found")
+def _pre_mutation_guard(batch: ScanBatch, cur: ScanStatus, body: ScanBatchPatch, set_fields: dict[str, Any]) -> ScanBatchPatchResponse | None:
+    """Steps 2b-5 of the PATCH contract: every guard that runs BEFORE `set_fields` is applied.
 
-    # 2. T-27-01 cross-tenant guard. Returns 403 BEFORE state-machine logic so
-    # a leaked batch_id cannot be probed via 409 vs 200 timing. Mirrors
-    # agent_proposals.py:62-76 byte-for-byte.
-    if batch.agent_id != agent.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="scan batch does not belong to authenticated agent",
-        )
+    phaze-bk9el.9: split out of `patch_scan_batch` (CCN 19 in 99 NLOC) so each function stays
+    under the CCN-15 target -- no behaviour change, the branch order and every raised/returned
+    value are identical to the pre-split body.
 
-    cur = ScanStatus(batch.status)
-    set_fields = body.model_dump(exclude_unset=True)
-
+    Returns a `ScanBatchPatchResponse` to short-circuit an idempotent echo (zero DB writes,
+    caller returns it as-is); `None` means the caller should apply `set_fields`, stamp the
+    heartbeat, and commit. Raises `HTTPException` (409) for every illegal transition.
+    """
     # 2b. phaze-v392: terminal-state guard, gated on the ROW STATE rather than on whether the
     # PATCH body happens to carry `status`. `ScanBatchPatch` makes every field optional and the
     # agent legitimately sends status-less progress PATCHes (`ScanBatchPatch(processed_files=...)`
@@ -169,6 +143,55 @@ async def patch_scan_batch(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"illegal transition {cur.value} -> {new.value}",
             )
+
+    return None
+
+
+@router.patch("/{batch_id}", status_code=status.HTTP_200_OK, response_model=ScanBatchPatchResponse)
+async def patch_scan_batch(
+    batch_id: uuid.UUID,
+    body: ScanBatchPatch,
+    agent: Annotated[Agent, Depends(get_authenticated_agent)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ScanBatchPatchResponse:
+    """Update a ScanBatch row. Cross-tenant guard runs BEFORE state-machine evaluation (T-27-01)."""
+    # 1. 404 if batch_id is unknown.
+    #
+    # phaze-bnvx: load under a row-level write lock, mirroring the two sibling PATCH handlers
+    # (agent_execution.patch_execution_log, phaze-6zxs; agent_proposals.patch_proposal_state,
+    # phaze-jlu6). ScanBatch has no version_id_col and the engine runs at READ COMMITTED, so a
+    # plain PK read here is a TOCTOU: two concurrent PATCHes (e.g. the control-side stall reaper
+    # racing an in-flight agent PATCH, or the agent client's own tenacity retry landing after a
+    # prior attempt already committed) can both read the same RUNNING snapshot, both pass the
+    # step-2b terminal guard and the step-5 transition guard against that stale read, and the
+    # last committer wins blindly -- overwriting a just-committed COMPLETED/FAILED outcome, or
+    # re-stamping a fresh heartbeat onto an already-terminal row. FOR UPDATE serializes the two:
+    # the second PATCH blocks on the row lock until the first commits, then re-evaluates every
+    # guard below against the now-committed status.
+    batch = await session.get(ScanBatch, batch_id, with_for_update=True)
+    if batch is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="scan batch not found")
+
+    # 2. T-27-01 cross-tenant guard. Returns 403 BEFORE state-machine logic so
+    # a leaked batch_id cannot be probed via 409 vs 200 timing. Mirrors
+    # agent_proposals.py:62-76 byte-for-byte.
+    if batch.agent_id != agent.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="scan batch does not belong to authenticated agent",
+        )
+
+    cur = ScanStatus(batch.status)
+    set_fields = body.model_dump(exclude_unset=True)
+
+    # 2b-5. Terminal-row guard, idempotent-echo guard, cannot-transition-to-LIVE guard, and the
+    # state-machine transition guard -- see _pre_mutation_guard's docstring for the full ordering
+    # rationale. A non-None return is an idempotent echo to hand straight back (zero DB writes);
+    # `None` means every guard passed and the mutation below may proceed. Illegal transitions and
+    # a terminal row raise HTTPException (409) from inside the guard itself.
+    guard_response = _pre_mutation_guard(batch, cur, body, set_fields)
+    if guard_response is not None:
+        return guard_response
 
     # 6. Apply explicit-set mutations only (default-None values do NOT clobber).
     for field, value in set_fields.items():

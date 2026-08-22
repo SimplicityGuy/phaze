@@ -102,6 +102,11 @@ THE CONTRACT
    The test: could a stricter signature have rejected it? Yes -> phaze-btlu, 422 at the boundary.
    No -> here, catch and branch.
 
+   :func:`execute_guarding_vanished_file` is the standard shape for rules 4 and 5 together
+   (phaze-bk9el.9): it runs the statement in a SAVEPOINT, catches the race, logs the hold through
+   the CALLER's own logger, and returns ``None`` so the caller renders its own no-op 200. Use it
+   rather than re-deriving the try/``begin_nested``/except shape at a new call site.
+
 5. A FAILED STATEMENT POISONS THE TRANSACTION -- USE A SAVEPOINT, NOT A ROLLBACK.
    Postgres aborts the whole transaction on any failed statement; every subsequent statement on
    that session raises ``PendingRollbackError`` until it is unwound. So a handler that catches an
@@ -141,12 +146,22 @@ USING IT
 """
 
 import json
-from typing import Any
+from typing import Any, cast
+import uuid
 
 from fastapi import HTTPException
+from sqlalchemy import CursorResult
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+import structlog
 
 
-__all__ = ["MALFORMED_PAYLOAD_STATUS", "MAX_ARRAY_ITEMS", "parse_json_array_payload"]
+__all__ = [
+    "MALFORMED_PAYLOAD_STATUS",
+    "MAX_ARRAY_ITEMS",
+    "execute_guarding_vanished_file",
+    "parse_json_array_payload",
+]
 
 
 MALFORMED_PAYLOAD_STATUS = 422
@@ -251,3 +266,55 @@ def parse_json_array_payload(raw: str, *, field: str, max_items: int = MAX_ARRAY
         )
 
     return parsed
+
+
+async def execute_guarding_vanished_file(
+    session: AsyncSession,
+    stmt: Any,
+    *,
+    logger: structlog.stdlib.BoundLogger,
+    handler_name: str,
+    file_id: uuid.UUID,
+    agent_id: str,
+) -> CursorResult[Any] | None:
+    """Execute ``stmt`` inside a SAVEPOINT, holding a clean ``None`` on a vanished-FileRecord race.
+
+    The standard shape for contract rules 4 (catch the race, not the typo) and 5 (a SAVEPOINT, not
+    a full rollback). ``stmt`` targets a row whose FileRecord parent can be removed concurrently by
+    ``services.scan_deletion.delete_scan_cascade`` while a multi-hour agent run (analysis, metadata
+    extraction, ...) is still in flight -- a routine, expected race (phaze-wn1l / phaze-1lnzo), not a
+    bug. Running it inside ``session.begin_nested()`` means a caught ``IntegrityError`` (the FK
+    violation from the vanished parent) unwinds only the nested scope, leaving the caller's outer
+    transaction usable for the rest of the response, per rule 5.
+
+    Originally duplicated verbatim across ``routers/agent_analysis.py`` (``put_analysis``,
+    ``post_analysis_progress``, ``report_analysis_failed``) and ``routers/agent_metadata.py``
+    (``put_metadata``, ``report_metadata_failed``) -- five call sites, one shape, consolidated here
+    per this module's own docstring ("composes the helpers here rather than re-deriving a guard").
+
+    Args:
+        session: The caller's session; ``stmt`` runs in a SAVEPOINT nested inside its current
+            transaction.
+        stmt: The INSERT/UPDATE/DELETE statement to execute.
+        logger: The CALLING module's own bound logger (never this module's) -- passed through so
+            the emitted warning still attributes to the router that actually raced, matching what
+            each call site logged before this helper existed. No behaviour change: the log line's
+            module attribution is unchanged from before extraction.
+        handler_name: The calling function's own name, echoed into the warning so the hold is
+            traceable to the specific endpoint that raced (mirrors each site's original message,
+            e.g. ``"put_analysis file vanished mid-write; ..."``).
+        file_id: The PATH file id the statement targeted (AUTH-01) -- logged, never re-derived.
+        agent_id: The authenticated agent id -- logged alongside ``file_id``.
+
+    Returns:
+        The ``CursorResult`` on success (an INSERT .. ON CONFLICT statement returns one at runtime;
+        the async stubs type it as the base ``Result``, hence the cast here rather than at every
+        call site). ``None`` on the caught race -- rendering the no-op 200 response stays the
+        caller's own decision (rule 3), not this helper's.
+    """
+    try:
+        async with session.begin_nested():
+            return cast("CursorResult[Any]", await session.execute(stmt))
+    except IntegrityError:
+        logger.warning(f"{handler_name} file vanished mid-write; holding with a no-op 200", file_id=str(file_id), agent_id=agent_id)
+        return None
