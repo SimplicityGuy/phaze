@@ -579,6 +579,63 @@ async def load_companion_targets(
     return by_agent
 
 
+async def _read_companion_chunk(
+    task_router: AgentTaskRouter,
+    agent_id: str,
+    chunk: list[CompanionReadItem],
+    max_chars: int,
+    media_file_id: uuid.UUID,
+) -> list[dict[str, str]]:
+    """Read ONE wire-bounded chunk of companions from one owning agent; ``[]`` on any failure.
+
+    phaze-bk9el.26: this is the body of ``fetch_companion_contents``'s innermost loop, extracted
+    verbatim so that function nests 2 levels instead of 4. The extraction is behavior-preserving by
+    construction: the ``except`` path used to hand control back to the enclosing chunk loop with
+    ``continue``, and returning ``[]`` here is the same thing, because the caller does nothing with
+    this block's output except extend its accumulator with it.
+
+    phaze-6bkk: request/response over the agent's ``meta`` lane. The containment check that used to
+    run control-side (phaze-eycl) moved WITH the read, onto the agent, and is re-run there against
+    that agent's own configured ``scan_roots`` -- the only place ``Path.resolve()`` can answer
+    honestly, since the controller has no such filesystem.
+
+    Args:
+        task_router: The per-agent SAQ enqueuer (``ctx["task_router"]``); non-``None`` by the
+            caller's guard.
+        agent_id: Id of the agent that owns every companion in ``chunk``.
+        chunk: At most ``_COMPANION_CHUNK`` companion targets for that one agent.
+        max_chars: Maximum chars per companion file (passed to ``clean_companion_content``).
+        media_file_id: UUID of the media file (for logging only).
+
+    Returns:
+        List of dicts with ``"filename"`` and ``"content"`` keys; ``[]`` if the read failed.
+    """
+    try:
+        queue = task_router.queue_for(agent_id, lane_for_task("read_companion_files"))
+        await queue.connect()
+        payload = ReadCompanionFilesPayload(agent_id=agent_id, companions=chunk, max_chars=max_chars)
+        job_result = await queue.apply("read_companion_files", timeout=_COMPANION_READ_TIMEOUT_S, **payload.model_dump(mode="json"))
+    except Exception:
+        # An offline agent, a saturated lane, or a timeout. Log and propose WITHOUT the
+        # companion context rather than failing the batch -- the pre-phaze-6bkk behavior on
+        # an unreadable companion, minus the silence (it used to be an unconditional
+        # `except OSError: continue` that hid a permanent, topology-level failure).
+        logger.warning("companion_read_unavailable", agent_id=agent_id, media_file_id=str(media_file_id), exc_info=True)
+        return []
+
+    contents: list[dict[str, str]] = []
+    for entry in (job_result or {}).get("contents", []):
+        # phaze-qj9e: strip NUL/lone-surrogate bytes before the content flows into the
+        # context_used JSONB column. A UTF-16LE .nfo/.txt companion decodes to text riddled
+        # with U+0000, which PostgreSQL jsonb rejects outright -- aborting store_proposals for
+        # the WHOLE batch and poisoning every retry with identical content. Both the cleaning
+        # and the sanitizing stay control-side: they are pure functions, and this is where the
+        # value is persisted.
+        cleaned = sanitize_pg_text(clean_companion_content(entry["content"], max_chars))
+        contents.append({"filename": sanitize_pg_text(entry["filename"]), "content": cleaned})
+    return contents
+
+
 async def fetch_companion_contents(
     by_agent: dict[str, list[CompanionReadItem]],
     max_chars: int,
@@ -612,35 +669,12 @@ async def fetch_companion_contents(
 
     contents: list[dict[str, str]] = []
     for agent_id, items in by_agent.items():
-        # phaze-6bkk: request/response over the agent's meta lane. The containment check that used
-        # to run here (phaze-eycl) moved WITH the read, onto the agent, and is re-run there against
-        # that agent's own configured scan_roots -- the only place `Path.resolve()` can answer
-        # honestly, since the controller has no such filesystem. Chunked to the payload's wire bound
-        # so an unusually companion-heavy media file cannot 422 the whole read.
+        # Chunked to the payload's wire bound so an unusually companion-heavy media file cannot 422
+        # the whole read. Each chunk is one independent agent round trip: a chunk that fails
+        # contributes nothing and the next one is still attempted -- see `_read_companion_chunk`.
         for start in range(0, len(items), _COMPANION_CHUNK):
             chunk = items[start : start + _COMPANION_CHUNK]
-            try:
-                queue = task_router.queue_for(agent_id, lane_for_task("read_companion_files"))
-                await queue.connect()
-                payload = ReadCompanionFilesPayload(agent_id=agent_id, companions=chunk, max_chars=max_chars)
-                job_result = await queue.apply("read_companion_files", timeout=_COMPANION_READ_TIMEOUT_S, **payload.model_dump(mode="json"))
-            except Exception:
-                # An offline agent, a saturated lane, or a timeout. Log and propose WITHOUT the
-                # companion context rather than failing the batch -- the pre-phaze-6bkk behavior on
-                # an unreadable companion, minus the silence (it used to be an unconditional
-                # `except OSError: continue` that hid a permanent, topology-level failure).
-                logger.warning("companion_read_unavailable", agent_id=agent_id, media_file_id=str(media_file_id), exc_info=True)
-                continue
-
-            for entry in (job_result or {}).get("contents", []):
-                # phaze-qj9e: strip NUL/lone-surrogate bytes before the content flows into the
-                # context_used JSONB column. A UTF-16LE .nfo/.txt companion decodes to text riddled
-                # with U+0000, which PostgreSQL jsonb rejects outright -- aborting store_proposals for
-                # the WHOLE batch and poisoning every retry with identical content. Both the cleaning
-                # and the sanitizing stay control-side: they are pure functions, and this is where the
-                # value is persisted.
-                cleaned = sanitize_pg_text(clean_companion_content(entry["content"], max_chars))
-                contents.append({"filename": sanitize_pg_text(entry["filename"]), "content": cleaned})
+            contents.extend(await _read_companion_chunk(task_router, agent_id, chunk, max_chars, media_file_id))
 
     return contents
 

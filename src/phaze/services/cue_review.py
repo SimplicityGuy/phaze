@@ -172,6 +172,33 @@ async def build_cue_tracks_for_versions(session: AsyncSession, version_ids: Sequ
     # WHOLE cue workspace to an empty list with only a log line -- an operator sees "no cue work to
     # review", which is exactly the failure phaze-hcsb's per-card isolation exists to prevent.
     # Chunking also bounds peak memory: without it every version's rows are resident at once.
+    #
+    # phaze-bk9el.26: both chunk loops below are flagged by the health index as io_in_loop +
+    # serial_await_in_loop (lines 178 and 184 as measured at a3fd169a), and the flag carries
+    # ``dataflow_verified: true`` -- correctly, no iteration reads what a previous one wrote. They
+    # are LEFT SEQUENTIAL ANYWAY. Absence of a data dependence is necessary for an
+    # ``asyncio.gather`` and nowhere near sufficient; what actually decides it here is the shared
+    # session, which a dataflow check cannot see.
+    #
+    #   1. THE GATHER WINS NOTHING, MEASURED. ``session`` is one AsyncSession holding one DBAPI
+    #      connection, which cannot multiplex. Note it does NOT raise on concurrent use -- the
+    #      widely repeated claim that it does is false for the pinned SQLAlchemy 2.0.52; it
+    #      silently serializes instead, which is worse, because the "fix" then looks like it
+    #      worked. Measured against the test harness, 6 x ``pg_sleep(0.1)`` on ONE session: serial
+    #      loop 0.745 s, ``asyncio.gather`` 0.659 s, against an ideal-parallel 0.10 s and an
+    #      ideal-serial 0.60 s. The 1.13x is per-call Python overhead, not overlap -- the queries
+    #      still went down the wire one at a time.
+    #   2. REAL CONCURRENCY WOULD COST THE SNAPSHOT. Overlapping these reads needs one connection
+    #      per chunk, i.e. a session and transaction each. That drops the single read transaction
+    #      the two queries share -- ``track_ids`` is derived from the first query's rows and fed to
+    #      the second -- and multiplies this render's connection-pool draw by the chunk count, from
+    #      inside a page render bounded at ``_MAX_REVIEW_ROWS`` (2000) versions.
+    #   3. IT WOULD CHANGE THE DEGRADE PATH. This runs inside ``get_cue_review_cards``'s outer
+    #      ``except Exception``, whose contract is to degrade the cue workspace rather than 500. A
+    #      gather changes which exception surfaces when more than one chunk fails, so the degraded
+    #      behavior is observably different -- and every finding on this file sits inside this one
+    #      function, which has no dedicated test file of its own (covered incidentally, chiefly by
+    #      tests/review/routers/test_cue.py and tests/review/services/test_review_degrade.py).
     tracks: list[TracklistTrack] = []
     for chunk in _id_chunks(version_ids):
         tracks_stmt = select(TracklistTrack).where(TracklistTrack.version_id.in_(chunk))
