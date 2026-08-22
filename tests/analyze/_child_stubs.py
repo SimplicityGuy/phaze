@@ -210,3 +210,132 @@ def crawling_analyze(
     if progress_cb is not None:
         progress_cb(beats, beats)
     return _result(file_path, models_dir, **windowing)
+
+
+# ---------------------------------------------------------------------------
+# REAL-result stubs (phaze-qiwdk, seam-inventory row A3)
+#
+# Everything above this line returns `_result` — a hand-built dict of plain Python floats
+# with one fine window and a one-entry `features` dict. It is a PROXY, and it is a proxy of
+# the one shape that cannot exhibit what `_emit`'s strict `json.dumps` and the parent pump
+# actually have to survive: a numpy scalar leaf, a non-finite float, or a line big enough
+# to matter to a 64 KiB pipe. The four stubs below carry the REAL artifact instead
+# (`tests/analyze/_real_result.py` documents where it came from), plus two deliberately
+# corrupted variants that exist to PROVE the real-artifact assertions have teeth — an
+# assertion that "the real result contains no numpy scalar" is worth nothing unless a
+# numpy scalar would have failed it.
+# ---------------------------------------------------------------------------
+
+
+def real_analyze(
+    file_path: str,
+    models_dir: str,
+    *,
+    progress_cb: Callable[[int, int], None] | None = None,
+    heartbeat_cb: Callable[[str, int, int], None] | None = None,
+    **windowing: Any,
+) -> dict[str, Any]:
+    """Return the REAL captured ``analyze_file`` result, verbatim.
+
+    Deliberately does NOT echo its arguments (unlike :func:`_result`): the caller asserts
+    byte-for-byte equality against the same artifact, so any added key would be the stub's
+    fingerprint rather than essentia's output.
+    """
+    from tests.analyze._real_result import real_analysis_result  # deferred: the CHILD process imports this, not the parent
+
+    return real_analysis_result()
+
+
+def numpy_leaf_analyze(
+    file_path: str,
+    models_dir: str,
+    *,
+    progress_cb: Callable[[int, int], None] | None = None,
+    heartbeat_cb: Callable[[str, int, int], None] | None = None,
+    **windowing: Any,
+) -> dict[str, Any]:
+    """The real result with ONE ``numpy.float32`` leaf spliced into a window's features.
+
+    The control for :func:`real_analyze`. ``_predict_single`` returns a numpy array and
+    ``np.mean`` returns a ``numpy.float64``; the ONLY reason one never reaches the wire is
+    the explicit ``float(pred)`` coercion in ``_run_model_sets_over_windows``. Delete that
+    coercion and this is what the child would emit — so the stub reproduces the failure
+    that coercion prevents, rather than asserting a negative into thin air.
+    """
+    import numpy as np  # deferred, child-side; numpy is already an analysis-path dependency
+
+    from tests.analyze._real_result import real_analysis_result  # deferred: the CHILD process imports this, not the parent
+
+    result = real_analysis_result()
+    coarse = next(w for w in result["windows"] if w["tier"] == "coarse")
+    coarse["features"]["genre"]["predictions"][0]["confidence"] = np.float32(0.5)
+    return result
+
+
+def nan_leaf_analyze(
+    file_path: str,
+    models_dir: str,
+    *,
+    progress_cb: Callable[[int, int], None] | None = None,
+    heartbeat_cb: Callable[[str, int, int], None] | None = None,
+    **windowing: Any,
+) -> dict[str, Any]:
+    """The real result with ONE ``NaN`` spliced into a window's features.
+
+    A separate control from :func:`numpy_leaf_analyze` because the two fail at DIFFERENT
+    hops: a numpy scalar dies in the child at ``json.dumps``, while a ``NaN`` is emitted
+    (``allow_nan`` defaults True), is accepted by the parent's ``json.loads``, and only dies
+    two hops later inside ``AnalysisWindowPayload``. Conflating them would hide that gap.
+    """
+    from tests.analyze._real_result import real_analysis_result  # deferred: the CHILD process imports this, not the parent
+
+    result = real_analysis_result()
+    coarse = next(w for w in result["windows"] if w["tier"] == "coarse")
+    coarse["features"]["genre"]["predictions"][0]["confidence"] = float("nan")
+    return result
+
+
+# A 24-hour recording's exact window counts at the 30 s / 180 s defaults: 86400 / 30 and
+# 86400 / 180, both of which divide evenly. The archive's own longest file today is 6 h 08 m
+# (737 fine + 123 coarse windows, ~750 KB of protocol line -- already 11x the pipe buffer);
+# 24 h is the product's stated ceiling for a concert set and the point at which the line first
+# clears 2 MiB, so it is the scale the framing case is built at. See the
+# `long_recording_analyze` docstring for why replicating one window is the right fixture.
+_FINE_WINDOWS_IN_24H = 2880
+_COARSE_WINDOWS_IN_24H = 480
+
+
+def long_recording_analyze(
+    file_path: str,
+    models_dir: str,
+    *,
+    progress_cb: Callable[[int, int], None] | None = None,
+    heartbeat_cb: Callable[[str, int, int], None] | None = None,
+    **windowing: Any,
+) -> dict[str, Any]:
+    """The real result inflated to a 24-hour recording's window count — a multi-MiB line.
+
+    Built by REPLICATING the real coarse window rather than by analyzing 24 hours of audio,
+    and that is the right fixture for this test specifically: the mechanism under test is
+    PIPE FRAMING, which is a function of byte count and of nothing else. The per-window
+    VALUES are what :func:`real_analyze` exists to carry; duplicating them here costs the
+    framing case nothing and buys a fixture that builds in milliseconds.
+
+    Bounded by FIXTURE SIZE, never by a timer — D-08 liveness is progress-based and this
+    module must not smuggle a wall clock into any lane (phaze-1b39).
+    """
+    from tests.analyze._real_result import real_analysis_result  # deferred: the CHILD process imports this, not the parent
+
+    result = real_analysis_result()
+    fine_template = next(w for w in result["windows"] if w["tier"] == "fine")
+    coarse_template = next(w for w in result["windows"] if w["tier"] == "coarse")
+    fine = [{**fine_template, "window_index": i, "start_sec": float(i * 30), "end_sec": float((i + 1) * 30)} for i in range(_FINE_WINDOWS_IN_24H)]
+    coarse = [
+        {**coarse_template, "window_index": i, "start_sec": float(i * 180), "end_sec": float((i + 1) * 180)} for i in range(_COARSE_WINDOWS_IN_24H)
+    ]
+    result["windows"] = fine + coarse
+    result["fine_windows_analyzed"] = len(fine)
+    result["fine_windows_total"] = len(fine)
+    result["coarse_windows_analyzed"] = len(coarse)
+    result["coarse_windows_total"] = len(coarse)
+    return result

@@ -38,8 +38,14 @@ repos:
         exclude: *byte-identical
       - id: pretty-format-json
         args: [--autofix, --indent=2]
-        # Skip generated artifacts (planning graphs, graphify output)
-        exclude: ^(\.planning/|graphify-out/)
+        # Skip generated artifacts (planning graphs, graphify output).
+        # Also skip the captured real-essentia analysis result (phaze-qiwdk): this hook SORTS
+        # keys, and the `features` dict's key order is a real property of the artifact --
+        # `_run_model_sets_over_windows` pins it to MODEL_SETS order with "genre" last,
+        # deliberately, because the dict is JSON-serialized downstream where insertion order is
+        # the output. Sorting it would quietly edit the record, exactly as with the recorded
+        # 1001Tracklists renders above. The file is already written at --indent=2.
+        exclude: ^(\.planning/|graphify-out/|tests/analyze/fixtures/real_analyze_file_result\.json$)
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: 65dbdb59d2f2d9c3bdc343c566821ad3319ddaa3  # frozen: v0.16.3
