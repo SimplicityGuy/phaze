@@ -85,7 +85,7 @@ from phaze.schemas.agent_analysis import (
 from phaze.services.analysis_exec import AnalysisSubprocessError, run_analysis_subprocess
 from phaze.services.analysis_wire import _features_to_mood_dict, _features_to_style_dict
 from phaze.services.hashing import compute_sha256
-from phaze.services.video_audio import NoAudioTrackError, extract_audio_track
+from phaze.services.video_audio import AudioSource, NoAudioTrackError, extract_audio_track
 from phaze.tasks._shared.agent_bootstrap import construct_agent_client
 
 
@@ -220,7 +220,7 @@ async def _report_analysis_failure(
     """
     try:
         await client.report_analysis_failed(file_id, AnalysisFailurePayload(reason=reason, error=error[:_ERROR_DETAIL_MAX]))
-    except Exception:
+    except Exception:  # broad by design (see docstring): delivery-guarded, must never raise past this function
         log.warning("job_runner_analysis_failure_report_failed", file_id=fid, step=step)
 
 
@@ -390,11 +390,13 @@ def _build_payload(result: dict[str, Any]) -> AnalysisWritePayload:
     )
 
 
-async def run() -> None:
-    """Execute the one-shot flow for a single file, then ``sys.exit(<code>)``.
+def _load_config_step() -> AgentSettings:
+    """Step 0a: resolve + validate settings before anything else runs.
 
-    Never returns normally — every terminal path raises ``SystemExit`` (via
-    ``sys.exit``) so the caller's process exit code carries the outcome.
+    Extracted from :func:`run` (phaze-bk9el.12, no behaviour change) so ``run`` itself
+    stays under CCN 15 -- this step alone accounted for 2 of its 22 branches. Exits
+    ``EXIT_CONFIG`` (20) on either failure path; every other path returns a concrete
+    ``AgentSettings``.
     """
     try:
         cfg = get_settings()
@@ -412,7 +414,14 @@ async def run() -> None:
     if not isinstance(cfg, AgentSettings):  # pragma: no cover - pod always runs PHAZE_ROLE=agent
         log.error("job_runner_requires_agent_role", got=type(cfg).__name__)
         sys.exit(EXIT_CONFIG)
+    return cfg
 
+
+def _resolve_file_id_step() -> tuple[uuid.UUID, str]:
+    """Step 0b: read + parse ``PHAZE_JOB_FILE_ID``. Exits ``EXIT_CONFIG`` (20) on failure.
+
+    Extracted from :func:`run` (phaze-bk9el.12, no behaviour change).
+    """
     raw_file_id = os.environ.get(_FILE_ID_ENV)
     if not raw_file_id:
         log.error("job_runner_missing_file_id", env=_FILE_ID_ENV)
@@ -422,9 +431,327 @@ async def run() -> None:
     except ValueError:
         log.error("job_runner_invalid_file_id", value=raw_file_id)
         sys.exit(EXIT_CONFIG)
+    return file_id, str(file_id)
+
+
+async def _presign_step(client: Any, file_id: uuid.UUID, fid: str) -> tuple[str, str, str | None, PresignDownloadMetadata | None]:
+    """(1) presign — fail-fast, no extra retry loop (D-02). Exits ``EXIT_DOWNLOAD`` (10) on failure.
+
+    Extracted from :func:`run` (phaze-bk9el.12, no behaviour change).
+    """
+    t_presign = time.monotonic()
+    try:
+        # phaze-sfbx.1 widened this to a 4-tuple; phaze-sfbx.3 now CONSUMES the
+        # display-identity block (Phase 100) for the console banner below.
+        url, expected_sha256, audio_ext, presign_metadata = await client.request_download_url(file_id)
+    except Exception:
+        # broad by design: any presign failure (network, auth, malformed control-plane
+        # response) maps to the same EXIT_DOWNLOAD fail-fast contract (D-01/D-02) -- the
+        # client's own AgentApiError hierarchy is only a SUBSET of what can go wrong here.
+        log.exception("job_runner_presign_failed", file_id=fid, step="presign")
+        sys.exit(EXIT_DOWNLOAD)
+    log.info("job_runner_step_ok", file_id=fid, step="presign", elapsed_ms=_elapsed_ms(t_presign))
+    # OBS-02 (phaze-sfbx.3): human-readable startup banner, best-effort from the presign
+    # metadata block. Degrades to a UUID-only line and never fails the job (D-01 untouched).
+    _log_banner(fid, presign_metadata)
+    return url, expected_sha256, audio_ext, presign_metadata
+
+
+async def _download_step(url: str, tmp_path: Path, fid: str) -> None:
+    """(2) download — stream to ``tmp_path``; bearer never attached (T-52-04).
+
+    ``tmp_path`` is resolved by the CALLER (:func:`run`), not here, so its ``finally``
+    cleanup still knows the path even when this step fails partway through a write.
+    Exits ``EXIT_DOWNLOAD`` (10) on failure. Extracted from :func:`run` (phaze-bk9el.12,
+    no behaviour change).
+    """
+    t_download = time.monotonic()
+    try:
+        await _download_to(url, tmp_path)
+    except Exception:
+        # broad by design: network, timeout, and disk-write failures are all equally
+        # "download failed" -- _download_to already narrows the credential-leak case
+        # (PresignedDownloadError); every other failure mode still belongs here so it
+        # maps to EXIT_DOWNLOAD instead of an unclassified crash.
+        log.exception("job_runner_download_failed", file_id=fid, step="download")
+        sys.exit(EXIT_DOWNLOAD)
+    # OBS-02 (phaze-sfbx.3): carry the downloaded size so the friendly line reads
+    # "...step=download downloaded_mb=130.4...". event/step/elapsed_ms stay UNCHANGED
+    # (machine parsers key off them); downloaded_mb is a purely additive human field.
+    log.info(
+        "job_runner_step_ok",
+        file_id=fid,
+        step="download",
+        elapsed_ms=_elapsed_ms(t_download),
+        downloaded_mb=_mb(tmp_path.stat().st_size),
+    )
+
+
+async def _verify_integrity_step(tmp_path: Path, expected_sha256: str, fid: str) -> None:
+    """(3) integrity — the only check a Postgres-free pod can make (KJOB-02); sha256 runs
+    OFF the event loop (chunked stdlib hash). Exits ``EXIT_INTEGRITY`` (11) on mismatch.
+
+    Extracted from :func:`run` (phaze-bk9el.12, no behaviour change).
+    """
+    t_verify = time.monotonic()
+    actual_sha256 = await asyncio.to_thread(compute_sha256, tmp_path)
+    # Normalize both sides before comparing. compute_sha256 already returns
+    # lowercase hex and the schema pins expected_sha256 to lowercase-hex, so
+    # this is defensive against any future case/whitespace skew (IN-02).
+    if actual_sha256.strip().lower() != expected_sha256.strip().lower():
+        log.error("job_runner_integrity_mismatch", file_id=fid, step="verify")
+        sys.exit(EXIT_INTEGRITY)
+    # OBS-02 (phaze-sfbx.3): a truncated hash makes the friendly "verified sha256" line
+    # human-recognizable; event/step/elapsed_ms unchanged, sha256 is additive.
+    log.info("job_runner_step_ok", file_id=fid, step="verify", elapsed_ms=_elapsed_ms(t_verify), sha256=actual_sha256[:12])
+
+
+async def _extract_step(client: Any, file_id: uuid.UUID, fid: str, tmp_path: Path) -> AudioSource:
+    """(3.5) video-audio extraction (phaze-3ea41, probe-based format scope) —
+    symmetric with the SAQ lane (tasks/functions.py::process_file); see
+    services/video_audio.py's D-09 for track-selection, disk-headroom and lane-symmetry
+    rationale, and for which of those are the operator's and which the implementer's
+    ("operator decisions of record", 2026-08-12). This lane's own presence there is the
+    operator's: extraction runs on BOTH lanes, answered "Both lanes" 2026-08-12 (record
+    2). Offering EVERY downloaded file to extraction rather than only video containers is
+    the IMPLEMENTER's, not the operator's -- ffprobe is the sole authority on whether it
+    has an audio stream, not the downloaded suffix or the raw ``audio_ext`` field.
+
+    There is no SAQ job in this one-shot pod (D-25: it never
+    imports the agent worker or its liveness machinery -- test_task_split.py enforces
+    that), so this call passes no progress/liveness callback -- the pod has no wall-clock
+    bound at all on THIS step, matching every other step's D-01/phaze-202e "no bound"
+    discipline; the inner analysis stall watchdog only arms once run_analysis_subprocess
+    spawns the analysis child below.
+
+    ``scratch_dir=tmp_path.parent`` keeps the extracted audio in the SAME directory as
+    the already-larger downloaded original (this pod has no other configured scratch
+    location -- ``AgentSettings.cloud_scratch_dir`` is a DIFFERENT host's rsync landing
+    zone for the SAQ compute lane, not this pod's own ephemeral filesystem).
+
+    Exits ``EXIT_ANALYSIS`` (12) on failure, reporting the failure first (phaze-l832u.2).
+    Extracted from :func:`run` (phaze-bk9el.12, no behaviour change).
+    """
+    t_extract = time.monotonic()
+    try:
+        audio_source = await extract_audio_track(str(tmp_path), file_id=fid, scratch_dir=tmp_path.parent)
+    except NoAudioTrackError as exc:
+        # Its OWN branch (not folded into the generic one below) purely for a distinct,
+        # greppable log event -- "no audio in this container" is an operationally
+        # different signal from "ffmpeg/ffprobe itself failed", even though both now get
+        # identical stored-error/exit treatment.
+        log.error("job_runner_no_audio_track", file_id=fid, step="extract", error=str(exc)[:_ERROR_DETAIL_MAX])
+        await _report_analysis_failure(client, file_id, fid, step="extract", reason="error", error=str(exc))
+        sys.exit(EXIT_ANALYSIS)
+    except Exception as exc:
+        # AudioExtractionError (dominantly a corrupt/truncated container -- deterministic,
+        # same T-43-08 reasoning as the no-audio case) AND any other genuinely unexpected
+        # failure (e.g. an OSError making the scratch dir) alike: ALL still get a stored
+        # error_message before the pod exits, closing the SAME "undiagnosable except via
+        # pod logs" gap the no-audio case had. Deliberately ``Exception``, not narrowed to
+        # AudioExtractionError alone, so this remains the safety net the old bare
+        # ``except Exception`` was for anything video_audio.py does not itself wrap.
+        log.exception("job_runner_extraction_failed", file_id=fid, step="extract")
+        await _report_analysis_failure(client, file_id, fid, step="extract", reason="error", error=str(exc))
+        sys.exit(EXIT_ANALYSIS)
+    log.info(
+        "job_runner_step_ok",
+        file_id=fid,
+        step="extract",
+        elapsed_ms=_elapsed_ms(t_extract),
+        extracted=audio_source.cleanup_path is not None,
+    )
+    return audio_source
+
+
+async def _analyze_step(
+    client: Any,
+    file_id: uuid.UUID,
+    fid: str,
+    read_path: str,
+    models_dir: str,
+    cfg: AgentSettings,
+    suffix: str,
+) -> AnalysisWritePayload:
+    """(4) analyze — the exhaustive analyze_file runs in a REAL child process via the
+    shared subprocess driver (Phase 101, OBS-03): the pod's event loop is no longer
+    GIL-starved, so the progress callback fires mid-analysis. No retry loop —
+    fail-fast, D-02 / KJOB-03. models_dir from env (D-05).
+
+    LIVENESS (phaze-w55w1). This lane used to pass ``timeout=None`` and, since phaze-202e,
+    carried no Job deadline either -- literally no bound at all, deliberately, because
+    bounding it by a WALL CLOCK is what killed every long concert set at 3h (incident
+    2026-07-28, phaze-1b39). "No wall clock" was the right half of that lesson; "no bound"
+    was the wrong half, and it left a wedged child occupying a burst lane slot indefinitely.
+    The stall watchdog is the bound that lesson actually implies: silence is bounded,
+    runtime is not, so a set that keeps completing windows still runs as long as it needs.
+    A pod that can never START is still detected by POD STATE in reconcile_cloud_jobs.
+    Only a raised exception maps to EXIT_ANALYSIS (12) -- a stall raises, so it does too.
+
+    Payload construction (the isinstance/zero-window/build-payload checks below) is part
+    of THIS step, not the callback step: a malformed analyze result (non-dict, windows
+    present-but-None, or an unexpected window key) is a bad-analysis-output failure and
+    MUST map to EXIT_ANALYSIS, not EXIT_CALLBACK (KJOB-04 distinct-exit-code contract).
+    Mirrors the process_file dict-guard. ``suffix`` is the DOWNLOAD temp file's suffix
+    (threaded through from :func:`run`, not re-derived from ``read_path``) purely for the
+    zero-window diagnostic log below.
+
+    Exits ``EXIT_ANALYSIS`` (12) on any failure in this step, reporting the failure first
+    (phaze-l832u.2). Extracted from :func:`run` (phaze-bk9el.12, no behaviour change) --
+    this step alone accounted for 8 of ``run``'s original 22 branches.
+    """
+    t_analyze = time.monotonic()
+    progress_cb, pending_progress = _make_progress_cb(client, file_id, cfg.analysis_progress_interval_sec)
+    # phaze-sfbx.4 markers, phaze-bo3p.3 capture: essentia's ``[ INFO ] MusicExtractor...``
+    # banners are written by C++ directly to fd 1/2 — in the CHILD, whose fd 1 is
+    # re-routed to the stderr pipe, so the driver frames every banner line as an
+    # ``analysis_child_output`` event (Phase 101 delivered the capture the in-process
+    # model deferred). The begin/end markers still bracket the framed child output so
+    # an operator tailing the console sees where analysis starts and stops.
+    log.info("job_runner_analyze_begin", file_id=fid, step="analyze", detail="analysis running -- framed essentia output follows")
+    try:
+        # Any-typed on purpose: the dict guard below must stay a REACHABLE runtime check
+        # (the seam is monkeypatched in tests, and KJOB-04 wants a loud EXIT_ANALYSIS on
+        # any malformed analysis output), not be optimized away by the driver's annotation.
+        result: Any = await run_analysis_subprocess(
+            read_path,
+            models_dir,
+            progress_cb=progress_cb,
+            stall_timeout=cfg.analysis_stall_timeout_sec,
+        )
+    except Exception as exc:
+        # broad by design: essentia/driver failures span many exception types (a stalled
+        # TimeoutError, a crashed AnalysisSubprocessError, an unexpected driver bug) --
+        # _reason_for_analysis_exception classifies whatever comes through into the wire's
+        # reason vocabulary rather than requiring an exhaustive except list here.
+        # Close the frame BEFORE the failure log so the (possibly noisy) essentia output above
+        # stays bracketed even on the crash path, then map to EXIT_ANALYSIS (D-01 unchanged).
+        log.info("job_runner_analyze_end", file_id=fid, step="analyze", outcome="error")
+        log.exception("job_runner_analysis_failed", file_id=fid, step="analyze")
+        # phaze-l832u.2: this bare sys.exit used to store NOTHING -- same asymmetry the
+        # zero-window guard below had, and the same class of gap that left the incident's
+        # cloud failures with no analysis-table trace at all. reason mirrors the SAQ lane's
+        # TimeoutError/AnalysisSubprocessError split (_reason_for_analysis_exception).
+        await _report_analysis_failure(client, file_id, fid, step="analyze", reason=_reason_for_analysis_exception(exc), error=str(exc))
+        sys.exit(EXIT_ANALYSIS)
+    # Close the frame on the success path too: everything below is analysis-OUTPUT validation
+    # (NOT essentia stdout), so it sits OUTSIDE the frame markers.
+    log.info("job_runner_analyze_end", file_id=fid, step="analyze", outcome="ok")
+    # Drain any in-flight progress POSTs (each swallows its own errors) so the one-shot
+    # process never races its own exit — the completion PUT below remains the authority.
+    if pending_progress:
+        await asyncio.gather(*pending_progress, return_exceptions=True)
+
+    if not isinstance(result, dict):
+        log.error("job_runner_bad_result", file_id=fid, step="analyze", got=type(result).__name__)
+        await _report_analysis_failure(
+            client,
+            file_id,
+            fid,
+            step="analyze",
+            reason="error",
+            error=f"analysis driver returned {type(result).__name__}, expected dict",
+        )
+        sys.exit(EXIT_ANALYSIS)
+    # Fail LOUDLY on a zero-window analysis (cloud-analyze-empty-no-ext hardening).
+    # ``*_total`` is the NATURAL pre-stride window count; both being 0 means the
+    # duration probe read 0 seconds (an undecodable/mis-suffixed download), which
+    # previously recorded a NULL-everything "success". A real audio file always
+    # yields >=1 window, so 0/0 is a decode failure — exit non-zero so Kueue/Workload
+    # reads it as failed_at instead of a false completion.
+    fine_total = result.get("fine_windows_total") or 0
+    coarse_total = result.get("coarse_windows_total") or 0
+    if fine_total == 0 and coarse_total == 0:
+        log.error(
+            "job_runner_empty_analysis",
+            file_id=fid,
+            step="analyze",
+            reason="zero_windows",
+            suffix=suffix,
+            fine_windows_total=fine_total,
+            coarse_windows_total=coarse_total,
+        )
+        # phaze-l832u.2: this bare sys.exit used to store NOTHING -- the asymmetry with the
+        # extraction-failure branches above (which DO report before exiting) that let 11.5h
+        # of cloud zero-window failures (phaze-l832u) leave zero trace in the analysis
+        # table, diagnosable only by reading pod logs. ``reason="crashed"`` mirrors the SAQ
+        # lane's equivalent zero-natural-window guard (tasks/functions.py::process_file,
+        # phaze-by30) so the same underlying failure reads the same vocabulary in both lanes.
+        await _report_analysis_failure(
+            client,
+            file_id,
+            fid,
+            step="analyze",
+            reason="crashed",
+            error="zero natural analysis windows (undecodable or zero-length audio)",
+        )
+        sys.exit(EXIT_ANALYSIS)
+    # A window dict carrying an unexpected key fails AnalysisWindowPayload (extra="forbid")
+    # during payload build -- still an analysis-output error, so it maps to EXIT_ANALYSIS
+    # (12), NOT EXIT_CALLBACK (13) (WR-01: payload build is part of the analyze step).
+    try:
+        payload = _build_payload(result)
+    except Exception as exc:
+        # broad by design: malformed analysis-child output can fail payload construction in
+        # more than one way (a pydantic ValidationError on a window field, a TypeError/KeyError
+        # in the mood/style dict rebuild) -- all are analysis-output defects and must map to
+        # EXIT_ANALYSIS, not a specific exception subset.
+        log.exception("job_runner_analysis_failed", file_id=fid, step="analyze")
+        await _report_analysis_failure(client, file_id, fid, step="analyze", reason="error", error=str(exc))
+        sys.exit(EXIT_ANALYSIS)
+    # OBS-02 (phaze-sfbx.3): surface the analyzed/total fine-window counts so the friendly
+    # line reads "...step=analyze fine_windows_analyzed=94 fine_windows_total=94...".
+    # event/step/elapsed_ms unchanged; the window counts are additive human fields. phaze-w55w1
+    # dropped the `sampled` field with the window caps -- analysis is exhaustive, so the two
+    # counts are equal on a healthy file and their difference is the only interesting signal.
+    log.info(
+        "job_runner_step_ok",
+        file_id=fid,
+        step="analyze",
+        elapsed_ms=_elapsed_ms(t_analyze),
+        fine_windows_analyzed=result.get("fine_windows_analyzed"),
+        fine_windows_total=result.get("fine_windows_total"),
+    )
+    return payload
+
+
+async def _callback_step(client: Any, file_id: uuid.UUID, fid: str, payload: AnalysisWritePayload) -> None:
+    """(5) callback — the shared _request funnel supplies the bounded ~3x retry (D-02);
+    on final failure exit 13. The payload was already built in the analyze step so build
+    errors never mis-code as EXIT_CALLBACK.
+
+    Extracted from :func:`run` (phaze-bk9el.12, no behaviour change).
+    """
+    t_callback = time.monotonic()
+    try:
+        await client.put_analysis(file_id, payload)
+    except Exception:
+        # broad by design: any put_analysis failure (network, auth, a 5xx surviving the
+        # shared bounded retry) maps to the same terminal EXIT_CALLBACK boundary -- the
+        # retry/backoff policy already lives in the shared _request funnel (D-02).
+        log.exception("job_runner_callback_failed", file_id=fid, step="callback")
+        sys.exit(EXIT_CALLBACK)
+    # OBS-02 (phaze-sfbx.3): name the destination so the friendly "analysis written" line
+    # reads for humans; event/step/elapsed_ms unchanged, result is additive.
+    log.info("job_runner_step_ok", file_id=fid, step="callback", elapsed_ms=_elapsed_ms(t_callback), result="analysis written")
+
+
+async def run() -> None:
+    """Execute the one-shot flow for a single file, then ``sys.exit(<code>)``.
+
+    Never returns normally — every terminal path raises ``SystemExit`` (via
+    ``sys.exit``) so the caller's process exit code carries the outcome.
+
+    phaze-bk9el.12: orchestrates the numbered steps (1 presign, 2 download, 3 verify,
+    3.5 extract, 4 analyze, 5 callback), each now its own ``_*_step`` helper -- extracted
+    so this function's own CCN drops from 22 (max_nesting 3, 151-line body) to a linear
+    sequence of awaits. NO behaviour change: every log event, exit code, and cleanup path
+    is identical to the single-function version: only the call sites moved.
+    """
+    cfg = _load_config_step()
+    file_id, fid = _resolve_file_id_step()
 
     models_dir = os.environ.get(_MODELS_DIR_ENV) or cfg.models_path
-    fid = str(file_id)
 
     # KJOB-05 / T-52-01: build the callback client with verify=cfg.agent_ca_file
     # (the internal CA, mounted from a K8s Secret at runtime per KDEPLOY-06 — no
@@ -439,257 +766,26 @@ async def run() -> None:
     # downloaded rather than pushing a second, extracted artifact through the staging pipeline.
     extracted_audio_path: str | None = None
     try:
-        # (1) presign — fail-fast, no extra retry loop (D-02).
-        t_presign = time.monotonic()
-        try:
-            # phaze-sfbx.1 widened this to a 4-tuple; phaze-sfbx.3 now CONSUMES the
-            # display-identity block (Phase 100) for the console banner below.
-            url, expected_sha256, audio_ext, presign_metadata = await client.request_download_url(file_id)
-        except Exception:
-            log.exception("job_runner_presign_failed", file_id=fid, step="presign")
-            sys.exit(EXIT_DOWNLOAD)
-        log.info("job_runner_step_ok", file_id=fid, step="presign", elapsed_ms=_elapsed_ms(t_presign))
-        # OBS-02 (phaze-sfbx.3): human-readable startup banner, best-effort from the presign
-        # metadata block. Degrades to a UUID-only line and never fails the job (D-01 untouched).
-        _log_banner(fid, presign_metadata)
+        url, expected_sha256, audio_ext, _presign_metadata = await _presign_step(client, file_id, fid)
 
-        # (2) download — stream to a temp file; bearer never attached (T-52-04).
         # The temp file MUST carry the file's REAL audio extension: essentia detects
         # format by extension, and the staged S3 key has none (cloud-analyze-empty-no-ext).
         suffix = _temp_suffix(audio_ext, url)
         tmp_path = Path(tempfile.gettempdir()) / f"{fid}{suffix}"
-        t_download = time.monotonic()
-        try:
-            await _download_to(url, tmp_path)
-        except Exception:
-            log.exception("job_runner_download_failed", file_id=fid, step="download")
-            sys.exit(EXIT_DOWNLOAD)
-        # OBS-02 (phaze-sfbx.3): carry the downloaded size so the friendly line reads
-        # "...step=download downloaded_mb=130.4...". event/step/elapsed_ms stay UNCHANGED
-        # (machine parsers key off them); downloaded_mb is a purely additive human field.
-        log.info(
-            "job_runner_step_ok",
-            file_id=fid,
-            step="download",
-            elapsed_ms=_elapsed_ms(t_download),
-            downloaded_mb=_mb(tmp_path.stat().st_size),
-        )
+        await _download_step(url, tmp_path, fid)
+        await _verify_integrity_step(tmp_path, expected_sha256, fid)
 
-        # (3) integrity — the only check a Postgres-free pod can make (KJOB-02);
-        # sha256 runs OFF the event loop (chunked stdlib hash).
-        t_verify = time.monotonic()
-        actual_sha256 = await asyncio.to_thread(compute_sha256, tmp_path)
-        # Normalize both sides before comparing. compute_sha256 already returns
-        # lowercase hex and the schema pins expected_sha256 to lowercase-hex, so
-        # this is defensive against any future case/whitespace skew (IN-02).
-        if actual_sha256.strip().lower() != expected_sha256.strip().lower():
-            log.error("job_runner_integrity_mismatch", file_id=fid, step="verify")
-            sys.exit(EXIT_INTEGRITY)
-        # OBS-02 (phaze-sfbx.3): a truncated hash makes the friendly "verified sha256" line
-        # human-recognizable; event/step/elapsed_ms unchanged, sha256 is additive.
-        log.info("job_runner_step_ok", file_id=fid, step="verify", elapsed_ms=_elapsed_ms(t_verify), sha256=actual_sha256[:12])
-
-        # (3.5) video-audio extraction (phaze-3ea41, probe-based format scope) —
-        # symmetric with the SAQ lane (tasks/functions.py::process_file); see
-        # services/video_audio.py's D-09 for track-selection, disk-headroom and lane-symmetry
-        # rationale, and for which of those are the operator's and which the implementer's
-        # ("operator decisions of record", 2026-08-12). This lane's own presence there is the
-        # operator's: extraction runs on BOTH lanes, answered "Both lanes" 2026-08-12 (record
-        # 2). Offering EVERY downloaded file to extraction rather than only video containers is
-        # the IMPLEMENTER's, not the operator's -- ffprobe is the sole authority on whether it
-        # has an audio stream, not the downloaded suffix or the raw ``audio_ext`` field.
-        #
-        # There is no SAQ job in this one-shot pod (D-25: it never
-        # imports the agent worker or its liveness machinery -- test_task_split.py enforces
-        # that), so this call passes no progress/liveness callback -- the pod has no wall-clock
-        # bound at all on THIS step, matching every other step's D-01/phaze-202e "no bound"
-        # discipline; the inner analysis stall watchdog only arms once run_analysis_subprocess
-        # spawns the analysis child below.
-        #
-        # NoAudioTrackError/AudioExtractionError get an EXPLICIT catch (review correction,
-        # phaze-3ea41) -- a bare ``except Exception`` here silently swallowed the distinction
-        # and, worse, never stored an error_message at all before exiting (this pod's ONLY
-        # other HTTP write is the success-path put_analysis below), leaving a deterministic
-        # no-audio/corrupt-container failure completely undiagnosable except by reading pod
-        # logs, on top of costing a full download-cycle's bandwidth per bounded cloud re-drive
-        # before reconcile's redrive-then-local-fallback safety net (tasks/reconcile_cloud_jobs.py)
-        # finally spills the row to local. ``scratch_dir=tmp_path.parent`` keeps the extracted
-        # audio in the SAME directory as the already-larger downloaded original (this pod has
-        # no other configured scratch location -- ``AgentSettings.cloud_scratch_dir`` is a
-        # DIFFERENT host's rsync landing zone for the SAQ compute lane, not this pod's own
-        # ephemeral filesystem).
-        t_extract = time.monotonic()
-        try:
-            audio_source = await extract_audio_track(str(tmp_path), file_id=fid, scratch_dir=tmp_path.parent)
-        except NoAudioTrackError as exc:
-            # Its OWN branch (not folded into the generic one below) purely for a distinct,
-            # greppable log event -- "no audio in this container" is an operationally
-            # different signal from "ffmpeg/ffprobe itself failed", even though both now get
-            # identical stored-error/exit treatment.
-            log.error("job_runner_no_audio_track", file_id=fid, step="extract", error=str(exc)[:_ERROR_DETAIL_MAX])
-            await _report_analysis_failure(client, file_id, fid, step="extract", reason="error", error=str(exc))
-            sys.exit(EXIT_ANALYSIS)
-        except Exception as exc:
-            # AudioExtractionError (dominantly a corrupt/truncated container -- deterministic,
-            # same T-43-08 reasoning as the no-audio case) AND any other genuinely unexpected
-            # failure (e.g. an OSError making the scratch dir) alike: ALL still get a stored
-            # error_message before the pod exits, closing the SAME "undiagnosable except via
-            # pod logs" gap the no-audio case had. Deliberately ``Exception``, not narrowed to
-            # AudioExtractionError alone, so this remains the safety net the old bare
-            # ``except Exception`` was for anything video_audio.py does not itself wrap.
-            log.exception("job_runner_extraction_failed", file_id=fid, step="extract")
-            await _report_analysis_failure(client, file_id, fid, step="extract", reason="error", error=str(exc))
-            sys.exit(EXIT_ANALYSIS)
+        audio_source = await _extract_step(client, file_id, fid, tmp_path)
         # phaze-l832u: ``cleanup_path`` is the ONLY thing this pod may delete -- it is None when
         # the download was already plain audio and nothing was extracted, in which case the
         # analyzer reads the downloaded file itself (which the finally deletes anyway, as
         # ``tmp_path``). Never assign this from ``analysis_path``: on the OTHER lane the same
         # mistake deletes the operator's archive original, and the two call sites must not drift.
         extracted_audio_path = audio_source.cleanup_path
-        log.info(
-            "job_runner_step_ok",
-            file_id=fid,
-            step="extract",
-            elapsed_ms=_elapsed_ms(t_extract),
-            extracted=audio_source.cleanup_path is not None,
-        )
         read_path = audio_source.analysis_path
 
-        # (4) analyze — the exhaustive analyze_file runs in a REAL child process via the
-        # shared subprocess driver (Phase 101, OBS-03): the pod's event loop is no longer
-        # GIL-starved, so the progress callback fires mid-analysis. No retry loop —
-        # fail-fast, D-02 / KJOB-03. models_dir from env (D-05).
-        #
-        # LIVENESS (phaze-w55w1). This lane used to pass ``timeout=None`` and, since phaze-202e,
-        # carried no Job deadline either -- literally no bound at all, deliberately, because
-        # bounding it by a WALL CLOCK is what killed every long concert set at 3h (incident
-        # 2026-07-28, phaze-1b39). "No wall clock" was the right half of that lesson; "no bound"
-        # was the wrong half, and it left a wedged child occupying a burst lane slot indefinitely.
-        # The stall watchdog is the bound that lesson actually implies: silence is bounded,
-        # runtime is not, so a set that keeps completing windows still runs as long as it needs.
-        # A pod that can never START is still detected by POD STATE in reconcile_cloud_jobs.
-        # Only a raised exception maps to EXIT_ANALYSIS (12) -- a stall raises, so it does too.
-        t_analyze = time.monotonic()
-        progress_cb, pending_progress = _make_progress_cb(client, file_id, cfg.analysis_progress_interval_sec)
-        # phaze-sfbx.4 markers, phaze-bo3p.3 capture: essentia's ``[ INFO ] MusicExtractor...``
-        # banners are written by C++ directly to fd 1/2 — in the CHILD, whose fd 1 is
-        # re-routed to the stderr pipe, so the driver frames every banner line as an
-        # ``analysis_child_output`` event (Phase 101 delivered the capture the in-process
-        # model deferred). The begin/end markers still bracket the framed child output so
-        # an operator tailing the console sees where analysis starts and stops.
-        log.info("job_runner_analyze_begin", file_id=fid, step="analyze", detail="analysis running -- framed essentia output follows")
-        try:
-            # Any-typed on purpose: the dict guard below must stay a REACHABLE runtime check
-            # (the seam is monkeypatched in tests, and KJOB-04 wants a loud EXIT_ANALYSIS on
-            # any malformed analysis output), not be optimized away by the driver's annotation.
-            result: Any = await run_analysis_subprocess(
-                read_path,
-                models_dir,
-                progress_cb=progress_cb,
-                stall_timeout=cfg.analysis_stall_timeout_sec,
-            )
-        except Exception as exc:
-            # Close the frame BEFORE the failure log so the (possibly noisy) essentia output above
-            # stays bracketed even on the crash path, then map to EXIT_ANALYSIS (D-01 unchanged).
-            log.info("job_runner_analyze_end", file_id=fid, step="analyze", outcome="error")
-            log.exception("job_runner_analysis_failed", file_id=fid, step="analyze")
-            # phaze-l832u.2: this bare sys.exit used to store NOTHING -- same asymmetry the
-            # zero-window guard below had, and the same class of gap that left the incident's
-            # cloud failures with no analysis-table trace at all. reason mirrors the SAQ lane's
-            # TimeoutError/AnalysisSubprocessError split (_reason_for_analysis_exception).
-            await _report_analysis_failure(client, file_id, fid, step="analyze", reason=_reason_for_analysis_exception(exc), error=str(exc))
-            sys.exit(EXIT_ANALYSIS)
-        # Close the frame on the success path too: everything below is analysis-OUTPUT validation
-        # (NOT essentia stdout), so it sits OUTSIDE the frame markers.
-        log.info("job_runner_analyze_end", file_id=fid, step="analyze", outcome="ok")
-        # Drain any in-flight progress POSTs (each swallows its own errors) so the one-shot
-        # process never races its own exit — the completion PUT below remains the authority.
-        if pending_progress:
-            await asyncio.gather(*pending_progress, return_exceptions=True)
-
-        # Payload construction is part of the analyze step (NOT the callback step): a malformed
-        # analyze result (non-dict, windows present-but-None, or an unexpected window key) is a
-        # bad-analysis-output failure and MUST map to EXIT_ANALYSIS, not EXIT_CALLBACK (KJOB-04
-        # distinct-exit-code contract). Mirrors the process_file dict-guard.
-        if not isinstance(result, dict):
-            log.error("job_runner_bad_result", file_id=fid, step="analyze", got=type(result).__name__)
-            await _report_analysis_failure(
-                client,
-                file_id,
-                fid,
-                step="analyze",
-                reason="error",
-                error=f"analysis driver returned {type(result).__name__}, expected dict",
-            )
-            sys.exit(EXIT_ANALYSIS)
-        # Fail LOUDLY on a zero-window analysis (cloud-analyze-empty-no-ext hardening).
-        # ``*_total`` is the NATURAL pre-stride window count; both being 0 means the
-        # duration probe read 0 seconds (an undecodable/mis-suffixed download), which
-        # previously recorded a NULL-everything "success". A real audio file always
-        # yields >=1 window, so 0/0 is a decode failure — exit non-zero so Kueue/Workload
-        # reads it as failed_at instead of a false completion.
-        fine_total = result.get("fine_windows_total") or 0
-        coarse_total = result.get("coarse_windows_total") or 0
-        if fine_total == 0 and coarse_total == 0:
-            log.error(
-                "job_runner_empty_analysis",
-                file_id=fid,
-                step="analyze",
-                reason="zero_windows",
-                suffix=suffix,
-                fine_windows_total=fine_total,
-                coarse_windows_total=coarse_total,
-            )
-            # phaze-l832u.2: this bare sys.exit used to store NOTHING -- the asymmetry with the
-            # extraction-failure branches above (which DO report before exiting) that let 11.5h
-            # of cloud zero-window failures (phaze-l832u) leave zero trace in the analysis
-            # table, diagnosable only by reading pod logs. ``reason="crashed"`` mirrors the SAQ
-            # lane's equivalent zero-natural-window guard (tasks/functions.py::process_file,
-            # phaze-by30) so the same underlying failure reads the same vocabulary in both lanes.
-            await _report_analysis_failure(
-                client,
-                file_id,
-                fid,
-                step="analyze",
-                reason="crashed",
-                error="zero natural analysis windows (undecodable or zero-length audio)",
-            )
-            sys.exit(EXIT_ANALYSIS)
-        # A window dict carrying an unexpected key fails AnalysisWindowPayload (extra="forbid")
-        # during payload build -- still an analysis-output error, so it maps to EXIT_ANALYSIS
-        # (12), NOT EXIT_CALLBACK (13) (WR-01: payload build is part of the analyze step).
-        try:
-            payload = _build_payload(result)
-        except Exception as exc:
-            log.exception("job_runner_analysis_failed", file_id=fid, step="analyze")
-            await _report_analysis_failure(client, file_id, fid, step="analyze", reason="error", error=str(exc))
-            sys.exit(EXIT_ANALYSIS)
-        # OBS-02 (phaze-sfbx.3): surface the analyzed/total fine-window counts so the friendly
-        # line reads "...step=analyze fine_windows_analyzed=94 fine_windows_total=94...".
-        # event/step/elapsed_ms unchanged; the window counts are additive human fields. phaze-w55w1
-        # dropped the `sampled` field with the window caps -- analysis is exhaustive, so the two
-        # counts are equal on a healthy file and their difference is the only interesting signal.
-        log.info(
-            "job_runner_step_ok",
-            file_id=fid,
-            step="analyze",
-            elapsed_ms=_elapsed_ms(t_analyze),
-            fine_windows_analyzed=result.get("fine_windows_analyzed"),
-            fine_windows_total=result.get("fine_windows_total"),
-        )
-
-        # (5) callback — the shared _request funnel supplies the bounded ~3x
-        # retry (D-02); on final failure exit 13. The payload was already built
-        # in the analyze step so build errors never mis-code as EXIT_CALLBACK.
-        t_callback = time.monotonic()
-        try:
-            await client.put_analysis(file_id, payload)
-        except Exception:
-            log.exception("job_runner_callback_failed", file_id=fid, step="callback")
-            sys.exit(EXIT_CALLBACK)
-        # OBS-02 (phaze-sfbx.3): name the destination so the friendly "analysis written" line
-        # reads for humans; event/step/elapsed_ms unchanged, result is additive.
-        log.info("job_runner_step_ok", file_id=fid, step="callback", elapsed_ms=_elapsed_ms(t_callback), result="analysis written")
+        payload = await _analyze_step(client, file_id, fid, read_path, models_dir, cfg, suffix)
+        await _callback_step(client, file_id, fid, payload)
 
         log.info("job_runner_complete", file_id=fid, outcome="success", exit_code=EXIT_OK)
         sys.exit(0)

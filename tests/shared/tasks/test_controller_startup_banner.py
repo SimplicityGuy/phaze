@@ -16,7 +16,7 @@ async def test_controller_startup_logs_role_banner(
     """OPS-01: controller startup must emit a banner line with role + queue name."""
     # Patch heavyweight constructors so the test doesn't open Postgres/HTTP connections.
     # Unused lambda args are prefixed with `_` to satisfy ruff ARG005 (CLAUDE.md ruleset).
-    monkeypatch.setattr("phaze.tasks.controller.create_async_engine", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr("phaze.database.create_async_engine", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.DiscogsographyClient", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.load_prompt_template", lambda: "stub")
@@ -73,7 +73,7 @@ async def test_controller_startup_exports_llm_api_key_for_litellm(
     # so the key cannot leak into ControlSettings() in unrelated tests.
     _saved = os.environ.get("ANTHROPIC_API_KEY")
     os.environ.pop("ANTHROPIC_API_KEY", None)
-    monkeypatch.setattr("phaze.tasks.controller.create_async_engine", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr("phaze.database.create_async_engine", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.DiscogsographyClient", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.load_prompt_template", lambda: "stub")
@@ -123,7 +123,7 @@ async def test_controller_startup_sources_task_engine_pool_from_config(
         captured.update(kw)
         return MagicMock()
 
-    monkeypatch.setattr("phaze.tasks.controller.create_async_engine", _capturing_engine)
+    monkeypatch.setattr("phaze.database.create_async_engine", _capturing_engine)
     monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.DiscogsographyClient", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.load_prompt_template", lambda: "stub")

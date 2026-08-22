@@ -24,7 +24,7 @@ def _stub_controller(monkeypatch: pytest.MonkeyPatch, *, buckets: list[Any]) -> 
     registry shape (an empty ``backends`` list -- the LocalQueue probe is out of scope here) plus
     an explicit ``buckets`` list, the surface this module's new startup step reads.
     """
-    monkeypatch.setattr("phaze.tasks.controller.create_async_engine", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr("phaze.database.create_async_engine", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.DiscogsographyClient", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.load_prompt_template", lambda: "stub")
