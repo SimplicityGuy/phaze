@@ -218,6 +218,23 @@ def test_settings_env_var_universe_is_unchanged() -> None:
 _HOST_DERIVED_FIELDS = ("lane_analyze_concurrency",)
 
 
+def _diff_report(actual: dict[str, Any], golden: dict[str, Any]) -> str:
+    """Name every key whose value differs, with both values.
+
+    pytest elides the differing entries of a large dict comparison ("Omitting 76 identical
+    items"), which is exactly the information needed when a golden fails on a machine you
+    cannot attach to. Build the report ourselves so a CI failure is actionable on sight.
+    """
+    only_actual = sorted(set(actual) - set(golden))
+    only_golden = sorted(set(golden) - set(actual))
+    changed = sorted(k for k in set(actual) & set(golden) if actual[k] != golden[k])
+    lines = [f"{len(changed)} field(s) differ, {len(only_actual)} extra, {len(only_golden)} missing"]
+    lines += [f"  CHANGED {k}: golden={golden[k]!r} actual={actual[k]!r}" for k in changed]
+    lines += [f"  EXTRA   {k}: actual={actual[k]!r}" for k in only_actual]
+    lines += [f"  MISSING {k}: golden={golden[k]!r}" for k in only_golden]
+    return "\n".join(lines)
+
+
 def _without_host_derived(resolved: dict[str, Any]) -> dict[str, Any]:
     """The resolved mapping minus fields whose default is derived from this host."""
     return {k: v for k, v in resolved.items() if k not in _HOST_DERIVED_FIELDS}
@@ -242,7 +259,9 @@ def test_control_settings_resolve_to_recorded_defaults() -> None:
     """
     resolved = _resolved(ControlSettings())
     _assert_host_derived_fields(resolved)
-    assert _without_host_derived(resolved) == _without_host_derived(_golden()["CONTROL_DEFAULTS"])
+    expected = _without_host_derived(_golden()["CONTROL_DEFAULTS"])
+    got = _without_host_derived(resolved)
+    assert got == expected, _diff_report(got, expected)
 
 
 @pytest.mark.usefixtures("scrubbed_env")
@@ -257,7 +276,9 @@ def test_agent_settings_resolve_to_recorded_defaults(monkeypatch: pytest.MonkeyP
         monkeypatch.setenv(name, value)
     resolved = _resolved(AgentSettings())
     _assert_host_derived_fields(resolved)
-    assert _without_host_derived(resolved) == _without_host_derived(_golden()["AGENT_DEFAULTS"])
+    expected = _without_host_derived(_golden()["AGENT_DEFAULTS"])
+    got = _without_host_derived(resolved)
+    assert got == expected, _diff_report(got, expected)
 
 
 @pytest.mark.usefixtures("scrubbed_env")
