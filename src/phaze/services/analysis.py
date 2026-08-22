@@ -51,6 +51,7 @@ from phaze.services.analysis_derive import (
 )
 from phaze.services.analysis_models import (
     _DEFAULT_TF_BATCH_SIZE,  # re-export only; see the note above  # noqa: F401
+    _FIXED_BATCH_SIZE,  # re-export only; see the note above  # noqa: F401
     _TF_BATCH_SIZE_ENV,  # re-export only; see the note above  # noqa: F401
     GENRE_MODEL,
     MODEL_SETS,
