@@ -231,6 +231,15 @@ class AgentTaskRouter:
             # phaze-9f82r: wrap so callers can distinguish this (ambiguous -- durable side effects
             # may already exist) from a failure raised earlier, out of ``queue.connect()`` above
             # (provably pre-broker). See ``AmbiguousEnqueueError``'s docstring.
+            #
+            # The breadth is the point and must not be narrowed (phaze-bk9el.25): what makes this
+            # call ambiguous is precisely that ANY of enqueue()'s three steps -- the before_enqueue
+            # hook chain's durable ledger write, the saq_jobs INSERT, the separate NOTIFY -- can
+            # raise after an earlier one already committed, and those three steps live in SAQ,
+            # psycopg3 and Postgres respectively. An except list enumerating today's exception types
+            # would let tomorrow's escape UNWRAPPED, and an unwrapped raise out of here is
+            # indistinguishable to the caller from the provably-safe pre-broker failure. Nothing is
+            # swallowed: the original is chained via ``from exc``.
             raise AmbiguousEnqueueError(
                 f"enqueue for agent {agent_id!r} task {task_name!r} raised after the broker connection was established: {exc}"
             ) from exc
@@ -257,38 +266,58 @@ class AgentTaskRouter:
             retries=retries,
         )
 
+    @staticmethod
+    async def _close_one(cache_key: tuple[str, str], queue: Queue) -> None:
+        """Release ONE cached queue's two handles, never raising.
+
+        phaze-sbpj3: each handle's cleanup is isolated in its own try/except so a raise from one
+        queue's ``cache_redis.aclose()`` / ``queue.disconnect()`` (a redis client on a dropped
+        connection, a psycopg3 pool close error) cannot abandon :meth:`close`'s loop -- every
+        remaining queue still gets a close attempt, and this queue still gets its SECOND close
+        attempt even when its first one failed.
+
+        Both excepts are deliberately broad and are NOT silent: this runs on the shutdown path,
+        where the only useful outcome is "try everything, report what failed". Narrowing them would
+        mean enumerating the failure modes of two third-party client libraries' teardown paths, and
+        anything missed would abandon the rest of the fleet's cleanup. Each logs at WARNING with
+        ``exc_info=True``, so the traceback is preserved rather than swallowed.
+        """
+        # Phase 36 (WR-01): close the factory-attached cache_redis handle too —
+        # disconnect() closes only the psycopg3 pool, leaving the Redis client open.
+        cache_redis = getattr(queue, "cache_redis", None)
+        if cache_redis is not None:
+            try:
+                await cache_redis.aclose()
+            except Exception:
+                logger.warning(
+                    "agent task router: cache_redis.aclose() failed during close()",
+                    queue=cache_key,
+                    exc_info=True,
+                )
+        try:
+            await queue.disconnect()
+        except Exception:
+            logger.warning(
+                "agent task router: queue.disconnect() failed during close()",
+                queue=cache_key,
+                exc_info=True,
+            )
+
     async def close(self) -> None:
         """Disconnect every cached Queue and clear the cache. Idempotent.
 
-        phaze-sbpj3: each queue's cleanup is isolated in its own try/except so a
-        raise from one queue's ``cache_redis.aclose()`` / ``queue.disconnect()`` (a
-        redis client on a dropped connection, a psycopg3 pool close error) cannot
-        abandon the rest of the loop -- every remaining queue still gets a close
-        attempt. ``self._queues.clear()`` runs in a ``finally`` so the cache is
-        always cleared, even when one or more queues failed to close cleanly,
-        keeping the documented idempotency guarantee honest.
+        Per-queue cleanup is delegated to :meth:`_close_one`, which never raises (phaze-sbpj3), so
+        this loop always reaches every cached queue. ``self._queues.clear()`` runs in a ``finally``
+        so the cache is always cleared even if the loop is torn down by something ``_close_one`` does
+        not cover (e.g. cancellation), keeping the documented idempotency guarantee honest.
+
+        The closes are SERIAL on purpose and must not become an ``asyncio.gather``: shutdown is not
+        latency-sensitive, and each queue's teardown touches a distinct psycopg3 pool and redis
+        client whose close paths are third-party and not known to be concurrency-safe against each
+        other. Serial closes also keep the WARNING log ordering readable when several fail.
         """
         try:
             for cache_key, queue in self._queues.items():
-                # Phase 36 (WR-01): close the factory-attached cache_redis handle too —
-                # disconnect() closes only the psycopg3 pool, leaving the Redis client open.
-                cache_redis = getattr(queue, "cache_redis", None)
-                if cache_redis is not None:
-                    try:
-                        await cache_redis.aclose()
-                    except Exception:
-                        logger.warning(
-                            "agent task router: cache_redis.aclose() failed during close()",
-                            queue=cache_key,
-                            exc_info=True,
-                        )
-                try:
-                    await queue.disconnect()
-                except Exception:
-                    logger.warning(
-                        "agent task router: queue.disconnect() failed during close()",
-                        queue=cache_key,
-                        exc_info=True,
-                    )
+                await self._close_one(cache_key, queue)
         finally:
             self._queues.clear()
