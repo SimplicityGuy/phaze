@@ -438,6 +438,37 @@ users:
     assert secret_token not in caplog.text
 
 
+def test_kubeconfig_dict_from_unmarked_yaml_error_reports_no_location(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``YAMLError`` carrying NO ``problem_mark`` still sanitizes -- it just has no location to add.
+
+    The handler above builds its message from ``exc.problem_mark``, which only the ``MarkedYAMLError``
+    subclasses set. A plain ``yaml.YAMLError`` -- what a custom loader, a reader-level failure, or a
+    future PyYAML raises -- has none, and the ``mark is None`` arm was the one path through that
+    handler no test exercised (phaze-frq98, closing a branch the per-bead branch gate flagged).
+
+    It is reached by monkeypatching ``safe_load`` rather than by crafting input, deliberately: every
+    malformed document PyYAML can produce from a string sets a mark, so the arm is unreachable
+    through the front door. That is exactly why it needs pinning -- an untested arm in the ONE
+    handler whose job is to keep a bearer token out of the message is worth a test even when the
+    input that triggers it must be forced.
+    """
+    secret_token = "SUPER-SECRET-BEARER-TOKEN-def456"
+
+    def _raise_unmarked(_content: str) -> object:
+        raise yaml.YAMLError(f"catastrophe near {secret_token}")
+
+    monkeypatch.setattr(yaml, "safe_load", _raise_unmarked)
+
+    with pytest.raises(kube_staging.KubeStagingError) as exc_info:
+        kube_staging._kubeconfig_dict_from(_kube(kubeconfig=SecretStr("apiVersion: v1\n"), api_url=None))
+
+    message = str(exc_info.value)
+    assert secret_token not in message  # the sanitization holds with or without a mark
+    assert "at line" not in message  # no mark => no location clause, rather than a bogus one
+    assert "YAMLError" in message  # the exception TYPE is still reported, which is the useful half
+    assert exc_info.value.__cause__ is None
+
+
 def test_kubeconfig_dict_from_rejects_non_mapping_yaml() -> None:
     """A syntactically valid YAML document that is NOT a mapping (e.g. a bare scalar/list) must still
     fail loud with a sanitized ``KubeStagingError`` rather than returning a non-dict to callers that
@@ -641,6 +672,43 @@ async def test_get_workload_for_both_miss_returns_none(kube_respx: MockRouter) -
     kube_respx.get(_WL_PATH).mock(return_value=Response(200, json=_workload_list()))
 
     assert await kube_staging.get_workload_for(job_uid, _kube()) is None
+
+
+async def test_get_workload_for_skips_a_workload_owned_by_a_different_job(kube_respx: MockRouter) -> None:
+    """A namespace scan that finds OTHER jobs' Workloads must keep looking, not claim the first one.
+
+    The existing both-miss test returns an EMPTY list, so the owner-ref scan never enters its loop
+    body at all. This is the populated miss -- the shape a real shared namespace always has, where
+    several analyze Jobs are in flight and every one of them has a Workload. Two branches that
+    nothing exercised (phaze-frq98, flagged by the per-bead branch gate):
+
+    * the ``ref.get("uid") == job_uid`` comparison going FALSE -- i.e. actually rejecting a
+      non-matching owner rather than only ever confirming a matching one, which is the entire
+      correctness claim of the fallback;
+    * the inner ``for ref`` loop RUNNING OUT without returning, so the scan advances to the next
+      Workload instead of stopping.
+
+    Both matter: a wrong turn here binds one file's admission state to another file's Workload.
+    The matching Workload is placed LAST so the scan is forced through both.
+    """
+    job_uid = "job-uid-4"
+    selector = f"kueue.x-k8s.io/job-uid={job_uid}"
+    kube_respx.get(_WL_PATH, params__contains={"labelSelector": selector}).mock(return_value=Response(200, json=_workload_list()))
+    kube_respx.get(_WL_PATH).mock(
+        return_value=Response(
+            200,
+            json=_workload_list(
+                _workload_item("wl-someone-else", owner_uid="a-different-jobs-uid"),
+                _workload_item("wl-no-owner-refs-at-all"),
+                _workload_item("wl-ours", owner_uid=job_uid),
+            ),
+        )
+    )
+
+    workload = await kube_staging.get_workload_for(job_uid, _kube())
+
+    assert workload is not None
+    assert workload.name == "wl-ours"
 
 
 # --------------------------------------------------------------------------- #
