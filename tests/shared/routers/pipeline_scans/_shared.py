@@ -47,7 +47,7 @@ from phaze.database import get_session
 from phaze.models.agent import Agent  # noqa: F401 -- re-exported: conftest.py + test_path_and_auth.py
 from phaze.models.file import FileRecord
 from phaze.models.scan_batch import ScanBatch, ScanStatus
-from phaze.routers import pipeline, pipeline_scans, shell
+from phaze.routers import pipeline, pipeline_scans, scan, shell
 from phaze.routers.response_shape import RENDERABLE_ALERT_STATUS
 from phaze.services.agent_task_router import AmbiguousEnqueueError  # noqa: F401 -- re-exported for test_enqueue_outcomes.py
 
@@ -75,6 +75,7 @@ def _make_smoke_app(session: AsyncSession) -> tuple[FastAPI, AsyncMock]:
     """
     app = FastAPI(title="pipeline-scans-smoke", version="test")
     app.include_router(pipeline_scans.router)
+    app.include_router(scan.router)
     app.include_router(pipeline.router)
     app.include_router(shell.router)
     app.dependency_overrides[get_session] = lambda: session

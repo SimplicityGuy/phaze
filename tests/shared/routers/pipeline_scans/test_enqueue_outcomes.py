@@ -86,7 +86,7 @@ async def test_post_scans_ambiguous_enqueue_leaves_batch_running(
     ac, mock_router = smoke
     mock_router.enqueue_for_agent.side_effect = AmbiguousEnqueueError("enqueue raised after the broker connection was live")
 
-    with caplog.at_level("ERROR", logger="phaze.routers.pipeline_scans"):
+    with caplog.at_level("ERROR", logger="phaze.routers.scan"):
         response = await ac.post(
             "/pipeline/scans",
             data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "2026/"},
@@ -145,7 +145,7 @@ async def test_post_scans_enqueue_failure_with_secondary_commit_also_failing(
 
     monkeypatch.setattr(session, "rollback", _record_rollback)
 
-    with caplog.at_level(_logging.ERROR, logger="phaze.routers.pipeline_scans"):
+    with caplog.at_level(_logging.ERROR, logger="phaze.routers.scan"):
         response = await ac.post(
             "/pipeline/scans",
             data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "2026/"},

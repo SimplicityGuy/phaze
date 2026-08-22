@@ -79,7 +79,7 @@ def _normalize(scan_root: str, subpath: str) -> tuple[str, Any]:
 
     ``("accept", <canonical path>)`` or ``("reject", <exact operator-facing message>)``.
     """
-    from phaze.routers.pipeline_scans import _normalize_and_validate_scan_path
+    from phaze.routers.scan import _normalize_and_validate_scan_path
     from phaze.schemas.pipeline_scans import TriggerScanForm
 
     result = _normalize_and_validate_scan_path(_request(), TriggerScanForm(agent_id="unused", scan_root=scan_root, subpath=subpath))
@@ -95,7 +95,7 @@ async def _authorize(session: AsyncSession, *, scan_roots: list[str] | None, rev
     ``("accept", <agent id>)`` or ``("reject", <exact operator-facing message>)``. A fresh
     agent id per call so the corpus rows cannot interfere with each other.
     """
-    from phaze.routers.pipeline_scans import _authorize_scan_root
+    from phaze.routers.scan import _authorize_scan_root
     from phaze.schemas.pipeline_scans import TriggerScanForm
 
     agent_id = f"chartest-{uuid.uuid4().hex[:8]}"

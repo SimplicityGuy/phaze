@@ -41,6 +41,7 @@ from phaze.routers import (
     proposals,
     record,
     routing,
+    scan,
     search,
     shell,
     tags,
@@ -293,10 +294,14 @@ _ROUTERS: tuple[APIRouter, ...] = (
     # api container has no media mount, so the mutagen write runs on the owning agent's meta lane
     # and its result reaches the tag_write_log audit table only through this callback.
     agent_tag_writes.router,
-    # Phase 27 admin-UI router (D-05..D-08): POST /pipeline/scans + the HTMX
-    # poll partial + the agent-roots swap. Distinct from `pipeline.router`,
+    # Phase 27 admin-UI router (D-05..D-08): the HTMX poll partial, the Recent
+    # Scans table and the agent-roots swap. Distinct from `pipeline.router`,
     # which serves the dashboard page and existing pipeline-stage triggers.
     pipeline_scans.router,
+    # phaze-bk9el.17 split the POST /pipeline/scans trigger out of `pipeline_scans`
+    # into its own module; both carry the same `/pipeline/scans` prefix and neither
+    # shadows the other (distinct method+path pairs), so registration order is free.
+    scan.router,
     # Phase 29 admin-UI router (D-11..D-14): GET /admin/agents (operator-facing
     # liveness page) + GET /admin/agents/_table (HTMX 5s poll partial). The
     # router is read-only and does NOT use get_authenticated_agent (consistent
