@@ -36,6 +36,11 @@ _MOOD_SET_NAMES = frozenset(
 )
 
 
+def _is_positive_label(entry: dict[str, Any]) -> bool:
+    """True unless ``entry``'s label carries essentia's negation prefix (``non_``/``not_``)."""
+    return not str(entry.get("label", "")).startswith(("non_", "not_"))
+
+
 def _positive_class_prediction(predictions: list[Any]) -> float | None:
     """Return the POSITIVE-class probability from a binary classifier's prediction list.
 
@@ -46,29 +51,31 @@ def _positive_class_prediction(predictions: list[Any]) -> float | None:
     P(non_relaxed)/P(non_sad)/P(non_party) as the mood confidence — a systematic
     inversion of the stored wire dict.
 
-    Select the positive class by LABEL: the entry whose label does NOT start with a
-    negation prefix (``non_`` / ``not_``). Falls back to the first well-formed entry
-    when no label qualifies. Returns None if nothing usable is present (keeps this
-    converter's defensive, never-raise contract for malformed input).
+    Select the positive class by LABEL (:func:`_is_positive_label`). Falls back to the
+    first well-formed entry when no label qualifies. Returns None if nothing usable is
+    present (keeps this converter's defensive, never-raise contract for malformed input).
     """
-    positive: dict[str, Any] | None = None
-    for entry in predictions:
-        if not isinstance(entry, dict):
-            continue
-        if not str(entry.get("label", "")).startswith(("non_", "not_")):
-            positive = entry
-            break
+    dict_entries = [entry for entry in predictions if isinstance(entry, dict)]
+    positive = next((entry for entry in dict_entries if _is_positive_label(entry)), None)
     if positive is None:
-        for entry in predictions:
-            if isinstance(entry, dict):
-                positive = entry
-                break
+        positive = dict_entries[0] if dict_entries else None
     if positive is None:
         return None
     try:
         return float(positive["prediction"])
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _mood_set_scores(set_data: dict[str, Any]) -> list[float]:
+    """Positive-class scores across every variant in one ``mood_*`` set."""
+    scores: list[float] = []
+    for predictions in set_data.values():
+        if isinstance(predictions, list) and predictions:
+            score = _positive_class_prediction(predictions)
+            if score is not None:
+                scores.append(score)
+    return scores
 
 
 def _features_to_mood_dict(features: dict[str, Any]) -> dict[str, float] | None:
@@ -84,15 +91,24 @@ def _features_to_mood_dict(features: dict[str, Any]) -> dict[str, float] | None:
         set_data = features.get(set_name)
         if not isinstance(set_data, dict):
             continue
-        variant_scores: list[float] = []
-        for predictions in set_data.values():
-            if isinstance(predictions, list) and predictions:
-                score = _positive_class_prediction(predictions)
-                if score is not None:
-                    variant_scores.append(score)
+        variant_scores = _mood_set_scores(set_data)
         if variant_scores:
             out[set_name.removeprefix("mood_")] = sum(variant_scores) / len(variant_scores)
     return out or None
+
+
+def _style_entry(entry: Any) -> tuple[str, float] | None:
+    """Convert one genre-prediction entry to a ``(label, confidence)`` wire pair, or None."""
+    if not isinstance(entry, dict):
+        return None
+    label = entry.get("label")
+    confidence = entry.get("confidence")
+    if label is None or confidence is None:
+        return None
+    try:
+        return str(label).replace("---", "/"), float(confidence)
+    except (TypeError, ValueError):
+        return None
 
 
 def _features_to_style_dict(features: dict[str, Any]) -> dict[str, float] | None:
@@ -109,14 +125,7 @@ def _features_to_style_dict(features: dict[str, Any]) -> dict[str, float] | None
         return None
     out: dict[str, float] = {}
     for entry in predictions:
-        if not isinstance(entry, dict):
-            continue
-        label = entry.get("label")
-        confidence = entry.get("confidence")
-        if label is None or confidence is None:
-            continue
-        try:
-            out[str(label).replace("---", "/")] = float(confidence)
-        except (TypeError, ValueError):
-            continue
+        pair = _style_entry(entry)
+        if pair is not None:
+            out[pair[0]] = pair[1]
     return out or None

@@ -885,3 +885,76 @@ async def test_real_plain_audio_file_is_not_remuxed_and_survives(tmp_path: Path)
     assert result == AudioSource(analysis_path=str(src), cleanup_path=None)
     assert src.read_bytes() == before, "the input was rewritten or replaced"
     assert list(tmp_path.iterdir()) == [src], "the skip branch left a scratch file behind"
+
+
+# ---------------------------------------------------------------------------
+# Real consumer verification (CLAUDE.md rule 3, phaze-bk9el.3's CCN cleanup)
+#
+# ``probe_container_streams``/ffprobe round-tripping the extracted artifact (the tests above)
+# proves round-tripping, not compatibility -- phaze-3ea41's own postmortem: the container change
+# was verified with the muxer's own tooling and broke ``es.MetadataReader``, the real downstream
+# reader, for every one of 11,428 corpus files. This bead's refactor of extract_audio_track is
+# behaviour-preserving (extract-method only), but the rule applies to any change here regardless,
+# so both of this module's return shapes -- the extraction branch AND the skip branch -- are
+# handed to the REAL essentia ``MetadataReader``, not merely re-probed with ffprobe.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg/ffprobe not installed on this runner")
+async def test_real_extraction_output_is_readable_by_the_real_consumer_es_metadatareader(tmp_path: Path) -> None:
+    """The extraction (remux) branch's ``.mka`` output, handed to real ``es.MetadataReader`` --
+    the actual downstream reader (see the module docstring's D-09/D-10 records) -- not to
+    ffprobe a second time. Must not raise, and must read back the real source duration.
+    """
+    import essentia.standard as es
+
+    src = tmp_path / "synthetic_with_audio.mkv"
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc=duration=2:size=64x64:rate=2",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:duration=2",
+        "-c:v",
+        "libx264",
+        "-c:a",
+        "aac",
+        "-shortest",
+        str(src),
+    )
+    await proc.wait()
+    assert src.exists()
+
+    result = await extract_audio_track(str(src), scratch_dir=tmp_path)
+
+    # MetadataReader()() returns a 12-tuple; index 8 is duration in seconds (same convention
+    # services/analysis.py's D-10 record and its own tests use).
+    duration_sec = es.MetadataReader(filename=result.analysis_path)()[8]
+    assert duration_sec == pytest.approx(2.0, abs=0.5), "es.MetadataReader must read a real duration from the extracted .mka artifact"
+
+
+@pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg/ffprobe not installed on this runner")
+async def test_real_skip_branch_output_is_readable_by_the_real_consumer_es_metadatareader(tmp_path: Path) -> None:
+    """The complement: the SKIP branch (phaze-l832u) hands back the untouched input, and that
+    input -- the overwhelmingly common case, an ordinary archive audio file -- must likewise be
+    readable, duration and all, by the real ``es.MetadataReader``.
+    """
+    import essentia.standard as es
+
+    src = tmp_path / "track.mp3"
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-c:a", "libmp3lame", "-q:a", "9", str(src)
+    )
+    await proc.wait()
+    assert src.exists()
+
+    result = await extract_audio_track(str(src), scratch_dir=tmp_path)
+    assert result.cleanup_path is None
+
+    duration_sec = es.MetadataReader(filename=result.analysis_path)()[8]
+    assert duration_sec == pytest.approx(3.0, abs=0.5), "es.MetadataReader must read a real duration for the untouched skip-branch file"

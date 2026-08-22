@@ -80,6 +80,35 @@ class _PartialNetwork:
 
 
 @dataclass(frozen=True)
+class DecodeTarget:
+    """The file, sample rate, and window set one decode call targets.
+
+    Primitive-obsession cleanup (phaze-bk9el.3): ``file_path``, ``sample_rate`` and
+    ``windows`` travel together through every rung of the decode ladder below --
+    "decode which windows, of which file, at what rate" is one question, not three
+    independent parameters that happen to share an argument list. Bundling them stops a
+    future call site from swapping two of the three (e.g. passing one call's ``windows``
+    against another call's ``sample_rate``) without a type error.
+
+    :func:`_decode_windows` and :func:`_decode_windows_streaming` keep their historical
+    ``(file_path, sample_rate, windows, ...)`` signature -- ``services/analysis.py`` calls
+    both positionally and is out of this bead's scope -- but build one ``DecodeTarget`` at
+    the top and thread it through every internal helper instead.
+
+    The parameters left OUT of this type are independent on purpose, not overlooked:
+    ``stop_at_sec`` is a per-attempt gate value that changes across retries of the SAME
+    target (gated, then ungated); ``on_skip``/``on_beat`` are callbacks, not decode
+    identity; ``watchdog_enabled`` toggles a concern (liveness) orthogonal to what is being
+    decoded; and ``runtime``/``DecodeRuntime`` are dependency bundles already grouped by
+    their own dataclasses above.
+    """
+
+    file_path: str
+    sample_rate: int
+    windows: Sequence[Window]
+
+
+@dataclass(frozen=True)
 class StreamingRuntime:
     """Essentia constructors and runner used by one streaming decode."""
 
@@ -171,8 +200,7 @@ def _stream_source(loader: Any, sample_rate: int, stop_at_sec: float | None, run
 
 def _build_window_branches(
     source: Any,
-    sample_rate: int,
-    windows: Sequence[Window],
+    target: DecodeTarget,
     pool: Any,
     runtime: StreamingRuntime,
     network: _PartialNetwork,
@@ -183,9 +211,9 @@ def _build_window_branches(
     loop still leaves every branch built so far -- including the half-wired one -- visible to
     the caller's teardown.  Nothing is returned: the network IS the accumulator.
     """
-    for idx, start, end in windows:
+    for idx, start, end in target.windows:
         scale = network.register(runtime.scale(factor=1.0))
-        trimmer = network.register(runtime.trimmer(sampleRate=sample_rate, startTime=start, endTime=end))
+        trimmer = network.register(runtime.trimmer(sampleRate=target.sample_rate, startTime=start, endTime=end))
         source >> scale.signal
         scale.signal >> trimmer.signal
         trimmer.signal >> (pool, f"{_SINK_KEY_PREFIX}{idx}")
@@ -225,14 +253,15 @@ def _decode_windows_streaming(
     list, so a raise part-way through the fan-out -- the ordinary failure path, not an exotic
     one -- still hands the ``finally`` everything that was constructed (D-09, phaze-u1n7j).
     """
+    target = DecodeTarget(file_path, sample_rate, windows)
     pool = runtime.pool()
     network = _PartialNetwork()
-    loader = network.register(runtime.mono_loader(filename=file_path, sampleRate=sample_rate))
+    loader = network.register(runtime.mono_loader(filename=target.file_path, sampleRate=target.sample_rate))
     try:
-        source = _stream_source(loader, sample_rate, stop_at_sec, runtime, network)
-        _build_window_branches(source, sample_rate, windows, pool, runtime, network)
+        source = _stream_source(loader, target.sample_rate, stop_at_sec, runtime, network)
+        _build_window_branches(source, target, pool, runtime, network)
         runtime.run(loader)
-        return _extract_window_buffers(pool, windows)
+        return _extract_window_buffers(pool, target.windows)
     finally:
         runtime.disconnect_network(network.connected())
         network.clear()
@@ -240,22 +269,18 @@ def _decode_windows_streaming(
 
 
 def _call_streaming(
-    file_path: str,
-    sample_rate: int,
-    windows: Sequence[Window],
+    target: DecodeTarget,
     stop_at_sec: float | None,
     runtime: DecodeRuntime,
 ) -> dict[int, Any]:
     """Call the streaming seam while preserving its established ungated call shape."""
     if stop_at_sec is None:
-        return runtime.streaming_decode(file_path, sample_rate, windows)
-    return runtime.streaming_decode(file_path, sample_rate, windows, stop_at_sec=stop_at_sec)
+        return runtime.streaming_decode(target.file_path, target.sample_rate, target.windows)
+    return runtime.streaming_decode(target.file_path, target.sample_rate, target.windows, stop_at_sec=stop_at_sec)
 
 
 def _streaming_with_watchdog(
-    file_path: str,
-    sample_rate: int,
-    windows: Sequence[Window],
+    target: DecodeTarget,
     stop_at_sec: float | None,
     on_beat: BeatCallback,
     runtime: DecodeRuntime,
@@ -264,7 +289,7 @@ def _streaming_with_watchdog(
 ) -> dict[int, Any]:
     """Run one blocking streaming attempt with optional periodic liveness beats."""
     if not watchdog_enabled:
-        return _call_streaming(file_path, sample_rate, windows, stop_at_sec, runtime)
+        return _call_streaming(target, stop_at_sec, runtime)
 
     stopped = threading.Event()
 
@@ -278,16 +303,14 @@ def _streaming_with_watchdog(
     watchdog = threading.Thread(target=_watch, name="phaze-decode-heartbeat", daemon=True)
     watchdog.start()
     try:
-        return _call_streaming(file_path, sample_rate, windows, stop_at_sec, runtime)
+        return _call_streaming(target, stop_at_sec, runtime)
     finally:
         stopped.set()
         watchdog.join()
 
 
 def _try_streaming_ladder(
-    file_path: str,
-    sample_rate: int,
-    windows: Sequence[Window],
+    target: DecodeTarget,
     stop_at_sec: float | None,
     on_beat: BeatCallback,
     runtime: DecodeRuntime,
@@ -297,30 +320,28 @@ def _try_streaming_ladder(
     """Attempt gated then ungated streaming, returning ``None`` for full fallback."""
     if stop_at_sec is not None:
         try:
-            return _streaming_with_watchdog(file_path, sample_rate, windows, stop_at_sec, on_beat, runtime, watchdog_enabled=watchdog_enabled)
+            return _streaming_with_watchdog(target, stop_at_sec, on_beat, runtime, watchdog_enabled=watchdog_enabled)
         except Exception:
-            runtime.logger.warning("gated streaming decode failed at %d Hz; retrying ungated", sample_rate, exc_info=True)
+            runtime.logger.warning("gated streaming decode failed at %d Hz; retrying ungated", target.sample_rate, exc_info=True)
             on_beat()
     try:
-        return _streaming_with_watchdog(file_path, sample_rate, windows, None, on_beat, runtime, watchdog_enabled=watchdog_enabled)
+        return _streaming_with_watchdog(target, None, on_beat, runtime, watchdog_enabled=watchdog_enabled)
     except Exception:
-        runtime.logger.warning("streaming decode pass failed at %d Hz; falling back to per-window EasyLoader", sample_rate, exc_info=True)
+        runtime.logger.warning("streaming decode pass failed at %d Hz; falling back to per-window EasyLoader", target.sample_rate, exc_info=True)
         return None
 
 
 def _decode_per_window(
-    file_path: str,
-    sample_rate: int,
-    windows: Sequence[Window],
+    target: DecodeTarget,
     on_skip: SkipCallback,
     on_beat: BeatCallback,
     runtime: DecodeRuntime,
 ) -> dict[int, Any]:
     """Decode windows independently, preserving per-window failure isolation."""
     decoded: dict[int, Any] = {}
-    for idx, start, end in windows:
+    for idx, start, end in target.windows:
         try:
-            decoded[idx] = runtime.easy_loader(filename=file_path, sampleRate=sample_rate, startTime=start, endTime=end)()
+            decoded[idx] = runtime.easy_loader(filename=target.file_path, sampleRate=target.sample_rate, startTime=start, endTime=end)()
         except Exception:
             on_skip(idx, start, end, True)
         on_beat()
@@ -346,18 +367,17 @@ def _decode_windows(
     watchdog_enabled: bool,
 ) -> dict[int, Any]:
     """Run the gated -> ungated -> per-window decode ladder for one chunk."""
+    target = DecodeTarget(file_path, sample_rate, windows)
     decoded = _try_streaming_ladder(
-        file_path,
-        sample_rate,
-        windows,
+        target,
         stop_at_sec,
         on_beat,
         runtime,
         watchdog_enabled=watchdog_enabled,
     )
     if decoded is None:
-        decoded = _decode_per_window(file_path, sample_rate, windows, on_skip, on_beat, runtime)
+        decoded = _decode_per_window(target, on_skip, on_beat, runtime)
     else:
-        _report_missing_windows(decoded, windows, on_skip)
+        _report_missing_windows(decoded, target.windows, on_skip)
     runtime.release_decode_network()
     return decoded
