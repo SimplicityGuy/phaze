@@ -210,6 +210,12 @@ def resolve_repository(conn: sqlite3.Connection, repo_name: str) -> tuple[str, s
 
 def load_metrics(conn: sqlite3.Connection, repo_id: str) -> list[dict[str, Any]]:
     """Every src/ file's row from health_file_metrics, sorted by path."""
+    # False positive: this is sqlite3.Connection.execute, not SQLAlchemy, and the only
+    # interpolation is METRIC_COLUMNS -- a module-level literal tuple of column names.
+    # repo_id is bound as a ? parameter. Ruff S608 and bandit B608 are suppressed below
+    # for the same reason; semgrep needs its own marker, and it must sit on the line
+    # directly above the match anchor (`conn.execute(`) to be honoured.
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
     rows = conn.execute(
         f"""
         SELECT {", ".join(METRIC_COLUMNS)}
