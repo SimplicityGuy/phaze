@@ -287,6 +287,14 @@ async def build_drain_queue(
     eligibility and bypasses no suppression. Its safety property is the negative case: if the
     requested file disappears or becomes ineligible before the worker starts, the slice spends
     zero requests instead of silently looking up an unrelated flagged set.
+
+    Six parameters, deliberately not bundled (phaze-bk9el.28), for the same reason as
+    ``drain_once``'s eleven: the four selection arguments have exactly ONE consumer -- this
+    function -- and inside it they fan out to three different queries (``agent_id`` to
+    ``load_candidate_signals``, ``flagged_file_ids`` to ``load_flagged_file_ids`` and
+    ``force_file_ids``, ``target_file_ids`` to the exact-set filter). A bundle would be a rename,
+    not a simplification, and it would force the caller at ``phaze.tasks.tracklist_drain`` -- which
+    passes two of the four -- to construct an object to set one flag.
     """
     moment = _compute_moment(now)
     raw_signals = await load_candidate_signals(session, agent_id=agent_id)
@@ -558,6 +566,11 @@ def _found(base: LookupAttempt, *, chosen: ScoredResult, reason: str, render_req
     source that can carry its own mis-decode. ``repair_mojibake`` is idempotent and a no-op on
     clean text, and doing it once here rather than at every later read is what keeps the stored
     value and the generated index in agreement.
+
+    Five parameters, deliberately not bundled (phaze-bk9el.28): they come from five unrelated
+    places at the single call site -- the attempt scaffold, the scorer's selection, the selection's
+    reason string, the renderer's request count and the parser's track payloads -- and no subset of
+    them travels on to any further callee. A bundle here would be a tuple with names.
     """
     return replace(
         base,
@@ -622,6 +635,14 @@ async def persist_lookup(
     deliberately do NOT clear it: a Turnstile block is not an answer, and the operator's request is
     still outstanding until the backoff produces one (or the attempt cap parks the set, at which
     point the cache -- not the flag -- keeps it out of ``entries``).
+
+    Five parameters, deliberately not bundled (phaze-bk9el.28). ``session`` is infrastructure and
+    ``now`` is a clock; of the three that remain, ``candidate`` and ``attempt`` are the two halves
+    of "what was asked" and "what came back" and are already objects, and only ``propagation_min``
+    travels further (to ``_store_and_propagate``). Merging the question with its answer would lose
+    the distinction the whole module is organised around, and this signature is load-bearing
+    outside the module -- ``tests/integration/test_tracklist_refresh_real_db.py`` calls it
+    directly.
     """
     moment = now or datetime.now(UTC)
     result = PersistResult()
@@ -643,6 +664,24 @@ async def persist_lookup(
     if attempt.is_found or attempt.outcome.is_definitive_negative:
         await clear_flags(session, [member.file_id for member in candidate.unique_set.members])
     return result
+
+
+@dataclass(frozen=True, slots=True)
+class _Propagation:
+    """The provenance stamped on a tracklist row that is a PROJECTION of another file's page.
+
+    phaze-bk9el.28: ``set_key`` and ``confidence`` are the pair of columns that make a false merge
+    correctable (one ``DELETE ... WHERE propagated_from_set_key = :key`` reverses a whole cluster),
+    and they are meaningful only together -- a row with one and not the other is not a state this
+    module has, and until this bundle existed nothing said so. They were threaded as two loose
+    parameters through ``_store_and_propagate`` -> ``_upsert_propagated`` -> ``_write_row``, where
+    the "both or neither" rule lived only in ``_write_row``'s two call sites passing
+    ``set_key=None, confidence=None`` or both by convention. As one optional value the rule is
+    structural: ``None`` IS the canonical row, and there is no way to spell half of it.
+    """
+
+    set_key: str
+    confidence: DuplicateConfidence
 
 
 async def _store_and_propagate(
@@ -689,7 +728,9 @@ async def _store_and_propagate(
                 reason=member.reason,
             )
             continue
-        await _upsert_propagated(session, attempt=attempt, file_id=member.file_id, set_key=unique_set.key, confidence=member.confidence)
+        await _upsert_propagated(
+            session, attempt=attempt, file_id=member.file_id, propagation=_Propagation(set_key=unique_set.key, confidence=member.confidence)
+        )
         propagated += 1
 
     return PersistResult(
@@ -718,7 +759,7 @@ async def _resolve_canonical(session: AsyncSession, *, attempt: LookupAttempt, p
     tracklist = found.scalar_one_or_none()
 
     if tracklist is None:
-        return await _write_row(session, attempt=attempt, file_id=preferred_file_id, set_key=None, confidence=None)
+        return await _write_row(session, attempt=attempt, file_id=preferred_file_id, propagation=None)
 
     if tracklist.file_id is None or tracklist.file_id == preferred_file_id:
         tracklist.file_id = preferred_file_id
@@ -741,8 +782,7 @@ async def _upsert_propagated(
     *,
     attempt: LookupAttempt,
     file_id: uuid.UUID,
-    set_key: str,
-    confidence: DuplicateConfidence,
+    propagation: _Propagation,
 ) -> Tracklist:
     """Create or refresh the projection of this page onto ONE duplicate file.
 
@@ -767,10 +807,10 @@ async def _upsert_propagated(
     )
     tracklist = existing.scalar_one_or_none()
     if tracklist is None:
-        return await _write_row(session, attempt=attempt, file_id=file_id, set_key=set_key, confidence=confidence)
+        return await _write_row(session, attempt=attempt, file_id=file_id, propagation=propagation)
 
-    tracklist.propagated_from_set_key = set_key
-    tracklist.propagation_confidence = confidence.value
+    tracklist.propagated_from_set_key = propagation.set_key
+    tracklist.propagation_confidence = propagation.confidence.value
     tracklist.match_confidence = attempt.result_confidence
     await _append_version(session, tracklist, attempt)
     return tracklist
@@ -781,10 +821,9 @@ async def _write_row(
     *,
     attempt: LookupAttempt,
     file_id: uuid.UUID,
-    set_key: str | None,
-    confidence: DuplicateConfidence | None,
+    propagation: _Propagation | None,
 ) -> Tracklist:
-    """Insert one tracklist row and its first version."""
+    """Insert one tracklist row and its first version -- ``propagation=None`` writes the canonical."""
     tracklist = Tracklist(
         external_id=attempt.external_id or "",
         source_url=attempt.source_url or "",
@@ -795,8 +834,8 @@ async def _write_row(
         event=attempt.event,
         date=attempt.date,
         source=TRACKLIST_SOURCE,
-        propagated_from_set_key=set_key,
-        propagation_confidence=confidence.value if confidence is not None else None,
+        propagated_from_set_key=propagation.set_key if propagation is not None else None,
+        propagation_confidence=propagation.confidence.value if propagation is not None else None,
     )
     session.add(tracklist)
     await session.flush()
@@ -926,6 +965,27 @@ async def drain_once(
     ``should_stop`` is checked BETWEEN candidates, never mid-lookup: abandoning a lookup after the
     search has already been sent would discard a request that has been spent and cannot be
     reclaimed, so a shutdown waits out at most one in-flight item.
+
+    ELEVEN PARAMETERS, DELIBERATELY NOT BUNDLED (phaze-bk9el.28). The primitive_obsession biomarker
+    counts parameters and flags this as the module's worst; the count is real and the conclusion
+    does not follow here, for three reasons that were each checked rather than assumed:
+
+    * They do not travel together. Everything past ``session_factory`` fans out to a DIFFERENT
+      callee -- ``{agent_id, include_unknown, flagged_file_ids, target_file_ids, now}`` to
+      ``build_drain_queue``, ``{search, renderer}`` to ``perform_lookup``, ``propagation_min`` to
+      ``persist_lookup``, and ``{limit, should_stop}`` to this function's own loop. That is the
+      test phaze-bk9el.8's ``_RowReconcile`` passed and this fails: there, ONE group was threaded
+      through several helpers, so the bundle removed a repeated argument list. Here a bundle would
+      add a type that exists only to be immediately taken apart, and the count would move rather
+      than fall. ``_Propagation`` below is this module's case that DOES pass the test.
+    * Every one of them is keyword-only (note the bare ``*``) and defaulted, so no call site is
+      positional and none can be broken by re-ordering -- verified across the one production caller
+      (``phaze.tasks.tracklist_drain``) and every test site. The biomarker cannot see that; a
+      keyword-only defaulted signature is self-documenting at the call site in a way an
+      11-positional one is not, and the production caller passes a SUBSET, not all eleven.
+    * The parameters are the drain's operator-facing knobs: budget, identity, admission overrides,
+      propagation gate, shutdown hook, clock. Grouping them into an object would have to invent a
+      concept ("drain options") that nothing else in the module or its callers holds.
     """
     moment = now or datetime.now(UTC)
     async with session_factory() as session:
