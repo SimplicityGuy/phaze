@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
+from mutagen._vorbis import VCommentDict
 from mutagen.id3 import ID3
 from mutagen.mp4 import MP4
 import pytest
@@ -61,17 +62,23 @@ def _mp4_case() -> tuple[MagicMock, MagicMock]:
     return audio, tags
 
 
-def _vorbis_case() -> tuple[MagicMock, MagicMock]:
-    tags = _mapping_tags(
-        {
-            "artist": ["Vorbis Artist"],
-            "title": ["Vorbis Title"],
-            "album": ["Vorbis Album"],
-            "date": ["2022"],
-            "genre": ["Rock", "Alternative"],
-            "tracknumber": ["7/14"],
-        }
-    )
+def _vorbis_case() -> tuple[MagicMock, VCommentDict]:
+    """phaze-wt9vw: a REAL ``VCommentDict``, unlike the other two cases' mapping stand-ins.
+
+    The Vorbis arm of ``parse_format_tags`` used to be the dispatch's unguarded default -- every
+    container that was not ID3 or MP4 landed there, so any mapping-shaped mock was read as Vorbis.
+    That fallback is what made the ``.wma`` defect self-confirming, and it is gone: the format is
+    now resolved by ``tag_formats.resolve_tag_format``, which recognises Vorbis by the genuine
+    ``VCommentDict`` base shared by ``VCFLACDict``, ``OggVCommentDict`` and ``OggOpusVComment``.
+    A fixture that is not really a Vorbis comment container is therefore no longer read as one.
+    """
+    tags = VCommentDict()
+    tags["artist"] = ["Vorbis Artist"]
+    tags["title"] = ["Vorbis Title"]
+    tags["album"] = ["Vorbis Album"]
+    tags["date"] = ["2022"]
+    tags["genre"] = ["Rock", "Alternative"]
+    tags["tracknumber"] = ["7/14"]
     audio = MagicMock()
     audio.__class__ = type("OggVorbis", (), {})
     audio.tags = tags

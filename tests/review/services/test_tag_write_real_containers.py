@@ -10,9 +10,9 @@ the one consumer that could not read the artifact was never handed it.
 
 This module closes four rows of the ``phaze-d2hgv.6`` producer→consumer seam inventory at once:
 
-* **B5** — the filed bug. ``.wma`` takes ``_write_vorbis``'s catch-all and writes literal Vorbis
-  key names into an ASF file; ``verify_write`` reads them back through the same ``_VORBIS_MAP``
-  and reports success. See :func:`test_written_tags_are_visible_to_essentia`.
+* **B5** — the filed bug, now fixed. ``.wma`` used to take ``_write_vorbis``'s catch-all and write
+  literal Vorbis key names into an ASF file, and ``verify_write`` read them back through the same
+  ``_VORBIS_MAP`` and reported success. See :func:`test_written_tags_are_visible_to_essentia`.
 * **B2** — the whole ``tests/`` tree contained ZERO invocations of a non-mutagen tag reader.
   Every test here reads back through ``es.MetadataReader``, which is a genuine second
   implementation and is already a test dependency via
@@ -20,8 +20,8 @@ This module closes four rows of the ``phaze-d2hgv.6`` producer→consumer seam i
 * **B3** — ``_write_vorbis`` had never run against a real FLAC/Ogg/Opus container, and its
   ``del audio[key]`` branch — *undo's entire mechanism*, a destructive operation — had never
   executed against one at all. See :func:`test_vorbis_delete_branch_removes_tags_from_real_container`.
-* **B4** — ``_write_mp4`` likewise, including the ``elif isinstance(audio, MP4)`` dispatch arm at
-  ``tag_write_disk.py:97`` that no test took. See :func:`test_mp4_dispatch_branch_writes_real_atoms`.
+* **B4** — ``_write_mp4`` likewise, including the MP4 dispatch arm that no test took. See
+  :func:`test_mp4_dispatch_branch_writes_real_atoms`.
 
 **Why ``ffprobe`` is NOT the reader used here.** It is a weak discriminator for the ASF bug and
 would have passed the pre-fix code: ffmpeg's ASF demuxer passes unknown extended-content-description
@@ -33,12 +33,29 @@ the tool. ``es.MetadataReader`` distinguishes the two totally — measured, agai
     phaze-written .wma  ->  ('', '', '', '', '', '', '')          # every field EMPTY
     spec-correct .wma   ->  ('Real Title', 'Real Artist', ...)    # all fields readable
 
-**What fails without the fix.** :func:`test_written_tags_are_visible_to_essentia` fails on the
-``wma`` parameter against pre-phaze-wt9vw code — ``es.MetadataReader`` returns empty strings for
-every field while ``verify_write`` reports no discrepancies. The other parameters PASS against
-pre-fix code and are regression pins, not bug reproductions: they hold behaviour that is currently
-correct only *by coincidence* (see :func:`test_dispatch_branch_taken_per_container`) and has no
-other test.
+**What fails without the fix, and how to reproduce it — read this before trying.** The container
+tests were committed BEFORE the fix (commit ``a943872b``, against source ``7db055e5``) precisely so
+the red run would be real rather than reconstructed. That recorded run is::
+
+    FAILED test_written_tags_are_visible_to_essentia[wma]
+    FAILED test_verify_write_agrees_with_the_independent_reader[wma]
+    2 failed, 34 passed
+
+Exactly two, both ``wma``. **The other 34 passed against pre-fix code too**, and that is not a
+weakness — they are regression pins for behaviour that was already correct but untested, some of it
+correct only by coincidence (see :func:`test_dispatch_branch_taken_per_container`). Do not read a
+green run of this module as evidence that the ASF fix is present; only those two parameters carry
+that.
+
+**Reverting only ``src/`` today will NOT reproduce those two failures** — it produces a collection
+error for the entire module, because the AC-4 tests added after the fix import
+``phaze.services.tag_formats``, ``_ASF_MAP`` and ``_WRITERS``, none of which exist pre-fix. That is
+measured, not assumed. To see the red run, take *this file* at ``a943872b`` against ``src/`` at
+``7db055e5``; the two must move together.
+
+The AC-4 tests at the bottom are a third category: they assert the *shape* of the read/write split
+rather than any one format's behaviour, and they are what stops the next unmapped container from
+reproducing the bug.
 
 **No fixture audio is committed.** Every container is produced by real ``ffmpeg`` at test time,
 one second of generated sine — the same discipline (and the same encoder-availability gating) as
@@ -51,14 +68,27 @@ from __future__ import annotations
 import shutil
 import subprocess
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import mutagen
 from mutagen.id3 import ID3
 from mutagen.mp4 import MP4
 import pytest
 
+from phaze.services import tag_write_disk
 from phaze.services.metadata import extract_tags
-from phaze.services.tag_write_disk import verify_write, write_and_verify_sync, write_tags
+from phaze.services.metadata_parsing import _ASF_MAP, _ID3_MAP, _MP4_MAP, _VORBIS_MAP
+from phaze.services.tag_formats import TagFormat, UnsupportedTagFormatError, resolve_tag_format
+from phaze.services.tag_write_disk import (
+    _WRITE_ASF_MAP,
+    _WRITE_ID3_MAP,
+    _WRITE_MP4_MAP,
+    _WRITE_VORBIS_MAP,
+    _WRITERS,
+    verify_write,
+    write_and_verify_sync,
+    write_tags,
+)
 
 
 if TYPE_CHECKING:
@@ -367,3 +397,150 @@ def test_phaze_can_read_back_what_phaze_wrote(tmp_path: Path, ext: str) -> None:
     assert tags.genre == "Rock", f".{ext}: ingest read-back lost genre (got {tags.genre!r})"
     assert tags.year == 2024, f".{ext}: ingest read-back lost year (got {tags.year!r})"
     assert tags.track_number == 3, f".{ext}: ingest read-back lost track number (got {tags.track_number!r})"
+
+
+# ---------------------------------------------------------------------------
+# AC 4 -- the verifier must not be re-maskable. These are structural assertions
+# about the SHAPE of the read/write split, not about any one format's behaviour:
+# they are what stops the next unmapped container from reproducing the ASF bug.
+# ---------------------------------------------------------------------------
+
+
+def test_write_and_read_maps_are_mutual_inverses() -> None:
+    """Each format's write table and read table must invert each other, key for key.
+
+    The two tables are authored separately and deliberately NOT shared (see ``_ASF_MAP``'s comment
+    for why: a single shared table hides a typo from every test that does not consult an external
+    reader, whereas two tables make the same typo a round-trip failure). Separateness only buys
+    that if something checks they agree -- this is that check.
+
+    It is intentionally a pure data assertion with no file I/O: it runs on every platform, needs no
+    ffmpeg, and fails the instant someone adds a field to one side only.
+    """
+    pairs = [
+        ("ID3", {field: cls.__name__ for field, cls in _WRITE_ID3_MAP.items()}, _ID3_MAP),
+        ("MP4", _WRITE_MP4_MAP, _MP4_MAP),
+        ("Vorbis", _WRITE_VORBIS_MAP, _VORBIS_MAP),
+        ("ASF", _WRITE_ASF_MAP, _ASF_MAP),
+    ]
+    for name, write_map, read_map in pairs:
+        assert {v: k for k, v in write_map.items()} == read_map, (
+            f"{name}: the write map and the read map disagree. Write {write_map!r} inverts to "
+            f"{ {v: k for k, v in write_map.items()}!r}, but the read map is {read_map!r}"
+        )
+
+
+def test_every_tag_format_has_a_writer_and_a_reader() -> None:
+    """No ``TagFormat`` member may exist without both halves. Fails the moment one is added alone.
+
+    ``resolve_tag_format`` can only return a member of this enum, and ``_WRITERS`` is indexed by it
+    with no ``.get`` and no default -- so a member without a writer is a ``KeyError`` at write time
+    rather than a silent fallback. This test moves that failure to CI.
+    """
+    for fmt in TagFormat:
+        assert fmt in _WRITERS, f"TagFormat.{fmt.name} has no writer -- write_tags would KeyError on it"
+
+    read_maps = {TagFormat.ID3: _ID3_MAP, TagFormat.MP4: _MP4_MAP, TagFormat.VORBIS: _VORBIS_MAP, TagFormat.ASF: _ASF_MAP}
+    for fmt in TagFormat:
+        assert fmt in read_maps, f"TagFormat.{fmt.name} has no read map -- parse_format_tags would fall through to Vorbis"
+
+
+def test_resolver_refuses_an_unmapped_container_instead_of_guessing() -> None:
+    """The absence of a catch-all, asserted directly. THIS is the AC 4 property.
+
+    The ASF defect needed two things: a writer that guessed a format, and a verifier that guessed
+    the SAME format. Both guesses came from an unguarded ``else`` arm. With the guess removed there
+    is nothing for a future unmapped container to fall into -- it raises on the way in, so it can
+    never be written wrongly and therefore never confirmed wrongly.
+
+    A plain object stands in for "a container mutagen supports that phaze has not mapped". Using a
+    real one would mean shipping a format we deliberately do not handle; the resolver's contract is
+    about what it does with an unrecognised type, which this exercises exactly.
+    """
+
+    class _UnmappedAudio:
+        pass
+
+    class _UnmappedTags:
+        pass
+
+    with pytest.raises(UnsupportedTagFormatError) as excinfo:
+        resolve_tag_format(_UnmappedAudio(), _UnmappedTags())
+
+    assert "_UnmappedAudio" in str(excinfo.value), "the refusal must name the container it could not handle"
+
+
+def test_write_tags_refuses_an_unmapped_container_rather_than_writing_vorbis_keys(tmp_path: Path) -> None:
+    """End-to-end form of the above, through the real ``write_and_verify_sync`` status machinery.
+
+    Guards the property that matters operationally: an unwritable file is recorded FAILED, not
+    COMPLETED. Pre-fix, an unmapped container took the Vorbis arm, wrote keys the format does not
+    use, verified them against those same keys, and was stamped COMPLETED -- the exact sequence
+    that produced this bead.
+    """
+    path = _make_container(tmp_path, "flac")
+
+    def _reject_everything(audio: object, tags: object) -> TagFormat:
+        msg = "unsupported tag format: simulated unmapped container"
+        raise UnsupportedTagFormatError(msg)
+
+    with patch("phaze.services.tag_write_disk.resolve_tag_format", _reject_everything):
+        status, discrepancies, error_message, _before = write_and_verify_sync(str(path), dict(_TAGS))
+
+    assert tag_write_disk.resolve_tag_format is resolve_tag_format, "the patch must not leak out of the context manager"
+    assert status.value == "failed", f"an unmapped container must FAIL the write, got {status!r}"
+    assert discrepancies is None, "a refused write has no per-field discrepancies to report"
+    assert error_message is not None and "unsupported tag format" in error_message
+
+
+def test_verifier_does_not_reach_for_the_writers_key_table(tmp_path: Path) -> None:
+    """``verify_write`` must not consult the WRITE-side maps -- AC 4, asserted mechanically.
+
+    Reading back through the writer's own table is what made the ASF write self-confirming, and it
+    is the kind of coupling a later refactor could reintroduce "to avoid duplication" without any
+    test noticing. Here every write-side table is replaced with garbage AFTER the write has landed:
+    a verifier that reads through them cannot survive it, and one that reads the format's real keys
+    is unaffected.
+    """
+    path = _make_container(tmp_path, "wma")
+    write_tags(str(path), dict(_TAGS))
+
+    poison = dict.fromkeys(_TAGS, "GARBAGE_KEY_THAT_IS_NOT_ON_DISK")
+    with (
+        patch.dict("phaze.services.tag_write_disk._WRITE_ASF_MAP", poison, clear=True),
+        patch.dict("phaze.services.tag_write_disk._WRITE_VORBIS_MAP", poison, clear=True),
+        patch.dict("phaze.services.tag_write_disk._WRITE_MP4_MAP", poison, clear=True),
+    ):
+        discrepancies = verify_write(str(path), dict(_TAGS))
+
+    assert discrepancies == {}, f"verify_write consulted a write-side map -- it must read the format's own keys. Got {discrepancies!r}"
+
+
+def test_a_wrong_write_is_now_caught_by_the_verifier(tmp_path: Path) -> None:
+    """The end of the masking, stated as behaviour: write ASF the OLD (wrong) way, and verify FAILS.
+
+    This is the regression test for the defect itself rather than for the fix's structure. It
+    reproduces the pre-fix write exactly -- literal Vorbis keys into an ASF container -- and
+    asserts phaze's own verifier now reports discrepancies where it previously returned ``{}``.
+
+    If this test ever goes green-by-returning-``{}`` again, the read path has re-acquired a Vorbis
+    fallback for ASF and the bug is back, whatever the writer is doing.
+    """
+    path = _make_container(tmp_path, "wma")
+
+    audio = mutagen.File(str(path))
+    for field, key in (("artist", "artist"), ("title", "title"), ("album", "album"), ("genre", "genre")):
+        audio[key] = [str(_TAGS[field])]
+    audio["date"] = ["2024"]
+    audio["tracknumber"] = ["3"]
+    audio.save()
+
+    discrepancies = verify_write(str(path), dict(_TAGS))
+
+    assert discrepancies, "the pre-fix ASF write must now be REPORTED, not confirmed -- this is the masking property, restored"
+    assert set(discrepancies) == set(_TAGS), (
+        f"every field was written to the wrong key, so every field should be flagged; got {sorted(discrepancies)}"
+    )
+    assert all(entry["actual"] is None for entry in discrepancies.values()), (
+        f"a format-correct reader sees nothing at those keys, so every 'actual' should be None; got {discrepancies!r}"
+    )

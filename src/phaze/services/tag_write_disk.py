@@ -18,12 +18,12 @@ from typing import TYPE_CHECKING, Any
 import unicodedata
 
 import mutagen
-from mutagen.id3 import ID3, TALB, TCON, TDRC, TIT2, TPE1, TRCK
-from mutagen.mp4 import MP4
+from mutagen.id3 import TALB, TCON, TDRC, TIT2, TPE1, TRCK
 import structlog
 
 from phaze.enums.tag_write import TagWriteStatus
 from phaze.services.metadata import TagReadError, extract_tags, normalize_track_number_text, normalize_year_text
+from phaze.services.tag_formats import TagFormat, resolve_tag_format
 
 
 if TYPE_CHECKING:
@@ -60,6 +60,32 @@ _WRITE_MP4_MAP: dict[str, str] = {
     "track_number": "trkn",
 }
 
+# phaze-wt9vw. ASF (.wma) attribute names, DERIVED BY MEASUREMENT against a real consumer rather
+# than from the spec alone. Each candidate below was written to a real ffmpeg-produced .wma on its
+# own and the file handed to ``es.MetadataReader``; only these six were honoured:
+#
+#   artist        Author           <- NOT "WM/AlbumArtist" (reads back as album_artist, not artist)
+#   title         Title            <- NOT "WM/Title"       (not honoured at all)
+#   album         WM/AlbumTitle    <- NOT "WM/Album"       (not honoured at all)
+#   year          WM/Year          <- NOT "WM/OriginalReleaseYear"
+#   genre         WM/Genre         <- NOT "WM/GenreID"
+#   track_number  WM/TrackNumber   <- NOT "WM/Track"
+#
+# The same probe is why ``ffprobe`` is not the oracle for this map and must not be substituted for
+# one: ffmpeg's ASF demuxer passes UNKNOWN extended-content attributes through verbatim, so it
+# reported ``artist`` both for the correct ``Author`` and for the bogus lowercase ``artist`` the
+# pre-fix code wrote. It cannot tell a correct ASF tag from the defect. ``es.MetadataReader``
+# distinguishes them completely, and pins this table in
+# ``tests/review/services/test_tag_write_real_containers.py``.
+_WRITE_ASF_MAP: dict[str, str] = {
+    "artist": "Author",
+    "title": "Title",
+    "album": "WM/AlbumTitle",
+    "year": "WM/Year",
+    "genre": "WM/Genre",
+    "track_number": "WM/TrackNumber",
+}
+
 # phaze-52qd: the full set of core tag fields a write/undo snapshot must span. ``_extract_before_tags``
 # records EVERY one of these -- ``None`` where the field is absent on disk -- so an undo can DELETE a
 # frame the write added, not merely leave it.
@@ -82,22 +108,29 @@ def write_tags(file_path: str, tags: dict[str, str | int | list[str] | None]) ->
 
     Raises:
         ValueError: If the file is not a recognized audio format.
+        UnsupportedTagFormatError: If it opens but belongs to no tag family phaze can write
+            (phaze-wt9vw). A ``ValueError`` subclass, so existing ``except ValueError`` callers
+            are unaffected. This REPLACES the previous ``else: _write_vorbis(...)`` arm, which
+            wrote Vorbis comment keys into whatever container it was handed -- for ASF (.wma)
+            that produced a file no format-correct reader could see, which phaze's own
+            verify-after-write then confirmed as COMPLETED. Refusing is the point: a write that
+            cannot be done correctly must fail loudly rather than succeed wrongly.
     """
     audio = mutagen.File(file_path)
     if audio is None:
         msg = f"{file_path} is not a recognized audio file"
         raise ValueError(msg)
 
-    # Ensure tags container exists
+    # Ensure tags container exists. This MUST precede resolve_tag_format: for WAVE and AIFF,
+    # ``add_tags()`` is what installs the ``_WaveID3`` / ``_IFFID3`` container the resolver
+    # identifies as ID3. Reordering these two lines silently reroutes .wav and .aiff away from
+    # the ID3 writer -- see resolve_tag_format's docstring and
+    # tests/review/services/test_tag_write_real_containers.py::test_dispatch_branch_taken_per_container.
     if audio.tags is None:
         audio.add_tags()
 
-    if isinstance(audio.tags, ID3):
-        _write_id3(audio, tags)
-    elif isinstance(audio, MP4):
-        _write_mp4(audio, tags)
-    else:
-        _write_vorbis(audio, tags)
+    writer = _WRITERS[resolve_tag_format(audio, audio.tags)]
+    writer(audio, tags)
 
     audio.save()
 
@@ -140,6 +173,31 @@ def _write_vorbis(audio: Any, tags: dict[str, str | int | list[str] | None]) -> 
             audio[vorbis_key] = [str(value)]
 
 
+def _write_asf(audio: Any, tags: dict[str, str | int | list[str] | None]) -> None:
+    """Write ASF attributes to a .wma file. A ``None`` value DELETES the attribute (phaze-wt9vw).
+
+    New in phaze-wt9vw. Before it, ASF files reached ``_write_vorbis`` through the dispatch's
+    catch-all and received literal ``artist`` / ``date`` / ``tracknumber`` keys -- syntactically
+    valid ASF extended-content attributes that no format-correct reader looks for. See
+    :data:`_WRITE_ASF_MAP` for the correct names and how they were established.
+
+    Structurally the same shape as :func:`_write_vorbis` (mutagen's ``ASFTags`` is also a
+    dict-of-lists), and deliberately NOT merged with it: the two differ in their key tables, and
+    sharing the function is how the formats got conflated in the first place.
+    """
+    for field, value in tags.items():
+        asf_key = _WRITE_ASF_MAP.get(field)
+        if asf_key is None:
+            continue
+        if value is None:
+            if asf_key in audio:
+                del audio[asf_key]
+        elif isinstance(value, list):
+            audio[asf_key] = [str(item) for item in value]
+        else:
+            audio[asf_key] = [str(value)]
+
+
 def _mp4_track_tuple(value: str | int) -> tuple[int, int]:
     """Parse a track-number tag value into MP4's ``(track, total)`` atom form.
 
@@ -178,6 +236,18 @@ def _write_mp4(audio: Any, tags: dict[str, str | int | list[str] | None]) -> Non
             audio[mp4_key] = [_mp4_track_tuple(value)]
         else:
             audio[mp4_key] = [str(value)]
+
+
+# The one dispatch table ``write_tags`` uses (phaze-wt9vw). Keyed by TagFormat, which has no
+# UNKNOWN member, so every entry is a real writer and a container that resolves to no format never
+# reaches this map -- ``resolve_tag_format`` has already raised. Replacing the old if/elif/else
+# chain with a total mapping is what removes the "guess vorbis" arm the ASF defect lived in.
+_WRITERS: dict[TagFormat, Callable[[Any, dict[str, str | int | list[str] | None]], None]] = {
+    TagFormat.ID3: _write_id3,
+    TagFormat.MP4: _write_mp4,
+    TagFormat.VORBIS: _write_vorbis,
+    TagFormat.ASF: _write_asf,
+}
 
 
 # phaze-2zl7: fields whose normalized value is a LOSSY parse of richer raw text (a full release
