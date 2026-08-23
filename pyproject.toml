@@ -12,7 +12,8 @@ dependencies = [
     # Phase 53 (KSTAGE-01..05): async S3 client the control plane uses to presign multipart
     # PUT + just-in-time GET URLs and to delete/abort staged objects. The control plane never
     # reads file bytes (DIST-01); it only orchestrates presigned URLs the agent/pod transfer over.
-    "aioboto3>=15.5.0",
+    # aioboto3 stopped at aiobotocore 2.x, so use aiobotocore's native session API directly.
+    "aiobotocore>=3.9.0",
     "alembic>=1.19.1",
     "asyncpg>=0.31.0",
     "beautifulsoup4>=4.15.0",
@@ -22,7 +23,7 @@ dependencies = [
     "httpx>=0.28.1",
     # Phase 54 (KSUBMIT-01): control-plane Kubernetes client. Submits suspended Kueue Jobs
     # via the kube API, watches them to completion, and reconciles their status. Lives on the
-    # control plane ONLY (kube creds never reach the agent/pod, mirroring aioboto3). Verified
+    # control plane ONLY (kube creds never reach the agent/pod, mirroring aiobotocore). Verified
     # legitimate (kr8s-org, BSD-3-Clause, pure-Python) before install (T-54-SC).
     "kr8s>=0.20.15",
     # Capped on purpose: litellm had a supply-chain attack (malicious 1.82.7/1.82.8,
@@ -36,12 +37,11 @@ dependencies = [
     # this cap is now the ONLY control on this package: the repo-wide `exclude-newer`
     # cooldown was removed the same day, so there is no waiting window behind it.
     #
-    # Raised 1.94.x -> 1.97.x on 2026-08-18, same deliberate step, during an operator-run
-    # project update. This crosses THREE minor lines (1.95, 1.96, 1.97), not one, so it is a
-    # wider jump than the previous raise; litellm ships frequent breaking minors, which is
-    # half the reason for the cap in the first place. Vetted at this raise: see the PR for
+    # Raised 1.97.x -> 1.98.x on 2026-08-23, same deliberate step. This also requires the
+    # aiobotocore 3.x migration above because litellm 1.98 requires boto3 >=1.43.1 while the
+    # final aioboto3 release pins boto3 to the 1.40 line. Vetted at this raise: see the PR for
     # the pip-audit / osv-scanner / full-suite results.
-    "litellm>=1.97.0,<1.98.0",
+    "litellm>=1.98.0,<1.99.0",
     "lxml>=6.1.1",
     "mutagen>=1.48.1",
     "numpy>=2.5.2",
@@ -176,7 +176,7 @@ module = ["mutagen", "mutagen.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["aioboto3", "aiobotocore.*", "botocore", "botocore.*"]
+module = ["aiobotocore.*", "botocore", "botocore.*"]
 ignore_missing_imports = true
 
 # PyYAML ships no py.typed / stubs bundled; kube_staging parses inline kubeconfig content via yaml.safe_load.
@@ -316,7 +316,7 @@ split-on-trailing-comma = true
 #
 # What this gives up, stated so nobody has to reconstruct it: a cooldown exists so a compromised
 # release has time to be detected and yanked before it can enter a lockfile. This repo has already
-# been on the receiving end of that class -- litellm is pinned `>=1.97.0,<1.98.0` because of the
+# been on the receiving end of that class -- litellm is pinned `>=1.98.0,<1.99.0` because of the
 # March 2026 supply-chain attack on 1.82.7/1.82.8. With no window, a malicious release published
 # minutes ago is eligible the moment `uv lock` runs.
 #
@@ -356,7 +356,7 @@ dev = [
     "httpx>=0.28.1",
     # Phase 53: S3 mock so the staging leg (presign/upload/delete) is testable without a
     # live S3 backend or cluster. The [server] extra (flask/werkzeug) provides
-    # ThreadedMotoServer -- required because aioboto3/aiobotocore's async response parsing
+    # ThreadedMotoServer -- required because aiobotocore's async response parsing
     # is incompatible with moto's in-process `mock_aws`, so the SDK must talk real HTTP to a
     # wire-compatible moto server (this is what makes presigned-URL round-trips testable).
     "moto[server]>=5.2.2",

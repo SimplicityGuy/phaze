@@ -10,7 +10,7 @@ receive time-boxed presigned URLs; bucket credentials live here and nowhere else
 Structure mirrors the stateless-service conventions of ``enqueue_router.py`` (module-level
 async functions, ``__future__`` annotations, ``TYPE_CHECKING`` guard, a fail-loud custom
 error) and the external-client discipline of ``agent_client.py`` (one operation per function,
-secrets never logged). There are NO ORM imports here -- the service is pure aioboto3 keyed by
+secrets never logged). There are NO ORM imports here -- the service is pure aiobotocore keyed by
 ``file_id`` (reconcile-by-file_id; the ``file_id``-scoped key is the single object identity).
 
 The client is built from the operator-provided ``ControlSettings`` S3 surface, so it works
@@ -23,8 +23,8 @@ from __future__ import annotations
 import hashlib
 from typing import TYPE_CHECKING, Any, cast
 
-import aioboto3
 from aiobotocore.config import AioConfig
+from aiobotocore.session import get_session
 from botocore.exceptions import ClientError
 
 from phaze.config import get_settings
@@ -130,7 +130,7 @@ def resolve_bucket_config(cfg: ControlSettings, bucket_id: str | None) -> Bucket
 
 
 def _client(bucket: BucketConfig) -> Any:
-    """Build the aioboto3 S3 client context manager from the active bucket's identity/creds.
+    """Build the aiobotocore S3 client context manager from the active bucket's identity/creds.
 
     Returns an ``async with``-able client. Credentials come from the control-plane-only
     ``SecretStr`` fields and are never logged. The region falls back to ``us-east-1`` so
@@ -146,13 +146,12 @@ def _client(bucket: BucketConfig) -> Any:
     """
     cfg = cast("ControlSettings", get_settings())
     timeout = cfg.s3_client_timeout_sec
-    session = aioboto3.Session(
+    session = get_session()
+    return session.create_client(
+        "s3",
         aws_access_key_id=bucket.access_key_id.get_secret_value() if bucket.access_key_id else None,
         aws_secret_access_key=bucket.secret_access_key.get_secret_value() if bucket.secret_access_key else None,
         region_name=bucket.region or "us-east-1",
-    )
-    return session.client(
-        "s3",
         endpoint_url=bucket.endpoint_url,
         config=AioConfig(
             s3={"addressing_style": bucket.addressing_style},
