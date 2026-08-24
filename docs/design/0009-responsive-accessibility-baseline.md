@@ -137,7 +137,7 @@ just test-browser-install    # once per machine — downloads the Chromium build
 just test-browser            # runs the suite (depends on `tailwind`, see below)
 ```
 
-CI runs it as the **`Browser contract (non-blocking)`** job in `.github/workflows/tests.yml`. It is
+CI runs it as the **`Browser contract`** job in `.github/workflows/tests.yml`. It is
 **blocking** as of 2026-08-21 (`phaze-8p1uq`): a red browser job now fails the build.
 
 It did not start that way, and the reason it did not is the reason to keep it red-means-red now. A
@@ -370,7 +370,7 @@ code says about where the gap comes from.
 
 **Correction to the framing `phaze-39eiy` shipped with.** `tests/browser/conftest.py`'s
 `live_server` fixture is `scope="session"` — one uvicorn boot, one migration run, per pytest
-*session*, not per test. CI's `Browser contract (non-blocking)` job runs the whole suite as one
+*session*, not per test. CI's `Browser contract` job runs the whole suite as one
 session, so it pays the true boot+migration cost once, for its first test(s), and runs *warm*
 against an already-booted server for the remaining ~170. The fresh-process-per-attempt shape that
 found the flake is a **more extreme cold reproduction than CI's own steady state** — a good
