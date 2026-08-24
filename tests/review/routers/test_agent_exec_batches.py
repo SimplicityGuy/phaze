@@ -696,6 +696,30 @@ async def test_concurrent_sub_batch_terminals_keep_status_consistent_with_failed
     agent, raw_token = seed_test_agent
     url_tmpl = "/api/internal/agent/exec-batches/{}/progress"
 
+    # phaze-7w9dv: `ac` is ONE AsyncClient bound to `_make_smoke_app`'s `lambda: session`
+    # override, so the three POSTs gathered below (line ~734) share ONE AsyncSession. That is
+    # the shape docs/design/0015-shared-session-gather.md (phaze-4tch9) exists to name, and this
+    # site is LEFT AS-IS deliberately -- not an oversight, and not because it is safe:
+    #   * Fact A -- SQLAlchemy documents AsyncSession as unsafe for concurrent use, naming
+    #     `asyncio.gather` explicitly and prescribing one session per task. Upstream's stated
+    #     contract; it has not changed and is sufficient on its own.
+    #   * Fact B -- on the pinned 2.0.52 it does not raise; it silently serializes (measured four
+    #     times across this repo; this test's own 25 rounds x 3 concurrent POSTs never raised
+    #     either). Fact B is NOT a licence: it is undocumented behaviour upstream is free to
+    #     change, and a release that started raising here would be an upstream bug fix, not a
+    #     regression.
+    #   * This test's SUBJECT is Redis atomicity (issue #61's stale-read promotion guard) under a
+    #     real Redis; the DB touch is incidental -- one authentication SELECT per request via
+    #     `get_authenticated_agent`. Giving each request its own session means moving this whole
+    #     file's `_make_smoke_app`/`_make_client` (shared by all 30 tests here) off the hermetic
+    #     single-connection `session` fixture, the way the genuinely-concurrent DB tests
+    #     (`tests/integration/test_agent_push_concurrency.py`,
+    #     `tests/integration/test_agent_s3_concurrency.py`) already do with the real-PG
+    #     `committed_db` fixture -- a file-wide fixture change to protect a subject this test does
+    #     not exercise. phaze-7w9dv dispositions that trade explicitly as NOT worth making here.
+    #   General form and measurement table: docs/design/0015-shared-session-gather.md. Mechanical
+    #   guard for this shape appearing elsewhere without this citation:
+    #   tests/shared/test_gather_over_session_fixture_guard.py.
     async with _make_client(session, redis_client, raw_token) as ac:
         for round_idx in range(25):
             batch_id = uuid.uuid4()
