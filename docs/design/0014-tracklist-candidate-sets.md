@@ -1,4 +1,4 @@
-# 0004 — Candidate sets for the 1001Tracklists drain: classify, dedup, cache
+# ADR-0014 — Candidate sets for the 1001Tracklists drain: classify, dedup, cache
 
 **Bead:** phaze-fq9h.3 (epic phaze-fq9h) · **Status:** implemented · **Date:** 2026-08-02
 
