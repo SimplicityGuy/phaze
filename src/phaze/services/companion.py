@@ -180,8 +180,10 @@ async def _insert_links(session: AsyncSession, rows: list[dict[str, uuid.UUID]])
 # Related trap, since it is what routes beads to this module in the first place: a static
 # serial_await_in_loop finding carrying ``dataflow_verified: true`` is NOT a green light. Absence of
 # a data dependence is NECESSARY AND NEVER SUFFICIENT for a gather -- the flag says nothing about
-# session sharing, which is the binding constraint here. (phaze-4tch9 owns writing that general
-# form somewhere greppable, and correcting the same false premise at proposal.py:415-421.)
+# session sharing, which is the binding constraint here. phaze-4tch9 discharged that: the general
+# form, the four-seat measurement table and the tree-wide sweep now live in
+# docs/design/0015-shared-session-gather.md, and the same false premise in proposal.py's ``store_proposals`` has
+# been amended to agree with this block.
 #
 #   unlinked-companion page read   The keyset walk's cursor. Page N+1's ``id > after`` bound is not
 #     (in associate_companions)    known until page N has been read. Sequencing IS the algorithm;

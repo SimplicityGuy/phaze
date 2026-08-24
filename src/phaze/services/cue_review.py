@@ -187,7 +187,12 @@ async def build_cue_tracks_for_versions(session: AsyncSession, version_ids: Sequ
     #      worked. Measured against the test harness, 6 x ``pg_sleep(0.1)`` on ONE session: serial
     #      loop 0.745 s, ``asyncio.gather`` 0.659 s, against an ideal-parallel 0.10 s and an
     #      ideal-serial 0.60 s. The 1.13x is per-call Python overhead, not overlap -- the queries
-    #      still went down the wire one at a time.
+    #      still went down the wire one at a time. That serialization must NOT be leant on, though:
+    #      it is undocumented behaviour upstream is free to change, and a release that started
+    #      raising would turn a gather here into a live defect. What upstream DOES document -- that
+    #      one AsyncSession is unsafe across concurrent tasks, `asyncio.gather` named explicitly --
+    #      is sufficient on its own. General form, measurement table and tree-wide sweep:
+    #      docs/design/0015-shared-session-gather.md (phaze-4tch9).
     #   2. REAL CONCURRENCY WOULD COST THE SNAPSHOT. Overlapping these reads needs one connection
     #      per chunk, i.e. a session and transaction each. That drops the single read transaction
     #      the two queries share -- ``track_ids`` is derived from the first query's rows and fed to
