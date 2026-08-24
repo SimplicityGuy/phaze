@@ -99,6 +99,27 @@ downgrades, and the approximately 21-minute Repowise coverage refresh were not r
 documentation-only change. Their commands and static contracts were validated; CI remains the
 integration gate.
 
+## Post-audit drift (not part of the original 2026-08-19 result)
+
+This audit is a dated snapshot, not a maintained index: it has never been edited since the
+commit that created it (`908e3f82`), and every row below reflects the tree as it stood on
+2026-08-19. The `Result` classification in each row is therefore left exactly as recorded —
+rewriting a historical row to match a later tree would make the record say something it did
+not say on its date (ADR-0012 rule 2). Paths in the table can still drift out of date after
+the fact; known drift is logged here instead, dated, without touching the rows themselves.
+
+- `docs/design/0004-tracklist-candidate-sets.md` (line 1404, `architecture decision record`,
+  `unchanged`) was renumbered to `docs/design/0014-tracklist-candidate-sets.md` by phaze-kbue9
+  on 2026-08-23. The row's path and classification were correct on 2026-08-19; the file no
+  longer exists at that path. Logged 2026-08-24 (phaze-x2z38).
+- `tests/browser/FLAKE_RECORD.md` (line 1473, `test documentation/fixture`, `unchanged`) was
+  deleted by phaze-8p1uq on 2026-08-21 (`4a6c595a`), which moved its "what to watch when CI
+  runs start" guidance into ADR-0009 and removed the rest as superseded by the browser
+  contract job's promotion to blocking. The row was correct on 2026-08-19; the file no longer
+  exists at that path. Logged 2026-08-24 (phaze-x2z38) — found while re-verifying this
+  document's paths for phaze-x2z38 and out of that bead's scope, so filed separately as
+  phaze-r5vz0 rather than fixed here.
+
 ## Exact inventory
 
 | Path | Classification | Result |
