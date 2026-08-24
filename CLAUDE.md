@@ -557,11 +557,27 @@ branches, `services/analysis.py` 97.91% / **93.97%**, `services/video_audio.py` 
 num_branches)`, not lines, and offers no option to select the metric (verified against coverage
 7.15.4). Enabling branch measurement therefore silently re-points every floor left on that knob —
 which is why both repo-wide floors read `percent_statements_covered` explicitly in
-`scripts/coverage_floor.py`, why `coverage xml` / `coverage json` / `coverage report` all carry
-`--fail-under=0` in `coverage-combine` (all three honour it, and the first two run *before*
-`report`, so an arming there aborts the combine before the real gate is reached), and why every
-line the gate prints names the metric it measured. `fail_under = 95` remains in `pyproject.toml`
-purely as a backstop for an ad-hoc `uv run pytest --cov=phaze` outside those recipes.
+`scripts/coverage_floor.py`, why the two ARTIFACT WRITERS — `coverage json` and `coverage xml` —
+carry `--fail-under=0` in `coverage-combine` while `coverage report` carries the real floor
+(`--fail-under=95`), and why every line the gate prints names the metric it measured. `fail_under
+= 95` remains in `pyproject.toml` purely as a backstop for an ad-hoc `uv run pytest --cov=phaze`
+outside those recipes.
+
+The two writers are disarmed for a measured reason, not a stylistic one (`phaze-jktlb`). Before
+that bead, `coverage-combine` ran `xml` / `json` / `report` in that order with no `--fail-under`
+overrides on the first two, so each writer inherited pyproject's `fail_under = 95` — and a writer
+that fails its own floor still **writes its file first**, then exits nonzero. Measured over
+deliberately partial shards: that ordering aborted at `coverage xml`, which wrote `coverage.xml`
+and then exited on the floor, so `coverage json` never ran and `coverage.json` was never
+written — the exact file `scripts/coverage_floor.py` and `just branch-check` read to find which
+module dropped. `--fail-under=0` on `coverage json` and `coverage xml` forces both artifacts to
+be written in full regardless of the score; `coverage report --fail-under=95`, last and on
+purpose, is where the run actually fails.
+
+`tests/shared/test_coverage_gate.py` pins the half of this that prose cannot: it asserts
+`coverage-combine`'s `coverage report --fail-under=<N>` equals `pyproject.toml`'s
+`[tool.coverage.report] fail_under`, so `coverage report` carrying the real floor is not something
+a future edit can quietly relax — the two sites must move together or the guard fails the build.
 
 ## Workflow: Features and PRs
 
