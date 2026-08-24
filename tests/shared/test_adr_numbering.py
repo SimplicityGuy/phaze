@@ -4,16 +4,30 @@ phaze-x2z38. The dispatcher seat that filed this bead observed the collision TWI
 days: phaze-kbue9's renumber of ``0004-tracklist-candidate-sets.md`` to
 ``0014-tracklist-candidate-sets.md`` existed specifically to resolve a duplicate 0004 (it
 briefly collided with ``0004-ledger-replay-safety.md`` -- the 2026-08-19 documentation audit's
-inventory row for the old path, at ``docs/documentation-audit-2026-08-19.md:1404``, records
-both files as ``0004`` because that duplicate was real and current on that date). The very
-next day a second, unrelated bead independently authored a new ``docs/design/0014-*.md`` off
-a stale ``main`` and had to be redirected to ``0015`` before it landed. Two collisions in two
-days from two different causes (a stale rename and a stale branch base) is a pattern a
-one-line ``ls | uniq -d`` check would catch before either reached review.
+inventory row for the old path, in ``docs/documentation-audit-2026-08-19.md``'s ``Exact
+inventory`` table, records both files as ``0004`` because that duplicate was real and current
+on that date; see that file's own ``Post-audit drift`` section for the citation trail, not a
+line number, which would go stale the next time either file is edited). The very next day a
+second, unrelated bead independently authored a new ``docs/design/0014-*.md`` off a stale
+``main`` and had to be redirected to ``0015`` before it landed. Two collisions in two days from
+two different causes (a stale rename and a stale branch base) is a pattern a one-line
+``ls | uniq -d`` check would catch before either reached review.
 
 This guard does not police numbering GAPS or ORDERING -- only that the leading four digits,
 where present, are never shared by two files. A gap (skipping a number) or an out-of-order
 addition is not a collision and is not this guard's concern.
+
+WHAT THIS GUARD DOES **NOT** COVER, AND WHY IT MATTERS (phaze-f70y9, found while phaze-x2z38
+was already in flight). A renumber has a SECOND residue this guard is structurally blind to:
+freeing a number and reusing it for a new file is not a duplicate at any point in time -- the
+old file is gone before the new one lands -- so a bare ``ADR-NNNN`` prose citation written
+before the rename, meaning the OLD occupant of that number, now silently resolves to the NEW
+one instead of failing. Demonstrated live: a bead cited "ADR-0014" meaning the
+shared-``AsyncSession``-gather decision, which is actually ``docs/design/0015-shared-session-
+gather.md``. This guard would not have caught that, and should not be read as though it does.
+No practical guard for that shape was identified as part of phaze-x2z38 or phaze-f70y9; a
+self-check that each ADR file's own ``# ADR-NNNN`` heading matches its filename is a candidate
+for a different, narrower guard, but it would not catch a bad citation elsewhere either.
 """
 
 from pathlib import Path
