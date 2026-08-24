@@ -1121,17 +1121,36 @@ bv --recipe high-impact --robot-triage # pre-filter: top PageRank scores
   bytes were checked against the live tree, so never re-read"*, and treats `index_behind: true` as
   informational. That is about **verified BYTES**; it says nothing about **freshly computed
   METRICS**, and the two go stale by different rules.
-  **The check, on repowise 0.45.0:** a health row is fresh iff its `analyzed_commit` equals
-  `git rev-parse HEAD`. `repowise update` runs the health fold **incrementally — only over the files
-  changed since the last index** — and stamps each recomputed row with HEAD-at-fold-time. So an
-  older value means "folded at an earlier commit" and `NULL` means "never re-folded". Measured
-  2026-08-24: an update across `635b85e6..130791c2` folded exactly the two files that range changes,
-  and no others.
-  **What that leaves stale is everything the fold did not touch** — 2341 of 2393 rows at the time of
-  measurement. A bulk read therefore mixes fresh and stale rows, and a file whose metrics should move
-  because its **dependencies or coverage** changed while its own bytes did not is never recomputed at
-  all. `analyzed_commit` is HEAD-at-fold-time, **not** the file's own last-modifying commit (measured:
-  0 of 8 sampled rows matched `git log -1 -- <file>`), so it tells you *when* a row was computed, not
+  **The check, on repowise 0.45.0 — and it is TARGET-AWARE, not a commit equality test.**
+  `repowise update` runs the health fold **incrementally, only over the files changed since the last
+  index**, stamping each recomputed row's `analyzed_commit` with HEAD-at-fold-time. So rows
+  legitimately carry *different* commits, and **an older `analyzed_commit` does not mean stale** — if
+  the file has not changed since, that row still describes the current bytes. The question to ask
+  per file is whether the file changed after its stamp:
+
+  ```bash
+  git diff --quiet "$analyzed_commit" HEAD -- "$path" && echo current || echo STALE
+  ```
+
+  **Do NOT write `analyzed_commit != HEAD` and call it stale.** That is the upstream maintainer's
+  named trap (repowise-dev/repowise#1864, 2026-08-24): it overstates what the commits prove and
+  flags legitimately-current rows. This guidance made exactly that mistake once — see the note below.
+  There are **three** states, not two: **known** (a stamp you can compare), **mixed** (a response
+  spanning several folds — `get_health` reports `health_analyzed_commits_distinct` for this, and one
+  repo-wide boolean cannot represent it), and **unknown** (`NULL`, or a commit git cannot resolve —
+  which is *not* the same as current). `get_health` emits `health_analyzed_commit` only when the
+  newest row has one, and omits it entirely when every row is `NULL` rather than saying provenance is
+  unknown.
+  **A targeted call's provenance is not necessarily about your target.** Upstream states the summary
+  is currently derived from the repo-wide metric population, so a freshly analyzed *unrelated* file
+  can make the metadata look newer than the metric you asked for. Compare per path; do not read the
+  response-level stamp as a verdict on your file.
+  **Provenance is still being dropped on several write paths** — the full health re-score in
+  `update_cmd/persistence.py`, `repowise health`'s own persistence, the fast-index upgrade pass, and
+  the `IndexStore` interface/SQL adapter, which cannot forward the commit at all. Any of those can
+  replace the table with entirely `NULL` provenance, so a store that once had stamps can lose them.
+  `analyzed_commit` is HEAD-at-fold-time, **not** the file's own last-modifying commit (measured:
+  0 of 8 sampled rows matched `git log -1 -- <file>`) — it records *when* a row was computed, not
   *what content* it describes.
   **The staleness is not confined to `get_health`.** `get_risk` embeds `health_score`,
   `coverage_pct`, `branch_coverage_pct` and `top_biomarkers` from the same fold rows, and
@@ -1148,9 +1167,14 @@ bv --recipe high-impact --robot-triage # pre-filter: top PageRank scores
   > said `repowise update` never runs the health fold and that no cheap staleness check exists. Both
   > were true when measured on repowise **0.44.0** and false on the **0.45.0** that was already
   > installed when the text was written — the prose was faithful to the bead's evidence and stale
-  > about the tool. Upstream `repowise-dev/repowise#1864` was filed on the 0.44.0 behaviour and looks
-  > fixed. **Re-measure a tool's behaviour against the version you are running before writing it
-  > down**, especially when quoting an earlier bead's finding; that is the phaze-b62ri shape.
+  > about the tool. The **first correction then overshot**, asserting `analyzed_commit == HEAD` as a
+  > freshness test; the upstream maintainer had already named that exact comparison as a trap hours
+  > earlier on `repowise-dev/repowise#1864`, and it was not read before writing. Two lessons, both
+  > cheap: **re-measure a tool's behaviour against the version you are running** (the phaze-b62ri
+  > shape), and **read the upstream thread before restating what a tool does** — a maintainer's reply
+  > outranks our black-box measurement about intent, even when our measurement is correct. #1864
+  > remains OPEN and is *not* fixed: provenance stamping is partly implemented, several writers still
+  > drop it.
 - **`bd label remove` reports success unconditionally** (gastownhall/beads#5988). It prints
   `✓ Removed label 'X' from Y` and exits 0 **even when the bead never had X** — so that line is
   evidence of neither the label's presence nor its removal. Read the label set back with
