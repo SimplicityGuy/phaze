@@ -5,10 +5,16 @@ without reading state back from the controller (D-23). `models_path` appears
 only in ProcessFilePayload (essentia needs the .pb files); metadata/scan tasks
 don't need it because their adapters point at local sidecars.
 
-NO `current_path` per D-24 -- agents work off `original_path` which was
-stamped at scan time. `current_path` is the post-execution path; only
-meaningful AFTER execute_approved_batch flips state, sent back via
-patch_proposal_state (NOT carried in any task payload).
+NO `current_path` per D-24 -- analysis / metadata / scan tasks work off
+`original_path`, which was stamped at scan time and never changes.
+
+THREE payloads take an explicit, narrow exception to that, because each addresses a
+file that has ALREADY been moved, so `original_path` names nothing on disk:
+`WriteFileTagsPayload.file_path`, `WriteCueSheetPayload.audio_path`, and
+`ExecuteBatchProposalItem.original_path` -- the last of which is MISNAMED for
+historical reasons and carries `current_path` (phaze-shzdj); see its own docstring.
+Each exception is documented where it is declared. `current_path` is otherwise the
+post-execution path, sent back via patch_proposal_state.
 
 All schemas declare `extra="forbid"` per Phase 25 D-16 -- agent-supplied
 job payloads are validated as strictly as HTTP request bodies.
@@ -189,6 +195,23 @@ class ExecuteBatchProposalItem(BaseModel):
     The agent needs full local-file-op context (original_path, proposed_path,
     proposed_filename, optional sha256 verify) in the payload itself -- D-23
     forbids reading state back from the controller mid-job.
+
+    ``original_path`` CARRIES ``FileRecord.current_path`` -- where the file is NOW --
+    and NOT ``FileRecord.original_path`` (phaze-shzdj). The field name is historical:
+    it was chosen when the two columns could not yet diverge, because no proposal had
+    ever executed. ``FileRecord.original_path`` is written once at ingest and never
+    again (operator, 2026-08-24: "original_path should never change. it's the ORIGINAL
+    location of the file. the current_path is where the file is now."), so shipping it
+    made the SECOND execution of an already-renamed file resolve a source that no
+    longer exists.
+
+    This is the same narrow, explicit D-24 exception :class:`WriteFileTagsPayload` and
+    :class:`WriteCueSheetPayload` take, for the same reason: a file operation must
+    address the file where it actually is. Everything the executor derives from this
+    field is therefore current rather than stale -- the move SOURCE, the owning
+    scan_root, AND the in-place-rename parent directory
+    (``tasks.execution._resolve_destination``), which are all computed from this one
+    value and so were all poisoned by the same staleness.
 
     ``proposed_path`` is the RELATIVE destination DIRECTORY the LLM proposed
     (e.g. ``"performances/artists/Disclosure"``), matching how it is stored on

@@ -1,7 +1,8 @@
 """SAQ task: execute_approved_batch -- per-proposal local file ops + HTTP state reporting (Phase 26 B2 Option A + Phase 28 D-03/D-15).
 
 Reads file paths from payload (no DB lookup -- D-23 invariant). For each proposal:
-1. Resolve `original_path` under its owning scan_root, then build the destination as
+1. Resolve `item.original_path` -- which carries the file's CURRENT on-disk location,
+   see ExecuteBatchProposalItem -- under its owning scan_root, then build the destination as
    ``owning_root/proposed_path/proposed_filename`` (``proposed_path`` is a RELATIVE dir;
    empty == rename in place) and containment-check it (T-26-11-S1 path-traversal guard).
 2. POST /execution-log with status='in_progress' (per-proposal audit row). phaze-87ba: if that
@@ -217,10 +218,15 @@ def _resolve_destination(
     ``proposed_path`` is a RELATIVE destination directory under the file's own
     scan_root; the destination is ``owning_root / proposed_path /
     proposed_filename`` (mirrors ``services.collision`` joining semantics). An
-    empty/null ``proposed_path`` means "rename in place" -- keep the original's
-    directory and apply the new filename. The constructed absolute path is
-    re-run through :func:`_resolve_and_check_containment` so a ``../`` embedded
-    in ``proposed_path`` cannot escape the scan_roots (T-26-11-S1).
+    empty/null ``proposed_path`` means "rename in place" -- keep the directory the
+    file is CURRENTLY in and apply the new filename. Both ``owning_root`` and
+    ``original.parent`` are derived by the caller from ``item.original_path``, which
+    carries ``FileRecord.current_path`` (phaze-shzdj) -- so an in-place rename of an
+    already-moved file targets where the file is now, not where it was ingested.
+
+    The constructed absolute path is re-run through
+    :func:`_resolve_and_check_containment` so a ``../`` embedded in
+    ``proposed_path`` cannot escape the scan_roots (T-26-11-S1).
     """
     dest_dir = (owning_root / item.proposed_path) if item.proposed_path else original.parent
     resolved, _ = _resolve_and_check_containment(str(dest_dir / item.proposed_filename), scan_roots)

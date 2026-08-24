@@ -433,3 +433,262 @@ async def test_null_proposed_path_renames_in_place(tmp_path: Path, monkeypatch: 
     assert dest.exists(), "in-place rename did not produce the new filename"
     assert not orig.exists(), "original name still present after in-place rename"
     assert api.patch_proposal_state.await_args.args[1].current_path == str(dest)
+
+
+# ---------------------------------------------------------------------------
+# phaze-shzdj: dispatch must ship the file's CURRENT location as the move source.
+#
+# `FileRecord.original_path` is written once at ingest and never again (operator,
+# 2026-08-24: "original_path should never change. it's the ORIGINAL location of the
+# file. the current_path is where the file is now."). Dispatch used to ship it, so
+# the SECOND execution of an already-renamed file was handed a source that no longer
+# exists.
+#
+# The stale value fed THREE derivations, not one -- and only the first fails loudly:
+#   1. the move SOURCE                     -> FileNotFoundError out of _sha256_of_file
+#   2. `owning_root`                       -> destination built under the INGEST scan root
+#   3. `original.parent` (rename in place) -> destination built in the INGEST directory
+# 2 and 3 are silent-wrong-result defects: a fix that addressed only 1 would let the
+# move succeed to the wrong place. So these tests assert WHERE THE FILE LANDED, never
+# merely that nothing raised -- an "it no longer errors" assertion passes with the
+# destination still wrong.
+#
+# BE PRECISE ABOUT WHAT THE PRE-FIX RED RUN PROVES. All three derivations read the SAME
+# single value, `item.original_path`, so shipping `current_path` into it repairs all
+# three at once -- 2 and 3 were never independent code defects, they were the same stale
+# input flowing downstream. That also means 2 and 3 cannot be shown RED on their own
+# through the real path: derivation 1's FileNotFoundError always fires first and masks
+# them. The destination assertions below are therefore REGRESSION guards, not
+# reproductions -- they exist so that a future partial fix (e.g. adding a separate
+# `current_path` wire field that feeds only the source) fails here instead of shipping a
+# correct-looking move to a stale directory.
+#
+# Every test below drives the REAL path dispatcher -> executor: a stored
+# Agent/FileRecord/RenameProposal, the wire payload built by
+# `get_approved_proposals_grouped_by_agent`, and `execute_approved_batch` against a
+# real fixture on disk.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_catalog_row(
+    session: AsyncSession,
+    *,
+    agent_id: str,
+    scan_roots: list[str],
+    original_path: str,
+    current_path: str,
+    content: bytes,
+    proposed_path: str,
+    proposed_filename: str,
+) -> None:
+    """Seed Agent + FileRecord + APPROVED RenameProposal exactly as production stores them.
+
+    ``original_path`` and ``current_path`` are set INDEPENDENTLY so a caller can
+    reproduce an already-moved file: ingest location in one column, real on-disk
+    location in the other. ``sha256_hash`` is the digest of ``content``, which is what
+    the file at ``current_path`` holds -- a move does not change a file's bytes, so the
+    ingest-time digest is still the correct one for the moved file.
+    """
+    session.add(Agent(id=agent_id, name=agent_id, token_hash=None, scan_roots=scan_roots, revoked_at=None))
+    file_id = uuid.uuid4()
+    session.add(
+        FileRecord(
+            id=file_id,
+            sha256_hash=hashlib.sha256(content).hexdigest(),
+            original_path=original_path,
+            original_filename=original_path.rsplit("/", 1)[-1],
+            current_path=current_path,
+            file_type="music",
+            file_size=len(content),
+            agent_id=agent_id,
+        ),
+    )
+    await session.flush()
+    session.add(
+        RenameProposal(
+            id=uuid.uuid4(),
+            file_id=file_id,
+            proposed_filename=proposed_filename,
+            proposed_path=proposed_path,
+            status=ProposalStatus.APPROVED,
+            confidence=0.95,
+        ),
+    )
+    await session.commit()
+
+
+async def test_e2e_second_execution_moves_the_file_from_where_it_is_now(
+    session: AsyncSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An already-moved file's second execution reads AND writes relative to its CURRENT location.
+
+    The fixture's ingest location and current location differ in BOTH their directory
+    and their owning scan root, so this covers derivations 1 and 2 together: pre-fix the
+    move source is the missing ingest path, and even if it were found the destination
+    would be built under the INGEST scan root.
+
+    Pre-fix this fails at `result["status"] == "completed"` -- `_verify_hash_or_raise`
+    opens the ingest path, which is not on disk, and the proposal errors out.
+    """
+    root_ingest = tmp_path / "root-ingest"
+    root_current = tmp_path / "root-current"
+    ingest = root_ingest / "incoming" / "raw-set.mp3"
+    current = root_current / "library" / "raw-set.mp3"
+    # ONLY the current location exists on disk -- the ingest path was consumed by a
+    # prior execution, which is exactly the state this bead is about.
+    current.parent.mkdir(parents=True, exist_ok=True)
+    root_ingest.mkdir(parents=True, exist_ok=True)
+    content = b"concert-audio-bytes-already-moved"
+    current.write_bytes(content)
+    assert not ingest.exists()
+
+    agent_id = "agent-shzdj-moved"
+    scan_roots = [str(root_ingest), str(root_current)]
+    await _seed_catalog_row(
+        session,
+        agent_id=agent_id,
+        scan_roots=scan_roots,
+        original_path=str(ingest),
+        current_path=str(current),
+        content=content,
+        proposed_path="sorted/Disclosure",
+        proposed_filename="Disclosure - Live at Coachella.mp3",
+    )
+
+    groups = await get_approved_proposals_grouped_by_agent(session)
+    items = groups[agent_id]
+    assert len(items) == 1
+
+    _patch_settings(monkeypatch, scan_roots)
+    api = _make_api_client_mock()
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id=agent_id, proposals=items)
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed"
+    assert result["error_count"] == 0
+
+    # Derivation 2: the destination is built under the CURRENT owning scan root.
+    expected_dest = root_current / "sorted/Disclosure" / "Disclosure - Live at Coachella.mp3"
+    assert expected_dest.exists(), f"file not moved to {expected_dest}"
+    assert expected_dest.read_bytes() == content
+    assert not current.exists(), "the file was not removed from its previous location"
+    # ...and NOTHING was written under the ingest root. Asserting only that the move
+    # succeeded would pass with the file landing here instead.
+    stray = sorted(p for p in root_ingest.rglob("*") if p.is_file())
+    assert stray == [], f"destination was built under the stale ingest root: {stray}"
+
+    state = api.patch_proposal_state.await_args.args[1]
+    assert state.proposal_state == "executed"
+    assert state.current_path == str(expected_dest)
+
+    # The seam itself, asserted LAST so the behavioural assertions above are what
+    # characterise a pre-fix run instead of being short-circuited by this one.
+    assert items[0].original_path == str(current)
+
+
+async def test_e2e_second_execution_in_place_rename_targets_the_current_directory(
+    session: AsyncSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An in-place rename of an already-moved file renames it where it is, not where it was ingested.
+
+    Derivation 3: with ``proposed_path == ""`` the destination directory is
+    ``original.parent``. Pre-fix ``original`` is the ingest path, so the rename targets
+    the INGEST directory -- a wrong destination that raises nothing once the source
+    problem alone is fixed. This test is the one that pins it, because it asserts the
+    landing directory rather than the absence of an error.
+    """
+    scan_root = tmp_path / "media"
+    ingest = scan_root / "incoming" / "messy name.mp3"
+    current = scan_root / "library" / "messy name.mp3"
+    current.parent.mkdir(parents=True, exist_ok=True)
+    ingest.parent.mkdir(parents=True, exist_ok=True)
+    content = b"already-moved-in-place"
+    current.write_bytes(content)
+    assert not ingest.exists()
+
+    agent_id = "agent-shzdj-inplace"
+    await _seed_catalog_row(
+        session,
+        agent_id=agent_id,
+        scan_roots=[str(scan_root)],
+        original_path=str(ingest),
+        current_path=str(current),
+        content=content,
+        proposed_path="",  # null -> '' on the wire: rename in place
+        proposed_filename="Clean Name.mp3",
+    )
+
+    groups = await get_approved_proposals_grouped_by_agent(session)
+    items = groups[agent_id]
+    assert items[0].proposed_path == ""
+
+    _patch_settings(monkeypatch, [str(scan_root)])
+    api = _make_api_client_mock()
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id=agent_id, proposals=items)
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed"
+    assert result["error_count"] == 0
+
+    expected_dest = current.parent / "Clean Name.mp3"
+    assert expected_dest.exists(), f"in-place rename did not land in the file's current directory ({expected_dest})"
+    assert expected_dest.read_bytes() == content
+    assert not current.exists(), "the file was not renamed away from its previous name"
+    # The ingest directory must be untouched -- this is the assertion that a
+    # source-only fix cannot satisfy.
+    assert not (ingest.parent / "Clean Name.mp3").exists(), "in-place rename targeted the stale ingest directory"
+    assert api.patch_proposal_state.await_args.args[1].current_path == str(expected_dest)
+    assert items[0].original_path == str(current)
+
+
+async def test_e2e_first_execution_is_unchanged_when_current_path_equals_original_path(
+    session: AsyncSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A FIRST execution -- original_path == current_path == the on-disk location -- is unaffected.
+
+    This is the blast-radius test (CLAUDE.md rule 4). The dispatch query has no
+    already-moved predicate, so switching the shipped column changes the source path for
+    EVERY executed proposal, not only second ones. For a file that has never been moved
+    the two columns hold the same string, so the wire item and the destination must be
+    byte-identical to what the pre-fix code produced.
+    """
+    scan_root = tmp_path / "media"
+    orig = scan_root / "incoming" / "raw-set.mp3"
+    orig.parent.mkdir(parents=True, exist_ok=True)
+    content = b"never-moved-concert-audio"
+    orig.write_bytes(content)
+
+    agent_id = "agent-shzdj-first"
+    await _seed_catalog_row(
+        session,
+        agent_id=agent_id,
+        scan_roots=[str(scan_root)],
+        original_path=str(orig),
+        current_path=str(orig),  # never executed: the two columns agree
+        content=content,
+        proposed_path="performances/artists/Disclosure",
+        proposed_filename="Disclosure - Live at Coachella.mp3",
+    )
+
+    groups = await get_approved_proposals_grouped_by_agent(session)
+    items = groups[agent_id]
+
+    _patch_settings(monkeypatch, [str(scan_root)])
+    api = _make_api_client_mock()
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id=agent_id, proposals=items)
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed"
+    assert result["error_count"] == 0
+    expected_dest = scan_root / "performances/artists/Disclosure" / "Disclosure - Live at Coachella.mp3"
+    assert expected_dest.exists(), f"file not moved to {expected_dest}"
+    assert expected_dest.read_bytes() == content
+    assert not orig.exists(), "original was not removed"
+    assert api.patch_proposal_state.await_args.args[1].current_path == str(expected_dest)
+    assert items[0].original_path == str(orig)
