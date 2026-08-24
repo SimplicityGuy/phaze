@@ -1,0 +1,2183 @@
+{
+  "bpm": 129.2,
+  "musical_key": "F minor",
+  "mood": "electronic",
+  "style": "Electronic/Progressive Breaks",
+  "danceability": 0.8896977802117666,
+  "features": {
+    "mood_acoustic": {
+      "musicnn_msd": [
+        {
+          "label": "acoustic",
+          "prediction": 0.09172268211841583
+        },
+        {
+          "label": "non_acoustic",
+          "prediction": 0.930461585521698
+        }
+      ],
+      "musicnn_mtt": [
+        {
+          "label": "acoustic",
+          "prediction": 0.07919210195541382
+        },
+        {
+          "label": "non_acoustic",
+          "prediction": 0.8279627561569214
+        }
+      ],
+      "vggish": [
+        {
+          "label": "acoustic",
+          "prediction": 0.008366400375962257
+        },
+        {
+          "label": "non_acoustic",
+          "prediction": 0.9921508431434631
+        }
+      ]
+    },
+    "mood_electronic": {
+      "musicnn_msd": [
+        {
+          "label": "electronic",
+          "prediction": 0.8132793307304382
+        },
+        {
+          "label": "non_electronic",
+          "prediction": 0.14925219118595123
+        }
+      ],
+      "musicnn_mtt": [
+        {
+          "label": "electronic",
+          "prediction": 0.7098126411437988
+        },
+        {
+          "label": "non_electronic",
+          "prediction": 0.12172908335924149
+        }
+      ],
+      "vggish": [
+        {
+          "label": "electronic",
+          "prediction": 0.9573809504508972
+        },
+        {
+          "label": "non_electronic",
+          "prediction": 0.045295532792806625
+        }
+      ]
+    },
+    "mood_aggressive": {
+      "musicnn_msd": [
+        {
+          "label": "aggressive",
+          "prediction": 0.6061815619468689
+        },
+        {
+          "label": "not_aggressive",
+          "prediction": 0.6509210467338562
+        }
+      ],
+      "musicnn_mtt": [
+        {
+          "label": "aggressive",
+          "prediction": 0.4889640212059021
+        },
+        {
+          "label": "not_aggressive",
+          "prediction": 0.5128049850463867
+        }
+      ],
+      "vggish": [
+        {
+          "label": "aggressive",
+          "prediction": 0.6508205533027649
+        },
+        {
+          "label": "not_aggressive",
+          "prediction": 0.34184688329696655
+        }
+      ]
+    },
+    "mood_relaxed": {
+      "musicnn_msd": [
+        {
+          "label": "non_relaxed",
+          "prediction": 0.638627290725708
+        },
+        {
+          "label": "relaxed",
+          "prediction": 0.4044257700443268
+        }
+      ],
+      "musicnn_mtt": [
+        {
+          "label": "non_relaxed",
+          "prediction": 0.8420279622077942
+        },
+        {
+          "label": "relaxed",
+          "prediction": 0.20908156037330627
+        }
+      ],
+      "vggish": [
+        {
+          "label": "non_relaxed",
+          "prediction": 0.8186440467834473
+        },
+        {
+          "label": "relaxed",
+          "prediction": 0.19082464277744293
+        }
+      ]
+    },
+    "mood_happy": {
+      "musicnn_msd": [
+        {
+          "label": "happy",
+          "prediction": 0.378873735666275
+        },
+        {
+          "label": "non_happy",
+          "prediction": 0.6562899947166443
+        }
+      ],
+      "musicnn_mtt": [
+        {
+          "label": "happy",
+          "prediction": 0.35181933641433716
+        },
+        {
+          "label": "non_happy",
+          "prediction": 0.5943604111671448
+        }
+      ],
+      "vggish": [
+        {
+          "label": "happy",
+          "prediction": 0.31674620509147644
+        },
+        {
+          "label": "non_happy",
+          "prediction": 0.6883530020713806
+        }
+      ]
+    },
+    "mood_sad": {
+      "musicnn_msd": [
+        {
+          "label": "non_sad",
+          "prediction": 0.8241400122642517
+        },
+        {
+          "label": "sad",
+          "prediction": 0.3596939742565155
+        }
+      ],
+      "musicnn_mtt": [
+        {
+          "label": "non_sad",
+          "prediction": 0.5580622553825378
+        },
+        {
+          "label": "sad",
+          "prediction": 0.1953398436307907
+        }
+      ],
+      "vggish": [
+        {
+          "label": "non_sad",
+          "prediction": 0.8362990617752075
+        },
+        {
+          "label": "sad",
+          "prediction": 0.1649419665336609
+        }
+      ]
+    },
+    "mood_party": {
+      "musicnn_msd": [
+        {
+          "label": "non_party",
+          "prediction": 0.4114357531070709
+        },
+        {
+          "label": "party",
+          "prediction": 0.7204541563987732
+        }
+      ],
+      "musicnn_mtt": [
+        {
+          "label": "non_party",
+          "prediction": 0.457893431186676
+        },
+        {
+          "label": "party",
+          "prediction": 0.693676233291626
+        }
+      ],
+      "vggish": [
+        {
+          "label": "non_party",
+          "prediction": 0.18701164424419403
+        },
+        {
+          "label": "party",
+          "prediction": 0.8164159059524536
+        }
+      ]
+    },
+    "danceability": {
+      "musicnn_msd": [
+        {
+          "label": "danceable",
+          "prediction": 0.8246058821678162
+        },
+        {
+          "label": "not_danceable",
+          "prediction": 0.1904333084821701
+        }
+      ],
+      "musicnn_mtt": [
+        {
+          "label": "danceable",
+          "prediction": 0.818049967288971
+        },
+        {
+          "label": "not_danceable",
+          "prediction": 0.20252536237239838
+        }
+      ],
+      "vggish": [
+        {
+          "label": "danceable",
+          "prediction": 0.9542840123176575
+        },
+        {
+          "label": "not_danceable",
+          "prediction": 0.04487350583076477
+        }
+      ]
+    },
+    "gender": {
+      "musicnn_msd": [
+        {
+          "label": "female",
+          "prediction": 0.5166747570037842
+        },
+        {
+          "label": "male",
+          "prediction": 0.4993119239807129
+        }
+      ],
+      "musicnn_mtt": [
+        {
+          "label": "female",
+          "prediction": 0.41745075583457947
+        },
+        {
+          "label": "male",
+          "prediction": 0.5136255025863647
+        }
+      ],
+      "vggish": [
+        {
+          "label": "female",
+          "prediction": 0.5040342807769775
+        },
+        {
+          "label": "male",
+          "prediction": 0.4603770077228546
+        }
+      ]
+    },
+    "tonality": {
+      "musicnn_msd": [
+        {
+          "label": "atonal",
+          "prediction": 0.9628628492355347
+        },
+        {
+          "label": "tonal",
+          "prediction": 0.058455899357795715
+        }
+      ],
+      "musicnn_mtt": [
+        {
+          "label": "atonal",
+          "prediction": 0.8656741976737976
+        },
+        {
+          "label": "tonal",
+          "prediction": 0.07243110239505768
+        }
+      ],
+      "vggish": [
+        {
+          "label": "atonal",
+          "prediction": 0.947154700756073
+        },
+        {
+          "label": "tonal",
+          "prediction": 0.060542985796928406
+        }
+      ]
+    },
+    "voice_instrumental": {
+      "musicnn_msd": [
+        {
+          "label": "instrumental",
+          "prediction": 0.4049432575702667
+        },
+        {
+          "label": "voice",
+          "prediction": 0.5968719720840454
+        }
+      ],
+      "musicnn_mtt": [
+        {
+          "label": "instrumental",
+          "prediction": 0.589032769203186
+        },
+        {
+          "label": "voice",
+          "prediction": 0.41487595438957214
+        }
+      ],
+      "vggish": [
+        {
+          "label": "instrumental",
+          "prediction": 0.43311673402786255
+        },
+        {
+          "label": "voice",
+          "prediction": 0.559054434299469
+        }
+      ]
+    },
+    "genre": {
+      "predictions": [
+        {
+          "label": "Electronic/Progressive Breaks",
+          "confidence": 0.37182456254959106
+        },
+        {
+          "label": "Electronic/Breaks",
+          "confidence": 0.3662834167480469
+        },
+        {
+          "label": "Electronic/Big Beat",
+          "confidence": 0.25509530305862427
+        },
+        {
+          "label": "Electronic/Breakbeat",
+          "confidence": 0.1812152862548828
+        },
+        {
+          "label": "Electronic/Progressive House",
+          "confidence": 0.11814674735069275
+        },
+        {
+          "label": "Electronic/Electro",
+          "confidence": 0.06785736978054047
+        },
+        {
+          "label": "Electronic/House",
+          "confidence": 0.05071922764182091
+        },
+        {
+          "label": "Electronic/Ambient",
+          "confidence": 0.03636583313345909
+        },
+        {
+          "label": "Electronic/Techno",
+          "confidence": 0.03048846125602722
+        },
+        {
+          "label": "Electronic/Synth-pop",
+          "confidence": 0.02252029813826084
+        }
+      ]
+    }
+  },
+  "windows": [
+    {
+      "tier": "fine",
+      "window_index": 0,
+      "start_sec": 0.0,
+      "end_sec": 30.0,
+      "bpm": 129.2,
+      "musical_key": "F minor"
+    },
+    {
+      "tier": "fine",
+      "window_index": 1,
+      "start_sec": 30.0,
+      "end_sec": 60.0,
+      "bpm": 129.2,
+      "musical_key": "F minor"
+    },
+    {
+      "tier": "fine",
+      "window_index": 2,
+      "start_sec": 60.0,
+      "end_sec": 90.0,
+      "bpm": 129.1,
+      "musical_key": "F minor"
+    },
+    {
+      "tier": "fine",
+      "window_index": 3,
+      "start_sec": 90.0,
+      "end_sec": 120.0,
+      "bpm": 129.2,
+      "musical_key": "F minor"
+    },
+    {
+      "tier": "fine",
+      "window_index": 4,
+      "start_sec": 120.0,
+      "end_sec": 150.0,
+      "bpm": 129.1,
+      "musical_key": "F major"
+    },
+    {
+      "tier": "fine",
+      "window_index": 5,
+      "start_sec": 150.0,
+      "end_sec": 180.0,
+      "bpm": 129.3,
+      "musical_key": "F major"
+    },
+    {
+      "tier": "fine",
+      "window_index": 6,
+      "start_sec": 180.0,
+      "end_sec": 210.0,
+      "bpm": 129.1,
+      "musical_key": "F minor"
+    },
+    {
+      "tier": "fine",
+      "window_index": 7,
+      "start_sec": 210.0,
+      "end_sec": 240.0,
+      "bpm": 129.2,
+      "musical_key": "F major"
+    },
+    {
+      "tier": "fine",
+      "window_index": 8,
+      "start_sec": 240.0,
+      "end_sec": 270.0,
+      "bpm": 129.1,
+      "musical_key": "F minor"
+    },
+    {
+      "tier": "fine",
+      "window_index": 9,
+      "start_sec": 270.0,
+      "end_sec": 300.0,
+      "bpm": 129.2,
+      "musical_key": "F major"
+    },
+    {
+      "tier": "fine",
+      "window_index": 10,
+      "start_sec": 300.0,
+      "end_sec": 330.0,
+      "bpm": 129.2,
+      "musical_key": "F major"
+    },
+    {
+      "tier": "fine",
+      "window_index": 11,
+      "start_sec": 330.0,
+      "end_sec": 360.0,
+      "bpm": 129.1,
+      "musical_key": "F major"
+    },
+    {
+      "tier": "fine",
+      "window_index": 12,
+      "start_sec": 360.0,
+      "end_sec": 390.0,
+      "bpm": 129.4,
+      "musical_key": "F minor"
+    },
+    {
+      "tier": "fine",
+      "window_index": 13,
+      "start_sec": 390.0,
+      "end_sec": 420.0,
+      "bpm": 129.2,
+      "musical_key": "F major"
+    },
+    {
+      "tier": "fine",
+      "window_index": 14,
+      "start_sec": 420.0,
+      "end_sec": 450.0,
+      "bpm": 128.9,
+      "musical_key": "G minor"
+    },
+    {
+      "tier": "fine",
+      "window_index": 15,
+      "start_sec": 450.0,
+      "end_sec": 480.0,
+      "bpm": 129.3,
+      "musical_key": "G minor"
+    },
+    {
+      "tier": "fine",
+      "window_index": 16,
+      "start_sec": 480.0,
+      "end_sec": 510.0,
+      "bpm": 129.0,
+      "musical_key": "G minor"
+    },
+    {
+      "tier": "fine",
+      "window_index": 17,
+      "start_sec": 510.0,
+      "end_sec": 540.0,
+      "bpm": 129.4,
+      "musical_key": "D minor"
+    },
+    {
+      "tier": "coarse",
+      "window_index": 0,
+      "start_sec": 0.0,
+      "end_sec": 180.0,
+      "mood": "electronic",
+      "style": "Electronic/Progressive Breaks",
+      "danceability": 0.8656466205914816,
+      "features": {
+        "mood_acoustic": {
+          "musicnn_msd": [
+            {
+              "label": "acoustic",
+              "prediction": 0.09172268211841583
+            },
+            {
+              "label": "non_acoustic",
+              "prediction": 0.930461585521698
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "acoustic",
+              "prediction": 0.07919210195541382
+            },
+            {
+              "label": "non_acoustic",
+              "prediction": 0.8279627561569214
+            }
+          ],
+          "vggish": [
+            {
+              "label": "acoustic",
+              "prediction": 0.008366400375962257
+            },
+            {
+              "label": "non_acoustic",
+              "prediction": 0.9921508431434631
+            }
+          ]
+        },
+        "mood_electronic": {
+          "musicnn_msd": [
+            {
+              "label": "electronic",
+              "prediction": 0.8132793307304382
+            },
+            {
+              "label": "non_electronic",
+              "prediction": 0.14925219118595123
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "electronic",
+              "prediction": 0.7098126411437988
+            },
+            {
+              "label": "non_electronic",
+              "prediction": 0.12172908335924149
+            }
+          ],
+          "vggish": [
+            {
+              "label": "electronic",
+              "prediction": 0.9573809504508972
+            },
+            {
+              "label": "non_electronic",
+              "prediction": 0.045295532792806625
+            }
+          ]
+        },
+        "mood_aggressive": {
+          "musicnn_msd": [
+            {
+              "label": "aggressive",
+              "prediction": 0.6061815619468689
+            },
+            {
+              "label": "not_aggressive",
+              "prediction": 0.6509210467338562
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "aggressive",
+              "prediction": 0.4889640212059021
+            },
+            {
+              "label": "not_aggressive",
+              "prediction": 0.5128049850463867
+            }
+          ],
+          "vggish": [
+            {
+              "label": "aggressive",
+              "prediction": 0.6508205533027649
+            },
+            {
+              "label": "not_aggressive",
+              "prediction": 0.34184688329696655
+            }
+          ]
+        },
+        "mood_relaxed": {
+          "musicnn_msd": [
+            {
+              "label": "non_relaxed",
+              "prediction": 0.638627290725708
+            },
+            {
+              "label": "relaxed",
+              "prediction": 0.4044257700443268
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "non_relaxed",
+              "prediction": 0.8420279622077942
+            },
+            {
+              "label": "relaxed",
+              "prediction": 0.20908156037330627
+            }
+          ],
+          "vggish": [
+            {
+              "label": "non_relaxed",
+              "prediction": 0.8186440467834473
+            },
+            {
+              "label": "relaxed",
+              "prediction": 0.19082464277744293
+            }
+          ]
+        },
+        "mood_happy": {
+          "musicnn_msd": [
+            {
+              "label": "happy",
+              "prediction": 0.378873735666275
+            },
+            {
+              "label": "non_happy",
+              "prediction": 0.6562899947166443
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "happy",
+              "prediction": 0.35181933641433716
+            },
+            {
+              "label": "non_happy",
+              "prediction": 0.5943604111671448
+            }
+          ],
+          "vggish": [
+            {
+              "label": "happy",
+              "prediction": 0.31674620509147644
+            },
+            {
+              "label": "non_happy",
+              "prediction": 0.6883530020713806
+            }
+          ]
+        },
+        "mood_sad": {
+          "musicnn_msd": [
+            {
+              "label": "non_sad",
+              "prediction": 0.8241400122642517
+            },
+            {
+              "label": "sad",
+              "prediction": 0.3596939742565155
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "non_sad",
+              "prediction": 0.5580622553825378
+            },
+            {
+              "label": "sad",
+              "prediction": 0.1953398436307907
+            }
+          ],
+          "vggish": [
+            {
+              "label": "non_sad",
+              "prediction": 0.8362990617752075
+            },
+            {
+              "label": "sad",
+              "prediction": 0.1649419665336609
+            }
+          ]
+        },
+        "mood_party": {
+          "musicnn_msd": [
+            {
+              "label": "non_party",
+              "prediction": 0.4114357531070709
+            },
+            {
+              "label": "party",
+              "prediction": 0.7204541563987732
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "non_party",
+              "prediction": 0.457893431186676
+            },
+            {
+              "label": "party",
+              "prediction": 0.693676233291626
+            }
+          ],
+          "vggish": [
+            {
+              "label": "non_party",
+              "prediction": 0.18701164424419403
+            },
+            {
+              "label": "party",
+              "prediction": 0.8164159059524536
+            }
+          ]
+        },
+        "danceability": {
+          "musicnn_msd": [
+            {
+              "label": "danceable",
+              "prediction": 0.8246058821678162
+            },
+            {
+              "label": "not_danceable",
+              "prediction": 0.1904333084821701
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "danceable",
+              "prediction": 0.818049967288971
+            },
+            {
+              "label": "not_danceable",
+              "prediction": 0.20252536237239838
+            }
+          ],
+          "vggish": [
+            {
+              "label": "danceable",
+              "prediction": 0.9542840123176575
+            },
+            {
+              "label": "not_danceable",
+              "prediction": 0.04487350583076477
+            }
+          ]
+        },
+        "gender": {
+          "musicnn_msd": [
+            {
+              "label": "female",
+              "prediction": 0.5166747570037842
+            },
+            {
+              "label": "male",
+              "prediction": 0.4993119239807129
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "female",
+              "prediction": 0.41745075583457947
+            },
+            {
+              "label": "male",
+              "prediction": 0.5136255025863647
+            }
+          ],
+          "vggish": [
+            {
+              "label": "female",
+              "prediction": 0.5040342807769775
+            },
+            {
+              "label": "male",
+              "prediction": 0.4603770077228546
+            }
+          ]
+        },
+        "tonality": {
+          "musicnn_msd": [
+            {
+              "label": "atonal",
+              "prediction": 0.9628628492355347
+            },
+            {
+              "label": "tonal",
+              "prediction": 0.058455899357795715
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "atonal",
+              "prediction": 0.8656741976737976
+            },
+            {
+              "label": "tonal",
+              "prediction": 0.07243110239505768
+            }
+          ],
+          "vggish": [
+            {
+              "label": "atonal",
+              "prediction": 0.947154700756073
+            },
+            {
+              "label": "tonal",
+              "prediction": 0.060542985796928406
+            }
+          ]
+        },
+        "voice_instrumental": {
+          "musicnn_msd": [
+            {
+              "label": "instrumental",
+              "prediction": 0.4049432575702667
+            },
+            {
+              "label": "voice",
+              "prediction": 0.5968719720840454
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "instrumental",
+              "prediction": 0.589032769203186
+            },
+            {
+              "label": "voice",
+              "prediction": 0.41487595438957214
+            }
+          ],
+          "vggish": [
+            {
+              "label": "instrumental",
+              "prediction": 0.43311673402786255
+            },
+            {
+              "label": "voice",
+              "prediction": 0.559054434299469
+            }
+          ]
+        },
+        "genre": {
+          "predictions": [
+            {
+              "label": "Electronic/Progressive Breaks",
+              "confidence": 0.37182456254959106
+            },
+            {
+              "label": "Electronic/Breaks",
+              "confidence": 0.3662834167480469
+            },
+            {
+              "label": "Electronic/Big Beat",
+              "confidence": 0.25509530305862427
+            },
+            {
+              "label": "Electronic/Breakbeat",
+              "confidence": 0.1812152862548828
+            },
+            {
+              "label": "Electronic/Progressive House",
+              "confidence": 0.11814674735069275
+            },
+            {
+              "label": "Electronic/Electro",
+              "confidence": 0.06785736978054047
+            },
+            {
+              "label": "Electronic/House",
+              "confidence": 0.05071922764182091
+            },
+            {
+              "label": "Electronic/Ambient",
+              "confidence": 0.03636583313345909
+            },
+            {
+              "label": "Electronic/Techno",
+              "confidence": 0.03048846125602722
+            },
+            {
+              "label": "Electronic/Synth-pop",
+              "confidence": 0.02252029813826084
+            }
+          ]
+        }
+      }
+    },
+    {
+      "tier": "coarse",
+      "window_index": 1,
+      "start_sec": 180.0,
+      "end_sec": 360.0,
+      "mood": "electronic",
+      "style": "Electronic/Breaks",
+      "danceability": 0.7747137149175009,
+      "features": {
+        "mood_acoustic": {
+          "musicnn_msd": [
+            {
+              "label": "acoustic",
+              "prediction": 0.09801919013261795
+            },
+            {
+              "label": "non_acoustic",
+              "prediction": 0.9398856163024902
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "acoustic",
+              "prediction": 0.10130371153354645
+            },
+            {
+              "label": "non_acoustic",
+              "prediction": 0.7859930992126465
+            }
+          ],
+          "vggish": [
+            {
+              "label": "acoustic",
+              "prediction": 0.06301940977573395
+            },
+            {
+              "label": "non_acoustic",
+              "prediction": 0.9359579682350159
+            }
+          ]
+        },
+        "mood_electronic": {
+          "musicnn_msd": [
+            {
+              "label": "electronic",
+              "prediction": 0.656493604183197
+            },
+            {
+              "label": "non_electronic",
+              "prediction": 0.29477646946907043
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "electronic",
+              "prediction": 0.5782709121704102
+            },
+            {
+              "label": "non_electronic",
+              "prediction": 0.3140357732772827
+            }
+          ],
+          "vggish": [
+            {
+              "label": "electronic",
+              "prediction": 0.9114619493484497
+            },
+            {
+              "label": "non_electronic",
+              "prediction": 0.09335058182477951
+            }
+          ]
+        },
+        "mood_aggressive": {
+          "musicnn_msd": [
+            {
+              "label": "aggressive",
+              "prediction": 0.6248334646224976
+            },
+            {
+              "label": "not_aggressive",
+              "prediction": 0.673248291015625
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "aggressive",
+              "prediction": 0.5212554931640625
+            },
+            {
+              "label": "not_aggressive",
+              "prediction": 0.5497565865516663
+            }
+          ],
+          "vggish": [
+            {
+              "label": "aggressive",
+              "prediction": 0.5068110227584839
+            },
+            {
+              "label": "not_aggressive",
+              "prediction": 0.48839181661605835
+            }
+          ]
+        },
+        "mood_relaxed": {
+          "musicnn_msd": [
+            {
+              "label": "non_relaxed",
+              "prediction": 0.6600110530853271
+            },
+            {
+              "label": "relaxed",
+              "prediction": 0.35095492005348206
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "non_relaxed",
+              "prediction": 0.8436037302017212
+            },
+            {
+              "label": "relaxed",
+              "prediction": 0.21966469287872314
+            }
+          ],
+          "vggish": [
+            {
+              "label": "non_relaxed",
+              "prediction": 0.775962769985199
+            },
+            {
+              "label": "relaxed",
+              "prediction": 0.2276032567024231
+            }
+          ]
+        },
+        "mood_happy": {
+          "musicnn_msd": [
+            {
+              "label": "happy",
+              "prediction": 0.40555673837661743
+            },
+            {
+              "label": "non_happy",
+              "prediction": 0.6591001749038696
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "happy",
+              "prediction": 0.3699766993522644
+            },
+            {
+              "label": "non_happy",
+              "prediction": 0.5884262919425964
+            }
+          ],
+          "vggish": [
+            {
+              "label": "happy",
+              "prediction": 0.3077108860015869
+            },
+            {
+              "label": "non_happy",
+              "prediction": 0.6837040185928345
+            }
+          ]
+        },
+        "mood_sad": {
+          "musicnn_msd": [
+            {
+              "label": "non_sad",
+              "prediction": 0.7354078888893127
+            },
+            {
+              "label": "sad",
+              "prediction": 0.4863074719905853
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "non_sad",
+              "prediction": 0.541719913482666
+            },
+            {
+              "label": "sad",
+              "prediction": 0.26542118191719055
+            }
+          ],
+          "vggish": [
+            {
+              "label": "non_sad",
+              "prediction": 0.8513644337654114
+            },
+            {
+              "label": "sad",
+              "prediction": 0.14796067774295807
+            }
+          ]
+        },
+        "mood_party": {
+          "musicnn_msd": [
+            {
+              "label": "non_party",
+              "prediction": 0.575157105922699
+            },
+            {
+              "label": "party",
+              "prediction": 0.569459855556488
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "non_party",
+              "prediction": 0.5617950558662415
+            },
+            {
+              "label": "party",
+              "prediction": 0.5095323920249939
+            }
+          ],
+          "vggish": [
+            {
+              "label": "non_party",
+              "prediction": 0.2729562819004059
+            },
+            {
+              "label": "party",
+              "prediction": 0.7372386455535889
+            }
+          ]
+        },
+        "danceability": {
+          "musicnn_msd": [
+            {
+              "label": "danceable",
+              "prediction": 0.7588281035423279
+            },
+            {
+              "label": "not_danceable",
+              "prediction": 0.2692115306854248
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "danceable",
+              "prediction": 0.7127484679222107
+            },
+            {
+              "label": "not_danceable",
+              "prediction": 0.3322826027870178
+            }
+          ],
+          "vggish": [
+            {
+              "label": "danceable",
+              "prediction": 0.8525645732879639
+            },
+            {
+              "label": "not_danceable",
+              "prediction": 0.14912351965904236
+            }
+          ]
+        },
+        "gender": {
+          "musicnn_msd": [
+            {
+              "label": "female",
+              "prediction": 0.40276363492012024
+            },
+            {
+              "label": "male",
+              "prediction": 0.5949674248695374
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "female",
+              "prediction": 0.34298744797706604
+            },
+            {
+              "label": "male",
+              "prediction": 0.5901085138320923
+            }
+          ],
+          "vggish": [
+            {
+              "label": "female",
+              "prediction": 0.49107158184051514
+            },
+            {
+              "label": "male",
+              "prediction": 0.47456440329551697
+            }
+          ]
+        },
+        "tonality": {
+          "musicnn_msd": [
+            {
+              "label": "atonal",
+              "prediction": 0.9877887964248657
+            },
+            {
+              "label": "tonal",
+              "prediction": 0.016042478382587433
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "atonal",
+              "prediction": 0.9071367383003235
+            },
+            {
+              "label": "tonal",
+              "prediction": 0.046784158796072006
+            }
+          ],
+          "vggish": [
+            {
+              "label": "atonal",
+              "prediction": 0.986741840839386
+            },
+            {
+              "label": "tonal",
+              "prediction": 0.014291551895439625
+            }
+          ]
+        },
+        "voice_instrumental": {
+          "musicnn_msd": [
+            {
+              "label": "instrumental",
+              "prediction": 0.23839233815670013
+            },
+            {
+              "label": "voice",
+              "prediction": 0.7615549564361572
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "instrumental",
+              "prediction": 0.3787546455860138
+            },
+            {
+              "label": "voice",
+              "prediction": 0.602070152759552
+            }
+          ],
+          "vggish": [
+            {
+              "label": "instrumental",
+              "prediction": 0.3007079064846039
+            },
+            {
+              "label": "voice",
+              "prediction": 0.6927703619003296
+            }
+          ]
+        },
+        "genre": {
+          "predictions": [
+            {
+              "label": "Electronic/Breaks",
+              "confidence": 0.33640748262405396
+            },
+            {
+              "label": "Electronic/Progressive Breaks",
+              "confidence": 0.2613033056259155
+            },
+            {
+              "label": "Electronic/Big Beat",
+              "confidence": 0.2477949559688568
+            },
+            {
+              "label": "Electronic/Breakbeat",
+              "confidence": 0.19423329830169678
+            },
+            {
+              "label": "Electronic/Progressive House",
+              "confidence": 0.08621644228696823
+            },
+            {
+              "label": "Electronic/House",
+              "confidence": 0.061783552169799805
+            },
+            {
+              "label": "Electronic/Electro",
+              "confidence": 0.06058986857533455
+            },
+            {
+              "label": "Rock/Heavy Metal",
+              "confidence": 0.04644625633955002
+            },
+            {
+              "label": "Electronic/Industrial",
+              "confidence": 0.02856861986219883
+            },
+            {
+              "label": "Electronic/Synth-pop",
+              "confidence": 0.024909911677241325
+            }
+          ]
+        }
+      }
+    },
+    {
+      "tier": "coarse",
+      "window_index": 2,
+      "start_sec": 360.0,
+      "end_sec": 540.0,
+      "mood": "electronic",
+      "style": "Electronic/Big Beat",
+      "danceability": 0.9779885411262512,
+      "features": {
+        "mood_acoustic": {
+          "musicnn_msd": [
+            {
+              "label": "acoustic",
+              "prediction": 0.003374435706064105
+            },
+            {
+              "label": "non_acoustic",
+              "prediction": 0.9911112785339355
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "acoustic",
+              "prediction": 0.004557893145829439
+            },
+            {
+              "label": "non_acoustic",
+              "prediction": 0.9793022871017456
+            }
+          ],
+          "vggish": [
+            {
+              "label": "acoustic",
+              "prediction": 0.006679353769868612
+            },
+            {
+              "label": "non_acoustic",
+              "prediction": 0.9939014911651611
+            }
+          ]
+        },
+        "mood_electronic": {
+          "musicnn_msd": [
+            {
+              "label": "electronic",
+              "prediction": 0.8961701989173889
+            },
+            {
+              "label": "non_electronic",
+              "prediction": 0.0934303030371666
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "electronic",
+              "prediction": 0.7756363153457642
+            },
+            {
+              "label": "non_electronic",
+              "prediction": 0.06299533694982529
+            }
+          ],
+          "vggish": [
+            {
+              "label": "electronic",
+              "prediction": 0.9661030173301697
+            },
+            {
+              "label": "non_electronic",
+              "prediction": 0.03425902873277664
+            }
+          ]
+        },
+        "mood_aggressive": {
+          "musicnn_msd": [
+            {
+              "label": "aggressive",
+              "prediction": 0.8446118831634521
+            },
+            {
+              "label": "not_aggressive",
+              "prediction": 0.5065538287162781
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "aggressive",
+              "prediction": 0.7484036684036255
+            },
+            {
+              "label": "not_aggressive",
+              "prediction": 0.26176348328590393
+            }
+          ],
+          "vggish": [
+            {
+              "label": "aggressive",
+              "prediction": 0.8027380108833313
+            },
+            {
+              "label": "not_aggressive",
+              "prediction": 0.1880270391702652
+            }
+          ]
+        },
+        "mood_relaxed": {
+          "musicnn_msd": [
+            {
+              "label": "non_relaxed",
+              "prediction": 0.712960422039032
+            },
+            {
+              "label": "relaxed",
+              "prediction": 0.34189894795417786
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "non_relaxed",
+              "prediction": 0.9278448224067688
+            },
+            {
+              "label": "relaxed",
+              "prediction": 0.08802668005228043
+            }
+          ],
+          "vggish": [
+            {
+              "label": "non_relaxed",
+              "prediction": 0.8674260377883911
+            },
+            {
+              "label": "relaxed",
+              "prediction": 0.1481105089187622
+            }
+          ]
+        },
+        "mood_happy": {
+          "musicnn_msd": [
+            {
+              "label": "happy",
+              "prediction": 0.33288857340812683
+            },
+            {
+              "label": "non_happy",
+              "prediction": 0.7489945292472839
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "happy",
+              "prediction": 0.40281426906585693
+            },
+            {
+              "label": "non_happy",
+              "prediction": 0.5669652223587036
+            }
+          ],
+          "vggish": [
+            {
+              "label": "happy",
+              "prediction": 0.10750528424978256
+            },
+            {
+              "label": "non_happy",
+              "prediction": 0.8919288516044617
+            }
+          ]
+        },
+        "mood_sad": {
+          "musicnn_msd": [
+            {
+              "label": "non_sad",
+              "prediction": 0.956093430519104
+            },
+            {
+              "label": "sad",
+              "prediction": 0.2372719645500183
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "non_sad",
+              "prediction": 0.668849766254425
+            },
+            {
+              "label": "sad",
+              "prediction": 0.09367576241493225
+            }
+          ],
+          "vggish": [
+            {
+              "label": "non_sad",
+              "prediction": 0.9835941195487976
+            },
+            {
+              "label": "sad",
+              "prediction": 0.017086895182728767
+            }
+          ]
+        },
+        "mood_party": {
+          "musicnn_msd": [
+            {
+              "label": "non_party",
+              "prediction": 0.31665870547294617
+            },
+            {
+              "label": "party",
+              "prediction": 0.7954531311988831
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "non_party",
+              "prediction": 0.42276719212532043
+            },
+            {
+              "label": "party",
+              "prediction": 0.730207085609436
+            }
+          ],
+          "vggish": [
+            {
+              "label": "non_party",
+              "prediction": 0.17138658463954926
+            },
+            {
+              "label": "party",
+              "prediction": 0.8351413607597351
+            }
+          ]
+        },
+        "danceability": {
+          "musicnn_msd": [
+            {
+              "label": "danceable",
+              "prediction": 0.9921405911445618
+            },
+            {
+              "label": "not_danceable",
+              "prediction": 0.03993070870637894
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "danceable",
+              "prediction": 0.9767311215400696
+            },
+            {
+              "label": "not_danceable",
+              "prediction": 0.03894800320267677
+            }
+          ],
+          "vggish": [
+            {
+              "label": "danceable",
+              "prediction": 0.9650939106941223
+            },
+            {
+              "label": "not_danceable",
+              "prediction": 0.03519453853368759
+            }
+          ]
+        },
+        "gender": {
+          "musicnn_msd": [
+            {
+              "label": "female",
+              "prediction": 0.61896151304245
+            },
+            {
+              "label": "male",
+              "prediction": 0.3986802101135254
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "female",
+              "prediction": 0.3911854028701782
+            },
+            {
+              "label": "male",
+              "prediction": 0.5432355999946594
+            }
+          ],
+          "vggish": [
+            {
+              "label": "female",
+              "prediction": 0.4728083610534668
+            },
+            {
+              "label": "male",
+              "prediction": 0.5070188641548157
+            }
+          ]
+        },
+        "tonality": {
+          "musicnn_msd": [
+            {
+              "label": "atonal",
+              "prediction": 0.9990174174308777
+            },
+            {
+              "label": "tonal",
+              "prediction": 0.0011600764701142907
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "atonal",
+              "prediction": 0.9549601674079895
+            },
+            {
+              "label": "tonal",
+              "prediction": 0.016156811267137527
+            }
+          ],
+          "vggish": [
+            {
+              "label": "atonal",
+              "prediction": 0.9983254671096802
+            },
+            {
+              "label": "tonal",
+              "prediction": 0.0017973375506699085
+            }
+          ]
+        },
+        "voice_instrumental": {
+          "musicnn_msd": [
+            {
+              "label": "instrumental",
+              "prediction": 0.40518996119499207
+            },
+            {
+              "label": "voice",
+              "prediction": 0.5635899305343628
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "instrumental",
+              "prediction": 0.6897262930870056
+            },
+            {
+              "label": "voice",
+              "prediction": 0.342605859041214
+            }
+          ],
+          "vggish": [
+            {
+              "label": "instrumental",
+              "prediction": 0.6591262817382812
+            },
+            {
+              "label": "voice",
+              "prediction": 0.34138429164886475
+            }
+          ]
+        },
+        "genre": {
+          "predictions": [
+            {
+              "label": "Electronic/Big Beat",
+              "confidence": 0.4405316710472107
+            },
+            {
+              "label": "Electronic/Breakbeat",
+              "confidence": 0.40457162261009216
+            },
+            {
+              "label": "Electronic/Breaks",
+              "confidence": 0.3747105896472931
+            },
+            {
+              "label": "Electronic/Progressive Breaks",
+              "confidence": 0.37106743454933167
+            },
+            {
+              "label": "Electronic/Broken Beat",
+              "confidence": 0.10735582560300827
+            },
+            {
+              "label": "Electronic/Trip Hop",
+              "confidence": 0.07303246110677719
+            },
+            {
+              "label": "Electronic/Progressive House",
+              "confidence": 0.06887972354888916
+            },
+            {
+              "label": "Electronic/Electro",
+              "confidence": 0.05462198704481125
+            },
+            {
+              "label": "Electronic/Drum n Bass",
+              "confidence": 0.047426484525203705
+            },
+            {
+              "label": "Electronic/House",
+              "confidence": 0.040639862418174744
+            }
+          ]
+        }
+      }
+    },
+    {
+      "tier": "coarse",
+      "window_index": 3,
+      "start_sec": 540.0,
+      "end_sec": 545.96,
+      "mood": "aggressive",
+      "style": "Electronic/Downtempo",
+      "danceability": 0.9404422442118326,
+      "features": {
+        "mood_acoustic": {
+          "musicnn_msd": [
+            {
+              "label": "acoustic",
+              "prediction": 0.0005024639540351927
+            },
+            {
+              "label": "non_acoustic",
+              "prediction": 0.987193763256073
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "acoustic",
+              "prediction": 0.0012600041227415204
+            },
+            {
+              "label": "non_acoustic",
+              "prediction": 0.9918767809867859
+            }
+          ],
+          "vggish": [
+            {
+              "label": "acoustic",
+              "prediction": 0.0021024856250733137
+            },
+            {
+              "label": "non_acoustic",
+              "prediction": 0.9982432723045349
+            }
+          ]
+        },
+        "mood_electronic": {
+          "musicnn_msd": [
+            {
+              "label": "electronic",
+              "prediction": 0.7876747250556946
+            },
+            {
+              "label": "non_electronic",
+              "prediction": 0.2302532196044922
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "electronic",
+              "prediction": 0.74933260679245
+            },
+            {
+              "label": "non_electronic",
+              "prediction": 0.06912460923194885
+            }
+          ],
+          "vggish": [
+            {
+              "label": "electronic",
+              "prediction": 0.8621678352355957
+            },
+            {
+              "label": "non_electronic",
+              "prediction": 0.15247556567192078
+            }
+          ]
+        },
+        "mood_aggressive": {
+          "musicnn_msd": [
+            {
+              "label": "aggressive",
+              "prediction": 0.9882485270500183
+            },
+            {
+              "label": "not_aggressive",
+              "prediction": 0.12960855662822723
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "aggressive",
+              "prediction": 0.9764114022254944
+            },
+            {
+              "label": "not_aggressive",
+              "prediction": 0.032953862100839615
+            }
+          ],
+          "vggish": [
+            {
+              "label": "aggressive",
+              "prediction": 0.9786090850830078
+            },
+            {
+              "label": "not_aggressive",
+              "prediction": 0.020105451345443726
+            }
+          ]
+        },
+        "mood_relaxed": {
+          "musicnn_msd": [
+            {
+              "label": "non_relaxed",
+              "prediction": 0.7133728861808777
+            },
+            {
+              "label": "relaxed",
+              "prediction": 0.3196977376937866
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "non_relaxed",
+              "prediction": 0.944349467754364
+            },
+            {
+              "label": "relaxed",
+              "prediction": 0.0798785388469696
+            }
+          ],
+          "vggish": [
+            {
+              "label": "non_relaxed",
+              "prediction": 0.9578254222869873
+            },
+            {
+              "label": "relaxed",
+              "prediction": 0.05023234710097313
+            }
+          ]
+        },
+        "mood_happy": {
+          "musicnn_msd": [
+            {
+              "label": "happy",
+              "prediction": 0.19488851726055145
+            },
+            {
+              "label": "non_happy",
+              "prediction": 0.770115077495575
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "happy",
+              "prediction": 0.23324652016162872
+            },
+            {
+              "label": "non_happy",
+              "prediction": 0.6648319363594055
+            }
+          ],
+          "vggish": [
+            {
+              "label": "happy",
+              "prediction": 0.11348748952150345
+            },
+            {
+              "label": "non_happy",
+              "prediction": 0.8683908581733704
+            }
+          ]
+        },
+        "mood_sad": {
+          "musicnn_msd": [
+            {
+              "label": "non_sad",
+              "prediction": 0.9345278143882751
+            },
+            {
+              "label": "sad",
+              "prediction": 0.2871173918247223
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "non_sad",
+              "prediction": 0.6641226410865784
+            },
+            {
+              "label": "sad",
+              "prediction": 0.17343424260616302
+            }
+          ],
+          "vggish": [
+            {
+              "label": "non_sad",
+              "prediction": 0.9973772168159485
+            },
+            {
+              "label": "sad",
+              "prediction": 0.0020109128672629595
+            }
+          ]
+        },
+        "mood_party": {
+          "musicnn_msd": [
+            {
+              "label": "non_party",
+              "prediction": 0.4371979236602783
+            },
+            {
+              "label": "party",
+              "prediction": 0.6756541132926941
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "non_party",
+              "prediction": 0.6566963791847229
+            },
+            {
+              "label": "party",
+              "prediction": 0.48461320996284485
+            }
+          ],
+          "vggish": [
+            {
+              "label": "non_party",
+              "prediction": 0.16995932161808014
+            },
+            {
+              "label": "party",
+              "prediction": 0.8288475871086121
+            }
+          ]
+        },
+        "danceability": {
+          "musicnn_msd": [
+            {
+              "label": "danceable",
+              "prediction": 0.999812126159668
+            },
+            {
+              "label": "not_danceable",
+              "prediction": 0.03561076149344444
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "danceable",
+              "prediction": 0.8545386791229248
+            },
+            {
+              "label": "not_danceable",
+              "prediction": 0.22463659942150116
+            }
+          ],
+          "vggish": [
+            {
+              "label": "danceable",
+              "prediction": 0.9669759273529053
+            },
+            {
+              "label": "not_danceable",
+              "prediction": 0.030934492126107216
+            }
+          ]
+        },
+        "gender": {
+          "musicnn_msd": [
+            {
+              "label": "female",
+              "prediction": 0.5700638890266418
+            },
+            {
+              "label": "male",
+              "prediction": 0.41788026690483093
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "female",
+              "prediction": 0.40684959292411804
+            },
+            {
+              "label": "male",
+              "prediction": 0.5573651194572449
+            }
+          ],
+          "vggish": [
+            {
+              "label": "female",
+              "prediction": 0.36521390080451965
+            },
+            {
+              "label": "male",
+              "prediction": 0.6156880259513855
+            }
+          ]
+        },
+        "tonality": {
+          "musicnn_msd": [
+            {
+              "label": "atonal",
+              "prediction": 0.9988378882408142
+            },
+            {
+              "label": "tonal",
+              "prediction": 0.0005775277386419475
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "atonal",
+              "prediction": 0.9724586606025696
+            },
+            {
+              "label": "tonal",
+              "prediction": 0.00724887615069747
+            }
+          ],
+          "vggish": [
+            {
+              "label": "atonal",
+              "prediction": 0.999735414981842
+            },
+            {
+              "label": "tonal",
+              "prediction": 0.0003169280826114118
+            }
+          ]
+        },
+        "voice_instrumental": {
+          "musicnn_msd": [
+            {
+              "label": "instrumental",
+              "prediction": 0.5159280300140381
+            },
+            {
+              "label": "voice",
+              "prediction": 0.4267495572566986
+            }
+          ],
+          "musicnn_mtt": [
+            {
+              "label": "instrumental",
+              "prediction": 0.7693238854408264
+            },
+            {
+              "label": "voice",
+              "prediction": 0.32241132855415344
+            }
+          ],
+          "vggish": [
+            {
+              "label": "instrumental",
+              "prediction": 0.829249918460846
+            },
+            {
+              "label": "voice",
+              "prediction": 0.17299658060073853
+            }
+          ]
+        },
+        "genre": {
+          "predictions": [
+            {
+              "label": "Electronic/Downtempo",
+              "confidence": 0.371295303106308
+            },
+            {
+              "label": "Electronic/Trip Hop",
+              "confidence": 0.30985450744628906
+            },
+            {
+              "label": "Electronic/Big Beat",
+              "confidence": 0.25085967779159546
+            },
+            {
+              "label": "Electronic/Breakbeat",
+              "confidence": 0.22234509885311127
+            },
+            {
+              "label": "Hip Hop/Trip Hop",
+              "confidence": 0.2214595526456833
+            },
+            {
+              "label": "Hip Hop/Britcore",
+              "confidence": 0.20835116505622864
+            },
+            {
+              "label": "Hip Hop/Instrumental",
+              "confidence": 0.11020556092262268
+            },
+            {
+              "label": "Electronic/Breaks",
+              "confidence": 0.0653168335556984
+            },
+            {
+              "label": "Electronic/Ambient",
+              "confidence": 0.044550444930791855
+            },
+            {
+              "label": "Electronic/Abstract",
+              "confidence": 0.04346955195069313
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "fine_windows_analyzed": 18,
+  "fine_windows_total": 18,
+  "coarse_windows_analyzed": 4,
+  "coarse_windows_total": 4
+}

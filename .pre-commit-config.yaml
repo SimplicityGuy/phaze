@@ -49,7 +49,13 @@ repos:
         # Skip generated artifacts (planning graphs, graphify output) and the byte-identical
         # vendored Kubernetes JSON schemas (tests/vendor/, phaze-frq98) -- reformatting an upstream
         # artifact destroys the sha256 that proves it IS the upstream artifact.
-        exclude: ^(\.planning/|graphify-out/|tests/vendor/)
+        # Also skip the captured real-essentia analysis result (phaze-qiwdk): this hook SORTS
+        # keys, and the `features` dict's key order is a real property of the artifact --
+        # `_run_model_sets_over_windows` pins it to MODEL_SETS order with "genre" last,
+        # deliberately, because the dict is JSON-serialized downstream where insertion order is
+        # the output. Sorting it would quietly edit the record, exactly as with the recorded
+        # 1001Tracklists renders above. The file is already written at --indent=2.
+        exclude: ^(\.planning/|graphify-out/|tests/vendor/|tests/analyze/fixtures/real_analyze_file_result\.json$)
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: aab412d509121cb5f7533134b7e67f9fab59c682  # frozen: v0.16.4
