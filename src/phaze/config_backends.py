@@ -22,9 +22,10 @@ from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, Field, SecretStr, ValidationInfo, field_validator, model_validator
 
 from phaze.services.analysis_sizing import derive_sizing
+from phaze.services.k8s_quantity import QUANTITY_FIELDS, validate_quantity
 
 
 # Chars that must never reach the ssh remote spec / rsync operand (whitespace + shell metacharacters).
@@ -249,6 +250,36 @@ class KubeConfig(BaseModel):
     active_deadline_seconds: Annotated[int, Field(gt=0)] | None = None
     kubeconfig: SecretStr | None = None
     sa_token: SecretStr | None = None
+
+    @field_validator(*QUANTITY_FIELDS)
+    @classmethod
+    def _validate_quantity_format(cls, value: str | None, info: ValidationInfo) -> str | None:
+        """Reject a malformed Kubernetes Quantity AT CONFIG LOAD rather than at apiserver admission (phaze-frq98, F1).
+
+        These three fields reach ``build_job_manifest`` and are copied verbatim into the Job's
+        ``resources.requests`` / ``resources.limits``. Before this validator they were checked only
+        for truthiness, so ``"4GB"`` (for ``"4Gi"``) was accepted by phaze, asserted on by phaze's
+        own tests, and rejected only by a live cluster -- one full submit round-trip after the
+        operator typed it, with the error surfacing as an opaque ``KubeStagingError``.
+
+        **Schema validation does not cover this**, which is why the check lives here and not in the
+        manifest validator: the Kubernetes OpenAPI schema types a Quantity as a plain ``string``, so
+        ``"4GB"`` is schema-valid and ``kubeconform`` would pass it too (measured -- see
+        ``services/k8s_quantity.py``'s module docstring and the test it names).
+
+        ``None`` passes through untouched. All three fields are ``Optional`` and their unset-ness is
+        load-bearing -- ``memory_limit`` unset means "emit no ``limits`` key at all" (ADR-0005), and
+        an unset ``cpu_request`` / ``memory_request`` is caught later, by name, in
+        ``build_job_manifest``'s existing fail-loud check -- which names the offending backend entry,
+        a better message than this validator could produce. Validating a field's FORMAT must never
+        quietly promote it to REQUIRED.
+
+        FORMAT ONLY. No value is judged, clamped or normalised -- see the module docstring on why
+        that boundary matters for ``memory_limit`` specifically.
+        """
+        if value is None:
+            return None
+        return validate_quantity(value, field=info.field_name or "quantity")
 
     @model_validator(mode="before")
     @classmethod

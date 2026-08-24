@@ -384,6 +384,20 @@ dev = [
     "defusedxml>=0.7.1",
     "greenlet>=3.5.5",
     "httpx>=0.28.1",
+    # phaze-frq98 (seam F1): validates `kube_staging.build_job_manifest`'s output against the REAL
+    # Kubernetes Job schema -- the vendored, OpenAPI-derived artifact under
+    # `tests/vendor/kubernetes-json-schema/`, which is the SAME artifact `kubeconform` consumes.
+    # Chosen over kubeconform deliberately: kubeconform IS a JSON-Schema validator over these files,
+    # so a Go binary in CI *and* on every dev machine buys nothing the schema does not already carry
+    # (and it would still need the schemas vendored for offline determinism). A pure-Python dev
+    # dependency needs no dev-side setup step at all -- `uv sync` already installs this group.
+    # NOTE: no JSON Schema catches a bad Quantity ("4GB", "500") -- k8s types those as plain strings.
+    # That is `services/k8s_quantity.py`'s job, at config load, and it is ADR-0012 G3 in miniature:
+    # this schema is DERIVED FROM the same OpenAPI the apiserver publishes, so validating against it
+    # proves the manifest's shape and says nothing about what the apiserver's own Quantity parser --
+    # the real consumer -- will accept. See ADR-0012 section 4, G3
+    # (`docs/design/0012-verification-fidelity-and-operator-attribution.md`).
+    "jsonschema>=4.26.0",
     # Phase 53: S3 mock so the staging leg (presign/upload/delete) is testable without a
     # live S3 backend or cluster. The [server] extra (flask/werkzeug) provides
     # ThreadedMotoServer -- required because aiobotocore's async response parsing
