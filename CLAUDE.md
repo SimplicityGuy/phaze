@@ -175,6 +175,8 @@ on that, since it exports its own DSN against a 5432 service container.
 **Never share Postgres OR Redis between concurrent agents.** Both are stateful, both are shared by
 default, and both must be isolated per worktree. Saying "test database" here was the phaze-fwo7
 defect: it taught agents to isolate Postgres and left every seat on the same logical Redis.
+That mistake has a general form, and a third instance — see "Every writable path shared by
+concurrent seats is a collision surface" below.
 
 ```bash
 just test-db-for <name>    # derives <derived> from <name> (see below), creates
@@ -322,6 +324,63 @@ If you got here because Redis logical-DB allocation ran out, this is the wrong t
 `just test-db-reclaim` (above), which frees the seats nobody is using and touches neither
 container. Reaching for `test-db-down` to free an index was the phaze-68wky defect, and it is how
 the 2026-07-29 incident starts.
+
+### Every writable path shared by concurrent seats is a collision surface (phaze-rlshw)
+
+Postgres was the first instance and Redis the second — and the phaze-fwo7 note above records what
+enumerating instead of generalising costs: saying "test database" taught agents to isolate Postgres
+and left every seat on one logical Redis. The **scratchpad** is the third instance, so carry the
+general form rather than a third bullet: **anything a concurrent seat can open for writing must
+carry the bead id in its path** — databases, cache namespaces, log files, transcripts, scratch
+directories, report files. The surface is "writable and shared", not "stateful service".
+
+**Evidence-bearing paths are the costly ones, because they fail silently.** A clobbered database
+raises; a clobbered gate log does not. It yields a *confident wrong citation* — a seat reading back
+a pass/fail count, a coverage figure or a `phaze test database:` header that belongs to some other
+run. That is the phaze-jnj90 / phaze-nqawu family, a signal that looks like evidence, arriving
+through the **harness** rather than through the code or the config; and on this repo the transcript
+of the gate run *is* the deliverable.
+
+**The scratchpad is per-SESSION, not per-SEAT, and its "session-specific" label is the whole trap.**
+Every sub-agent of one dispatch is handed the *identical*
+`/private/tmp/claude-501/<repo-slug>/<session-uuid>/scratchpad`. "Session-specific" is true and
+reads as isolation: it isolates you from other *sessions*, never from your sibling *seats*.
+Measured 2026-08-22 on the six-way dispatch of phaze-bk9el.25–.29 + phaze-4jvy1 — three seats
+independently redirected `just check` into `<scratchpad>/check.log`, `>` truncated at open, and the
+runs interleaved. `dev/scanauth` grepped that log for its pytest header, read another seat's
+database name, correctly recognised the two-pytest-processes-on-one-database shape described above,
+and killed a **healthy** gate: right reasoning, wrong evidence, ~20 minutes of full-suite runtime
+lost. Nothing in Postgres, Redis or git was corrupted — per-seat isolation held across all six.
+
+**The convention:** write scratch output under `<scratchpad>/<bead-id>/`, or simply inside the
+bead's own worktree, which is per-bead by construction and needs no new convention at all. Prefer
+the worktree for gate logs.
+
+> **Operator decision 2026-08-22.** Question as put: *"the shared-scratchpad-as-'session-specific'
+> trap will recur on every future fan-out, and it produced a wasted gate run and two near-misses in
+> one wave. The durable fix is either a per-seat scratchpad convention or a line in CLAUDE.md's
+> dispatch guidance. Want me to file that as a bead?"* Answer as given, verbatim: *"yes, always use
+> per-bead scratchpads."* Durable record: bead phaze-rlshw. The operator said **per-bead**, not
+> per-seat as the question offered — the bead id is the unit, and it outlives a seat being
+> reassigned or resumed.
+
+### A gate is green only if its own pytest summary line says so (phaze-rlshw)
+
+Never a wrapper's exit code, never a background-task "completed" status, never the absence of
+visible errors. Read the **pytest summary line** and the **coverage line**, and confirm the pytest
+header names **your own** seat's database. Measured 2026-08-22, same wave: a background-task wrapper
+reported `completed (exit code 0)` over a `just check` that had exited **143** — SIGTERM at 19%,
+zero failed tests. The `0` was a trailing `echo`, not the gate. This belongs beside the scratchpad
+rule because it is the same class: the harness told a seat it was fine, and no code was wrong.
+
+### Concurrent gates are bounded by headroom, not by isolation (phaze-rlshw)
+
+The isolation rules protect **correctness** and say nothing about **capacity** — and exceeding
+capacity does not look like a failure, it looks like a SIGTERM that a wrapper renders as exit 0.
+Measured 2026-08-22: **5** concurrent full-suite gates at **545–671 MB** RSS each left **46%** of
+memory free with **461 MB of 1024 MB** swap in use, and one gate was genuinely SIGTERM'd. Run
+`ps aux | grep "[p]ytest"` before starting a gate; if three full-suite sessions are already running,
+wait rather than adding a fourth. A fan-out wider than that staggers its **gates**, not its claims.
 
 ## Code Quality
 
@@ -528,7 +587,7 @@ A music collection organizer that ingests music files (mp3, m4a, ogg) and concer
 ### AI / LLM Integration
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
-| litellm | >=1.97.0,<1.98.0 (pin exact minor) | Unified LLM API client | Single interface to 100+ LLM providers (OpenAI, Anthropic, local models). Avoids vendor lock-in. Use for filename/path proposals. **IMPORTANT:** Pin exact minor line due to the March 2026 supply chain incident on versions 1.82.7-1.82.8. Verify checksums. |
+| litellm | >=1.98.0,<1.99.0 (pin exact minor) | Unified LLM API client | Single interface to 100+ LLM providers (OpenAI, Anthropic, local models). Avoids vendor lock-in. Use for filename/path proposals. **IMPORTANT:** Pin exact minor line due to the March 2026 supply chain incident on versions 1.82.7-1.82.8. Verify checksums. |
 | pydantic | >=2.10 | Data validation / LLM structured output | Already a FastAPI dependency. Use for validating LLM responses (proposed filenames, paths). Structured output parsing. |
 ### Configuration / Infrastructure
 | Technology | Version | Purpose | Why Recommended |
@@ -586,7 +645,7 @@ A music collection organizer that ingests music files (mp3, m4a, ogg) and concer
 | FastAPI >=0.141.1 | Pydantic 2.x | FastAPI requires Pydantic v2. Do not install Pydantic v1. |
 | FastAPI >=0.141.1 | Starlette (resolved through FastAPI) | Do not override FastAPI's Starlette constraint. |
 | Alembic >=1.19.1 | SQLAlchemy >=2.0 | Use `alembic init -t async` for async template. Import all models in `env.py` for autogenerate to work. |
-| litellm | ALL | **Pin exact minor line.** Supply chain attack on 1.82.7/1.82.8 (March 2026). Pinned `>=1.97.0,<1.98.0`; raise the cap deliberately after vetting. Verify SHA checksums. |
+| litellm | ALL | **Pin exact minor line.** Supply chain attack on 1.82.7/1.82.8 (March 2026). Pinned `>=1.98.0,<1.99.0`; raise the cap deliberately after vetting. Verify SHA checksums. |
 | SAQ >=0.26.4 (`saq[postgres]`) | Postgres (psycopg[binary]>=3.3.4) | Broker migrated from Redis to Postgres in Phase 36. Redis (client >=8.1.0) is used for caching only now. |
 | FFmpeg (system) 7.1.x (via the base image) | the essentia-tensorflow wheel's **static** ffmpeg 7.1 (amd64) AND the arm64 agent's from-source essentia, compiled against trixie `libav*-dev` 7.1.x | This is the compatibility that matters and the reason 7.1 is the right line. **amd64:** the wheel's `_essentia.cpython-314-x86_64-linux-gnu.so` statically links ffmpeg 7.1 — no bundled `libav*.so`, no soname refs, so there is no dynamic seam to repoint; trixie's CLI is already on that line. **arm64:** no cp314 aarch64 wheel exists, so essentia is compiled from source against `libavcodec-dev`/`libavformat-dev`/`libavutil-dev`/`libswresample-dev` — the same Debian source package as the CLI, so the base tag moves both together or neither. Reaching 7.1 there required the base move to trixie (bookworm tops out at 5.1.x). **Python stays 3.13 on that image** — TF ships no cp314 aarch64 wheel (dependabot PR #326 proved 3.14 breaks the build); base suite, Python, TF and the pinned essentia commit are one combination, not four independent knobs. |
 | chromaprint (system) | no verified consumer | Not consumed via `pyacoustid` (unused) or by any `phaze` source. **Not** an essentia-tensorflow runtime dependency either — `ldd` on the deployed `_essentia` extension shows no chromaprint link and `import essentia` succeeds without it (phaze-0jpe.6 correction; see `docs/design/0002-fingerprint-removal.md`). **Retained permanently by operator decision 2026-07-29** — phaze-0jpe.6 closed as "keep"; stays installed (`chromaprint-tools`) in Docker. |
@@ -807,7 +866,7 @@ The five rules in **Acceptance criteria, attribution, and verification fidelity*
 2. **Exploring a new idea?** Use the planner: invoke the `bh:planner` skill (`/bh:plan <idea>`) to drive ideate → research → decompose → file.
 3. **When filing a new bead, ask clarifying questions** — scope, priority, acceptance — before writing the description.
 4. **Before starting execution on a bead**, if there is any ambiguity about what must be delivered, keep asking clarifying questions until the work is clear. An acceptance criterion that looks wrong or ambiguous is a question for the operator, never something to reinterpret in prose — see rule 1 above, and `phaze-3ea41` for what reinterpreting one costs.
-5. **Once work starts, the dispatching session occupies the dispatcher seat itself** — load the `bh:dispatcher` skill and drive the molecule from that session; do NOT spawn a `bh:dispatcher` sub-agent (a sub-agent surrenders mid-flight visibility and leaves the session inferring state from git, which misreads both uncommitted work and evidence-only spike beads). From that seat, **dispatch a team of developer sub-agents**, each working in its own worktree (`wt/bead/issue/<id>`) branched off the bead's integration branch. Never share a worktree or a test database between concurrent agents.
+5. **Once work starts, the dispatching session occupies the dispatcher seat itself** — load the `bh:dispatcher` skill and drive the molecule from that session; do NOT spawn a `bh:dispatcher` sub-agent (a sub-agent surrenders mid-flight visibility and leaves the session inferring state from git, which misreads both uncommitted work and evidence-only spike beads). From that seat, **dispatch a team of developer sub-agents**, each working in its own worktree (`wt/bead/issue/<id>`) branched off the bead's integration branch. Never share a worktree, a test database, or any other writable path between concurrent agents — see "Every writable path shared by concurrent seats is a collision surface".
 6. **Fix pushes get the adversarial treatment.** Before a `fixgroup:*` integration branch merges — a molecule whose children are bug beads from a bug hunt — run a **diff-scoped adversarial verification pass over the fix diff**: the same different-model, default-to-refuted verifier the hunt used to confirm its findings, with the fix itself as the claim under refutation. Findings become new beads, never silent edits. Rationale, the measurements behind it, and an explicit list of what the pass does **not** catch: [ADR-0011](docs/design/0011-bug-hunt-cadence.md). The same ADR sets the hunting cadence — routine lens passes are scoped to the diff since the last hunt; whole-tree passes are reduced in frequency, **not** retired.
 7. **When all children of the bead are done:** land the molecule (merge commit, never squash), then close the bead(s) with comments explaining the outcome. **A code molecule needs no PR** — `bh work finish <epic>` onto local main, then push `main` to origin directly; CI runs after the fact, so the full `just check` on an isolated seat is what actually gated it. **A docs molecule does**: open a PR, invoke a code review, and wait for green CI. If anything fails, investigate and fix — do not bypass. See "Workflow: Features and PRs" for which changes count as docs.
 8. **Periodically push the beads DB** to the Dolt remote: `bd dolt push`.
@@ -945,7 +1004,8 @@ bv --recipe high-impact --robot-triage # pre-filter: top PageRank scores
 - **Dependencies**: beads can block other beads; `bh work ready` shows only unblocked
   work.
 - **Worktrees**: one per bead, `wt/bead/issue/<id>`. Never share a worktree, a test
-  database, or a Redis logical DB between concurrent agents.
+  database, or a Redis logical DB between concurrent agents — nor any other writable path,
+  scratch directories and gate logs included.
 
 ### Syncing the Dolt remote
 

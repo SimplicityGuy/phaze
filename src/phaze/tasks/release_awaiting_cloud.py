@@ -236,12 +236,64 @@ def _free_slots(snapshot: dict[str, BackendSlot]) -> int:
     return sum(slot["remaining"] for slot in snapshot.values() if slot["available"])
 
 
+@dataclass(slots=True)
+class _WalkState:
+    """The mutable running tally of ONE tick's paged FIFO walk (phaze-9sqa).
+
+    Owned by :func:`stage_cloud_window` and mutated IN PLACE by the walk helpers, deliberately: the
+    outer CR-02 safety net reports ``max(scanned, len(candidates))`` held rows using whatever the walk
+    got through *before* it raised, so these counters must survive an exception unwinding out of the
+    walk. Returning them instead would lose exactly the numbers the abort path needs.
+
+    * ``tally`` -- the ``{"staged", "skipped"}`` the cron returns.
+    * ``hold_reasons`` -- each held candidate binned by the ``select_backend`` filter that rejected it;
+      feeds both the completion log line and the repeated-all-held WARNING.
+    * ``scanned`` -- every row examined this tick across ALL pages (the ``_MAX_CANDIDATE_SCAN`` budget).
+    """
+
+    tally: dict[str, int] = field(default_factory=lambda: {"staged": 0, "skipped": 0})
+    hold_reasons: Counter[str] = field(default_factory=Counter)
+    scanned: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _TickContext:
+    """The environment ONE tick's paged FIFO walk routes against (phaze-bk9el.27, primitive_obsession).
+
+    ``session``, ``snapshot``, ``cfg``, ``task_router`` and ``state`` travelled together, unchanged and
+    in the same order, through every walk helper below; the four primitive_obsession findings on this
+    file were that ONE recurring group seen from four frames, not four separate shapes. Bundling it
+    names the concept it always was -- "the environment this tick's walk runs in" -- and is the same
+    resolution :class:`phaze.tasks.reconcile_cloud_jobs._RowReconcile` gave the identical shape one bead
+    earlier. A helper that does not need a field simply does not read it.
+
+    ``frozen=True`` freezes the BINDINGS, never the objects behind them. ``snapshot``'s per-backend
+    ``remaining`` counters and ``state``'s tally are still mutated IN PLACE by the walk, which is
+    load-bearing in both cases: the in-place ``remaining`` decrement is what makes a full top-rank
+    backend spill the next candidate to the next rank within the same tick (SCHED-01), and the in-place
+    ``state`` counters are what let the CR-02 safety net report ``max(state.scanned, len(candidates))``
+    after an exception unwinds out of the walk. :func:`stage_cloud_window` keeps its own references to
+    both objects, and the freeze is precisely what guarantees no helper can swap either one out from
+    under it.
+
+    Deliberately NOT folded in: ``page`` and ``page_limit`` (the rows a given call is routing and the
+    LIMIT they were fetched with), and the per-candidate ``lane_entered_at`` / ``cloud_attempts`` /
+    ``cloud_budget`` triple. Every one of those varies WITHIN a single tick's walk, so folding them in
+    would blur "the environment this call runs in" with "what this particular call is working on" --
+    the same distinction ``_RowReconcile`` draws.
+    """
+
+    session: AsyncSession
+    snapshot: dict[str, BackendSlot]
+    cfg: ControlSettings
+    task_router: Any
+    state: _WalkState
+
+
 async def _next_candidate_page(
-    session: AsyncSession,
-    snapshot: dict[str, BackendSlot],
+    walk: _TickContext,
     page: list[tuple[FileRecord, datetime]],
     page_limit: int,
-    scanned: int,
 ) -> tuple[list[tuple[FileRecord, datetime]], int] | None:
     """Return the next keyset page + the LIMIT it was fetched with, or ``None`` to end the walk (phaze-9sqa).
 
@@ -261,37 +313,18 @@ async def _next_candidate_page(
     The cursor is the last row's ``(created_at, id)``, matching the query's composite ORDER BY exactly;
     ``created_at`` is immutable and ``id`` breaks its ties, so the walk can neither skip nor re-serve a row.
     """
-    free_slots = _free_slots(snapshot)
+    free_slots = _free_slots(walk.snapshot)
+    scanned = walk.state.scanned
     if free_slots <= 0 or len(page) < page_limit or scanned >= _MAX_CANDIDATE_SCAN:
         return None
     # Ask for at least _MIN_CANDIDATE_PAGE (amortize the walk over a long unroutable prefix), never more
     # than the scan budget still unspent.
     next_limit = min(max(free_slots, _MIN_CANDIDATE_PAGE), _MAX_CANDIDATE_SCAN - scanned)
     last_file = page[-1][0]
-    next_page = await get_cloud_staging_candidates(session, next_limit, after=(last_file.created_at, last_file.id))
+    next_page = await get_cloud_staging_candidates(walk.session, next_limit, after=(last_file.created_at, last_file.id))
     if not next_page:
         return None
     return next_page, next_limit
-
-
-@dataclass(slots=True)
-class _WalkState:
-    """The mutable running tally of ONE tick's paged FIFO walk (phaze-9sqa).
-
-    Owned by :func:`stage_cloud_window` and mutated IN PLACE by the walk helpers, deliberately: the
-    outer CR-02 safety net reports ``max(scanned, len(candidates))`` held rows using whatever the walk
-    got through *before* it raised, so these counters must survive an exception unwinding out of the
-    walk. Returning them instead would lose exactly the numbers the abort path needs.
-
-    * ``tally`` -- the ``{"staged", "skipped"}`` the cron returns.
-    * ``hold_reasons`` -- each held candidate binned by the ``select_backend`` filter that rejected it;
-      feeds both the completion log line and the repeated-all-held WARNING.
-    * ``scanned`` -- every row examined this tick across ALL pages (the ``_MAX_CANDIDATE_SCAN`` budget).
-    """
-
-    tally: dict[str, int] = field(default_factory=lambda: {"staged": 0, "skipped": 0})
-    hold_reasons: Counter[str] = field(default_factory=Counter)
-    scanned: int = 0
 
 
 async def _snapshot_backend_slots(backends: Sequence[Backend], session: AsyncSession) -> dict[str, BackendSlot]:
@@ -334,16 +367,17 @@ async def _snapshot_backend_slots(backends: Sequence[Backend], session: AsyncSes
 
 
 def _route_candidate(
+    walk: _TickContext,
     lane_entered_at: datetime,
     cloud_attempts: int,
-    snapshot: dict[str, BackendSlot],
-    cfg: ControlSettings,
     cloud_budget: CloudBudgetState | None,
 ) -> tuple[Backend | None, str]:
     """Return the pure rank/budget policy's ``(backend, "")`` dispatch or ``(None, reason)`` hold.
 
-    No I/O: the whole decision is the pure ``select_backend_with_reason`` over the per-tick snapshot.
-    The ONE thing this wrapper adds is the clock, and it must stay per-candidate:
+    No I/O -- and taking the :class:`_TickContext` does not change that: this reads only ``walk.snapshot``
+    (already probed, once, for the whole tick) and ``walk.cfg``, and never touches ``walk.session`` or
+    ``walk.task_router``. The whole decision remains the pure ``select_backend_with_reason`` over the
+    per-tick snapshot. The ONE thing this wrapper adds is the clock, and it must stay per-candidate:
 
     models/base.py: created_at/updated_at carry no timezone=True, so create_all yields naive datetimes
     while a TIMESTAMPTZ migration column hands asyncpg tz-aware ones. Match the candidate's awareness
@@ -362,18 +396,11 @@ def _route_candidate(
     now = datetime.now(UTC)
     if lane_entered_at.tzinfo is None:
         now = now.replace(tzinfo=None)
-    return select_backend_with_reason(lane_entered_at, cloud_attempts, snapshot, now, cfg, cloud_budget=cloud_budget)
+    return select_backend_with_reason(lane_entered_at, cloud_attempts, walk.snapshot, now, walk.cfg, cloud_budget=cloud_budget)
 
 
-async def _stage_candidate_page(
-    session: AsyncSession,
-    page: list[tuple[FileRecord, datetime]],
-    snapshot: dict[str, BackendSlot],
-    cfg: ControlSettings,
-    task_router: Any,
-    state: _WalkState,
-) -> bool:
-    """Route ONE page of FIFO candidates, mutating ``snapshot``/``state``; return "fileserver vanished".
+async def _stage_candidate_page(walk: _TickContext, page: list[tuple[FileRecord, datetime]]) -> bool:
+    """Route ONE page of FIFO candidates, mutating ``walk.snapshot``/``walk.state``; return "fileserver vanished".
 
     SCHED-01: each candidate goes to select_backend's rank-first choice across N backends. ``dispatch``
     owns the FileState -> PUSHING flip AND the cloud_job write in the CALLER's session (D-03), before
@@ -384,15 +411,15 @@ async def _stage_candidate_page(
     decremented. Returns True only for the fileserver-vanished break, which ends the whole walk.
     """
     for index, (file, lane_entered_at) in enumerate(page):
-        cloud_attempts, cloud_budget = await _cloud_budget_for(session, file.id)
-        target, hold_reason = _route_candidate(lane_entered_at, cloud_attempts, snapshot, cfg, cloud_budget)
+        cloud_attempts, cloud_budget = await _cloud_budget_for(walk.session, file.id)
+        target, hold_reason = _route_candidate(walk, lane_entered_at, cloud_attempts, cloud_budget)
         if target is None:
             # Clean per-candidate hold: no eligible backend for this file this tick. No state change
             # -- the file stays AWAITING_CLOUD (guards the updated_at staleness signal, RESEARCH A3).
             # phaze-9sqa: bin the labelled reason. This is the ONLY hold that leaves free slots open
             # (every other skip below claimed a slot), so it is the one the walk must step past.
-            state.hold_reasons[hold_reason] += 1
-            state.tally["skipped"] += 1
+            walk.state.hold_reasons[hold_reason] += 1
+            walk.state.tally["skipped"] += 1
             continue
         # WR-02: dispatch re-resolves the fileserver agent per file. Under READ COMMITTED a fileserver
         # revoked by a concurrent session AFTER GATE-2 in the caller but BEFORE this iteration raises
@@ -402,11 +429,11 @@ async def _stage_candidate_page(
         # raising file is untouched and the already-staged prior candidates are genuine -> stop (NOT
         # rollback), letting the caller's post-loop commit persist that good prior work.
         try:
-            dispatched = await target.dispatch(file, session, task_router)
+            dispatched = await target.dispatch(file, walk.session, walk.task_router)
         except NoActiveAgentError:
             held = len(page) - index
             logger.info("stage_cloud_window hold: fileserver agent vanished mid-tick", held=held)
-            state.tally["skipped"] += held
+            walk.state.tally["skipped"] += held
             # phaze-9sqa: the fileserver is the push initiator for EVERY backend, so this ends the
             # whole walk -- fetching further pages could only hold them too (and lock them for it).
             return True
@@ -423,27 +450,20 @@ async def _stage_candidate_page(
             # (no work claimed), and continue so a single flaky cluster cannot starve the other
             # backends. The tick NEVER aborts and NEVER raises.
             logger.warning("stage_cloud_window: backend dispatch failed -> holding this candidate", backend_id=target.id)
-            state.tally["skipped"] += 1
+            walk.state.tally["skipped"] += 1
             continue
         # The slot is claimed (cloud_job upserted) on both a genuine stage and a dedup no-op, so
         # decrement the local remaining unconditionally -- this is what makes a full top-rank backend
         # spill the NEXT candidate to the next rank within the same tick (SCHED-01), cap-safe (SCHED-02).
-        snapshot[target.id]["remaining"] -= 1
+        walk.snapshot[target.id]["remaining"] -= 1
         if dispatched:
-            state.tally["staged"] += 1
+            walk.state.tally["staged"] += 1
         else:
-            state.tally["skipped"] += 1
+            walk.state.tally["skipped"] += 1
     return False
 
 
-async def _walk_candidate_pages(
-    session: AsyncSession,
-    first_page: tuple[list[tuple[FileRecord, datetime]], int],
-    snapshot: dict[str, BackendSlot],
-    cfg: ControlSettings,
-    task_router: Any,
-    state: _WalkState,
-) -> None:
+async def _walk_candidate_pages(walk: _TickContext, first_page: tuple[list[tuple[FileRecord, datetime]], int]) -> None:
     """Drive the phaze-9sqa paged FIFO walk: route a page, then decide whether to fetch the next.
 
     A page is the pair ``(rows, the LIMIT they were fetched with)`` -- the LIMIT is not decoration, it
@@ -454,14 +474,14 @@ async def _walk_candidate_pages(
     Every invariant the original single-page loop held is unchanged: ONE transaction, ONE advisory
     lock, ONE post-loop commit in the CALLER, no mid-loop rollback -- pagination only widens WHICH rows
     a tick may consider, never when it commits. This function issues no COMMIT/ROLLBACK of its own; it
-    runs inside the caller's CR-02 safety net and may raise into it, which is why ``state`` carries the
-    counters rather than a return value.
+    runs inside the caller's CR-02 safety net and may raise into it, which is why ``walk.state`` carries
+    the counters rather than a return value.
     """
     page, page_limit = first_page
     while True:
-        state.scanned += len(page)
-        fileserver_vanished = await _stage_candidate_page(session, page, snapshot, cfg, task_router, state)
-        next_page = None if fileserver_vanished else await _next_candidate_page(session, snapshot, page, page_limit, state.scanned)
+        walk.state.scanned += len(page)
+        fileserver_vanished = await _stage_candidate_page(walk, page)
+        next_page = None if fileserver_vanished else await _next_candidate_page(walk, page, page_limit)
         if next_page is None:
             break
         page, page_limit = next_page
@@ -524,6 +544,13 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
     the session, the ONE ``pg_advisory_xact_lock``, the ONE post-loop commit, the parked-enqueue flush,
     and the CR-02 rollback -- no helper commits, rolls back, or takes a lock. Fragmenting that
     ownership is what would re-open the over-stage class (Landmine L1).
+
+    phaze-bk9el.27: the walk helpers take that environment as ONE :class:`_TickContext` rather than as
+    the same five loose parameters restated per signature. Handing them the session inside a bundle does
+    NOT hand them the transaction -- the ownership sentence above is unchanged and still exact, and the
+    frozen bundle in fact narrows what a helper can do to the tick (it cannot rebind the session, the
+    snapshot or the tally). This function constructs the bundle at the single call site below and keeps
+    its own ``snapshot`` / ``state`` references, which is what the CR-02 rollback path reads.
     """
     # ControlSettings-scoped: this cron is registered ONLY on the control worker (PHAZE_ROLE=control),
     # so get_settings() returns ControlSettings here (mirrors controller.startup's config access).
@@ -595,7 +622,7 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
         # roll back mid-walk (that would end the txn and release the pg_advisory_xact_lock, re-opening the
         # over-stage class, Landmine L1). The advisory-lock scope + single post-loop commit are unchanged.
         try:
-            await _walk_candidate_pages(session, (candidates, limit), snapshot, cfg, ctx["task_router"], state)
+            await _walk_candidate_pages(_TickContext(session, snapshot, cfg, ctx["task_router"], state), (candidates, limit))
             await session.commit()
             # phaze-grzo: fire the s3_upload enqueues KueueBackend.dispatch parked, ONLY now that the
             # cloud_job UPLOADING rows are durably committed -- so the worker-visible job (and its

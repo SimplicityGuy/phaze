@@ -29,6 +29,13 @@ retry's ``write_and_verify_sync`` re-extracts ``before_tags`` from whatever is o
 ALREADY-WRITTEN state, not the true original. Reporting it up front, first-write-wins, makes the
 captured snapshot independent of which attempt's write or callback actually completes.
 
+phaze-2zeu0: the write rewrites the file's BYTES, so the file's sha256 changes and
+``FileRecord.sha256_hash`` -- written once at ingest and never refreshed -- goes stale, permanently
+breaking every consumer that verifies bytes against it. The result callback now carries the
+post-write digest (``_write_verify_and_rehash``, computed in the same thread offload as the write)
+so the control plane can refresh that column. ``phaze.services.hashing`` is stdlib-only, so it does
+not disturb the D-25 boundary below.
+
 This module MUST NOT import phaze.database, phaze.models.*, or sqlalchemy.
 Enforced by tests/shared/core/test_task_split.py (Plan 10 / D-25).
 """
@@ -45,10 +52,13 @@ from phaze.enums.tag_write import TagWriteStatus
 from phaze.schemas.agent_tag_writes import TagWriteBeforeSnapshotPayload, TagWriteResultPayload
 from phaze.schemas.agent_tasks import WriteFileTagsPayload
 from phaze.services.containment import resolve_and_check_containment
+from phaze.services.hashing import compute_sha256
 from phaze.services.tag_write_disk import _extract_before_tags, write_and_verify_sync
 
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from phaze.services.agent_client import PhazeAgentClient
 
 
@@ -57,6 +67,51 @@ logger = structlog.get_logger(__name__)
 # Same bound as TagWriteResultPayload.error_message -- truncate BEFORE constructing the payload so a
 # pathological exception string can never raise a ValidationError that would swallow the real error.
 _ERROR_MESSAGE_MAX = 2000
+
+
+def _write_verify_and_rehash(
+    path: Path,
+    tags: dict[str, Any],
+) -> tuple[TagWriteStatus, dict[str, dict[str, str | None]] | None, str | None, dict[str, str | int | list[str] | None], str | None]:
+    """``write_and_verify_sync`` plus the post-write re-hash, in ONE thread offload (phaze-2zeu0).
+
+    Bundled here rather than added inside ``write_and_verify_sync`` for two reasons. It keeps
+    ``services.tag_write_disk`` about TAGS -- the re-hash is not a tag concern and that module's
+    four other callers (and its tests) do not want it -- and it preserves the phaze-qfxv discipline
+    the caller depends on: the read-before, the mutagen ``save()``, the verify re-read AND now the
+    sha256 all run in a single ``asyncio.to_thread``, so the agent's event loop (which also runs the
+    Phase-46 liveness heartbeat) is never handed a fifth chance to stall on a slow media mount.
+
+    WHY THE HASH IS TAKEN ON EVERY PATH, NOT ONLY ON ``COMPLETED``. ``write_and_verify_sync``
+    decides the status AFTER ``write_tags`` has already called ``audio.save()``, so the status
+    describes what the VERIFY concluded, not whether the bytes moved. ``COMPLETED``,
+    ``DISCREPANCY`` and ``VERIFY_FAILED`` all follow a landed write (the last one explicitly: "the
+    on-disk write SUCCEEDED but the verify re-read failed"), and ``FAILED`` is indeterminate -- an
+    exception raised inside or after ``save()`` still leaves a rewritten file. Hashing
+    unconditionally sidesteps the whole classification: whatever is on disk now is what we report.
+    Measured (phaze-2zeu0): a write that did not change the file's SIZE at all -- 5208 bytes before
+    and after, because the ID3 area had padding to spare -- still changed the digest. There is no
+    "small write" that is safe to skip.
+
+    IMPLEMENTER'S DECISION, NOT THE OPERATOR'S (bead phaze-2zeu0). On 2026-08-22 the operator was
+    asked which fix mechanism to use and answered with the option label "Re-hash on the agent,
+    PATCH it back" -- that is the whole of what they chose. WHICH STATUSES it covers was never put
+    to them, so it is decided here, on the reasoning above, and labelled as the implementer's own.
+    The durable record of both is the bead. Flagged explicitly so this invites review rather than
+    borrowing authority it does not have (ADR-0012 rule 2).
+
+    A hashing failure yields ``None`` -- "not observed" -- rather than raising: the disk write has
+    already happened by this point, and letting an unreadable-file ``OSError`` escape would fail the
+    SAQ job and strand the audit row in ``queued``, losing the write's outcome entirely over a
+    secondary read. ``None`` makes the control plane leave the column alone.
+    """
+    status, discrepancies, error_message, before_tags = write_and_verify_sync(str(path), tags)
+    try:
+        digest: str | None = compute_sha256(path)
+    except OSError:
+        logger.warning("tag write re-hash failed -- reporting no observed hash", path=str(path), exc_info=True)
+        digest = None
+    return status, discrepancies, error_message, before_tags, digest
 
 
 async def write_file_tags(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
@@ -84,6 +139,10 @@ async def write_file_tags(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             log_id=str(payload.log_id),
             error=str(exc),
         )
+        # phaze-2zeu0: no `sha256_hash` here, deliberately. This branch returns BEFORE any disk I/O,
+        # so nothing was observed -- and the file is outside this agent's scan_roots, which is
+        # exactly the file it must not read. Omitting it (None = "not observed") leaves the stored
+        # hash untouched, which is correct: an unattempted write cannot have invalidated it.
         result = TagWriteResultPayload(status=TagWriteStatus.FAILED, before_tags={}, error_message=str(exc)[:_ERROR_MESSAGE_MAX])
         await api.patch_tag_write(payload.log_id, result)
         return {"file_id": str(payload.file_id), "log_id": str(payload.log_id), "status": str(TagWriteStatus.FAILED)}
@@ -111,13 +170,16 @@ async def write_file_tags(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     # re-read) runs in ONE thread offload. The agent's event loop also runs the Phase-46 liveness
     # heartbeat, whose design premise is 'the event loop is free'; an on-loop stall against a slow
     # media mount risks a false DEAD classification and duplicate-work re-enqueue.
-    status, discrepancies, error_message, before_tags = await asyncio.to_thread(write_and_verify_sync, file_path, payload.tags)
+    # phaze-2zeu0: `_write_verify_and_rehash` appends the post-write sha256 to that same offload --
+    # see its docstring for why the hash is taken on every terminal path rather than only COMPLETED.
+    status, discrepancies, error_message, before_tags, sha256_hash = await asyncio.to_thread(_write_verify_and_rehash, resolved_path, payload.tags)
 
     result = TagWriteResultPayload(
         status=status,
         before_tags=before_tags,
         discrepancies=discrepancies or None,
         error_message=error_message[:_ERROR_MESSAGE_MAX] if error_message else None,
+        sha256_hash=sha256_hash,
     )
     # A failed WRITE is not a failed JOB -- ``write_and_verify_sync`` already classified it into a
     # terminal audit status the operator retries from the workspace. Only the CALLBACK is allowed to

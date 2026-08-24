@@ -59,6 +59,23 @@ class TagWriteResultPayload(BaseModel):
     before_tags: dict[str, str | int | list[str] | None] = Field(default_factory=dict)
     discrepancies: dict[str, dict[str, str | None]] | None = None
     error_message: str | None = Field(default=None, max_length=_ERROR_MESSAGE_MAX)
+    # phaze-2zeu0: the file's sha256 as the agent OBSERVED IT ON DISK after doing its work. A tag
+    # write rewrites the file's bytes, so ``FileRecord.sha256_hash`` -- written once at ingest
+    # (``tasks/scan.py:218``) and never refreshed -- goes stale the moment a write lands, and every
+    # consumer that verifies bytes against that column then fails PERMANENTLY: the execution
+    # pre-copy verify (``tasks/execution.py``) raises "sha256 mismatch", and the cloud lane's
+    # integrity gate (``job_runner._verify_integrity_step``) exits 11 with no retry.
+    #
+    # This is deliberately typed as an OBSERVATION, not as an invalidation signal, and that framing
+    # is what makes it correct for every status rather than just the happy one. The agent is the
+    # only party that can read the file (DIST-01: the api container has no media mount), so it
+    # reports what is actually there; the control plane records it. ``None`` means "not observed"
+    # (the containment refusal returns before any disk I/O), NOT "unchanged" -- so the control
+    # plane leaves the column alone rather than guessing.
+    #
+    # Same lowercase-hex bound as ``PresignDownloadResponse.expected_sha256`` and the
+    # ``FileRecord.sha256_hash`` column (``String(64)``); ``compute_sha256`` returns exactly that.
+    sha256_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     _reject_pg_unsafe_before_tags = field_validator("before_tags", "discrepancies", mode="after")(_reject_pg_unsafe_json)
 

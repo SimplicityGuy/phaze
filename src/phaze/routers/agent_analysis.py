@@ -130,7 +130,7 @@ async def _delete_staged_object_if_cloud(session: AsyncSession, file_id: uuid.UU
     """Delete the staged S3 object inline once the analysis result has landed (D-02, KSTAGE-04).
 
     Guarded on a ``cloud_job`` row existing for ``file_id``: an all-local file (no staging
-    row) makes ZERO S3 calls -- no aioboto3 client is built and no S3 config is required, so
+    row) makes ZERO S3 calls -- no aiobotocore client is built and no S3 config is required, so
     deploys without object storage are completely unaffected (T-53-22). This is CRITICAL: the
     guard must short-circuit BEFORE any ``s3_staging`` call so the all-local path never raises
     on an unconfigured backend.

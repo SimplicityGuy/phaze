@@ -410,3 +410,100 @@ def test_controller_startup_creates_proposal_service() -> None:
     source = inspect.getsource(startup)
     assert "proposal_service" in source
     assert "ProposalService" in source
+
+
+# ---------------------------------------------------------------------------
+# phaze-02v1s: correlating a malformed completion with the files it cost
+#
+# `services/proposal.py` logs the MODE and a content preview -- it is the only layer holding the
+# raw bytes. This layer is the only one holding the batch index and the file ids, and the seam
+# finding named their absence explicitly ("no file ids, no model name, no content snippet, no way
+# to tell which mode fired"). These two tests cover the half that lives here.
+# ---------------------------------------------------------------------------
+
+
+@patch("phaze.tasks.proposal.store_proposals", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.check_rate_limit", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.fetch_companion_contents", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.load_companion_targets", new_callable=AsyncMock)
+async def test_generate_proposals_logs_file_ids_when_the_completion_is_unparseable(
+    mock_targets: AsyncMock,
+    mock_fetch: AsyncMock,
+    mock_rate_limit: AsyncMock,
+    mock_store: AsyncMock,
+) -> None:
+    """The batch dies, and the log says WHICH files died with it and in which mode.
+
+    The exception is re-raised unchanged: SAQ's retry and failure handling are untouched, and
+    `MalformedCompletionError` is meant to fail the job loudly. This is logging only -- it is NOT
+    the "zero exception handling" the finding described as absent being quietly filled in.
+    """
+    from structlog.testing import capture_logs
+
+    from phaze.services.proposal import MalformedCompletionError
+    from phaze.tasks.proposal import generate_proposals
+
+    file_id = uuid.uuid4()
+    session = AsyncMock()
+    session.execute.side_effect = _batch_query_results([_make_file_record(file_id=file_id)], [_make_analysis(file_id=file_id)], [])
+
+    mock_targets.return_value = {}
+    mock_fetch.return_value = []
+
+    ctx = _make_ctx(mock_session=session)
+    ctx["proposal_service"].generate_batch.side_effect = MalformedCompletionError("boom", mode="truncated")
+
+    with capture_logs() as captured, pytest.raises(MalformedCompletionError):
+        await generate_proposals(ctx, file_ids=[str(file_id)], batch_index=7)
+
+    event = next(item for item in captured if item.get("parse_mode") == "truncated")
+    assert event["batch_index"] == 7
+    assert event["file_ids"] == [str(file_id)]
+    assert event["file_count"] == 1
+    mock_store.assert_not_called()
+
+
+@patch("phaze.tasks.proposal.store_proposals", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.check_rate_limit", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.fetch_companion_contents", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.load_companion_targets", new_callable=AsyncMock)
+async def test_generate_proposals_reports_a_salvaged_batch_and_still_stores_the_survivors(
+    mock_targets: AsyncMock,
+    mock_fetch: AsyncMock,
+    mock_rate_limit: AsyncMock,
+    mock_store: AsyncMock,
+) -> None:
+    """A salvaged batch proceeds -- the survivors are real proposals -- but it does not look clean.
+
+    `store_proposals` is still called, because discarding a proposal is not a reason to discard the
+    nine that were complete. What must not happen is the batch passing through indistinguishable
+    from an untouched one.
+    """
+    from structlog.testing import capture_logs
+
+    from phaze.services.proposal import SalvagedBatchProposalResponse
+    from phaze.tasks.proposal import generate_proposals
+
+    file_id = uuid.uuid4()
+    session = AsyncMock()
+    session.execute.side_effect = _batch_query_results([_make_file_record(file_id=file_id)], [_make_analysis(file_id=file_id)], [])
+
+    mock_targets.return_value = {}
+    mock_fetch.return_value = []
+
+    ctx = _make_ctx(mock_session=session)
+    ctx["proposal_service"].generate_batch.return_value = SalvagedBatchProposalResponse(
+        proposals=[FileProposalResponse(file_index=0, proposed_filename="Kept.mp3", confidence=0.8, reasoning="complete")],
+        discarded_positions=[1, 2],
+    )
+    mock_store.return_value = 1
+
+    with capture_logs() as captured:
+        result = await generate_proposals(ctx, file_ids=[str(file_id)], batch_index=3)
+
+    assert result["status"] == "ok"
+    mock_store.assert_called_once()
+    event = next(item for item in captured if "discarded_positions" in item)
+    assert event["discarded_positions"] == [1, 2]
+    assert event["kept"] == 1
+    assert event["batch_index"] == 3

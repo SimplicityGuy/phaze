@@ -343,6 +343,35 @@ async def _already_answered_elsewhere(session: AsyncSession, file: FileRecord, m
     return None
 
 
+def _signals_for(file: FileRecord, metadata: FileMetadata | None) -> CandidateSignals:
+    """Project one file row (+ its optional metadata row) onto the classifier's input record.
+
+    Pure field mapping, extracted from :func:`_lookup_status_without_a_tracklist` (phaze-bk9el.28)
+    because it carried seven of that function's thirteen decision points while expressing no
+    decision at all -- six ``metadata is None`` guards plus the repaired-filename fallback. Keeping
+    them here leaves the caller's real control flow (classify -> early return -> derive -> cluster
+    -> cache -> query-text fallback) legible, and makes the mapping testable without a session.
+
+    The metadata guards are per-field rather than one branch because a file with no
+    ``FileMetadata`` row is ordinary, not exceptional: ``classify`` reads duration + filename and
+    is specified to cope with an absent duration.
+    """
+    return CandidateSignals(
+        file_id=file.id,
+        filename=file.original_filename_repaired or file.original_filename,
+        sha256_hash=file.sha256_hash,
+        original_path=file.original_path,
+        file_type=file.file_type,
+        file_size=file.file_size,
+        duration_seconds=metadata.duration if metadata else None,
+        bitrate=metadata.bitrate if metadata else None,
+        track_number=metadata.track_number if metadata else None,
+        artist=metadata.artist if metadata else None,
+        title=metadata.title if metadata else None,
+        album=metadata.album if metadata else None,
+    )
+
+
 async def _lookup_status_without_a_tracklist(
     session: AsyncSession, file: FileRecord
 ) -> tuple[CandidateClass | None, TracklistLookupCache | None, CacheDecision | None, str | None]:
@@ -365,21 +394,7 @@ async def _lookup_status_without_a_tracklist(
 
     answered_elsewhere = await _already_answered_elsewhere(session, file, metadata)
 
-    filename = file.original_filename_repaired or file.original_filename
-    signals = CandidateSignals(
-        file_id=file.id,
-        filename=filename,
-        sha256_hash=file.sha256_hash,
-        original_path=file.original_path,
-        file_type=file.file_type,
-        file_size=file.file_size,
-        duration_seconds=metadata.duration if metadata else None,
-        bitrate=metadata.bitrate if metadata else None,
-        track_number=metadata.track_number if metadata else None,
-        artist=metadata.artist if metadata else None,
-        title=metadata.title if metadata else None,
-        album=metadata.album if metadata else None,
-    )
+    signals = _signals_for(file, metadata)
     classification = classify(signals)
     if classification.candidate_class is not CandidateClass.LIVE_SET or answered_elsewhere is not None:
         return classification.candidate_class, None, None, answered_elsewhere

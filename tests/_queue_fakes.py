@@ -28,15 +28,18 @@ per the WR-03 review note preferring a committed row over a flush-only one).
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import functools
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 from saq import Job
+from saq.queue.postgres import PostgresQueue
 from sqlalchemy import update
 
 from phaze.models.agent import Agent
 from phaze.services.enqueue_router import LANES, lane_for_task
+from tests.db_guard import integration_dsns
 
 
 if TYPE_CHECKING:
@@ -53,6 +56,112 @@ Capture = list[tuple[str, str, dict[str, Any]]]
 # lets tests assert per-job control settings (Phase 31: process_file timeout/retries)
 # without polluting the captured task payload that the worker would receive.
 _JOB_CONTROL_FIELDS = frozenset(Job.__dataclass_fields__)
+
+# --- phaze-9nz1g (seam E1): the REAL serializer, on a never-connected PostgresQueue ---------
+#
+# Before this, ``FakeQueue.enqueue`` recorded the kwargs dict IN-PROCESS and UNSERIALIZED, so the
+# type-fidelity property of every ``queue.enqueue`` -> broker -> worker ``**kwargs`` hop was
+# asserted NOWHERE: a UUID / datetime / Path / enum kwarg that the real broker rejects with a
+# ``TypeError``, and a tuple / int-keyed dict that survives but comes back a DIFFERENT TYPE, both
+# read as a clean pass. That is ADR-0012 rule 3 verbatim -- the producer's own in-process echo is
+# not the artifact's real consumer.
+#
+# The fix routes every fake enqueue through the SAME code the production broker runs:
+# ``PostgresQueue.serialize`` (``json.dumps(job.to_dict())`` -- ``build_pipeline_queue`` registers
+# no custom ``dump``/``load``, so SAQ's defaults are what ships) and ``PostgresQueue.deserialize``
+# (``json.loads`` -> ``Job(**job_dict)``). NOT a hand-rolled ``json.dumps`` standing in for it:
+# a stand-in would drift the moment a custom serializer is configured, which is the whole failure
+# mode this seam exists to close.
+#
+# The queue is NEVER connected. ``PostgresQueue.__init__`` builds its psycopg pool ``open=False``
+# and ``serialize``/``deserialize`` touch only ``self._dump`` / ``self._load`` / ``self.name``, so
+# constructing one opens no socket and needs no live Postgres -- these stay usable in the hermetic
+# unit suite. The DSN comes from ``tests.db_guard.integration_dsns`` rather than a literal purely so
+# no second, independently-hardcoded DSN default can drift from the guard (phaze-yxklc).
+_SERIALIZER_DSN, _ = integration_dsns()
+
+
+@functools.cache
+def _serializer_queue(name: str) -> PostgresQueue:
+    """Return a cached, NEVER-CONNECTED ``PostgresQueue`` named ``name``, for serialize/deserialize only.
+
+    DO NOT "simplify" this to a bare ``json.dumps``/``json.loads`` pair, and do not connect it.
+    Both halves of that sentence are load-bearing, and neither is obvious from the call site:
+
+    * It must be a REAL ``PostgresQueue`` because the property under test is "the fake agrees with
+      the production broker". A hand-rolled ``json.dumps`` agrees with today's broker by
+      coincidence and would silently stop agreeing the day ``build_pipeline_queue`` passes a custom
+      ``dump``/``load`` -- which is exactly the drift this seam exists to prevent (ADR-0012 rule 3:
+      verify with the artifact's real consumer, not with a stand-in for it).
+    * It is never connected, and needs no live Postgres, because ``PostgresQueue.__init__`` builds
+      its psycopg pool ``open=False`` and ``serialize``/``deserialize`` touch only ``self._dump`` /
+      ``self._load`` / ``self.name``. That is what lets the REAL serializer run inside the hermetic
+      unit suite -- no socket, no fixture, no skip-when-the-broker-is-down. A "cleanup" that awaits
+      ``connect()`` here would make several hundred hermetic tests require a database.
+
+    ``tests/shared/test_fake_queue_serializer_fidelity.py`` asserts both properties, so a change
+    that breaks either goes red rather than quietly degrading the check.
+
+    Cached per queue name because ``deserialize`` refuses a blob whose embedded ``queue`` field does
+    not match ``self.name`` (``saq/queue/base.py``), so the round trip has to run on a queue carrying
+    the same name as the fake it is standing behind.
+    """
+    return PostgresQueue(url=_SERIALIZER_DSN, name=name)
+
+
+class NonSerializableEnqueueError(TypeError):
+    """A fake enqueue carried a payload the REAL Postgres broker could not serialize (phaze-9nz1g).
+
+    A ``TypeError`` subclass because that is exactly what ``json.dumps`` -- and therefore
+    ``PostgresQueue.enqueue`` -- raises in production for the same value; the subclass only adds a
+    message naming the offending queue/task and the fix. Seeing this from a test means the test was
+    passing a value no real enqueue could ever have carried: serialize it at the producer
+    (``payload.model_dump(mode="json")``, ``str(some_uuid)``) exactly as production does.
+    """
+
+
+def round_trip_enqueue_kwargs(
+    queue_name: str,
+    task_name: str,
+    payload: dict[str, Any],
+    policy: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Round-trip one enqueue's kwargs through the real SAQ ``PostgresQueue`` serializer.
+
+    Builds the ``saq.Job`` the real ``Queue.enqueue`` would build from the same split
+    (payload -> ``job.kwargs``, job-control keys -> ``Job`` fields), serializes it, deserializes it,
+    and returns ``(worker_visible_payload, worker_visible_policy)`` -- what the WORKER would receive,
+    not what the producer handed in. The two differ precisely where this seam had no coverage:
+    a ``tuple`` comes back a ``list``, an int-keyed ``dict`` comes back string-keyed, and a
+    ``UUID`` / ``datetime`` / ``Path`` / ``enum`` / ``set`` / ``Decimal`` does not come back at all.
+
+    ``queue`` is dropped from ``policy`` before constructing the Job (it IS a ``Job`` dataclass field,
+    so the caller's split routes it here, but the real ``Queue.enqueue`` overwrites it with the
+    enqueueing queue on the very next line -- so the fake must too, or the round trip would
+    deserialize against the wrong name).
+
+    Raises:
+        NonSerializableEnqueueError: the payload or policy is not JSON-serializable, i.e. the real
+            broker would have raised ``TypeError`` here too.
+    """
+    queue = _serializer_queue(queue_name)
+    job_fields = {k: v for k, v in policy.items() if k != "queue"}
+    job = Job(function=task_name, kwargs=dict(payload), queue=queue, **job_fields)
+    try:
+        blob = queue.serialize(job)
+    except TypeError as exc:
+        raise NonSerializableEnqueueError(
+            f"enqueue({task_name!r}) on queue {queue_name!r} carried a payload the real Postgres broker "
+            f"cannot serialize: {exc}. Production serializes at the producer -- "
+            f'`payload.model_dump(mode="json")` or `str(value)` -- so a test passing the raw object is '
+            f"exercising a hop that could never happen. Payload keys: {sorted(payload)}."
+        ) from exc
+    restored = queue.deserialize(blob)
+    assert restored is not None  # a serialized Job never deserializes to None (only an empty blob does)
+    # ``Job.to_dict`` omits any field still at its dataclass default, so read the policy back off the
+    # restored Job by attribute rather than out of the blob -- an explicitly-passed default (say
+    # ``retries=1``) must still be reported as captured.
+    return dict(restored.kwargs or {}), {k: getattr(restored, k) for k in job_fields}
 
 
 class FakeRedis:
@@ -182,6 +291,11 @@ class FakeQueue:
         # the payload the worker receives and ``captured_policy`` holds timeout/retries/etc.
         payload = {k: v for k, v in kwargs.items() if k not in _JOB_CONTROL_FIELDS}
         policy = {k: v for k, v in kwargs.items() if k in _JOB_CONTROL_FIELDS}
+        # phaze-9nz1g: record what the WORKER would receive, not what the producer handed in --
+        # the real ``PostgresQueue`` serializer stands between the two. See
+        # :func:`round_trip_enqueue_kwargs`. A non-serializable value raises here, exactly as the
+        # real broker would, instead of being echoed back unchanged.
+        payload, policy = round_trip_enqueue_kwargs(self.name, task_name, payload, policy)
         if self._capture is not None:
             self._capture.append((self.name, task_name, payload))
         self.captured.append((task_name, payload))

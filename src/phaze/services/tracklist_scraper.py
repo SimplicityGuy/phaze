@@ -473,28 +473,11 @@ class TracklistScraper:
             # phaze-7zoh: bound to the column width -- see _EXTERNAL_ID_MAX_LEN.
             external_id = match.group(1)[: self._EXTERNAL_ID_MAX_LEN]
 
-            if href_str.startswith("/"):
-                url = f"{self.BASE_URL}{href_str}"
-            else:
-                # Absolute href from the response body -- e.g. a compromised/malicious upstream
-                # response embedding "http://169.254.169.254/tracklist/x/", which the external_id
-                # pattern above matches as a substring. Only forward it if scheme+host clear the
-                # allow-list; otherwise drop this result rather than let a poisoned search page
-                # hand the caller an SSRF target (phaze-k5zz).
-                if not self._is_allowed_url(href_str):
-                    logger.warning("Skipping search result with disallowed href host: %s", href_str)
-                    continue
-                url = href_str
+            url = self._resolve_result_url(href_str)
+            if url is None:
+                continue
 
-            # phaze-mk6y: the current markup carries no separate artist/date elements -- the
-            # link text is the full "Artist @ Event, Venue, City, Country" string and the date is
-            # embedded at the end of the href slug.
-            artist_part, separator, rest = title.partition(self._SEARCH_LINK_TEXT_ARTIST_SEPARATOR)
-            artist = artist_part.strip() if separator else None
-            # phaze-fq9h.6: the remainder after " @ " is the event/venue/city text -- previously
-            # discarded as `_rest`, which left the scorer with no event term at all (0.3 of the
-            # weighting) and forced it to match on artist+date alone.
-            event = rest.strip() or None if separator else None
+            artist, event = self._split_link_text(title)
             date = self._extract_row_date(item) or self._extract_date_from_href(href_str)
 
             results.append(
@@ -516,6 +499,41 @@ class TracklistScraper:
             raise SearchParseFailureError(len(items))
 
         return results
+
+    @classmethod
+    def _resolve_result_url(cls, href_str: str) -> str | None:
+        """Resolve one search row's ``href`` to an absolute URL, or ``None`` to drop the row.
+
+        A site-relative href is joined onto :attr:`BASE_URL`. An ABSOLUTE href from the response
+        body -- e.g. a compromised/malicious upstream response embedding
+        "http://169.254.169.254/tracklist/x/", which ``_EXTERNAL_ID_PATTERN`` matches as a
+        substring -- is only forwarded if scheme+host clear the allow-list; otherwise the row is
+        dropped rather than letting a poisoned search page hand the caller an SSRF target
+        (phaze-k5zz).
+        """
+        if href_str.startswith("/"):
+            return f"{cls.BASE_URL}{href_str}"
+        if not cls._is_allowed_url(href_str):
+            logger.warning("Skipping search result with disallowed href host: %s", href_str)
+            return None
+        return href_str
+
+    @classmethod
+    def _split_link_text(cls, title: str) -> tuple[str | None, str | None]:
+        """Split a search row's link text into ``(artist, event)``, both ``None`` when unsplittable.
+
+        phaze-mk6y: the current markup carries no separate artist/date elements -- the link text is
+        the full "Artist @ Event, Venue, City, Country" string and the date is embedded at the end
+        of the href slug.
+
+        phaze-fq9h.6: the remainder after " @ " is the event/venue/city text -- previously
+        discarded as `_rest`, which left the scorer with no event term at all (0.3 of the
+        weighting) and forced it to match on artist+date alone.
+        """
+        artist_part, separator, rest = title.partition(cls._SEARCH_LINK_TEXT_ARTIST_SEPARATOR)
+        if not separator:
+            return None, None
+        return artist_part.strip(), rest.strip() or None
 
     @classmethod
     def _extract_row_date(cls, item: Tag) -> str | None:

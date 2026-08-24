@@ -22,12 +22,35 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 
 import coverage
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 JUSTFILE_PATH = REPO_ROOT / "justfile"
+PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
+
+
+def _coverage_config(*section: str) -> dict[str, object]:
+    """Return one ``tool.coverage.<section>`` table, PARSED rather than string-sliced.
+
+    phaze-jktlb. This used to be ``pyproject.split("[tool.coverage.run]", 1)[1]``, which reads
+    the file as text and therefore cannot tell a section HEADER from the same characters
+    appearing inside a comment. Any prose near the config that quoted the header verbatim
+    split the file at the wrong place and failed the guard -- so the config could only be
+    documented in contorted paraphrase, and pyproject.toml really did contort (its
+    ``fail_under`` rationale still says "the tool.coverage.run section below" to dodge it).
+
+    A guard that a comment can defeat is measuring text, not configuration. ``tomllib`` reads
+    the same bytes the way coverage.py's own config loader does.
+    """
+    table: dict[str, object] = tomllib.loads(PYPROJECT_PATH.read_text(encoding="utf-8"))["tool"]["coverage"]
+    for key in section:
+        assert key in table, f"pyproject.toml has no [tool.coverage.{'.'.join(section)}] table"
+        table = table[key]  # type: ignore[assignment]
+    return table
+
 
 # The pytest step every gate must ultimately reach. `just test` (-x -q) is deliberately NOT it.
 VALIDATION_TEST_STEP = "just test-cov"
@@ -53,8 +76,16 @@ def _dry_run(recipe: str) -> str:
 
 
 def test_the_validation_test_step_produces_coverage() -> None:
-    """Without --cov the 'coverage not below 95%' half of every bead criterion is unsatisfiable."""
-    assert "--cov=phaze" in _dry_run("test-cov")
+    """Without --cov the 'coverage not below 95%' half of every bead criterion is unsatisfiable.
+
+    The flag carries no ``=phaze`` since phaze-jktlb -- the source is ``source = ["phaze"]`` in
+    pyproject, and naming it in both places is two places to edit and one to forget. So this
+    asserts the two halves separately: that the recipe switches coverage ON, and that what a bare
+    ``--cov`` then measures is still phaze. The second half is asked of coverage.py itself, which
+    is what makes it a behaviour check rather than a spelling check.
+    """
+    assert re.search(r"(?<!\S)--cov(?!\S)", _dry_run("test-cov")), "the gate no longer switches coverage on"
+    assert coverage.Coverage(config_file=str(PYPROJECT_PATH)).get_option("run:source") == ["phaze"]
 
 
 def test_the_validation_test_step_does_not_stop_at_the_first_failure() -> None:
@@ -110,10 +141,7 @@ def test_the_fail_fast_recipe_is_retained_and_labelled_as_local_iteration() -> N
 
 def test_branch_coverage_is_enabled_repo_wide() -> None:
     """Criterion 1. Without `branch = true` the number is invisible and every later check is moot."""
-    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    run_section = pyproject.split("[tool.coverage.run]", 1)[1].split("\n[", 1)[0]
-
-    assert re.search(r"^branch = true$", run_section, re.MULTILINE), run_section
+    assert _coverage_config("run")["branch"] is True, "pyproject.toml no longer enables branch coverage repo-wide"
 
 
 def test_the_repo_wide_line_floor_is_enforced_explicitly_not_via_fail_under() -> None:
@@ -152,7 +180,10 @@ def test_the_validation_test_step_enforces_the_line_floor_and_writes_a_json_repo
     step = _dry_run("test-cov")
 
     assert "--cov-fail-under=0" not in step, "pytest-cov's floor must stay armed on the gate path"
-    assert "--cov-report=json:coverage.json" in step
+    # No `:coverage.json` here since phaze-jktlb: the destination moved into pyproject's json
+    # table, so the recipe asks for the report and the config says where it lands. That the
+    # config is actually honored is proved from artifacts in test_coverage_settings_are_central.py.
+    assert "--cov-report=json" in step
     assert "scripts/coverage_floor.py" in step
 
 
