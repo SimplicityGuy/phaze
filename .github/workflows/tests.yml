@@ -452,7 +452,7 @@ jobs:
   # main (a `scrollbar-gutter` arithmetic bug) reproduced 10/10 in CI and 0/10 on macOS. Check the
   # rendering axis before the timing axis; the trace artifact below is what makes that possible.
   browser:
-    name: Browser contract (non-blocking)
+    name: Browser contract
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
