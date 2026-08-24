@@ -77,7 +77,7 @@ import pytest
 
 from phaze.services import tag_write_disk
 from phaze.services.metadata import extract_tags
-from phaze.services.metadata_parsing import _ASF_MAP, _ID3_MAP, _MP4_MAP, _VORBIS_MAP
+from phaze.services.metadata_parsing import _ASF_MAP, _ID3_MAP, _MP4_MAP, _READERS, _VORBIS_MAP
 from phaze.services.tag_formats import TagFormat, UnsupportedTagFormatError, resolve_tag_format
 from phaze.services.tag_write_disk import (
     _WRITE_ASF_MAP,
@@ -515,16 +515,60 @@ def test_write_and_read_maps_are_mutual_inverses() -> None:
 def test_every_tag_format_has_a_writer_and_a_reader() -> None:
     """No ``TagFormat`` member may exist without both halves. Fails the moment one is added alone.
 
-    ``resolve_tag_format`` can only return a member of this enum, and ``_WRITERS`` is indexed by it
-    with no ``.get`` and no default -- so a member without a writer is a ``KeyError`` at write time
-    rather than a silent fallback. This test moves that failure to CI.
+    ``resolve_tag_format`` can only return a member of this enum, and both ``_WRITERS``
+    (``tag_write_disk``) and ``_READERS`` (``metadata_parsing``, phaze-prla2) are indexed by it
+    with no ``.get`` and no default -- so a member without a writer OR without a reader is a
+    ``KeyError`` at write/read time rather than a silent fallback. This test moves that failure to
+    CI.
+
+    Asserts against ``_READERS`` itself, NOT a dict re-declared here (phaze-prla2): a copy of the
+    mapping can drift from the mapping ``parse_format_tags`` actually consults and still pass this
+    test while the real dispatch is broken -- which is exactly what the pre-fix version of this
+    test did. See :func:`test_every_tag_format_has_a_writer_and_a_reader_actually_discriminates`
+    for proof this assertion catches that shape of defect.
     """
     for fmt in TagFormat:
         assert fmt in _WRITERS, f"TagFormat.{fmt.name} has no writer -- write_tags would KeyError on it"
 
-    read_maps = {TagFormat.ID3: _ID3_MAP, TagFormat.MP4: _MP4_MAP, TagFormat.VORBIS: _VORBIS_MAP, TagFormat.ASF: _ASF_MAP}
     for fmt in TagFormat:
-        assert fmt in read_maps, f"TagFormat.{fmt.name} has no read map -- parse_format_tags would fall through to Vorbis"
+        assert fmt in _READERS, f"TagFormat.{fmt.name} has no reader -- parse_format_tags would KeyError on it"
+
+
+def test_every_tag_format_has_a_writer_and_a_reader_actually_discriminates() -> None:
+    """The guard above must actually FAIL when the property it protects is violated.
+
+    phaze-prla2's own lesson, applied reflexively: a guard nobody has seen fail is not yet a
+    guard. This reproduces the exact failure mode the bead is about -- a ``TagFormat`` member with
+    a writer but no reader -- by patching ``_READERS`` down to a subset missing one real member
+    (``_WRITERS`` and the ``TagFormat`` enum itself are untouched, so the writer half stays wired),
+    then CALLS THE REAL GUARD, :func:`test_every_tag_format_has_a_writer_and_a_reader`, rather than
+    re-implementing its loop here.
+
+    That distinction is the whole point. An earlier draft of this test re-declared the guard's
+    ``for fmt in TagFormat: assert fmt in _READERS`` loop inline -- which asserts that a for-loop
+    and an assert statement THIS TEST wrote behave the way this test wrote them, a tautology that
+    would pass identically if the real guard were deleted or its assertion changed to something
+    else entirely. That is precisely the defect this bead exists to fix, reintroduced one level up:
+    a check against a copy of the thing it is meant to verify, which can drift from the real thing
+    and still pass. Calling the guard function directly means deleting or weakening it fails THIS
+    test too.
+
+    ``patch.dict`` mutates the ``_READERS`` dict object IN PLACE (clear + update) rather than
+    rebinding the module attribute to a new object, so the guard -- which reads the same dict via
+    its own ``from phaze.services.metadata_parsing import ... _READERS`` import at module scope --
+    observes the mutation through its own name binding, not just through this test's. Confirmed by
+    running this test standalone: it fails with ``AssertionError: assert True`` (``pytest.raises``
+    finding nothing to catch) if the guard is reading a stale/copied ``_READERS`` instead of the
+    live one, and passes when it observes the patched dict -- which is what actually happens here.
+    """
+    incomplete_readers = dict(_READERS)
+    del incomplete_readers[TagFormat.ASF]
+
+    with (
+        patch.dict("phaze.services.metadata_parsing._READERS", incomplete_readers, clear=True),
+        pytest.raises(AssertionError, match="ASF has no reader"),
+    ):
+        test_every_tag_format_has_a_writer_and_a_reader()
 
 
 def test_resolver_refuses_an_unmapped_container_instead_of_guessing() -> None:

@@ -289,6 +289,47 @@ def _normalized_values(fields: Mapping[str, Any], raw_sources: Mapping[str, Any]
     )
 
 
+def _read_id3(tags: Any) -> ParsedTagValues:
+    """Read ID3 frames (MP3, and the ``_WaveID3``/``_IFFID3`` containers WAVE/AIFF install)."""
+    return _mapped_sources(tags, _ID3_MAP, _id3_value, _text_value)
+
+
+def _read_mp4(tags: Any) -> ParsedTagValues:
+    """Read MP4 atoms, keeping ``trkn`` structured for :func:`_mp4_value` to unpack."""
+    return _mapped_sources(tags, _MP4_MAP, lambda _field, value: value, _mp4_value)
+
+
+def _read_vorbis(tags: Any) -> ParsedTagValues:
+    """Read Vorbis comments (FLAC / OGG / OPUS)."""
+    return _mapped_sources(tags, _VORBIS_MAP, lambda _field, value: value, _text_value)
+
+
+def _read_asf(tags: Any) -> ParsedTagValues:
+    """Read ASF (.wma) extended content description attributes."""
+    return _mapped_sources(tags, _ASF_MAP, lambda _field, value: value, _text_value)
+
+
+# phaze-prla2. Total, module-level read dispatch -- mirrors tag_write_disk._WRITERS in shape and
+# in guarantee. Indexed with no ``.get`` and no default, so a ``TagFormat`` member added without a
+# reader here is a ``KeyError`` at read time instead of being silently served through
+# ``_VORBIS_MAP``. That closes the gap phaze-wt9vw's own fix left open: the WRITE side already had
+# this property (``_WRITERS[resolve_tag_format(...)]`` in ``tag_write_disk.write_tags``), but the
+# READ side still ended in an unconditional ``return _mapped_sources(tags, _VORBIS_MAP, ...)`` --
+# reachable only once a fifth ``TagFormat`` member exists, which is exactly the moment this lesson
+# is least likely to be remembered.
+#
+# Read and write dispatch are now symmetric by construction: adding an enum member without wiring
+# BOTH tables breaks the corresponding side immediately rather than degrading silently into Vorbis.
+# ``test_every_tag_format_has_a_writer_and_a_reader`` asserts against this exact dict -- not a copy
+# of it declared inside the test -- so the test cannot drift from the mapping it is meant to guard.
+_READERS: dict[TagFormat, Callable[[Any], ParsedTagValues]] = {
+    TagFormat.ID3: _read_id3,
+    TagFormat.MP4: _read_mp4,
+    TagFormat.VORBIS: _read_vorbis,
+    TagFormat.ASF: _read_asf,
+}
+
+
 def parse_format_tags(audio: Any, tags: Any) -> ParsedTagValues:
     """Purely normalize opened mutagen objects according to their tag family.
 
@@ -299,11 +340,21 @@ def parse_format_tags(audio: Any, tags: Any) -> ParsedTagValues:
     identical fallback on the write side, that is what let a .wma be written with Vorbis keys and
     then VERIFIED against those same keys: two independent guesses that always agree.
 
-    An unresolvable container yields an empty result rather than raising. That is deliberate and is
-    NOT the old fallback in disguise: ingest opens whatever the archive contains, and the honest
-    answer for a container phaze cannot read is "no tags", which is also what the old Vorbis
-    fallback produced for one (barring an accidental key collision -- precisely the ASF case). The
-    WRITE path, where a wrong guess corrupts a file instead of returning nothing, refuses instead.
+    phaze-prla2: that fix made ``resolve_tag_format`` itself total-or-raise, but the dispatch on its
+    RESULT still ended in an unconditional Vorbis arm -- unreachable today (every current
+    ``TagFormat`` member is handled above it), but silently wrong the moment a fifth member is
+    added without a matching ``if``. Dispatch is now through :data:`_READERS`, a total mapping with
+    no default, mirroring ``tag_write_disk._WRITERS``: an unhandled ``TagFormat`` member is a
+    ``KeyError`` here, exactly as it already was on the write side.
+
+    An unresolvable CONTAINER (``resolve_tag_format`` raising :class:`UnsupportedTagFormatError`)
+    yields an empty result rather than raising. That is deliberate and is NOT the old fallback in
+    disguise: ingest opens whatever the archive contains, and the honest answer for a container
+    phaze cannot read is "no tags", which is also what the old Vorbis fallback produced for one
+    (barring an accidental key collision -- precisely the ASF case). The WRITE path, where a wrong
+    guess corrupts a file instead of returning nothing, refuses instead. This is orthogonal to the
+    ``_READERS`` lookup above: an unresolvable container never reaches it at all, only an
+    unmapped *recognised* ``TagFormat`` member would.
     """
     if tags is None:
         return ParsedTagValues()
@@ -312,10 +363,4 @@ def parse_format_tags(audio: Any, tags: Any) -> ParsedTagValues:
     except UnsupportedTagFormatError:
         return ParsedTagValues()
 
-    if tag_format is TagFormat.ID3:
-        return _mapped_sources(tags, _ID3_MAP, _id3_value, _text_value)
-    if tag_format is TagFormat.MP4:
-        return _mapped_sources(tags, _MP4_MAP, lambda _field, value: value, _mp4_value)
-    if tag_format is TagFormat.ASF:
-        return _mapped_sources(tags, _ASF_MAP, lambda _field, value: value, _text_value)
-    return _mapped_sources(tags, _VORBIS_MAP, lambda _field, value: value, _text_value)
+    return _READERS[tag_format](tags)
