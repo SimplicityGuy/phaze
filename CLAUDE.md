@@ -1116,6 +1116,22 @@ bv --recipe high-impact --robot-triage # pre-filter: top PageRank scores
   would push seats toward false attestations, which is strictly worse than a stale label — and **do
   not mass-edit the existing beads**, which would re-accumulate from the next batch merge. Tracked
   upstream at beadhive/beadhive#15. *The general form:* a record that reads as a status is not one.
+- **A repowise health number can be stale, and "trust the index" does not cover it** (phaze-ia4ah).
+  The repowise guidance in `.claude/CLAUDE.md` says *"Trust the index — `verified: true` means the
+  bytes were checked against the live tree, so never re-read"*, and treats `index_behind: true` as
+  informational. That is about **verified BYTES**; it says nothing about **freshly computed
+  METRICS**. `repowise update` does **not** run the health fold — that is documented, by-design
+  behaviour and **not** a defect, so do not write it up as one — with the result that `get_health`
+  served byte-identical `duplication_pct`, `nloc` and `health_analyzed_at` across two commits and
+  two `update` runs. The fresh path is the CLI: `repowise health --file <path>` recomputes one file
+  in-process with no cache (`--format json` and `--module <prefix>` are the bulk equivalents); it
+  moved `agent_analysis.py` from 26.52% to 25.82% where the MCP read showed no change at all.
+  **There is currently no cheap staleness check** — `health_file_metrics.analyzed_commit` is NULL
+  for every row, so establishing freshness costs a full recompute compared against the stored rows.
+  **Do NOT conclude "always use the CLI"**: that was measured harmful, because it fixes nothing for
+  bulk reads while leaving agents believing they have worked around it. Tracked upstream at
+  repowise-dev/repowise#1864 (sibling #1747). *Same general form as the entry above:* a record that
+  reads as a status is not one.
 - **`bd label remove` reports success unconditionally** (gastownhall/beads#5988). It prints
   `✓ Removed label 'X' from Y` and exits 0 **even when the bead never had X** — so that line is
   evidence of neither the label's presence nor its removal. Read the label set back with
