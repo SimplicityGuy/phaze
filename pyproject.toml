@@ -362,7 +362,11 @@ dev = [
     # (and it would still need the schemas vendored for offline determinism). A pure-Python dev
     # dependency needs no dev-side setup step at all -- `uv sync` already installs this group.
     # NOTE: no JSON Schema catches a bad Quantity ("4GB", "500") -- k8s types those as plain strings.
-    # That is `services/k8s_quantity.py`'s job, at config load. See ADR-0014.
+    # That is `services/k8s_quantity.py`'s job, at config load, and it is ADR-0012 G3 in miniature:
+    # this schema is DERIVED FROM the same OpenAPI the apiserver publishes, so validating against it
+    # proves the manifest's shape and says nothing about what the apiserver's own Quantity parser --
+    # the real consumer -- will accept. See ADR-0012 section 4, G3
+    # (`docs/design/0012-verification-fidelity-and-operator-attribution.md`).
     "jsonschema>=4.26.0",
     # Phase 53: S3 mock so the staging leg (presign/upload/delete) is testable without a
     # live S3 backend or cluster. The [server] extra (flask/werkzeug) provides
