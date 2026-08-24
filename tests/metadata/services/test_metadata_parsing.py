@@ -13,7 +13,10 @@ import pytest
 from phaze.services.metadata import ExtractedTags, TagReadError, extract_tags
 from phaze.services.metadata_parsing import (
     ParsedTagValues,
+    _parse_track_tuple,
+    _raw_genre_value,
     _raw_track_text,
+    _raw_track_tuple,
     normalize_track_number_text,
     normalize_year_text,
     parse_format_tags,
@@ -170,3 +173,52 @@ def test_raw_track_text_list_of_none_is_none_not_the_string_none() -> None:
     contract) rather than the pre-refactor literal string ``"None"``.
     """
     assert _raw_track_text([None]) is None
+
+
+# ---------------------------------------------------------------------------
+# phaze-prla2: branch-coverage backfill for pre-existing defensive arms that the read-dispatch
+# rewrite exposed (removing the read dispatch's if-chain shrank this file's total branch count,
+# which turned these four ALREADY-UNCOVERED-BUT-UNCHANGED arms into a per-bead branch-coverage
+# regression per ``just branch-check`` -- same absolute 4 missing branches before and after,
+# smaller denominator). None of these functions were touched by phaze-prla2; these tests just
+# give the pre-existing defensive arms the direct coverage they were always missing.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_track_tuple_empty_tuple_degrades_to_none() -> None:
+    """The empty/first-element-None guard, never exercised by any real MP4 ``trkn`` fixture."""
+    assert _parse_track_tuple(()) is None
+
+
+def test_raw_genre_value_scalar_non_list_returns_sanitized_text() -> None:
+    """A non-``list`` genre source (the docstring's "single-value genre" case) still returns text.
+
+    Every real mutagen fixture in this module hands ``_raw_genre_value`` a list (mutagen tag
+    values normally are), so the plain-scalar arm was reachable but untested.
+    """
+    assert _raw_genre_value("Solo Genre") == "Solo Genre"
+
+
+def test_raw_genre_value_all_bytes_list_yields_no_parts() -> None:
+    """A genre list whose every entry is ``bytes`` is filtered down to an empty ``parts`` -- the
+    ``if not parts: return None`` arm, never exercised by a fixture that mixes in a real string.
+    """
+    assert _raw_genre_value([b"skip-me"]) is None
+
+
+def test_raw_track_tuple_zero_total_omits_the_total_suffix() -> None:
+    """phaze-6p7fz's own example, ``(3, 0)``: total 0 means "no total" for an MP4 ripper, so the
+    ``len(value) >= 2 and value[1]`` guard must be FALSE here and fall through to the bare track
+    number -- the arm every other fixture's non-zero total skips past.
+    """
+    assert _raw_track_tuple((3, 0)) == "3"
+
+
+def test_raw_track_tuple_empty_tuple_returns_none() -> None:
+    """Both guards FALSE: an empty tuple has no track number to render at all.
+
+    This is the arm the ``(3, 0)`` case above does NOT reach -- that fixture still takes the
+    second ``if``'s TRUE branch (``value`` truthy, ``value[0] is not None``). This one exercises
+    its FALSE branch, falling all the way through to the final ``return None``.
+    """
+    assert _raw_track_tuple(()) is None
