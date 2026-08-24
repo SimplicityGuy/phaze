@@ -1120,18 +1120,37 @@ bv --recipe high-impact --robot-triage # pre-filter: top PageRank scores
   The repowise guidance in `.claude/CLAUDE.md` says *"Trust the index — `verified: true` means the
   bytes were checked against the live tree, so never re-read"*, and treats `index_behind: true` as
   informational. That is about **verified BYTES**; it says nothing about **freshly computed
-  METRICS**. `repowise update` does **not** run the health fold — that is documented, by-design
-  behaviour and **not** a defect, so do not write it up as one — with the result that `get_health`
-  served byte-identical `duplication_pct`, `nloc` and `health_analyzed_at` across two commits and
-  two `update` runs. The fresh path is the CLI: `repowise health --file <path>` recomputes one file
-  in-process with no cache (`--format json` and `--module <prefix>` are the bulk equivalents); it
-  moved `agent_analysis.py` from 26.52% to 25.82% where the MCP read showed no change at all.
-  **There is currently no cheap staleness check** — `health_file_metrics.analyzed_commit` is NULL
-  for every row, so establishing freshness costs a full recompute compared against the stored rows.
-  **Do NOT conclude "always use the CLI"**: that was measured harmful, because it fixes nothing for
-  bulk reads while leaving agents believing they have worked around it. Tracked upstream at
-  repowise-dev/repowise#1864 (sibling #1747). *Same general form as the entry above:* a record that
-  reads as a status is not one.
+  METRICS**, and the two go stale by different rules.
+  **The check, on repowise 0.45.0:** a health row is fresh iff its `analyzed_commit` equals
+  `git rev-parse HEAD`. `repowise update` runs the health fold **incrementally — only over the files
+  changed since the last index** — and stamps each recomputed row with HEAD-at-fold-time. So an
+  older value means "folded at an earlier commit" and `NULL` means "never re-folded". Measured
+  2026-08-24: an update across `635b85e6..130791c2` folded exactly the two files that range changes,
+  and no others.
+  **What that leaves stale is everything the fold did not touch** — 2341 of 2393 rows at the time of
+  measurement. A bulk read therefore mixes fresh and stale rows, and a file whose metrics should move
+  because its **dependencies or coverage** changed while its own bytes did not is never recomputed at
+  all. `analyzed_commit` is HEAD-at-fold-time, **not** the file's own last-modifying commit (measured:
+  0 of 8 sampled rows matched `git log -1 -- <file>`), so it tells you *when* a row was computed, not
+  *what content* it describes.
+  **The staleness is not confined to `get_health`.** `get_risk` embeds `health_score`,
+  `coverage_pct`, `branch_coverage_pct` and `top_biomarkers` from the same fold rows, and
+  `get_context` does via `include=["health"]` — neither warns. Only `get_dead_code` emits
+  `_meta.stale_warning`, and it is the tool whose data `update` *does* refresh; `get_health` emits
+  none, and the standard message ("run `repowise update`") would be poor advice for it anyway, since
+  an update only re-folds changed files.
+  **To force a fresh read:** `repowise health --file <path>` recomputes one file in-process
+  (`--format json` and `--module <prefix>` are the bulk equivalents). **Do NOT conclude "always use
+  the CLI"**: that was measured harmful, because it fixes nothing for bulk reads while leaving agents
+  believing they have worked around it. Check `analyzed_commit` instead.
+  *Same general form as the entry above:* a record that reads as a status is not one.
+  > **This entry was wrong once, and the way it was wrong is the lesson.** As landed on 2026-08-24 it
+  > said `repowise update` never runs the health fold and that no cheap staleness check exists. Both
+  > were true when measured on repowise **0.44.0** and false on the **0.45.0** that was already
+  > installed when the text was written — the prose was faithful to the bead's evidence and stale
+  > about the tool. Upstream `repowise-dev/repowise#1864` was filed on the 0.44.0 behaviour and looks
+  > fixed. **Re-measure a tool's behaviour against the version you are running before writing it
+  > down**, especially when quoting an earlier bead's finding; that is the phaze-b62ri shape.
 - **`bd label remove` reports success unconditionally** (gastownhall/beads#5988). It prints
   `✓ Removed label 'X' from Y` and exits 0 **even when the bead never had X** — so that line is
   evidence of neither the label's presence nor its removal. Read the label set back with
