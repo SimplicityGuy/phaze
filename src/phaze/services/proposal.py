@@ -719,10 +719,30 @@ async def store_proposals(
     # phaze-p2p6u: this loop's `await session.execute(stmt)` (below) is flagged by the health
     # index as io_in_loop + serial_await_in_loop. Left AS SEQUENTIAL, deliberately, for two
     # reasons rather than one:
-    #   1. `session` is a single AsyncSession. SQLAlchemy's async session is not safe for
-    #      concurrent use -- awaiting N of its `.execute()` calls via `asyncio.gather` (rather
-    #      than sequentially) is a correctness bug, not a performance win, so gather is not an
-    #      option here at all.
+    #   1. `session` is a single AsyncSession, and gathering its `.execute()` calls buys NOTHING.
+    #      BE PRECISE ABOUT WHY -- phaze-4tch9 amended this reason because the phrasing that stood
+    #      here was false. It said gathering over one AsyncSession "is a correctness bug", which
+    #      reads as "it fails loudly". IT DOES NOT FAIL AT ALL. Two things are established, and
+    #      BOTH are reasons not to gather:
+    #        * SQLAlchemy DOCUMENTS AsyncSession as not safe for concurrent use, naming
+    #          `asyncio.gather` and prescribing one session per task. That is upstream's stated
+    #          contract, it has not changed, and it is sufficient on its own.
+    #        * On the pinned 2.0.52 the MEASURED behaviour is SILENT SERIALIZATION, not an
+    #          exception. Measured 2026-08-22 by phaze-bk9el.26 (dev/w3-26), six
+    #          `select pg_sleep(0.1)` on ONE session: serial loop 0.745 s vs `asyncio.gather`
+    #          0.659 s, against an ideal-parallel 0.10 s and an ideal-serial 0.60 s -- the
+    #          gathered time lands on the SERIAL figure, so the 1.13x is per-call Python overhead
+    #          and not overlap; eight concurrent ORM `session.execute` calls on one session
+    #          returned eight results and raised nothing. Reproduced three more times, most
+    #          recently by this bead on 2026-08-23 at 0.632 s serial / 0.655 s gathered (0.96x --
+    #          the gather was SLOWER).
+    #      The silent serialization must NOT be leant on: it is undocumented behaviour upstream is
+    #      free to change, and a release that started raising would turn a gather here into a live
+    #      defect. "Unsupported" and "does not raise today" are both true; neither licenses one.
+    #      General form, with the sweep and the full measurement table:
+    #      docs/design/0015-shared-session-gather.md -- no-data-dependence (repowise's
+    #      `dataflow_verified: true`) is NECESSARY AND NEVER SUFFICIENT for a gather; the shared
+    #      session is the binding constraint, and that flag says nothing about session sharing.
     #   2. Collapsing the N per-proposal upserts into a single multi-row
     #      `INSERT ... ON CONFLICT DO UPDATE` (the pattern used elsewhere in this molecule) is
     #      not behavior-preserving here: `file_index` is "an unbounded int the LLM emits" (WR-01,
