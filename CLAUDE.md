@@ -801,6 +801,20 @@ phaze is developed against a real personal music archive on real hardware. Inves
 **Scope:** any tracked file — spike and design docs, `.planning/**`, source comments, scripts, SQL. Also commit messages and PR bodies, which are just as permanent and just as public as the files.
 
 **The history caveat:** scrubbing a file does not scrub git history. Once an identifier is committed, removing it from the working tree leaves it fully readable via `git show <old-sha>`, and removing it from history means a rewrite and a force-push — disruptive, and on a shared branch possibly not viable at all. **Prefer never committing the identifier over fixing it later:** use the placeholder in the first draft rather than the real name you intend to replace before pushing.
+### Cite ADRs by filename, never by bare number
+
+Write `docs/design/0015-shared-session-gather.md`, not "ADR-0015". Where the prose reads better with the number, keep the number *and* the disambiguator — "ADR-0015 (shared session gather)".
+
+**A bare number is a pointer with no redundancy, so nothing can check it.** ADR numbers are reassignable: renaming a file frees its number, and the next ADR to claim it silently inherits every citation written against the old occupant — correctly formed, greppable, and now resolving to a different, currently-valid document.
+
+**Measured, 2026-08-24 (`phaze-f70y9`).** `4a08e873` renumbered `0004-tracklist-candidate-sets.md` to `0014-...` while `d4f673ac` introduced the shared-session-gather ADR *as* 0014. Session-gather was pushed to 0015; a census of the 3,200-bead corpus found **8 bare "ADR-0014" citations, all in one bead, all meaning session gather, all now resolving to the tracklist ADR**. It was caught exactly once, **by a human reading prose**; no grep, link checker or CI check found it or could have, because "ADR-0014" implies no path — nothing to dereference, nothing to 404.
+
+**`phaze-x2z38`'s duplicate-leading-number guard (`tests/shared/test_adr_numbering.py`) does NOT cover this** and must not be read as if it does: these numbers were never duplicated at any instant, 0014 was legally *reused* after a rename freed it. It is still worth having — it removes the principal *cause* of renumbers.
+
+**When you renumber, sweep the number VACATED and the number newly OCCUPIED.** The second gets missed, and that is a general property of renumbers, not anyone's lapse: at planning time the newly-occupied number is not yet anybody's, so there is nothing to sweep for. `phaze-kbue9` swept 0004 thoroughly and never swept 0014. Likewise **do not cite a number before its file exists** — a forward citation is dangling when written and silently becomes *wrong* once something else claims the number (`f4c39654` cited ADR-0014 when `docs/design/` topped out at `0013-ffmpeg-pin.md`).
+
+*The general form:* a pointer with no redundancy cannot be checked by any tool, so the redundancy must be written into the citation at authoring time — the same shape as [ADR-0012](docs/design/0012-verification-fidelity-and-operator-attribution.md)'s rule that a decision attributed to the operator carries its question, answer, date and durable record.
+
 <!-- GSD:conventions-end -->
 
 <!-- GSD:architecture-start source:ARCHITECTURE.md -->
