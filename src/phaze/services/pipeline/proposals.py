@@ -9,13 +9,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import exists, func, select
+from sqlalchemy import func, select
 import structlog
 
 from phaze.enums.stage import Stage
-from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
-from phaze.models.metadata import FileMetadata
 from phaze.services.stage_status import (
     done_clause,
 )
@@ -41,22 +39,40 @@ def _proposal_pending_clauses() -> tuple[ColumnElement[bool], ...]:
     return (
         # Phase 90 (PR-A, Pitfall 4): the ``files.state IN (ANALYZED, METADATA_EXTRACTED)`` gate is
         # REPLACED by ``~done_clause(Stage.PROPOSE)`` -- a file with an existing proposal is a done
-        # PROPOSE and is EXCLUDED, so no already-proposed file is ever re-proposed. The two EXISTS
-        # convergence clauses below (metadata present AND a COMPLETED analysis row) still bound the set.
+        # PROPOSE and is EXCLUDED, so no already-proposed file is ever re-proposed. The two
+        # convergence clauses below (metadata DONE and analysis DONE) still bound the set.
         ~done_clause(Stage.PROPOSE),
-        exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id)),
+        # phaze-rhs6m: metadata is gated on ``done_clause(Stage.METADATA)`` -- a row present AND
+        # ``failed_at IS NULL`` -- NOT on bare row-existence. A metadata FAILURE is persisted as a
+        # ``metadata`` row with ``failed_at`` set and the payload columns NULL
+        # (``routers/agent_metadata.py``'s ``report_metadata_failed``), so the previous bare
+        # ``exists(FileMetadata)`` admitted a file whose metadata never landed. That was the
+        # ASYMMETRY with the analysis conjunct below, which has required its own completion
+        # discriminator since Phase 57.1, and it was reachable rather than theoretical: such a file
+        # could be proposed, approved and EXECUTED, and -- because ``done_clause(Stage.METADATA)``
+        # stays False until real metadata lands -- it then sat in the metadata pending set FOREVER,
+        # where all four ``ExtractMetadataPayload`` producers re-drive it at ``original_path``, the
+        # ingest-time location it has just been moved away from (D-24, schemas/agent_tasks.py).
+        #
+        # The producers are deliberately UNCHANGED (operator decision 2026-08-24, phaze-rhs6m): the
+        # fix is at the gate, so the state that strands them is never reached, rather than at four
+        # call sites whose read path would change for every file in the archive.
+        #
+        # Force-skip is NOT affected and must not be "fixed" to compensate: ``force_skip_stage``
+        # (routers/pipeline/skip.py) writes ONLY a ``stage_skip`` marker and is documented
+        # additive-only and "deliberately NOT ``done``", so a skipped file has no ``metadata`` row to
+        # satisfy either form of this conjunct -- it was un-proposable before this change too.
+        done_clause(Stage.METADATA),
         # Phase 57.1 (D-03 KEY RISK): require the COMPLETION discriminator, not bare row-existence.
         # D-03 upserts a partial `analysis` row at analysis START (NULL aggregates, completed_at NULL)
         # while the file is still METADATA_EXTRACTED -- bare `exists(AnalysisResult)` would batch that
         # partial row into generate_proposals with NULL bpm/key/mood. `analysis_completed_at IS NOT
         # NULL` (stamped only in the put_analysis completion branch) gates it out; in-flight rows have
-        # completed_at NULL.
-        exists(
-            select(AnalysisResult.id).where(
-                AnalysisResult.file_id == FileRecord.id,
-                AnalysisResult.analysis_completed_at.isnot(None),
-            )
-        ),
+        # completed_at NULL. phaze-rhs6m composes this from the shared ``done_clause`` builder rather
+        # than hand-rolling the same EXISTS -- a byte-equivalent swap (stage_status.py's ANALYZE
+        # branch IS this predicate), made so both conjuncts now read from ONE definition and the
+        # asymmetry above cannot silently reappear on either side.
+        done_clause(Stage.ANALYZE),
     )
 
 

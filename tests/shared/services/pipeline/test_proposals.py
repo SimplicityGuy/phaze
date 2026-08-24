@@ -205,3 +205,72 @@ async def test_count_proposal_pending_files_agrees_with_the_batched_set(session:
 
     assert flat == [str(eligible.id)], "only the converged, unproposed file is batched"
     assert count == len(flat), "the counter must return exactly the size of the batched set"
+
+
+# --------------------------------------------------------------------------------------------------
+# phaze-rhs6m: the propose convergence gate's METADATA conjunct.
+#
+# Operator decision 2026-08-24, answer as given verbatim and in full: "Close the gate asymmetry:
+# require metadata failed_at IS NULL". Durable record: the operator-decision comment on phaze-rhs6m.
+#
+# WHY THESE TWO CELLS AND WHY AT THIS SEAM. Until this fix the metadata conjunct was a BARE
+# `exists(FileMetadata)` while the analysis conjunct had carried a completion discriminator since
+# Phase 57.1. A metadata FAILURE is stored as a `metadata` row with `failed_at` set and payload NULL
+# (`routers/agent_metadata.py::report_metadata_failed`), so it satisfied bare existence -- a file
+# whose metadata NEVER LANDED was proposable, and therefore approvable and EXECUTABLE. Once executed
+# the file has moved on disk, but `done(metadata)` stays False until real metadata lands, so it sat
+# in the metadata pending set FOREVER, where all four `ExtractMetadataPayload` producers re-drive it
+# at `original_path` -- the ingest location it was just moved away from (D-24, schemas/agent_tasks.py).
+#
+# The first cell is the RED: it drives the REAL gate (`get_proposal_pending_batches`, the exact query
+# POST /pipeline/proposals enqueues) against real Postgres and asserts REFUSAL. Against the pre-fix
+# gate it FAILS -- the pre-fix behaviour was measured directly, as an acceptance, by the phaze-rhs6m
+# step-1 reachability probe. The second cell is the ordinary case: metadata that genuinely SUCCEEDED
+# is untouched, which is what keeps this a closed asymmetry rather than a narrowed pipeline.
+# --------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_propose_gate_refuses_a_file_whose_metadata_failed(session: AsyncSession) -> None:
+    """A metadata FAILURE row + a completed analysis must NOT be proposable (phaze-rhs6m).
+
+    RED against the pre-fix gate, whose metadata conjunct was a bare `exists(FileMetadata)` and
+    admitted this file. The analysis side is deliberately fully converged so the ONLY thing keeping
+    the file out is the metadata conjunct -- if this cell ever goes green for the wrong reason, the
+    positive control below is what catches it.
+    """
+    failed = _make_pipeline_file()
+    session.add(failed)
+    await session.flush()
+    # The 81-03 failure shape: failed_at set, every payload column NULL.
+    session.add(FileMetadata(file_id=failed.id, failed_at=datetime.now(UTC), error_message="tag read failed"))
+    session.add(AnalysisResult(file_id=failed.id, bpm=120.0, analysis_completed_at=datetime.now(UTC)))
+    await session.flush()
+
+    batched = {fid for batch in await get_proposal_pending_batches(session, 10) for fid in batch}
+
+    assert str(failed.id) not in batched, "a file whose metadata extraction FAILED must not be proposable"
+    # The counter shares `_proposal_pending_clauses` with the batcher; assert it agrees, so the two
+    # cannot drift into a dashboard that advertises a set GENERATE ALL will not batch (phaze-37i1.2).
+    assert await count_proposal_pending_files(session) == 0
+
+
+@pytest.mark.asyncio
+async def test_propose_gate_still_accepts_a_file_whose_metadata_succeeded(session: AsyncSession) -> None:
+    """The ordinary case is UNCHANGED: real metadata + a completed analysis is still proposable.
+
+    The positive control for the cell above. `failed_at IS NULL` is the whole of what the new
+    conjunct adds, so the never-failed path -- which is every one of the 11,428 files in the archive
+    at the time of the change -- must behave exactly as before.
+    """
+    ok = _make_pipeline_file()
+    session.add(ok)
+    await session.flush()
+    session.add(FileMetadata(file_id=ok.id, artist="A", title="T", failed_at=None))
+    session.add(AnalysisResult(file_id=ok.id, bpm=120.0, analysis_completed_at=datetime.now(UTC)))
+    await session.flush()
+
+    batched = {fid for batch in await get_proposal_pending_batches(session, 10) for fid in batch}
+
+    assert str(ok.id) in batched, "a metadata-SUCCEEDED, analysis-complete file must stay proposable"
+    assert await count_proposal_pending_files(session) == 1
