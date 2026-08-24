@@ -53,8 +53,8 @@ phaze-1i0h6's four-of-four unevidenced validation claims.
 | `just test-validate` | — | — | whole suite | yes, 95% line floor | yes | **M** — executed as `check`'s delegate in the red-gate run below |
 | `just check` | yes | yes | whole suite | yes, 95% line floor | yes | **M** — the red-gate run below |
 | `just check-all` | yes (via pre-commit) | yes (via pre-commit) | whole suite | yes, 95% line floor | yes | **I** — never executed as one command; measures itself at the next `bh work finish` |
-| `bh work check <id>` | yes | yes | whole suite | yes, 95% line floor | yes | **M** — red-gate run 2026-08-21: a deliberately failing test gave `1 failed, 7329 passed` and **exit 1** |
-| `bh work submit <id>` | yes | yes | whole suite | yes, 95% line floor | yes | **M** — phaze-jnj90/phaze-nqawu's own group submit, 2026-08-21 |
+| `bh work check <id>` | yes | yes | whole suite | yes, 95% line floor | yes | **M** — red-gate run 2026-08-21: a deliberately failing test gave `1 failed, 7329 passed` and **exit 1**. Unconditional: `check` **writes** the verdict ledger, it never reuses it (phaze-qsyc0) |
+| `bh work submit <id>` | yes\* | yes\* | whole suite\* | yes\* | yes\* | **M** — phaze-jnj90/phaze-nqawu's own group submit, 2026-08-21. **\*ONLY ON A LEDGER MISS** — on a hit it runs NOTHING and replays a cached verdict; see "A gate's M is a property of a RUN" below |
 | `bh work finish <epic>` (= `merge --molecule`) | via pre-commit | via pre-commit | whole suite | yes, 95% line floor | yes | **I** — config + `bh work merge --help` |
 | `bh work merge --group <ids>` | yes | yes | whole suite | yes, 95% line floor | yes | **I** — config + `bh work merge --help` |
 | `bh work merge <id>` (single bead → molecule) | **no — see below** | no | no | no | no | **I** — config + `bh work merge --help` |
@@ -93,6 +93,63 @@ every row above silently reverts to lint+typecheck while `submit` keeps printing
 a pristine checkout" — so a green submit on a machine whose config you have not checked is not
 evidence. `tests/shared/test_validation_gate_recipes.py` guards the justfile half of this; nothing
 in this repo can guard the config half.
+
+**That paragraph describes what submit runs on a ledger MISS.** `bh work submit`'s own `--help`
+promises to validate "from a clean checkout", and this repo read that as meaning every green submit
+is its own pristine-checkout, full-suite measurement. It is not: the verdict ledger is keyed on
+`(tree hash, validate-cmd hash)` and **not** on which command validated, so a `bh work check`
+verdict earned in the **seat worktree** is replayed by a submit that never makes a checkout at all
+(phaze-qsyc0, established 2026-08-24 against bh 0.14.0). A submit is evidence of a full-suite run
+only when its transcript carries the pytest summary and coverage lines; a replay prints a
+`validation verdict reused (…)` line instead. The next section has the mechanism, what invalidates
+a verdict, and the general form.
+
+### A gate's M is a property of a RUN, never of a COMMAND (phaze-qsyc0)
+
+`bh work submit` does not always validate. It consults a **verdict ledger** and, on a hit, skips
+the throwaway checkout entirely and prints a line like:
+
+```
+validation verdict reused (sha 0fe39f1, tree f7beb62, recorded 2026-08-23T20:40:28-07:00)
+```
+
+That submit ran no tests. It is not unsound — but it is **not its own measurement**, and the table
+row above would otherwise read as though it always were. Established 2026-08-24 from
+`beadhive/validation_ledger.py`, `beadhive/config.py` and the live ledger file, against bh 0.14.0:
+
+- **The key is `(tree hash, validate-cmd hash)` — the validating COMMAND is not part of it.** So a
+  `bh work check` verdict, earned in the **seat worktree**, is replayed by `bh work submit`, whose
+  `--help` promises a **clean checkout**. That is deliberate (bh-i0p1.4), and `check` records only
+  from a CLEAN worktree — but the two are interchangeable under one key, so "submit validated from
+  a pristine checkout" can be discharged by a run that never made one. Both use phaze's
+  `work.validate_cmd: just check`, so their hashes always match. **M** — the ledger at
+  `.git/bh-validation-ledger.json` stores exactly `{tree, cmd_hash, rc, at, host, sha}`.
+- **The ENVIRONMENT is not in the key, and phaze does not use bh's mitigation for that.** bh
+  re-derives the environment from the tree via `verify: true` worktree-init rules; phaze declares
+  **none** (its three init rules carry no `verify` flag — only the homelab rig has one), so no
+  environment establishment happens in either writer. `TEST_DATABASE_URL`,
+  `MIGRATIONS_TEST_DATABASE_URL` and `PHAZE_REDIS_URL` are shell exports, and a tree hash cannot
+  see them. In practice `just check` self-provisions a seat when they are unset (phaze-bk9el.23),
+  so isolation still holds — but the key does not cover what the pytest header records.
+- **What DOES invalidate a verdict:** the TTL (`work.ledger_ttl`, default **P1D** — 24 h; bh's own
+  docstring says operators are expected to tune this **down**, not up); a red verdict, which is
+  recorded but never reused; any edit to the `justfile`, which is *in* the tree and so changes the
+  tree hash; and any change to phaze's `validate_cmd`, which changes the cmd hash. That last one
+  covers the phaze-nqawu hazard — a verdict earned under the old lint-only command cannot be
+  replayed under `just check`.
+- **There is no flag to force re-validation.** `bh work submit --help` offers none. The knobs are
+  `work.ledger_ttl` and `work.validate_precheck` in `~/.beadhive/config.yaml` (phaze sets neither),
+  or deleting `.git/bh-validation-ledger.json`.
+
+**The general form, and it is the next case after the wrapper/delegate rule above.** That rule says
+an inference that a wrapper is measured because its delegate was measured is still an inference.
+This is sharper: here the composed command genuinely **was** measured — once — and the question is
+whether **this invocation** measured anything. So: **a gate's M is a property of a RUN, never of a
+command.** A command that can replay a cached verdict has two paths, and only the transcript of the
+invocation in front of you says which one you got. This is why the rule below — a gate is green only
+if its own pytest summary line says so — already catches it: a replayed verdict prints no pytest
+summary line and no coverage line at all. If you cannot see those lines, you did not measure
+anything, whatever the command was called.
 
 **`just test` is deliberately retained and is deliberately not a gate.** `-x` gives a tight
 edit/run loop, and `-q` gives dot-density. Both cost evidence — a red `-x` run characterises only
