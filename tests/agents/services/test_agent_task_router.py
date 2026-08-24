@@ -239,6 +239,27 @@ async def test_close_continues_after_one_queue_raises_and_clears_cache() -> None
     assert router._queues == {}
 
 
+async def test_close_skips_the_redis_handle_when_a_queue_has_none() -> None:
+    """A queue carrying no ``cache_redis`` handle is still disconnected, not skipped.
+
+    phaze-bk9el.25: ``_close_one`` reads the handle with ``getattr(queue, "cache_redis", None)``
+    precisely because it is not guaranteed to exist -- a queue built without a cache URL, or one
+    whose handle was already released, has ``None`` there. That FALSE arm was the only uncovered
+    branch in this module (90.00%), so nothing proved the psycopg3 pool still got closed on that
+    path; a guard that returned early instead of falling through would have leaked the pool with
+    every test still green.
+    """
+    router = AgentTaskRouter(queue_url="postgresql://u:p@h:5432/d", cache_redis_url="redis://c:6379/0")
+    queue = router._queue_for("agent-no-cache-handle", "meta")
+    queue.cache_redis = None
+    queue.disconnect = AsyncMock()
+
+    await router.close()
+
+    queue.disconnect.assert_awaited_once()
+    assert router._queues == {}
+
+
 def test_queue_for_sizes_dispatch_pool_from_config() -> None:
     """quick-260707-ryn: each per-(agent,lane) dispatch queue builds min_size=0/max_size=2 from config.
 

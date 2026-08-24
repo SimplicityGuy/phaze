@@ -453,6 +453,40 @@ async def get_proposal_stats(session: AsyncSession) -> ProposalStats:
     )
 
 
+# phaze-bk9el.26: the health index reports FOUR primitive_obsession findings on this module and
+# nothing else structural (max CCN 7, max nesting 2, measured at a3fd169a) -- `get_proposals_page`
+# (6 params), `_diagnose_zero_rowcount_status_update` (5), `update_proposal_status` (5) and
+# `update_proposal_fields` (5). ALL FOUR ARE LEFT AS THEY ARE, each for its own reason, and this
+# comment is that record. The module's dominant deductions are history-derived -- churn in the
+# 97.8th percentile, change_entropy in the 98.7th -- and no refactor can reach either, so bundling
+# parameters here would add churn to the single highest-churn file in its epic while moving a
+# metric it cannot move. That is the trade each reason below is weighed against.
+#
+#   `get_proposals_page` -- (session, *, status, search, page, page_size, sort) is not this
+#   module's invention, it is the codebase's paged-query idiom: 14 non-router functions take
+#   `page` + `page_size`, and `get_files_page` carries the same 6. Decisively, this function's
+#   ONLY production caller, `services/review.py::get_proposal_workspace_page`, has the byte-
+#   identical parameter list and forwards all five keyword arguments through (normalizing only
+#   `search or None`). So a params object either leaves the two halves of one call chain
+#   disagreeing, or propagates into review.py -- which phaze-bk9el.4 modified, and which is this
+#   module's strongest co-change partner (weight 7.33).
+#   The genuinely obsessed pair here, the old `sort_by`/`sort_dir` strings, was ALREADY bundled
+#   into the `SortState` object by phaze-a6hm.10; what remains is three unrelated concepts
+#   (filter, page, order) that no single object honestly names.
+#
+#   `_diagnose_zero_rowcount_status_update` -- a private helper split out of
+#   `update_proposal_status`'s `rowcount == 0` branch (see its docstring). Its parameters mirror
+#   its one caller's locals BY CONSTRUCTION; that is what makes the extraction verifiable as
+#   behavior-preserving. Bundling them would put an object between a function and the branch it
+#   was lifted out of, and buy nothing.
+#
+#   `update_proposal_status` / `update_proposal_fields` -- (session, proposal_id, new_status |
+#   fields, allowed_from, expected_updated_at) is the `allowed_from` compare-and-set idiom
+#   (phaze-uu17/phaze-3tj4), named and deliberately copied elsewhere in the tree --
+#   `routers/agent_scan_batches.py:90` says so in as many words. The parameters are four distinct
+#   concepts, not one: row identity, target state, a precondition on current state, and a
+#   precondition on version. Folding the two preconditions into a "guard" object would hide the
+#   thing the CAS contract exists to make explicit at every call site.
 async def get_proposals_page(
     session: AsyncSession,
     *,

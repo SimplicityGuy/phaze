@@ -1088,7 +1088,7 @@ sweep_osv_scanner_ignores() {
       { if (buf != "") { printf "%s", buf; buf="" }; print }
     ' "$ignore_file" >"$tmp_file"
 
-    if osv-scanner --config="$tmp_file" scan . >/dev/null 2>&1; then
+    if osv-scanner scan source --config="$tmp_file" -r . >/dev/null 2>&1; then
       resolved+=("$test_vid")
       print_success "✓ $test_vid — fixed! Removing from ignore list"
     else

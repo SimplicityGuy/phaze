@@ -4,12 +4,13 @@ from typing import Annotated
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
 from phaze.enums.tag_write import TagWriteStatus
 from phaze.models.agent import Agent
+from phaze.models.file import FileRecord
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_tag_writes import (
@@ -60,6 +61,12 @@ async def patch_tag_write(
     the ALREADY-WRITTEN state. Only the FIRST snapshot any attempt ever reports can be trusted as
     the true original, regardless of which attempt's callback happens to reach this endpoint.
 
+    ``sha256_hash`` (phaze-2zeu0) refreshes ``FileRecord.sha256_hash`` from what the agent observed
+    on disk AFTER the write, in the same transaction. The write rewrote the file's bytes, and that
+    column is otherwise set once at ingest and never again -- see the inline comment at the write
+    site for the two consumers that then fail permanently, and for why ``None`` leaves the column
+    alone instead of nulling it.
+
     ``agent`` comes from the auth dep (token, never body -- AUTH-01) and the row is addressed by
     the PATH ``log_id`` only, so a forged body cannot redirect the write. The endpoint deliberately
     does NOT check that the row's file belongs to the calling agent: ``log_id`` is a server-minted
@@ -107,6 +114,31 @@ async def patch_tag_write(
     # a mangled filename in an OSError string passes pydantic but aborts the transaction in Postgres
     # (CharacterNotInRepertoireError), which would roll the whole callback back and strand the row.
     log_entry.error_message = sanitize_pg_text(body.error_message)[:_ERROR_MESSAGE_MAX] if body.error_message else None
+    # phaze-2zeu0: refresh the file's stored digest from what the agent OBSERVED on disk after the
+    # write, in THIS SAME TRANSACTION as the terminal status. A tag write rewrites the file's bytes
+    # (mutagen's `audio.save()`), and `FileRecord.sha256_hash` is otherwise written exactly once, at
+    # ingest (`tasks/scan.py:218`), and never refreshed -- so without this every byte-verify against
+    # that column fails PERMANENTLY for the rest of the file's life: `tasks/execution.py`'s pre-copy
+    # verify raises "sha256 mismatch" on the file's very next execution, and the cloud lane's
+    # `job_runner._verify_integrity_step` exits 11 with no retry. Every retry recomputes the same
+    # real hash against the same stale column, so nothing in the system could ever clear it.
+    #
+    # SAME TRANSACTION IS THE POINT, not tidiness. The status write is what makes the tag write
+    # durable and visible; if the hash landed separately, a crash between the two would leave a
+    # write recorded as COMPLETED with a hash that no longer describes the file -- precisely the
+    # state this bead exists to eliminate, reached by a narrower window.
+    #
+    # `None` means "not observed" (see the payload field), never "unchanged", so the column is left
+    # alone rather than nulled -- `sha256_hash` is `nullable=False` and a NULL would additionally
+    # collapse every such file into one bogus duplicate group under `services/dedup.py`'s
+    # `GROUP BY sha256_hash` (Postgres groups all NULLs together).
+    #
+    # Reached only on the applied path: a late/duplicate replay returns above, because the first
+    # callback already recorded the digest for this write.
+    if body.sha256_hash is not None:
+        await session.execute(
+            update(FileRecord).where(FileRecord.id == log_entry.file_id).values(sha256_hash=body.sha256_hash, updated_at=func.now())
+        )
     # phaze-yy9bk: clear the write_file_tags:<log_id> scheduling-ledger row in the SAME
     # transaction as the terminal write. No other code path clears it -- unlike every other
     # agent-side stage (agent_analysis.py / agent_metadata.py / agent_push.py / agent_s3), this

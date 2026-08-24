@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 import uuid
 
 from litellm import acompletion
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
@@ -89,9 +89,48 @@ class FileProposalResponse(BaseModel):
 
 
 class BatchProposalResponse(BaseModel):
-    """LLM response for a batch of files."""
+    """LLM response for a batch of files.
+
+    This class is ALSO the ``response_format`` schema handed to litellm, so its JSON schema is
+    part of the request. Do not add fields to it to carry parse metadata -- that would change every
+    prompt's schema. ``SalvagedBatchProposalResponse`` below exists for exactly that reason.
+    """
 
     proposals: list[FileProposalResponse]
+
+
+class SalvagedBatchProposalResponse(BatchProposalResponse):
+    """A batch that parsed only after per-item salvage -- some proposals were DISCARDED.
+
+    A subclass rather than a field on the parent, deliberately: ``BatchProposalResponse`` doubles as
+    the ``response_format`` schema sent to the provider, so a new field there would alter the
+    request. Subclassing leaves that schema untouched while making a salvaged batch distinguishable
+    with ``isinstance`` and keeping every existing ``BatchProposalResponse`` annotation valid.
+
+    ``discarded_positions`` holds POSITIONS in the array the model emitted, not ``file_index``
+    values: a malformed item may be missing ``file_index`` altogether (that is one of the ways it
+    becomes malformed), whereas its position is always known.
+    """
+
+    discarded_positions: list[int]
+
+
+class MalformedCompletionError(ValueError):
+    """The provider's completion could not be turned into any usable proposal.
+
+    Raised INSTEAD of letting a bare ``pydantic.ValidationError`` escape, so the failure carries the
+    mode that produced it (``mode``) and the operator gets a legible line rather than a raw
+    traceback. Subclasses ``ValueError`` because ``pydantic.ValidationError`` does too -- any caller
+    that was already catching ``ValueError`` around ``generate_batch`` keeps working unchanged.
+
+    Deliberately an ERROR and not an empty batch: returning zero proposals would let the SAQ job
+    report ``status: ok, count: 0`` and hide a broken prompt or model behind a green pipeline. See
+    the operator scope decision recorded on phaze-02v1s.
+    """
+
+    def __init__(self, message: str, *, mode: str) -> None:
+        super().__init__(message)
+        self.mode = mode
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +299,166 @@ def _date_convention_guidance(files_context: list[dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Completion-parsing defences (phaze-02v1s half 2)
+#
+# Scope here is an OPERATOR decision taken 2026-08-22 on bead phaze-02v1s, and the two halves of
+# it are different kinds of record. Both are quoted in full below; the durable record for each is a
+# comment on phaze-02v1s.
+#
+#   1. Diagnostic logging. Question as put (via the dispatcher, 2026-08-22): "`tasks/proposal.py`
+#      has zero logging and zero exception handling today, so a malformed completion surfaces as a
+#      bare pydantic traceback from SAQ: no file ids, no model name, no content snippet, no way to
+#      tell which of the five modes fired. 'Fail loudly' is currently failing opaquely. Should
+#      diagnostic logging land?" Answer as given -- the selected option LABEL, verbatim:
+#      "Yes -- in this bead (Recommended)", 2026-08-22. Durable record: bead comment on
+#      phaze-02v1s.
+#      WHICH FIELDS to log was NOT specified by the operator and is the implementer's decision.
+#
+#   2. Scope, 2026-08-22. On the "how much should phaze defend" question the operator selected NO
+#      option and typed a free-hand note instead. Verbatim and entire: "let's create a new bead for
+#      5b, bump that to P3, but don't block closure of this bead on that work." Durable record:
+#      bead comment on phaze-02v1s; the new bead is phaze-km2x6 [P3]. NO option label is cited for
+#      this decision because none was selected.
+#      That note addresses mode 5b ONLY. That modes 1, 2, 3 and 5a are therefore in scope here is
+#      the DISPATCHER'S INFERENCE from "don't block closure", explicitly labelled as such when it
+#      was relayed -- it is a reasonable reading, not a stated one, and it is not an operator
+#      decision. Recorded honestly rather than folded into the citation above.
+#
+# The measured behaviour these defend is in
+# tests/review/services/test_proposal_provider_wire_shapes.py, which drives the real litellm from
+# provider wire bytes. Read its docstring before changing anything here.
+# ---------------------------------------------------------------------------
+
+# A fenced code block, with or without a language tag. DOTALL so the payload may span lines;
+# non-greedy so the FIRST complete block wins rather than everything up to the last fence.
+_JSON_FENCE_RE = re.compile(r"```(?:[A-Za-z0-9_+-]*)\r?\n(?P<body>.*?)\r?\n?```", re.DOTALL)
+
+# How much of a bad completion reaches the log. Head AND tail, because the tail is what
+# distinguishes a truncated completion (mode 5b) from a merely wrapped one -- a head-only preview
+# of a 4000-char reply cut at max_tokens looks identical to a healthy one.
+_PREVIEW_HEAD = 240
+_PREVIEW_TAIL = 120
+
+
+def _preview(content: str) -> str:
+    """A bounded head+tail excerpt of a completion, for the diagnostic log.
+
+    This deliberately puts real archive filenames into the deployment's logs: they are the whole
+    diagnostic value, phaze is a single-operator tool on a private network, and phaze-km2x6 is
+    gated on someone being able to read these lines and tell what happened. It is a runtime log,
+    not a tracked file, so the repo's no-local-identifiers convention (which governs COMMITTED
+    text) is not in play.
+    """
+    if len(content) <= _PREVIEW_HEAD + _PREVIEW_TAIL:
+        return content
+    return f"{content[:_PREVIEW_HEAD]}…[{len(content) - _PREVIEW_HEAD - _PREVIEW_TAIL} chars elided]…{content[-_PREVIEW_TAIL:]}"
+
+
+def _extract_json_span(content: str) -> str | None:
+    """The JSON substring inside a fenced or prose-wrapped completion, or ``None``.
+
+    PURE SUBSTRING SELECTION. It slices; it never edits, completes, re-quotes or reinterprets a
+    byte, so it cannot manufacture a document the model did not emit. That is what keeps it on the
+    right side of "discard, never infer" -- and it is why it is safe to run on content that has
+    already failed validation.
+
+    Two shapes, in order:
+
+    * a fenced block -- ```` ```json ... ``` ```` or a bare ```` ``` ... ``` ```` (measured mode 1);
+    * otherwise the span from the first ``{`` to the last ``}`` (measured mode 2, and its mirror,
+      trailing commentary after the JSON).
+
+    Returns ``None`` when neither shape is present, so the caller can tell "nothing to try" from
+    "tried and it did not parse".
+    """
+    fence = _JSON_FENCE_RE.search(content)
+    if fence is not None:
+        body = fence.group("body").strip()
+        if body:
+            return body
+
+    start = content.find("{")
+    end = content.rfind("}")
+    if start != -1 and end > start:
+        return content[start : end + 1]
+    return None
+
+
+def _wrapping_mode(content: str) -> str:
+    """Which wrapper the extraction stripped -- ``fenced`` or ``preamble``. Log-only."""
+    return "fenced" if _JSON_FENCE_RE.search(content) is not None else "preamble"
+
+
+def _salvage_proposals(text: str) -> tuple[list[FileProposalResponse], list[int]] | None:
+    """Validate the batch item by item, keeping the good and DISCARDING the bad.
+
+    Returns ``(kept, discarded_positions)``, or ``None`` when salvage does not apply -- which is
+    every case where the outer document is not structurally sound. A truncated completion (mode 5b)
+    fails ``json.loads`` here and returns ``None``: it is NOT repaired, by operator scope. See
+    phaze-km2x6.
+
+    Two refusals worth stating, because both would otherwise degrade into the failure this bead
+    exists to prevent:
+
+    * **Nothing kept is not a success.** An all-bad batch returns ``None`` and the caller raises,
+      rather than reporting a clean empty batch that would let the SAQ job log ``count: 0, ok``.
+    * **Nothing discarded means salvage was not what fixed it.** If every item validates, the outer
+      failure came from somewhere else and claiming a salvage would mislabel the batch, so this
+      returns ``None`` rather than inventing a salvage that did no work.
+
+    Discarded items are dropped whole. No field is defaulted, inferred, or carried over from a
+    sibling proposal -- a proposal the model did not finish emitting is a proposal phaze does not
+    have.
+    """
+    try:
+        document = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    raw_items = document.get("proposals")
+    if not isinstance(raw_items, list):
+        return None
+
+    kept: list[FileProposalResponse] = []
+    discarded_positions: list[int] = []
+    for position, item in enumerate(raw_items):
+        try:
+            kept.append(FileProposalResponse.model_validate(item))
+        except ValidationError:
+            discarded_positions.append(position)
+
+    if not kept or not discarded_positions:
+        return None
+    return kept, discarded_positions
+
+
+def _failure_mode(content: str, error: ValidationError, *, finish_reason: str | None) -> str:
+    """Name the mode of an unrecoverable completion so the logs can be counted later.
+
+    The distinction that has to survive is ``truncated`` (measured mode 5b) versus everything else,
+    because phaze-km2x6 is gated on whether 5b has ever actually fired in this deployment and a
+    null result closes it unfixed. Two independent signals, either sufficient:
+
+    * ``finish_reason == "length"`` -- the provider's own statement that it hit ``max_tokens``;
+    * a ``json_invalid`` error whose message says ``EOF while parsing`` -- pydantic-core's wording
+      for input that ended mid-value.
+
+    The second is a heuristic on a dependency's error text and is documented as one. It is a
+    fallback for providers that do not report ``finish_reason`` faithfully; the first is the
+    authority when present.
+    """
+    error_types = {item["type"] for item in error.errors()}
+    if finish_reason == "length":
+        return "truncated"
+    if error_types == {"json_invalid"}:
+        if any("EOF while parsing" in str(item.get("ctx", {}).get("error", "")) or "EOF while parsing" in item["msg"] for item in error.errors()):
+            return "truncated"
+        return "fenced_unrecovered" if _JSON_FENCE_RE.search(content) is not None else "json_invalid"
+    return "schema_invalid"
+
+
 class ProposalService:
     """Handles LLM-based filename proposal generation."""
 
@@ -275,7 +474,11 @@ class ProposalService:
             files_context: List of per-file context dicts (output of build_file_context).
 
         Returns:
-            Parsed ``BatchProposalResponse`` from the LLM.
+            Parsed ``BatchProposalResponse``. A ``SalvagedBatchProposalResponse`` when some
+            proposals had to be discarded to parse the rest -- see ``_parse_completion``.
+
+        Raises:
+            MalformedCompletionError: The completion yielded no usable proposal at all.
         """
         # Placeholder BEFORE payload: substituting the file JSON first would let a filename that
         # happened to contain the placeholder text get rewritten by the second pass.
@@ -286,7 +489,108 @@ class ProposalService:
             messages=[{"role": "user", "content": prompt}],
             response_format=BatchProposalResponse,
         )
-        return BatchProposalResponse.model_validate_json(response.choices[0].message.content)
+        choice = response.choices[0]
+        return self._parse_completion(
+            choice.message.content,
+            batch_size=len(files_context),
+            finish_reason=getattr(choice, "finish_reason", None),
+        )
+
+    def _parse_completion(self, content: str | None, *, batch_size: int, finish_reason: str | None) -> BatchProposalResponse:
+        """Turn a provider completion into a batch, defending the modes phaze-02v1s measured.
+
+        THE LADDER, in order. Each rung runs only when the one above it failed, so a well-formed
+        completion takes exactly the same path it always did and pays nothing:
+
+        1. **Straight parse.** The overwhelmingly common case.
+        2. **Absent content** (measured mode 3). ``content=None`` is in-contract for litellm --
+           ``AnthropicConfig`` builds ``content=merged_text or None``, so a reply with no text and
+           no tool call arrives as ``None``, not ``""``. There is nothing to recover from an absent
+           completion, so this raises immediately rather than descending the ladder.
+        3. **Fence / preamble extraction** (measured modes 1 and 2). Pure SUBSTRING selection --
+           see ``_extract_json_span``. It never edits, completes or reinterprets bytes.
+        4. **Per-item salvage** (measured mode 5a). Keeps the items that validate and DISCARDS the
+           ones that do not, returning a ``SalvagedBatchProposalResponse`` so the caller and the log
+           can both tell a salvaged batch from a clean one.
+
+        NOT ON THE LADDER, deliberately: repairing syntactically invalid JSON (measured mode 5b --
+        a completion truncated mid-token). That is ``phaze-km2x6`` [P3], and it is gated on reading
+        the logs this method emits. A partial repairer landed here would make its gating question
+        ("has 5b ever actually fired?") unanswerable, and a wrong repair yields a plausible valid
+        document with WRONG content -- a silent bad proposal an operator might approve. Mode 5b
+        raises, and says so in the log.
+
+        The governing principle for rungs 3 and 4 is **discard, never infer**. Nothing here invents
+        a filename, a confidence or a path. Losing a proposal is recoverable by re-running the
+        batch; approving a fabricated one is not.
+        """
+        log = logger.bind(llm_model=self.model, batch_size=batch_size, finish_reason=finish_reason)
+
+        # Rung 2 first, because `model_validate_json(None)` is a confusing `json_type` error rather
+        # than the plain "the model returned nothing" this actually is. NOTE the measured
+        # correction from phaze-02v1s half 1: that error is a pydantic ValidationError, NOT a
+        # TypeError, so an `except TypeError` guard here would never have fired.
+        if not isinstance(content, str) or not content.strip():
+            mode = "content_none" if content is None else "content_empty"
+            log.error(
+                "llm proposal batch: provider returned no content — whole batch lost",
+                parse_mode=mode,
+                content_type=type(content).__name__,
+            )
+            msg = f"LLM returned no usable content (mode={mode}, finish_reason={finish_reason})"
+            raise MalformedCompletionError(msg, mode=mode)
+
+        # Rung 1: the fast path. Unchanged behaviour for every well-formed completion.
+        try:
+            return BatchProposalResponse.model_validate_json(content)
+        except ValidationError as first_error:
+            direct_error = first_error
+
+        # Rung 3: fences and preambles. Only a substring is taken; if the span does not parse we
+        # keep descending rather than pretending it helped.
+        span = _extract_json_span(content)
+        if span is not None and span != content:
+            try:
+                parsed = BatchProposalResponse.model_validate_json(span)
+            except ValidationError:
+                pass
+            else:
+                log.warning(
+                    "llm proposal batch: recovered by extracting the JSON span — provider wrapped it",
+                    parse_mode=_wrapping_mode(content),
+                    proposals=len(parsed.proposals),
+                    content_preview=_preview(content),
+                )
+                return parsed
+
+        # Rung 4: per-item salvage. Requires the OUTER document to be structurally sound; a
+        # truncated document (mode 5b) does not reach here and is not repaired.
+        salvage_source = span if span is not None else content
+        salvaged = _salvage_proposals(salvage_source)
+        if salvaged is not None:
+            kept, discarded_positions = salvaged
+            log.warning(
+                "llm proposal batch: salvaged — some proposals were DISCARDED, not repaired",
+                parse_mode="item_invalid",
+                kept=len(kept),
+                discarded=len(discarded_positions),
+                discarded_positions=discarded_positions,
+                error_types=sorted({error["type"] for error in direct_error.errors()}),
+                content_preview=_preview(content),
+            )
+            return SalvagedBatchProposalResponse(proposals=kept, discarded_positions=discarded_positions)
+
+        # Nothing recovered. Name the mode so `phaze-km2x6` can be answered from the logs.
+        mode = _failure_mode(content, direct_error, finish_reason=finish_reason)
+        log.error(
+            "llm proposal batch: unparseable completion — whole batch lost",
+            parse_mode=mode,
+            error_types=sorted({error["type"] for error in direct_error.errors()}),
+            content_len=len(content),
+            content_preview=_preview(content),
+        )
+        msg = f"LLM completion could not be parsed (mode={mode}, finish_reason={finish_reason})"
+        raise MalformedCompletionError(msg, mode=mode) from direct_error
 
     @staticmethod
     def _clamp_confidence(value: float) -> float:
@@ -579,6 +883,63 @@ async def load_companion_targets(
     return by_agent
 
 
+async def _read_companion_chunk(
+    task_router: AgentTaskRouter,
+    agent_id: str,
+    chunk: list[CompanionReadItem],
+    max_chars: int,
+    media_file_id: uuid.UUID,
+) -> list[dict[str, str]]:
+    """Read ONE wire-bounded chunk of companions from one owning agent; ``[]`` on any failure.
+
+    phaze-bk9el.26: this is the body of ``fetch_companion_contents``'s innermost loop, extracted
+    verbatim so that function nests 2 levels instead of 4. The extraction is behavior-preserving by
+    construction: the ``except`` path used to hand control back to the enclosing chunk loop with
+    ``continue``, and returning ``[]`` here is the same thing, because the caller does nothing with
+    this block's output except extend its accumulator with it.
+
+    phaze-6bkk: request/response over the agent's ``meta`` lane. The containment check that used to
+    run control-side (phaze-eycl) moved WITH the read, onto the agent, and is re-run there against
+    that agent's own configured ``scan_roots`` -- the only place ``Path.resolve()`` can answer
+    honestly, since the controller has no such filesystem.
+
+    Args:
+        task_router: The per-agent SAQ enqueuer (``ctx["task_router"]``); non-``None`` by the
+            caller's guard.
+        agent_id: Id of the agent that owns every companion in ``chunk``.
+        chunk: At most ``_COMPANION_CHUNK`` companion targets for that one agent.
+        max_chars: Maximum chars per companion file (passed to ``clean_companion_content``).
+        media_file_id: UUID of the media file (for logging only).
+
+    Returns:
+        List of dicts with ``"filename"`` and ``"content"`` keys; ``[]`` if the read failed.
+    """
+    try:
+        queue = task_router.queue_for(agent_id, lane_for_task("read_companion_files"))
+        await queue.connect()
+        payload = ReadCompanionFilesPayload(agent_id=agent_id, companions=chunk, max_chars=max_chars)
+        job_result = await queue.apply("read_companion_files", timeout=_COMPANION_READ_TIMEOUT_S, **payload.model_dump(mode="json"))
+    except Exception:
+        # An offline agent, a saturated lane, or a timeout. Log and propose WITHOUT the
+        # companion context rather than failing the batch -- the pre-phaze-6bkk behavior on
+        # an unreadable companion, minus the silence (it used to be an unconditional
+        # `except OSError: continue` that hid a permanent, topology-level failure).
+        logger.warning("companion_read_unavailable", agent_id=agent_id, media_file_id=str(media_file_id), exc_info=True)
+        return []
+
+    contents: list[dict[str, str]] = []
+    for entry in (job_result or {}).get("contents", []):
+        # phaze-qj9e: strip NUL/lone-surrogate bytes before the content flows into the
+        # context_used JSONB column. A UTF-16LE .nfo/.txt companion decodes to text riddled
+        # with U+0000, which PostgreSQL jsonb rejects outright -- aborting store_proposals for
+        # the WHOLE batch and poisoning every retry with identical content. Both the cleaning
+        # and the sanitizing stay control-side: they are pure functions, and this is where the
+        # value is persisted.
+        cleaned = sanitize_pg_text(clean_companion_content(entry["content"], max_chars))
+        contents.append({"filename": sanitize_pg_text(entry["filename"]), "content": cleaned})
+    return contents
+
+
 async def fetch_companion_contents(
     by_agent: dict[str, list[CompanionReadItem]],
     max_chars: int,
@@ -612,35 +973,12 @@ async def fetch_companion_contents(
 
     contents: list[dict[str, str]] = []
     for agent_id, items in by_agent.items():
-        # phaze-6bkk: request/response over the agent's meta lane. The containment check that used
-        # to run here (phaze-eycl) moved WITH the read, onto the agent, and is re-run there against
-        # that agent's own configured scan_roots -- the only place `Path.resolve()` can answer
-        # honestly, since the controller has no such filesystem. Chunked to the payload's wire bound
-        # so an unusually companion-heavy media file cannot 422 the whole read.
+        # Chunked to the payload's wire bound so an unusually companion-heavy media file cannot 422
+        # the whole read. Each chunk is one independent agent round trip: a chunk that fails
+        # contributes nothing and the next one is still attempted -- see `_read_companion_chunk`.
         for start in range(0, len(items), _COMPANION_CHUNK):
             chunk = items[start : start + _COMPANION_CHUNK]
-            try:
-                queue = task_router.queue_for(agent_id, lane_for_task("read_companion_files"))
-                await queue.connect()
-                payload = ReadCompanionFilesPayload(agent_id=agent_id, companions=chunk, max_chars=max_chars)
-                job_result = await queue.apply("read_companion_files", timeout=_COMPANION_READ_TIMEOUT_S, **payload.model_dump(mode="json"))
-            except Exception:
-                # An offline agent, a saturated lane, or a timeout. Log and propose WITHOUT the
-                # companion context rather than failing the batch -- the pre-phaze-6bkk behavior on
-                # an unreadable companion, minus the silence (it used to be an unconditional
-                # `except OSError: continue` that hid a permanent, topology-level failure).
-                logger.warning("companion_read_unavailable", agent_id=agent_id, media_file_id=str(media_file_id), exc_info=True)
-                continue
-
-            for entry in (job_result or {}).get("contents", []):
-                # phaze-qj9e: strip NUL/lone-surrogate bytes before the content flows into the
-                # context_used JSONB column. A UTF-16LE .nfo/.txt companion decodes to text riddled
-                # with U+0000, which PostgreSQL jsonb rejects outright -- aborting store_proposals for
-                # the WHOLE batch and poisoning every retry with identical content. Both the cleaning
-                # and the sanitizing stay control-side: they are pure functions, and this is where the
-                # value is persisted.
-                cleaned = sanitize_pg_text(clean_companion_content(entry["content"], max_chars))
-                contents.append({"filename": sanitize_pg_text(entry["filename"]), "content": cleaned})
+            contents.extend(await _read_companion_chunk(task_router, agent_id, chunk, max_chars, media_file_id))
 
     return contents
 

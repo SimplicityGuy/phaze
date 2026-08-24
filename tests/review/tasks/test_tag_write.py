@@ -187,6 +187,13 @@ class TestWriteFileTagsTask:
         directly on the loop. The agent's event loop also runs the Phase-46 liveness heartbeat, so an
         on-loop mutagen stall against a slow mount risks a false DEAD classification and
         duplicate-work re-enqueue.
+
+        phaze-2zeu0 added the post-write sha256 -- another whole-file read, and so another way to
+        stall the loop. It went INSIDE the existing second offload rather than beside it, which is
+        why the count asserted here is still 2: the second callable is now
+        ``_write_verify_and_rehash``, which wraps ``write_and_verify_sync`` and appends the digest.
+        The count is the load-bearing half of this assertion -- if a future change grows it to 3,
+        the discipline has been broken even if every individual call is still offloaded.
         """
         ctx, _api = _ctx()
 
@@ -194,12 +201,12 @@ class TestWriteFileTagsTask:
             _patch_scan_roots([str(mp3_file.parent)]),
             patch("phaze.tasks.tag_write.asyncio.to_thread", new_callable=AsyncMock) as to_thread,
         ):
-            to_thread.side_effect = [{}, (TagWriteStatus.COMPLETED, None, None, {})]
+            to_thread.side_effect = [{}, (TagWriteStatus.COMPLETED, None, None, {}, "a" * 64)]
             await write_file_tags(ctx, **_kwargs(str(mp3_file), {"artist": "Test"}))
 
         assert to_thread.await_count == 2
         assert to_thread.await_args_list[0].args[0].__name__ == "_extract_before_tags"
-        assert to_thread.await_args_list[1].args[0].__name__ == "write_and_verify_sync"
+        assert to_thread.await_args_list[1].args[0].__name__ == "_write_verify_and_rehash"
 
 
 class TestContainment:
