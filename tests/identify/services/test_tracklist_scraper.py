@@ -274,6 +274,38 @@ class TestTracklistScraperHrefDateExtraction:
         assert TracklistScraper._extract_date_from_href(href) == "2024-03-05"
 
 
+class TestTracklistScraperRowFieldExtraction:
+    """phaze-bk9el.28: the two per-row helpers lifted out of ``_parse_search_results``.
+
+    They were previously reachable only through a full HTML parse, so a change to either was
+    verifiable only by the behaviour of the loop that called them. ``_parse_search_results`` sits
+    on the file with this module's worst bug-fix history (9 fixes in 6 months at a3fd169a), which
+    is the argument for testing its pieces directly rather than only end to end.
+    """
+
+    def test_resolve_result_url_joins_a_site_relative_href_onto_the_base(self):
+        assert TracklistScraper._resolve_result_url("/tracklist/abc/x") == f"{TracklistScraper.BASE_URL}/tracklist/abc/x"
+
+    def test_resolve_result_url_passes_an_absolute_href_on_the_allowed_host(self):
+        href = f"{TracklistScraper.BASE_URL}/tracklist/abc/x"
+        assert TracklistScraper._resolve_result_url(href) == href
+
+    def test_resolve_result_url_drops_an_absolute_href_off_the_allow_list(self):
+        """phaze-k5zz: the SSRF case -- a poisoned search body whose href the external_id pattern
+        still matches must yield None (drop the row), never a forwarded target."""
+        assert TracklistScraper._resolve_result_url("http://169.254.169.254/tracklist/x/") is None
+
+    def test_split_link_text_splits_artist_from_event_on_the_separator(self):
+        assert TracklistScraper._split_link_text("Sven Vath @ Time Warp, Mannheim, Germany") == ("Sven Vath", "Time Warp, Mannheim, Germany")
+
+    def test_split_link_text_returns_none_for_both_without_a_separator(self):
+        assert TracklistScraper._split_link_text("Just A Title") == (None, None)
+
+    def test_split_link_text_returns_none_for_an_empty_remainder(self):
+        """phaze-fq9h.6: an empty event term must be None, not "" -- the scorer weights presence."""
+        assert TracklistScraper._split_link_text("Sven Vath @ ") == ("Sven Vath", None)
+
+
 class TestTracklistScraperSearchEdgeCases:
     """Search error/parse branches and result-item skip paths."""
 

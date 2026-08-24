@@ -86,6 +86,39 @@ api_port := env_var_or_default("API_PORT", "8000")
 api_ca_cert := env_var_or_default("PHAZE_API_CA_CERT", "certs/phaze-ca.crt")
 api_base := "https://localhost:" + api_port
 
+# phaze-jktlb: the ONE place that decides which coverage reports a whole-suite run emits.
+#
+# WHY IT IS HERE AND NOT IN pyproject.toml, which is where it belongs by rights and where
+# this bead went looking for it first. Everything coverage.py itself owns IS centralised in
+# pyproject -- branch, concurrency, omit, relative_files, source, fail_under, precision,
+# show_missing, and (phaze-jktlb) the json/xml output PATHS. Report SELECTION is not
+# coverage.py's; `--cov-report` belongs to pytest-cov, which registers eleven command-line
+# options and NOT ONE ini key, so there is no `[tool.pytest.ini_options]` setting to hold it.
+# Measured against the installed pytest-cov 7.1.0, not inferred from its docs.
+#
+# WHY NOT `addopts`, WHICH IS pytest-cov's OWN DOCUMENTED ANSWER. It half-works and the other
+# half is a trap. Measured: report selection in `addopts` is inert until a run passes `--cov`,
+# so `just test` would still cost nothing -- that part is genuinely fine. But `--cov-report=`
+# IS NOT A RESET, however much the pytest-cov docs read like one. Its argparse action does
+# `cov_report[report_type] = file`, so an empty value merely adds the key `""` alongside
+# whatever is already accumulated. With json+xml in `addopts`, `just test-bucket`'s
+# `--cov-report=` suppressed nothing and BOTH artifacts were still written. Since
+# `COVERAGE_FILE=.coverage.<name>` redirects only the DATA file, a single shard would then
+# overwrite a full run's coverage.json -- the exact file `just branch-check` compares against.
+# A missing artifact is an error you can see; a partial one wearing the right filename is a
+# wrong answer you cannot. `-o addopts=` does override, but it would also drop `-m 'not
+# browser'` and pull the browser suite into every shard.
+#
+# So: a just variable, which AC3 names as the sanctioned second-best, and which the shard
+# recipes simply do not reference -- leaving their `--cov-report=` suppression working
+# because nothing has accumulated for it to fail to clear.
+#
+# ALPHABETICAL, like every coverage flag list in this file (operator instruction 2026-08-22,
+# recorded on phaze-jktlb). `term` rather than `term-missing`: `show_missing = true` in
+# pyproject already adds the Missing column to a plain terminal report -- measured -- and
+# naming it twice is the duplication this bead exists to remove.
+cov_reports := "--cov-report=json --cov-report=term --cov-report=xml"
+
 [doc('List all available commands')]
 default:
     @just --list
@@ -249,10 +282,13 @@ test:
 # `just check-all` ultimately run. Three properties are load-bearing and each one is the
 # fix for a defect that shipped:
 #
-#   * `--cov=phaze` -- bead acceptance criteria in this repo routinely ask for a coverage
+#   * `--cov` -- bead acceptance criteria in this repo routinely ask for a coverage
 #     figure alongside "run the full hive validation". Without this the criterion is
 #     structurally unsatisfiable and every developer paid a second full-suite pass to
-#     recover the number. pyproject's `[tool.coverage.report] fail_under = 95` means
+#     recover the number. It carries no `=phaze` (phaze-jktlb): the source is
+#     `source = ["phaze"]` in pyproject, a bare `--cov` measures exactly that -- verified
+#     from the artifact, not from the config -- and naming it twice is two places to edit
+#     and one place to forget. pyproject's `[tool.coverage.report] fail_under = 95` means
 #     pytest-cov ENFORCES a 95% floor here: sub-95 coverage exits nonzero. Since
 #     phaze-bk9el.21 turned `branch = true` on, the figure pytest-cov checks is the
 #     COMBINED line+branch one -- measured at 98.1559% against the 95 floor, so it stays
@@ -269,15 +305,20 @@ test:
 #     independently reinvented the same `--collect-only` workaround to recover it, which
 #     proves the seat but is not a transcript of the gate's own session.
 #
-# tests/shared/test_validation_gate_recipes.py fails the build if any of the three regress.
-#   * a json report -- `scripts/coverage_floor.py` reads `coverage.json`, and so does
-#     `just branch-check`, which is how a bead proves it did not lower branch coverage on a
-#     file it touched (phaze-bk9el.21). Writing it here means the per-bead branch check is
-#     free after any gate run instead of costing a second 20-minute suite.
+#   * `{{cov_reports}}` -- json, term and xml, from the single variable at the top of this
+#     file. `scripts/coverage_floor.py` reads `coverage.json`, and so does `just
+#     branch-check`, which is how a bead proves it did not lower branch coverage on a file
+#     it touched (phaze-bk9el.21); emitting it here means the per-bead branch check is free
+#     after any gate run instead of costing a second 20-minute suite. The xml is there so
+#     that no consumer is coupled to whichever recipe the developer happened to run
+#     (phaze-jktlb): Codecov's artifact is now produced by the local gate too, not only by
+#     `coverage-combine` in CI. Destinations come from pyproject, not from a `:DEST` here.
+#
+# tests/shared/test_validation_gate_recipes.py fails the build if any of these regress.
 [doc('Run tests with coverage report -- the validation-grade invocation (no -x, no -q, 95% line floor + 90% per-module line floor enforced)')]
 [group('test')]
 test-cov:
-    uv run pytest --cov=phaze --cov-report=term-missing --cov-report=json:coverage.json
+    uv run pytest --cov {{cov_reports}}
     uv run python scripts/coverage_floor.py
 
 # `test-cov` plus the seat provisioning `check` used to carry inline, factored out here so
@@ -343,10 +384,16 @@ test-validate:
     fi
     just test-cov
 
-[doc('Run tests with coverage XML output (for CI)')]
+# phaze-jktlb: NOTHING CALLS THIS. CI shards with `just test-bucket` and fans in with
+# `just coverage-combine`; no workflow, script or recipe references `test-ci`. It is kept
+# (removing a recipe is outside this bead) but it is now the same whole-suite invocation as
+# `test-cov` minus the line-floor script, rather than the third different opinion about
+# which reports to emit that it used to be. If you are reaching for it, you want `just
+# test-cov`; if it is still unreferenced next time someone reads this, delete it.
+[doc('Run tests with coverage reports, without the line-floor script (UNUSED -- prefer `just test-cov`)')]
 [group('test')]
 test-ci:
-    uv run pytest --cov=phaze --cov-report=xml --cov-report=term-missing
+    uv run pytest --cov {{cov_reports}}
 
 [doc('Run a specific test file')]
 [group('test')]
@@ -417,10 +464,27 @@ vulture:
 # directory into several parallel shards, e.g. "tests/shared/core" and
 # "tests/shared/routers tests/shared/services ..."). NAME is only the shard label used
 # for the .coverage.<NAME> shard filename -- it no longer has to equal a directory name.
+#
+# THIS RECIPE DELIBERATELY DOES NOT USE {{cov_reports}}. Acceptance criterion 4 -- "JSON and XML
+# are emitted by every coverage-producing recipe" -- was narrowed to whole-suite recipes by an
+# operator decision taken on 2026-08-22 and recorded on bead phaze-jktlb, which is the durable
+# record and carries the question as put and the answer as given.
+#
+# THE EVIDENCE BEHIND THAT DECISION, because the exclusion looks like laziness without it. A shard
+# measures a fraction of phaze and nothing consumes a per-shard report -- but the deciding fact is
+# that `COVERAGE_FILE` redirects only the binary DATA file, measured. A shard's json/xml would
+# still land on the SHARED `coverage.json`/`coverage.xml` names and overwrite a full run's, and
+# `just branch-check` reads exactly that coverage.json. So emitting them turns "no report yet" --
+# an error you can see -- into "a report covering one eleventh of the repo", a wrong answer you
+# cannot. The shard's whole contract is to defer every judgement to the combined number, which is
+# the same reasoning `--cov-fail-under=0` already encodes.
+#
+# Pinned by `test_running_the_shard_flag_set_actually_writes_no_report`, which RUNS these flags
+# rather than reading them, because `--cov-report=` looks like a reset and is not one.
 [doc('Run a single CI shard (one or more test paths), writing coverage data to .coverage.<name>. XDIST="" keeps DB shards serial; DB-free shards pass XDIST="-n auto".')]
 [group('test')]
 test-bucket NAME PATHS XDIST="":
-    COVERAGE_FILE=.coverage.{{NAME}} uv run pytest {{PATHS}} {{XDIST}} --cov=phaze --cov-context=test --cov-report= --cov-fail-under=0 --junitxml=junit.xml -o junit_family=legacy -q
+    COVERAGE_FILE=.coverage.{{NAME}} uv run pytest {{PATHS}} {{XDIST}} --cov --cov-context=test --cov-fail-under=0 --cov-report= --junitxml=junit.xml -o junit_family=legacy -q
 
 # phaze-bk9el.21 -- READ THIS BEFORE CHANGING EITHER `--fail-under` HERE OR IN pyproject.
 #
@@ -469,12 +533,32 @@ test-bucket NAME PATHS XDIST="":
 branch-check *flags:
     uv run python scripts/branch_coverage_check.py {{flags}}
 
-[doc('Combine per-bucket .coverage.* shards into coverage.xml and enforce the gate (95% line total + 90% per-module lines)')]
+# ORDERING (phaze-jktlb). `combine` first because everything else reads what it writes; then the
+# ARTIFACTS, alphabetically; then the GATES. That artifacts-before-gates split is a deliberate
+# departure from straight alphabetical order -- `report` sorts between `json` and `xml` -- and the
+# reason is that a coverage failure must still leave behind the two reports that explain WHICH
+# module dropped. Gate first and a red run destroys its own evidence.
+#
+# `--fail-under=0` on the two artifact steps (phaze-jktlb). Without it they inherit pyproject's
+# `fail_under = 95`, and a report writer WRITES its file and only then exits nonzero on the floor
+# -- so the recipe aborts partway through the artifacts, before `coverage report` and before
+# `coverage_floor.py`, i.e. before either real gate has spoken.
+#
+# MEASURED, not argued (phaze-jktlb, over deliberately partial shards): the pre-jktlb ordering
+# `xml` / `json` / `report` failed at `coverage xml` and left coverage.xml on disk with NO
+# coverage.json at all. coverage.json is the file `scripts/coverage_floor.py` and
+# `just branch-check` read, so a sub-floor combine destroyed the artifact you need to find out
+# WHICH module dropped, and reported it as a report writer exiting nonzero rather than as a named
+# module below its floor. This was never a false green -- it failed, loudly, at the wrong thing.
+# With the flags, the same partial-shard combine wrote both reports in full and then failed at
+# `coverage report --fail-under=95` with "total of 47.56 is less than fail-under=95.00".
+# The floor is enforced on the last two lines, deliberately and by name, and nowhere else.
+[doc('Combine per-bucket .coverage.* shards into coverage.json + coverage.xml and enforce the gate (95% line total + 90% per-module lines)')]
 [group('test')]
 coverage-combine:
     uv run coverage combine
-    uv run coverage xml
-    uv run coverage json
+    uv run coverage json --fail-under=0
+    uv run coverage xml --fail-under=0
     uv run coverage report --fail-under=95
     uv run python scripts/coverage_floor.py
 

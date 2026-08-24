@@ -63,6 +63,58 @@ JOB_TTL_SECONDS = 900
 # documented phaze-agent-env ConfigMap (docs/k8s-burst.md §6) does or does not carry.
 _ANALYZE_AGENT_KIND = "compute"
 
+# --------------------------------------------------------------------------- #
+# JOB-ENV-CONTRACT (phaze-frq98, seam F2) -- the env `job_runner.run` requires,
+# enumerated instead of hoped for.
+# --------------------------------------------------------------------------- #
+#
+# `build_job_manifest` references the agent-env ConfigMap and the token Secret BY NAME ONLY
+# (`envFrom`), because both are operator-created and phaze creates neither. That is the right
+# posture and it is not what is being changed here. What was missing is that phaze never wrote
+# down WHICH KEYS those objects have to carry, so a ConfigMap missing `PHAZE_AGENT_API_URL` was
+# invisible to every test phaze has and surfaced only as a pod exiting 20, one submit round-trip
+# and one Kueue admission later.
+#
+# These three sets are that contract, split by WHO SUPPLIES each key -- the split is the whole
+# point, because a key in the wrong column is as broken as a missing one. They are consumed by
+# `tests/analyze/services/backends/test_kube_env_contract.py`, which parses the operator-facing
+# ConfigMap out of `docs/k8s-burst.md` §6 and asserts it covers `JOB_ENV_FROM_CONFIGMAP` exactly.
+# Reading the DOCUMENTED object rather than a fixture restated here is deliberate: the docs block
+# is what an operator actually applies, so it is the artifact's real consumer-side twin (CLAUDE.md
+# rule 3). A fixture would only prove this file agrees with itself.
+
+#: Keys the agent-env ConfigMap (`kube.env_configmap_name`, docs/k8s-burst.md §6) must carry.
+#: `PHAZE_ROLE` is not decoration: `get_settings()` dispatches on it and returns `ControlSettings`
+#: without it, which `job_runner._load_config_step`'s isinstance guard turns into exit 20.
+#: `PHAZE_AGENT_API_URL` is enforced by `AgentSettings._enforce_required_agent_fields`.
+#: `PHAZE_MODELS_DIR` is the soft one -- see `MODELS_MOUNT_PATH` below.
+JOB_ENV_FROM_CONFIGMAP: frozenset[str] = frozenset({"PHAZE_ROLE", "PHAZE_AGENT_API_URL", "PHAZE_MODELS_DIR"})
+
+#: Keys the bearer-token Secret (`kube.env_secret_name`, docs/k8s-burst.md §5) must carry. Also
+#: enforced by `_enforce_required_agent_fields`; absent, the pod cannot authenticate its callback.
+JOB_ENV_FROM_SECRET: frozenset[str] = frozenset({"PHAZE_AGENT_TOKEN"})
+
+#: Keys `build_job_manifest` code-injects into the container `env`; these must NOT be
+#: operator-supplied. Two vary per submit or per mount (`PHAZE_JOB_FILE_ID`, `PHAZE_AGENT_CA_FILE`) and one
+#: is a fixed invariant of the lane (`PHAZE_AGENT_KIND`, above). `env` overrides `envFrom` of the
+#: same name, so a ConfigMap entry for any of these is silent dead weight, not a second source of
+#: truth -- docs/k8s-burst.md §6 says so for `PHAZE_AGENT_KIND` and the contract test enforces it
+#: for all three.
+JOB_ENV_CODE_INJECTED: frozenset[str] = frozenset({"PHAZE_AGENT_CA_FILE", "PHAZE_JOB_FILE_ID", "PHAZE_AGENT_KIND"})
+
+#: Where the optional models PVC is mounted, and the value `PHAZE_MODELS_DIR` must carry.
+#:
+#: **THE INVARIANT BINDS THREE PARTICIPANTS, not the two the original comment predicted.** The docstring of
+#: `build_job_manifest` warns that this mountPath must equal the ConfigMap's `PHAZE_MODELS_DIR` --
+#: mount the PVC anywhere else and the weights land where nothing looks for them. Enumerating the
+#: contract turned up a third participant: `job_runner.run` reads `os.environ["PHAZE_MODELS_DIR"]`
+#: **or falls back to `cfg.models_path`**, whose default (`config.py`) is also `/models`. So the
+#: ConfigMap key is soft-required -- omit it and the fallback silently agrees today -- which means
+#: a drift in `models_path` alone would break the PVC mount for any deployment that leaves the
+#: ConfigMap key out, with nothing in the manifest to show for it. `test_kube_env_contract.py`
+#: compares all three.
+MODELS_MOUNT_PATH = "/models"
+
 _QUEUE_NAME_LABEL = "kueue.x-k8s.io/queue-name"
 _MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
 _MANAGED_BY_VALUE = "phaze"
@@ -307,6 +359,11 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
     ships weights-free; ``job_runner`` never downloads them). **INVARIANT:** the ``/models`` mountPath
     MUST equal the agent-env ConfigMap's ``PHAZE_MODELS_DIR`` (default ``/models``) -- the container
     reads weights from ``PHAZE_MODELS_DIR``, so a drift would mount the PVC where nothing looks for it.
+    phaze-frq98 gave that prediction a test: the mountPath is now :data:`MODELS_MOUNT_PATH` and
+    ``tests/analyze/services/backends/test_kube_env_contract.py`` compares it against the ConfigMap
+    documented in ``docs/k8s-burst.md`` §6 **and** against ``BaseSettings.models_path``, the fallback
+    ``job_runner`` uses when the ConfigMap key is absent -- three participants, not the two this
+    comment originally named.
     phaze creates no PV/PVC and references the claim by name only (same posture as the LocalQueue /
     Secret / ConfigMap it references by name). When ``models_pvc_name`` is None, NO models volume/mount
     is emitted -- the manifest is byte-identical to the CA-only form (regression-guarded). The PVC
@@ -398,7 +455,10 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
                             #     PHAZE_AGENT_API_URL, PHAZE_MODELS_DIR from the ConfigMap;
                             #     PHAZE_AGENT_TOKEN from the Secret) the pod entrypoint requires to
                             #     build AgentSettings + call back. Both objects are operator-created;
-                            #     phaze references them by name only (kube_env_*_name).
+                            #     phaze references them by name only (kube_env_*_name) -- but the KEYS
+                            #     each must carry are now enumerated, not assumed: see
+                            #     JOB_ENV_FROM_CONFIGMAP / JOB_ENV_FROM_SECRET / JOB_ENV_CODE_INJECTED
+                            #     at the top of this module (phaze-frq98, seam F2).
                             "env": [
                                 {"name": "PHAZE_AGENT_CA_FILE", "value": "/certs/phaze-ca.crt"},
                                 {"name": "PHAZE_JOB_FILE_ID", "value": str(file_id)},
@@ -444,7 +504,7 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
                 "persistentVolumeClaim": {"claimName": kube.models_pvc_name, "readOnly": True},
             }
         )
-        pod_spec["containers"][0]["volumeMounts"].append({"name": "models", "mountPath": "/models", "readOnly": True})
+        pod_spec["containers"][0]["volumeMounts"].append({"name": "models", "mountPath": MODELS_MOUNT_PATH, "readOnly": True})
     # ADR-0005 (phaze-k6d5): OPT-IN memory limit, OFF by default. When set, the analyze container
     # gains `resources.limits.memory` so the kernel cgroup-OOMKills the offending pod instead of a
     # global, node-scoped OOM choosing a victim by oom_score_adj (the failure mode that killed

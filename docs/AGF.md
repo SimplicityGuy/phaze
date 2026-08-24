@@ -75,6 +75,13 @@ Do not run two pytest processes against one seat. The session advisory lock refu
 process, while separate seats can validate concurrently. Do not stop the shared test containers
 while another seat is active.
 
+Isolation is not only about services. Any writable path two seats can open is a collision surface,
+and the scratchpad the harness advertises as "session-specific" is per-session, not per-seat —
+every seat of one dispatch is handed the same directory. Write scratch output under a path carrying
+the bead id, or inside the bead's own worktree. Read a gate's verdict from its own pytest summary
+and coverage lines, never from a wrapper's exit code or a task-completion status. CLAUDE.md carries
+the measured incidents behind both rules.
+
 ## Boundaries
 
 - File epics through the planner; do not hand-roll dependency graphs with raw `bd` commands.

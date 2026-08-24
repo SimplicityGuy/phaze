@@ -319,7 +319,7 @@ class KueueBackend(_BaseBackend):
                 # phaze-jwz0: CAS hit -> clear the ledger + COMMIT the spill FIRST, which releases the drain's
                 # global ``pg_advisory_xact_lock`` and the idle-in-transaction connection BEFORE any S3 network
                 # I/O. The prior structure held that single global lock + an open txn across
-                # ``abort_multipart_upload`` / ``delete_staged_object`` -- aioboto3 calls subject to botocore's
+                # ``abort_multipart_upload`` / ``delete_staged_object`` -- aiobotocore calls subject to botocore's
                 # full connect-timeout x retry cycle (minutes against a hung/unreachable bucket) -- so ONE bad
                 # endpoint wedged every ``stage_cloud_window`` drain tick and every reconcile row behind it, and
                 # ran DESTRUCTIVE cleanup before the commit (a commit failure then left the DB claiming an upload
@@ -411,7 +411,7 @@ class KueueBackend(_BaseBackend):
             if current is not None and current.status == CloudJobStatus.AWAITING.value and current.upload_id == upload_id:
                 await s3_staging.delete_staged_object(file_id, bucket)
         except Exception:
-            # Broad by design: aioboto3/botocore can raise a wide range of transport/service errors here,
+            # Broad by design: aiobotocore/botocore can raise a wide range of transport/service errors here,
             # and (per the docstring above) a cleanup failure must never propagate to abort the already-
             # committed spill -- it can only be logged and left for the next idempotent re-run.
             logger.warning(

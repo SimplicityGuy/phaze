@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 import uuid
 
 from sqlalchemy import select
+import structlog
 
 from phaze.config import settings
 from phaze.models.analysis import AnalysisResult
@@ -13,7 +14,9 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.services.date_convention import annotate_date_conventions
 from phaze.services.proposal import (
+    MalformedCompletionError,
     ProposalService,
+    SalvagedBatchProposalResponse,
     build_file_context,
     check_rate_limit,
     fetch_companion_contents,
@@ -24,6 +27,9 @@ from phaze.services.proposal import (
 
 if TYPE_CHECKING:
     from phaze.schemas.agent_tasks import CompanionReadItem
+
+
+logger = structlog.get_logger(__name__)
 
 
 async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_index: int) -> dict[str, Any]:
@@ -137,7 +143,31 @@ async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_
 
     # 3. Call LLM -- also with NO DB connection held (phaze-6fvu).
     proposal_service: ProposalService = ctx["proposal_service"]
-    batch_response = await proposal_service.generate_batch(files_context)
+    # phaze-02v1s: correlate a malformed completion with the files it cost. The service logs the
+    # MODE and a content preview (it is the only layer holding the raw bytes); this layer is the
+    # only one holding the batch index and the file ids, and without them the operator learns that
+    # a batch died but not which one. Re-raised unchanged -- SAQ's retry/failure handling is
+    # untouched, and this is logging only, NOT the exception handling the seam finding described as
+    # absent. `MalformedCompletionError` deliberately escapes to fail the job loudly.
+    try:
+        batch_response = await proposal_service.generate_batch(files_context)
+    except MalformedCompletionError as exc:
+        logger.error(
+            "generate_proposals: batch lost to an unparseable LLM completion",
+            batch_index=batch_index,
+            parse_mode=exc.mode,
+            file_count=len(valid_file_ids),
+            file_ids=valid_file_ids,
+        )
+        raise
+    if isinstance(batch_response, SalvagedBatchProposalResponse):
+        logger.warning(
+            "generate_proposals: batch was SALVAGED — the discarded files get no proposal this run",
+            batch_index=batch_index,
+            kept=len(batch_response.proposals),
+            discarded_positions=batch_response.discarded_positions,
+            file_count=len(valid_file_ids),
+        )
 
     # 4. Open a FRESH short session only for the writes + commit (phaze-6fvu). store_proposals upserts
     #    by file_id (pg_insert), so it needs no live ORM objects from the read phase.

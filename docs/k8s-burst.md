@@ -439,6 +439,23 @@ memory_limit   = "4Gi"   # OPTIONAL, PROVISIONAL. Bounds the pod (kernel OOM); i
 Both figures, their provenance, and the quota they must stay in lockstep with are in
 [Sizing the burst lane](#sizing-the-burst-lane--what-to-set-who-owns-it-what-measured-it) below.
 
+**All three quantities are format-checked when `backends.toml` loads** (phaze-frq98). `cpu_request`,
+`memory_request` and `memory_limit` were free-form strings checked only for truthiness, so `"4GB"`
+where `"4Gi"` was meant was accepted by phaze, asserted on by phaze's own tests, and rejected only
+by a live cluster. They are now parsed against the Kubernetes Quantity grammar at config load, where
+the error names the field. Note the two edges that catch operators out: **there is no `B` suffix**
+(`4Gi` binary, `4G` decimal — never `4GB`), and **decimal SI uses a lowercase `k`** with no uppercase
+`K`. Negative values are refused too, since the apiserver requires a request or limit `>= 0`.
+
+This is **format validation only — it changes no value and imposes no default**, `memory_limit` very
+much included (ADR-0005 point 1 stands: the right value is a property of the operator's node). Two
+things it therefore does **not** catch: `cpu_request = "500"` meant as `"500m"` is a *well-formed*
+quantity (500 whole CPUs) and passes — it surfaces instead as a Kueue quota rejection against the
+ClusterQueue `nominalQuota` — and a JSON-Schema check of the manifest would not have caught either
+case, because Kubernetes types a Quantity as a plain string. That measurement is what put the check
+here rather than in the manifest validator; see
+`tests/analyze/services/backends/test_kube_manifest_schema.py`.
+
 Set it **above** `memory_request`, not equal to it — equal values (on both cpu *and* memory)
 would promote the pod's QoS class to `Guaranteed`, which this deployment deliberately avoids:
 `build_job_manifest` never emits a CPU limit, so a memory-only limit leaves the pod `Burstable`
@@ -909,9 +926,19 @@ roleRef:
 The one-shot pod authenticates its `/api/internal/agent/*` callback with a compute-agent bearer
 token — the **same** mechanism as the v5.0 fileserver/compute agents. Mint it on the control
 plane with `phaze agents add --kind compute` (this creates an `Agent` row so the callback
-authenticates), then paste the token into the Secret. The pod consumes it via
-`PHAZE_AGENT_TOKEN_FILE` (the `_FILE` convention — the token never rides a plain env var or a
-log line).
+authenticates), then paste the token into the Secret. The pod consumes it as **`PHAZE_AGENT_TOKEN`**,
+injected by `envFrom.secretRef` from this Secret — `envFrom` projects each Secret key under its own
+name, so the key below must be spelled exactly that.
+
+> **Corrected 2026-08-22 (phaze-frq98).** This paragraph previously said the pod consumes the token
+> via `PHAZE_AGENT_TOKEN_FILE`, "the `_FILE` convention". That is the **fileserver agent's**
+> docker-compose arrangement, not this one, and it contradicted the YAML directly below it. An
+> operator who followed the prose and named the key `PHAZE_AGENT_TOKEN_FILE` would have shipped a
+> pod whose secret-file resolution tried to open the token *string* as a path, failing settings
+> validation and exiting 20 — which is exactly the seam-F2 failure mode
+> (`docs/spikes/phaze-d2hgv.6-artifact-seam-inventory-2026-08-20.md`) that enumerating the env
+> contract was meant to surface. The key names are now asserted against this file by
+> `tests/analyze/services/backends/test_kube_env_contract.py`, so the two halves cannot drift again.
 
 ```bash
 # On the control plane: mint the compute-agent token, then paste it into secret.yaml below.

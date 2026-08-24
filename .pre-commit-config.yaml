@@ -4,11 +4,15 @@ repos:
     rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
     hooks:
       - id: check-added-large-files
+        # The vendored Kubernetes JSON schemas are 683 KB of upstream artifact (phaze-frq98) --
+        # over the 500 KB default, and deliberately NOT minified: the whole point of a vendored
+        # schema is that `curl ... | shasum -a 256` re-verifies it byte for byte against upstream.
         exclude: |
           (?x)^(
             \.planning/graphs/graph\.json|
             \.planning/graphs/\.last-build-snapshot\.json|
-            graphify-out/graph\.json
+            graphify-out/graph\.json|
+            tests/vendor/kubernetes-json-schema/.*\.json
           )$
       - id: check-executables-have-shebangs
       - id: check-json
@@ -31,24 +35,30 @@ repos:
         # (phaze-han03): a patch file is a CHECKSUMMED-BY-CONTEXT format. Diff context
         # lines legitimately carry trailing whitespace and the trailer ends "-- ", so
         # stripping either makes `git am` fail to apply — verified, it did.
-        exclude: &byte-identical ^(src/phaze/static/vendor/|tests/identify/fixtures/tracklist_render/|docs/spikes/[^/]+/patches/)
+        # Same rule once more for the vendored Kubernetes JSON schemas (phaze-frq98,
+        # tests/vendor/): they are the upstream `yannh/kubernetes-json-schema` artifacts, checked
+        # against a recorded sha256, and they ship with NO trailing newline -- so this hook WOULD
+        # rewrite them and break that check.
+        exclude: &byte-identical ^(src/phaze/static/vendor/|tests/identify/fixtures/tracklist_render/|docs/spikes/[^/]+/patches/|tests/vendor/)
       - id: mixed-line-ending
         exclude: *byte-identical
       - id: trailing-whitespace
         exclude: *byte-identical
       - id: pretty-format-json
         args: [--autofix, --indent=2]
-        # Skip generated artifacts (planning graphs, graphify output).
+        # Skip generated artifacts (planning graphs, graphify output) and the byte-identical
+        # vendored Kubernetes JSON schemas (tests/vendor/, phaze-frq98) -- reformatting an upstream
+        # artifact destroys the sha256 that proves it IS the upstream artifact.
         # Also skip the captured real-essentia analysis result (phaze-qiwdk): this hook SORTS
         # keys, and the `features` dict's key order is a real property of the artifact --
         # `_run_model_sets_over_windows` pins it to MODEL_SETS order with "genre" last,
         # deliberately, because the dict is JSON-serialized downstream where insertion order is
         # the output. Sorting it would quietly edit the record, exactly as with the recorded
         # 1001Tracklists renders above. The file is already written at --indent=2.
-        exclude: ^(\.planning/|graphify-out/|tests/analyze/fixtures/real_analyze_file_result\.json$)
+        exclude: ^(\.planning/|graphify-out/|tests/vendor/|tests/analyze/fixtures/real_analyze_file_result\.json$)
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: 65dbdb59d2f2d9c3bdc343c566821ad3319ddaa3  # frozen: v0.16.3
+    rev: aab412d509121cb5f7533134b7e67f9fab59c682  # frozen: v0.16.4
     hooks:
       - id: ruff
         args: [--fix]
@@ -92,7 +102,7 @@ repos:
         args: [--strict]
 
   - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: 745eface02aef23e168a8afb6b5737818efbea95  # frozen: v0.11.0.1
+    rev: a6564f5d57444e123433a5c9af733e3975c77229  # frozen: v0.11.0.1-1
     hooks:
       - id: shellcheck
         args: [--shell=bash, --severity=warning]

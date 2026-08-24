@@ -80,9 +80,9 @@ def test_agent_worker_does_not_import_phaze_database() -> None:
         # The ORM async engine must NEVER be dragged into the agent import graph. psycopg3
         # (psycopg / psycopg_pool / saq.queue.postgres) is explicitly NOT forbidden — it is
         # the Phase-36 broker the agent role is allowed to carry. Phase 53 (KSTAGE-02): the S3
-        # SDK (aioboto3/botocore) MUST also stay out — the agent transfers bytes httpx-only over
+        # SDK (aioboto3/aiobotocore/botocore) MUST also stay out — the agent transfers bytes httpx-only over
         # presigned URLs and holds no bucket credentials (T-53-11).
-        forbidden = ("phaze.database", "phaze.tasks.session", "sqlalchemy.ext.asyncio", "aioboto3", "botocore")
+        forbidden = ("phaze.database", "phaze.tasks.session", "sqlalchemy.ext.asyncio", "aioboto3", "aiobotocore", "botocore")
         present = [m for m in forbidden if m in sys.modules]
         if present:
             # Print full importer chain for debugging which import dragged it in.
@@ -229,7 +229,7 @@ def test_upload_task_stays_postgres_free_and_sdk_free() -> None:
 
     ``upload_file_s3`` runs on the file-server agent worker (registered in
     agent_worker.settings) and transfers bytes httpx-only to presigned part URLs. It must NOT
-    drag the app ORM / async DB engine NOR the S3 SDK (aioboto3/botocore) into the agent import
+    drag the app ORM / async DB engine NOR the S3 SDK (aioboto3/aiobotocore/botocore) into the agent import
     graph (KSTAGE-02 / T-53-11). It imports only stdlib (asyncio/pathlib), phaze.config (no DB),
     phaze.schemas.agent_s3 (Pydantic), and references PhazeAgentClient via ctx at runtime.
     Verified by subprocess so a contaminated import cannot poison downstream tests via sys.modules.
@@ -245,7 +245,7 @@ def test_upload_task_stays_postgres_free_and_sdk_free() -> None:
         os.environ.setdefault("PHAZE_REDIS_URL", "redis://localhost:6379/0")
         import phaze.tasks.s3_upload  # noqa: F401
 
-        forbidden = ("phaze.database", "phaze.tasks.session", "sqlalchemy.ext.asyncio", "aioboto3", "botocore")
+        forbidden = ("phaze.database", "phaze.tasks.session", "sqlalchemy.ext.asyncio", "aioboto3", "aiobotocore", "botocore")
         present = [m for m in forbidden if m in sys.modules]
         if present:
             for m in present:

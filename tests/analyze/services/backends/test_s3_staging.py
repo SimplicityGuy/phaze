@@ -1,6 +1,6 @@
 """Tests for the control-plane S3 staging service (Phase 53, Plan 02; Phase 70, MKUE-02).
 
-aioboto3/aiobotocore's async response parsing is incompatible with moto's in-process
+aiobotocore's async response parsing is incompatible with moto's in-process
 ``mock_aws`` (it expects ``response.content`` to be awaitable), so these tests run
 against a wire-compatible ``ThreadedMotoServer`` (real HTTP) with a per-call ``BucketConfig``
 pointed at it. Presigned-URL byte transfers go over httpx -- exactly as the agent/pod do in
@@ -622,14 +622,11 @@ def test_client_is_bounded_with_explicit_timeouts(monkeypatch: pytest.MonkeyPatc
     captured: dict[str, object] = {}
 
     class _CapSession:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
-        def client(self, _service: str, **kwargs: object) -> object:
+        def create_client(self, _service: str, **kwargs: object) -> object:
             captured["config"] = kwargs.get("config")
             return SimpleNamespace()
 
-    monkeypatch.setattr(s3_staging.aioboto3, "Session", _CapSession)
+    monkeypatch.setattr(s3_staging, "get_session", _CapSession)
     monkeypatch.setattr(s3_staging, "get_settings", lambda: SimpleNamespace(s3_client_timeout_sec=17))
 
     s3_staging._client(_bucket_config("http://s3.test", "b"))

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import String, func, literal_column, select, union_all
+from sqlalchemy import ColumnElement, Select, String, func, literal_column, select, union_all
 from sqlalchemy.sql.expression import cast
 
 from phaze.models.analysis import AnalysisResult
@@ -51,34 +51,79 @@ class SearchPagination:
     has_next: bool
 
 
-async def search(
-    session: AsyncSession,
-    query: str,
-    *,
-    artist: str | None = None,
-    genre: str | None = None,
-    date_from: date | None = None,
-    date_to: date | None = None,
-    bpm_min: float | None = None,
-    bpm_max: float | None = None,
-    page: int = 1,
-    page_size: int = DEFAULT_PAGE_SIZE,
-) -> tuple[list[SearchResult], SearchPagination]:
-    """Search across files and tracklists using full-text search with facet filters."""
-    ts_query = func.plainto_tsquery("simple", query)
+@dataclass(frozen=True)
+class SearchFacets:
+    """The facet filters ``search()`` applies to its three union branches.
 
-    # File subquery. phaze-x4ux: match/display the mojibake-repaired filename when one is on
-    # record (COALESCE falls back to the raw, byte-faithful `original_filename` for files ingested
-    # before this repair shipped and not yet backfilled -- see services/text_repair_backfill.py).
-    # `FileMetadata.artist`/`title`/`genre` need no COALESCE here: they are repaired in place at
-    # tag-extraction ingest (services/metadata.py::_first_str), so the stored column is already
-    # the clean text.
+    Grouped into one object because the three ``_*_branch`` builders below each consume a DIFFERENT
+    subset of them and every branch must be able to say which facets it honours -- ``genre`` and the
+    BPM range exist only on files, ``date_from``/``date_to`` only on files and tracklists, and
+    ``artist`` on all three. Passing the individual values through would make each builder's
+    signature a positional-argument shape where a caller swapping two ``str | None`` arguments type
+    checks cleanly; a named field cannot be transposed by accident.
+
+    A facet left ``None`` (or, for the two text facets, empty) is NOT applied -- the branch is
+    unfiltered on that dimension rather than filtered to NULL.
+    """
+
+    artist: str | None = None
+    genre: str | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    bpm_min: float | None = None
+    bpm_max: float | None = None
+
+
+# phaze-bk9el.25 -- DUPLICATION RULING for the three branch builders below, recorded so the two
+# clone pairs a similarity scanner reports here are not "resolved" by a later pass.
+#
+# The bead that produced this refactor cited "21.6% duplication" on this file. That figure does NOT
+# reproduce at the tip it was re-measured against: there is no dry_violation finding on this module
+# at all. What exists are two INTRA-FILE clone pairs, both surfaced only as refactoring suggestions,
+# and both are RULED STRUCTURAL -- deliberately left in place:
+#
+# 1. The facet-application blocks (`if facets.artist: ... .ilike(...)` and the date bounds) look
+#    near-identical across the file and tracklist branches, and are not. They apply to DIFFERENT
+#    columns on DIFFERENT models with DIFFERENT column types, and the date bound is where that
+#    difference bites: `FileRecord.created_at` is a DateTime, so `date_to` needs the exclusive
+#    next-day bound (phaze-ql6c) clamped against `date.max` (phaze-u2c4), while `Tracklist.date` is
+#    a true Date and `<= date_to` is already inclusive. A shared helper would have to re-introduce
+#    that distinction as a parameter, and -- the real cost -- would separate those two bead comments
+#    from the single expression they exist to explain, in a module with 8 bug fixes in 6 months.
+#    Both fixes ARE that expression; a reader who reaches it must reach them.
+#
+# 2. The union branches' SELECT column lists repeat the same eight labels. That repetition is what
+#    makes the UNION ALL legal: every branch must project the same eight columns in the same order
+#    and the NULL literals in the `genre`/`state` slots are load-bearing column-parity placeholders,
+#    not copied code. Factoring them into a generated list would hide the one property this union's
+#    correctness rests on.
+#
+# What the split below DOES buy is the thing the duplication figure was standing in for: `search()`
+# was one 98-line function at CCN 15 taking 10 parameters. Each branch is now separately readable
+# and separately documented about which facets it honours and why it ignores the rest.
+
+
+def _file_branch(ts_query: ColumnElement[Any], facets: SearchFacets) -> Select[Any]:
+    """Build the ``file`` branch of the search union, with the facets files support applied.
+
+    Honours every facet: ``artist``/``genre`` against FileMetadata, the date range against
+    ``FileRecord.created_at``, and the BPM range against the outer-joined AnalysisResult. The
+    outer joins keep files with no tags and no analysis in the result set -- they can still match on
+    filename -- while a facet on either table implicitly narrows to rows that have one.
+
+    phaze-x4ux: match/display the mojibake-repaired filename when one is on record (COALESCE falls
+    back to the raw, byte-faithful ``original_filename`` for files ingested before this repair
+    shipped and not yet backfilled -- see services/text_repair_backfill.py).
+    ``FileMetadata.artist``/``title``/``genre`` need no COALESCE here: they are repaired in place at
+    tag-extraction ingest (services/metadata.py::_first_str), so the stored column is already the
+    clean text.
+    """
     file_display_filename = func.coalesce(FileRecord.original_filename_repaired, FileRecord.original_filename)
     file_tsvector = func.to_tsvector(
         "simple",
         func.concat_ws(" ", file_display_filename, FileMetadata.artist, FileMetadata.title, FileMetadata.genre),
     )
-    file_q = (
+    file_q: Select[Any] = (
         select(
             cast(FileRecord.id, String).label("id"),
             literal_column("'file'").label("result_type"),
@@ -103,13 +148,13 @@ async def search(
     # matches literally instead of `_` acting as a single-char wildcard, and an artist tag
     # containing a literal `\` (e.g. `AC\DC`) round-trips through the ⌘K autocomplete instead of
     # the backslash being silently consumed as the LIKE escape character.
-    if artist:
-        file_q = file_q.where(FileMetadata.artist.ilike(like_wildcard(artist), escape=LIKE_ESCAPE_CHAR))
-    if genre:
-        file_q = file_q.where(FileMetadata.genre.ilike(like_wildcard(genre), escape=LIKE_ESCAPE_CHAR))
-    if date_from:
-        file_q = file_q.where(FileRecord.created_at >= date_from)
-    if date_to:
+    if facets.artist:
+        file_q = file_q.where(FileMetadata.artist.ilike(like_wildcard(facets.artist), escape=LIKE_ESCAPE_CHAR))
+    if facets.genre:
+        file_q = file_q.where(FileMetadata.genre.ilike(like_wildcard(facets.genre), escape=LIKE_ESCAPE_CHAR))
+    if facets.date_from:
+        file_q = file_q.where(FileRecord.created_at >= facets.date_from)
+    if facets.date_to:
         # phaze-ql6c: FileRecord.created_at is a DateTime, while date_to is a plain date -- comparing
         # created_at <= date_to promotes date_to to midnight, silently excluding every file created
         # later that same day. Use the exclusive next-day bound so date_to is fully inclusive, matching
@@ -120,18 +165,30 @@ async def search(
         # accepts and forwards. Clamp the addend's input so the expression stays total for every
         # value `date` can represent: `date.max` and `date.max - timedelta(days=1)` (9999-12-30)
         # both correctly resolve to the exclusive bound `date.max` (there is no later day to exclude).
-        file_q = file_q.where(FileRecord.created_at < min(date_to, date.max - timedelta(days=1)) + timedelta(days=1))
-    if bpm_min is not None:
-        file_q = file_q.where(AnalysisResult.bpm >= bpm_min)
-    if bpm_max is not None:
-        file_q = file_q.where(AnalysisResult.bpm <= bpm_max)
+        file_q = file_q.where(FileRecord.created_at < min(facets.date_to, date.max - timedelta(days=1)) + timedelta(days=1))
+    if facets.bpm_min is not None:
+        file_q = file_q.where(AnalysisResult.bpm >= facets.bpm_min)
+    if facets.bpm_max is not None:
+        file_q = file_q.where(AnalysisResult.bpm <= facets.bpm_max)
+    return file_q
 
-    # Tracklist subquery
+
+def _tracklist_branch(ts_query: ColumnElement[Any], facets: SearchFacets) -> Select[Any]:
+    """Build the ``tracklist`` branch of the search union, with the facets tracklists support.
+
+    Honours ``artist`` and the date range only. ``genre`` and the BPM range have no tracklist
+    equivalent, so a search carrying either still returns tracklists -- deliberately: the facets are
+    per-branch narrowings, not a whole-union filter, and the ``genre`` slot below is the NULL literal
+    that keeps this branch's column list union-compatible with the file branch's.
+
+    Unlike the file branch, ``Tracklist.date`` is a true Date column, so ``<= date_to`` is already
+    inclusive and needs none of the file branch's exclusive next-day bound.
+    """
     tracklist_tsvector = func.to_tsvector(
         "simple",
         func.concat_ws(" ", Tracklist.artist, Tracklist.event),
     )
-    tracklist_q = select(
+    tracklist_q: Select[Any] = select(
         cast(Tracklist.id, String).label("id"),
         literal_column("'tracklist'").label("result_type"),
         func.coalesce(Tracklist.event, Tracklist.artist).label("title"),
@@ -142,19 +199,28 @@ async def search(
         func.ts_rank(tracklist_tsvector, ts_query).label("rank"),
     ).where(tracklist_tsvector.op("@@")(ts_query))
 
-    if artist:
-        tracklist_q = tracklist_q.where(Tracklist.artist.ilike(like_wildcard(artist), escape=LIKE_ESCAPE_CHAR))
-    if date_from:
-        tracklist_q = tracklist_q.where(Tracklist.date >= date_from)
-    if date_to:
-        tracklist_q = tracklist_q.where(Tracklist.date <= date_to)
+    if facets.artist:
+        tracklist_q = tracklist_q.where(Tracklist.artist.ilike(like_wildcard(facets.artist), escape=LIKE_ESCAPE_CHAR))
+    if facets.date_from:
+        tracklist_q = tracklist_q.where(Tracklist.date >= facets.date_from)
+    if facets.date_to:
+        tracklist_q = tracklist_q.where(Tracklist.date <= facets.date_to)
+    return tracklist_q
 
-    # Discogs release subquery (only accepted links, per D-09)
+
+def _discogs_branch(ts_query: ColumnElement[Any], facets: SearchFacets) -> Select[Any]:
+    """Build the ``discogs_release`` branch of the search union (accepted links only, per D-09).
+
+    Honours ``artist`` only -- a Discogs link carries no genre, no BPM, and no date comparable to the
+    other two branches (``discogs_year`` is a year, cast to a String for the shared ``date`` slot, so
+    it cannot participate in a date-range comparison). The ``status == "accepted"`` predicate is NOT
+    a facet: it is the D-09 rule that unaccepted links never surface in search at all.
+    """
     discogs_tsvector = func.to_tsvector(
         "simple",
         func.concat_ws(" ", DiscogsLink.discogs_artist, DiscogsLink.discogs_title),
     )
-    discogs_q = (
+    discogs_q: Select[Any] = (
         select(
             cast(DiscogsLink.id, String).label("id"),
             literal_column("'discogs_release'").label("result_type"),
@@ -169,11 +235,34 @@ async def search(
         .where(DiscogsLink.status == "accepted")
     )
 
-    if artist:
-        discogs_q = discogs_q.where(DiscogsLink.discogs_artist.ilike(like_wildcard(artist), escape=LIKE_ESCAPE_CHAR))
+    if facets.artist:
+        discogs_q = discogs_q.where(DiscogsLink.discogs_artist.ilike(like_wildcard(facets.artist), escape=LIKE_ESCAPE_CHAR))
+    return discogs_q
+
+
+async def search(
+    session: AsyncSession,
+    query: str,
+    *,
+    artist: str | None = None,
+    genre: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    bpm_min: float | None = None,
+    bpm_max: float | None = None,
+    page: int = 1,
+    page_size: int = DEFAULT_PAGE_SIZE,
+) -> tuple[list[SearchResult], SearchPagination]:
+    """Search across files and tracklists using full-text search with facet filters.
+
+    The three union branches are built by :func:`_file_branch`, :func:`_tracklist_branch` and
+    :func:`_discogs_branch`; each documents which facets it honours and why it ignores the rest.
+    """
+    ts_query = func.plainto_tsquery("simple", query)
+    facets = SearchFacets(artist=artist, genre=genre, date_from=date_from, date_to=date_to, bpm_min=bpm_min, bpm_max=bpm_max)
 
     # Phase 90 (PR-A, D-11): the pipeline-status facet is gone, so files / tracklists / discogs ALWAYS union.
-    combined = union_all(file_q, tracklist_q, discogs_q).subquery()
+    combined = union_all(_file_branch(ts_query, facets), _tracklist_branch(ts_query, facets), _discogs_branch(ts_query, facets)).subquery()
 
     # phaze-ezic: a whole-corpus COUNT used to run here on every call (`select(func.count())
     # .select_from(combined)`), i.e. on every ⌘K keystroke -- exactly the per-render full scan
