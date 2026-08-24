@@ -378,9 +378,13 @@ rule because it is the same class: the harness told a seat it was fine, and no c
 The isolation rules protect **correctness** and say nothing about **capacity** — and exceeding
 capacity does not look like a failure, it looks like a SIGTERM that a wrapper renders as exit 0.
 Measured 2026-08-22: **5** concurrent full-suite gates at **545–671 MB** RSS each left **46%** of
-memory free with **461 MB of 1024 MB** swap in use, and one gate was genuinely SIGTERM'd. Run
-`ps aux | grep "[p]ytest"` before starting a gate; if three full-suite sessions are already running,
-wait rather than adding a fourth. A fan-out wider than that staggers its **gates**, not its claims.
+memory free with **461 MB of 1024 MB** swap in use, and one gate was genuinely SIGTERM'd. Count the
+live gates with `ps -eo args= | grep -cE '^[^ ]*/\.venv/bin/python[0-9.]* .*pytest'`; if three are
+already running, wait rather than adding a fourth. A fan-out wider than that staggers its **gates**,
+not its claims. Two simpler forms are wrong, both measured: `grep pytest` counts the `uv` and shell
+wrappers **and the measuring pipeline itself** (**3** reported against **0** live gates), and
+matching `ps aux` field 11 on `python$` fails the other way — it misses an interpreter spelled
+`python3`, reporting **1** when **2** were live. Undercounting is the direction that adds a gate.
 
 ## Code Quality
 
