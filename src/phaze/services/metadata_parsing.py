@@ -6,10 +6,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from mutagen.id3 import ID3
-from mutagen.mp4 import MP4
-
 from phaze.services.pg_text import sanitize_pg_text
+from phaze.services.tag_formats import TagFormat, UnsupportedTagFormatError, resolve_tag_format
 from phaze.services.text_repair import repair_mojibake
 
 
@@ -38,6 +36,26 @@ _MP4_MAP: dict[str, str] = {
     "\xa9day": "year",
     "\xa9gen": "genre",
     "trkn": "track_number",
+}
+
+# phaze-wt9vw. ASF (.wma) attributes. Until this existed, ASF files fell through the dispatch below
+# into ``_VORBIS_MAP``, which meant phaze read all six fields as ``None`` from any .wma tagged by a
+# conformant tagger -- a silent all-empty INGEST, not merely a verify-side problem. The write-side
+# half of the same defect wrote Vorbis keys into ASF and then confirmed them through this very
+# fallback.
+#
+# Written independently of ``tag_write_disk._WRITE_ASF_MAP`` rather than shared with it, on purpose:
+# two separately-authored tables make a typo in either one visible to a round-trip test, which a
+# single shared table would hide from every test that does not consult an external reader. Their
+# mutual consistency is asserted by
+# ``tests/review/services/test_tag_write_real_containers.py::test_write_and_read_maps_are_mutual_inverses``.
+_ASF_MAP: dict[str, str] = {
+    "Author": "artist",
+    "Title": "title",
+    "WM/AlbumTitle": "album",
+    "WM/Year": "year",
+    "WM/Genre": "genre",
+    "WM/TrackNumber": "track_number",
 }
 
 
@@ -272,11 +290,32 @@ def _normalized_values(fields: Mapping[str, Any], raw_sources: Mapping[str, Any]
 
 
 def parse_format_tags(audio: Any, tags: Any) -> ParsedTagValues:
-    """Purely normalize opened mutagen objects according to their tag family."""
+    """Purely normalize opened mutagen objects according to their tag family.
+
+    phaze-wt9vw: the family is decided by the SHARED :func:`~phaze.services.tag_formats.resolve_tag_format`,
+    the same call ``tag_write_disk.write_tags`` dispatches on. Previously this function carried its
+    own copy of that decision, ending in an unguarded ``return _mapped_sources(tags, _VORBIS_MAP, ...)``
+    -- so any container phaze did not recognise was read as though it were Vorbis. Paired with the
+    identical fallback on the write side, that is what let a .wma be written with Vorbis keys and
+    then VERIFIED against those same keys: two independent guesses that always agree.
+
+    An unresolvable container yields an empty result rather than raising. That is deliberate and is
+    NOT the old fallback in disguise: ingest opens whatever the archive contains, and the honest
+    answer for a container phaze cannot read is "no tags", which is also what the old Vorbis
+    fallback produced for one (barring an accidental key collision -- precisely the ASF case). The
+    WRITE path, where a wrong guess corrupts a file instead of returning nothing, refuses instead.
+    """
     if tags is None:
         return ParsedTagValues()
-    if isinstance(tags, ID3):
+    try:
+        tag_format = resolve_tag_format(audio, tags)
+    except UnsupportedTagFormatError:
+        return ParsedTagValues()
+
+    if tag_format is TagFormat.ID3:
         return _mapped_sources(tags, _ID3_MAP, _id3_value, _text_value)
-    if isinstance(audio, MP4):
+    if tag_format is TagFormat.MP4:
         return _mapped_sources(tags, _MP4_MAP, lambda _field, value: value, _mp4_value)
+    if tag_format is TagFormat.ASF:
+        return _mapped_sources(tags, _ASF_MAP, lambda _field, value: value, _text_value)
     return _mapped_sources(tags, _VORBIS_MAP, lambda _field, value: value, _text_value)

@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+from mutagen._vorbis import VCommentDict
 import pytest
 
 from phaze.services.metadata import (
@@ -301,36 +302,41 @@ class TestExtractTagsID3:
 
 
 class TestExtractTagsVorbis:
-    """Tests for extract_tags with Vorbis-tagged (OGG/FLAC) files."""
+    """Tests for extract_tags with Vorbis-tagged (OGG/FLAC) files.
+
+    phaze-wt9vw: both tests in this class were GREEN ON THE STRENGTH OF THE BUG. They built a
+    ``MagicMock`` wearing a class literally named ``"VorbisComment"`` and were read as Vorbis only
+    because the format dispatch ended in an unguarded "anything that isn't ID3 or MP4 must be
+    Vorbis" arm -- the same fallback that let ``.wma`` files be written with Vorbis keys and then
+    verified against those same keys. Removing the fallback turned both red. They now build a real
+    ``VCommentDict``; the resolver was NOT relaxed to accommodate them, which would have
+    reinstated the defect in order to preserve a test of it.
+
+    **The general form, because this will recur wherever a default branch is removed:** a wrong
+    fallback branch can make tests pass that assert the wrong thing, so removing it surfaces them
+    as failures. A red test after deleting a default is evidence about the TEST first, and only
+    then about the fix -- check what the test was actually relying on before concluding the change
+    is wrong.
+    """
 
     @patch("phaze.services.metadata.mutagen.File")
     def test_extracts_vorbis_tags(self, mock_file):
         mock_audio = MagicMock()
-        # Vorbis tags are NOT ID3 and NOT MP4
-        mock_tags = MagicMock()
-        # Remove ID3 spec so isinstance check fails
-        mock_tags.__class__ = type("VorbisComment", (), {})
-
-        def vorbis_get(key):
-            mapping = {
-                "artist": ["Vorbis Artist"],
-                "title": ["Vorbis Title"],
-                "album": ["Vorbis Album"],
-                "date": ["2023"],
-                "genre": ["Rock"],
-                "tracknumber": ["5/10"],
-            }
-            return mapping.get(key)
-
-        mock_tags.get = vorbis_get
-        mock_tags.items.return_value = [
-            ("artist", ["Vorbis Artist"]),
-            ("title", ["Vorbis Title"]),
-            ("album", ["Vorbis Album"]),
-            ("date", ["2023"]),
-            ("genre", ["Rock"]),
-            ("tracknumber", ["5/10"]),
-        ]
+        # phaze-wt9vw: a REAL ``VCommentDict``, not a MagicMock wearing a class named
+        # "VorbisComment". This test used to build the latter and passed only because the format
+        # dispatch ended in an unguarded "anything that isn't ID3 or MP4 must be Vorbis" arm --
+        # the exact fallback that let .wma files be written with Vorbis keys and then verified
+        # against those same keys. With the dispatch made explicit
+        # (``tag_formats.resolve_tag_format``), a stand-in that is not really a Vorbis comment
+        # container is no longer read as one, so the fixture has to be honest. Constructing the
+        # real container costs nothing and is strictly more faithful.
+        mock_tags = VCommentDict()
+        mock_tags["artist"] = ["Vorbis Artist"]
+        mock_tags["title"] = ["Vorbis Title"]
+        mock_tags["album"] = ["Vorbis Album"]
+        mock_tags["date"] = ["2023"]
+        mock_tags["genre"] = ["Rock"]
+        mock_tags["tracknumber"] = ["5/10"]
 
         mock_audio.tags = mock_tags
         mock_audio.__class__ = type("OggVorbis", (), {})
@@ -361,15 +367,10 @@ class TestExtractTagsVorbis:
         apart.
         """
         mock_audio = MagicMock()
-        mock_tags = MagicMock()
-        mock_tags.__class__ = type("VorbisComment", (), {})
-
-        def vorbis_get(key):
-            mapping = {"genre": ["Rock", "Pop"]}
-            return mapping.get(key)
-
-        mock_tags.get = vorbis_get
-        mock_tags.items.return_value = [("genre", ["Rock", "Pop"])]
+        # phaze-wt9vw: a real ``VCommentDict`` -- see the sibling test above for why a fake class
+        # named "VorbisComment" no longer resolves as Vorbis.
+        mock_tags = VCommentDict()
+        mock_tags["genre"] = ["Rock", "Pop"]
 
         mock_audio.tags = mock_tags
         mock_audio.__class__ = type("OggVorbis", (), {})
