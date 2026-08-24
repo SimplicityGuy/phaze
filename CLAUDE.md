@@ -53,8 +53,8 @@ phaze-1i0h6's four-of-four unevidenced validation claims.
 | `just test-validate` | — | — | whole suite | yes, 95% line floor | yes | **M** — executed as `check`'s delegate in the red-gate run below |
 | `just check` | yes | yes | whole suite | yes, 95% line floor | yes | **M** — the red-gate run below |
 | `just check-all` | yes (via pre-commit) | yes (via pre-commit) | whole suite | yes, 95% line floor | yes | **I** — never executed as one command; measures itself at the next `bh work finish` |
-| `bh work check <id>` | yes | yes | whole suite | yes, 95% line floor | yes | **M** — red-gate run 2026-08-21: a deliberately failing test gave `1 failed, 7329 passed` and **exit 1** |
-| `bh work submit <id>` | yes | yes | whole suite | yes, 95% line floor | yes | **M** — phaze-jnj90/phaze-nqawu's own group submit, 2026-08-21 |
+| `bh work check <id>` | yes | yes | whole suite | yes, 95% line floor | yes | **M** — red-gate run 2026-08-21: a deliberately failing test gave `1 failed, 7329 passed` and **exit 1**. Unconditional: `check` **writes** the verdict ledger, it never reuses it (phaze-qsyc0) |
+| `bh work submit <id>` | yes\* | yes\* | whole suite\* | yes\* | yes\* | **M** — phaze-jnj90/phaze-nqawu's own group submit, 2026-08-21. **\*ONLY ON A LEDGER MISS** — on a hit it runs NOTHING and replays a cached verdict; see "A gate's M is a property of a RUN" below |
 | `bh work finish <epic>` (= `merge --molecule`) | via pre-commit | via pre-commit | whole suite | yes, 95% line floor | yes | **I** — config + `bh work merge --help` |
 | `bh work merge --group <ids>` | yes | yes | whole suite | yes, 95% line floor | yes | **I** — config + `bh work merge --help` |
 | `bh work merge <id>` (single bead → molecule) | **no — see below** | no | no | no | no | **I** — config + `bh work merge --help` |
@@ -93,6 +93,63 @@ every row above silently reverts to lint+typecheck while `submit` keeps printing
 a pristine checkout" — so a green submit on a machine whose config you have not checked is not
 evidence. `tests/shared/test_validation_gate_recipes.py` guards the justfile half of this; nothing
 in this repo can guard the config half.
+
+**That paragraph describes what submit runs on a ledger MISS.** `bh work submit`'s own `--help`
+promises to validate "from a clean checkout", and this repo read that as meaning every green submit
+is its own pristine-checkout, full-suite measurement. It is not: the verdict ledger is keyed on
+`(tree hash, validate-cmd hash)` and **not** on which command validated, so a `bh work check`
+verdict earned in the **seat worktree** is replayed by a submit that never makes a checkout at all
+(phaze-qsyc0, established 2026-08-24 against bh 0.14.0). A submit is evidence of a full-suite run
+only when its transcript carries the pytest summary and coverage lines; a replay prints a
+`validation verdict reused (…)` line instead. The next section has the mechanism, what invalidates
+a verdict, and the general form.
+
+### A gate's M is a property of a RUN, never of a COMMAND (phaze-qsyc0)
+
+`bh work submit` does not always validate. It consults a **verdict ledger** and, on a hit, skips
+the throwaway checkout entirely and prints a line like:
+
+```
+validation verdict reused (sha 0fe39f1, tree f7beb62, recorded 2026-08-23T20:40:28-07:00)
+```
+
+That submit ran no tests. It is not unsound — but it is **not its own measurement**, and the table
+row above would otherwise read as though it always were. Established 2026-08-24 from
+`beadhive/validation_ledger.py`, `beadhive/config.py` and the live ledger file, against bh 0.14.0:
+
+- **The key is `(tree hash, validate-cmd hash)` — the validating COMMAND is not part of it.** So a
+  `bh work check` verdict, earned in the **seat worktree**, is replayed by `bh work submit`, whose
+  `--help` promises a **clean checkout**. That is deliberate (bh-i0p1.4), and `check` records only
+  from a CLEAN worktree — but the two are interchangeable under one key, so "submit validated from
+  a pristine checkout" can be discharged by a run that never made one. Both use phaze's
+  `work.validate_cmd: just check`, so their hashes always match. **M** — the ledger at
+  `.git/bh-validation-ledger.json` stores exactly `{tree, cmd_hash, rc, at, host, sha}`.
+- **The ENVIRONMENT is not in the key, and phaze does not use bh's mitigation for that.** bh
+  re-derives the environment from the tree via `verify: true` worktree-init rules; phaze declares
+  **none** (its three init rules carry no `verify` flag — only the homelab rig has one), so no
+  environment establishment happens in either writer. `TEST_DATABASE_URL`,
+  `MIGRATIONS_TEST_DATABASE_URL` and `PHAZE_REDIS_URL` are shell exports, and a tree hash cannot
+  see them. In practice `just check` self-provisions a seat when they are unset (phaze-bk9el.23),
+  so isolation still holds — but the key does not cover what the pytest header records.
+- **What DOES invalidate a verdict:** the TTL (`work.ledger_ttl`, default **P1D** — 24 h; bh's own
+  docstring says operators are expected to tune this **down**, not up); a red verdict, which is
+  recorded but never reused; any edit to the `justfile`, which is *in* the tree and so changes the
+  tree hash; and any change to phaze's `validate_cmd`, which changes the cmd hash. That last one
+  covers the phaze-nqawu hazard — a verdict earned under the old lint-only command cannot be
+  replayed under `just check`.
+- **There is no flag to force re-validation.** `bh work submit --help` offers none. The knobs are
+  `work.ledger_ttl` and `work.validate_precheck` in `~/.beadhive/config.yaml` (phaze sets neither),
+  or deleting `.git/bh-validation-ledger.json`.
+
+**The general form, and it is the next case after the wrapper/delegate rule above.** That rule says
+an inference that a wrapper is measured because its delegate was measured is still an inference.
+This is sharper: here the composed command genuinely **was** measured — once — and the question is
+whether **this invocation** measured anything. So: **a gate's M is a property of a RUN, never of a
+command.** A command that can replay a cached verdict has two paths, and only the transcript of the
+invocation in front of you says which one you got. This is why the rule below — a gate is green only
+if its own pytest summary line says so — already catches it: a replayed verdict prints no pytest
+summary line and no coverage line at all. If you cannot see those lines, you did not measure
+anything, whatever the command was called.
 
 **`just test` is deliberately retained and is deliberately not a gate.** `-x` gives a tight
 edit/run loop, and `-q` gives dot-density. Both cost evidence — a red `-x` run characterises only
@@ -373,6 +430,18 @@ reported `completed (exit code 0)` over a `just check` that had exited **143** �
 zero failed tests. The `0` was a trailing `echo`, not the gate. This belongs beside the scratchpad
 rule because it is the same class: the harness told a seat it was fine, and no code was wrong.
 
+**A shell pipeline eats the status too, and that is the common case (phaze-skhmm).** A pipeline's
+exit status is its **last** command's, and `tail` succeeds at printing a failure — so `| tail`,
+`| head`, `| grep`, `| jq` and even `| cat` all report 0 over a command that died. Measured
+2026-08-24: `bh work merge phaze-rlshw --wait 2>&1 | tail -30` exited **0** because `--wait` is not
+an option and `tail` happily printed the usage error; the dispatcher read the 0 and told the
+operator the merge was queued, which it was not. Re-run under `set -o pipefail` it is 1. Keep
+trimming output — just make the status survive it: `set -o pipefail; just check 2>&1 | tail -40`,
+or read `${PIPESTATUS[0]}`. **`grep` is the sharper edge, because it inverts as well as masks:**
+`cmd | grep -q PASS` returns 0 when `cmd` FAILED but its error text quoted the pattern, and 1 when
+`cmd` SUCCEEDED but printed nothing matching — a status wrong in *both* directions, which is worse
+than one that is merely optimistic.
+
 ### Concurrent gates are bounded by headroom, not by isolation (phaze-rlshw)
 
 The isolation rules protect **correctness** and say nothing about **capacity** — and exceeding
@@ -507,6 +576,31 @@ purely as a backstop for an ad-hoc `uv run pytest --cov=phaze` outside those rec
   review is for, and CI cannot supply it.
 - **A change touching both is a docs change** for this purpose: open the PR.
 - **One PR per feature**, wherever a PR is opened at all — no mixing unrelated changes.
+- **`bh work merge` / `bh work finish` are LOCAL — they never push.** A bead reaching CLOSED/merged
+  means the local integration branch took the merge, and nothing more. `bh work merge` prints
+  `✓ merged … and closed it` for a merge that exists only in your clone; measured 2026-08-24, that
+  line appeared while `origin/main` was unchanged. **To verify a landing, check the REMOTE** —
+  `git fetch origin && git merge-base --is-ancestor <sha> origin/main`, or `git ls-remote origin
+  refs/heads/main`. **Do NOT verify against local `main`, and the reason is the whole point: the
+  merge just wrote that ref, so `--is-ancestor <sha> main` cannot fail.** A verification that cannot
+  fail is not one — it caught two dispatchers on the same day, the second after the bead was already
+  filed. *The general form:* "merged" is a claim about a repository; a local check is a claim about a
+  working copy.
+- **Before provisioning ANY worktree, check for base skew** (phaze-aox61):
+  `git fetch origin && git rev-list --left-right --count main...origin/main`. Zero/zero is the only
+  safe state — `bh work claim` reports `"start_point": "main"`, the LOCAL ref, so every worktree cut
+  while local `main` is ahead inherits those commits and the PR renders foreign files (measured: PRs
+  #516 and #517 each showed 5 foreign files including a 423-line test belonging to another bead).
+  If it was skipped, the detection pair is `git log --oneline origin/main..<branch>`, which must list
+  **only** this bead's commits, and `git diff --stat origin/main...<branch>`, which is the
+  authoritative diff. **A GitHub file list lagging a base push and a genuinely contaminated branch
+  look identical in the UI** — on PR #516 `baseRefOid` still named the pre-push tip while git already
+  computed the correct 2-file diff — so only those two commands tell them apart. The fix is
+  `git rebase --onto origin/main <old-base>`; note that **pushing `main` does not always clear it**,
+  because content that reached origin by a different route has a different sha and no shared
+  ancestor. *The general form:* content equality does not imply a shared ancestor — "already on
+  origin" is a claim about topology, checked with `--is-ancestor`, never inferred from the same work
+  having landed.
 - **On a direct push, CI runs after the fact — nothing gates `main`.** The bead's own validation is
   therefore the real gate, and it must be a genuine one: the full `just check` on an isolated seat.
   Since phaze-nqawu (2026-08-21) `bh work check` and `bh work submit` **are** that command, so the
@@ -1010,6 +1104,39 @@ bv --recipe high-impact --robot-triage # pre-filter: top PageRank scores
 - **Worktrees**: one per bead, `wt/bead/issue/<id>`. Never share a worktree, a test
   database, or a Redis logical DB between concurrent agents — nor any other writable path,
   scratch directories and gate logs included.
+- **`review:*` on a CLOSED bead means nothing** (phaze-s3d1u). The label tracks review state
+  while a bead is live; `bh` clears it on approve, merge and land, but the clear has holes —
+  group/molecule merges have no clear call at all — so 174 of 2412 closed beads carry a stale
+  `review:pending`. **Nothing automated reads it after close:** `bv` 0.18.0's binary contains zero
+  occurrences of any `review:*` label, and `bh`'s only consumer (`work_next`) filters to non-closed
+  beads before reading it. So the practical rule is simply **filter on status when you query that
+  label** — `bd list --label review:pending --status open`, never the bare `--label` form. Two
+  constraints go with it: **resolving a gate as SUPERSEDED rather than approving a sha nobody
+  reviewed is CORRECT and must stay available** — a fix that made `approve` the only tidy path
+  would push seats toward false attestations, which is strictly worse than a stale label — and **do
+  not mass-edit the existing beads**, which would re-accumulate from the next batch merge. Tracked
+  upstream at beadhive/beadhive#15. *The general form:* a record that reads as a status is not one.
+- **A repowise health number can be stale, and "trust the index" does not cover it** (phaze-ia4ah).
+  The repowise guidance in `.claude/CLAUDE.md` says *"Trust the index — `verified: true` means the
+  bytes were checked against the live tree, so never re-read"*, and treats `index_behind: true` as
+  informational. That is about **verified BYTES**; it says nothing about **freshly computed
+  METRICS**. `repowise update` does **not** run the health fold — that is documented, by-design
+  behaviour and **not** a defect, so do not write it up as one — with the result that `get_health`
+  served byte-identical `duplication_pct`, `nloc` and `health_analyzed_at` across two commits and
+  two `update` runs. The fresh path is the CLI: `repowise health --file <path>` recomputes one file
+  in-process with no cache (`--format json` and `--module <prefix>` are the bulk equivalents); it
+  moved `agent_analysis.py` from 26.52% to 25.82% where the MCP read showed no change at all.
+  **There is currently no cheap staleness check** — `health_file_metrics.analyzed_commit` is NULL
+  for every row, so establishing freshness costs a full recompute compared against the stored rows.
+  **Do NOT conclude "always use the CLI"**: that was measured harmful, because it fixes nothing for
+  bulk reads while leaving agents believing they have worked around it. Tracked upstream at
+  repowise-dev/repowise#1864 (sibling #1747). *Same general form as the entry above:* a record that
+  reads as a status is not one.
+- **`bd label remove` reports success unconditionally** (gastownhall/beads#5988). It prints
+  `✓ Removed label 'X' from Y` and exits 0 **even when the bead never had X** — so that line is
+  evidence of neither the label's presence nor its removal. Read the label set back with
+  `bd label list <id>` if it matters. This is not academic: phaze-s3d1u cited exactly that line as
+  its proof and was wrong about the mechanism as a result.
 
 ### Syncing the Dolt remote
 
