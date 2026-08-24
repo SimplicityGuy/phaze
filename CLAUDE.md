@@ -430,6 +430,18 @@ reported `completed (exit code 0)` over a `just check` that had exited **143** �
 zero failed tests. The `0` was a trailing `echo`, not the gate. This belongs beside the scratchpad
 rule because it is the same class: the harness told a seat it was fine, and no code was wrong.
 
+**A shell pipeline eats the status too, and that is the common case (phaze-skhmm).** A pipeline's
+exit status is its **last** command's, and `tail` succeeds at printing a failure — so `| tail`,
+`| head`, `| grep`, `| jq` and even `| cat` all report 0 over a command that died. Measured
+2026-08-24: `bh work merge phaze-rlshw --wait 2>&1 | tail -30` exited **0** because `--wait` is not
+an option and `tail` happily printed the usage error; the dispatcher read the 0 and told the
+operator the merge was queued, which it was not. Re-run under `set -o pipefail` it is 1. Keep
+trimming output — just make the status survive it: `set -o pipefail; just check 2>&1 | tail -40`,
+or read `${PIPESTATUS[0]}`. **`grep` is the sharper edge, because it inverts as well as masks:**
+`cmd | grep -q PASS` returns 0 when `cmd` FAILED but its error text quoted the pattern, and 1 when
+`cmd` SUCCEEDED but printed nothing matching — a status wrong in *both* directions, which is worse
+than one that is merely optimistic.
+
 ### Concurrent gates are bounded by headroom, not by isolation (phaze-rlshw)
 
 The isolation rules protect **correctness** and say nothing about **capacity** — and exceeding
