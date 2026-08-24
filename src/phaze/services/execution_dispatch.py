@@ -96,7 +96,17 @@ async def get_approved_proposals_grouped_by_agent(
         item = ExecuteBatchProposalItem(
             proposal_id=proposal.id,
             file_id=file_record.id,
-            original_path=file_record.original_path,
+            # phaze-shzdj: the wire field is NAMED original_path but carries
+            # FileRecord.CURRENT_path -- where the file is NOW. FileRecord.original_path is
+            # written once at ingest and never again, so shipping it made the SECOND
+            # execution of an already-renamed file resolve a source that no longer exists
+            # (and derive owning_root + the in-place-rename parent from that same stale
+            # value). Operator, 2026-08-24: "original_path should never change. it's the
+            # ORIGINAL location of the file. the current_path is where the file is now."
+            # current_path is NOT NULL (models/file.py:42) and required at the ingest
+            # boundary (schemas/agent_files.py:34), so there is no NULL case to fall back
+            # from. See ExecuteBatchProposalItem's docstring for the field name.
+            original_path=file_record.current_path,
             # proposed_path is the RELATIVE destination directory; '' (null ->
             # '') tells the executor to rename in place. proposed_filename is
             # always present (non-nullable column) and is what the executor
