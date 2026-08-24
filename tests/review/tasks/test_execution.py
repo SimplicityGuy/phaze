@@ -53,14 +53,14 @@ async def test_execute_approved_batch_smoke_completed(tmp_path: Path, monkeypatc
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(o1),
+            source_path=str(o1),
             proposed_path="moved",
             proposed_filename="a.mp3",
         ),
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(o2),
+            source_path=str(o2),
             proposed_path="moved",
             proposed_filename="b.mp3",
         ),
@@ -87,14 +87,14 @@ async def test_execute_approved_batch_smoke_partial_failure(tmp_path: Path, monk
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(o_ok),
+            source_path=str(o_ok),
             proposed_path="moved",
             proposed_filename="a.mp3",
         ),
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(o_missing),
+            source_path=str(o_missing),
             proposed_path="moved",
             proposed_filename="missing.mp3",
         ),

@@ -274,7 +274,7 @@ def _proposal_item() -> ExecuteBatchProposalItem:
     return ExecuteBatchProposalItem(
         proposal_id=uuid.uuid4(),
         file_id=uuid.uuid4(),
-        original_path="/orig/a.mp3",
+        source_path="/orig/a.mp3",
         proposed_path="new",  # RELATIVE destination directory
         proposed_filename="a.mp3",
     )
@@ -293,7 +293,7 @@ def test_execute_batch_proposal_item_allows_empty_proposed_path() -> None:
     item = ExecuteBatchProposalItem(
         proposal_id=uuid.uuid4(),
         file_id=uuid.uuid4(),
-        original_path="/orig/a.mp3",
+        source_path="/orig/a.mp3",
         proposed_path="",
         proposed_filename="renamed.mp3",
     )
@@ -308,7 +308,7 @@ def test_execute_batch_proposal_item_requires_proposed_filename() -> None:
             {
                 "proposal_id": str(uuid.uuid4()),
                 "file_id": str(uuid.uuid4()),
-                "original_path": "/o",
+                "source_path": "/o",
                 "proposed_path": "n",
             },
         )
@@ -320,7 +320,7 @@ def test_execute_batch_proposal_item_with_sha256() -> None:
     item = ExecuteBatchProposalItem(
         proposal_id=uuid.uuid4(),
         file_id=uuid.uuid4(),
-        original_path="/o",
+        source_path="/o",
         proposed_path="n",
         proposed_filename="a.mp3",
         sha256_hash="a" * 64,
@@ -335,7 +335,7 @@ def test_execute_batch_proposal_item_rejects_unknown_field() -> None:
             {
                 "proposal_id": str(uuid.uuid4()),
                 "file_id": str(uuid.uuid4()),
-                "original_path": "/o",
+                "source_path": "/o",
                 "proposed_path": "n",
                 "proposed_filename": "a.mp3",
                 "current_path": "/x",  # explicitly forbidden by D-24
@@ -400,7 +400,7 @@ def test_execute_approved_batch_payload_round_trip() -> None:
             ExecuteBatchProposalItem(
                 proposal_id=uuid.uuid4(),
                 file_id=uuid.uuid4(),
-                original_path="/orig/a.mp3",
+                source_path="/orig/a.mp3",
                 proposed_path="new",
                 proposed_filename="a.mp3",
                 sha256_hash="b" * 64,
@@ -423,7 +423,7 @@ def test_execute_approved_batch_payload_rejects_unknown_field() -> None:
                     {
                         "proposal_id": str(uuid.uuid4()),
                         "file_id": str(uuid.uuid4()),
-                        "original_path": "/o",
+                        "source_path": "/o",
                         "proposed_path": "n",
                         "proposed_filename": "a.mp3",
                     },
@@ -436,10 +436,19 @@ def test_execute_approved_batch_payload_rejects_unknown_field() -> None:
 
 
 def test_no_current_path_field_anywhere() -> None:
-    """D-24 invariant: NO payload carries `current_path` — agents work off original_path.
+    """D-24 invariant: NO payload carries a field NAMED `current_path`.
 
     `current_path` is set on the FileRecord only AFTER execute_approved_batch
-    flips state via PATCH /proposals/{id}/state.
+    flips state via PATCH /proposals/{id}/state, so analysis / metadata / scan payloads
+    address the file by `original_path` instead.
+
+    phaze-xzjrr: the three D-24 EXCEPTIONS -- `WriteFileTagsPayload.file_path`,
+    `WriteCueSheetPayload.audio_path`, `ExecuteBatchProposalItem.source_path` -- do
+    carry the current location, and this assertion is exactly why all three are ROLE
+    names. Naming one of them `current_path` to be literal about its provenance would
+    put the schema in direct contradiction with its own D-24 note and would require
+    WEAKENING this guard; a role name states what the executor does with the value and
+    stays true whichever column fills it.
     """
     payload_classes = (
         ProcessFilePayload,

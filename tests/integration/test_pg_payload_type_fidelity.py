@@ -181,7 +181,7 @@ def _representative_payloads() -> list[tuple[str, BaseModel]]:
                     ExecuteBatchProposalItem(
                         proposal_id=uuid.uuid4(),
                         file_id=uuid.uuid4(),
-                        original_path="/archive/<track-05>.mp3",
+                        source_path="/archive/<track-05>.mp3",
                         proposed_path="/archive/Artist/Album",
                         proposed_filename="Artist - Event - Title (2024).mp3",
                         sha256_hash="b" * 64,
@@ -189,7 +189,7 @@ def _representative_payloads() -> list[tuple[str, BaseModel]]:
                     ExecuteBatchProposalItem(
                         proposal_id=uuid.uuid4(),
                         file_id=uuid.uuid4(),
-                        original_path="/archive/<track-06>.mp3",
+                        source_path="/archive/<track-06>.mp3",
                         proposed_path="/archive/Artist/Album",
                         proposed_filename="Artist - Event - Other (2024).mp3",
                         sha256_hash=None,

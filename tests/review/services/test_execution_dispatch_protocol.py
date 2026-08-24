@@ -40,7 +40,7 @@ def _proposal(agent_id: str = "agent-a") -> ExecuteBatchProposalItem:
     return ExecuteBatchProposalItem(
         proposal_id=uuid.uuid4(),
         file_id=uuid.uuid4(),
-        original_path=f"/in/{agent_id}.mp3",
+        source_path=f"/in/{agent_id}.mp3",
         proposed_path="out",
         proposed_filename=f"{agent_id}.mp3",
     )

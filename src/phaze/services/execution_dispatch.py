@@ -96,17 +96,23 @@ async def get_approved_proposals_grouped_by_agent(
         item = ExecuteBatchProposalItem(
             proposal_id=proposal.id,
             file_id=file_record.id,
-            # phaze-shzdj: the wire field is NAMED original_path but carries
-            # FileRecord.CURRENT_path -- where the file is NOW. FileRecord.original_path is
-            # written once at ingest and never again, so shipping it made the SECOND
-            # execution of an already-renamed file resolve a source that no longer exists
-            # (and derive owning_root + the in-place-rename parent from that same stale
-            # value). Operator, 2026-08-24: "original_path should never change. it's the
-            # ORIGINAL location of the file. the current_path is where the file is now."
-            # current_path is NOT NULL (models/file.py:42) and required at the ingest
-            # boundary (schemas/agent_files.py:34), so there is no NULL case to fall back
-            # from. See ExecuteBatchProposalItem's docstring for the field name.
-            original_path=file_record.current_path,
+            # phaze-shzdj: the move SOURCE is FileRecord.CURRENT_path -- where the file is
+            # NOW -- and never FileRecord.original_path, which is written once at ingest and
+            # never again, so shipping it made the SECOND execution of an already-renamed
+            # file resolve a source that no longer exists (and derive owning_root + the
+            # in-place-rename parent from that same stale value). Operator, 2026-08-24:
+            # "original_path should never change. it's the ORIGINAL location of the file.
+            # the current_path is where the file is now." current_path is NOT NULL
+            # (models/file.py:42) and required at the ingest boundary
+            # (schemas/agent_files.py:34), so there is no NULL case to fall back from.
+            # phaze-xzjrr: the wire field is `source_path`, a ROLE name -- it was called
+            # `original_path` while it carried that column, and kept the name for one bead
+            # after phaze-xzjrr's parent switched the column, which is the misdescription
+            # this rename removed. THIS ASSIGNMENT IS THE SEAM: the JSON key produced here
+            # is what tasks/execution.py reads and what an agent implementor codes against.
+            # It is pinned end to end by
+            # test_the_wire_key_the_dispatcher_produces_is_the_one_the_executor_moves_from.
+            source_path=file_record.current_path,
             # proposed_path is the RELATIVE destination directory; '' (null ->
             # '') tells the executor to rename in place. proposed_filename is
             # always present (non-nullable column) and is what the executor
