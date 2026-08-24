@@ -26,7 +26,7 @@ EVIDENTIARY CLASS -- read this before citing these tests (AC 1)
 ``OPENAI_API_KEY``, so no live provider was reachable. The wire payloads below are hand-constructed
 to the documented Anthropic Messages API and OpenAI Chat Completions response schemas.
 
-So the chain is: *hand-built wire bytes* -> **real litellm 1.97.0 transform** -> **real
+So the chain is: *hand-built wire bytes* -> **real litellm 1.98.0 transform** -> **real
 ``ProposalService.generate_batch``** -> **real pydantic 2.13.4**. Three of the four links are the
 production article; the first is not. That is strictly stronger than a ``model_dump_json()`` fixture
 (which has zero production links) and strictly weaker than a captured live completion. Treat the
@@ -34,12 +34,41 @@ production article; the first is not. That is strictly stronger than a ``model_d
 
 **Do not let a later summary upgrade that to "tested against real provider output".**
 
+WHICH litellm THESE VERDICTS WERE MEASURED AGAINST (phaze-o6wg7)
+----------------------------------------------------------------
+**Originally measured against litellm 1.97.0; RE-MEASURED against litellm 1.98.0 on 2026-08-23 and
+found identical in every cell.** Recording both is the point -- a verdict that survived a minor
+version change is better evidence than one taken once, and the file should say which it is.
+
+The re-measurement happened because it was *forced*: ``test_litellm_pin_is_unchanged`` below turned
+main red when the aiobotocore 3.x upgrade moved the pin (litellm 1.98 requires boto3 >=1.43.1). The
+cheap response was to edit the assertion string, which would have re-baselined all six verdicts onto
+an unmeasured version -- the ADR-0012 defect this repo has paid for three times. Instead all six
+were re-run: the whole module passed unmodified except the pin string itself, and, independently,
+each mode was re-driven through real litellm 1.98 with phaze's own ``response_format`` to capture
+the exact content reaching the parser and re-derive the BEFORE column from the unmodified
+``model_validate_json``. Same content, same error types, same exception, same frame.
+
+Mode 4 was the one at risk and was checked at the mechanism rather than the outcome: litellm 1.98.0
+still raises ``InternalServerError`` from ``exception_mapping_utils.py`` **inside ``acompletion``**,
+so ``response.choices[0]`` is still never evaluated and there is still no ``IndexError``. The
+"already handled by the library" claim holds -- and still holds only because of the pin.
+
+*A caution for whoever re-measures next.* A first pass here called litellm with
+``response_format={"type": "json_object"}`` and the Anthropic tool-call rows came back
+``content=None`` -- which reads exactly like "1.98 stopped unwrapping the forced tool call". It had
+not. phaze passes ``response_format=BatchProposalResponse`` (a pydantic model), and it is *that*
+which makes litellm map the schema to the forced ``json_tool_call`` and unwrap ``input["values"]``
+into ``message.content``. Re-measure with the production kwargs or you will measure a different
+code path and report it as a regression.
+
 THE MEASURED TABLE (AC 3) -- BEFORE and AFTER the half-2 defences
 ------------------------------------------------------------------
 "Before" was measured 2026-08-22 against the unmodified parser and is the finding the operator
 decision on bead ``phaze-02v1s`` was taken on (that decision is quoted in full in
 ``services/proposal.py``); it is kept here as the historical record, not as current behaviour.
-litellm 1.97.0 / pydantic 2.13.4 / openai 2.54.0 / httpx 0.28.1.
+Originally litellm 1.97.0; every cell below re-measured unchanged against **litellm 1.98.0** /
+pydantic 2.13.4 / openai 2.54.0 / httpx 0.28.1 (phaze-o6wg7, 2026-08-23).
 "Anthropic" is ``claude-sonnet-4-20250514``, the configured default (``config.llm_model``).
 "OpenAI" is ``gpt-4o``, reachable by changing that one setting.
 
@@ -66,9 +95,10 @@ TWO CORRECTIONS TO THE BEAD'S OWN PREMISE, both measured here:
   have FAILED, and the ``except TypeError`` guard it implied would never have fired.
   ``test_content_none_raises_validation_error_not_type_error`` pins both halves.
 
-* **The empty-``choices`` list never reaches phaze's code at all.** litellm 1.97.0 raises
-  ``litellm.InternalServerError`` ("provider returned a response with no 'choices'") inside
-  ``acompletion``, so ``response.choices[0]`` is never evaluated and there is no ``IndexError``.
+* **The empty-``choices`` list never reaches phaze's code at all.** litellm (1.97.0, and re-measured
+  at 1.98.0) raises ``litellm.InternalServerError`` ("provider returned a response with no
+  'choices'") inside ``acompletion``, so ``response.choices[0]`` is never evaluated and there is no
+  ``IndexError``.
   This mode is already handled -- by the library, not by phaze -- and needs no guard. It is pinned
   anyway, because that guarantee lives entirely in a pinned dependency.
 
@@ -540,12 +570,19 @@ class TestEmptyChoices:
     """The one mode already handled -- by litellm, which is a pinned dependency, so pin it here."""
 
     async def test_openai_empty_choices_is_raised_by_litellm_before_phaze_indexes_it(self) -> None:
-        """No ``IndexError``: litellm 1.97.0 refuses the response inside ``acompletion``.
+        """No ``IndexError``: litellm refuses the response inside ``acompletion``.
 
         Asserted at the type litellm actually raises rather than at ``Exception``, because the whole
         value of this case is that ``response.choices[0]`` is never reached. If a future litellm
         stopped guarding this, the raise would become ``IndexError`` from ``proposal.py`` and this
         test would go red -- which is precisely the notification wanted.
+
+        Measured at 1.97.0 and **re-measured at 1.98.0** (phaze-o6wg7), the latter at the mechanism
+        rather than the outcome: the traceback's deepest frame is litellm's own
+        ``exception_mapping_utils.py``, confirming the raise happens inside ``acompletion`` and not
+        at phaze's indexing. That distinction is the entire content of this test -- an
+        ``InternalServerError`` raised anywhere else would satisfy the assertion below while
+        invalidating the claim, so re-verify the frame, not just the type, on the next bump.
         """
         with pytest.raises(litellm.InternalServerError) as exc_info:
             await call_generate_batch(OPENAI_MODEL, openai_response([]))
@@ -838,12 +875,24 @@ class TestModeFiveBIsNotRepaired:
 def test_litellm_pin_is_unchanged() -> None:
     """AC 6, and load-bearing for mode 4.
 
-    The ``>=1.97.0,<1.98.0`` pin is a supply-chain control (CLAUDE.md, March 2026 incident), and it
+    The ``>=1.98.0,<1.99.0`` pin is a supply-chain control (CLAUDE.md, March 2026 incident), and it
     is separately what makes "empty ``choices`` is already handled" true -- that guarantee lives in
     litellm, not in phaze. Widening the pin invalidates several of this file's verdicts, so it fails
     here rather than silently.
+
+    **This test has already done its job once, and the record of that is the reason to keep it
+    exactly this narrow.** It was written against ``>=1.97.0,<1.98.0``; the aiobotocore 3.x upgrade
+    moved the pin to ``>=1.98.0,<1.99.0`` (litellm 1.98 requires boto3 >=1.43.1) and this assertion
+    turned main red rather than letting five measured verdicts be re-baselined onto a version none
+    of them had been measured against. ``phaze-o6wg7`` then re-measured all five and found them
+    identical -- see the module docstring's version note.
+
+    So the correct response to this test failing is **re-measure, then update the string** -- never
+    relax it to a substring match, a range spanning minors, or a floor with no ceiling. Each of
+    those turns a forcing question into a silent assumption, and the narrow pin is itself the
+    control CLAUDE.md mandates after the 1.82.7/1.82.8 incident.
     """
     pyproject = Path(__file__).resolve().parents[3] / "pyproject.toml"
     dependencies = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["dependencies"]
 
-    assert "litellm>=1.97.0,<1.98.0" in dependencies
+    assert "litellm>=1.98.0,<1.99.0" in dependencies
