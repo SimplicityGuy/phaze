@@ -97,6 +97,24 @@ dependencies = [
 [project.scripts]
 phaze = "phaze.cli:main"
 
+# phaze-jktlb. WHERE the JSON report lands. Measured, not assumed (coverage 7.15.4 +
+# pytest-cov 7.1.0): `--cov-report=json` with NO `:DEST` and a bare `coverage json` BOTH
+# resolve their destination from this key -- pytest-cov's engine passes `outfile=None`
+# straight through to coverage.py, which then reads the config. Verified by pointing this
+# key at a sentinel filename and observing the artifact appear under that name.
+#
+# THE SPLIT THAT MATTERS, because it is the thing this bead got asked to establish:
+# coverage.py owns the report's DESTINATION; pytest-cov owns whether the report is EMITTED
+# at all. `--cov-report` is a pytest-cov flag with no coverage.py equivalent and no pytest
+# ini key (the installed plugin registers eleven `addoption`s and zero `addini`s), so
+# SELECTION cannot live here. It lives in the justfile's `cov_reports` variable. Do not
+# "finish the job" by trying to move selection into this table -- there is nothing to move
+# it to, and a key here that coverage.py ignores reads as configured while doing nothing.
+#
+# `scripts/coverage_floor.py` and `just branch-check` both read this path.
+[tool.coverage.json]
+output = "coverage.json"
+
 [tool.coverage.report]
 # phaze-bk9el.21 -- THIS NUMBER DID NOT CHANGE, BUT WHAT IT MEASURES DID. Read before editing.
 #
@@ -146,6 +164,18 @@ concurrency = ["greenlet", "thread"]
 omit = ["tests/*"]
 relative_files = true
 source = ["phaze"]
+
+# phaze-jktlb. WHERE the Cobertura report lands -- the companion to the json table above, and
+# established by the same measurement: `--cov-report=xml` with no `:DEST`, and the bare
+# `coverage xml` that `just coverage-combine` runs, both take their destination from here.
+# This retired the `-o coverage.xml` that scripts/repowise-coverage.sh used to hardcode.
+#
+# Codecov reads this file (.github/workflows/tests.yml `files: ./coverage.xml`), so the path
+# is also pinned there and in scripts/repowise_coverage_gate.py's `--coverage-xml`. Cobertura
+# cannot carry per-test contexts; the binary `.coverage` is the only artifact that can, which
+# is why `--cov-context=test` stays on the shard recipes rather than moving into config.
+[tool.coverage.xml]
+output = "coverage.xml"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/phaze"]

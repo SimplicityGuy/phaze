@@ -7,9 +7,10 @@
 # a README paragraph:
 #
 #   1. `repowise update`                     reindex (structural; this repo indexes docs_enabled:false)
-#   2. pytest --cov=phaze --cov-context=test ~21 min, writes .coverage WITH per-test contexts
+#   2. pytest --cov --cov-context=test       ~21 min, writes .coverage WITH per-test contexts
 #   3. `repowise coverage add .coverage`     -> the test-to-code map ONLY
 #   4. `coverage xml` + `coverage add ...`   -> per-file line coverage (REQUIRED, see gate)
+#      then `coverage json`                  -> the report `just branch-check` reads (phaze-jktlb)
 #   5. `repowise health`                     folds the coverage into the defect scores
 #
 # Step 3 alone is a SILENT PARTIAL SUCCESS: it prints "Built the test-to-code map: N test->file
@@ -146,10 +147,15 @@ repowise update
 # --cov-fail-under=0 mirrors `just test-bucket`: the 95% floor is enforced by `just coverage-combine`
 # and CI, not here. This recipe's job is to MEASURE and ingest; failing the ingest because coverage
 # dipped would withhold the data exactly when it is most wanted.
+# phaze-jktlb: flags are alphabetical here and in every justfile coverage recipe, `--cov` carries no
+# `=phaze` because `source = ["phaze"]` in pyproject already says so, and `--cov-report=` stays --
+# like `just test-bucket`, this run wants the binary .coverage and nothing else, and step 4 below
+# writes the xml itself once the map is safely ingested. Its `-o coverage.xml` is gone for the same
+# one-place reason: `[tool.coverage.xml] output` in pyproject now supplies that path.
 echo ""
-echo "2/5 🧪 pytest --cov=phaze --cov-context=test (~21 min)"
+echo "2/5 🧪 pytest --cov --cov-context=test (~21 min)"
 rm -f .coverage coverage.xml
-if ! uv run pytest tests/ --cov=phaze --cov-context=test --cov-report= --cov-fail-under=0 -q; then
+if ! uv run pytest tests/ --cov --cov-context=test --cov-fail-under=0 --cov-report= -q; then
   echo "❌ the suite failed — NOTHING was ingested, so the previously ingested coverage is intact." >&2
   echo "   Fix the failures and re-run; ingesting a red run would fold wrong data into every score." >&2
   exit 1
@@ -172,7 +178,7 @@ fi
 # This is the half that step 3 only LOOKS like it did. See the gate script's docstring.
 echo ""
 echo "4/5 📥 coverage xml + repowise coverage add coverage.xml   (per-file line coverage)"
-if ! uv run coverage xml -o coverage.xml --fail-under=0; then
+if ! uv run coverage xml --fail-under=0; then
   echo "❌ \`coverage xml\` failed — per-file line coverage was NOT ingested." >&2
   echo "   The test-to-code map from step 3 IS in the database and \`repowise coverage status\`" >&2
   echo "   will happily show it. That state is the trap: line_coverage_pct stays null and every" >&2
@@ -183,6 +189,39 @@ if ! repowise coverage add coverage.xml; then
   echo "❌ ingesting coverage.xml failed — per-file line coverage is missing while the" >&2
   echo "   test-to-code map is present. This is the silent-partial state; do not treat the" >&2
   echo "   populated \`repowise coverage status\` map as success." >&2
+  exit 1
+fi
+
+# phaze-jktlb, AC4: this script runs the WHOLE suite, so "no consumer is coupled to one recipe"
+# reads onto it exactly as it reads onto `just test-cov`. It already emitted coverage.xml above
+# (for repowise); it emitted no coverage.json at all, so a developer who spent 21 minutes here and
+# then ran `just branch-check` got a missing file, or worse a stale one from some earlier run.
+#
+# It is NOT covered by the operator decision of 2026-08-22 recorded on bead phaze-jktlb, which
+# excluded `just test-bucket` from AC4 and stops there. That decision rests on a shard measuring a
+# FRACTION of phaze; this run measures all of it, so the reasoning does not transfer, and extending
+# it here would be stretching an attribution past the conditions attached to it. Fixed on its own
+# merits instead, which is why no second narrowing was needed.
+#
+# Emitted AFTER the ingest, deliberately: the ingest is what this script exists for, and a report
+# written for someone else's benefit must not be able to abort it. The destination comes from
+# pyproject, same as everywhere else.
+#
+# DO NOT "SIMPLIFY" THIS INTO THE PYTEST STEP ABOVE. The obvious tidy-up is to delete these lines
+# and pass the justfile's `cov_reports` through as a script argument, so that "which reports" is
+# stated in exactly one place. It was considered and rejected (dispatcher ruling, 2026-08-22).
+# A shell script cannot read a `just` variable, so the plumbing is real, and worse, it forces the
+# pytest step to emit reports BEFORE the ingest -- inverting the measure -> ingest -> report order
+# this script exists to encode and handing a report writer the power to abort the ingest.
+#
+# What is duplicated is only the "which reports" answer, and by a DIFFERENT mechanism (`coverage`
+# subcommands here, `--cov-report` flags in the justfile). The destination is still single-sourced
+# in pyproject, which is the half that silently rots when it is duplicated.
+echo ""
+echo "    📄 coverage json (for \`just branch-check\`; not used by repowise)"
+if ! uv run coverage json --fail-under=0; then
+  echo "⚠️  \`coverage json\` failed — the repowise ingest above SUCCEEDED and is intact, but" >&2
+  echo "   coverage.json was not refreshed, so \`just branch-check\` has no report to read." >&2
   exit 1
 fi
 
