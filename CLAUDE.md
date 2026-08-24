@@ -576,6 +576,31 @@ purely as a backstop for an ad-hoc `uv run pytest --cov=phaze` outside those rec
   review is for, and CI cannot supply it.
 - **A change touching both is a docs change** for this purpose: open the PR.
 - **One PR per feature**, wherever a PR is opened at all — no mixing unrelated changes.
+- **`bh work merge` / `bh work finish` are LOCAL — they never push.** A bead reaching CLOSED/merged
+  means the local integration branch took the merge, and nothing more. `bh work merge` prints
+  `✓ merged … and closed it` for a merge that exists only in your clone; measured 2026-08-24, that
+  line appeared while `origin/main` was unchanged. **To verify a landing, check the REMOTE** —
+  `git fetch origin && git merge-base --is-ancestor <sha> origin/main`, or `git ls-remote origin
+  refs/heads/main`. **Do NOT verify against local `main`, and the reason is the whole point: the
+  merge just wrote that ref, so `--is-ancestor <sha> main` cannot fail.** A verification that cannot
+  fail is not one — it caught two dispatchers on the same day, the second after the bead was already
+  filed. *The general form:* "merged" is a claim about a repository; a local check is a claim about a
+  working copy.
+- **Before provisioning ANY worktree, check for base skew** (phaze-aox61):
+  `git fetch origin && git rev-list --left-right --count main...origin/main`. Zero/zero is the only
+  safe state — `bh work claim` reports `"start_point": "main"`, the LOCAL ref, so every worktree cut
+  while local `main` is ahead inherits those commits and the PR renders foreign files (measured: PRs
+  #516 and #517 each showed 5 foreign files including a 423-line test belonging to another bead).
+  If it was skipped, the detection pair is `git log --oneline origin/main..<branch>`, which must list
+  **only** this bead's commits, and `git diff --stat origin/main...<branch>`, which is the
+  authoritative diff. **A GitHub file list lagging a base push and a genuinely contaminated branch
+  look identical in the UI** — on PR #516 `baseRefOid` still named the pre-push tip while git already
+  computed the correct 2-file diff — so only those two commands tell them apart. The fix is
+  `git rebase --onto origin/main <old-base>`; note that **pushing `main` does not always clear it**,
+  because content that reached origin by a different route has a different sha and no shared
+  ancestor. *The general form:* content equality does not imply a shared ancestor — "already on
+  origin" is a claim about topology, checked with `--is-ancestor`, never inferred from the same work
+  having landed.
 - **On a direct push, CI runs after the fact — nothing gates `main`.** The bead's own validation is
   therefore the real gate, and it must be a genuine one: the full `just check` on an isolated seat.
   Since phaze-nqawu (2026-08-21) `bh work check` and `bh work submit` **are** that command, so the
@@ -1079,6 +1104,23 @@ bv --recipe high-impact --robot-triage # pre-filter: top PageRank scores
 - **Worktrees**: one per bead, `wt/bead/issue/<id>`. Never share a worktree, a test
   database, or a Redis logical DB between concurrent agents — nor any other writable path,
   scratch directories and gate logs included.
+- **`review:*` on a CLOSED bead means nothing** (phaze-s3d1u). The label tracks review state
+  while a bead is live; `bh` clears it on approve, merge and land, but the clear has holes —
+  group/molecule merges have no clear call at all — so 174 of 2412 closed beads carry a stale
+  `review:pending`. **Nothing automated reads it after close:** `bv` 0.18.0's binary contains zero
+  occurrences of any `review:*` label, and `bh`'s only consumer (`work_next`) filters to non-closed
+  beads before reading it. So the practical rule is simply **filter on status when you query that
+  label** — `bd list --label review:pending --status open`, never the bare `--label` form. Two
+  constraints go with it: **resolving a gate as SUPERSEDED rather than approving a sha nobody
+  reviewed is CORRECT and must stay available** — a fix that made `approve` the only tidy path
+  would push seats toward false attestations, which is strictly worse than a stale label — and **do
+  not mass-edit the existing beads**, which would re-accumulate from the next batch merge. Tracked
+  upstream at beadhive/beadhive#15. *The general form:* a record that reads as a status is not one.
+- **`bd label remove` reports success unconditionally** (gastownhall/beads#5988). It prints
+  `✓ Removed label 'X' from Y` and exits 0 **even when the bead never had X** — so that line is
+  evidence of neither the label's presence nor its removal. Read the label set back with
+  `bd label list <id>` if it matters. This is not academic: phaze-s3d1u cited exactly that line as
+  its proof and was wrong about the mechanism as a result.
 
 ### Syncing the Dolt remote
 
