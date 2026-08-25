@@ -436,9 +436,17 @@ exit status is its **last** command's, and `tail` succeeds at printing a failure
 2026-08-24: `bh work merge phaze-rlshw --wait 2>&1 | tail -30` exited **0** because `--wait` is not
 an option and `tail` happily printed the usage error; the dispatcher read the 0 and told the
 operator the merge was queued, which it was not. Re-run under `set -o pipefail` it is 1. Keep
-trimming output — just make the status survive it: `set -o pipefail; just check 2>&1 | tail -40`,
-or read `${PIPESTATUS[0]}`. **`grep` is the sharper edge, because it inverts as well as masks:**
-`cmd | grep -q PASS` returns 0 when `cmd` FAILED but its error text quoted the pattern, and 1 when
+trimming output — just make the status survive it: `set -o pipefail; just check 2>&1 | tail -40`.
+**Do not reach for `${PIPESTATUS[0]}` instead (phaze-oufc4).** That array is bash-only; this
+repo's shell is zsh, where `${PIPESTATUS[0]}` is not an error but silently expands to the **empty
+string** — verified in this repo's own zsh: `false | true; echo ${PIPESTATUS[0]}` → empty. An empty
+status reads as benign at a glance, which is worse than the masking it was meant to fix. zsh's own
+array is spelled `pipestatus` — lowercase, **1-indexed**, so the first command's status is
+`${pipestatus[1]}` — but there is no need to reach for either spelling: `set -o pipefail` alone is
+already correct in both bash (CI's shell) and zsh (this repo's local shell), needs no dialect
+switch, and is the only remedy this file recommends. **`grep` is the sharper edge, because it
+inverts as well as masks:** `cmd | grep -q PASS` returns 0 when `cmd` FAILED but its error text
+quoted the pattern, and 1 when
 `cmd` SUCCEEDED but printed nothing matching — a status wrong in *both* directions, which is worse
 than one that is merely optimistic.
 
