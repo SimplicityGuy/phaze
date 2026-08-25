@@ -16,6 +16,7 @@ from phaze.enums.stage import Stage
 from phaze.models.file import FileRecord
 from phaze.services.stage_status import (
     done_clause,
+    inflight_clause,
 )
 
 
@@ -35,6 +36,10 @@ def _proposal_pending_clauses() -> tuple[ColumnElement[bool], ...]:
     A counter that answered a slightly different question than the trigger would put a
     number in front of the operator that the button does not honour -- exactly the class of
     dishonest UI this bead exists to remove.
+
+    Four conjuncts: not already proposed, metadata present, a COMPLETED analysis, and (phaze-3542b)
+    NO enrich stage in flight. The fourth is not a convergence condition -- it is a safety
+    interlock against the move a proposal ultimately performs; see its comment below.
     """
     return (
         # Phase 90 (PR-A, Pitfall 4): the ``files.state IN (ANALYZED, METADATA_EXTRACTED)`` gate is
@@ -73,6 +78,50 @@ def _proposal_pending_clauses() -> tuple[ColumnElement[bool], ...]:
         # branch IS this predicate), made so both conjuncts now read from ONE definition and the
         # asymmetry above cannot silently reappear on either side.
         done_clause(Stage.ANALYZE),
+        # phaze-3542b: NO ENRICH STAGE MAY BE IN FLIGHT. A proposal that is approved and executed
+        # MOVES the file and unlinks the source, while every enrich payload carries the pre-move
+        # `FileRecord.original_path` (D-24). A job already enqueued when the move lands therefore
+        # opens a path that no longer exists, and nothing re-validates it at the consumer
+        # (`tasks/functions.py` `read_path = payload.scratch_path or payload.original_path`;
+        # `tasks/s3_upload.py`'s docstring calls an unreadable original_path "a clear TERMINAL
+        # error -- the task NEVER falls back"). These two conjuncts are the DOOR: a file with work
+        # in flight is not proposable, so the move cannot be scheduled underneath it.
+        #
+        # OPERATOR DECISION 2026-08-25 (ADR-0012 rule 2). Question as put: the mechanism for
+        # phaze-3542b's confirmed enqueue-then-execute TOCTOU, offered as labelled options.
+        # Answer as given -- the option LABEL the operator selected, and the whole of what they
+        # authored: "Close the door: add ~inflight to the propose gate". Durable record: the
+        # phaze-3542b bead comment dated 2026-08-25. "Narrow the producer" was REFUSED, so
+        # `services/reanalysis_backfill.py` is deliberately NOT changed. The label decided the
+        # MECHANISM and the SEAM; it did not decide the stage scope, which is the implementer's
+        # call and is argued below.
+        #
+        # WHY BOTH STAGES, when only analyze carries the CONFIRMED shape. Analyze is the measured
+        # one: `services/reanalysis_backfill.py` deliberately bypasses the `~done` gate (its module
+        # docstring :59-79), so `done(analyze) AND inflight(analyze)` is reachable head-on -- it is
+        # the ONLY producer of eight whose selection set intersects this gate's. Metadata is NOT
+        # merely redundant, and that is why it is here rather than left to phaze-rhs6m:
+        #   - BOTH metadata retry routes select on a bare `failed_clause` with NO in-flight
+        #     conjunct of their own (`pipeline/pending.py::get_metadata_failed_files` and
+        #     `routers/pipeline/extraction.py::retry_metadata_failed_file`), leaning entirely on
+        #     SAQ's deterministic-key dedup; and
+        #   - `services/scheduling_ledger.clear_ledger_entry` can legitimately SKIP its clear (the
+        #     phaze-3yln ownership guard, and the phaze-jf7xt degraded-probe path), so a completed
+        #     `put_metadata` can leave `done(metadata)` TRUE with a ledger row still standing.
+        # Those two together make `done(metadata) AND genuinely-inflight(metadata)` reachable by a
+        # narrow interleaving, which this conjunct closes. Independently: an ASYMMETRY between this
+        # predicate's two enrich conjuncts is precisely what produced the parent bead phaze-rhs6m,
+        # and re-introducing one here would repeat that defect's shape.
+        #
+        # THE COST, stated because it is real. `inflight` is bare ledger-row existence (D-01), so a
+        # LEAKED row -- a job that finished but whose clear was skipped -- blocks proposing a file
+        # whose work is actually done. That is bounded, not indefinite: `tasks/ledger_reaper.py`'s
+        # `*/5` cron deletes exactly the domain-completed-and-not-live rows, so the false block
+        # self-clears within ~5 minutes. It CANNOT reap a genuinely in-flight row, because
+        # `resolved_ledger_clause` requires liveness to be ABSENT -- which is what makes this door
+        # hold for the whole of a multi-hour analysis rather than being swept out from under it.
+        ~inflight_clause(Stage.ANALYZE),
+        ~inflight_clause(Stage.METADATA),
     )
 
 
@@ -93,8 +142,9 @@ async def get_proposal_pending_batches(session: AsyncSession, batch_size: int) -
     """Return the ``generate_proposals`` pending set as deterministic, sorted file-id batches.
 
     Runs the convergence query (files NOT yet proposed -- ``~done_clause(PROPOSE)`` -- with BOTH a
-    ``FileMetadata`` AND a COMPLETED ``AnalysisResult`` row -- the EXACT set the manual proposals
-    triggers use), then SORTS the file-id strings before chunking into ``batch_size`` groups.
+    ``FileMetadata`` AND a COMPLETED ``AnalysisResult`` row, and since phaze-3542b with NEITHER
+    enrich stage in flight -- the EXACT set the manual proposals triggers use), then SORTS the
+    file-id strings before chunking into ``batch_size`` groups.
     Phase 90 (PR-A, Pitfall 4): the propose-exclusion replaces the retired ``files.state`` membership,
     so an already-proposed file is never re-batched.
 
