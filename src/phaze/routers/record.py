@@ -142,7 +142,6 @@ async def _load_pending_rows(session: AsyncSession, file_id: uuid.UUID) -> tuple
         {
             "id": p.id,
             "filename": p.file.original_filename,
-            "original_path": p.file.current_path,
             "proposed_filename": p.proposed_filename,
             "proposed_path": p.proposed_path or "",
             # phaze-exivg: the optimistic-concurrency token the record page's APPROVE button
