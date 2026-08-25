@@ -1,16 +1,16 @@
 """SAQ task: execute_approved_batch -- per-proposal local file ops + HTTP state reporting (Phase 26 B2 Option A + Phase 28 D-03/D-15).
 
 Reads file paths from payload (no DB lookup -- D-23 invariant). For each proposal:
-1. Resolve `item.original_path` -- which carries the file's CURRENT on-disk location,
-   see ExecuteBatchProposalItem -- under its owning scan_root, then build the destination as
+1. Resolve `item.source_path` -- the move SOURCE, which carries the file's CURRENT on-disk
+   location, see ExecuteBatchProposalItem -- under its owning scan_root, then build the destination as
    ``owning_root/proposed_path/proposed_filename`` (``proposed_path`` is a RELATIVE dir;
    empty == rename in place) and containment-check it (T-26-11-S1 path-traversal guard).
 2. POST /execution-log with status='in_progress' (per-proposal audit row). phaze-87ba: if that
    POST fails it is retried once more immediately before the terminal PATCH, because PATCH is an
    UPDATE that 404s on a missing row (and a 404 is never retried), which otherwise erased the
    audit record of a move that actually happened.
-3. Optionally verify sha256 of `original_path` against `payload.sha256_hash`.
-4. Move `original_path` -> destination (an atomic no-clobber os.link claim when same-fs, else a
+3. Optionally verify sha256 of `source_path` against `payload.sha256_hash`.
+4. Move `source_path` -> destination (an atomic no-clobber os.link claim when same-fs, else a
    bounded streamed copy published by the same claim -- never load the whole file into RAM;
    concert videos are multi-GB). phaze-s0wu: the claim, not the caller's earlier exists-check, is
    what actually guarantees no destination is ever overwritten.
@@ -220,7 +220,7 @@ def _resolve_destination(
     proposed_filename`` (mirrors ``services.collision`` joining semantics). An
     empty/null ``proposed_path`` means "rename in place" -- keep the directory the
     file is CURRENTLY in and apply the new filename. Both ``owning_root`` and
-    ``original.parent`` are derived by the caller from ``item.original_path``, which
+    ``original.parent`` are derived by the caller from ``item.source_path``, which
     carries ``FileRecord.current_path`` (phaze-shzdj) -- so an in-place rename of an
     already-moved file targets where the file is now, not where it was ingested.
 
@@ -1074,13 +1074,13 @@ async def _compute_proposed(
 
     Returns ``proposed`` -- the only value ``_execute_one`` still needs from this block afterward.
     """
-    # 2. Path-traversal guard for original_path + construct/guard the
+    # 2. Path-traversal guard for source_path + construct/guard the
     # destination. step.current="copy" (the default) covers path-resolve (a
     # failure here means "the copy couldn't begin" -- matches operator
     # intuition). proposed_path is a RELATIVE dir under the owning
     # scan_root; the destination is owning_root/proposed_path/proposed_filename
     # (empty proposed_path == in-place rename).
-    original, owning_root = _resolve_and_check_containment(item.original_path, scan_roots)
+    original, owning_root = _resolve_and_check_containment(item.source_path, scan_roots)
     proposed = _resolve_destination(item, original, owning_root, scan_roots)
 
     already_moved = _check_replay_corroborated(original, proposed, item, job)
@@ -1093,7 +1093,7 @@ async def _compute_proposed(
         await _verify_hash_or_raise(
             proposed,
             item.sha256_hash,
-            label=item.original_path,
+            label=item.source_path,
             suffix=f" (already-moved replay check against {proposed})",
         )
 
@@ -1114,7 +1114,7 @@ async def _compute_proposed(
         # 3. Optional sha256 verify (caller may supply None to skip)
         if item.sha256_hash is not None:
             step.current = "verify"
-            await _verify_hash_or_raise(original, item.sha256_hash, label=item.original_path)
+            await _verify_hash_or_raise(original, item.sha256_hash, label=item.source_path)
 
         # 4. Move original -> proposed.
         await _apply_file_move(original, proposed, item, step)
@@ -1151,7 +1151,7 @@ async def _execute_one(
 
     Per-proposal lifecycle:
     1. POST execution-log (status=in_progress) -- one row per file op.
-    2. Path-traversal guard for original_path and proposed_path.
+    2. Path-traversal guard for source_path and proposed_path.
     3. Optional sha256 verify.
     4. Copy + delete.
     5. PATCH execution-log (status=completed | failed).
@@ -1191,7 +1191,7 @@ async def _execute_one(
         id=execution_log_id,
         proposal_id=item.proposal_id,
         operation="move",
-        source_path=item.original_path,
+        source_path=item.source_path,
         destination_path=dest_display,
         sha256_verified=False,  # not yet verified at this point
         status=ExecutionStatus.IN_PROGRESS,

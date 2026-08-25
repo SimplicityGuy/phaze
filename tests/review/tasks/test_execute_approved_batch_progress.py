@@ -119,7 +119,7 @@ async def test_success_emits_one_deleted_progress_post(tmp_path: Path, monkeypat
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
         ),
@@ -158,7 +158,7 @@ async def test_failure_emits_failed_progress_post_with_failed_at_step(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig),
+            source_path=str(orig),
             # relative-dir traversal resolving OUTSIDE the scan_root -> path-traversal ValueError
             proposed_path="../../../../../../../../etc",
             proposed_filename="passwd",
@@ -184,7 +184,7 @@ async def test_sha256_mismatch_maps_to_failed_at_verify(tmp_path: Path, monkeypa
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
             sha256_hash="0" * 64,  # wrong hash forces sha256 mismatch
@@ -233,7 +233,7 @@ async def test_delete_failure_maps_to_failed_at_delete(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
         ),
@@ -265,7 +265,7 @@ async def test_sub_batch_terminal_set_on_last_item_only(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(o),
+            source_path=str(o),
             proposed_path="new",
             proposed_filename=p.name,
         )
@@ -319,7 +319,7 @@ async def test_progress_post_failure_logs_warning_but_does_not_raise(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[i]),
+            source_path=str(orig_paths[i]),
             proposed_path="new",
             proposed_filename=proposed_paths[i].name,
         )
@@ -357,7 +357,7 @@ async def test_uuids_persisted_in_job_meta_on_first_run(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(o),
+            source_path=str(o),
             proposed_path="new",
             proposed_filename=p.name,
         )
@@ -409,7 +409,7 @@ async def test_uuids_reused_from_job_meta_on_retry(
         ExecuteBatchProposalItem(
             proposal_id=proposal_id,
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
         ),
@@ -511,7 +511,7 @@ async def test_crash_retry_already_moved_reports_completed_not_stale_failed(
         ExecuteBatchProposalItem(
             proposal_id=proposal_id,
             file_id=uuid.uuid4(),
-            original_path=str(original),
+            source_path=str(original),
             proposed_path="new",
             proposed_filename=proposed.name,
         ),
@@ -585,7 +585,7 @@ async def test_crash_retry_already_moved_with_hash_verifies_against_proposed(
         ExecuteBatchProposalItem(
             proposal_id=proposal_id,
             file_id=uuid.uuid4(),
-            original_path=str(original),
+            source_path=str(original),
             proposed_path="new",
             proposed_filename=proposed.name,
             sha256_hash=content_hash,
@@ -638,7 +638,7 @@ async def test_crash_retry_hash_mismatch_at_proposed_is_still_a_genuine_failure(
         ExecuteBatchProposalItem(
             proposal_id=proposal_id,
             file_id=uuid.uuid4(),
-            original_path=str(original),
+            source_path=str(original),
             proposed_path="new",
             proposed_filename=proposed.name,
             sha256_hash="0" * 64,  # deliberately wrong
@@ -694,7 +694,7 @@ async def test_crash_retry_already_moved_uncorroborated_fails_loudly_not_silentl
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(original),
+            source_path=str(original),
             proposed_path="new",
             proposed_filename=proposed.name,
             sha256_hash=content_hash,
@@ -749,7 +749,7 @@ async def test_duplicate_missing_source_is_not_silently_executed_onto_another_re
         ExecuteBatchProposalItem(
             proposal_id=proposal_x,
             file_id=uuid.uuid4(),
-            original_path=str(original_x),
+            source_path=str(original_x),
             proposed_path="new",
             proposed_filename=destination_name,
             sha256_hash=content_hash,
@@ -779,7 +779,7 @@ async def test_duplicate_missing_source_is_not_silently_executed_onto_another_re
         ExecuteBatchProposalItem(
             proposal_id=proposal_y,
             file_id=uuid.uuid4(),
-            original_path=str(original_y),
+            source_path=str(original_y),
             proposed_path="new",
             proposed_filename=destination_name,
             sha256_hash=content_hash,
@@ -850,7 +850,7 @@ async def test_cross_fs_replay_committed_copy_completes_move_not_clobber_fail(
         ExecuteBatchProposalItem(
             proposal_id=proposal_id,
             file_id=uuid.uuid4(),
-            original_path=str(original),
+            source_path=str(original),
             proposed_path="new",
             proposed_filename=proposed.name,
         ),
@@ -905,7 +905,7 @@ async def test_cross_fs_replay_committed_copy_with_hash_completes_move(
         ExecuteBatchProposalItem(
             proposal_id=proposal_id,
             file_id=uuid.uuid4(),
-            original_path=str(original),
+            source_path=str(original),
             proposed_path="new",
             proposed_filename=proposed.name,
             sha256_hash=content_hash,
@@ -970,7 +970,7 @@ async def test_already_moved_replay_cleans_up_orphaned_commit_marker(
         ExecuteBatchProposalItem(
             proposal_id=proposal_id,
             file_id=uuid.uuid4(),
-            original_path=str(original),
+            source_path=str(original),
             proposed_path="new",
             proposed_filename=proposed.name,
         ),
@@ -1015,7 +1015,7 @@ async def test_already_moved_replay_via_moved_flag_cleans_up_absent_marker_safel
         ExecuteBatchProposalItem(
             proposal_id=proposal_id,
             file_id=uuid.uuid4(),
-            original_path=str(original),
+            source_path=str(original),
             proposed_path="new",
             proposed_filename=proposed.name,
         ),
@@ -1057,7 +1057,7 @@ async def test_cross_fs_foreign_file_at_destination_still_refused(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(original),
+            source_path=str(original),
             proposed_path="new",
             proposed_filename=proposed.name,
         ),
@@ -1119,7 +1119,7 @@ async def test_cross_fs_duplicates_own_already_completed_move_is_refused_not_del
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(original_a),
+            source_path=str(original_a),
             proposed_path="new",
             proposed_filename=proposed.name,
             sha256_hash=content_hash,
@@ -1142,7 +1142,7 @@ async def test_cross_fs_duplicates_own_already_completed_move_is_refused_not_del
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(original_b),
+            source_path=str(original_b),
             proposed_path="new",
             proposed_filename=proposed.name,
             sha256_hash=content_hash,
@@ -1202,7 +1202,7 @@ async def test_cross_fs_unlink_failure_leaves_complete_copy_and_retry_does_not_r
             ExecuteBatchProposalItem(
                 proposal_id=proposal_id,
                 file_id=uuid.uuid4(),
-                original_path=str(original),
+                source_path=str(original),
                 proposed_path="new",
                 proposed_filename="concert.mkv",
             ),
@@ -1279,7 +1279,7 @@ async def test_error_message_uses_step_reason_prefix(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
             sha256_hash="0" * 64,
@@ -1314,7 +1314,7 @@ async def test_execution_log_and_progress_use_distinct_uuids(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
         ),
@@ -1346,7 +1346,7 @@ async def test_legacy_ctx_without_job_does_not_break(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
         ),
@@ -1375,7 +1375,7 @@ async def test_correct_sha256_still_succeeds(tmp_path: Path, monkeypatch: pytest
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
             sha256_hash=correct_hash,
@@ -1408,7 +1408,7 @@ async def test_empty_scan_roots_raises_runtime_error(monkeypatch: pytest.MonkeyP
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path="/music/x.mp3",
+            source_path="/music/x.mp3",
             proposed_path="renamed",
             proposed_filename="y.mp3",
         ),
@@ -1439,7 +1439,7 @@ async def test_post_execution_log_failure_is_swallowed(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
         ),
@@ -1472,7 +1472,7 @@ async def test_patch_completed_log_failure_is_swallowed(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
         ),
@@ -1504,7 +1504,7 @@ async def test_patch_failed_log_failure_is_swallowed(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
             sha256_hash="0" * 64,
@@ -1537,7 +1537,7 @@ async def test_patch_proposal_state_failed_report_failure_is_swallowed(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
             sha256_hash="0" * 64,
@@ -1569,7 +1569,7 @@ async def test_progress_post_failure_on_success_path_is_swallowed(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[i]),
+            source_path=str(orig_paths[i]),
             proposed_path="new",
             proposed_filename=proposed_paths[i].name,
         )
@@ -1606,7 +1606,7 @@ async def test_progress_post_failure_on_failure_path_is_swallowed(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
             sha256_hash="0" * 64,
@@ -1614,7 +1614,7 @@ async def test_progress_post_failure_on_failure_path_is_swallowed(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[1]),
+            source_path=str(orig_paths[1]),
             proposed_path="new",
             proposed_filename=proposed_paths[1].name,
         ),
@@ -1668,7 +1668,7 @@ async def test_executed_state_patch_5xx_does_not_fail_proposal(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
         ),
@@ -1723,7 +1723,7 @@ async def test_lost_completion_token_on_success_path_raises_for_saq_replay(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
         ),
@@ -1760,7 +1760,7 @@ async def test_lost_completion_token_does_not_mark_the_proposal_failed(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
         ),
@@ -1795,7 +1795,7 @@ async def test_lost_completion_token_on_failure_path_also_raises(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
             sha256_hash="0" * 64,  # forces a verify failure -> the FAILURE-path token POST
@@ -1851,7 +1851,7 @@ async def test_failed_start_log_is_recreated_before_the_completed_patch(
         ExecuteBatchProposalItem(
             proposal_id=proposal_id,
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
         ),
@@ -1887,7 +1887,7 @@ async def test_failed_start_log_is_recreated_before_the_failed_patch(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
             sha256_hash="0" * 64,  # forces a verify failure
@@ -1915,7 +1915,7 @@ async def test_successful_start_log_is_not_re_posted(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
         ),
@@ -1946,7 +1946,7 @@ async def test_persistent_execution_log_outage_is_reported_at_error(
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
+            source_path=str(orig_paths[0]),
             proposed_path="new",
             proposed_filename=proposed_paths[0].name,
         ),

@@ -158,7 +158,7 @@ async def test_groups_by_agent_id(session: AsyncSession) -> None:
             assert isinstance(item, ExecuteBatchProposalItem)
             assert isinstance(item.proposal_id, uuid.UUID)
             assert isinstance(item.file_id, uuid.UUID)
-            assert item.original_path.startswith("/music/")
+            assert item.source_path.startswith("/music/")
             assert item.proposed_path.startswith("organized/")
             # proposed_filename is carried on the wire (bug fix: the executor
             # needs it to build the real destination, not just the directory).
@@ -272,7 +272,7 @@ async def test_ordering_within_agent_group_by_created_at_then_id(session: AsyncS
         )
 
     groups = await get_approved_proposals_grouped_by_agent(session)
-    actual = [item.original_path.rsplit("/", 1)[-1] for item in groups["agent-order"]]
+    actual = [item.source_path.rsplit("/", 1)[-1] for item in groups["agent-order"]]
     assert actual == [f"order-{i:02d}.mp3" for i in range(5)]
 
 
@@ -287,7 +287,7 @@ def _make_items(n: int) -> list[ExecuteBatchProposalItem]:
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=f"/x/{i}.mp3",
+            source_path=f"/x/{i}.mp3",
             proposed_path="y",
             proposed_filename=f"{i}.mp3",
             sha256_hash="b" * 64,

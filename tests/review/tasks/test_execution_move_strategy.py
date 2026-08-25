@@ -57,7 +57,7 @@ def _item(orig: Path, proposed_path: str, filename: str) -> ExecuteBatchProposal
     return ExecuteBatchProposalItem(
         proposal_id=uuid.uuid4(),
         file_id=uuid.uuid4(),
-        original_path=str(orig),
+        source_path=str(orig),
         proposed_path=proposed_path,
         proposed_filename=filename,
     )
@@ -268,7 +268,7 @@ def _item_with_hash(orig: Path, proposed_path: str, filename: str, sha256_hash: 
     return ExecuteBatchProposalItem(
         proposal_id=uuid.uuid4(),
         file_id=uuid.uuid4(),
-        original_path=str(orig),
+        source_path=str(orig),
         proposed_path=proposed_path,
         proposed_filename=filename,
         sha256_hash=sha256_hash,

@@ -11,10 +11,14 @@ NO `current_path` per D-24 -- analysis / metadata / scan tasks work off
 THREE payloads take an explicit, narrow exception to that, because each addresses a
 file that has ALREADY been moved, so `original_path` names nothing on disk:
 `WriteFileTagsPayload.file_path`, `WriteCueSheetPayload.audio_path`, and
-`ExecuteBatchProposalItem.original_path` -- the last of which is MISNAMED for
-historical reasons and carries `current_path` (phaze-shzdj); see its own docstring.
-Each exception is documented where it is declared. `current_path` is otherwise the
-post-execution path, sent back via patch_proposal_state.
+`ExecuteBatchProposalItem.source_path`. All three are ROLE names -- they say what the
+path is FOR, not which column filled it -- and that is exactly what keeps them true
+whichever column dispatch selects. `ExecuteBatchProposalItem.source_path` was named
+`original_path` until phaze-xzjrr: phaze-shzdj made it carry `current_path` and the old
+name then actively asserted the wrong thing, so the wire field was renamed while the
+at-risk population was still zero (see its own docstring for the measurement and the
+skew analysis). Each exception is documented where it is declared. `current_path` is
+otherwise the post-execution path, sent back via patch_proposal_state.
 
 All schemas declare `extra="forbid"` per Phase 25 D-16 -- agent-supplied
 job payloads are validated as strictly as HTTP request bodies.
@@ -192,18 +196,19 @@ class ScanDirectoryPayload(BaseModel):
 class ExecuteBatchProposalItem(BaseModel):
     """Per-proposal details carried inside ExecuteApprovedBatchPayload.proposals.
 
-    The agent needs full local-file-op context (original_path, proposed_path,
+    The agent needs full local-file-op context (source_path, proposed_path,
     proposed_filename, optional sha256 verify) in the payload itself -- D-23
     forbids reading state back from the controller mid-job.
 
-    ``original_path`` CARRIES ``FileRecord.current_path`` -- where the file is NOW --
-    and NOT ``FileRecord.original_path`` (phaze-shzdj). The field name is historical:
-    it was chosen when the two columns could not yet diverge, because no proposal had
-    ever executed. ``FileRecord.original_path`` is written once at ingest and never
-    again (operator, 2026-08-24: "original_path should never change. it's the ORIGINAL
-    location of the file. the current_path is where the file is now."), so shipping it
-    made the SECOND execution of an already-renamed file resolve a source that no
-    longer exists.
+    ``source_path`` is the absolute path the executor MOVES THE FILE FROM. It is a role
+    name, not a column mirror: it says what the executor does with the value, so it stays
+    true whichever column dispatch selects to fill it. Today dispatch fills it from
+    ``FileRecord.current_path`` -- where the file is NOW -- and NOT from
+    ``FileRecord.original_path`` (phaze-shzdj). ``FileRecord.original_path`` is written
+    once at ingest and never again (operator, 2026-08-24: "original_path should never
+    change. it's the ORIGINAL location of the file. the current_path is where the file
+    is now."), so shipping it made the SECOND execution of an already-renamed file
+    resolve a source that no longer exists.
 
     This is the same narrow, explicit D-24 exception :class:`WriteFileTagsPayload` and
     :class:`WriteCueSheetPayload` take, for the same reason: a file operation must
@@ -212,6 +217,30 @@ class ExecuteBatchProposalItem(BaseModel):
     scan_root, AND the in-place-rename parent directory
     (``tasks.execution._resolve_destination``), which are all computed from this one
     value and so were all poisoned by the same staleness.
+
+    THE FIELD WAS CALLED ``original_path`` UNTIL phaze-xzjrr, and the rename is a
+    BREAKING WIRE CHANGE, deliberately taken while it was free. ``extra="forbid"`` makes
+    the skew symmetric and, in both directions, LOUD AND PRE-FILE-OP:
+
+    * an OLD payload (``original_path``) validated by NEW code fails
+      :meth:`ExecuteApprovedBatchPayload.model_validate` at the top of
+      ``tasks.execution.execute_approved_batch`` with two errors --
+      ``extra_forbidden`` at ``proposals.N.original_path`` and ``missing`` at
+      ``proposals.N.source_path``;
+    * a NEW payload (``source_path``) validated by OLD agent code fails the mirror
+      image of that.
+
+    Either way validation precedes every file op, so nothing is half-moved and no
+    ``ExecutionLog`` row is written -- a skewed deploy costs AVAILABILITY (the batch
+    dead-letters and must be re-dispatched), never integrity. No compatibility shim is
+    provided because none is owed: re-measured on the live catalog 2026-08-24 at
+    implementation time, ``saq_jobs`` held 0 ``execute_approved_batch`` rows (of 13) and
+    ``scheduling_ledger`` 0 rows with ``function = 'execute_approved_batch'``, so there
+    is no serialized payload anywhere that a shim could rescue. Contrast
+    :meth:`ProcessFilePayload._drop_removed_window_cap_keys`, which IS load-bearing
+    precisely because that measurement was non-zero for it. RE-MEASURE BOTH TABLES
+    BEFORE DEPLOYING A FURTHER RENAME -- the straight-rename shape is correct only while
+    they are empty.
 
     ``proposed_path`` is the RELATIVE destination DIRECTORY the LLM proposed
     (e.g. ``"performances/artists/Disclosure"``), matching how it is stored on
@@ -232,7 +261,7 @@ class ExecuteBatchProposalItem(BaseModel):
 
     proposal_id: uuid.UUID
     file_id: uuid.UUID
-    original_path: str
+    source_path: str  # absolute move SOURCE; filled from FileRecord.current_path (D-24 exception)
     proposed_path: str  # RELATIVE destination directory ('' == rename in place)
     proposed_filename: str  # new filename incl. extension (appended under proposed_path)
     sha256_hash: str | None = None  # optional pre-copy integrity check

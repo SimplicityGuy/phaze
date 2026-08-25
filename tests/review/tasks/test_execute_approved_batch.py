@@ -10,10 +10,12 @@ Four scenarios:
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 import uuid
 
+import pydantic
 import pytest
 
 from phaze.config import AgentSettings
@@ -26,8 +28,6 @@ from phaze.tasks.execution import execute_approved_batch
 
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -64,7 +64,7 @@ def _item(orig: Path, dest: Path, root: Path, **kwargs: object) -> ExecuteBatchP
     return ExecuteBatchProposalItem(
         proposal_id=uuid.uuid4(),
         file_id=uuid.uuid4(),
-        original_path=str(orig),
+        source_path=str(orig),
         proposed_path=str(dest.parent.relative_to(root)),
         proposed_filename=dest.name,
         **kwargs,  # type: ignore[arg-type]
@@ -135,7 +135,7 @@ async def test_execute_approved_batch_path_escape_rejected(tmp_path: Path, monke
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig),
+            source_path=str(orig),
             # relative-dir traversal that resolves OUTSIDE the scan_root -- T-26-11-S1
             proposed_path="../../../../../../../../etc",
             proposed_filename="passwd",
@@ -177,11 +177,11 @@ async def test_execute_approved_batch_sha256_mismatch(tmp_path: Path, monkeypatc
     assert not proposed_paths[1].exists()
 
 
-async def test_execute_approved_batch_original_path_escape_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """original_path escapes scan_root -> proposal fails, no file op attempted (GAP-4 / T-26-11-S1-mirror).
+async def test_execute_approved_batch_source_path_escape_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """source_path escapes scan_root -> proposal fails, no file op attempted (GAP-4 / T-26-11-S1-mirror).
 
     Mirrors test_execute_approved_batch_path_escape_rejected but flips which field carries the escape:
-    here original_path="/etc/shadow" (outside scan_root) while proposed_path is valid.
+    here source_path="/etc/shadow" (outside scan_root) while proposed_path is valid.
     Verifies that _resolve_and_check_containment is enforced on BOTH paths, not just proposed_path.
     """
     allowed_root = tmp_path / "allowed"
@@ -193,8 +193,8 @@ async def test_execute_approved_batch_original_path_escape_rejected(tmp_path: Pa
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path="/etc/shadow",  # outside scan_root -- GAP-4 escape via original_path
-            proposed_path="",  # in-place; irrelevant -- original_path is rejected first
+            source_path="/etc/shadow",  # outside scan_root -- GAP-4 escape via the move source
+            proposed_path="",  # in-place; irrelevant -- source_path is rejected first
             proposed_filename="dest.mp3",
         ),
     ]
@@ -204,7 +204,7 @@ async def test_execute_approved_batch_original_path_escape_rejected(tmp_path: Pa
     assert result["error_count"] == 1, f"Expected error_count=1, got {result['error_count']}"
     assert result["status"] == "completed_with_errors"
     # Proposed destination must not have been created (no file op attempted)
-    assert not proposed.exists(), "proposed destination was created despite original_path escape rejection"
+    assert not proposed.exists(), "proposed destination was created despite source_path escape rejection"
     # Failure reported via patch_proposal_state
     assert api.patch_proposal_state.await_args.args[1].proposal_state == "failed"
 
@@ -219,7 +219,7 @@ async def test_execute_approved_batch_requires_scan_roots(tmp_path: Path, monkey
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(o),
+            source_path=str(o),
             proposed_path="moved",
             proposed_filename="y.mp3",
         ),
@@ -279,7 +279,7 @@ async def test_execute_approved_batch_tolerates_patch_failed_log_failure(tmp_pat
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(missing),
+            source_path=str(missing),
             proposed_path="new",
             proposed_filename="missing.mp3",
         ),
@@ -304,7 +304,7 @@ async def test_execute_approved_batch_tolerates_failure_report_failure(tmp_path:
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(missing),
+            source_path=str(missing),
             proposed_path="new",
             proposed_filename="missing.mp3",
         ),
@@ -419,7 +419,7 @@ async def test_null_proposed_path_renames_in_place(tmp_path: Path, monkeypatch: 
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
-            original_path=str(orig),
+            source_path=str(orig),
             proposed_path="",  # null -> '' on the wire: rename in place
             proposed_filename="Clean Name.mp3",
         ),
@@ -454,7 +454,8 @@ async def test_null_proposed_path_renames_in_place(tmp_path: Path, monkeypatch: 
 # destination still wrong.
 #
 # BE PRECISE ABOUT WHAT THE PRE-FIX RED RUN PROVES. All three derivations read the SAME
-# single value, `item.original_path`, so shipping `current_path` into it repairs all
+# single value, `item.source_path` (named `item.original_path` until phaze-xzjrr renamed
+# the wire field), so shipping `current_path` into it repairs all
 # three at once -- 2 and 3 were never independent code defects, they were the same stale
 # input flowing downstream. That also means 2 and 3 cannot be shown RED on their own
 # through the real path: derivation 1's FileNotFoundError always fires first and masks
@@ -585,7 +586,7 @@ async def test_e2e_second_execution_moves_the_file_from_where_it_is_now(
 
     # The seam itself, asserted LAST so the behavioural assertions above are what
     # characterise a pre-fix run instead of being short-circuited by this one.
-    assert items[0].original_path == str(current)
+    assert items[0].source_path == str(current)
 
 
 async def test_e2e_second_execution_in_place_rename_targets_the_current_directory(
@@ -642,7 +643,7 @@ async def test_e2e_second_execution_in_place_rename_targets_the_current_director
     # source-only fix cannot satisfy.
     assert not (ingest.parent / "Clean Name.mp3").exists(), "in-place rename targeted the stale ingest directory"
     assert api.patch_proposal_state.await_args.args[1].current_path == str(expected_dest)
-    assert items[0].original_path == str(current)
+    assert items[0].source_path == str(current)
 
 
 async def test_e2e_first_execution_is_unchanged_when_current_path_equals_original_path(
@@ -691,4 +692,165 @@ async def test_e2e_first_execution_is_unchanged_when_current_path_equals_origina
     assert expected_dest.read_bytes() == content
     assert not orig.exists(), "original was not removed"
     assert api.patch_proposal_state.await_args.args[1].current_path == str(expected_dest)
-    assert items[0].original_path == str(orig)
+    assert items[0].source_path == str(orig)
+
+
+# ---------------------------------------------------------------------------
+# phaze-xzjrr: the producer/consumer wire seam, pinned by NAME and by VALUE.
+#
+# phaze-shzdj and phaze-2zeu0 both came from the same gap: the dispatcher and the
+# executor share only a FIELD, and nothing asserted that the thing one puts in it is
+# the thing the other takes out. The tests above close the VALUE half for the
+# already-moved case. The test below closes the NAME half, on the wire.
+#
+# WHY THE EXISTING TESTS DO NOT ALREADY COVER IT. Every test in this file hands
+# `ExecuteApprovedBatchPayload` a list of Python `ExecuteBatchProposalItem` objects, so
+# the JSON KEY is never named in an assertion anywhere. That leaves a specific, cheap
+# mistake uncaught: a `pydantic.Field(alias=...)` (or `serialization_alias`) renaming
+# only the PYTHON attribute while the wire key stays put -- design option (c) on this
+# bead, refused precisely because the wire shape is what an agent implementor reads.
+# Under an alias the producer, the executor, mypy and every test in this file agree,
+# and the JSON key still says something false. Asserting on `model_dump(mode="json")`
+# is what sees it.
+# ---------------------------------------------------------------------------
+
+#: The JSON key carrying the move SOURCE in an `execute_approved_batch` payload.
+#:
+#: This literal IS the agent-facing contract: it is what
+#: `services/execution_dispatch.py` emits, what
+#: `ExecuteApprovedBatchPayload.model_validate` accepts at the top of
+#: `tasks/execution.py::execute_approved_batch`, and what an out-of-tree agent
+#: implementor codes against. `extra="forbid"` means a change here breaks BOTH skew
+#: directions loudly (see `ExecuteBatchProposalItem`'s docstring), so change it only
+#: together with the schema field, the producer, and all four consumer sites -- and
+#: only after re-measuring `saq_jobs` and `scheduling_ledger` for serialized payloads.
+MOVE_SOURCE_WIRE_KEY = "source_path"
+
+
+async def test_the_wire_key_the_dispatcher_produces_is_the_one_the_executor_moves_from(
+    session: AsyncSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Producer -> JSON -> schema -> executor, asserted on ONE key by name and by value.
+
+    Renaming either half alone fails here:
+
+    * rename the schema field or the producer kwarg and the assertion on
+      ``wire[MOVE_SOURCE_WIRE_KEY]`` raises ``KeyError`` -- the key the dispatcher
+      emits is no longer the key this contract names;
+    * rename the executor's reads (``item.source_path``) alone and the file is never
+      moved, so the landing assertions fail;
+    * add an alias so the attribute and the wire key diverge and the ``model_dump``
+      key-set assertion fails, which no other test in this file can see.
+
+    The fixture is an ALREADY-MOVED file -- ingest path absent from disk, real bytes at
+    the current path -- so the value half is not vacuous: only the correct column
+    reaching the correct key names a file that exists, and a wrong-but-consistent
+    plumbing job still fails.
+    """
+    root = tmp_path / "media"
+    ingest = root / "incoming" / "raw-set.mp3"
+    current = root / "library" / "raw-set.mp3"
+    current.parent.mkdir(parents=True, exist_ok=True)
+    content = b"wire-seam-bytes"
+    current.write_bytes(content)
+    assert not ingest.exists()
+
+    agent_id = "agent-xzjrr-seam"
+    await _seed_catalog_row(
+        session,
+        agent_id=agent_id,
+        scan_roots=[str(root)],
+        original_path=str(ingest),
+        current_path=str(current),
+        content=content,
+        proposed_path="sorted",
+        proposed_filename="Renamed.mp3",
+    )
+
+    # 1. The REAL producer.
+    items = (await get_approved_proposals_grouped_by_agent(session))[agent_id]
+    assert len(items) == 1
+
+    # 2. Serialize exactly as the enqueue does. THIS DICT IS THE WIRE -- an agent
+    #    receives these bytes, not a Python object, so this is the only place the
+    #    contract is observable.
+    wire = items[0].model_dump(mode="json")
+    assert MOVE_SOURCE_WIRE_KEY in wire, (
+        f"the dispatcher no longer emits {MOVE_SOURCE_WIRE_KEY!r}; it emits {sorted(wire)}. "
+        "The schema field, the producer and the executor must be renamed together."
+    )
+    # An alias would leave the ATTRIBUTE and the KEY disagreeing; require both.
+    assert MOVE_SOURCE_WIRE_KEY in ExecuteBatchProposalItem.model_fields, (
+        f"{MOVE_SOURCE_WIRE_KEY!r} is on the wire but is not a declared field name -- "
+        "an alias hides the rename from the executor's readers and from mypy."
+    )
+    assert wire[MOVE_SOURCE_WIRE_KEY] == str(current), "the dispatcher did not ship the file's current location"
+
+    # 3. Re-validate FROM the wire dict, the way the agent worker does.
+    payload = ExecuteApprovedBatchPayload.model_validate(
+        {"batch_id": str(uuid.uuid4()), "agent_id": agent_id, "proposals": [wire]},
+    )
+
+    # 4. The REAL executor.
+    _patch_settings(monkeypatch, [str(root)])
+    api = _make_api_client_mock()
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed"
+    assert result["error_count"] == 0
+    # The consumer half: the file the executor moved is the one named by that key.
+    assert not Path(wire[MOVE_SOURCE_WIRE_KEY]).exists(), "the executor did not move the file named by the wire key"
+    dest = root / "sorted" / "Renamed.mp3"
+    assert dest.exists() and dest.read_bytes() == content
+
+    # The audit trail closes the loop: ExecutionLogCreate.source_path is populated from
+    # this same wire field (tasks/execution.py), and after phaze-xzjrr the two names
+    # agree -- so a divergence shows up as a mismatch here rather than only in prose.
+    assert api.post_execution_log.await_args.args[0].source_path == wire[MOVE_SOURCE_WIRE_KEY]
+
+
+async def test_the_old_wire_key_is_refused_before_any_file_op(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pre-phaze-xzjrr payload (``original_path``) dead-letters; it never half-moves a file.
+
+    This is the stated skew behaviour, asserted rather than assumed (acceptance criterion 2).
+    ``extra="forbid"`` gives BOTH errors -- unexpected ``original_path`` AND missing
+    ``source_path`` -- and it fires inside ``ExecuteApprovedBatchPayload.model_validate``
+    at the top of ``execute_approved_batch``, before any path is resolved. So a skewed
+    deploy costs availability (the batch must be re-dispatched), never integrity.
+    """
+    root = tmp_path / "media"
+    src = root / "incoming" / "raw-set.mp3"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(b"pre-rename-payload")
+
+    legacy_wire = {
+        "proposal_id": str(uuid.uuid4()),
+        "file_id": str(uuid.uuid4()),
+        "original_path": str(src),  # the pre-phaze-xzjrr key
+        "proposed_path": "sorted",
+        "proposed_filename": "Renamed.mp3",
+        "sha256_hash": None,
+    }
+
+    _patch_settings(monkeypatch, [str(root)])
+    api = _make_api_client_mock()
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        await execute_approved_batch(
+            {"api_client": api},
+            batch_id=str(uuid.uuid4()),
+            agent_id="agent-xzjrr-skew",
+            proposals=[legacy_wire],
+        )
+
+    kinds = {(e["type"], e["loc"][-1]) for e in exc_info.value.errors()}
+    assert ("extra_forbidden", "original_path") in kinds
+    assert ("missing", "source_path") in kinds
+    # Nothing was touched: no file op, and no audit row claiming one.
+    assert src.exists(), "the source was moved despite the payload never validating"
+    assert not (root / "sorted" / "Renamed.mp3").exists()
+    api.post_execution_log.assert_not_awaited()
