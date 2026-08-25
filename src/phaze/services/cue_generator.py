@@ -47,6 +47,12 @@ _FILE_TYPE_MAP: dict[str, str] = {
 # stripping from any value interpolated into a CUE double-quoted field. See _cue_quote (phaze-4ea3).
 _CUE_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
+# The single top-level ``FILE "<name>"`` directive, matched so the name can be RETARGETED to the
+# basename the sheet is really written beside (phaze-pqib3). ``_cue_quote`` strips every literal
+# quote from an interpolated value, so ``[^"]*`` cannot under-run a filename containing one, and
+# the trailing type token is left untouched by matching only up to the closing quote.
+_CUE_FILE_DIRECTIVE_RE = re.compile(r'^FILE "[^"]*"', re.MULTILINE)
+
 
 def seconds_to_cue_timestamp(total_seconds: float) -> str:
     """Convert seconds to CUE MM:SS:FF format at 75 frames per second.
@@ -174,6 +180,53 @@ def generate_cue_content(audio_filename: str, file_type: str, tracks: list[CueTr
     return "\n".join(lines) + "\n"
 
 
+def retarget_cue_file_line(content: str, audio_filename: str) -> str:
+    """Rewrite a rendered sheet's ``FILE`` directive to name ``audio_filename`` (phaze-pqib3, seam C5).
+
+    A CUE sheet's ``FILE`` is a BARE NAME, and its real consumer -- a parser or player opening the
+    ``.cue`` -- resolves it **relative to the .cue's own directory**. That makes the correct name a
+    fact about where the sheet lands, which is decided by :func:`write_cue_file`, not by whoever
+    rendered the text.
+
+    Those two were different machines and they disagreed. ``routers/cue.py::generate_cue`` renders
+    ``FILE`` from the UNRESOLVED ``FileRecord.current_path`` while ``tasks/cue_write.py::_write_sync``
+    containment-resolves that path and writes beside the RESOLVED file, so any entry whose
+    ``current_path`` is a symlink into a differently-named target produced a sheet naming a sibling
+    that was not there. The api cannot render it correctly and must not try: it mounts no media
+    (DIST-01), so ``Path.resolve()`` there normalizes lexically and proves nothing -- only the agent
+    holding the mount can resolve a symlink honestly. Hence a retarget at the write, rather than a
+    "fix" at the render.
+
+    The new name is sanitized exactly like the rendered one (:func:`_cue_quote`): it is an
+    agent-filesystem basename, so a literal quote or control character in it would terminate the
+    field or the record early, which is the ``phaze-4ea3`` FILE-injection shape.
+
+    Args:
+        content: A rendered CUE sheet carrying exactly one ``FILE`` directive.
+        audio_filename: The basename the sheet will actually sit beside.
+
+    Returns:
+        ``content`` with that directive's quoted name replaced. Byte-identical to ``content`` when
+        the name already matched, which is every non-symlinked file in the archive.
+
+    Raises:
+        ValueError: ``content`` does not carry exactly one ``FILE`` directive. It is rendered by
+            :func:`generate_cue_content`, which emits exactly one and sanitizes every interpolated
+            value so a second cannot be injected -- so neither zero nor two is a state a caller can
+            reach honestly, and writing a sheet whose audio reference is missing or ambiguous is
+            worse than failing the job.
+    """
+    # A REPLACEMENT FUNCTION, not a template string: a basename may legitimately contain a
+    # backslash escape (``\\1``, ``\\g``) that ``re.sub`` would otherwise interpret as a
+    # backreference into the pattern.
+    replacement = f'FILE "{_cue_quote(audio_filename)}"'
+    patched, count = _CUE_FILE_DIRECTIVE_RE.subn(lambda _match: replacement, content)
+    if count != 1:
+        msg = f"CUE content carries {count} FILE directives, expected exactly 1 -- refusing to write a sheet with an unclear audio reference"
+        raise ValueError(msg)
+    return patched
+
+
 def next_cue_path_and_version(audio_path: Path) -> tuple[Path, int]:
     """Determine the next CUE file path AND the version number that file will carry.
 
@@ -248,6 +301,13 @@ def write_cue_file(content: str, audio_path: Path) -> tuple[Path, int]:
     ``FileExistsError`` instead of clobbering -- it re-derives the next free version (the winner's
     file now exists, so the scan naturally advances) and retries, rather than losing the loser's
     content.
+
+    phaze-pqib3 (seam C5): this function writes ``content`` VERBATIM and does not reconcile it with
+    ``audio_path`` -- ``test_content_matches`` pins that byte-identity, and the versioning and
+    concurrency tests around it depend on being able to pass arbitrary marker content. The sheet's
+    ``FILE`` directive must still name the basename it lands beside, but that reconciliation is the
+    job of the caller that RESOLVES the path and so creates the discrepancy in the first place; see
+    :func:`retarget_cue_file_line` and ``tasks/cue_write.py::_write_sync``.
 
     Args:
         content: CUE sheet content string.

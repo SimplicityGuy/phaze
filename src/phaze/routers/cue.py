@@ -146,6 +146,14 @@ async def generate_cue(
     # already holds -- and dispatch the BYTES to the agent that owns the media mount. The api
     # container has none, so the previous in-process ``write_cue_file`` could only ever raise
     # FileNotFoundError on a parent directory that does not exist in this container.
+    #
+    # phaze-pqib3 (seam C5): ``audio_path.name`` is the UNRESOLVED basename, and that is correct
+    # HERE even though the sheet's ``FILE`` line must ultimately name the file it lands beside. The
+    # api mounts no media, so it cannot tell a symlink from a real file -- ``Path.resolve()`` in
+    # this container normalizes lexically and proves nothing. The agent reconciles the two after
+    # its own honest resolve (``tasks/cue_write.py::_write_sync``). Do NOT "fix" this by resolving
+    # here; the preview below is the operator's own view of the entry they clicked, and this is the
+    # only name this process can truthfully render.
     audio_path = Path(file_record.current_path)
     content = generate_cue_content(audio_path.name, file_record.file_type, cue_tracks)
     try:

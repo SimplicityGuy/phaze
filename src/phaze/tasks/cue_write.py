@@ -31,7 +31,7 @@ import structlog
 from phaze.config import AgentSettings, get_settings
 from phaze.schemas.agent_tasks import WriteCueSheetPayload
 from phaze.services.containment import resolve_and_check_containment
-from phaze.services.cue_generator import write_cue_file
+from phaze.services.cue_generator import retarget_cue_file_line, write_cue_file
 
 
 logger = structlog.get_logger(__name__)
@@ -46,9 +46,19 @@ def _write_sync(audio_path: Path, content: str, scan_roots: list[str]) -> tuple[
     symlinks honestly (``Path.resolve()`` against a path that does not exist in the api container
     normalizes lexically and proves nothing). Same symlink-safe resolve-then-compare the executor
     uses for its move destinations (T-26-11-S1).
+
+    phaze-pqib3 (seam C5): that resolve is also what makes the RETARGET below necessary, which is
+    why the two sit together. ``routers/cue.py::generate_cue`` renders ``FILE "<basename>"`` from
+    the UNRESOLVED ``current_path`` -- the only name the api can know -- while the line above then
+    writes the sheet beside the RESOLVED file. For a symlink into a differently-named target the
+    sheet therefore landed in the target's directory naming the symlink, and ``FILE`` is a bare
+    name that every consumer resolves relative to the ``.cue``'s OWN directory. This function is
+    the first and only place that knows both halves, so it reconciles them: the sheet names the
+    file it is actually placed beside. Nothing is retargeted for a path that is its own realpath,
+    which is every non-symlinked file in the archive.
     """
     resolved, _owning_root = resolve_and_check_containment(str(audio_path), scan_roots)
-    return write_cue_file(content, resolved)
+    return write_cue_file(retarget_cue_file_line(content, resolved.name), resolved)
 
 
 async def write_cue_sheet(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:  # noqa: ARG001  -- ctx is SAQ's required first arg; this task needs nothing from it
