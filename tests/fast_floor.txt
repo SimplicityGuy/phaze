@@ -40,6 +40,7 @@ tests/shared/core/test_health.py
 tests/shared/core/test_main_lifespan.py
 tests/shared/core/test_route_reachability.py
 tests/shared/test_adr_numbering.py
+tests/shared/test_bh_test_report_drop_zone.py
 tests/shared/test_branch_coverage_check.py
 tests/shared/test_change_gate.py
 tests/shared/test_ci_workflow_wiring.py
