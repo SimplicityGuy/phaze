@@ -27,6 +27,7 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from tests import bh_test_report
 from tests._background_drain import leaked_background_tasks_message, pending_router_background_tasks
 from tests._queue_fakes import install_fake_queues
 from tests.db_guard import (
@@ -151,6 +152,28 @@ def _route_structlog_through_stdlib() -> "AsyncGenerator[None]":  # type: ignore
 # Stash key for the connection holding this session's exclusive lock on the test database.
 # Parked on `config` (not a module global) so it travels with the pytest session that owns it.
 _SESSION_LOCK_ATTR = "_phaze_test_db_session_lock"
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config: pytest.Config) -> None:
+    """Register the bh test-report plugin (phaze-ea6kp).
+
+    All of the behaviour -- and the reason it is a hook rather than an `addopts` line -- lives in
+    `tests/bh_test_report.py`; this is only the registration. Kept out of this file on purpose:
+    conftest.py is already load-bearing for the session advisory lock and the DB guard, and the
+    drop-zone opt-in shares no state with either.
+
+    `tryfirst` is load-bearing, not decoration. Registering here makes pluggy replay the in-flight
+    historic `pytest_configure` call against the new plugin immediately, so the plugin sets
+    `config.option.xmlpath` from within this call -- which must therefore complete before
+    `_pytest.junitxml.pytest_configure` reads that option and builds the writer.
+
+    The `is_registered` guard is not paranoia: `register` RAISES on a double registration, and the
+    module is also loadable directly as `-p tests.bh_test_report` (which is how the subprocess
+    tests exercise it without dragging this file's database seat into a nested run).
+    """
+    if not config.pluginmanager.is_registered(bh_test_report):
+        config.pluginmanager.register(bh_test_report, bh_test_report.PLUGIN_NAME)
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
