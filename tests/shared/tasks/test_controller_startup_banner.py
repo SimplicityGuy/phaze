@@ -7,6 +7,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tests.shared.tasks._shared import make_stub_session_factory
+
 
 @pytest.mark.asyncio
 async def test_controller_startup_logs_role_banner(
@@ -17,7 +19,7 @@ async def test_controller_startup_logs_role_banner(
     # Patch heavyweight constructors so the test doesn't open Postgres/HTTP connections.
     # Unused lambda args are prefixed with `_` to satisfy ruff ARG005 (CLAUDE.md ruleset).
     monkeypatch.setattr("phaze.database.create_async_engine", lambda *_a, **_kw: MagicMock())
-    monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: make_stub_session_factory())
     monkeypatch.setattr("phaze.tasks.controller.DiscogsographyClient", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.load_prompt_template", lambda: "stub")
     monkeypatch.setattr("phaze.tasks.controller.ProposalService", lambda *_a, **_kw: MagicMock())
@@ -74,7 +76,7 @@ async def test_controller_startup_exports_llm_api_key_for_litellm(
     _saved = os.environ.get("ANTHROPIC_API_KEY")
     os.environ.pop("ANTHROPIC_API_KEY", None)
     monkeypatch.setattr("phaze.database.create_async_engine", lambda *_a, **_kw: MagicMock())
-    monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: make_stub_session_factory())
     monkeypatch.setattr("phaze.tasks.controller.DiscogsographyClient", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.load_prompt_template", lambda: "stub")
     monkeypatch.setattr("phaze.tasks.controller.ProposalService", lambda *_a, **_kw: MagicMock())
@@ -124,7 +126,7 @@ async def test_controller_startup_sources_task_engine_pool_from_config(
         return MagicMock()
 
     monkeypatch.setattr("phaze.database.create_async_engine", _capturing_engine)
-    monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: make_stub_session_factory())
     monkeypatch.setattr("phaze.tasks.controller.DiscogsographyClient", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.load_prompt_template", lambda: "stub")
     monkeypatch.setattr("phaze.tasks.controller.ProposalService", lambda *_a, **_kw: MagicMock())

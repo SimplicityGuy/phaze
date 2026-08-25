@@ -27,6 +27,7 @@ import pytest
 from sqlalchemy.exc import DBAPIError
 
 from phaze.tasks.controller import _run_boot_reconcile_with_retry
+from tests.shared.tasks._shared import make_stub_session_factory
 
 
 def _schema_not_ready_error() -> DBAPIError:
@@ -155,7 +156,7 @@ def _stub_controller_for_boot_log(monkeypatch: pytest.MonkeyPatch) -> None:
     loop), and a Redis client stub.
     """
     monkeypatch.setattr("phaze.database.create_async_engine", lambda *_a, **_kw: MagicMock())
-    monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: make_stub_session_factory())
     monkeypatch.setattr("phaze.tasks.controller.DiscogsographyClient", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.load_prompt_template", lambda: "stub")
     monkeypatch.setattr("phaze.tasks.controller.ProposalService", lambda *_a, **_kw: MagicMock())

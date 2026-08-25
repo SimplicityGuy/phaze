@@ -13,6 +13,7 @@ from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.routers.agent_auth import get_authenticated_agent
+from phaze.routers.request_guards import MALFORMED_PAYLOAD_STATUS
 from phaze.schemas.agent_tag_writes import (
     TagWriteBeforeSnapshotPayload,
     TagWriteBeforeSnapshotResponse,
@@ -77,7 +78,14 @@ async def patch_tag_write(
         # ``queued`` is the state this endpoint EXISTS to leave. Accepting it would silently strand
         # the row (and the file, which stays out of every terminal count) with no error anywhere.
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            # `MALFORMED_PAYLOAD_STATUS`, not `status.HTTP_422_UNPROCESSABLE_ENTITY`: Starlette
+            # deprecated that constant in favour of `HTTP_422_UNPROCESSABLE_CONTENT`, and
+            # `routers/request_guards.py` already settled how this repo answers the rename --
+            # spell the wire code once, as a literal, so the contract is pinned to neither side
+            # of a rename that does not change what goes over the wire. Reusing that constant
+            # rather than re-spelling `422` here keeps the two envelope-rejection sites reading
+            # as the one status they are.
+            status_code=MALFORMED_PAYLOAD_STATUS,
             detail="tag-write callback must report a terminal status, not 'queued'",
         )
 
