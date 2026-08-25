@@ -1122,6 +1122,167 @@ than restated here. The defence is the same in both places, and it is why every 
 its date and the command that produced it: write the derivation down so the next reader can
 re-derive it, because nothing else in the system will notice when the inputs move.
 
+### A gate measures a TREE, and that tree may not be the one anyone merges (phaze-fkha3)
+
+The section above rations gate slots against the machine's **headroom**. This one rations them
+against the result's **validity** — the same decision one step earlier: *is it worth starting a gate
+right now?* A gate runs 20–25 minutes whenever the coverage map cannot speak for the diff, and
+`origin/main` does not hold still that long.
+
+**The check, immediately before `bh work check` / `bh work submit`:**
+
+```bash
+git fetch origin && git rev-list --left-right --count HEAD...origin/main
+```
+
+The right-hand count is how far `origin/main` has moved past you. Non-zero means the tree you are
+about to spend twenty minutes characterising is not the tree that will land.
+
+**The asymmetry is one-sided.** The check costs about a second; not running it costs 20–25 minutes
+plus the reasoning time to establish that a red is not yours. **M**, 2026-08-25: `origin/main` took
+**65 commits in 24 h — 2.71/h** (bursty; 1.50/h across the same day's quietest 12 h, so read it as a
+wave-period rate). Against that rate the expected number of commits landing *during one gate* is
+**0.99 for a 22-minute full-suite run** and **0.027 for a 35.57 s `check-fast` selected run**. Cite
+both or neither, exactly as with the two numbers in the gates table: the first says the base moves
+under roughly every full run, the second says it essentially never moves under a selected one. **The
+check earns its keep on the escalated path.**
+
+**It is NOT a mandate to rebase, and reading it that way has a measured cost.** Most landed commits
+will not interact with your bead. A rebase changes your tree, which changes the `(tree, cmd_hash)`
+ledger key, which means a second full gate: `phaze-irby2` ran a gate to green, ran this check, found
+four commits had landed in `CLAUDE.md` — its own file — rebased, and paid a second ~22-minute gate
+for it (**M**, 2026-08-25). That was the right call there and is the wrong call by default;
+rebase-looping against a main moving at 2.71 commits/h never converges. The rule is **know before
+you spend the slot**, not *always rebase*.
+
+#### Two questions do most of the work
+
+One is mechanical and takes a second. One is judgement, and is the one that costs money when skipped.
+
+**Mechanical — does it still merge?**
+
+```bash
+git fetch origin
+git merge-tree --write-tree HEAD origin/main >/dev/null; echo "MERGE_TREE=$?"
+```
+
+**Do not answer this by comparing hunk line numbers.** `git diff origin/main...HEAD` is
+`git diff $(git merge-base origin/main HEAD) HEAD`, so its left-side hunk headers are in
+**merge-base coordinates** — not `origin/main`'s. Measured on `CLAUDE.md`, 2026-08-25: a **22-line
+offset** between the three-dot and two-dot headers for the same edit, because a commit landed in
+between. Comparing your three-dot header against another branch's two-dot header compares two
+coordinate systems and calls the result overlap or disjointness. It is right by luck when the edits
+are far apart and silently wrong when they are adjacent, which is the case you actually need it for.
+
+Two things about that exit code, both measured on git 2.50.1:
+
+- **Exit 1 is ambiguous — conflict *or* a ref it could not resolve.** `git merge-tree --write-tree A
+  nosuchref` exits **1** with `merge-tree: nosuchref - not something we can merge` on stderr. So a
+  worktree that has never fetched, or whose remote is named differently, reports "conflict" when it
+  has measured nothing — and this check runs precisely when you suspect your `origin/main` is stale.
+  Fetch first, and read stderr before believing a 1. A misread here buys a needless rebase, which
+  costs the second slot this section exists to save.
+- **Clean is necessary, not sufficient: `merge-tree` answers *textual conflict*, never *will my green
+  survive*.** `phaze-sy8z3` merged clean and then went `2 failed, 7985 passed` on a field another
+  branch had renamed while it was in flight (the gates table above has the full run). `merge-tree`
+  would have returned 0. A rename landing on the base is invisible to a textual merge test and fatal
+  to a gate result.
+
+**Judgement — do the new commits falsify or duplicate a claim your text makes?**
+
+A content grep, and **nothing structural sees this**. It is the criterion seats skip, because the
+mechanical checks return a clean, confident answer and it feels as though the question has been
+settled. Note the asymmetry that makes it worth writing down: every other question here tells you
+whether to **rebase**. This one can tell you your text is now **wrong** even when no rebase is
+needed. The two failures are independent, and a seat that checks only for conflicts will ship a
+contradiction with a green gate and a clean merge.
+
+Measured, 2026-08-25: a branch that merged clean and was disjoint by file *and* by hunk would have
+landed a section arguing that fixed enumerations decay because nothing in them says whether they are
+complete — while two decayed enumerations sat a few hundred lines below it, both landed twenty
+minutes earlier, one phrased as an exhaustive instruction.
+
+#### Four more, when the first two leave it open
+
+- **Do the moved commits touch my files?** Read `git diff --stat origin/main...HEAD` and
+  `git log --oneline -5 origin/main` — the diff, never the commit count.
+- **Is a moved commit a whole-tree guard?** A test under `tests/shared/` that walks the repo
+  intersects every diff by construction, so a disjoint file list is the wrong answer for that class.
+  This population is not exotic: **78 of 585 test files** read a tracked repo file and assert on its
+  content (**M**, 2026-08-25 — one in eight). The litellm guard in the red-gate example below is one
+  of the 78, which is why that incident was structural rather than bad luck.
+- **Does my prose assert the contents of `main`?** Then gate against the tree you will land on, or
+  the assertion is only ever checked against a base that no longer exists. A seat's sentence *"the
+  opt-in is not on `main` yet"* was true when written and false forty minutes later; its first gate
+  had already validated it green (**M**, 2026-08-25).
+- **Does my text cite a path that only exists on the new base?** That is a forward citation, dangling
+  where written — `test -e` answers it, and it is the only mechanically checkable one of these four.
+
+**Which sentences rot: claims about STATE go stale, claims about MECHANISM do not.** The same
+paragraph that needed fixing for the third bullet carried a dated ratio that needed no edit at all,
+because it cited its date and gave the command for the current value. That distinction tells you
+which sentences to worry about instead of telling you to worry generally.
+
+#### On a red gate, establish provenance BEFORE debugging
+
+This is the first move, not a footnote — it is the half that saves the *second* slot.
+
+```bash
+git diff --stat origin/main...HEAD    # is the failing file even in my diff?
+git log --oneline -5 origin/main      # did the base move, and what landed?
+```
+
+If the failing file is not in your diff, the red is probably not yours. **M**, 2026-08-24: a seat's
+gate went red 23 minutes in on `test_litellm_pin_is_unchanged`, in a bead whose own diff was one ADR
+plus three comment-only edits. The guard asserted a pin string that a P0 on `main` had already moved;
+`origin/main` had advanced four commits while the gate ran. The seat checked provenance instead of
+debugging litellm, and that instinct is the only reason it did not lose a second slot. Writing it
+down is the point — instinct is not evenly distributed.
+
+#### What is NOT already covered (verified against bh 0.15.0, not inferred)
+
+`~/.beadhive/config.yaml`'s validation model has a staleness backstop, and it is easy to assume it
+covers this. It does not. Read against bh 0.15.0's source, 2026-08-25:
+
+- **It is the MOLECULE boundary only.** `work_merge.py:282` re-validates a landed molecule under
+  `relaxed` exactly when `stale` (`work_merge.py:394`). The per-bead path computes
+  `revalidate = mode == "conservative" or (on_main and mode != "loose")` (`work_merge.py:854`) —
+  **`stale` does not appear in it at all**. `merge-main` re-validates because it is on main, not
+  because anything noticed the base move.
+- **It cannot see `origin/main`, because nothing in the lifecycle fetches.** `stale` compares local
+  refs in the main clone — `git rev-parse` and `git merge-base` — and `git fetch` appears **nowhere**
+  in `work.py`, `work_merge.py`, `work_submission.py`, `work_group.py` or the `worktree*` modules
+  (the one hit, `worktree.py:823`, is `upstream/<base>` for `kind=external` hives; phaze is not one).
+  So the backstop notices local `main` moving under a molecule and is structurally blind to the
+  remote.
+- **The developer gate has nothing whatsoever.** `impl_check` (`work_submission.py:10–71`) locates
+  the worktree, runs the `verify: true` init rules, runs `validate_cmd`, records the verdict. No base
+  resolution, no `merge-base`, no fetch. `impl_submit` resolves `base` only to bound the commit-count
+  and conventional-subject guard and to record commit linkage; it never compares the base to
+  anything.
+- **`bh work merge --help` is silent on all of this** — it says only "validate it" for `--molecule`.
+  The source is the only authority here, which is why this bullet cites line numbers rather than help
+  text.
+
+The 20–25 minutes and the confusing red both land on the developer gate. That is the gap, and this
+section's check is what closes it.
+
+#### The general form
+
+CLAUDE.md already says a gate's **M** is a property of a RUN, never of a COMMAND. This is the next
+term in the same series: **an M is also a property of a MOMENT, never of the repo in perpetuity — an
+M about STATE decays, an M about MECHANISM does not.** A long verification measures a **tree**, and
+the base is part of that tree; when the base moves, a green is still an honest report about something
+that is no longer what anyone will merge.
+
+The label makes this worse rather than better, which is the part worth remembering. **M** is the
+marker that tells the next reader *do not re-verify this* — so an M attached to a claim about state is
+the one most likely to be carried forward unchecked after it has stopped being true. That is not an
+argument against the convention but for dating every M and naming the command that produced it —
+the same defence the ceiling section above arrives at from the other direction. That ceiling went
+stale because its inputs grew; a gate result goes stale because the base moved. Neither announces
+itself, and neither is repaired by trusting the label harder.
+
 ## Code Quality
 
 ### Ruff Configuration
