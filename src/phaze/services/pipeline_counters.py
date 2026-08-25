@@ -53,15 +53,50 @@ def _completed_key(function: str) -> str:
 
 
 def _to_int(value: Any) -> int:
-    """Coerce a Redis return value (``None`` / ``bytes`` / ``str`` / ``int``) to ``int``.
+    """Coerce a Redis return value (``None`` / ``str`` / ``int``) to ``int``. REFUSE ``bytes``.
 
-    A missing key reads back ``None`` -> ``0``. ``bytes`` (the default when the SAQ
-    queue's Redis client is not ``decode_responses=True``) is decoded before parsing.
+    A missing key reads back ``None`` -> ``0``.
+
+    IMPLEMENTER'S DECISION, not an operator decision (phaze-ooe68, dev/redismode, 2026-08-24;
+    labelled per ADR-0012 rule 2 so it invites the review an operator label would suppress).
+    This helper used to ACCEPT ``bytes`` and decode them, on the stated grounds that that is
+    "the default when the SAQ queue's Redis client is not ``decode_responses=True``". The
+    code-side client-mode measurement recorded on phaze-ooe68 refutes the premise:
+
+    * ``phaze:pipeline:{enqueued,completed}:*`` has exactly ONE production reader --
+      :func:`phaze.routers.pipeline.dashboard_stats._read_pipeline_counters`, which passes
+      ``app.state.redis`` (``main.py:161``, ``decode_responses=True``). That yields ``str``.
+    * The byte-mode reader the decode branch was written for was the ``controller_queue.redis``
+      fallback, DELETED in Phase 36 -- ``dashboard_stats._read_pipeline_counters``'s own
+      docstring says so ("the former ``controller_queue.redis`` fallback is gone").
+
+    So the bytes branch had no caller, and its only live effect was to make a client-mode
+    mismatch succeed SILENTLY -- consuming the very signal that a mismatch had occurred. The
+    WRITERS are genuinely byte-mode (``queue.cache_redis``, ``queue_factory.py:95``), but an
+    ``INCR`` is mode-independent on the wire: client mode changes what a READ decodes to and
+    nothing else, so a byte-mode writer is not a reason to accept byte-mode reads.
+
+    Refusing is loud but never fatal. The sole caller wraps ``read_counters`` in a broad
+    ``except`` that logs ``pipeline_counters_degraded`` with ``exc_info`` and renders the
+    dashboard from DB-truth instead (D-03: the DB owns every rendered ``done``; these counters
+    are only a cache). A future rewiring onto a byte-mode client therefore surfaces as a warning
+    carrying a traceback, rather than as numbers nobody can tell are stale or wrong.
+
+    Contrast :func:`phaze.routers.execution._coerce_int`, the reader on the OTHER half of this
+    same bytes-vs-str boundary (the ``exec:{batch_id}`` hash): it also refuses ``bytes``, but
+    SILENTLY, by returning its default. Both dispositions are now pinned by tests --
+    ``tests/analyze/core/test_pipeline_counters_client_mode.py`` and
+    ``tests/review/routers/test_exec_hash_client_mode.py`` -- against real Redis.
     """
     if value is None:
         return 0
     if isinstance(value, (bytes, bytearray)):
-        return int(value.decode())
+        msg = (
+            f"pipeline counters read back {type(value).__name__}, not str: read_counters requires the "
+            "decode_responses=True client (app.state.redis, main.py:161), never a byte-mode client "
+            "(queue.cache_redis, queue_factory.py:95). See phaze-ooe68."
+        )
+        raise TypeError(msg)
     return int(value)
 
 
