@@ -21,6 +21,7 @@ The test is marked with ``pytest.mark.integration`` per
 from __future__ import annotations
 
 import asyncio
+import logging
 import socket
 from typing import TYPE_CHECKING
 
@@ -90,6 +91,14 @@ async def tls_server(tmp_path: Path) -> AsyncIterator[tuple[int, Path, Path]]:
         return {"status": "ok"}
 
     port = _free_port()
+
+    # phaze-pv3kk: snapshot BEFORE `uvicorn.Config(...)`, which is the call that leaks --
+    # see the note beside the restore in this fixture's `finally`. `Config.__init__` runs
+    # `configure_logging()` itself, so a snapshot taken after construction records the
+    # already-clobbered WARNING and restores nothing.
+    _leaked_loggers = ("uvicorn", "uvicorn.error", "uvicorn.access")
+    _saved_levels = {name: logging.getLogger(name).level for name in _leaked_loggers}
+
     config = uvicorn.Config(
         app,
         host="127.0.0.1",
@@ -100,6 +109,35 @@ async def tls_server(tmp_path: Path) -> AsyncIterator[tuple[int, Path, Path]]:
         lifespan="off",
     )
     server = uvicorn.Server(config)
+
+    # phaze-pv3kk (the restore is in `finally` below; the snapshot is above the `Config` call).
+    # `uvicorn.Config` applies uvicorn's LOGGING_CONFIG through
+    # `logging.config.dictConfig` the moment it is constructed, which sets the PROCESS-GLOBAL
+    # levels of the `uvicorn` / `uvicorn.error` / `uvicorn.access` loggers to `log_level` above
+    # -- WARNING. Nothing ever puts them back. tests/conftest.py's autouse
+    # `_route_structlog_through_stdlib` teardown resets structlog and clears the ROOT logger's
+    # handlers, but it does not touch other loggers' LEVELS, so the WARNING outlives this module
+    # for the rest of the pytest process.
+    #
+    # That was invisible for as long as nothing downstream of this file asserted on an INFO
+    # record from one of those loggers -- and in the full suite's collection order, nothing does.
+    # `tests/shared/core/test_logging_operational.py::test_foreign_stdlib_log_flows_through_configured_pipeline`
+    # emits `logging.getLogger("uvicorn.error").info(...)` and asserts it renders; run that module
+    # after this one and it fails with `StopIteration` on an empty capsys. Minimal reproducer,
+    # measured 2026-08-25:
+    #
+    #     uv run pytest tests/agents/services/test_agent_client_tls.py \
+    #                   tests/shared/core/test_logging_operational.py
+    #     -> 1 failed, 7 passed  (each module alone: green)
+    #
+    # It surfaced while selecting `just check-fast`'s subset, because ANY subset reorders what
+    # runs between a leak and the test sensitive to it. The general form is worth carrying:
+    # **a suite that is green only in one collection order is green by coincidence** -- the
+    # ordering is not a property anything asserts, so a new test file, a rename, or a subset
+    # changes it. Containing the leak at its source is what makes the order irrelevant.
+    #
+    # This is the only `uvicorn.Config`/`Server` construction in the tree (`grep -rn` over
+    # `tests/` and `src/phaze/`), so restoring here restores everywhere.
     server_task = asyncio.create_task(server.serve())
 
     await _wait_for_tcp("127.0.0.1", port, timeout=5.0)
@@ -111,6 +149,8 @@ async def tls_server(tmp_path: Path) -> AsyncIterator[tuple[int, Path, Path]]:
             await asyncio.wait_for(server_task, timeout=5.0)
         except (TimeoutError, asyncio.CancelledError):
             server_task.cancel()
+        for name, level in _saved_levels.items():
+            logging.getLogger(name).setLevel(level)
 
 
 @pytest.mark.asyncio
