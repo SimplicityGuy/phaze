@@ -61,6 +61,15 @@ read this section as a claim that either is handled.
 All schemas declare `extra="forbid"` per Phase 25 D-16 -- agent-supplied
 job payloads are validated as strictly as HTTP request bodies.
 
+Every model here inherits `WirePayload` (`schemas/wire_payload.py`), NOT `BaseModel`
+(phaze-ot3os): `model_dump()` on these is always JSON-mode, so a producer writing
+`**payload.model_dump()` is correct whether or not its author remembered `mode="json"`.
+Read that module's docstring before adding a payload -- and note what it does NOT
+cover. The per-class `model_config = ConfigDict(extra="forbid")` lines are now
+redundant with the base and are KEPT deliberately: D-16 is a property each of these
+models asserts about itself, and it should stay readable at the class rather than one
+inheritance hop away.
+
 Revision iteration 2 note (2026-05-12): ExecuteApprovedBatchPayload expanded
 from `proposal_ids: list[UUID]` to a full `proposals: list[ExecuteBatchProposalItem]`
 per checker B2 (user chose Option A: implement execute_approved_batch fully).
@@ -71,10 +80,12 @@ file copy + verify + delete without DB access.
 from typing import Any, ClassVar
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
+
+from phaze.schemas.wire_payload import WirePayload
 
 
-class ProcessFilePayload(BaseModel):
+class ProcessFilePayload(WirePayload):
     """SAQ job: CPU-bound essentia analysis of a single audio file."""
 
     model_config = ConfigDict(extra="forbid")
@@ -126,7 +137,7 @@ class ProcessFilePayload(BaseModel):
         return data
 
 
-class PushFilePayload(BaseModel):
+class PushFilePayload(WirePayload):
     """SAQ job: rsync-over-SSH push of a single media file to the compute scratch dir.
 
     Phase 50: enqueued by the bounded cloud-window cron and run on the fileserver agent
@@ -203,7 +214,7 @@ class PushFilePayload(BaseModel):
         return v
 
 
-class ExtractMetadataPayload(BaseModel):
+class ExtractMetadataPayload(WirePayload):
     """SAQ job: mutagen tag-extraction for a single audio/video file."""
 
     model_config = ConfigDict(extra="forbid")
@@ -214,7 +225,7 @@ class ExtractMetadataPayload(BaseModel):
     agent_id: str
 
 
-class ScanDirectoryPayload(BaseModel):
+class ScanDirectoryPayload(WirePayload):
     """SAQ job: walk a directory on the agent and stream FileRecord chunks back via HTTP (Phase 27 D-14).
 
     Carries the per-job snapshot the agent needs to walk `scan_path`, post
@@ -231,7 +242,7 @@ class ScanDirectoryPayload(BaseModel):
     agent_id: str
 
 
-class ExecuteBatchProposalItem(BaseModel):
+class ExecuteBatchProposalItem(WirePayload):
     """Per-proposal details carried inside ExecuteApprovedBatchPayload.proposals.
 
     The agent needs full local-file-op context (source_path, proposed_path,
@@ -305,7 +316,7 @@ class ExecuteBatchProposalItem(BaseModel):
     sha256_hash: str | None = None  # optional pre-copy integrity check
 
 
-class WriteFileTagsPayload(BaseModel):
+class WriteFileTagsPayload(WirePayload):
     """SAQ job: mutagen tag write + verify for ONE applied file, on the owning agent (phaze-6bkk).
 
     Deliberately carries ``file_path`` -- the post-execution ``FileRecord.current_path`` -- which
@@ -332,7 +343,7 @@ class WriteFileTagsPayload(BaseModel):
     tags: dict[str, str | int | list[str] | None]
 
 
-class WriteCueSheetPayload(BaseModel):
+class WriteCueSheetPayload(WirePayload):
     """SAQ job: write a fully-rendered CUE sheet next to its audio file, on the owning agent (phaze-6bkk).
 
     The CUE TEXT is generated on the control plane (``services.cue_generator.generate_cue_content``
@@ -351,7 +362,7 @@ class WriteCueSheetPayload(BaseModel):
     content: str
 
 
-class CompanionReadItem(BaseModel):
+class CompanionReadItem(WirePayload):
     """One companion sidecar to read: its display filename and its on-agent path."""
 
     model_config = ConfigDict(extra="forbid")
@@ -360,7 +371,7 @@ class CompanionReadItem(BaseModel):
     path: str
 
 
-class ReadCompanionFilesPayload(BaseModel):
+class ReadCompanionFilesPayload(WirePayload):
     """SAQ job: bounded read of a media file's companion sidecars, on the owning agent (phaze-6bkk).
 
     Unlike every other agent task this one is REQUEST/RESPONSE -- ``services.proposal`` awaits its
@@ -377,7 +388,7 @@ class ReadCompanionFilesPayload(BaseModel):
     max_chars: int = Field(gt=0, le=1_000_000)
 
 
-class ExecuteApprovedBatchPayload(BaseModel):
+class ExecuteApprovedBatchPayload(WirePayload):
     """SAQ job: per-agent sub-batch of an approved-proposal execution dispatch.
 
     Carries everything the agent needs to perform local file operations and

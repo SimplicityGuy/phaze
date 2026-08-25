@@ -308,3 +308,120 @@ def test_every_model_validate_consumer_is_covered() -> None:
 
     covered = {type(payload).__name__ for _, payload in _representative_payloads()}
     assert found - covered == set(), f"task payload(s) with no broker round-trip row: {sorted(found - covered)}"
+
+
+# --- phaze-ot3os: the OMITTED conversion, against live broker bytes ---------------------------------
+#
+# The tests above prove the CORRECT producer call (``model_dump(mode="json")``) survives the hop.
+# These prove the claim phaze-ot3os actually makes -- that with ``WirePayload`` carrying the
+# discipline in the TYPE, the OMISSION survives it too, so there is no longer anything for a producer
+# to forget. That claim is about bytes on a broker, so it is adjudicated by a broker, not by a
+# same-process assertion about a dict: ADR-0012 rule 3.
+#
+# The general form of the lesson, since ADR-0012 rule 5 asks for it: a mechanism that makes a class of
+# input SAFE is verified by driving that exact input through the REAL consumer, together with a
+# negative control proving the consumer still rejects the input the mechanism does NOT cover.
+# Without the control, a green run is equally consistent with "the mechanism works" and "the consumer
+# accepts everything". Here the control is a plain ``BaseModel`` payload on the SAME live queue.
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(("task_name", "payload"), _representative_payloads(), ids=[name for name, _ in _representative_payloads()])
+async def test_the_omitted_conversion_is_now_harmless_across_the_real_broker(pg_queue: PostgresQueue, task_name: str, payload: BaseModel) -> None:
+    """``model_dump()`` WITHOUT ``mode="json"`` -- the omission -- survives the real broker intact.
+
+    Note the single difference from
+    :func:`test_production_payload_survives_the_broker_round_trip` above: that one dumps the way
+    every producer is currently WRITTEN, this one dumps the way a producer might be written TOMORROW
+    if its author forgets. With ``WirePayload`` forcing JSON mode it lands, and the real consumer --
+    ``type(payload).model_validate``, the same call the task function makes at
+    ``tasks/functions.py:573`` and its eight siblings -- reconstructs an EQUAL model, so a ``UUID``
+    field comes back a ``UUID`` rather than its text.
+
+    **EIGHT of the nine rows are load-bearing; ``read_companion_files`` is not, and saying so is the
+    point.** phaze-9nz1g's inventory and this bead both state that ``uuid.UUID`` "is a field on ALL
+    NINE task-payload models". Re-measured here: it is a field on eight.
+    ``ReadCompanionFilesPayload`` declares **no** ``UUID`` -- neither does its nested
+    ``CompanionReadItem`` -- so that lane's payload was already JSON-native and its omission was
+    already harmless before this bead. Its row still belongs in the parametrization (it guards
+    against a UUID being ADDED to that payload later, which is exactly the change that would make it
+    load-bearing) but it must not be counted as evidence that the mechanism does anything: it would
+    have passed unchanged. Do not restore the "all nine" phrasing without re-running
+    ``model_fields`` -- an inherited count nobody re-measured is how it got here.
+
+    Paired with :func:`test_the_omitted_conversion_is_still_refused_for_a_plain_basemodel`, which
+    shows the same omission STILL failing on this same queue for a model that did not inherit the
+    base. Read the two together: separately, this one cannot distinguish "the mechanism works" from
+    "the broker accepts anything".
+    """
+    key = f"{task_name}:{uuid.uuid4()}"
+
+    dumped = payload.model_dump()  # THE OMISSION -- no mode= at all.
+
+    job = await pg_queue.enqueue(task_name, key=key, **dumped)
+    assert job is not None
+
+    stored = await pg_queue.job(key)
+    assert stored is not None
+    assert stored.function == task_name
+
+    reconstructed = type(payload).model_validate(stored.kwargs)
+    assert reconstructed == payload
+
+
+@pytest.mark.integration
+async def test_the_omitted_conversion_is_still_refused_for_a_plain_basemodel(pg_queue: PostgresQueue) -> None:
+    """THE NEGATIVE CONTROL: on the same live queue, a non-``WirePayload`` payload still fails.
+
+    This is what makes the parametrized test above evidence rather than decoration. The model here is
+    field-for-field the shape of a real task payload and differs in exactly one respect -- it
+    inherits ``BaseModel`` instead of ``WirePayload`` -- and the live broker refuses it with the same
+    ``TypeError`` every one of the nine used to raise.
+
+    It is also the failure mode ``tests/shared/schemas/test_wire_payload_contract.py`` exists to
+    prevent at review time: a tenth payload model wired up without the base.
+    """
+    # Runtime import: the module-level ``BaseModel`` lives in the TYPE_CHECKING block (it is only an
+    # annotation there), and this test needs the real class to subclass.
+    from pydantic import BaseModel as RuntimeBaseModel, ConfigDict
+
+    class _NotWired(RuntimeBaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        file_id: uuid.UUID
+        agent_id: str
+
+    payload = _NotWired(file_id=uuid.uuid4(), agent_id="itest-agent")
+
+    with pytest.raises(TypeError, match="UUID is not JSON serializable"):
+        await pg_queue.enqueue("process_file", key=f"process_file:{uuid.uuid4()}", **payload.model_dump())
+
+
+@pytest.mark.integration
+async def test_a_refused_enqueue_leaves_no_saq_jobs_row(pg_queue: PostgresQueue) -> None:
+    """The refusal is PRODUCER-side and pre-INSERT -- phaze-ot3os's correction to the bead's premise, measured.
+
+    phaze-9nz1g and phaze-ot3os both describe an un-converted payload as failing "in a worker rather
+    than in a request, which is where failures are least visible". That is wrong.
+    ``saq.Queue.enqueue`` runs ``_before_enqueue(job)`` then ``_enqueue(job)`` ->
+    ``PostgresQueue.serialize`` -> ``json.dumps``, all synchronously inside the producer's own
+    ``await queue.enqueue(...)`` and BEFORE the ``saq_jobs`` INSERT (``saq/queue/base.py:314-357``,
+    ``:219``). So the row never exists and no worker ever sees it.
+
+    Pinned as a test rather than left as prose because it is the fact the whole mechanism choice
+    rested on: the gap phaze-ot3os closes was never "invisible until a worker sees it" -- the failure
+    was always loud and producer-side. The gap was that it happened at RUNTIME IN PRODUCTION rather
+    than by construction.
+    """
+    key = f"process_file:{uuid.uuid4()}"
+
+    with pytest.raises(TypeError, match="UUID is not JSON serializable"):
+        await pg_queue.enqueue("process_file", key=key, file_id=uuid.uuid4())
+
+    async with pg_queue.pool.connection() as conn:
+        # Parameterized -- queue.name and key are bound, never interpolated.
+        cursor = await conn.execute("SELECT count(*) FROM saq_jobs WHERE queue = %s AND key = %s", (pg_queue.name, key))
+        row = await cursor.fetchone()
+
+    assert row is not None
+    assert row[0] == 0, "a refused enqueue wrote a saq_jobs row -- the failure is NOT pre-INSERT after all"

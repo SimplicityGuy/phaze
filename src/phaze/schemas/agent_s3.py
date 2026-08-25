@@ -24,6 +24,10 @@ request body. ``UploadFileS3Payload`` is the exception that carries ``file_id``
 because it is a SAQ-job payload whose deterministic-key builder reads it (mirrors
 ``PushFilePayload``).
 
+It is also the one model here that inherits ``WirePayload`` rather than ``BaseModel``
+(phaze-ot3os) -- it is the only SAQ broker payload in this module; the callback
+request/response models cross HTTP, not the broker, and are unchanged.
+
 D-04: the agent collects each part's ETag and reports the ordered list -- there
 are NO S3-side per-part checksums (Content-MD5 / x-amz-checksum); the pod's
 end-to-end sha256 is the single integrity gate.
@@ -35,8 +39,10 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from phaze.schemas.wire_payload import WirePayload
 
-class UploadFileS3Payload(BaseModel):
+
+class UploadFileS3Payload(WirePayload):
     """SAQ job: httpx multipart-PUT upload of a single media file to presigned part URLs.
 
     Phase 53 (KSTAGE-02): enqueued by the control plane (which initiates+presigns
