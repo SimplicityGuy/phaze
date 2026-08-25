@@ -1,0 +1,72 @@
+# tests/fast_floor.txt -- the modules `just test-fast` runs on EVERY invocation, whatever the
+# change selects (phaze-pv3kk).
+#
+# THIS IS NOT THE SELECTOR. The selector is `repowise impacted-tests`, driven by the bead's own
+# diff -- operator decision 2026-08-25: "use repowise tests_to_run for phaze-pv3kk. While this may
+# produce longer than 5 minutes, it is selecting the right set of tests for the change."
+# scripts/select_impacted_tests.py runs it and prepends this file. An earlier draft of this bead
+# built a 348-module static subset as the PRIMARY selector; that design is superseded and this file
+# is the small remainder of it, with a different job.
+#
+# THE JOB IS A NON-EMPTY GUARANTEE, NOT BREADTH. A change-driven selector can legitimately select
+# nothing -- a brand-new file has no coverage rows -- and a gate that runs zero tests and exits 0 is
+# "exit 0 having measured nothing", the phaze-jnj90 defect. This floor means the gate always runs
+# something real. Breadth is the selector's job now, and adding modules here to chase coverage would
+# quietly rebuild the superseded design underneath the new one.
+#
+# WHAT IS IN IT, and the two reasons anything qualifies:
+#
+#   1. THE META-GUARDS -- the tests that protect invariants CLAUDE.md documents: the gate wiring
+#      (including this bead's own), the coverage floors, the test-DB guard and seat isolation, the
+#      repowise coverage refresh, and the D-09 streaming-decode teardown whose absence OOMKilled
+#      every file past ~3 hours in production. These are here BY NAME because an optimiser cannot
+#      see criticality: the superseded design's scoring pass dropped
+#      tests/shared/test_validation_gate_recipes.py -- the guard over the very recipes this bead
+#      changes -- along with test_coverage_floor.py, test_db_guard.py and
+#      test_analysis_streaming_decode.py. That is the evidence for hand-picking rather than scoring.
+#
+#   2. THE APP'S OWN BOOT PATH -- health, lifespan and route reachability. A change-selected run can
+#      be perfectly green while the application no longer starts, because nothing in the selection
+#      touched startup. Three modules, 15 tests, 3.59 s.
+#
+# Measured 2026-08-25 on worktree seat `pv3kk`: 34 modules, 343 tests, ~36 s.
+#
+# HOW TO CHANGE IT. Adding a module costs every gate run, forever. The bar is one of the two reasons
+# above, argued on the bead -- not "this test is useful", which is true of the whole suite.
+# tests/shared/test_fast_gate.py enforces the parts of this that can be enforced. Blank lines and
+# `#` comments are ignored.
+tests/analyze/services/pipeline/test_analysis_streaming_decode.py
+tests/shared/core/test_health.py
+tests/shared/core/test_main_lifespan.py
+tests/shared/core/test_route_reachability.py
+tests/shared/test_adr_numbering.py
+tests/shared/test_branch_coverage_check.py
+tests/shared/test_change_gate.py
+tests/shared/test_ci_workflow_wiring.py
+tests/shared/test_cluster_wide_catalog_scoping.py
+tests/shared/test_conftest_dsn_coercion.py
+tests/shared/test_conftest_hermeticity.py
+tests/shared/test_containment.py
+tests/shared/test_coverage_floor.py
+tests/shared/test_coverage_gate.py
+tests/shared/test_coverage_settings_are_central.py
+tests/shared/test_db_guard.py
+tests/shared/test_fast_gate.py
+tests/shared/test_gather_over_session_fixture_guard.py
+tests/shared/test_hadolint_version_pin.py
+tests/shared/test_health_baseline.py
+tests/shared/test_justfile_default.py
+tests/shared/test_no_exclude_newer_cooldown.py
+tests/shared/test_no_filestate_guard.py
+tests/shared/test_no_hardcoded_broker_dsn_fallback.py
+tests/shared/test_operator_attribution_citations.py
+tests/shared/test_partition_guard.py
+tests/shared/test_redis_worktree_isolation.py
+tests/shared/test_repowise_coverage_from_ci.py
+tests/shared/test_repowise_coverage_gate.py
+tests/shared/test_seat_name_normalization.py
+tests/shared/test_settle_discipline.py
+tests/shared/test_shared_harness_teardown_guard.py
+tests/shared/test_test_db_session_exclusivity.py
+tests/shared/test_validate_seat_derivation.py
+tests/shared/test_validation_gate_recipes.py

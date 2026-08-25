@@ -384,6 +384,105 @@ test-validate:
     fi
     just test-cov
 
+# THE CHANGE-DRIVEN TEST STEP (phaze-pv3kk). `just check-fast` runs this, and the phaze rig's
+# `work.validate_cmd` points at `check-fast`, so this is what `bh work check`, `bh work submit`,
+# `bh work merge` and `bh work merge-main` execute. `molecule` -- `bh work finish` -- is the ONLY
+# boundary that still runs the whole suite (`just check-all`).
+#
+# Operator decision 2026-08-25: "use repowise tests_to_run for phaze-pv3kk. While this may produce
+# longer than 5 minutes, it is selecting the right set of tests for the change." So there is no time
+# budget here on purpose. Selecting the RIGHT tests beats selecting a fixed number of them quickly.
+#
+# THREE OUTCOMES, and the middle one is the design. scripts/select_impacted_tests.py prints a verdict
+# and exits 0 / 3 / 1:
+#
+#   run       the selector had coverage-backed answers -> run the floor plus the selection
+#   escalate  the selector CANNOT speak for this change -> run the FULL gate instead
+#   fail      something is wrong that neither running nor escalating fixes (e.g. a dirty worktree)
+#
+# ESCALATION IS NOT A FALLBACK BOLTED ON FOR SAFETY -- it is the only honest answer to the states
+# `repowise impacted-tests` reports with EXIT 0 AND AN EMPTY SELECTION: no index (the default in a
+# bh worktree, since the map lives in the main clone), an empty map, `unknown_files` (every Jinja
+# template, pyproject and this justfile), and the three inference tiers repowise itself says "may
+# not be read as coverage". Piped naively into pytest each of those runs zero tests and reports
+# green. Read that script's docstring before changing anything here; all six failure modes are
+# written out with the measurements behind them.
+#
+# NO `--cov` ON THE SELECTED RUN (operator decision 2026-08-25, bead phaze-pv3kk; answer as given:
+# "No coverage gate on the fast suite -- keep it where the full suite runs").
+# A subset's figure is meaningless against the 95% floor and must not be quotable as one, and a
+# `coverage.json` written here would overwrite the artifact `just branch-check` reads. When this
+# recipe ESCALATES it delegates to `just test-validate`, which is the full gate and whose coverage is
+# the real thing -- that is correct, not a leak: at that point this is no longer a subset run.
+#
+# repowise is READ here and never written. Its coverage still comes only from `just
+# repowise-coverage` and `just repowise-coverage-ci`, so the "not for repowise" constraint holds.
+[doc('THE change-driven test step (`bh work check` / `submit` / `merge` run this): the tests repowise says the diff touches, plus the always-run floor -- escalating to the FULL suite whenever the selector cannot speak for the change. No coverage.')]
+[group('test')]
+test-fast:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z "${TEST_DATABASE_URL:-}" ]; then
+        just test-db
+        seat="$(bash scripts/derive-validate-seat-name.sh)"
+        echo "🪑 No TEST_DATABASE_URL exported; provisioning this worktree's own seat '${seat}'." >&2
+        eval "$(bash scripts/provision-test-seat.sh \
+            --seat "$seat" \
+            --pg-container "{{test_db_container}}" \
+            --pg-port "{{test_db_port}}" \
+            --redis-container "{{test_redis_container}}" \
+            --redis-port "{{test_redis_port}}" \
+            --redis-capacity "{{test_redis_databases}}" \
+            --origin "$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")")"
+    fi
+
+    # Kept INSIDE the worktree, which is per-bead by construction (phaze-rlshw): the scratchpad is
+    # per-SESSION, so concurrent seats of one dispatch share it and would clobber each other's
+    # selection here.
+    selection="$(git rev-parse --show-toplevel)/.fast-selection.txt"
+
+    # `|| rc=$?` rather than a bare call: under `set -e` a nonzero exit would abort before the
+    # verdict could be read, and exit 3 is a normal, expected outcome rather than an error.
+    rc=0
+    verdict="$(uv run python scripts/select_impacted_tests.py --floor tests/fast_floor.txt --out "$selection")" || rc=$?
+    echo "🎯 selector: ${verdict}"
+
+    case "$rc" in
+      0)
+        mapfile -t fast_args < "$selection"
+        if [ "${#fast_args[@]}" -eq 0 ]; then
+            echo "❌ the selector reported success over an empty selection — refusing to report a green gate." >&2
+            exit 1
+        fi
+        started=$SECONDS
+        uv run pytest "${fast_args[@]}"
+        echo "⏱️  just test-fast: ${#fast_args[@]} selected in $((SECONDS - started))s. NOT the full suite — \`just check\` is."
+        ;;
+      3)
+        # Loud, and it names its cause: a gate that silently swaps to the full suite is a
+        # twenty-minute surprise with no explanation, and the next seat "optimises" it away.
+        echo "⏫ FAST-GATE-ESCALATION: ${verdict#escalate }"
+        echo "   Running the FULL suite instead. This is the designed behaviour, not a failure —"
+        echo "   the selector discarded what it could not measure rather than running a guess."
+        # Also recorded durably, because the transcript is per-run and the question this answers is
+        # a trend one: if the fast gate is escalating on most beads, that is a fact about how stale
+        # the coverage map has become (`just repowise-coverage` refreshes it), and nobody should
+        # have to rediscover it by reading twenty transcripts. `.git/` is shared by every worktree
+        # of this clone and is never tracked, so the log outlives the ephemeral bead worktree that
+        # wrote it. One short append per escalation; concurrent seats interleave lines, not bytes.
+        printf '%s\t%s\t%s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "$(git rev-parse --abbrev-ref HEAD)" \
+            "${verdict#escalate }" \
+            >> "$(git rev-parse --git-common-dir)/fast-gate-escalations.log" || true
+        just test-validate
+        ;;
+      *)
+        echo "❌ the test selector failed (exit ${rc}); no verdict was produced and nothing was run." >&2
+        exit "$rc"
+        ;;
+    esac
+
 # phaze-jktlb: NOTHING CALLS THIS. CI shards with `just test-bucket` and fans in with
 # `just coverage-combine`; no workflow, script or recipe references `test-ci`. It is kept
 # (removing a recipe is outside this bead) but it is now the same whole-suite invocation as
@@ -1107,6 +1206,51 @@ pre-commit:
 [doc('THE per-bead gate (`bh work check` / `bh work submit` run this): lint + typecheck + the full suite with coverage; auto-provisions the ephemeral test-db when no TEST_DATABASE_URL override is already exported (e.g. a fresh worktree)')]
 [group('lint')]
 check: lint typecheck test-validate
+
+# THE per-bead gate (phaze-pv3kk). The phaze rig's `work.validate_cmd` points here, so this is what
+# `bh work check`, `bh work submit`, `bh work merge` and `bh work merge-main` run. `just check`
+# above is UNCHANGED; `just check-all` remains the `molecule` boundary and is the ONLY boundary that
+# still runs the whole suite.
+#
+# OPERATOR DECISIONS, 2026-08-25 (ADR-0012 rule 2). Durable record: bead phaze-pv3kk's COMMENTS --
+# not its description, which records the original request and was superseded twice the same day.
+# Option labels / answers verbatim:
+#   Q: fold change-driven selection into this bead?
+#   A: "yes, awesome, use repowise tests_to_run for phaze-pv3kk. While this may produce longer than
+#       5 minutes, it is selecting the right set of tests for the change. Let's do this!"
+#   Q: which boundaries run it, given ad-hoc beads land through merge-main and never reach finish?
+#   A: "merge-main too -- nothing full-suite before main; CI catches it after"
+#
+#     check / submit / merge / merge-main  ->  this recipe (change-selected)
+#     molecule (`bh work finish`)          ->  `just check-all`, the whole suite
+#
+# WHY THIS DOES NOT SIMPLY UNDO phaze-nqawu, WHOSE COMMENT SITS BESIDE `validate_cmd` IN
+# `~/.beadhive/config.yaml`. That bead made submit slow because a fast boundary had produced epic
+# phaze-1i0h6's four unevidenced validation claims, and its objection is STRONGER here, not weaker:
+# under these boundaries an ad-hoc bead reaches `main` with no full-suite run anywhere before it.
+# The answer is NOT "merge still runs everything" -- it no longer does. It is that the selection is
+# CHANGE-DRIVEN AND MEASURED rather than a fixed cheap subset: what runs is what repowise's per-test
+# coverage map says the diff actually touches, and when the map cannot answer, the recipe escalates
+# to the full suite instead of guessing. phaze-nqawu's failure was a gate that ran NO tests while
+# printing success; this one refuses to report a verdict it did not measure.
+#
+# The backstop is post-push CI, which is the model CLAUDE.md already describes for direct pushes:
+# "On a direct push, CI runs after the fact -- nothing gates main." That makes CLAUDE.md's other
+# standing instruction materially more load-bearing than before: TREAT A RED POST-MERGE CI RUN AS A
+# FIX-FORWARD P0, not a routine failure to triage later.
+#
+# WHAT IS GIVEN UP, named so nobody rediscovers it as a surprise: `bh work merge`'s validation was
+# the boundary that caught "green in isolation, red in combination". Change-driven selection narrows
+# that class -- the selector picks the tests guarding the changed lines, which is where such
+# interactions usually surface -- but it does NOT close it. An interaction can live in a test that
+# guards neither side's changed lines, and nothing before CI will see it.
+#
+# ESCAPE HATCH. `just check` by hand, any time you want the whole suite; say on the bead that you
+# did. Nothing records it automatically, deliberately -- a record no tool reads is the
+# stale-`review:*`-label shape (phaze-s3d1u).
+[doc('THE per-bead gate (`bh work check` / `submit` / `merge` run this): lint + typecheck + the tests repowise says the change touches, escalating to the full suite when it cannot tell. `bh work finish` still runs `just check-all`.')]
+[group('lint')]
+check-fast: lint typecheck test-fast
 
 # THE molecule / merge-to-main gate, wired to `work.validate` `molecule:` and `merge-main:`
 # for the phaze rig in `~/.beadhive/config.yaml` (phaze-nqawu). The config shipped that
