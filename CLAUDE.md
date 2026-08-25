@@ -649,6 +649,61 @@ reported `completed (exit code 0)` over a `just check` that had exited **143** �
 zero failed tests. The `0` was a trailing `echo`, not the gate. This belongs beside the scratchpad
 rule because it is the same class: the harness told a seat it was fine, and no code was wrong.
 
+**The same mechanism hides genuine FAILURES, and that is the direction to design against
+(phaze-o24tm).** Measured 2026-08-25: a background-task wrapper reported `completed (exit code 0)`
+over a gate that had genuinely failed — `1 failed, 7922 passed`, a coverage line, 20:19 of wall
+clock, and `GATE_EXIT=1` in the log. The 2026-08-22 case above had **zero** failed tests underneath,
+so it cost a slot; this one had a real failure underneath, and a seat reading the wrapper would have
+carried a red bead to submit as green. **A kill rendered as green wastes twenty minutes; a failure
+rendered as green lands a broken change.** Same mechanism, opposite consequences, and only the
+second is unrecoverable by waiting.
+
+**The positive tell, which is a procedure rather than an attitude (phaze-o24tm).** Capture the
+status onto the gate command itself, then read the LOG:
+
+```bash
+just check > gate.log 2>&1; GATE_EXIT=$?; echo "GATE_EXIT=$GATE_EXIT" >> gate.log
+```
+
+| what the log holds | verdict |
+|---|---|
+| `GATE_EXIT=0` + pytest summary + coverage line | green |
+| `GATE_EXIT=1` + pytest summary | genuinely red — a verdict |
+| **no `GATE_EXIT` line at all**, log truncated | **KILLED. Not a verdict.** |
+
+The third row is what earns the technique: the line's **absence** is diagnostic, because a SIGTERM
+kills the shell before the appended `echo` can run, so a killed gate cannot forge it. Both
+2026-08-25 kills were identified this way. Two bounds come with it, and without them the tell is
+actively misleading.
+
+**It must come BEFORE any trimming, and it makes the wrapper's status permanently meaningless.**
+The `echo` is now the last command and it succeeds, so an enclosing wrapper or list reports **0** by
+construction — deliberately arriving at the shape the 2026-08-22 incident hit by accident, where
+"the `0` was a trailing `echo`, not the gate". A seat that appends the tell and then reads the
+notification is worse off than one that never appended it, because that `0` is now *guaranteed*
+rather than coincidental. **Append it AND read the log — the two halves are one instruction.**
+
+**The tell is only as good as your access to where it printed.** It writes to the compound's
+stdout; under backgrounding that stdout goes to a task-output file while the harness surfaces its
+own status in the notification you actually read, so a seat can have the shape exactly right and
+still be handed nothing but the wrapper status at the moment of decision. Reported 2026-08-25 from a
+seat that hit it and read the log anyway — **relayed, not reproduced**, so treat the frequency as
+unknown. **What survives all three mechanisms** — pipeline, list, and wrapper — is reading the log
+body: the pytest summary, the coverage line and the `phaze test database:` header are written by the
+gate itself into the redirect target, and no wrapper, list or backgrounding can alter them. That is
+the same conclusion the redirection-order paragraph below reaches from its own side, which is why it
+is stated once there and not repeated as a fourth rule here.
+
+**And the durable record barely tells these apart either.** `.git/bh-validation-ledger.json` stores
+`{tree, cmd_hash, rc, at, host, sha}`, so a signal death is `rc=143`, a genuine failure is `rc=1`,
+and both are recorded as verdicts. Measured 2026-08-25: **55 of 56** entries carry no counts at all;
+the single exception is one `rc=0` entry carrying a `report` of `{tests, passed, failures, errors,
+skipped}`, a field that had only just begun to be populated. Read that as **dated, not permanent** —
+and note it changes nothing for the case that matters: this bead's own green check, run minutes
+after that exception appeared, recorded **no** `report` either, and a killed run has no summary to
+ingest in the first place. The lie this section is about reaches the artifact, not just the
+transcript.
+
 **A shell pipeline eats the status too, and that is the common case (phaze-skhmm).** A pipeline's
 exit status is its **last** command's, and `tail` succeeds at printing a failure — so `| tail`,
 `| head`, `| grep`, `| jq` and even `| cat` all report 0 over a command that died. Measured
@@ -663,7 +718,18 @@ status reads as benign at a glance, which is worse than the masking it was meant
 array is spelled `pipestatus` — lowercase, **1-indexed**, so the first command's status is
 `${pipestatus[1]}` — but there is no need to reach for either spelling: `set -o pipefail` alone is
 already correct in both bash (CI's shell) and zsh (this repo's local shell), needs no dialect
-switch, and is the only remedy this file recommends. **`grep` is the sharper edge, because it
+switch, and is the only remedy this file recommends **for a pipeline**. **It is not a general
+remedy for a masked status, and reading it as one has already produced a false green
+(phaze-o24tm).** `pipefail` governs `a | b` and does nothing whatever for `a; b` — a sequential
+**list**, whose status is simply its LAST command's. Measured 2026-08-25: a seat with `set -o
+pipefail` correctly set ran `bh work check <id> > check.log 2>&1; echo "CHECK_EXIT=$?"; tail -30
+check.log`; the trailing `tail` succeeded, so the list exited **0**, and the harness reported
+`completed (exit code 0)` over a check that had exited **1** and run **zero** tests (`selector:
+fail — the worktree has uncommitted changes`). Both facts sat seven lines apart in one output file.
+A trailing `tail` to trim output is the idiomatic thing to write and the whole reason the trimming
+advice exists, so this is the construct a backgrounded gate invocation naturally lands in — not an
+exotic one. The list case has its own remedy, in the section below: `echo "GATE_EXIT=$?"`
+**immediately** after the command and **before** any trimming. **`grep` is the sharper edge, because it
 inverts as well as masks:** `cmd | grep -q PASS` returns 0 when `cmd` FAILED but its error text
 quoted the pattern, and 1 when
 `cmd` SUCCEEDED but printed nothing matching — a status wrong in *both* directions, which is worse
@@ -698,18 +764,152 @@ rule that survives is **read the output rather than trust the status**: an empty
 capture or a suspiciously short log *is* the finding. Recording that limitation beside the guidance
 is worth more than adding one more confident imperative to a list that has already failed once.
 
-### Concurrent gates are bounded by headroom, not by isolation (phaze-rlshw)
+### Concurrent gates are bounded by headroom, not by isolation (phaze-rlshw, revised phaze-o24tm)
 
 The isolation rules protect **correctness** and say nothing about **capacity** — and exceeding
 capacity does not look like a failure, it looks like a SIGTERM that a wrapper renders as exit 0.
-Measured 2026-08-22: **5** concurrent full-suite gates at **545–671 MB** RSS each left **46%** of
-memory free with **461 MB of 1024 MB** swap in use, and one gate was genuinely SIGTERM'd. Count the
-live gates with `ps -eo args= | grep -cE '^[^ ]*/\.venv/bin/python[0-9.]* .*pytest'`; if three are
-already running, wait rather than adding a fourth. A fan-out wider than that staggers its **gates**,
-not its claims. Two simpler forms are wrong, both measured: `grep pytest` counts the `uv` and shell
-wrappers **and the measuring pipeline itself** (**3** reported against **0** live gates), and
-matching `ps aux` field 11 on `python$` fails the other way — it misses an interpreter spelled
-`python3`, reporting **1** when **2** were live. Undercounting is the direction that adds a gate.
+
+**Gate on HEADROOM, not on a count of running gates (phaze-o24tm, 2026-08-25).** This deliberately
+reverses the "if three are already running, wait rather than adding a fourth" rule that stood here
+from 2026-08-22, and the argument is below rather than assumed — the count was chosen for real
+reasons and deserves one. Before launching a gate:
+
+```bash
+sysctl vm.swapusage                                                 # hard NO-GO if "used" is non-zero
+memory_pressure | tail -1                                           # the headroom read: "free percentage: N%"
+ps -eo args= | grep -cE '^[^ ]*/\.venv/bin/python[0-9.]* .*pytest'  # who else is here — context, not a verdict
+```
+
+**Swap at `0.00M` is NECESSARY, not SUFFICIENT — and the difference is the whole rule.** Swap
+answers *"is this machine thrashing right now"*; a launch decision needs *"will it thrash if I add
+~1.3 GB"*. Those are different questions, and only the second is a launch decision. So non-zero swap
+is a **hard no-go** — by the time swap moves, free memory is already exhausted and you are past the
+point the check existed to catch, which makes it a stop signal rather than the primary signal.
+Clearing it establishes only that nothing is thrashing *now*; it does **not** establish headroom.
+The forward-looking read is `memory_pressure`'s free percentage, and it still carries **no
+calibrated threshold** — none has been derived, inventing one here would be exactly the unmeasured
+arithmetic this section exists to correct, and it is recorded so that one can be. Between the two,
+a seat is exercising judgement rather than reading a verdict, and that is an honest description of
+what the evidence supports rather than a gap in the rule.
+
+Swap earns the no-go slot on evidence, and how thin that evidence is has to be stated plainly,
+because carrying a claim stronger than its evidence is this section's own defect. **Exactly one kill
+has a recorded memory state**: 2026-08-22, **461 MB of 1024 MB** in use across the
+five-gate run in which one gate was SIGTERM'd — and even that is the wave's state, not a reading
+taken at the instant of the kill. The two 2026-08-25 kills (**18%** and **21%**, below) have **no
+recorded memory state at all**. If either of them died at `0.00M`, this discriminator is wrong, and
+nothing in the record can currently say. It therefore rests on **one measured kill with swap in use,
+plus every measured survivor at `0.00M`** — survivors over the old count included. **That is why the
+launch check is something you RECORD, not merely read:** write the swap reading and `WAITED_SEC`
+into the gate log, and the next kill either confirms this discriminator or refutes it. A rule that
+accumulates the evidence for its own threshold is more than the count it replaces ever had.
+
+**Why swap is a stop signal and not the primary one: it LAGS.** It moves only once free memory is
+already exhausted, so `0.00M` describes the state you are **in**, never the state your launch will
+**produce**. It is kept in the no-go slot for two reasons: on macOS swap moving *is* approximately
+"free is exhausted", so the reading is sound about what it reports, and every reading a seat reaches
+for instead is easier to misread (see the `vm_stat` trap below). Read it as *nothing is thrashing
+right now* — never as *nothing will be*. That limit binds every quantity here, the count it replaced
+included: a launch check is a snapshot, which is why the check-then-launch race below is reported
+rather than closed.
+
+The process count survives only as context, and it may make you **more** conservative, never less:
+three live gates is a reason to look at swap, not on its own a reason to wait, and **never** a
+reason to kill a running gate. Two seats declined to kill healthy runs on a count alone during the
+2026-08-25 wave and were right both times. If the count moves under you *after* you launch, report
+it rather than act — a check-then-launch race cannot be closed by a poller, and the shared lock file
+that would close it is the writable-path collision this repo keeps relearning.
+
+**Waiting is cheap, and that is measured rather than asserted (`phaze-sy8z3`, 2026-08-25).** A wide
+fan-out staggers its **gates**, not its claims. Poll until the machine is quiet, then take the slot;
+cap the poll so a stuck wait surfaces as a late gate rather than a silent hang.
+
+```bash
+waited=0
+while [ "$(ps -eo args= | grep -cE '^[^ ]*/\.venv/bin/python[0-9.]* .*pytest')" -gt 1 ] \
+      && [ "$waited" -lt 3600 ]; do sleep 30; waited=$((waited+30)); done
+echo "WAITED_SEC=$waited SWAP=$(sysctl -n vm.swapusage)"   # into the gate log, before the gate
+```
+
+That seat's first attempt launched at three concurrent and was SIGTERM'd at **21%** after ~20
+minutes; its next attempt waited **390 s** for the machine to quieten and then ran clean in
+**19:52**. **390 seconds of waiting replaced ~1190 seconds of lost suite.** Recording `WAITED_SEC`
+and the gate count at launch is what makes the *next* kill legible — it separates "the machine was
+overloaded" from "something is wrong with my tree", a distinction that could not be drawn cleanly on
+the first one. The loop waits for **≤1**, stricter than any ceiling, on purpose: a ceiling is the
+point at which gates start dying, and a seat with no deadline should not sit on it.
+
+**Why the count went, and why nothing about it ever looked wrong.** A count assumes a stable
+per-gate cost, and that cost is unstable in three independent ways, all measured on the same 32 GB
+machine. It drifts with **suite growth** — 545–671 MB per gate on 2026-08-22 against **1297–1340
+MB** on 2026-08-25, roughly double, because the suite grew (one 20-bead wave alone added tests
+across ~10 beads). It drifts **within a single run** as pytest moves between partitions: the same
+two gates read 1039/1019 MB and, four minutes later, 1243/1232 MB, while lighter partitions sampled
+the same day read 711/659/831 MB — a ~2× swing. And a count is blind to **everything else on the
+machine**, which is evidently what differed on 2026-08-25 between three gates that died and three
+that did not. The cost of that blindness was measured, not predicted: `phaze-rhs6m`'s **merge**
+validation was killed at **18%** and `phaze-sy8z3`'s re-gate at **21%**, both at three concurrent —
+the count's own limit — and **neither was a code failure**. `bh` converted the first kill's signal
+exit into "main is RED in combination" and bounced a green bead to `review:changes-requested`. Hours
+later, same machine and same date, **three** concurrent gates at 1040/1243/1063 MB sat at **65%**
+memory free with **zero** swap in use and ~10.5 GB available, under no distress at all. **Two killed
+validations have a durable record, and reading it corrects this paragraph twice.**
+`.git/bh-validation-ledger.json` holds `rc=143` — SIGTERM — for `210cb2029` (`chore(merge): bead
+phaze-rhs6m`, ledger `at` **2026-08-24 19:12:40** local) and for `ec7deb2f2` (`chore(merge): bead
+phaze-shzdj`, ledger `at` 14:47:56 the same day) — **`at` is when the VERDICT was recorded, not the
+commit date**, and the two differ by 10m08s and 26m27s respectively, which is roughly how long each
+validation ran before it died. So one of the kills above is confirmed by artifact, one is a **third**
+kill at an unrecorded concurrency, and `phaze-sy8z3`'s re-gate has **no ledger entry at all**. The
+timestamps are the 24th; the percentages above come from session transcripts dated the 25th, the
+wave ran overnight, and nothing reconciles the two beyond that. Take from the ledger only what it
+stores — `{tree, cmd_hash, rc, at, host, sha}`, and for these two entries **no counts** (one recent
+entry does carry them; see the masking section above): it establishes that the kills happened and
+were recorded as failing verdicts, never the memory state at the moment of the kill, which is the
+gap named above. So the rule
+was wrong in *both* directions at once — it permitted the runs that died, and here it would have
+forbidden three runs with ample room — and a rule wrong in both directions is not repaired by moving
+its threshold. What the count had going for it in 2026-08-22 was real, and is why this is a swap
+rather than a deletion: it is one command, easy to check and hard to get wrong under pressure.
+`sysctl vm.swapusage` keeps that property, because `used = 0.00M` is a zero/non-zero read with no
+threshold to get wrong.
+
+**Re-measure the figures above rather than inheriting them — and sample LATE.** Read a live gate's
+RSS in KB with `ps -eo rss=,args= | grep -E '/\.venv/bin/python[0-9.]* .*pytest'` (**M**,
+2026-08-25, dev/gateceiling: one live gate at **1349968 KB ≈ 1318 MB**, a third independent sample
+inside the 1297–1340 band). Naming the command is necessary and **not sufficient**: per-gate RSS
+grows through a run, so a prompt sample reads ~20% low — 1039 MB at t0 against 1243 MB four minutes
+later, the *same* process — and any ceiling derived from it is set too high. **Sample late in a run,
+or sample repeatedly and take the maximum.** Two simpler spellings of the *count* are wrong, both
+measured: `grep pytest` counts the `uv` and shell wrappers **and the measuring pipeline itself**
+(**3** reported against **0** live gates), and matching `ps aux` field 11 on `python$` fails the
+other way — it misses an interpreter spelled `python3`, reporting **1** when **2** were live.
+Undercounting is the direction that adds a gate. **A third miscount runs the same dangerous way and
+is invisible in the command's output: it counts gates that have reached PYTEST, not gates that are
+RUNNING.** `just check-fast` is `lint typecheck test-fast`, so for its first ~30–60 seconds a live
+gate is inside ruff and mypy with no pytest process at all, and matches nothing — measured
+2026-08-25, a seat's own gate invisible to the count at launch. The form above also does not
+distinguish a **full suite** from a **targeted slice** a seat is iterating on, so it overstates load
+in the other direction. Three miscounts, two of them silent and toward *adding* a gate: that is a
+fourth reason the count is context rather than the rule, and it is the reason a reading taken from
+the machine beats one assembled by matching process names.
+
+**And do not reach for `vm_stat`'s `Pages free` while re-deriving any of this.** It is the Linux
+`MemFree` intuition applied to a kernel that parks reclaimable pages on the inactive list, so a low
+value is the **healthy steady state** rather than a warning. Measured 2026-08-25 on this 32 GB
+machine: `Pages free` **0.12 GB** against **9.87 GB** inactive — about **10.07 GB** actually
+available — while `memory_pressure` reported **63%** free and swap read `0.00M` at the same instant.
+A seat reading `Pages free` alone concluded the machine was tight when it had ~10 GB spare. That is
+the sharpest argument for `sysctl vm.swapusage` holding the no-go slot: not that it is the most
+informative number available, but that it is the hardest one to read backwards.
+
+**The general form: the old ceiling was sound arithmetic on stale inputs.** It was not wrong when it
+was written, and nothing about it looked wrong afterwards, because **a ceiling derived from a
+measurement does not re-measure itself** — the divisor stays put while the suite it was divided
+against grows. The repowise 0.44-vs-0.45 entry under "Beads Workflow Integration" below
+(`phaze-ia4ah`) is the prior instance of this shape in this file, and it is written up there rather
+than restated here. The defence is the same in both places, and it is why every figure above carries
+its date and the command that produced it: write the derivation down so the next reader can
+re-derive it, because nothing else in the system will notice when the inputs move.
 
 ## Code Quality
 
