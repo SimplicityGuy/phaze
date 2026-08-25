@@ -40,6 +40,11 @@ WHICH litellm THESE VERDICTS WERE MEASURED AGAINST (phaze-o6wg7)
 found identical in every cell.** Recording both is the point -- a verdict that survived a minor
 version change is better evidence than one taken once, and the file should say which it is.
 
+The minor line these verdicts were measured against is the file's own provenance and is held in
+``MEASURED_LITELLM_MINOR`` at the foot of this file -- that constant is what the guards read, and it
+is what a re-measurement updates. The versions named in the prose above are the historical record of
+when each measurement was taken and are deliberately NOT maintained against it.
+
 The re-measurement happened because it was *forced*: ``test_litellm_pin_is_unchanged`` below turned
 main red when the aiobotocore 3.x upgrade moved the pin (litellm 1.98 requires boto3 >=1.43.1). The
 cheap response was to edit the assertion string, which would have re-baselined all six verdicts onto
@@ -135,8 +140,10 @@ that; modes 3 and 5b still do, and now say why in the log.
 from __future__ import annotations
 
 import functools
+import importlib.metadata
 import json
 from pathlib import Path
+import re
 import tomllib
 from typing import Any, ClassVar
 from unittest.mock import patch
@@ -145,6 +152,9 @@ import httpx
 import litellm
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
 import openai
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+from packaging.version import Version
 import pydantic
 import pytest
 from structlog.testing import capture_logs
@@ -872,27 +882,190 @@ class TestModeFiveBIsNotRepaired:
 # ---------------------------------------------------------------------------
 
 
-def test_litellm_pin_is_unchanged() -> None:
-    """AC 6, and load-bearing for mode 4.
+# The litellm minor line every verdict in this module was measured against -- originally 1.97
+# (``phaze-02v1s``), re-measured at 1.98 on 2026-08-23 (``phaze-o6wg7``); see the module docstring's
+# version note. **This is THIS FILE'S OWN provenance, not a copy of pyproject's pin string.** Editing
+# it is the act of claiming a re-measurement, which is why it is a hand-maintained literal and why it
+# is not derived from anything. Never "fix" a failure below by bumping it without re-running the
+# verdicts.
+MEASURED_LITELLM_MINOR = (1, 98)
 
-    The ``>=1.98.0,<1.99.0`` pin is a supply-chain control (CLAUDE.md, March 2026 incident), and it
-    is separately what makes "empty ``choices`` is already handled" true -- that guarantee lives in
-    litellm, not in phaze. Widening the pin invalidates several of this file's verdicts, so it fails
-    here rather than silently.
+# The compromised litellm releases (March 2026 supply-chain attack; CLAUDE.md, and the comment on the
+# pin in pyproject.toml). The floor must stay clear of these forever.
+COMPROMISED_LITELLM_RELEASES = (Version("1.82.7"), Version("1.82.8"))
 
-    **This test has already done its job once, and the record of that is the reason to keep it
-    exactly this narrow.** It was written against ``>=1.97.0,<1.98.0``; the aiobotocore 3.x upgrade
-    moved the pin to ``>=1.98.0,<1.99.0`` (litellm 1.98 requires boto3 >=1.43.1) and this assertion
-    turned main red rather than letting five measured verdicts be re-baselined onto a version none
-    of them had been measured against. ``phaze-o6wg7`` then re-measured all five and found them
-    identical -- see the module docstring's version note.
 
-    So the correct response to this test failing is **re-measure, then update the string** -- never
-    relax it to a substring match, a range spanning minors, or a floor with no ceiling. Each of
-    those turns a forcing question into a silent assumption, and the narrow pin is itself the
-    control CLAUDE.md mandates after the 1.82.7/1.82.8 incident.
-    """
+def _litellm_requirement(dependencies: list[str]) -> Requirement:
+    """The single ``litellm`` entry in a ``[project] dependencies`` list, parsed."""
+    litellm_reqs = [req for req in (Requirement(dep) for dep in dependencies) if canonicalize_name(req.name) == "litellm"]
+    assert len(litellm_reqs) == 1, f"expected exactly one litellm entry in [project] dependencies, found {litellm_reqs!r}"
+    return litellm_reqs[0]
+
+
+def _project_dependencies() -> list[str]:
     pyproject = Path(__file__).resolve().parents[3] / "pyproject.toml"
-    dependencies = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["dependencies"]
+    deps: list[str] = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["dependencies"]
+    return deps
 
-    assert "litellm>=1.98.0,<1.99.0" in dependencies
+
+def _assert_pin_confines_one_vetted_minor(requirement: Requirement) -> None:
+    """The supply-chain POLICY, as a shape. Shared by the guard and by its discrimination test.
+
+    Extracted so the discrimination test below can drive **this exact code** with a deliberately
+    broken pin instead of re-implementing the checks inline -- a discrimination test that restates
+    the loop it is meant to discriminate proves only that it agrees with itself.
+    """
+    bounds = {spec.operator: Version(spec.version) for spec in requirement.specifier}
+
+    assert ">=" in bounds, f"litellm must keep a `>=` floor; got {str(requirement.specifier)!r} (CLAUDE.md: pin the exact minor line)"
+    assert "<" in bounds, (
+        f"litellm must keep a `<` ceiling; got {str(requirement.specifier)!r}. A floor with no ceiling lets uv resolve any "
+        "future minor, and pyproject records that this cap is the ONLY control on this package since the exclude-newer "
+        "cooldown was removed (2026-08-04)."
+    )
+
+    floor, ceiling = bounds[">="], bounds["<"]
+    assert (ceiling.major, ceiling.minor) == (floor.major, floor.minor + 1), (
+        f"the litellm cap must be the NEXT minor after the floor, confining uv to one vetted line; got "
+        f"{str(requirement.specifier)!r}. A cap spanning several minors re-admits unvetted releases, which is the control "
+        "CLAUDE.md mandates after the March 2026 attack on 1.82.7/1.82.8."
+    )
+    assert all(floor > bad for bad in COMPROMISED_LITELLM_RELEASES), (
+        f"the litellm floor {floor} is not clear of the compromised releases {[str(v) for v in COMPROMISED_LITELLM_RELEASES]} "
+        "(March 2026 supply-chain attack)."
+    )
+
+
+def _assert_is_the_measured_minor(requirement: Requirement, installed: Version) -> None:
+    """The TRIPWIRE. Shared by the guard and by its discrimination test, for the same reason."""
+    pinned_floor = next(Version(spec.version) for spec in requirement.specifier if spec.operator == ">=")
+    measured = ".".join(str(part) for part in MEASURED_LITELLM_MINOR)
+
+    diagnosis = (
+        "\n\nIF THIS FILE IS NOT IN YOUR DIFF, THIS IS NOT YOUR BEAD (phaze-yqcgv). The litellm pin moved and this module's "
+        "guard has not been re-measured yet; `git log -1 --format=%h -- pyproject.toml` names who moved it.\n"
+        f"The verdicts in this module were measured against litellm {measured}.x and are NOT known to hold on any other "
+        "minor -- mode 4 in particular ('an empty `choices` list is already handled') is true only because litellm raises "
+        "InternalServerError inside `acompletion`, which is a property of the pinned version.\n"
+        "The fix is to RE-MEASURE the verdicts against the new minor and then update MEASURED_LITELLM_MINOR, exactly as "
+        "phaze-o6wg7 did. Bumping the constant alone banks an unverified claim (ADR-0012)."
+    )
+
+    assert (pinned_floor.major, pinned_floor.minor) == MEASURED_LITELLM_MINOR, (
+        f"pyproject pins litellm at {pinned_floor}, but this module's verdicts were measured against {measured}.x.{diagnosis}"
+    )
+    assert (installed.major, installed.minor) == MEASURED_LITELLM_MINOR, (
+        f"the installed litellm is {installed}, but this module's verdicts were measured against {measured}.x. The pin says "
+        f"{str(requirement.specifier)!r}, so either the environment has drifted from the lockfile (`uv sync`) or the lock "
+        f"has drifted from pyproject.{diagnosis}"
+    )
+
+
+def test_the_litellm_pin_confines_uv_to_one_vetted_minor_line() -> None:
+    """The supply-chain POLICY, asserted as a shape so it cannot go stale.
+
+    litellm had a supply-chain attack (malicious 1.82.7/1.82.8, March 2026) and ships frequent
+    breaking minors, so CLAUDE.md mandates pinning the exact minor line and raising the cap only
+    after vetting. pyproject's own comment records that this cap is now the **only** control on this
+    package -- the repo-wide ``exclude-newer`` cooldown was removed on 2026-08-04, so there is no
+    waiting window behind it.
+
+    Every assertion here is about the pin's SHAPE, so a deliberate, vetted bump passes this test
+    without editing it. What fails is the shape actually going wrong: the ceiling being dropped
+    (``litellm>=1.98.0``), the cap being widened to span several minors, the pin being deleted, or
+    the floor sliding back onto the compromised line. None of those is detectable by a test that
+    knows only one hard-coded version string -- which is why this test exists alongside
+    ``test_litellm_pin_is_unchanged`` rather than inside it.
+    """
+    _assert_pin_confines_one_vetted_minor(_litellm_requirement(_project_dependencies()))
+
+
+def test_litellm_pin_is_unchanged() -> None:
+    """AC 6, and load-bearing for mode 4 -- the TRIPWIRE half.
+
+    The pin is separately what makes "empty ``choices`` is already handled" true: that guarantee
+    lives in litellm, not in phaze. Moving the pin invalidates several of this file's verdicts, so it
+    fails here rather than silently.
+
+    **This test has already done its job once, and the record of that is the reason to keep it.** It
+    was written against ``>=1.97.0,<1.98.0``; the aiobotocore 3.x upgrade moved the pin to
+    ``>=1.98.0,<1.99.0`` (litellm 1.98 requires boto3 >=1.43.1) and this assertion turned main red
+    rather than letting five measured verdicts be re-baselined onto a version none of them had been
+    measured against. ``phaze-o6wg7`` then re-measured all five and found them identical -- see the
+    module docstring's version note.
+
+    So the correct response to this test failing is **re-measure, then update
+    ``MEASURED_LITELLM_MINOR``** -- never relax it to a substring match, a range spanning minors, or
+    a floor with no ceiling. Each of those turns a forcing question into a silent assumption, and the
+    pin's *shape* is guarded independently by
+    ``test_the_litellm_pin_confines_uv_to_one_vetted_minor_line``, so relaxing this one would not
+    even buy the silence it was reaching for.
+
+    **What phaze-85zxu changed, and why a literal is still here.** This used to assert
+    ``"litellm>=1.98.0,<1.99.0" in dependencies`` -- a verbatim copy of pyproject's pin string. That
+    made the guard a second copy of the value it guarded, so it could go stale, and did: it spent a
+    23-minute gate slot of a seat whose diff was one ADR plus three comment-only edits. The literal
+    that remains is a different kind of thing. ``MEASURED_LITELLM_MINOR`` is this file's record of
+    *which litellm its own evidence was taken against* -- a fact no other file states, so there is
+    nothing to derive it from and nothing for it to drift against. The pin itself is now read and
+    parsed rather than restated. The tripwire is also strictly wider than the string comparison was:
+    it fires on the INSTALLED distribution too, catching a lockfile or an environment that has
+    drifted off the pinned line, which a comparison against pyproject text never could.
+    """
+    _assert_is_the_measured_minor(
+        _litellm_requirement(_project_dependencies()),
+        Version(importlib.metadata.version("litellm")),
+    )
+
+
+@pytest.mark.parametrize(
+    ("dependency", "expected_message"),
+    [
+        ("litellm>=1.98.0", "must keep a `<` ceiling"),
+        ("litellm>=1.98.0,<2.0.0", "must be the NEXT minor after the floor"),
+        ("litellm<1.99.0", "must keep a `>=` floor"),
+        ("litellm>=1.82.7,<1.83.0", "not clear of the compromised releases"),
+    ],
+)
+def test_the_pin_shape_guard_rejects_every_way_the_pin_can_be_widened(dependency: str, expected_message: str) -> None:
+    """The pin-shape guard actually discriminates -- it is not vacuously green.
+
+    A guard is worth only what it rejects, and a shape assertion is much easier to write vacuously
+    than a string comparison is: ``str(specifier)`` is truthy for every pin ever written, so a guard
+    that merely *parsed* the specifier would pass on all four rows below. Each row is a real way this
+    pin has been or could be loosened, and each must fail for its OWN reason -- hence asserting on
+    the message, not just on the raise.
+
+    This drives ``_assert_pin_confines_one_vetted_minor`` directly rather than re-deriving the checks
+    here. Re-implementing them would make this test agree with a copy of the guard instead of with
+    the guard, which is the same defect the guard itself was fixed for (phaze-85zxu), one level up.
+    """
+    requirement = _litellm_requirement([dependency, "fastapi>=0.141.1"])
+    with pytest.raises(AssertionError, match=re.escape(expected_message)):
+        _assert_pin_confines_one_vetted_minor(requirement)
+
+
+def test_the_pin_shape_guard_accepts_a_deliberate_vetted_bump() -> None:
+    """The other half of discrimination: the guard must not fire on the change it exists to allow.
+
+    This is the property the old string comparison did NOT have and the whole reason it drifted. A
+    future vetted raise to 1.99 needs no edit to the shape guard -- only to
+    ``MEASURED_LITELLM_MINOR``, which is a deliberate claim that the verdicts were re-measured.
+    """
+    _assert_pin_confines_one_vetted_minor(_litellm_requirement(["litellm>=1.99.0,<1.100.0"]))
+    _assert_pin_confines_one_vetted_minor(_litellm_requirement(["litellm>=2.4.0,<2.5.0"]))
+
+
+def test_the_tripwire_fires_when_the_installed_litellm_leaves_the_measured_line() -> None:
+    """The INSTALLED half of the tripwire discriminates too.
+
+    The pyproject half is exercised every time the pin moves; this half only fires when the lock or
+    the environment drifts off it, which no gate run will produce on its own. Without this test that
+    assertion would be permanently un-exercised -- present, plausible, and unmeasured, which is the
+    evidentiary class CLAUDE.md's M/I convention exists to keep apart.
+    """
+    requirement = _litellm_requirement(_project_dependencies())
+    drifted = Version(f"{MEASURED_LITELLM_MINOR[0]}.{MEASURED_LITELLM_MINOR[1] + 1}.0")
+
+    with pytest.raises(AssertionError, match=re.escape("the installed litellm is")):
+        _assert_is_the_measured_minor(requirement, drifted)

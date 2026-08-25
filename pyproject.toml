@@ -41,6 +41,13 @@ dependencies = [
     # aiobotocore 3.x migration above because litellm 1.98 requires boto3 >=1.43.1 while the
     # final aioboto3 release pins boto3 to the 1.40 line. Vetted at this raise: see the PR for
     # the pip-audit / osv-scanner / full-suite results.
+    #
+    # WHEN YOU RAISE THIS CAP, the raise is not complete until the guard moves with it.
+    # tests/review/services/test_proposal_provider_wire_shapes.py measures the LLM->pydantic seam
+    # against whatever litellm is pinned here and records that minor in MEASURED_LITELLM_MINOR.
+    # Re-measure its verdicts and update that constant in the SAME commit as the bump. This comment
+    # is a pointer, not a coupling -- nothing enforces it, and the cost of forgetting lands on
+    # whoever gates next, ~23 minutes into a suite, in a file they did not touch (phaze-85zxu).
     "litellm>=1.98.0,<1.99.0",
     "lxml>=6.1.2",
     "mutagen>=1.48.1",
