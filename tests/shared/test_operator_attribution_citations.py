@@ -81,13 +81,29 @@ discussing an existing claim -- would not be caught by this test. That risk is a
 one file because of what it is (the definition, not a claim site); it is not extended to any other
 file in scope.
 
-``CLAUDE.md``'s guardrail G2 paragraph and ``scripts/recover_operator_decisions.py``'s module
-docstring are narrower, via ``_KNOWN_SHAPE_EXCLUSIONS`` (path, needle) pairs: each is prose ABOUT
-the citation requirement (defining it, or explaining a provenance-recovery tool's limits), not an
-uncited claim that some specific decision was made -- but neither file is vocabulary-saturated the
-way the ADR is, so anchoring the exemption to its exact paragraph is both possible and strictly
-better: a real, uncited attribution added anywhere ELSE in either file is still caught (see
-``test_known_meta_exclusions_are_still_narrowly_scoped_to_their_needle`` below).
+``CLAUDE.md``'s guardrail G2 paragraph, the verbatim copy of that paragraph that now also lives
+in ``docs/git-topology-and-verification.md``, and ``scripts/recover_operator_decisions.py``'s
+module docstring are narrower, via ``_KNOWN_SHAPE_EXCLUSIONS`` (path, needle) pairs: each is prose
+ABOUT the citation requirement (defining it, or explaining a provenance-recovery tool's limits),
+not an uncited claim that some specific decision was made -- but none of those files is
+vocabulary-saturated the way the ADR is, so anchoring the exemption to its exact paragraph is both
+possible and strictly better: a real, uncited attribution added anywhere ELSE in any of them is
+still caught (see ``test_known_meta_exclusions_are_still_narrowly_scoped_to_their_needle`` below,
+which runs against EVERY path listed in ``_KNOWN_SHAPE_EXCLUSIONS`` rather than one of them).
+
+WHY THAT SECOND PATH EXISTS, AND THE GENERAL FORM IT BOUGHT (phaze-i5bs3, 2026-08-25). Commit
+``a7205962`` extracted CLAUDE.md's verification-fidelity section into
+``docs/git-topology-and-verification.md``, carrying guardrail G2's definition paragraph with it
+while CLAUDE.md kept its own copy. The needle was already allowlisted -- but a
+``_KNOWN_SHAPE_EXCLUSIONS`` entry is a (path, needle) pair, so the extracted copy was scanned as
+an ordinary paragraph and reddened ``main``. The general form: **a path-scoped allowlist entry is
+a citation to a LOCATION, and an extraction moves the location without moving the entry.** When
+prose carrying an allowlisted needle is copied or extracted into a new file, that needle's path
+set has to move with it, and nothing mechanical can notice on the extractor's behalf -- at the
+moment the extraction is written the new path does not exist yet, so there is nothing to sweep
+for. It is the same failure family as CLAUDE.md's rule to sweep both the ADR number VACATED and
+the number newly OCCUPIED on a renumber, and it has the same mitigation: the seat performing the
+move is the only one positioned to do the sweep.
 
 A GAP THAT LOOKED UNCITABLE AND WASN'T: ``src/phaze/tasks/tracklist_drain_control.py:68`` --
 *"phaze-6nrrf, operator decision: auto-disarm after 3 consecutive CRON-ENQUEUED slice failures."*
@@ -175,6 +191,19 @@ _SHAPE_EXCLUSIONS: tuple[tuple[re.Pattern[str], str], ...] = (
 _KNOWN_SHAPE_EXCLUSIONS: tuple[tuple[str, str], ...] = (
     (
         "CLAUDE.md",
+        "is a citation, not an emphasis marker",
+    ),
+    # The SAME paragraph, at a second path. Commit `a7205962` (2026-08-25) extracted CLAUDE.md's
+    # verification-fidelity section into `docs/git-topology-and-verification.md` verbatim, so
+    # guardrail G2's own definition now exists in two tracked files; CLAUDE.md kept its copy.
+    # Both are prose ABOUT the citation requirement, so both take the same needle -- the wording
+    # is a verbatim extraction and rewording it to dodge the vocabulary would corrupt the rule's
+    # own statement of itself. Deliberately NOT an `_EXEMPT_FILES` entry: that document is not
+    # vocabulary-saturated the way ADR-0012 is, so anchoring to the paragraph keeps every OTHER
+    # paragraph in it checked (proved by `test_known_meta_exclusions_are_still_narrowly_scoped_
+    # to_their_needle` below, which runs against every path listed here rather than just one).
+    (
+        "docs/git-topology-and-verification.md",
         "is a citation, not an emphasis marker",
     ),
     (
@@ -550,8 +579,29 @@ class TestScannerMechanics:
         """A `_KNOWN_SHAPE_EXCLUSIONS` entry is (path, needle) -- an unrelated, uncited claim added
         later to the SAME file must still be caught; only the paragraph matching the needle is
         exempt.
+
+        Runs against EVERY path in the list rather than one representative of it: the list grows
+        (``docs/git-topology-and-verification.md`` joined it for phaze-i5bs3), and a check that
+        exercises one entry says nothing about the entry added after it.
         """
-        paragraphs = [
-            _Paragraph("CLAUDE.md", 1, "unrelated operator decision, no date, no bead id."),
+        for path in dict.fromkeys(path for path, _ in _KNOWN_SHAPE_EXCLUSIONS):
+            paragraphs = [_Paragraph(path, 1, "unrelated operator decision, no date, no bead id.")]
+            assert list(_iter_uncited_claims(iter(paragraphs))) != [], f"{path} is exempted wholesale, not by needle"
+
+    def test_every_known_shape_exclusion_still_resolves_to_a_real_paragraph(self) -> None:
+        """The complement of the test above, and the mechanical half of what phaze-i5bs3 cost.
+
+        A ``_KNOWN_SHAPE_EXCLUSIONS`` entry is a citation to a LOCATION. Rename the file, reword
+        the paragraph, or extract the prose into a second file, and the entry goes DEAD: it
+        exempts nothing, the allowlist describes a tree that no longer exists, and the only signal
+        is a red build somewhere else (which is exactly how the extraction to
+        ``docs/git-topology-and-verification.md`` announced itself). Requiring every entry to
+        still resolve to a paragraph in its own file is the one direction a needle-scoped
+        exemption cannot check on its own behalf.
+        """
+        stale = [
+            f"{path}: no paragraph contains the needle {needle!r}"
+            for path, needle in _KNOWN_SHAPE_EXCLUSIONS
+            if not any(needle in paragraph.text for paragraph in _paragraphs_for_file(_REPO_ROOT / path))
         ]
-        assert list(_iter_uncited_claims(iter(paragraphs))) != []
+        assert not stale, "stale _KNOWN_SHAPE_EXCLUSIONS entries (file renamed, prose reworded, or text moved):\n  " + "\n  ".join(stale)
