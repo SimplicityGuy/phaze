@@ -478,17 +478,44 @@ untouched and corrected two of the details below:
   diagnostic-only too."* Written as a flat list of names, this enumeration silently lost `shas`
   once already; that is the fixed-enumeration trap named under the boundary table above, which is
   why the optional field is named *as* optional here.
-- **No verdict in this ledger holds test counts at all**, so a replayed verdict cannot supply a
-  pytest summary line **even in principle** here — not merely as a matter of what it prints. bh
-  never invokes a test runner: it exports `BH_TEST_REPORT_DIR` into every validation subprocess and
-  parses whatever JUnit XML appears there, and a hive opts in from its own test config
-  (`beadhive/test_report.py`). phaze's `addopts` is `-m 'not browser'` (`pyproject.toml`) with no
-  `--junitxml`, and the repo's only `--junitxml` is in `justfile`'s `repowise-coverage` recipe,
-  which writes a fixed `junit.xml` in cwd rather than into the drop zone and is not a gate recipe.
-  **This does not make a phaze verdict weaker.** `rc` is authoritative by design — `test_report.py`
-  states it as the first of three binding constraints: the report is *detail, never a verdict*, and
-  **may never upgrade one**; a missing report is explicitly "not a failure". The verdicts carry no
-  detail, not less authority.
+- **Whether a replayed verdict can carry test counts is a property of the LEDGER ENTRY, not of
+  replay — so check, rather than assuming either state.** bh never invokes a test runner: it exports
+  `BH_TEST_REPORT_DIR` into every validation subprocess and parses whatever JUnit XML turns up
+  there, and a hive opts in from its own test config (`beadhive/test_report.py`). An entry recorded
+  while the hive opts into nothing is **rc-only** and can supply no pytest summary line at all; one
+  recorded after it opts in carries a `report`. **Both shapes coexist in the same file**, because
+  the field is per-entry and nothing rewrites old entries. Measured 2026-08-25: **1 of 56** entries
+  carried `report` (`{"tests": 8041, "passed": 8038, "failures": 0, "errors": 0, "skipped": 3}`);
+  the other 55 were rc-only.
+
+  **The field tracks the TREE THAT WAS VALIDATED, which is what makes the ratio predictable rather
+  than merely unstable.** A clean-checkout gate validates the tree under test, so the JUnit opt-in
+  is in effect only where *that tree* carries it — bh's ingest behaves correctly whether or not a
+  report appears. The opt-in (`tests/bh_test_report.py`) reached `main` on **2026-08-25**: entries
+  recorded against trees predating it are rc-only, entries against trees descended from it carry
+  counts, and nothing rewrites the old ones. That is why both shapes sit in one file, and why the
+  ratio climbs from here rather than holding at the figure above.
+
+  **An absent `report` says nothing whatever about the run — only about the tree.** Measured on this
+  bead's own first gate, the cleanest available case because the suite indisputably ran: a green
+  **8027 passed** full-suite run, on a tree cut before the opt-in landed, recorded **rc-only**. A
+  seat that finds no counts on a replayed verdict and concludes "nothing ran" has it exactly
+  backwards. **Do not read the ratio forward** — it is one command:
+
+  ```bash
+  python3 -c "import json,subprocess;p=subprocess.check_output(['git','rev-parse','--git-common-dir'],text=True).strip()+'/bh-validation-ledger.json';d=json.load(open(p));print(sum('report' in e for e in d),'of',len(d),'entries carry counts')"
+  ```
+
+  **`--git-common-dir` is load-bearing, not fastidiousness — do not "simplify" it to `.git/`.**
+  Inside a bead worktree `.git` is an 87-byte **file** pointing at the real gitdir, so the obvious
+  path raises `NotADirectoryError: [Errno 20] Not a directory` (measured 2026-08-25) — it would
+  break in exactly the place a seat runs it, and work fine wherever you tested it. The ledger lives
+  in the main clone regardless of which worktree asks.
+
+  **None of this makes an rc-only verdict weaker.** `rc` is authoritative by design —
+  `test_report.py` states it as the first of three binding constraints: the report is *detail, never
+  a verdict*, and **may never upgrade one**; a missing report is explicitly "not a failure". An
+  rc-only verdict carries no detail, not less authority.
 - **The ENVIRONMENT is not in the key, and phaze does not use bh's mitigation for that.** bh
   re-derives the environment from the tree via `verify: true` worktree-init rules; phaze declares
   **none** (its three init rules carry no `verify` flag — only the homelab rig has one), so no
