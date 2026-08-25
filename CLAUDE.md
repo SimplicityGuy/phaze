@@ -577,6 +577,35 @@ quoted the pattern, and 1 when
 `cmd` SUCCEEDED but printed nothing matching — a status wrong in *both* directions, which is worse
 than one that is merely optimistic.
 
+**Redirection ORDER is the same family and fails more quietly (phaze-2ng7c).** `cmd 2>&1 > file`
+and `cmd > file 2>&1` are different commands, not two spellings of one. Redirections apply **left to
+right**, and `2>&1` duplicates whatever stdout is *at that moment* — the terminal — so the later
+`> file` re-points stdout alone and stderr keeps going to the screen. The correct order points
+stdout at the file first, and `2>&1` then duplicates the file. For a command that writes to
+**stderr**, the wrong order leaves the file **empty, with exit 0**. Measured 2026-08-25
+(phaze-pv3kk): `just --dry-run` prints the recipe on stderr, so `just --dry-run test-fast 2>&1 >
+recipe.sh` left `recipe.sh` empty while the recipe scrolled past on the terminal — it looked like it
+had worked, and the failure surfaced one step later when four string substitutions against the file
+all reported not-found. `> recipe.sh 2>&1` held **62** lines. **It still reproduces, and re-deriving
+it costs ten seconds** — re-measured 2026-08-25 in this repo against a *different* recipe:
+`just --dry-run check-fast 2>&1 > f` writes **0 bytes** and exits **0**, `> f 2>&1` writes **64**
+lines. Different recipe, different line count, same failure, so this is a property of the shell
+rather than of the recipe that happened to expose it. A masked pipeline gives a wrong status
+over real output; this gives **no output and a successful status**, so whatever runs next measures
+nothing and reports fine — the defect class this file already names. It is also **invisible in a
+transcript**: the command appears to run, prints what you expected, and exits 0.
+
+**And that paragraph will not, on its own, stop this happening (phaze-2ng7c).** The pipeline hazard
+above was already written down, and quoted in a message a few minutes earlier, when the same seat in
+the same hour wrote `... | grep ... | head -5` followed by `echo "exit $?"`. Prose about a silent
+hazard raises the odds of **recognising** it after the fact; it does not reliably **prevent** it.
+So: where a mechanical check exists, the check is the control — `tests/shared/test_validation_gate_recipes.py`
+and `tests/shared/test_cluster_wide_catalog_scoping.py` are what actually hold their rules, not the
+paragraphs describing them. Where none exists — an ad-hoc diagnostic nobody will ever lint — the
+rule that survives is **read the output rather than trust the status**: an empty file, a zero-length
+capture or a suspiciously short log *is* the finding. Recording that limitation beside the guidance
+is worth more than adding one more confident imperative to a list that has already failed once.
+
 ### Concurrent gates are bounded by headroom, not by isolation (phaze-rlshw)
 
 The isolation rules protect **correctness** and say nothing about **capacity** — and exceeding
