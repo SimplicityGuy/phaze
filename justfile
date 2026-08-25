@@ -393,12 +393,35 @@ test-validate:
 # longer than 5 minutes, it is selecting the right set of tests for the change." So there is no time
 # budget here on purpose. Selecting the RIGHT tests beats selecting a fixed number of them quickly.
 #
-# THREE OUTCOMES, and the middle one is the design. scripts/select_impacted_tests.py prints a verdict
-# and exits 0 / 3 / 1:
+# FOUR OUTCOMES. scripts/select_impacted_tests.py prints a verdict and exits 0 / 3 / 1 / 4:
 #
 #   run       the selector had coverage-backed answers -> run the floor plus the selection
 #   escalate  the selector CANNOT speak for this change -> run the FULL gate instead
 #   fail      something is wrong that neither running nor escalating fixes (e.g. a dirty worktree)
+#   docs      every changed path is prose -> run the PROSE FLOOR, not the suite (phaze-fqfds)
+#
+# THE DOCS PATH RUNS tests/docs_floor.txt AND NOTHING ELSE -- 193 tests, 9.4-9.9 s, against the
+# suite's ~21 minutes (measured 2026-08-25, seat `docsgate`). The operator's answer here was
+# PERMISSION, not a mandate: "for docs only changes, no tests are needed!", clarified as "if tests
+# run, ok; if they don't also fine" (durable record: bead phaze-fqfds's comments). So WHAT runs is
+# an engineering choice, revisable on engineering grounds.
+#
+# The choice: run every test module that reads tracked prose. Startup dominates at this size, so
+# the COMPLETE set costs ~4.5 s more than the three ADR/attribution guards alone -- and a curated
+# three would have sailed past a break in docs/runbook.md, docs/configuration.md or
+# docs/k8s-burst.md while announcing that "the prose guards ran". A gate whose output overstates
+# its coverage is the defect this repo has already paid for twice. Running NOTHING was the other
+# real option; 9.6 s was not a saving worth the phaze-f70y9 gap, given CI's `test` job is gated on
+# `detect-changes.outputs.code-changed == "true"` and skips on a docs-only push too.
+#
+# tests/docs_floor.txt is DERIVED: tests/shared/test_fast_gate.py fails the build when a test
+# module references a prose path and is missing from it. Do not hand-prune it.
+#
+# The classification is a strict ALLOW-LIST -- `.md` only, only at the repo root or under docs/,
+# .planning/ or design/, only at mode 100644, every entry of the diff, renames on both ends. A
+# negation ("not a .py file") would hand the docs path to this justfile, to pyproject.toml, to
+# every YAML and every template. Read is_docs_path()/docs_only() in that script and the allow-list
+# section of tests/shared/test_fast_gate.py before widening any of it.
 #
 # ESCALATION IS NOT A FALLBACK BOLTED ON FOR SAFETY -- it is the only honest answer to the states
 # `repowise impacted-tests` reports with EXIT 0 AND AN EMPTY SELECTION: no index (the default in a
@@ -422,7 +445,17 @@ test-validate:
 test-fast:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ -z "${TEST_DATABASE_URL:-}" ]; then
+
+    # Provisioning is DEFERRED into the branches that actually run pytest (phaze-fqfds), so a
+    # selector refusal costs no container start at all. The escalation branch needs no call
+    # either -- `just test-validate` runs this same derivation, so it lands on the same seat name
+    # for this worktree. The docs branch DOES call it: those tests touch no database, but
+    # `pytest_sessionstart` still takes the session lock, and a transcript whose header reads
+    # `unlocked (Postgres unreachable or bypass set)` is one CLAUDE.md trains readers to distrust.
+    ensure_seat() {
+        if [ -n "${TEST_DATABASE_URL:-}" ]; then
+            return 0
+        fi
         just test-db
         seat="$(bash scripts/derive-validate-seat-name.sh)"
         echo "🪑 No TEST_DATABASE_URL exported; provisioning this worktree's own seat '${seat}'." >&2
@@ -434,7 +467,7 @@ test-fast:
             --redis-port "{{test_redis_port}}" \
             --redis-capacity "{{test_redis_databases}}" \
             --origin "$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")")"
-    fi
+    }
 
     # Kept INSIDE the worktree, which is per-bead by construction (phaze-rlshw): the scratchpad is
     # per-SESSION, so concurrent seats of one dispatch share it and would clobber each other's
@@ -444,7 +477,7 @@ test-fast:
     # `|| rc=$?` rather than a bare call: under `set -e` a nonzero exit would abort before the
     # verdict could be read, and exit 3 is a normal, expected outcome rather than an error.
     rc=0
-    verdict="$(uv run python scripts/select_impacted_tests.py --floor tests/fast_floor.txt --out "$selection")" || rc=$?
+    verdict="$(uv run python scripts/select_impacted_tests.py --floor tests/fast_floor.txt --docs-floor tests/docs_floor.txt --out "$selection")" || rc=$?
     echo "🎯 selector: ${verdict}"
 
     case "$rc" in
@@ -454,6 +487,7 @@ test-fast:
             echo "❌ the selector reported success over an empty selection — refusing to report a green gate." >&2
             exit 1
         fi
+        ensure_seat
         started=$SECONDS
         uv run pytest "${fast_args[@]}"
         echo "⏱️  just test-fast: ${#fast_args[@]} selected in $((SECONDS - started))s. NOT the full suite — \`just check\` is."
@@ -476,6 +510,33 @@ test-fast:
             "${verdict#escalate }" \
             >> "$(git rev-parse --git-common-dir)/fast-gate-escalations.log" || true
         just test-validate
+        ;;
+      4)
+        # Loud for the same reason the escalation is: this arm deliberately does NOT run the suite,
+        # and the only thing separating a narrowed gate from the phaze-jnj90 defect is that it says
+        # so in its own transcript. Do not quieten it, and do not prune the floor to "just the ADR
+        # guards" -- see the header above for why the curated version was measured and rejected.
+        echo "📄 DOCS-ONLY: ${verdict#docs }"
+        echo "   Running tests/docs_floor.txt -- every test module that reads tracked prose -- and"
+        echo "   NOT the suite. Ruff and mypy ran above. CI will not re-check this either: its test"
+        echo "   job is gated on code-changed and skips on a docs-only push."
+        mapfile -t docs_args < "$selection"
+        if [ "${#docs_args[@]}" -eq 0 ]; then
+            echo "❌ the prose floor is empty — refusing to report a green gate over zero tests." >&2
+            exit 1
+        fi
+        ensure_seat
+        started=$SECONDS
+        uv run pytest "${docs_args[@]}"
+        echo "⏱️  just test-fast: ${#docs_args[@]} prose-guard module(s) in $((SECONDS - started))s. NOT the full suite."
+        # Durable, same argument as the escalation log: "how often does this gate narrow itself"
+        # is a trend question, and a per-run transcript cannot answer it. `.git/` is shared by
+        # every worktree of this clone and never tracked, so it outlives the bead worktree.
+        printf '%s\t%s\t%s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "$(git rev-parse --abbrev-ref HEAD)" \
+            "${verdict#docs }" \
+            >> "$(git rev-parse --git-common-dir)/fast-gate-docs-runs.log" || true
         ;;
       *)
         echo "❌ the test selector failed (exit ${rc}); no verdict was produced and nothing was run." >&2

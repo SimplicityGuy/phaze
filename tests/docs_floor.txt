@@ -1,0 +1,28 @@
+# THE PROSE FLOOR -- what a documentation-only diff runs, and all it runs (phaze-fqfds).
+#
+# `scripts/select_impacted_tests.py` returns the `docs` verdict (exit 4) when every path in the
+# diff is prose, and `just test-fast` runs exactly this list instead of the ~21-minute suite.
+# Measured 2026-08-25 on seat `docsgate`: 193 tests, 9.4-9.9 s.
+#
+# THIS FILE IS DERIVED, NOT CURATED. `tests/shared/test_fast_gate.py` scans every test module for a
+# reference to a tracked prose path and fails the build if one is missing here, so a prose guard
+# written next month joins this floor or breaks the gate. The scan deliberately OVER-matches: a
+# module that merely mentions `docs/` costs a few milliseconds, while one that reads prose and is
+# absent from this file is a silent hole in the only gate a docs bead traverses.
+#
+# So do not hand-prune it. If a module here looks irrelevant, the fix is to stop it referencing a
+# prose path, not to delete the line -- and if you are ADDING one, add it because the scan told you
+# to, not because it felt related.
+#
+# Sorted, one path per line. `#` comments and blank lines are ignored.
+tests/agents/deployment/test_agent_compose.py
+tests/agents/deployment/test_k8s_runbook.py
+tests/analyze/services/backends/test_kube_env_contract.py
+tests/shared/core/test_docs_beui03.py
+tests/shared/core/test_docs_ia_current.py
+tests/shared/routers/test_pipeline_analysis_bind_param_cap.py
+tests/shared/test_adr_citation_resolution.py
+tests/shared/test_adr_numbering.py
+tests/shared/test_change_gate.py
+tests/shared/test_fast_gate.py
+tests/shared/test_operator_attribution_citations.py

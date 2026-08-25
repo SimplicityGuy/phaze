@@ -11,18 +11,107 @@ degraded state as a *warning on stderr and exit 0*. Piped naively into pytest, e
 below runs zero tests and reports green, which is the ``phaze-jnj90`` defect exactly: a gate that
 exits 0 having measured nothing. So this script's job is to turn each of them into a verdict.
 
-THREE VERDICTS, on stdout, with the exit code carrying the same thing so a caller can branch on
+FOUR VERDICTS, on stdout, with the exit code carrying the same thing so a caller can branch on
 either:
 
     run <n>           exit 0   -- a measured selection of n node ids was written to --out
     escalate <why>    exit 3   -- the selector cannot speak for this change; run the FULL suite
     fail <why>        exit 1   -- something is wrong that neither running nor escalating fixes
+    docs <n>          exit 4   -- every changed path is prose; run the PROSE GUARDS, not the suite
+
+Exit 4 rather than 2 is deliberate: ``argparse`` exits **2** on a usage error, so a mistyped flag
+would print a usage message and hand the caller the code that means "do not run the suite". A
+weakened gate must never be reachable by accident -- that is the ``phaze-jnj90`` defect with the
+argument parser holding the knife.
 
 ESCALATE IS NOT A FAILURE AND IT IS NOT "RUNNING THE GUESS". The guesses are discarded; the full
 suite replaces them. It is what repowise's own docstring prescribes for its lower tiers ("Nothing
 said anything. Run the full suite."), and it is the only response that is never weaker than the gate
 it replaces. A hard failure would leave the seat with no path except running the full suite by
 hand -- the same runtime, one manual step, and an invitation to skip it.
+
+=== THE DOCS-ONLY PATH (phaze-fqfds) ===
+
+A Markdown file has no coverage rows, so before this it demoted to ``unknown_files`` and the whole
+diff ESCALATED -- correct for an unmeasurable *code* file, exactly wrong for a file no unit test
+executes. Measured 2026-08-25: six prose-only beads paid a ~21-minute full suite each, about two
+hours, plus a re-run per rebase (a tree change invalidates the verdict ledger's key).
+
+OPERATOR DECISION, 2026-08-25. Question as put: whether a docs-only change should run no tests at
+all, or no tests EXCEPT the docs-reading guards. Answer as given, verbatim: *"for docs only
+changes, no tests are needed!"*, clarified when it was read back as a prohibition: *"i answered
+phaze-fqfds by stating if tests run, ok; if they don't also fine."* Durable record: bead
+``phaze-fqfds``'s comments.
+
+**That answer is PERMISSION, not a mandate, and the distinction is the whole reason this file says
+so.** "No tests are needed" lifts the requirement to run the suite; it does not forbid running
+anything. An earlier draft of this docstring recorded it as a prohibition -- accurate quotation,
+right date, durable record present, and still a misstatement of what was decided. It was caught
+only because the operator read it back. That is ADR-0012 rule 2's own failure mode occurring inside
+the record that rule governs, and the lesson generalises past this bead: **a correctly formatted
+citation can still misstate the decision, and the only check is the person who decided reading it
+back.** So what runs here is an ENGINEERING choice made under that permission, and it can be
+revisited on engineering grounds without going back to the operator.
+
+**THE CHOICE MADE, AND WHY IT IS NOT THE OBVIOUS ONE.** A docs-only diff runs the PROSE FLOOR --
+``tests/docs_floor.txt``, every test module that reads tracked prose -- and nothing else. Measured
+2026-08-25 on seat ``docsgate``: the floor is **193 tests in 9.4-9.9 s** against the full suite's
+~21 minutes, and against **24 tests in 5.12 s** for the three guards this was first scoped to.
+Startup dominates at that size, so the COMPLETE set costs about 4.5 s more than a curated three and
+under 1% of what escalating costs.
+
+That measurement is what rules out the middle option. Curating three modules --
+``test_adr_citation_resolution.py``, ``test_operator_attribution_citations.py``,
+``test_adr_numbering.py`` -- would have been the worst of the three choices, not a compromise:
+``docs/runbook.md``, ``docs/configuration.md`` and ``docs/k8s-burst.md`` are ALSO guarded, by
+``test_docs_beui03.py``, ``test_docs_ia_current.py`` and ``test_k8s_runbook.py`` (which parses the
+runbook's YAML fences), and a curated three would sail past a break in any of them while the
+transcript announced that "the prose guards ran". A gate whose output overstates its own coverage
+is the defect this repo has paid for twice.
+
+Running NOTHING was the other real option and is defensible -- it is simpler, and it has no
+manifest to drift. It was rejected because 9.6 s is not a saving worth having, and because the
+gap it opens is not hypothetical: ``test_adr_citation_resolution.py`` exists because of
+``phaze-f70y9``, where eight bare "ADR-0014" citations came to resolve to the wrong document after
+a renumber and were caught once, by a human reading prose. CI does not close it either --
+``ci.yml``'s ``test`` job is gated on ``detect-changes.outputs.code-changed == 'true'`` and skips
+on a docs-only push, leaving only pre-commit and secret scanning. Without the floor, a bad citation
+lands on ``main`` and surfaces as a red gate in the NEXT bead's transcript, on prose that bead did
+not write.
+
+**THE MANIFEST IS DERIVED, NOT CURATED, WHICH IS WHAT ANSWERS THE DRIFT OBJECTION.**
+``tests/shared/test_fast_gate.py`` scans every test module for a reference to a tracked prose path
+and fails the build if one is missing from the floor, so a prose guard added next month joins the
+floor or breaks the gate. It over-matches on purpose: a module that merely MENTIONS ``docs/`` costs
+a few milliseconds in the floor, while one that reads prose and is absent from it is a silent hole.
+
+**THE CLASSIFIER IS A STRICT ALLOW-LIST, AND THAT IS THE SUBSTANCE OF THE CHANGE.** "Not a ``.py``
+file" would be catastrophic here: ``justfile``, ``pyproject.toml``, every YAML, every Jinja
+template and every shell script are ALSO outside the coverage map and are all executable. Three
+rules, each of which fails closed:
+
+* **Suffix**: exactly ``.md``. Not ``.txt``, not ``LICENSE``, not "everything under ``docs/``" --
+  ``docs/`` holds ``.py`` benchmarks, ``.sh`` drivers, ``.patch`` files and ``.html`` prototypes.
+* **Location**: a root-level ``*.md`` (``CLAUDE.md``, ``README.md``, ``CONVENTIONS.md``) or one
+  under ``docs/``, ``.planning/`` or ``design/``. ``src/``, ``tests/``, ``scripts/`` and
+  ``services/`` are excluded by construction, which is the ``phaze-tlo10`` lesson the CI classifier
+  learned the hard way: ``src/phaze/prompts/naming.md`` is loaded at runtime by
+  ``load_prompt_template()`` and depended on for its exact placeholder lines. It is code that
+  happens to end in ``.md``.
+* **Mode**: every non-empty mode in the diff record must be ``100644``. That is what rejects a
+  chmod to ``100755``, a symlink (``120000``), a submodule (``160000``) and a type change -- none
+  of which ``--name-only`` can even show you.
+
+And two whole-diff rules: **every** entry must qualify (one ``.py`` among twenty ``.md`` is a code
+change), and an **empty** diff is not a docs change -- it falls through to the normal path, where
+the always-run floor still runs.
+
+This is deliberately NOT ``scripts/classify-changed-files.sh``, the CI skip gate. That one answers
+a different question with a looser allow-list (all of ``docs/`` whatever the extension, plus
+``*.txt`` and ``LICENSE``) over a caller-supplied path list that carries no modes. Sharing it would
+import its looseness into the last gate before ``main`` and make widening one silently widen the
+other. ``tests/shared/test_fast_gate.py`` pins this allow-list; ``tests/shared/test_change_gate.py``
+pins that one.
 
 === THE SIX WAYS THIS GOES WRONG, ALL MEASURED 2026-08-25 AGAINST repowise 0.45.0 ===
 
@@ -108,6 +197,36 @@ GUESS_INFERENCE = frozenset({"call-graph", "import-graph", "filename-pattern"})
 # The coverage-context suffix on every mapped test id (see failure mode E).
 CONTEXT_SUFFIXES = ("|run", "|setup", "|teardown")
 
+# ---------------------------------------------------------------------------------------------
+# The docs allow-list (phaze-fqfds). Every rule here is POSITIVE: a path is documentation only if
+# it satisfies all of them. A negation ("not a .py file") would hand the skip to the justfile, to
+# pyproject.toml, to every YAML and every Jinja template.
+# ---------------------------------------------------------------------------------------------
+
+DOCS_SUFFIX = ".md"
+
+# Root-level *.md is allowed separately (CLAUDE.md, README.md, CONVENTIONS.md). These are the only
+# DIRECTORIES prose lives in here. src/, tests/, scripts/ and services/ are absent on purpose:
+# src/phaze/prompts/naming.md is runtime-loaded content, not documentation (phaze-tlo10).
+DOCS_ROOTS: tuple[str, ...] = ("docs/", ".planning/", "design/")
+
+# A regular, non-executable blob. Anything else in a diff record -- 100755 (chmod +x), 120000
+# (symlink), 160000 (submodule) -- is not a prose edit whatever the path says.
+DOCS_MODE = "100644"
+EMPTY_MODE = "000000"
+
+# Diff statuses this classifier is willing to reason about. `T` (type change) is deliberately
+# absent, and so is anything unlisted: `U` (unmerged), `X` (unknown) and whatever a future git
+# adds all land on "cannot classify" -> not docs -> the normal path.
+CLASSIFIABLE_STATUSES = frozenset({"A", "C", "D", "M", "R"})
+
+# `git diff --raw` emits two paths for a rename or a copy and one for everything else.
+TWO_PATH_STATUSES = frozenset({"C", "R"})
+
+# The verdict -> exit code map. `docs` is 4 and NOT 2 because argparse exits 2 on a usage error:
+# a mistyped flag must not be able to mean "do not run the suite".
+VERDICT_EXIT = {"escalate": 3, "fail": 1, "docs": 4}
+
 
 class Refuse(Exception):
     """Raised with a verdict this script must report instead of a selection."""
@@ -126,8 +245,12 @@ def _resolve(tool: str) -> str:
     return found
 
 
-def _git(repo: Path, *args: str) -> str:
-    """Run git in ``repo`` and return stdout, raising ``Refuse`` on a nonzero exit."""
+def _git(repo: Path, *args: str, strip: bool = True) -> str:
+    """Run git in ``repo`` and return stdout, raising ``Refuse`` on a nonzero exit.
+
+    ``strip=False`` is for ``--raw -z``, whose records are NUL-delimited: stripping would be
+    harmless today but the caller parses field-by-field and should not depend on that.
+    """
     result = subprocess.run(  # noqa: S603  # nosec B603 - resolved executable, literal subcommands
         [_resolve("git"), "-C", str(repo), *args],
         check=False,
@@ -136,7 +259,7 @@ def _git(repo: Path, *args: str) -> str:
     )
     if result.returncode != 0:
         raise Refuse("fail", f"git {' '.join(args)} failed: {result.stderr.strip()}")
-    return result.stdout.strip()
+    return result.stdout.strip() if strip else result.stdout
 
 
 def _repowise_json(main_clone: Path, *args: str) -> dict[str, Any]:
@@ -172,6 +295,81 @@ def strip_context(test_id: str) -> str:
         if test_id.endswith(suffix):
             return test_id[: -len(suffix)]
     return test_id
+
+
+def is_docs_path(path: str) -> bool:
+    """True only for a Markdown file in a directory this repo keeps prose in (phaze-fqfds).
+
+    PURE. Three positive conditions, no negation anywhere:
+
+    * the suffix is exactly ``.md`` -- so ``.txt``, ``LICENSE`` and every non-Markdown file under
+      ``docs/`` (which holds ``.py`` benchmarks, ``.sh`` drivers, ``.patch`` files and ``.html``
+      prototypes) all fail;
+    * it is a root-level file, or lives under one of :data:`DOCS_ROOTS`;
+    * it contains no ``..`` component -- git does not emit one, and a classifier that would accept
+      ``docs/../src/phaze/prompts/naming.md`` is one rewrite of its caller away from doing so.
+
+    ``src/``, ``tests/``, ``scripts/`` and ``services/`` are not in :data:`DOCS_ROOTS`, which is the
+    phaze-tlo10 lesson stated positively: a doc-extension file inside a shipped tree is code.
+    """
+    if not path.endswith(DOCS_SUFFIX) or path == DOCS_SUFFIX:
+        return False
+    if ".." in path.split("/"):
+        return False
+    if "/" not in path:
+        return True
+    return path.startswith(DOCS_ROOTS)
+
+
+def docs_only(raw_diff: str) -> list[str] | None:
+    """Return the changed paths if EVERY diff record is a prose edit, else ``None`` (phaze-fqfds).
+
+    PURE: takes the stdout of ``git diff --raw -M -z <base> <head>`` and no other input, so
+    ``tests/shared/test_fast_gate.py`` exercises the shipped rule over synthetic records rather
+    than restating it.
+
+    ``--raw`` rather than ``--name-only`` because the modes are half the classification: an empty
+    ``--name-only`` line cannot tell a prose edit from ``chmod +x``, a file replaced by a symlink,
+    or a submodule pointer moved. Each record is ``:<srcmode> <dstmode> <srcsha> <dstsha>
+    <status>`` followed by one path, or two for a rename or a copy -- and for a rename BOTH ends
+    must be prose, so moving a file out of ``docs/`` into ``src/`` is a code change.
+
+    ``None`` is returned for anything that does not qualify AND for anything that cannot be parsed
+    -- a merge's combined record, a truncated stream, an unrecognised status. It is also returned
+    for an EMPTY diff: "no paths changed" is not "all changed paths are prose", and the caller's
+    normal path still runs the always-run floor. Fail closed in every direction.
+    """
+    tokens = [t for t in raw_diff.split("\0") if t]
+    if not tokens:
+        return None
+
+    paths: list[str] = []
+    index = 0
+    while index < len(tokens):
+        header = tokens[index]
+        # `::` is a combined (merge) record, which carries a different field count entirely.
+        if not header.startswith(":") or header.startswith("::"):
+            return None
+        fields = header[1:].split()
+        if len(fields) != 5:
+            return None
+        src_mode, dst_mode, _src_sha, _dst_sha, status = fields
+        letter = status[:1]
+        if letter not in CLASSIFIABLE_STATUSES:
+            return None
+        expected_paths = 2 if letter in TWO_PATH_STATUSES else 1
+        record_paths = tokens[index + 1 : index + 1 + expected_paths]
+        if len(record_paths) != expected_paths:
+            return None
+        index += 1 + expected_paths
+
+        if any(mode not in {DOCS_MODE, EMPTY_MODE} for mode in (src_mode, dst_mode)):
+            return None
+        if not all(is_docs_path(candidate) for candidate in record_paths):
+            return None
+        paths.extend(record_paths)
+
+    return sorted(set(paths))
 
 
 def assert_clean_worktree(repo: Path) -> None:
@@ -266,19 +464,39 @@ def classify(report: dict[str, Any]) -> tuple[list[str], set[str]]:
     return deduped, covered_sources
 
 
+def prose_paths(repo: Path, base_ref: str) -> list[str] | None:
+    """Return the changed paths if this diff is documentation-only, else ``None`` (phaze-fqfds).
+
+    Called BEFORE :func:`select` and doing its own :func:`assert_clean_worktree` first, and both
+    halves of that sentence are load-bearing:
+
+    * **Before** ``select``, because ``select`` refuses on ``no_index`` -- the DEFAULT state in a bh
+      worktree, since the coverage map is keyed by repo path and lives in the main clone. Asking
+      repowise first means every prose diff escalates on a condition that has nothing to do with
+      it, which is exactly the ~21 minutes this bead exists to remove.
+    * **After the dirty-tree refusal**, because this reads a COMMITTED range (failure mode F) and
+      cannot see an uncommitted ``.py`` edit. Deciding "prose only" over a dirty tree would weaken
+      the gate against code it never looked at.
+    """
+    assert_clean_worktree(repo)
+    head = _git(repo, "rev-parse", "HEAD")
+    base = _git(repo, "merge-base", base_ref, "HEAD")
+    return docs_only(_git(repo, "diff", "--raw", "-M", "-z", base, head, strip=False))
+
+
 def select(repo: Path, base_ref: str) -> tuple[list[str], list[str]]:
     """Return ``(node_ids, notes)`` for the change, or raise ``Refuse``."""
     notes: list[str] = []
     assert_clean_worktree(repo)
 
+    head = _git(repo, "rev-parse", "HEAD")
+    base = _git(repo, "merge-base", base_ref, "HEAD")
+    notes.append(f"range: {base[:8]}..{head[:8]} (vs {base_ref})")
+
     main_clone = Path(_git(repo, "rev-parse", "--git-common-dir")).resolve().parent
     if not (main_clone / ".repowise").is_dir():
         raise Refuse("escalate", f"no repowise index at {main_clone} — run `repowise init` there")
     notes.append(f"index: {main_clone}")
-
-    head = _git(repo, "rev-parse", "HEAD")
-    base = _git(repo, "merge-base", base_ref, "HEAD")
-    notes.append(f"range: {base[:8]}..{head[:8]} (vs {base_ref})")
 
     status = _repowise_json(main_clone, "coverage", "status")
     test_map = status.get("test_map") or {}
@@ -322,16 +540,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base", default="origin/main", help="integration ref to select against (default: origin/main)")
     parser.add_argument("--repo", default=".", help="worktree root (default: cwd)")
     parser.add_argument("--floor", default="tests/fast_floor.txt", help="always-run floor manifest")
+    parser.add_argument("--docs-floor", default="tests/docs_floor.txt", help="the prose floor: what a documentation-only diff runs")
     parser.add_argument("--out", required=True, help="file to write the pytest arguments to, one per line")
     args = parser.parse_args(argv)
 
     repo = Path(args.repo).resolve()
     try:
         floor = read_floor(repo / args.floor)
+        docs_floor = read_floor(repo / args.docs_floor)
+        prose = prose_paths(repo, args.base)
+        if prose is not None:
+            # A verdict of its own rather than a `run` over a swapped floor: the caller has to be
+            # able to say in its transcript that the SUITE did not run, and a `run 11` line reads
+            # like any other small selection. `read_floor` has already refused an empty manifest,
+            # so this can never be the zero-test path by accident.
+            Path(args.out).write_text("\n".join(docs_floor) + "\n", encoding="utf-8")
+            shown = ", ".join(prose[:5]) + (" \u2026" if len(prose) > 5 else "")
+            print(f"docs {len(docs_floor)} prose-guard module(s) for {len(prose)} documentation path(s): {shown}")  # noqa: T201
+            return VERDICT_EXIT["docs"]
         node_ids, notes = select(repo, args.base)
     except Refuse as refusal:
         print(f"{refusal.verdict} {refusal.reason}")  # noqa: T201
-        return {"escalate": 3, "fail": 1}[refusal.verdict]
+        return VERDICT_EXIT[refusal.verdict]
 
     for note in notes:
         print(f"  {note}", file=sys.stderr)  # noqa: T201
