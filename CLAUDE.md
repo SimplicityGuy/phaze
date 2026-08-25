@@ -608,7 +608,29 @@ lost. Nothing in Postgres, Redis or git was corrupted — per-seat isolation hel
 
 **The convention:** write scratch output under `<scratchpad>/<bead-id>/`, or simply inside the
 bead's own worktree, which is per-bead by construction and needs no new convention at all. Prefer
-the worktree for gate logs.
+the worktree for gate logs — **and name that log `*.log`** (phaze-5c0o1). Preferring the worktree is
+safe only because `.gitignore:83` carries `*.log`: `git status --porcelain` respects `.gitignore`,
+so `check.log` in the worktree is invisible, while `check.out`, `gate.txt` or any name matching no
+ignore pattern is untracked, dirty, and refused by `just check-fast`'s selector
+(`scripts/select_impacted_tests.py::assert_clean_worktree`) **before it runs anything**:
+
+> the worktree has uncommitted changes, which the main clone's index cannot see. Commit first (that
+> is already the dispatch protocol), then re-run.
+
+That message names uncommitted *changes* and will not read as "your log file" — recognise it
+anyway, because the cost is a gate that **measured nothing**, not an untidy directory. It is also
+loud and lands before collection, so a run that produced any pytest output was not stopped by this.
+
+**Prescribing the name rather than the check is deliberate.** The general rule — "run `git
+check-ignore -v <name>` on whatever you are about to write" — is strictly more correct and survives
+`.gitignore` moving, but it is a procedure to remember before an *incidental* action, which is the
+same shape as the trap this whole section documents, and it will be skipped. `*.log` is a one-word
+rule with no judgement in it, and misremembering it fails loudly and immediately rather than
+silently. Keep `git check-ignore -v <name>` as the escape hatch for a seat that wants a different
+name — or that needs to re-establish the claim above, since the safety is a property of
+`.gitignore`, not of the filename. Fixing the tension in the selector instead — having it ignore
+untracked files, or name the offending paths in its refusal — was considered here and left to a
+code bead.
 
 > **Operator decision 2026-08-22.** Question as put: *"the shared-scratchpad-as-'session-specific'
 > trap will recur on every future fan-out, and it produced a wasted gate run and two near-misses in
