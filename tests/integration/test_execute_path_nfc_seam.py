@@ -175,7 +175,11 @@ async def _run_execute_path_report(
     item = ExecuteBatchProposalItem(
         proposal_id=proposal_id,
         file_id=file_id,
-        original_path=f"{_SCAN_ROOT}/incoming/set-01.mp3",
+        # `source_path`, NOT `original_path` (phaze-xzjrr renamed it on THIS model only). It carries
+        # FileRecord.current_path -- where the file is NOW -- so it names the move SOURCE. The
+        # FileRecord above still takes `original_path`, which is the ingest column and a different
+        # thing entirely; three other payload models in agent_tasks.py keep that name correctly.
+        source_path=f"{_SCAN_ROOT}/incoming/set-01.mp3",
         proposed_path="performances/sets",
         proposed_filename=_FILENAME_NFD,
     )
