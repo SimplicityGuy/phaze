@@ -25,10 +25,16 @@ uv run mypy .              # Type check
 uv run pre-commit run --all-files # Run all pre-commit hooks
 
 just test                  # Fast LOCAL ITERATION only: -x -q. Not a gate — see below
-just check                 # THE per-bead gate: lint + typecheck + the full suite WITH
-                           # coverage (95% LINE floor enforced). What `bh work check`/`submit` run
-just check-all             # THE molecule / merge-to-main gate: every pre-commit hook + the
-                           # same suite. What `bh work finish` runs
+just check-fast            # THE per-bead gate (phaze-pv3kk): lint + typecheck + the tests
+                           # repowise says the change touches, escalating to the full suite
+                           # when it can't tell. What `bh work check`/`submit`/`merge` run
+just check                 # lint + typecheck + the full suite WITH coverage (95% LINE floor
+                           # enforced). No longer any per-bead boundary's default; runs as
+                           # `check-fast`'s escalation target, as `postland`/`union`'s recipe,
+                           # and by hand
+just check-all             # THE molecule gate: every pre-commit hook + the full suite. What
+                           # `bh work finish` runs — no boundary an AD-HOC bead traverses runs
+                           # a full suite; `molecule`/`postland`/`union` still do, see below
 just branch-check          # Per-bead BRANCH-coverage gate: fail if this bead lowered branch
                            # coverage on any src/phaze file it touched. Free after any `check`
 just test-db               # Bring up the shared test Postgres (5433) + Redis (6380) harness
@@ -40,24 +46,30 @@ just test-db-for <name>    # Carve an isolated seat out of that harness — REQU
 > skip, so a green run means less than it looks like. Check the database line in the pytest
 > header before trusting any result.
 
-### Which commands are gates, and which only look like one (phaze-jnj90 / phaze-nqawu)
+### Which commands are gates, and which only look like one (phaze-jnj90 / phaze-nqawu / phaze-pv3kk)
 
 Read this before citing any command as evidence in a bead. Before 2026-08-21 `just check` ran no
 coverage and `bh work check`/`submit` ran no tests at all, and that gap produced epic
-phaze-1i0h6's four-of-four unevidenced validation claims.
+phaze-1i0h6's four-of-four unevidenced validation claims. **Since 2026-08-25 (phaze-pv3kk), every
+per-bead boundary — `check`, `submit`, `merge`, `merge-main` — stopped running the full suite too.**
+They now run a change-driven subset selected by repowise's per-test coverage map (`just
+check-fast`), escalating to the full suite whenever that map cannot speak for the change.
+Three boundaries still run a full suite unconditionally or near it — `molecule`, `postland` and
+`union` — but **no boundary an ad-hoc bead traverses does**: `check`, `submit`, `merge` and
+`merge-main` are all fast, and an ad-hoc bead never reaches `molecule`/`postland`/`union` at all.
+Citing the pre-2026-08-25 shape of this table as current evidence is the phaze-jnj90 / phaze-nqawu
+failure recurring under a new cause: a change-selected run cited as though it were a full-suite one.
+
+#### Recipes
 
 | Command | ruff | mypy | tests | coverage | pytest header | evidence |
 |---------|------|------|-------|----------|---------------|----------|
 | `just test` | — | — | yes, **`-x`: stops at the first failure** | no | **no (`-q`)** | **I** — recipe text via `just --dry-run test`; never executed |
 | `just test-cov` | — | — | whole suite | yes, 95% line floor | yes | **M** — run 2026-08-21: 7323 passed, 98.78%, `real 1193.88` |
-| `just test-validate` | — | — | whole suite | yes, 95% line floor | yes | **M** — executed as `check`'s delegate in the red-gate run below |
-| `just check` | yes | yes | whole suite | yes, 95% line floor | yes | **M** — the red-gate run below |
-| `just check-all` | yes (via pre-commit) | yes (via pre-commit) | whole suite | yes, 95% line floor | yes | **I** — never executed as one command; measures itself at the next `bh work finish` |
-| `bh work check <id>` | yes | yes | whole suite | yes, 95% line floor | yes | **M** — red-gate run 2026-08-21: a deliberately failing test gave `1 failed, 7329 passed` and **exit 1**. Unconditional: `check` **writes** the verdict ledger, it never reuses it (phaze-qsyc0) |
-| `bh work submit <id>` | yes\* | yes\* | whole suite\* | yes\* | yes\* | **M** — phaze-jnj90/phaze-nqawu's own group submit, 2026-08-21. **\*ONLY ON A LEDGER MISS** — on a hit it runs NOTHING and replays a cached verdict; see "A gate's M is a property of a RUN" below |
-| `bh work finish <epic>` (= `merge --molecule`) | via pre-commit | via pre-commit | whole suite | yes, 95% line floor | yes | **I** — config + `bh work merge --help` |
-| `bh work merge --group <ids>` | yes | yes | whole suite | yes, 95% line floor | yes | **I** — config + `bh work merge --help` |
-| `bh work merge <id>` (single bead → molecule) | **no — see below** | no | no | no | no | **I** — config + `bh work merge --help` |
+| `just test-validate` | — | — | whole suite | yes, 95% line floor | yes | **M** — executed as `check`'s delegate in the red-gate run below, and as `check-fast`'s escalation delegate |
+| `just check` | yes | yes | whole suite | yes, 95% line floor | yes | **M** — the red-gate run below. Since phaze-pv3kk this is no longer any per-bead boundary's default recipe — it survives as the `postland`/`union` recipe, as `check-fast`'s escalation target, and as the manual escape hatch |
+| `just check-all` | yes (via pre-commit) | yes (via pre-commit) | whole suite | yes, 95% line floor | yes | **I** — never executed as one command; measures itself at the next `bh work finish`. The only *routinely traversed* full-suite boundary — `postland`/`union` (below) also run a full suite, but conditionally |
+| `just check-fast` | yes | yes | **change-selected subset + a fixed always-run floor**, escalating to the whole suite when the coverage map cannot speak for the change | no on a selected run (a subset's figure is meaningless against the 95% floor and would overwrite the artifact `just branch-check` reads); the full 95% floor on an escalated run, because escalation delegates to `just test-validate` | yes | **M** — measured 2026-08-25 (dev/fastsuite): RUN verdict 417 passed, 1 skipped, 35.57s; ESCALATE verdict on this bead's (phaze-pv3kk's) own diff — 5 changed files with no coverage-map rows — exit 3, deferring to `just check`'s 19:37; FAIL verdict on a dirty worktree, exit 1 |
 
 **M** = the command itself was executed and its transcript read; the cell says which run.
 **I** = inferred from the phaze block in `~/.beadhive/config.yaml` plus `bh`'s documented phase
@@ -77,22 +89,125 @@ the composition can fail while each part works. It is the same shape as
 the artifact's real consumer, not the tool that produced it), and it will recur in this repo
 wherever a change argues it is equivalent because its parts are.
 
-**`bh work merge <id>` re-validates nothing**, and that is by design rather than by oversight:
-`work.validation` defaults to `relaxed`, which re-tests at submit and at assembled-molecule
-pre-land only, on the reasoning that submit already validated this exact tip. What it does not
-cover is a bead that was green in isolation and red once combined — `finish` is the boundary that
-catches that, and it is why the `molecule` override exists. Set `validation: conservative` in the
-phaze block if a molecule ever needs re-testing after every per-bead merge.
+#### Boundary → recipe, after phaze-pv3kk — all seven boundaries
 
-`bh work check` / `submit` / `finish` run tests **because** `~/.beadhive/config.yaml` gives the
-phaze rig its own `work.validate_cmd: just check` and a `work.validate` block pointing the
-`molecule` and `merge-main` boundaries at `just check-all`. That file is **outside this repo and
-shared by every hive on the machine**; the global default at the bottom of it is still
-`sh -c "just lint && just typecheck"`, which runs no tests. If phaze's own block is ever removed,
-every row above silently reverts to lint+typecheck while `submit` keeps printing "validated from
-a pristine checkout" — so a green submit on a machine whose config you have not checked is not
-evidence. `tests/shared/test_validation_gate_recipes.py` guards the justfile half of this; nothing
-in this repo can guard the config half.
+Every row below carries **two different kinds of evidence, kept apart on purpose** (dev/fastsuite,
+verified independently by the dispatcher, 2026-08-25). `beadhive.config.validate_cmd` — imported
+live from the installed bh 0.14.0 — was **executed** against the actual `~/.beadhive/config.yaml`
+block with the `(phase, main_gate)` pair each caller passes: that is the BLOCK → COMMAND mapping,
+and it is **M**. Which `(phase, main_gate)` each `bh work` verb actually passes was established by
+**reading** the call sites in bh's `work.py`, not by running them: that is the BOUNDARY → PHASE
+mapping, and it is **I**. These are different claims — "the resolver returns X for phase Y" is not
+"`bh work merge` passes phase Y" — and merging them into one M is exactly the wrapper/delegate
+mistake above, one layer down. Only a live run of the verb after the config is applied upgrades a
+row's I half; `bh work brief` printing `just check-fast` for `validate_cmd` is live corroboration
+of the block, not a boundary run, and does not do that upgrading.
+
+| Boundary | Caller (`work.py`) | Resolves to | Evidence |
+|---|---|---|---|
+| `bh work check <id>` | `1909` — **no `check` phase exists**, so this is unconditionally `validate_cmd` | `just check-fast` | **M** (block→command) + **I** (boundary→phase — though with no override key possible for this phase, there is nothing left to misread) |
+| `bh work submit <id>` | `2417`, phase `submit`, no override | `just check-fast` (or a replayed ledger verdict — see "A gate's M is a property of a RUN" below) | **M** + **I** |
+| `bh work merge <id>` → molecule | `3557`, phase `merge`, `main_gate=False` | `just check-fast` — but **inert under `validation: relaxed`** (the phaze default): a per-bead merge landing into a molecule is not validated at all (`revalidate` evaluates `False`, work.py:3646) | **M** + **I** |
+| `bh work merge <id>` → main (every ad-hoc bead) | `3557`, phase `merge`, `main_gate=True` — `merge-main` wins over `merge` | `just check-fast` — **the boundary every ad-hoc bead actually hits**, since an ad-hoc bead (parent = NONE) lands here and never reaches `molecule` | **M** + **I** |
+| `bh work finish <epic>` (= molecule pre-land) | `2923`/`2948`, phase `molecule` | `just check-all` — the only *routinely traversed* full-suite boundary (the two rows below also run a full suite, but only conditionally) | **M** (block→command) + **I** (boundary→phase — no `bh work finish` has yet landed under this config; the first one upgrades this row) |
+| post-land molecule re-test (`postland`) | `2972`, phase `postland` | `just check` — kept full; see the citation immediately below the table | **M** + **I** |
+| union-merge resolution (`union`) | `3525`, phase `union` | `just check` — **preserved**, not decided: this is what it already resolved to before phaze-pv3kk, and it was never put to the operator, because leaving an unasked boundary unchanged needs no authority while changing it would | **M** + **I** |
+
+**Why `postland` stays full, cited in full (ADR-0012 rule 2).** Question as put (dispatcher →
+operator, 2026-08-25): *"your decision said 'merge-main too — nothing full-suite before main; CI
+catches it after'. Reading bh 0.14.0's source turned up a boundary that decision didn't enumerate:
+the postland phase — the molecule post-land re-test, which under relaxed fires only when the base
+moved underneath a land. It runs AFTER the land, but while still holding the merge slot, and rolls
+back on red, so nobody ever sees a broken main. It currently inherits `validate_cmd`, so pointing
+that at the fast recipe silently makes it fast too. Which should it be?"* Answer as given — the
+option **label** selected, verbatim (its *description* was the dispatcher's framing and carries no
+operator authority; only the label below is the operator's words, "(Recommended)" included since
+it was part of that label): *"Keep postland on the full suite (Recommended)"*. Date: 2026-08-25.
+Durable record: `phaze-pv3kk`'s bead comments.
+
+`validation: relaxed` (the phaze default) does not make an explicit `merge:` key redundant to set
+even though it makes it inert today: the phaze block still pins `merge: just check-fast` so that a
+future switch to `validation: conservative` does not silently pick up whatever `validate_cmd`
+happens to be at that time.
+
+**Negative control, executed against the same live block (dev/fastsuite / dispatcher,
+2026-08-25):** drop the `postland` and `union` keys and both resolve to `just check-fast` by silent
+inheritance; `molecule` and `merge` do **not** move when other keys are dropped, because an
+explicitly-present key returns before the resolver ever consults the fallback. And if `molecule`
+itself were ever lost, it too falls to `just check-fast` — at which point **nothing** runs the full
+suite before `main`, and every gate still prints green. That is why every boundary above is pinned
+explicitly rather than left to inherit, and why deleting any one of these five keys is a regression
+even though nothing in the diff around it would look wrong.
+
+**For an ad-hoc bead, nothing runs the full suite before `main`.** Ad-hoc beads (parent = NONE)
+land through `merge-main`, never through `molecule`/`finish`, so post-push CI becomes the *first*
+full-suite run such a bead ever gets. This is the model "Workflow: Features and PRs" already
+describes for direct pushes ("On a direct push, CI runs after the fact — nothing gates `main`"),
+and its instruction to **treat a red post-merge CI run as a fix-forward P0, not a routine failure
+to triage later** is materially more load-bearing under this shape than it was before phaze-pv3kk.
+
+**What this gives up, measured rather than argued.** `phaze-sy8z3` was bounced on 2026-08-25 by
+`merge-main`'s **old**, still-full-suite gate: `2 failed, 7985 passed, 3 skipped, 180 deselected in
+1305.43s (0:21:45)`, both failures `pydantic_core.ValidationError` on
+`ExecuteBatchProposalItem.source_path` — a field `phaze-xzjrr` renamed from `original_path` while
+`sy8z3` was in flight. Neither branch was wrong alone; only the combination was, and that is
+precisely the class `merge-main`'s full suite existed to catch. That gate ran under the config as
+it stood *before* this bead's boundaries went live — under the wiring above, `merge-main` is fast,
+and a future instance of the same shape (two independently-green branches, red only in combination)
+reaches `main` and is caught by CI instead. Read this as the measured cost of the operator's
+decision, not as an argument to reverse it — reversing it is the operator's call, not this table's.
+
+**Escalation is the common case here, not the exception.** Every Jinja template, `pyproject.toml`,
+the justfile and all YAML sit outside repowise's per-test coverage map — and phaze renders its
+whole UI from Jinja — so a bead touching any of them runs the full suite via escalation, while a
+bead touching only well-covered Python selects a handful of tests. Both are correct behaviour, not
+a defect to tune. `.git/fast-gate-escalations.log` (untracked, shared by every worktree of the
+clone, so it survives the ephemeral bead worktree that wrote to it) records every escalation with
+its reason, because "is this gate escalating a lot lately" is a trend question no single transcript
+can answer.
+
+**The coverage map is a standing maintenance obligation, not a one-time cost.** `repowise update`
+does **not** refresh it — that command's own `--help` scopes it to re-parsing files, the dependency
+graph, and git/dead-code artifacts; only `just repowise-coverage` (~21 min: a full `pytest --cov
+--cov-context=test` run plus `repowise coverage add`) rebuilds the test-to-code map, and nothing
+else does. Measured 2026-08-25: the map (ingested 2026-08-22 at `a3fd169a`) was **105 commits**
+behind tip `ec87a670`, with **47 of 272** `src/phaze` files and **48** test files changed since it
+was built. The same drift figure read **103** commits against an earlier tip (`190a9e30`) and
+**107** against a later one (`0cd4e0fc`) within the same session — quote the tip alongside any
+drift number; the number alone is meaningless, the same trap CLAUDE.md's repowise entry already
+names for `analyzed_commit`. At high drift a large fraction of changed files demote to `unknown`
+and escalate, which is correct behaviour and simultaneously the signal that a refresh is overdue.
+
+**Two numbers, and neither is honest alone.** `just check-fast` measured **417 tests in 35.57s**
+when the coverage map can speak for the change, and **19:37** (the full `just check`) when it
+cannot. The first number alone implies the gate is always fast; the second alone implies it does
+not work. Cite both together or cite neither.
+
+**`bh work merge <id>` re-validates nothing when it lands into a molecule under `validation:
+relaxed`** (the phaze default) — unchanged from before phaze-pv3kk, and still by design: submit
+already validated this exact tip, and it is `finish`/`molecule` that catches "green in isolation,
+red in combination" for a molecule's children. **When the same `merge` verb instead lands the bead
+on `main` (every ad-hoc bead), it *is* validated** — that path resolves `merge-main`, a different
+key from `merge` — but as of phaze-pv3kk that validation is `just check-fast`, not `just
+check-all`. Set `validation: conservative` in the phaze block if a molecule ever needs re-testing
+after every per-bead merge.
+
+`bh work check` / `submit` / `merge` / `merge-main` run `just check-fast` **because**
+`~/.beadhive/config.yaml` gives the phaze rig `work.validate_cmd: just check-fast` plus a
+`work.validate` block pinning `merge` (`just check-fast`, inert under `relaxed`), `merge-main`
+(`just check-fast`), `postland` (`just check`), `union` (`just check`) and `molecule` (`just
+check-all`, unchanged). That file is **outside this repo and shared by every hive on the
+machine**; the global default at the bottom of it is still `sh -c "just lint && just typecheck"`,
+which runs no tests.
+
+**The config file now has two silent failure modes, not one.** `validate_cmd` reverting to that
+machine-wide default is the original phaze-nqawu failure — a gate that runs no tests while
+printing success. The second is new, and quieter: **any one of the five `work.validate` override
+keys above going missing.** A dropped key does not error; the boundary simply inherits
+`validate_cmd`, and since phaze-pv3kk that inherited default is itself *fast*, so the boundary
+keeps printing green with no output difference except a shorter run — see the negative control
+above. `tests/shared/test_validation_gate_recipes.py` guards the justfile half of this; nothing in
+this repo can guard the config half.
 
 **That paragraph describes what submit runs on a ledger MISS.** `bh work submit`'s own `--help`
 promises to validate "from a clean checkout", and this repo read that as meaning every green submit
@@ -100,9 +215,11 @@ is its own pristine-checkout, full-suite measurement. It is not: the verdict led
 `(tree hash, validate-cmd hash)` and **not** on which command validated, so a `bh work check`
 verdict earned in the **seat worktree** is replayed by a submit that never makes a checkout at all
 (phaze-qsyc0, established 2026-08-24 against bh 0.14.0). A submit is evidence of a full-suite run
-only when its transcript carries the pytest summary and coverage lines; a replay prints a
-`validation verdict reused (…)` line instead. The next section has the mechanism, what invalidates
-a verdict, and the general form.
+only when its transcript carries the pytest summary and coverage lines; since phaze-pv3kk a submit
+is evidence of a *change-selected* run only when its transcript carries `check-fast`'s RUN verdict
+(or its escalation to `just check`'s pytest summary and coverage lines); a replay prints a
+`validation verdict reused (…)` line instead, either way. The next section has the mechanism, what
+invalidates a verdict, and the general form.
 
 ### A gate's M is a property of a RUN, never of a COMMAND (phaze-qsyc0)
 
@@ -122,21 +239,24 @@ row above would otherwise read as though it always were. Established 2026-08-24 
   `--help` promises a **clean checkout**. That is deliberate (bh-i0p1.4), and `check` records only
   from a CLEAN worktree — but the two are interchangeable under one key, so "submit validated from
   a pristine checkout" can be discharged by a run that never made one. Both use phaze's
-  `work.validate_cmd: just check`, so their hashes always match. **M** — the ledger at
-  `.git/bh-validation-ledger.json` stores exactly `{tree, cmd_hash, rc, at, host, sha}`.
+  `work.validate_cmd`, so their hashes always match — `just check` until 2026-08-25, `just
+  check-fast` since. **M** — the ledger at `.git/bh-validation-ledger.json` stores exactly `{tree,
+  cmd_hash, rc, at, host, sha}`.
 - **The ENVIRONMENT is not in the key, and phaze does not use bh's mitigation for that.** bh
   re-derives the environment from the tree via `verify: true` worktree-init rules; phaze declares
   **none** (its three init rules carry no `verify` flag — only the homelab rig has one), so no
   environment establishment happens in either writer. `TEST_DATABASE_URL`,
   `MIGRATIONS_TEST_DATABASE_URL` and `PHAZE_REDIS_URL` are shell exports, and a tree hash cannot
-  see them. In practice `just check` self-provisions a seat when they are unset (phaze-bk9el.23),
-  so isolation still holds — but the key does not cover what the pytest header records.
+  see them. In practice `just check` and `just check-fast` both self-provision a seat when they are
+  unset (phaze-bk9el.23), so isolation still holds — but the key does not cover what the pytest
+  header records.
 - **What DOES invalidate a verdict:** the TTL (`work.ledger_ttl`, default **P1D** — 24 h; bh's own
   docstring says operators are expected to tune this **down**, not up); a red verdict, which is
   recorded but never reused; any edit to the `justfile`, which is *in* the tree and so changes the
   tree hash; and any change to phaze's `validate_cmd`, which changes the cmd hash. That last one
   covers the phaze-nqawu hazard — a verdict earned under the old lint-only command cannot be
-  replayed under `just check`.
+  replayed under `just check`, and (since phaze-pv3kk) a verdict earned under `just check` cannot
+  be replayed under `just check-fast` either, for the same reason.
 - **There is no flag to force re-validation.** `bh work submit --help` offers none. The knobs are
   `work.ledger_ttl` and `work.validate_precheck` in `~/.beadhive/config.yaml` (phaze sets neither),
   or deleting `.git/bh-validation-ledger.json`.
@@ -154,20 +274,27 @@ anything, whatever the command was called.
 **`just test` is deliberately retained and is deliberately not a gate.** `-x` gives a tight
 edit/run loop, and `-q` gives dot-density. Both cost evidence — a red `-x` run characterises only
 the prefix of the suite before the first failure, and `-q` suppresses the pytest header entirely.
-Use it while iterating; cite `just check`.
+Use it while iterating; cite `just check-fast` (or `just check`, if that is what you actually ran
+by hand as the manual escape hatch named in the recipes table above).
 
-**Dropping `-x` from the gate has a measured price, and it is the right one to pay.** The red-gate
-run above put a deliberately failing test in `tests/shared/` and the gate still took **19m18s** to
-reach `1 failed, 7329 passed` — a bead with a genuine failure pays full freight to learn it, and
-pays it again on every re-run. That is the correct trade for a *gate*, whose job is to characterise
-the whole suite rather than to fail fast: a truncated prefix tells you nothing about the 7000 tests
-after the first failure. Iterate with `just test`, which is fail-fast precisely so you do not pay
-this twenty minutes while debugging. **Do not "optimise" `-x` back into the gate** — you would be
-trading complete counts for wall-clock at the one boundary where completeness is the entire point.
+**Dropping `-x` from the gate has a measured price, and it is the right one to pay on the full
+suite.** The red-gate run above put a deliberately failing test in `tests/shared/` and the gate
+still took **19m18s** to reach `1 failed, 7329 passed` — a bead with a genuine failure pays full
+freight to learn it, and pays it again on every re-run. That is the correct trade for a *full-suite
+gate*, whose job is to characterise the whole suite rather than to fail fast: a truncated prefix
+tells you nothing about the 7000 tests after the first failure. `just check-fast` earns most of
+that speed back differently — by running fewer, targeted tests rather than by stopping early — so
+it does not reopen this trade-off; it still runs every selected test to completion. Iterate with
+`just test`, which is fail-fast precisely so you do not pay twenty minutes while debugging. **Do
+not "optimise" `-x` back into `just check` or `just check-all`** — you would be trading complete
+counts for wall-clock at the boundaries where completeness is the entire point.
 
-**Consequence: a submit now costs a full suite run.** Export a per-worktree seat
-(`just test-db-for <name>`) before submitting, or the gate falls back to the shared `phaze_test`
-seat and two concurrent submits collide on the session advisory lock described below.
+**Consequence: a submit's cost is now conditional, and "usually fast" is not the same claim as
+"always fast."** Before phaze-pv3kk, "a submit costs a full suite run" was unconditionally true.
+Since 2026-08-25 it is change-selected — typically well under the old ~20 minutes — unless the
+diff escalates, in which case it costs exactly what it always did. Export a per-worktree seat
+(`just test-db-for <name>`) before submitting either way, or the gate falls back to the shared
+`phaze_test` seat and two concurrent submits collide on the session advisory lock described below.
 
 **Evidencing seat isolation.** The gate now prints its own header, so the transcript of the gate
 run is the evidence — no separate invocation is needed. Two older techniques still work when you
@@ -626,12 +753,16 @@ a future edit can quietly relax — the two sites must move together or the guar
   origin" is a claim about topology, checked with `--is-ancestor`, never inferred from the same work
   having landed.
 - **On a direct push, CI runs after the fact — nothing gates `main`.** The bead's own validation is
-  therefore the real gate, and it must be a genuine one: the full `just check` on an isolated seat.
-  Since phaze-nqawu (2026-08-21) `bh work check` and `bh work submit` **are** that command, so the
-  gate and the manual run are no longer two different things — but confirm the header line in the
-  submit transcript names your own seat, and see "Which commands are gates" above for what still
-  does not re-test. Treat a red post-merge CI run as a fix-forward P0, not a routine failure to
-  triage later.
+  therefore the real gate, but since phaze-pv3kk (2026-08-25) it is no longer necessarily a
+  full-suite one: `bh work check`/`submit`/`merge`/`merge-main` all resolve to `just check-fast`, a
+  change-selected subset that escalates to the full suite only when repowise's coverage map cannot
+  speak for the diff. **`merge-main` — the boundary every ad-hoc bead actually lands through — no
+  longer runs the full suite either**, so for most such beads post-push CI is the *first* complete
+  run of the suite they ever get, not a redundant re-check of one that already ran. Confirm the
+  header line in the submit transcript names your own seat, and see "Which commands are gates"
+  above for the full boundary → recipe table and what still does not re-test. **Treat a red
+  post-merge CI run as a fix-forward P0, not a routine failure to triage later** — this instruction
+  is materially more load-bearing under change-driven selection than it was when it was written.
 
 ## CI (GitHub Actions)
 
@@ -1075,12 +1206,15 @@ The lifecycle is `bh work`; raw `git` is only for the change *inside* the worktr
 
 ```bash
 bh work claim <id>       # provision the wt/bead/issue/<id> worktree + identity, → in_progress
-bh work check <id>       # run the hive validation (`just check` — FULL SUITE) against the worktree
-bh work submit <id>      # verify clean conventional history, re-validate from a
-                         # pristine checkout (FULL SUITE), open the review gate
+bh work check <id>       # run the hive validation (`just check-fast`, phaze-pv3kk — change-
+                         # selected, escalating to the full suite) against the worktree
+bh work submit <id>      # verify clean conventional history, re-validate with `just check-fast`
+                         # (or replay a cached verdict), open the review gate
 bh work approve <id>     # resolve the review gate
 bh work merge <id>       # serialize a --no-ff merge onto the integration branch, close the bead
-                         # (re-validates nothing — see "Which commands are gates" above)
+                         # (re-validates nothing when landing into a molecule under the default
+                         # `validation: relaxed`; landing on `main` DOES validate, via `merge-main`
+                         # — see "Which commands are gates" above for the full boundary table)
 bh work resume <id>      # re-attach after changes-requested
 bh work abandon <id>     # release the claim; --rm also removes the worktree
 ```
