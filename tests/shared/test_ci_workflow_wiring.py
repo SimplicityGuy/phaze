@@ -44,6 +44,8 @@ import re
 import tomllib
 from typing import Any
 
+from packaging.requirements import Requirement
+import pytest
 import yaml
 
 
@@ -280,10 +282,46 @@ def test_setup_job_reads_the_canonical_ci_shards_json() -> None:
             assert bucket in known_buckets, f"shard {shard['name']!r} path {token!r} references unknown bucket {bucket!r}"
 
 
+def _assert_browser_group_is_exactly_pinned_playwright(browser_group: list[str]) -> None:
+    """Assert the `browser` dependency-group's SHAPE, not its value (phaze-noxs2).
+
+    The invariant is that the group holds exactly one requirement, it is playwright, and
+    its specifier is a single exact ``==`` pin -- never that the pin names any particular
+    version. Unlike the litellm pin (phaze-85zxu), nothing in this repo's browser suite
+    measures a verdict against a specific playwright release: `just test-browser-install`'s
+    own comment states the reason for the pin is keeping the resolved browser *revision*
+    reproducible across an unchanged commit (via `uv.lock`), not that 1.62.0 itself has any
+    load-bearing behavior. So the guard here is a pure structural policy check, and a
+    deliberate playwright bump passes it without editing this test -- only a widened,
+    dropped, or diluted pin trips it.
+
+    Contrast with Patchright's own cap a few lines away in `pyproject.toml`
+    (`patchright>=1.62.1,<1.63.0`), which IS the litellm shape: it pins an exact patched
+    browser build that must stay in lockstep with the worker image's
+    ``patchright install chrome`` (see the comment there). Two version caps on sibling
+    browser-automation libraries, a few lines apart, are different kinds of thing -- do
+    not "fix" Patchright's cap to match this one.
+    """
+    assert len(browser_group) == 1, f"`browser` dependency-group must hold exactly one requirement; got {browser_group!r}"
+    requirement = Requirement(browser_group[0])
+    assert requirement.name == "playwright", f"`browser` dependency-group's sole requirement must be playwright; got {requirement.name!r}"
+    specs = list(requirement.specifier)
+    assert len(specs) == 1, f"playwright's specifier must be a single exact pin; got {str(requirement.specifier)!r}"
+    (spec,) = specs
+    assert spec.operator == "==", f"playwright must be pinned with `==`, not {spec.operator!r} ({browser_group[0]!r})"
+
+
 def test_browser_toolchain_is_exactly_pinned_in_an_optional_group() -> None:
-    """The browser runner cannot float independently of the reviewed lockfile."""
+    """The browser runner cannot float independently of the reviewed lockfile.
+
+    Playwright is a development-only dependency group, deliberately isolated from the
+    runtime dependency set (pyproject.toml:225-227) -- Patchright, not Playwright, is the
+    real runtime browser dependency (the 1001Tracklists render path). See
+    `_assert_browser_group_is_exactly_pinned_playwright` for why the check is structural
+    rather than a duplicated literal.
+    """
     pyproject = tomllib.loads(_PYPROJECT_PATH.read_text(encoding="utf-8"))
-    assert pyproject["dependency-groups"]["browser"] == ["playwright==1.62.0"]
+    _assert_browser_group_is_exactly_pinned_playwright(pyproject["dependency-groups"]["browser"])
 
     justfile_text = _JUSTFILE.read_text(encoding="utf-8")
     install_recipe = _extract_recipe(justfile_text, "test-browser-install")
@@ -292,6 +330,38 @@ def test_browser_toolchain_is_exactly_pinned_in_an_optional_group() -> None:
     for recipe in (install_recipe, ci_install_recipe, test_recipe):
         assert "--group browser" in recipe
         assert "--with playwright" not in recipe
+
+
+@pytest.mark.parametrize(
+    ("browser_group", "match"),
+    [
+        pytest.param(["playwright>=1.62.0"], "must be pinned with `==`", id="floor-only-not-exact"),
+        pytest.param(["playwright"], "single exact pin", id="unpinned"),
+        pytest.param([], "exactly one requirement", id="empty-group"),
+        pytest.param(["playwright==1.62.0", "pytest==8.0.0"], "exactly one requirement", id="second-package-added"),
+    ],
+)
+def test_browser_group_guard_rejects_every_broken_shape(browser_group: list[str], match: str) -> None:
+    """RED before green, four ways, each failing the real guard for its own reason (phaze-noxs2 AC2/AC3).
+
+    Calls `_assert_browser_group_is_exactly_pinned_playwright` directly -- the guard's own
+    assertion helper -- rather than re-implementing its checks inline. A discrimination test
+    that restates the loop it discriminates only proves it agrees with itself (phaze-prla2).
+    """
+    with pytest.raises(AssertionError, match=re.escape(match)):
+        _assert_browser_group_is_exactly_pinned_playwright(browser_group)
+
+
+def test_browser_group_guard_accepts_a_deliberate_playwright_bump() -> None:
+    """The property the old duplicated-literal guard lacked, and the reason it drifted.
+
+    A routine ``playwright==1.62.0`` -> ``==1.63.0`` bump is exactly the case this bead
+    exists to let pass WITHOUT editing this test. The four rejection cases above only prove
+    the guard is strict; without this, a future tightening of the helper (e.g. pinning the
+    version after all) could keep every rejection case green while silently reintroducing
+    the defect.
+    """
+    _assert_browser_group_is_exactly_pinned_playwright(["playwright==1.63.0"])
 
 
 def test_browser_ci_installs_headless_shell_without_apt() -> None:
