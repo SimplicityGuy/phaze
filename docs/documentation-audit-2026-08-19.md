@@ -99,6 +99,64 @@ downgrades, and the approximately 21-minute Repowise coverage refresh were not r
 documentation-only change. Their commands and static contracts were validated; CI remains the
 integration gate.
 
+## Post-audit drift (not part of the original 2026-08-19 result)
+
+This audit is a dated snapshot, not a maintained index: it has never been edited since the
+commit that created it (`908e3f82`), and every row below reflects the tree as it stood on
+2026-08-19. The `Result` classification in each row is therefore left exactly as recorded —
+rewriting a historical row to match a later tree would make the record say something it did
+not say on its date (`docs/design/0012-verification-fidelity-and-operator-attribution.md`
+rule 2). Paths in the table can still drift out of date after
+the fact; known drift is logged here instead, dated, without touching the rows themselves.
+
+- `docs/design/0004-tracklist-candidate-sets.md` (`architecture decision record`, `unchanged`
+  in the table below) was renumbered to `docs/design/0014-tracklist-candidate-sets.md` by
+  phaze-kbue9 on 2026-08-23. The row's path and classification were correct on 2026-08-19;
+  the file no longer exists at that path. Logged 2026-08-24 (phaze-x2z38). (Line numbers are
+  deliberately not cited here — this section's own insertion above the table shifts every row
+  below it, so a line number pinned at write time goes stale on the next edit; the path is the
+  stable key.)
+- `tests/browser/FLAKE_RECORD.md` (`test documentation/fixture`, `unchanged` in the table
+  below) was deleted by phaze-8p1uq on 2026-08-21 (`4a6c595a`). Confirmed a genuine deletion,
+  not a move: `git log --all --diff-filter=D -- tests/browser/FLAKE_RECORD.md` finds it, and
+  no rename match exists anywhere in history. The row was correct on 2026-08-19; the file no
+  longer exists at that path.
+
+  Dispositioned here as a first-class entry (phaze-r5vz0), against the same three options and
+  the same reading phaze-x2z38 applied above. Rewriting the row (path or `Result`) is rejected
+  for the reason this section already establishes: the document is a dated snapshot — one
+  commit since creation (`908e3f82`), no row ever edited in place, its own Method/Validation
+  text tied to the 2026-08-19 inventory — so a rewrite would assert something about that date
+  that was not true on it (`docs/design/0012-verification-fidelity-and-operator-attribution.md`
+  rule 2). Leaving the citation unremarked is rejected for the same reason it was rejected
+  above: it leaves a dead path unexplained for whoever follows it. Annotation is therefore the
+  right disposition, matching the sibling's choice — but this row's annotation is not the bare
+  "file deleted" shape the interim note it replaces used. `4a6c595a`'s own commit message
+  records that the deletion was not a discard: it moved `FLAKE_RECORD.md`'s "What to watch
+  when the CI runs start" section into what is now
+  `docs/design/0009-responsive-accessibility-baseline.md` verbatim, calling it "the file's
+  only durable content", and deleted the rest as "promotion scaffolding whose purpose is
+  spent." A bare "deleted" annotation would be true but incomplete — it would send
+  a reader looking for that guidance to a dead end instead of to where it now lives. The
+  disposition here is therefore annotate-and-point-at-the-new-location: the durable content
+  moved to `docs/design/0009-responsive-accessibility-baseline.md` (§ "What to watch when a CI
+  run goes red", which itself carries a back-reference to this deleted file); the remainder
+  was promotion scaffolding for the browser contract job's non-blocking-to-blocking gate,
+  spent once that gate was met on 2026-08-21, and was deleted outright rather than moved.
+  Logged 2026-08-24 (phaze-r5vz0).
+- The phaze-kbue9 renumber above has a second residue this table cannot show at all: it freed
+  the number 0004 (this audit's own row above for the old path already records a genuine
+  duplicate — `docs/design/0004-ledger-replay-safety.md` and the old
+  `docs/design/0004-tracklist-candidate-sets.md` were both `0004` as of 2026-08-19) and
+  assigned the freed 0014 to a new file. A bare `ADR-0014` or `ADR-0004` prose citation written
+  before the rename can therefore silently resolve to the WRONG document after it, rather than
+  to nothing — undetectable by any path-based check, including the ones this section uses.
+  Demonstrated live: a bead cited "ADR-0014" meaning the shared-`AsyncSession`-gather decision,
+  which is actually `docs/design/0015-shared-session-gather.md`. Logged 2026-08-24
+  (phaze-x2z38), filed separately as phaze-f70y9 rather than fixed here or in phaze-x2z38 —
+  disposition needs a census of the bead corpus, not just tracked files, which is its own
+  scope. Cite ADRs by filename, not bare number, in anything written after this point.
+
 ## Exact inventory
 
 | Path | Classification | Result |
