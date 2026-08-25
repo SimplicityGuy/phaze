@@ -111,10 +111,18 @@ async def _drop_batch_key(str_mode_redis: redis_async.Redis, batch_key: str) -> 
 
 
 def _proposal(index: int) -> ExecuteBatchProposalItem:
+    """One payload item, built with the CURRENT field names.
+
+    ``source_path`` was ``original_path`` until phaze-xzjrr, which renamed it as a deliberate
+    breaking wire change; ``model_config = ConfigDict(extra="forbid")`` makes the old spelling a
+    validation error rather than a silently ignored extra. Nothing here depends on the value --
+    ``_init_fields`` only counts items -- so this is a plain constructor, but it has to be a
+    VALID one for the seed mapping to be the real thing.
+    """
     return ExecuteBatchProposalItem(
         proposal_id=uuid.uuid4(),
         file_id=uuid.uuid4(),
-        original_path=f"/archive/<track-{index:02d}>.mp3",
+        source_path=f"/archive/<track-{index:02d}>.mp3",
         proposed_path="performances/artists/Example",
         proposed_filename=f"<track-{index:02d}>.mp3",
     )
