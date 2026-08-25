@@ -20,6 +20,44 @@ at-risk population was still zero (see its own docstring for the measurement and
 skew analysis). Each exception is documented where it is declared. `current_path` is
 otherwise the post-execution path, sent back via patch_proposal_state.
 
+WHAT D-24 RESTS ON, AND THE ASYMMETRY THAT ONCE BROKE IT (phaze-rhs6m, 2026-08-24).
+D-24 is sound only while the three enrich producers can never be handed a file that
+has already moved -- `original_path` is a valid on-disk location precisely until
+execution flips it. That precondition is NOT enforced in the producers; it is a
+PROPERTY OF THE PIPELINE ORDER, held up by the propose convergence gate
+(`services/pipeline/proposals.py::_proposal_pending_clauses`), because nothing can be
+executed that was not first proposed. The analyze and cloud-push seams hold it
+structurally: an executed file has `analysis_completed_at` set, migration 033's
+`analysis_completed_at XOR failed_at` CHECK makes done and failed mutually exclusive,
+and every analyze/push trigger selects on one or the other -- and the one producer
+that bypasses the `~done` gate, `services/reanalysis_backfill.py`, excludes applied
+files by hand (`~applied_clause()`).
+
+The METADATA seam did NOT hold, because the gate was ASYMMETRIC: analysis was gated on
+a completion discriminator (Phase 57.1) while metadata was gated on BARE ROW EXISTENCE.
+A metadata FAILURE is stored as a `metadata` row with `failed_at` set and payload NULL,
+so a file whose metadata never landed cleared the gate, could be proposed / approved /
+EXECUTED, and then -- since `done(metadata)` stays False until real metadata lands --
+sat in the metadata pending set PERMANENTLY, where all four `ExtractMetadataPayload`
+producers re-drive it at the `original_path` it had just been moved away from.
+
+RESOLUTION -- the rule is UNCHANGED and the exception list does NOT grow. Operator
+decision 2026-08-24 (phaze-rhs6m); question put as a choice among four mechanisms,
+answer as given, verbatim and in full: "Close the gate asymmetry: require metadata
+failed_at IS NULL". Durable record: the operator-decision comment on phaze-rhs6m. The
+metadata conjunct now composes `done_clause(Stage.METADATA)`, so an executed file can
+no longer BE metadata-pending and the producers keep shipping `original_path` under a
+precondition that now actually holds. Shipping `current_path` from the three enrich
+producers was considered and REFUSED -- it would have changed the read path for every
+analysis and metadata job in the archive to fix one producer of three.
+
+WHAT THIS DOES NOT COVER. The gate closes the state; it does not close a job that was
+already enqueued against a still-eligible file and runs after the move (enqueue-then-
+execute TOCTOU), nor `recover_orphaned_work` replaying a stored ledger payload whose
+`original_path` was minted before the move. Both are INFERENCE FROM CODE, NOT MEASURED,
+and are tracked separately as phaze-3542b, which carries that qualification verbatim. Do not
+read this section as a claim that either is handled.
+
 All schemas declare `extra="forbid"` per Phase 25 D-16 -- agent-supplied
 job payloads are validated as strictly as HTTP request bodies.
 

@@ -18,14 +18,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast as type_cast
 import weakref
 
-from sqlalchemy import distinct, exists, func, select, text
+from sqlalchemy import distinct, func, select, text
 import structlog
 
 from phaze.enums.stage import Stage
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord
-from phaze.models.metadata import FileMetadata
 from phaze.models.pipeline_stage_control import PipelineStageControl
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
@@ -174,9 +173,9 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
       drain writes gets its first version in the same transaction, so the bar reported 100% always and
       measured nothing.
     - ``match``       -- done = DISTINCT tracklist_id reachable from ``discogs_links``; total = COUNT(tracklists)
-    - ``proposals``   -- done = DISTINCT file_id in ``proposals``; total = convergence set (files with a
-      ``metadata`` row present AND analysis DONE, mirroring ``get_proposal_pending_batches``'s
-      ``_proposal_pending_clauses`` ready-set gate below -- phaze-nuyn)
+    - ``proposals``   -- done = DISTINCT file_id in ``proposals``; total = convergence set (metadata
+      DONE AND analysis DONE, mirroring ``get_proposal_pending_batches``'s ``_proposal_pending_clauses``
+      ready-set gate below -- phaze-nuyn, phaze-rhs6m)
     - ``execute``     -- done = DISTINCT file_id with a completed ``execution_log`` row; total = approved-proposal count
 
     Each source is wrapped in :func:`_safe_count` (or :func:`_safe_bucket_counts` for the enrich
@@ -200,9 +199,14 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
     discovery_stmt = select(func.count(FileRecord.id))
     # Proposals denominator: the convergence-gate set -- files with BOTH metadata AND analysis
     # (mirrors get_proposal_pending_batches's ready-set, ``_proposal_pending_clauses`` below). The
-    # metadata conjunct intentionally stays a bare row-existence check (matching
-    # ``_proposal_pending_clauses`` exactly -- neither predicate applies ``failed_at IS NULL`` yet;
-    # that is a separate, adjacent gap, not this one). The analysis conjunct uses
+    # metadata conjunct was a bare row-existence check until phaze-rhs6m, matching
+    # ``_proposal_pending_clauses`` exactly -- and the note here recorded that as "a separate,
+    # adjacent gap, not this one". phaze-rhs6m CLOSED that gap at the ready-set, so this denominator
+    # moves WITH it, onto the same ``done_clause(Stage.METADATA)`` builder: leaving it bare would
+    # re-open the phaze-nuyn drift on the other conjunct, and would put a proposals denominator on
+    # the dashboard that counts metadata-FAILED files GENERATE ALL will never batch -- the dishonest
+    # UI ``_proposal_pending_clauses``'s extraction (phaze-37i1.2) exists to prevent. The analysis
+    # conjunct uses
     # ``done_clause(Stage.ANALYZE)`` -- the same completion-discriminated predicate
     # ``_proposal_pending_clauses`` hand-rolls (DERIV-03: ``analysis_completed_at IS NOT NULL``) --
     # instead of bare existence, so this no longer counts a mid-flight partial analysis row
@@ -210,11 +214,7 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
     # set, ``analysis_completed_at`` NULL) neither of which get_proposal_pending_batches will ever
     # batch. Phase 57.1 added that discriminator to the ready-set only; this fixes the drift
     # (phaze-nuyn) by composing from the shared ``done_clause`` builder so the two cannot drift again.
-    convergence_stmt = (
-        select(func.count(FileRecord.id))
-        .where(exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id)))
-        .where(done_clause(Stage.ANALYZE))
-    )
+    convergence_stmt = select(func.count(FileRecord.id)).where(done_clause(Stage.METADATA)).where(done_clause(Stage.ANALYZE))
     tracklist_stmt = select(func.count(distinct(Tracklist.file_id)))
     proposals_stmt = select(func.count(distinct(RenameProposal.file_id)))
     execute_total_stmt = select(func.count(distinct(RenameProposal.file_id))).where(RenameProposal.status == ProposalStatus.APPROVED)
