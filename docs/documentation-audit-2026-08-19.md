@@ -117,12 +117,33 @@ the fact; known drift is logged here instead, dated, without touching the rows t
   below it, so a line number pinned at write time goes stale on the next edit; the path is the
   stable key.)
 - `tests/browser/FLAKE_RECORD.md` (`test documentation/fixture`, `unchanged` in the table
-  below) was deleted by phaze-8p1uq on 2026-08-21 (`4a6c595a`), which moved its "what to watch
-  when CI runs start" guidance into `docs/design/0009-responsive-accessibility-baseline.md`
-  and removed the rest as superseded by the browser contract job's promotion to blocking. The
-  row was correct on 2026-08-19; the file no longer exists at that path. Logged 2026-08-24
-  (phaze-x2z38) — found while re-verifying this document's paths for phaze-x2z38 and out of
-  that bead's scope, so filed separately as phaze-r5vz0 rather than fixed here.
+  below) was deleted by phaze-8p1uq on 2026-08-21 (`4a6c595a`). Confirmed a genuine deletion,
+  not a move: `git log --all --diff-filter=D -- tests/browser/FLAKE_RECORD.md` finds it, and
+  no rename match exists anywhere in history. The row was correct on 2026-08-19; the file no
+  longer exists at that path.
+
+  Dispositioned here as a first-class entry (phaze-r5vz0), against the same three options and
+  the same reading phaze-x2z38 applied above. Rewriting the row (path or `Result`) is rejected
+  for the reason this section already establishes: the document is a dated snapshot — one
+  commit since creation (`908e3f82`), no row ever edited in place, its own Method/Validation
+  text tied to the 2026-08-19 inventory — so a rewrite would assert something about that date
+  that was not true on it (`docs/design/0012-verification-fidelity-and-operator-attribution.md`
+  rule 2). Leaving the citation unremarked is rejected for the same reason it was rejected
+  above: it leaves a dead path unexplained for whoever follows it. Annotation is therefore the
+  right disposition, matching the sibling's choice — but this row's annotation is not the bare
+  "file deleted" shape the interim note it replaces used. `4a6c595a`'s own commit message
+  records that the deletion was not a discard: it moved `FLAKE_RECORD.md`'s "What to watch
+  when the CI runs start" section into what is now
+  `docs/design/0009-responsive-accessibility-baseline.md` verbatim, calling it "the file's
+  only durable content", and deleted the rest as "promotion scaffolding whose purpose is
+  spent." A bare "deleted" annotation would be true but incomplete — it would send
+  a reader looking for that guidance to a dead end instead of to where it now lives. The
+  disposition here is therefore annotate-and-point-at-the-new-location: the durable content
+  moved to `docs/design/0009-responsive-accessibility-baseline.md` (§ "What to watch when a CI
+  run goes red", which itself carries a back-reference to this deleted file); the remainder
+  was promotion scaffolding for the browser contract job's non-blocking-to-blocking gate,
+  spent once that gate was met on 2026-08-21, and was deleted outright rather than moved.
+  Logged 2026-08-24 (phaze-r5vz0).
 - The phaze-kbue9 renumber above has a second residue this table cannot show at all: it freed
   the number 0004 (this audit's own row above for the old path already records a genuine
   duplicate — `docs/design/0004-ledger-replay-safety.md` and the old
