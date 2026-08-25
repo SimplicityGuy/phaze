@@ -7,7 +7,7 @@
 | **Amended** | 2026-08-21 (`phaze-d2hgv.3`) — §1, §4 G2, §5 (incl. the new §5.1), §6 and §7 R1 corrected against a recovered primary record. See *Amendment — 2026-08-21* immediately below. §2, §3, and the substance of all five guardrails are unchanged.<br>2026-08-21 (`phaze-d2hgv.10`) — the `phaze-3ea41` site count corrected a second time, from 19 to **20**, after a wrap-tolerant sweep found two claims that no line-scoped search can return; §5's extraction-locality verdict corrected; §5's tree-wide figures restated as **floors**. See *Second correction — 2026-08-21* below. |
 | **Bead** | `phaze-u8qj0` |
 | **Applies to** | every bead that changes a production path: what an acceptance criterion obliges, what may be attributed to the operator, and what counts as having verified a claim |
-| **Enforced from** | `CLAUDE.md` → *Acceptance criteria, attribution, and verification fidelity* (the five rules, immediately above *Beadhive Workflow Enforcement*) |
+| **Enforced from** | `CLAUDE.md` → *Acceptance criteria, attribution, and verification fidelity* (the five rules, above *Beadhive Workflow Enforcement*) |
 
 ## Reading the corrections in order
 
@@ -512,6 +512,14 @@ ______________________________________________________________________
 Each is stated in a form a reviewer can check against a diff, and each carries an explicit verdict
 against all three incidents. The negative verdicts are the useful half: a guardrail that catches
 everything catches nothing, because it is not saying anything falsifiable.
+
+**All five assume a check gets scheduled at all.**
+[ADR-0016](0016-transferred-model-verification.md) (`phaze-0vsqf`, 2026-08-25) covers the failure
+one layer up, where none is: a belief transferred from a neighbouring system has no referent, so it
+presents as knowledge rather than as a claim and never triggers a verification. It is deliberately
+*not* a G6 — it is a condition on the reasoner rather than a property of the diff, and it binds
+docs-only beads too, which these five do not. Read this document for verification aimed at the
+wrong proxy; read that one for verification that was never aimed at all.
 
 ### G1 — An acceptance criterion is discharged by a test or by the operator, never by prose
 

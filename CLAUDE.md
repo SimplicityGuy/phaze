@@ -1596,10 +1596,61 @@ recorded that the long-file test *"proves the claim of a mocked essentia only an
 scoped it to memory, so three weeks later the same class of gap shipped a container change verified
 at the producer's own seam.
 
+## A belief that is true in a neighbouring system is a claim, not knowledge (phaze-0vsqf)
+
+The five rules above assume a check gets scheduled. This is the failure where none is, and it sits
+one layer up from all of them.
+
+**A belief carried in from a neighbouring system — another OS, another version of the same tool,
+another project with the same tool in it — presents as something you already know rather than as
+something you are claiming. Verification fires on claims, so nothing fires.** The defining property
+is that a transferred model has **no referent**: nothing to dereference, nothing to 404, nothing to
+notice going stale.
+
+**The trigger, which is the actionable half.** Not "be careful" — the rules above exist because
+three incidents shipped through seats that were being careful:
+
+> **When a belief about a tool's behaviour is load-bearing for a decision, and you did not read it
+> or run it IN THIS ENVIRONMENT, run it. Thirty seconds, every time.**
+
+**"Load-bearing"** is what keeps this from being paralysis: it applies when the belief changes what
+you *do* — a design conclusion, a gate you hold or release, a number you cite — not to every
+incidental assumption. **"In this environment"** does the other half: the installed version, this
+OS, this checkout, not the version documented upstream.
+
+**There is a second form, and it is the harder one to see:** a **verified mechanism vouching for an
+unobserved instance** in this system. A seat confirmed a real mechanism (a gate is invisible to the
+pytest-matching count for its first ~30–60 s, while ruff and mypy run) and then asserted an
+instance it had never observed, labelling it measured — while holding a gate slot on it. Its own
+account: *"the mechanism felt like it carried the instance with it."* So: **a mechanism you
+verified does not vouch for an instance you did not observe.** Verify the mechanism *and* look at
+the case.
+
+**The catalogue lives in
+[ADR-0016](docs/design/0016-transferred-model-verification.md), not here** — it opens with the four
+instances measured on 2026-08-25 (pytest `addopts` env expansion; Darwin `Pages free` read as
+headroom; bh `work.py`'s length across 0.14.0 → 0.15.0; the gate count), each with its evidence
+intact, and grows from there under its §8. That split is deliberate: `CLAUDE.md` is read in full by every seat
+on every session, so it hosts the fixed-size half — the name, the property, the trigger — and the
+list that accretes goes where it is read on demand. **Add new instances to the ADR.** Every entry
+there was produced by a careful seat reasoning correctly from a sound model, every one was true
+somewhere else, and every one was caught within minutes.
+
+*Its sibling is the section above on citing ADRs by filename, and the relationship is a strict
+ordering rather than a repetition:* a bare number is a pointer with **no redundancy**, so a reader
+can still try to dereference it and find it missing, and a link check
+(`tests/shared/test_adr_citation_resolution.py`) catches the dangling case; a transferred model has
+**no pointer at all**, which is why its mitigation cannot be a checker and has to be the condition
+above. This repo has already paid for three instances of it separately — `phaze-b62ri` (re-measure
+a tool against the version you are running), the repowise 0.44-vs-0.45 entry under *Key concepts*
+below, and `phaze-g9cus`'s dangling caller line numbers — each fixed at its own site, none of which
+named the general form. Rule 5 above is the obligation those three were owed;
+[ADR-0016](docs/design/0016-transferred-model-verification.md) is the payment.
+
 ## Beadhive Workflow Enforcement
 
 All work in this repo flows through beadhive. Do not make direct repo edits outside this workflow unless the user explicitly asks to bypass it.
-The five rules in **Acceptance criteria, attribution, and verification fidelity** directly above bind every step below — they are what the review gate in step 7 is checking, and they are not advisory.
+The five rules in **Acceptance criteria, attribution, and verification fidelity** above bind every step below — they are what the review gate in step 7 is checking, and they are not advisory.
 
 1. **Every piece of work has a bead.** Larger work is an epic with specific stories/tasks/bugs as children. File epics through the planner (`bh plan file`), never by hand — hand-rolled epics fail the molecule convention check.
 2. **Exploring a new idea?** Use the planner: invoke the `bh:planner` skill (`/bh:plan <idea>`) to drive ideate → research → decompose → file.
