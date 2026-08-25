@@ -91,27 +91,91 @@ wherever a change argues it is equivalent because its parts are.
 
 #### Boundary → recipe, after phaze-pv3kk — all seven boundaries
 
-Every row below carries **two different kinds of evidence, kept apart on purpose** (dev/fastsuite,
-verified independently by the dispatcher, 2026-08-25). `beadhive.config.validate_cmd` — imported
-live from the installed bh 0.14.0 — was **executed** against the actual `~/.beadhive/config.yaml`
-block with the `(phase, main_gate)` pair each caller passes: that is the BLOCK → COMMAND mapping,
-and it is **M**. Which `(phase, main_gate)` each `bh work` verb actually passes was established by
-**reading** the call sites in bh's `work.py`, not by running them: that is the BOUNDARY → PHASE
-mapping, and it is **I**. These are different claims — "the resolver returns X for phase Y" is not
+**Measured against bh 0.15.0** — `bh --version` → `0.15.0`, 2026-08-25, source root
+`/opt/homebrew/Cellar/beadhive/0.15.0/libexec/lib/python3.13/site-packages/beadhive/`. **If your
+`bh --version` disagrees with that, this table is unverified for you**: re-derive it with the one
+command under "Regenerating this table" below before citing a row. The version sits in this header
+rather than in the prose because the four `bh 0.14.0` citations this section used to carry went
+stale in silence — the version and the evidence lived apart, so nothing about the table's
+appearance changed when the tool moved underneath it (phaze-g9cus).
+
+Every row below carries **two different kinds of evidence, kept apart on purpose**.
+`beadhive.config.validate_cmd` — imported live from the installed bh — was **executed** against
+the actual `~/.beadhive/config.yaml` block with the `(phase, main_gate)` pair each caller passes:
+that is the BLOCK → COMMAND mapping, and it is **M** (dev/fastsuite + dispatcher, 2026-08-25,
+against bh 0.14.0; re-executed unchanged by dev/bhcite the same day against bh 0.15.0). Which
+`(phase, main_gate)` each `bh work` verb actually passes was established by **reading** the call
+sites, not by running them: that is the BOUNDARY → PHASE mapping, and it is **I**. These are different claims — "the resolver returns X for phase Y" is not
 "`bh work merge` passes phase Y" — and merging them into one M is exactly the wrapper/delegate
 mistake above, one layer down. Only a live run of the verb after the config is applied upgrades a
 row's I half; `bh work brief` printing `just check-fast` for `validate_cmd` is live corroboration
 of the block, not a boundary run, and does not do that upgrading.
 
-| Boundary | Caller (`work.py`) | Resolves to | Evidence |
+| Boundary | Caller — symbol, and the resolver call as written | Resolves to | Evidence |
 |---|---|---|---|
-| `bh work check <id>` | `1909` — **no `check` phase exists**, so this is unconditionally `validate_cmd` | `just check-fast` | **M** (block→command) + **I** (boundary→phase — though with no override key possible for this phase, there is nothing left to misread) |
-| `bh work submit <id>` | `2417`, phase `submit`, no override | `just check-fast` (or a replayed ledger verdict — see "A gate's M is a property of a RUN" below) | **M** + **I** |
-| `bh work merge <id>` → molecule | `3557`, phase `merge`, `main_gate=False` | `just check-fast` — but **inert under `validation: relaxed`** (the phaze default): a per-bead merge landing into a molecule is not validated at all (`revalidate` evaluates `False`, work.py:3646) | **M** + **I** |
-| `bh work merge <id>` → main (every ad-hoc bead) | `3557`, phase `merge`, `main_gate=True` — `merge-main` wins over `merge` | `just check-fast` — **the boundary every ad-hoc bead actually hits**, since an ad-hoc bead (parent = NONE) lands here and never reaches `molecule` | **M** + **I** |
-| `bh work finish <epic>` (= molecule pre-land) | `2923`/`2948`, phase `molecule` | `just check-all` — the only *routinely traversed* full-suite boundary (the two rows below also run a full suite, but only conditionally) | **M** (block→command) + **I** (boundary→phase — no `bh work finish` has yet landed under this config; the first one upgrades this row) |
-| post-land molecule re-test (`postland`) | `2972`, phase `postland` | `just check` — kept full; see the citation immediately below the table | **M** + **I** |
-| union-merge resolution (`union`) | `3525`, phase `union` | `just check` — **preserved**, not decided: this is what it already resolved to before phaze-pv3kk, and it was never put to the operator, because leaving an unasked boundary unchanged needs no authority while changing it would | **M** + **I** |
+| `bh work check <id>` | `work_submission.py::impl_check` — `validate_cmd(cfg, entry)`, **no phase argument at all** | `just check-fast` | **M** (block→command) + **I** (boundary→phase — with no phase passed there is nothing left to misread) |
+| `bh work submit <id>` | `work_submission.py::impl__validate_submit_checkout` — `validate_cmd(cfg, entry, "submit")` | `just check-fast` (or a replayed ledger verdict — see "A gate's M is a property of a RUN" below) | **M** + **I** |
+| `bh work merge <id>` → molecule | `work_merge.py::impl__postland_revalidate_bead` — `validate_cmd(cfg, entry, "merge", main_gate=on_main)`, reached with `on_main=False` | `just check-fast` — but **inert under `validation: relaxed`** (the phaze default): a per-bead merge landing into a molecule is not validated at all | **M** + **I** |
+| `bh work merge <id>` → main (every ad-hoc bead) | the same site with `on_main=True`, so `merge-main` wins over `merge` | `just check-fast` — **the boundary every ad-hoc bead actually hits**, since an ad-hoc bead (parent = NONE) lands here and never reaches `molecule` | **M** + **I** |
+| `bh work finish <epic>` (= molecule pre-land) | `work_merge.py::impl__validate_molecule_checkout`, and `::impl__open_molecule_pr` on the `landing: pr` path — both `validate_cmd(cfg, entry, "molecule")` | `just check-all` — the only *routinely traversed* full-suite boundary (the two rows below also run a full suite, but only conditionally) | **M** (block→command) + **I** (boundary→phase — no `bh work finish` has yet landed under this config; the first one upgrades this row) |
+| post-land molecule re-test (`postland`) | `work_merge.py::impl__postland_revalidate_molecule` — `validate_cmd(cfg, entry, "postland")` | `just check` — kept full; see the citation immediately below the table | **M** + **I** |
+| union-merge resolution (`union`) | `work_merge.py::impl__merge_bead_no_ff` → `worktree.try_merge_rebase(..., validate_cmd=…)` — `validate_cmd(cfg, entry, "union")` | `just check` — **preserved**, not decided: this is what it already resolved to before phaze-pv3kk, and it was never put to the operator, because leaving an unasked boundary unchanged needs no authority while changing it would | **M** + **I** |
+
+**Regenerating this table, which is the whole point of citing symbols rather than lines.** One
+command enumerates the entire boundary population against whatever bh is installed:
+
+```bash
+grep -rn "config\.validate_cmd(" --include='*.py' \
+  "$(dirname "$(readlink -f "$(command -v bh)")")"/../lib/python*/site-packages/beadhive/
+```
+
+Run 2026-08-25 exactly as written, it printed **15 lines — 14 real call sites plus one docstring
+mention in `prepush.py`**: the seven boundaries above (7 lines, since `molecule` has two),
+`submit --group` and `merge --group` (see the group-merge paragraphs later in this section), and five read-only
+consumers — `bh doctor`, `bh hive ready`, `bh work brief`, `bh work show --run`, and the pre-push
+lookup. Run it first and read the rows against it: a **newly added** boundary shows up there and in
+no per-row citation of any form. One limitation, stated because an unstated one is how this table
+failed the first time — the pattern assumes the module-qualified call form
+(`config.validate_cmd(` / `api.config.validate_cmd(`), which is what all 14 sites use today; a
+future `from .config import validate_cmd` would slip past it.
+
+**Why symbols and a regeneration command, and not line numbers (phaze-g9cus).** This table
+previously cited seven `work.py` line numbers — 1909, 2417, 3557, 2923, 2948, 2972 and 3525. bh
+0.15.0 split that module into `work_merge.py` / `work_group.py` / `work_submission.py` /
+`work_logic.py` and more, leaving `work.py` at **1777** lines, so `sed -n "${n}p"` returned
+**empty for all seven**. They did not point at the wrong code — a wrong citation can be read and
+recognised as wrong. They **dangled**, which is neither readable nor checkable, and nothing about
+the table's appearance changed.
+
+That is this file's ADR-numbering argument one level down: **a pointer with no redundancy cannot be
+checked by any tool, so the redundancy has to be written in at authoring time.** `sed -n '3557p'`
+succeeds against any file long enough — there is no assertion in `work.py:3557` that a reader or a
+tool could falsify. The citation form above is mutually redundant and so fails loudly:
+`grep -n "def impl__postland_revalidate_bead" work_merge.py` returns nothing if the symbol moved or
+was renamed, and `grep -n 'validate_cmd(cfg, entry, "merge"' work_merge.py` independently
+corroborates the phase. The cost is real and small — a symbol names a ~48-line function rather than
+one line — but a stale line number recovers nothing, while a symbol recovers its line in one grep.
+**This is not an argument from principle: every one of the seven boundaries changed file and line
+between the two versions, and every one is still findable today by its function name and its phase
+literal. Symbols survived the reorganisation; line numbers survived none of it.**
+
+**The general form, because this bead hit it twice in two different shapes.** A **fixed
+enumeration** is a pointer with no redundancy in exactly the same way a bare line number is:
+nothing in `{a, b, c, d, e, f}` says whether the list is complete, so it decays in silence and the
+next reader inherits it as fact. That is not an analogy — it is the same defect, and the ledger's
+field list in "A gate's M is a property of a RUN" below is where the second instance was found. Where a list can grow, name
+the optional members *as* optional; where a pointer can move, cite something that fails loudly when
+it does.
+
+**And the recurrence is the most interesting fact here, not the citations.** This is the repowise
+0.44-vs-0.45 shape — see the `analyzed_commit` entry in the beads section below, which states its
+own lesson as *re-measure a tool's behaviour against the version you are running* — recurring
+**inside the one table in this file whose declared purpose is to keep measured evidence apart from
+inferred**, written the day after that entry landed, and stale the same day it was written. Nothing
+here was careless: prose faithful to its author's evidence and stale about the tool is not a lapse
+of attention, because **nothing in the prose changes when the tool moves underneath it.** Care
+cannot catch that. What catches it is a citation that fails loudly and a command that regenerates
+the claim, which is what the two blocks above exist to be.
 
 **Why `postland` stays full, cited in full (ADR-0012 rule 2).** Question as put (dispatcher →
 operator, 2026-08-25): *"your decision said 'merge-main too — nothing full-suite before main; CI
@@ -123,7 +187,69 @@ that at the fast recipe silently makes it fast too. Which should it be?"* Answer
 option **label** selected, verbatim (its *description* was the dispatcher's framing and carries no
 operator authority; only the label below is the operator's words, "(Recommended)" included since
 it was part of that label): *"Keep postland on the full suite (Recommended)"*. Date: 2026-08-25.
-Durable record: `phaze-pv3kk`'s bead comments.
+Durable record: `phaze-pv3kk`'s bead comments. *(The question above names bh 0.14.0 because that is
+the version whose source was read the day it was asked. It is quoted verbatim and is **not**
+updated to 0.15.0: [ADR-0012](docs/design/0012-verification-fidelity-and-operator-attribution.md)
+(verification fidelity and operator attribution) rule 2 requires the question **as it was put**,
+and editing it so the asker appears to have said something they did not would falsify the durable
+record this rule exists to protect. The same reasoning keeps the two dated measurements in the ledger section below
+as they were written, with re-verification appended rather than substituted — correct a standing
+claim, preserve a dated one.)*
+
+**Three things the seven rows understate, re-derived 2026-08-25 against bh 0.15.0 (phaze-g9cus).**
+None of these changes a resolved recipe — all seven resolve exactly what the table already claimed.
+They are places a row was less specific than the source, and the difference matters when reading a
+transcript:
+
+- **`merge` / `merge-main` is a POST-land re-test, not a pre-merge gate.** Its only call site sits
+  inside `impl__postland_revalidate_bead`, which runs *after* the `--no-ff` merge while the merge
+  slot is still held, and rolls a safe-to-rewrite tip back on red — the same shape the `postland`
+  row describes, and why nobody ever sees a broken `main` from it. Whether it fires at all is one
+  line in `work_merge.py::impl__merge_bead`, worth quoting because both merge rows depend on it:
+  `revalidate = mode == "conservative" or (on_main and mode != "loose")`. Under `relaxed`,
+  molecule → `False`, main → `True`.
+- **`postland` is the MOLECULE post-land only.** The per-bead post-land resolves `merge` /
+  `merge-main`, never `postland`, so those are two separate boundaries rather than a general rule
+  and its narrower relative.
+- **`union` can only ever fire on a per-bead merge.** It is passed only into
+  `worktree.try_merge_rebase`, which has exactly one caller. The molecule land
+  (`impl__merge_molecule`) and the batch land both call `merge_no_ff` directly, with no union tier,
+  so `union: just check` is unreachable from either.
+
+**An eighth phase exists and is deliberately not an eighth row.** bh 0.15.0 has a `push-main` phase
+(`prepush.py::PUSH_MAIN_PHASE`, consumed by `prepush.py::push_main_cmd`); it does not *run* a
+command but resolves the one a pre-push gate would look a ledger verdict up under, and it **fails
+closed** — with the key unset it refuses rather than inheriting `validate_cmd`, the opposite of the
+silent-inheritance hazard below — measured 2026-08-25: `push_main_cmd` returns
+`('', '• no work.validate.push-main configured for hive phaze …')`, and no `pre-push` hook is
+installed in this clone, so it is doubly inert. Whether it predates 0.15.0 was not established.
+
+**A bounce from `merge-main` is not necessarily a test failure — check whether anything ran
+(observed 2026-08-25, dispatcher seat).** On that day `bh work merge` onto `main` failed **3 for 3**
+whenever it actually validated, and the failure was not in the tests. The transcript signature:
+
+```
+🎯 selector: fail  the worktree has uncommitted changes, which the main clone's index cannot see.
+❌ the test selector failed (exit 1); no verdict was produced and nothing was run.
+✗✗ … main is RED in combination (exit 1) … Bounced the bead; fix forward.
+```
+
+Three beads were set to `review:changes-requested` by a boundary that **ran zero tests**, while
+each bead's own gate was green and a full-suite check on the merged tree passed clean; a fourth
+escaped only because it replayed a ledger verdict. The condition was not reproducible outside bh's
+own invocation and is filed upstream — **so read this as a dated observation, not as a property of
+the boundary**, and expect it to be fixed. The `merge-main` row above is unaffected: which recipe
+resolves is a separate question from whether the run reaches it.
+
+**The durable half is the general form, and it is this section's own rule in a mirror.** "A gate is
+green only if its own pytest summary line says so" has an exact counterpart: **a gate is RED only
+if its own pytest summary line says so.** An exit 1 with no verdict is not a failing gate, it is an
+**unmeasured** one, and the two demand opposite responses — the first is a regression to fix, the
+second is a harness problem to escalate. Here the last line printed says `main is RED in
+combination`, which reads unmistakably as the first; the line that tells you it is the second is
+three lines earlier and easy to scroll past. A seat that trusts the verdict line starts hunting a
+regression that does not exist, which is the phaze-jnj90 / phaze-nqawu family arriving through the
+harness rather than the code — the same shape as a green that measured nothing, only inverted.
 
 `validation: relaxed` (the phaze default) does not make an explicit `merge:` key redundant to set
 even though it makes it inert today: the phaze block still pins `merge: just check-fast` so that a
@@ -138,6 +264,29 @@ itself were ever lost, it too falls to `just check-fast` — at which point **no
 suite before `main`, and every gate still prints green. That is why every boundary above is pinned
 explicitly rather than left to inherit, and why deleting any one of these five keys is a regression
 even though nothing in the diff around it would look wrong.
+
+**The control cannot cover every boundary, and one sits outside it.** `bh work merge --group`
+resolves the bare `validate_cmd` and **no `work.validate` key can reach it** — mechanism in the
+group-merge paragraphs later in this section. It is not a key that could be deleted; it is a key that never
+existed, so the control has nothing to protect there. Three measurements say what that costs
+(dev/bhcite, 2026-08-25, bh 0.15.0):
+
+- **The obvious fix validates clean and does nothing.** `WorkConfig.validate_overrides` is a
+  `dict[str, str]`, so `config_schema.WorkConfig.model_validate` **accepts** an invented `batch:`
+  key — and a `check:` key — without complaint, while the resolver consults neither. A config that
+  looks like it pinned the boundary has pinned nothing. Read the `bh work check` row the same way:
+  it is not that a `check:` key is rejected, it is that one would be silently inert.
+- **A group of ad-hoc beads lands on `main` through this hole.** `merge_group` takes its base from
+  `worktree.integration_base`, which falls back to the integration branch when the members have no
+  started container ancestor — so a batch of parent-less beads merges onto `main` validated by
+  `validate_cmd` rather than by `merge-main`, the one override whose entire purpose is to make the
+  main-landing boundary differ from the intermediate ones.
+- **Escalated as `hq-f9w`** (`bh escalate`, tool `bh work merge --group`, 2026-08-25). Read as a bh
+  defect rather than a design choice on four grounds: it is the only landing site in 0.15.0 that
+  omits the phase; its sibling `submit --group` passes `"submit"`; bh's own telemetry beside it
+  already names the phase (`{"bh.work.phase": "batch"}`), so the concept exists and merely never
+  reaches the resolver; and the schema accepts the remediation that does not work. **Do not try to
+  work around it in `~/.beadhive/config.yaml`** — there is nothing to write there that takes effect.
 
 **For an ad-hoc bead, nothing runs the full suite before `main`.** Ad-hoc beads (parent = NONE)
 land through `merge-main`, never through `molecule`/`finish`, so post-push CI becomes the *first*
@@ -234,10 +383,15 @@ it with nothing pinned in the way. Do not be misled by the telemetry beside it �
 **never** passed to the resolver, so a `batch:` key in the config would be inert. This is a
 BOUNDARY → PHASE read from source (**I** in this section's sense) paired with the same **M** block →
 command mapping the table already carries. It is deliberately **not** grafted on as an eighth row,
-because that table's caller citations are `work.py` line numbers and **bh 0.15.0 has split `work.py`
-into `work_merge.py` / `work_group.py` / `work_submission.py`, so none of those seven line numbers
-still resolve** (`bh --version` → 0.15.0, checked 2026-08-25; the table was written against 0.14.0
-the same day). Re-deriving all seven is its own measurement pass, not a side effect of this one.
+and the reason survived the table being rebuilt: every row there is keyed on the `(phase,
+main_gate)` pair its boundary passes, and a group merge passes **no phase at all**, so it has no
+key to sit under. It belongs in prose, here, where the absence itself is the subject.
+
+*(When this paragraph was written, that table cited seven `work.py` line numbers, and **bh 0.15.0's
+split of `work.py` into `work_merge.py` / `work_group.py` / `work_submission.py` left none of them
+resolving** — `bh --version` → 0.15.0, checked 2026-08-25, against a table written against 0.14.0
+the same day. Re-deriving all seven was its own measurement pass and was done as `phaze-g9cus`; the
+table above now cites symbols, and carries the command that regenerates it.)*
 
 **What the 2026-08-21 measurement does NOT license.** It was taken before phaze-pv3kk, when
 `validate_cmd` was `just check` rather than `just check-fast`. The *reuse* is unaffected — the ledger
@@ -284,7 +438,8 @@ promises to validate "from a clean checkout", and this repo read that as meaning
 is its own pristine-checkout, full-suite measurement. It is not: the verdict ledger is keyed on
 `(tree hash, validate-cmd hash)` and **not** on which command validated, so a `bh work check`
 verdict earned in the **seat worktree** is replayed by a submit that never makes a checkout at all
-(phaze-qsyc0, established 2026-08-24 against bh 0.14.0). A submit is evidence of a full-suite run
+(phaze-qsyc0, established 2026-08-24 against bh 0.14.0; **re-verified unchanged against bh 0.15.0
+on 2026-08-25**, phaze-g9cus). A submit is evidence of a full-suite run
 only when its transcript carries the pytest summary and coverage lines; since phaze-pv3kk a submit
 is evidence of a *change-selected* run only when its transcript carries `check-fast`'s RUN verdict
 (or its escalation to `just check`'s pytest summary and coverage lines); a replay prints a
@@ -302,7 +457,9 @@ validation verdict reused (sha 0fe39f1, tree f7beb62, recorded 2026-08-23T20:40:
 
 That submit ran no tests. It is not unsound — but it is **not its own measurement**, and the table
 row above would otherwise read as though it always were. Established 2026-08-24 from
-`beadhive/validation_ledger.py`, `beadhive/config.py` and the live ledger file, against bh 0.14.0:
+`beadhive/validation_ledger.py`, `beadhive/config.py` and the live ledger file, against bh 0.14.0
+— and **re-verified against bh 0.15.0 on 2026-08-25** (phaze-g9cus), which left the mechanism
+untouched and corrected two of the details below:
 
 - **The key is `(tree hash, validate-cmd hash)` — the validating COMMAND is not part of it.** So a
   `bh work check` verdict, earned in the **seat worktree**, is replayed by `bh work submit`, whose
@@ -310,8 +467,55 @@ row above would otherwise read as though it always were. Established 2026-08-24 
   from a CLEAN worktree — but the two are interchangeable under one key, so "submit validated from
   a pristine checkout" can be discharged by a run that never made one. Both use phaze's
   `work.validate_cmd`, so their hashes always match — `just check` until 2026-08-25, `just
-  check-fast` since. **M** — the ledger at `.git/bh-validation-ledger.json` stores exactly `{tree,
-  cmd_hash, rc, at, host, sha}`.
+  check-fast` since. **M** — the ledger at `.git/bh-validation-ledger.json` stores `{tree,
+  cmd_hash, rc, at, host, sha, shas}`, plus a **conditional eighth `report`** written only when the
+  validate command emits a parseable test summary. Re-read 2026-08-25 against bh 0.15.0: all **49**
+  live entries carry exactly those seven and **none** carries `report`. **Of the seven, two are the
+  key and five are not** — `validation_ledger.py::record` says so, and it is worth quoting because
+  the transcript line invites the opposite reading: *"Commit shas are METADATA, never identity
+  (bh-ku9n9.3): `sha` is the one observed by this run, `shas` every distinct one seen at this tree
+  — the join key a later historical upload needs … Nothing here reads them back. `host` is
+  diagnostic-only too."* Written as a flat list of names, this enumeration silently lost `shas`
+  once already; that is the fixed-enumeration trap named under the boundary table above, which is
+  why the optional field is named *as* optional here.
+- **Whether a replayed verdict can carry test counts is a property of the LEDGER ENTRY, not of
+  replay — so check, rather than assuming either state.** bh never invokes a test runner: it exports
+  `BH_TEST_REPORT_DIR` into every validation subprocess and parses whatever JUnit XML turns up
+  there, and a hive opts in from its own test config (`beadhive/test_report.py`). An entry recorded
+  while the hive opts into nothing is **rc-only** and can supply no pytest summary line at all; one
+  recorded after it opts in carries a `report`. **Both shapes coexist in the same file**, because
+  the field is per-entry and nothing rewrites old entries. Measured 2026-08-25: **1 of 56** entries
+  carried `report` (`{"tests": 8041, "passed": 8038, "failures": 0, "errors": 0, "skipped": 3}`);
+  the other 55 were rc-only.
+
+  **The field tracks the TREE THAT WAS VALIDATED, which is what makes the ratio predictable rather
+  than merely unstable.** A clean-checkout gate validates the tree under test, so the JUnit opt-in
+  is in effect only where *that tree* carries it — bh's ingest behaves correctly whether or not a
+  report appears. The opt-in (`tests/bh_test_report.py`) reached `main` on **2026-08-25**: entries
+  recorded against trees predating it are rc-only, entries against trees descended from it carry
+  counts, and nothing rewrites the old ones. That is why both shapes sit in one file, and why the
+  ratio climbs from here rather than holding at the figure above.
+
+  **An absent `report` says nothing whatever about the run — only about the tree.** Measured on this
+  bead's own first gate, the cleanest available case because the suite indisputably ran: a green
+  **8027 passed** full-suite run, on a tree cut before the opt-in landed, recorded **rc-only**. A
+  seat that finds no counts on a replayed verdict and concludes "nothing ran" has it exactly
+  backwards. **Do not read the ratio forward** — it is one command:
+
+  ```bash
+  python3 -c "import json,subprocess;p=subprocess.check_output(['git','rev-parse','--git-common-dir'],text=True).strip()+'/bh-validation-ledger.json';d=json.load(open(p));print(sum('report' in e for e in d),'of',len(d),'entries carry counts')"
+  ```
+
+  **`--git-common-dir` is load-bearing, not fastidiousness — do not "simplify" it to `.git/`.**
+  Inside a bead worktree `.git` is an 87-byte **file** pointing at the real gitdir, so the obvious
+  path raises `NotADirectoryError: [Errno 20] Not a directory` (measured 2026-08-25) — it would
+  break in exactly the place a seat runs it, and work fine wherever you tested it. The ledger lives
+  in the main clone regardless of which worktree asks.
+
+  **None of this makes an rc-only verdict weaker.** `rc` is authoritative by design —
+  `test_report.py` states it as the first of three binding constraints: the report is *detail, never
+  a verdict*, and **may never upgrade one**; a missing report is explicitly "not a failure". An
+  rc-only verdict carries no detail, not less authority.
 - **The ENVIRONMENT is not in the key, and phaze does not use bh's mitigation for that.** bh
   re-derives the environment from the tree via `verify: true` worktree-init rules; phaze declares
   **none** (its three init rules carry no `verify` flag — only the homelab rig has one), so no
@@ -327,9 +531,15 @@ row above would otherwise read as though it always were. Established 2026-08-24 
   covers the phaze-nqawu hazard — a verdict earned under the old lint-only command cannot be
   replayed under `just check`, and (since phaze-pv3kk) a verdict earned under `just check` cannot
   be replayed under `just check-fast` either, for the same reason.
-- **There is no flag to force re-validation.** `bh work submit --help` offers none. The knobs are
-  `work.ledger_ttl` and `work.validate_precheck` in `~/.beadhive/config.yaml` (phaze sets neither),
-  or deleting `.git/bh-validation-ledger.json`.
+- **There is no flag to force re-validation.** `bh work submit --help` offers none (re-read
+  2026-08-25 on bh 0.15.0). The knobs are `work.ledger_ttl` and `work.always_run` in
+  `~/.beadhive/config.yaml` (phaze sets neither), or deleting `.git/bh-validation-ledger.json`.
+  **`work.validate_precheck` no longer exists** — it was named here until phaze-g9cus, and a
+  `grep -rn validate_precheck` over the whole 0.15.0 package returns nothing. `work.always_run` is
+  the nearest current thing and is not the same knob: it names a command run *before* any recorded
+  verdict is honored — the small set a tree hash cannot vouch for, because it reads git metadata
+  rather than file content — and a non-zero exit **refuses the hit and seals the ledger for the
+  rest of the process**. It is paid on every hit, so it is seconds-not-minutes work by design.
 
 **The general form, and it is the next case after the wrapper/delegate rule above.** That rule says
 an inference that a wrapper is measured because its delegate was measured is still an inference.
@@ -694,9 +904,10 @@ gate itself into the redirect target, and no wrapper, list or backgrounding can 
 the same conclusion the redirection-order paragraph below reaches from its own side, which is why it
 is stated once there and not repeated as a fourth rule here.
 
-**And the durable record barely tells these apart either.** `.git/bh-validation-ledger.json` stores
-`{tree, cmd_hash, rc, at, host, sha}`, so a signal death is `rc=143`, a genuine failure is `rc=1`,
-and both are recorded as verdicts. Measured 2026-08-25: **55 of 56** entries carry no counts at all;
+**And the durable record barely tells these apart either.** `.git/bh-validation-ledger.json` records
+an `rc` and nothing else that separates these two cases (its full field list is in the ledger
+section above — do not re-enumerate it here, for the reason that section gives), so a signal death
+is `rc=143`, a genuine failure is `rc=1`, and both are recorded as verdicts. Measured 2026-08-25: **55 of 56** entries carry no counts at all;
 the single exception is one `rc=0` entry carrying a `report` of `{tests, passed, failures, errors,
 skipped}`, a field that had only just begun to be populated. Read that as **dated, not permanent** —
 and note it changes nothing for the case that matters: this bead's own green check, run minutes
@@ -862,8 +1073,8 @@ validation ran before it died. So one of the kills above is confirmed by artifac
 kill at an unrecorded concurrency, and `phaze-sy8z3`'s re-gate has **no ledger entry at all**. The
 timestamps are the 24th; the percentages above come from session transcripts dated the 25th, the
 wave ran overnight, and nothing reconciles the two beyond that. Take from the ledger only what it
-stores — `{tree, cmd_hash, rc, at, host, sha}`, and for these two entries **no counts** (one recent
-entry does carry them; see the masking section above): it establishes that the kills happened and
+stores (field list in the ledger section above), and for these two entries **no counts** (some
+entries do carry them; see the masking section above): it establishes that the kills happened and
 were recorded as failing verdicts, never the memory state at the moment of the kill, which is the
 gap named above. So the rule
 was wrong in *both* directions at once — it permitted the runs that died, and here it would have
