@@ -17,7 +17,19 @@
                          both from routers/proposals.py's _V7_ROW_FACETS, which now carries only the
                          one live stem.
      * pid            -- the proposal (or file) id.
-     * file           -- display name (truncating first line); original_path = its title tooltip.
+     * file           -- display name (truncating first line).
+     * file_tooltip   -- the `title=` tooltip on that display name, i.e. what hovering a TRUNCATED
+                         name reveals. Every live binding passes the filename, so the tooltip
+                         un-truncates `file` and nothing else.
+                         Named `original_path` until phaze-n8o9p, which is the one thing it never
+                         carried: two bindings passed `FileRecord.current_path` and two passed the
+                         filename, and the name asserted an ingest path at all four. Question put to
+                         the operator 2026-08-25 was whether the two FILENAME bindings should change
+                         to current_path for consistency; the answer inverted it -- "I want the
+                         tooltip to only be the filename since the current_path may be very long
+                         causing the tooltip to be too long" -- so the two PATH bindings changed
+                         instead. Durable record: the phaze-n8o9p bead comment dated 2026-08-25.
+                         A path belongs in the Destination facet below, never here.
      * before / after -- the current (struck rose) and proposed (emerald) values.
      * diff_label     -- optional visible label for the primary before/after facet.
      * secondary_label / secondary_before / secondary_after -- optional read-only second facet.
@@ -59,7 +71,7 @@
      class="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5{% if row_state and row_state != 'pending' %} opacity-70{% endif %}"
      x-data='{ editing:false, val:{{ after|tojson }} }'>
     <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div class="min-w-0 truncate text-sm text-gray-900 dark:text-gray-200" title="{{ original_path }}">{{ file }}</div>
+        <div class="min-w-0 truncate text-sm text-gray-900 dark:text-gray-200" title="{{ file_tooltip }}">{{ file }}</div>
         {% if row_state and row_state != 'pending' %}
         {# Applied/approved/skipped lifecycle (Pattern 6): status word + neutral UNDO (never destructive-red).
            'skipped' (a rejected row) is a neutral-gray word; approved/applied stay emerald. #}

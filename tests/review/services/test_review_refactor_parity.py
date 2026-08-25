@@ -122,6 +122,29 @@ def old_review() -> Iterator[ModuleType]:
 
 
 # ---------------------------------------------------------------------------
+# Deliberate key renames since the pinned pre-refactor SHA (phaze-n8o9p)
+# ---------------------------------------------------------------------------
+#
+# These row dicts are compared with a raw ``==``, which is what gives this module its teeth: any
+# divergence at all, in any key or value, fails. The cost is that it also cannot tell a REGRESSION
+# from a rename the repo made on purpose, and phaze-n8o9p made one -- ``original_path`` ->
+# ``current_path`` in ``_build_changes_review_row`` and ``_proposal_row_base``. The VALUE is
+# untouched on both sides (``proposal.file.current_path``); only the key's spelling moved, because
+# the old name asserted the ingest path while carrying the current one.
+#
+# So the old module's rows are re-keyed through exactly this mapping before the comparison, rather
+# than weakening the assertion to "same values, any keys". Every other difference -- a changed
+# value, a dropped key, an added one -- still fails loudly, which is the property worth keeping.
+# Add to this dict ONLY for a rename that is deliberate, value-preserving, and recorded on a bead.
+_RENAMED_SINCE_PRE_REFACTOR = {"original_path": "current_path"}
+
+
+def _rekey(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    """The pre-refactor rows, with deliberately-renamed keys spelled the way the new module spells them."""
+    return [{_RENAMED_SINCE_PRE_REFACTOR.get(key, key): value for key, value in row.items()} for row in rows]
+
+
+# ---------------------------------------------------------------------------
 # Changes Review / Propose / Rename-Move parity
 # ---------------------------------------------------------------------------
 
@@ -143,7 +166,7 @@ async def test_changes_review_page_parity(
 
     assert old_page.stats == new_page.stats
     assert old_page.pagination == new_page.pagination
-    assert old_page.rows == new_page.rows
+    assert _rekey(old_page.rows) == new_page.rows
 
 
 @pytest.mark.asyncio
@@ -159,7 +182,9 @@ async def test_pending_proposal_rows_parity(
     old_result = await old_review.get_pending_proposal_rows(session)
     new_result = await new_review.get_pending_proposal_rows(session)
 
-    assert old_result == new_result
+    assert _rekey(old_result.rows) == new_result.rows
+    assert old_result.total_pending == new_result.total_pending
+    assert old_result.high_confidence_pending == new_result.high_confidence_pending
 
 
 @pytest.mark.asyncio
@@ -176,7 +201,7 @@ async def test_proposal_workspace_page_parity(
 
     assert old_page.stats == new_page.stats
     assert old_page.pagination == new_page.pagination
-    assert old_page.rows == new_page.rows
+    assert _rekey(old_page.rows) == new_page.rows
 
 
 # ---------------------------------------------------------------------------

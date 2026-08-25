@@ -157,10 +157,10 @@
                            class="mt-1 rounded border-gray-300 focus:ring-2 focus:ring-blue-500 disabled:opacity-40 dark:border-phaze-border"
                            aria-label="Select {{ p.filename }}" aria-describedby="changes-eligibility-{{ p.id }}">
                     <div class="min-w-0 flex-1 -mx-4 -mt-3">
-                    {% with row_id_prefix="rename-row", pid=p.id, file=p.filename, original_path=p.original_path,
+                    {% with row_id_prefix="rename-row", pid=p.id, file=p.filename, file_tooltip=p.filename,
                             diff_label="Filename", before=p.filename, after=p.proposed_filename,
-                            secondary_label="Destination", secondary_before=p.original_path,
-                            secondary_after=((p.proposed_path ~ "/" ~ p.proposed_filename) if p.proposed_path else (p.original_path.rsplit("/", 1)[0] ~ "/" ~ p.proposed_filename)),
+                            secondary_label="Destination", secondary_before=p.current_path,
+                            secondary_after=((p.proposed_path ~ "/" ~ p.proposed_filename) if p.proposed_path else (p.current_path.rsplit("/", 1)[0] ~ "/" ~ p.proposed_filename)),
                              approve_url="/proposals/" ~ p.id ~ "/approve", skip_url="/proposals/" ~ p.id ~ "/reject",
                             undo_url="/proposals/" ~ p.id ~ "/undo", edit_url="/proposals/" ~ p.id ~ "/edit",
                              edit_facet="filename", row_state=("executed" if p.raw_status == "executed" else ("failed" if p.raw_status == "failed" else ("pending" if p.status == "needs_review" else ("skipped" if p.status == "rejected" else p.status)))),
@@ -217,7 +217,7 @@
                 {% if f.has_blanking %}{% set _ = tag_warnings.append("An existing tag would be blanked; excluded from bulk approval.") %}{% endif %}
                 {% if f.discrepancies %}{% set _ = tag_warnings.append("Verification discrepancy: " ~ f.discrepancies) %}{% endif %}
                 {% if f.error_message %}{% set _ = tag_warnings.append("Last error: " ~ f.error_message) %}{% endif %}
-                {% with row_id_prefix="tagwrite-row", pid=f.file_id, file=f.filename, original_path=f.filename,
+                {% with row_id_prefix="tagwrite-row", pid=f.file_id, file=f.filename, file_tooltip=f.filename,
                         diff_label="Complete tags", before=f.before_summary, after=f.after_summary,
                          approve_url="/tags/" ~ f.file_id ~ "/write", approve_method="post",
                          review_token=f.review_token,

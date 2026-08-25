@@ -107,7 +107,7 @@
         {% endif %}
     {% endif %}
     {% set _ = ns.rows.append([
-        {'text': p.filename, 'mono': True, 'title': p.original_path},
+        {'text': p.filename, 'mono': True, 'title': p.filename},
         {'text': p.proposed_filename},
         {'text': (p.proposed_path or "—"), 'mono': True, 'wrap': True, 'title': (p.proposed_path or "No proposed path")},
         {'text': llm_model, 'mono': True, 'title': llm_model, 'color': 'text-muted '},

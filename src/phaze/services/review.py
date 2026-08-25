@@ -243,7 +243,7 @@ def _build_changes_review_row(proposal: RenameProposal, collision_ids: set[str])
         "id": proposal.id,
         "file_id": proposal.file_id,
         "filename": proposal.file.original_filename,
-        "original_path": proposal.file.current_path,
+        "current_path": proposal.file.current_path,
         "proposed_filename": proposal.proposed_filename,
         "proposed_path": proposal.proposed_path,
         "confidence": proposal.confidence,
@@ -318,7 +318,7 @@ def _proposal_row_base(proposal: RenameProposal) -> dict[str, Any]:
     return {
         "id": proposal.id,
         "filename": proposal.file.original_filename,
-        "original_path": proposal.file.current_path,
+        "current_path": proposal.file.current_path,
         "proposed_filename": proposal.proposed_filename,
         "proposed_path": proposal.proposed_path,
         "confidence": proposal.confidence,
@@ -338,7 +338,7 @@ async def get_pending_proposal_rows(session: AsyncSession, *, confidence_thresho
 
     Reuses ``get_proposals_page(status="pending")`` inside a ``session.begin_nested()`` SAVEPOINT and
     maps each proposal (plus its ``selectinload``'d file) to a plain dict keyed for both diff facets:
-    ``id`` · ``filename`` (``file.original_filename``) · ``original_path`` (``file.current_path``) ·
+    ``id`` · ``filename`` (``file.original_filename``) · ``current_path`` (``file.current_path``) ·
     ``proposed_filename`` · ``proposed_path`` · ``confidence`` · ``status`` · ``updated_at``
     (phaze-exivg -- the row's optimistic-concurrency token, round-tripped by the APPROVE button).
     Returns an all-empty/zero :class:`PendingProposalRows` on any DB error so the render/poll path
@@ -396,7 +396,7 @@ async def get_proposal_workspace_page(
 
     The paginated sibling of :func:`get_pending_proposal_rows`, and the read behind
     ``/s/propose``'s filter tabs, search box and pager (phaze-a6hm.2 / .9). It emits the SAME row
-    dict shape that helper does -- ``id`` · ``filename`` · ``original_path`` · ``proposed_filename``
+    dict shape that helper does -- ``id`` · ``filename`` · ``current_path`` · ``proposed_filename``
     · ``proposed_path`` · ``confidence`` · ``status`` -- so ``_file_table.html`` and the workspaces built on it
     are unaffected by which of the two produced the rows.
 
