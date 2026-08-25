@@ -7,6 +7,8 @@ functions, with misses reading back 0). Uses the in-memory :class:`FakeRedis` do
 
 from __future__ import annotations
 
+import pytest
+
 from phaze.services.pipeline_counters import (
     PIPELINE_FUNCTIONS,
     _to_int,
@@ -17,13 +19,23 @@ from phaze.services.pipeline_counters import (
 from tests._queue_fakes import FakeRedis
 
 
-def test_to_int_coerces_none_bytes_str_and_int() -> None:
-    """``_to_int`` handles every Redis return shape: a miss (None), bytes (non-decode_responses
-    client), and a plain str/int (decode_responses=True client)."""
-    assert _to_int(None) == 0
-    assert _to_int(b"7") == 7
-    assert _to_int("42") == 42  # decode_responses=True path
+def test_to_int_accepts_the_decode_responses_shapes_and_refuses_bytes() -> None:
+    """``_to_int`` accepts what the ONE production reader yields, and refuses what it never yields.
+
+    phaze-ooe68 (seam E4): ``_to_int`` used to decode ``bytes`` as well, which made a Redis
+    client-mode mismatch succeed silently. It is now STRICT -- an implementer's decision argued
+    in the helper's own docstring. This is the unit half of the pin required by the bead; the
+    real-Redis half, where the ``bytes`` come from an actual byte-mode client rather than a
+    hand-written literal, is ``tests/analyze/core/test_pipeline_counters_client_mode.py``.
+    """
+    assert _to_int(None) == 0  # a miss
+    assert _to_int("42") == 42  # decode_responses=True path -- app.state.redis (main.py:161)
     assert _to_int(13) == 13  # already-int path
+
+    # The masking branch, now refused. Both spellings, since redis-py can hand back either.
+    for wrong in (b"7", bytearray(b"7")):
+        with pytest.raises(TypeError, match="requires the decode_responses=True client"):
+            _to_int(wrong)
 
 
 async def test_incr_enqueued_bumps_namespaced_key() -> None:
@@ -42,7 +54,10 @@ async def test_incr_completed_bumps_namespaced_key() -> None:
 
 
 async def test_read_counters_returns_merged_dict_for_all_functions() -> None:
-    redis = FakeRedis()
+    # phaze-ooe68: ``read_counters`` has exactly one production reader and it passes
+    # ``app.state.redis`` (decode_responses=True), so the double must stand in for THAT mode.
+    # The default byte-mode FakeRedis is the ``queue.cache_redis`` WRITER handle.
+    redis = FakeRedis(decode_responses=True)
     await incr_enqueued(redis, "process_file")
     await incr_enqueued(redis, "process_file")
     await incr_enqueued(redis, "process_file")
@@ -59,7 +74,7 @@ async def test_read_counters_returns_merged_dict_for_all_functions() -> None:
 
 
 async def test_read_counters_covers_all_functions() -> None:
-    redis = FakeRedis()
+    redis = FakeRedis(decode_responses=True)  # the dashboard reader's mode -- see above
     counters = await read_counters(redis)
     assert len(counters) == len(PIPELINE_FUNCTIONS) == 5
     for fn in PIPELINE_FUNCTIONS:

@@ -143,16 +143,23 @@ def test_store_literal_has_no_undefined_seed() -> None:
 class _FallbackRedis:
     """Minimal async Redis double exposing only ``mget`` over a seeded ``store`` dict.
 
-    Mirrors a non-``decode_responses`` client (returns ``bytes`` per present key) so the
-    ``pipeline_counters._to_int`` bytes-decode path is exercised. ``read_counters`` only
-    calls ``mget`` on the enqueued + completed key lists, so that is all we implement.
+    Mirrors ``app.state.redis`` -- ``Redis.from_url(url, decode_responses=True)`` (``main.py:161``)
+    -- because that is the ONE client production ever hands to ``read_counters``, via
+    ``dashboard_stats._read_pipeline_counters``. It therefore returns ``str`` per present key.
+
+    phaze-ooe68: it used to return ``bytes``, i.e. to stand in for ``queue.cache_redis``, the
+    byte-mode WRITER handle that never reads these keys. That exercised ``_to_int``'s bytes
+    branch, which existed only because ``_to_int`` was bimodal -- a double and a helper wrong in
+    the same direction, agreeing with each other about a client mode neither reader uses.
+    ``read_counters`` only calls ``mget`` on the enqueued + completed key lists, so that is all
+    we implement.
     """
 
     def __init__(self, store: dict[str, int]) -> None:
         self.store = store
 
-    async def mget(self, keys: list[str]) -> list[bytes | None]:
-        return [str(self.store[k]).encode() if k in self.store else None for k in keys]
+    async def mget(self, keys: list[str]) -> list[str | None]:
+        return [str(self.store[k]) if k in self.store else None for k in keys]
 
 
 def _idle_activity() -> dict[str, int]:

@@ -168,23 +168,44 @@ class FakeRedis:
     """A minimal in-memory async Redis double for the maintained pipeline counters.
 
     Implements only the surface ``phaze.services.pipeline_counters`` touches: ``incr``
-    (durable INCR, returns the new value) and ``mget`` (returns ``bytes`` per present key
-    or ``None`` for a miss, mirroring a non-``decode_responses`` client so the service's
-    ``_to_int`` bytes-decode path is exercised). Phase 36: attach to a :class:`FakeQueue` /
+    (durable INCR, returns the new value) and ``mget``. Phase 36: attach to a :class:`FakeQueue` /
     :class:`DedupFakeQueue` via its ``cache_redis`` attribute so the ``before_enqueue`` key
     hook's best-effort counter INCR (which reads ``job.queue.cache_redis``, NOT the removed
     ``job.queue.redis`` -- the broker is Postgres now) lands somewhere assertable.
+
+    ``decode_responses`` SELECTS THE CLIENT MODE THIS DOUBLE STANDS IN FOR, and the caller must
+    pick the one its production counterpart uses (phaze-ooe68, seam E4):
+
+    * ``False`` (the default) mirrors ``queue.cache_redis`` -- ``aioredis.Redis.from_url(url)``
+      with no ``decode_responses`` (``tasks/_shared/queue_factory.py:95``). That is the WRITER
+      handle, and it is the role this double plays in every ``cache_redis=FakeRedis()`` wiring
+      below, so it stays the default. ``mget`` returns ``bytes``.
+    * ``True`` mirrors ``app.state.redis`` -- ``Redis.from_url(url, decode_responses=True)``
+      (``main.py:161``). That is the ONLY production READER of these counters, reached via
+      ``dashboard_stats._read_pipeline_counters``, so it is the mode any test calling
+      ``read_counters`` must ask for. ``mget`` returns ``str``.
+
+    The flag exists because the previous unconditional ``bytes`` was the wrong mode for the read
+    path and nothing said so: it exercised ``_to_int``'s bytes branch, which was itself only
+    reachable because ``_to_int`` was bimodal. A double and a helper that were each wrong in the
+    same direction agreed with each other, and the client-mode boundary went untested. Being made
+    to name the mode is the point -- a double that can only be one mode cannot model a seam whose
+    two sides are different modes.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, decode_responses: bool = False) -> None:
         self.store: dict[str, int] = {}
+        self.decode_responses = decode_responses
 
     async def incr(self, key: str) -> int:
         self.store[key] = self.store.get(key, 0) + 1
         return self.store[key]
 
-    async def mget(self, keys: list[str]) -> list[bytes | None]:
-        return [str(self.store[k]).encode() if k in self.store else None for k in keys]
+    async def mget(self, keys: list[str]) -> list[bytes | str | None]:
+        raw = [str(self.store[k]) if k in self.store else None for k in keys]
+        if self.decode_responses:
+            return list(raw)
+        return [None if v is None else v.encode() for v in raw]
 
     async def aclose(self) -> None:
         # Phase 36 (WR-01): shutdown paths close the factory-attached cache_redis handle.
