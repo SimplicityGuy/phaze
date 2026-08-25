@@ -187,6 +187,24 @@ graphify-out/graph.html
 # Beadhive gate lock — transient, written per-session
 /.beads.gate.lock
 
+# Beadhive clean-checkout liveness marker. `clean_checkout` builds a throwaway
+# worktree and then writes this marker INSIDE it (beadhive `VERIFY_MARKER`, written
+# by `impl__write_verify_marker` in worktree_verify.py), so the "clean" checkout is
+# never clean by git's definition. `just check-fast` runs
+# scripts/select_impacted_tests.py, whose `assert_clean_worktree` refuses on any
+# `git status --porcelain` output — correctly, since uncommitted changes are
+# invisible to the main clone's diff — so it refused before collecting a single
+# test and every caller rendered that as a red verdict: 9 of 9 merge/submit
+# validations on 2026-08-25, each bouncing a green bead and writing a false red
+# into .git/bh-validation-ledger.json.
+#
+# This is a WORKAROUND for an upstream bug, not a preference: beadhive/beadhive#20
+# (tracked locally as hq-j74). DELETE THIS LINE once bh writes the marker outside
+# the checkout, or adds it to the checkout's .git/info/exclude — after either fix
+# nothing in phaze needs to know the file exists. Root-anchored because bh writes
+# it at the checkout root and nowhere else.
+/.bh-verify.json
+
 # Codex agent state (sibling of .claude/, machine-local)
 /.codex/
 
