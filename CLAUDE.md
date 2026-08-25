@@ -192,6 +192,76 @@ key from `merge` — but as of phaze-pv3kk that validation is `just check-fast`,
 check-all`. Set `validation: conservative` in the phaze block if a molecule ever needs re-testing
 after every per-bead merge.
 
+**`bh work merge --group <ids>` re-validates nothing either — and its own `--help` says otherwise
+(phaze-hr66n).** Measured 2026-08-21 on the phaze-jnj90/phaze-nqawu group merge: the verb took
+**6 seconds** and printed **no pytest header at all**, only
+
+```
+✓ validation verdict reused (sha fafd16b, tree 4fb18ff, recorded 2026-08-21T12:50:37-07:00)
+```
+
+**Record the MECHANISM, not the absence.** This is a deliberate verdict cache, not an omission, and
+it is sound: `submit --group` had already validated this exact tree with this exact command, and the
+batch branch had not moved between submit and merge. Written as a bare "does not validate" it reads
+as a defect and invites someone to "fix" it. Read from the installed source
+(`beadhive/work_group.py:587`, bh 0.15.0), the landing check is
+`clean_checkout(..., validate_cmd(cfg, entry), reuse=True)`, and the comment above it states the
+rule: *"the ledger is keyed on (TREE, cmd_hash), so a hit here means this exact content already
+passed this exact command … Anything else (a rebase onto a moved base, a changed command, a stale or
+red entry) misses and runs."* **The printed `sha` is therefore DISPLAYED, not KEYED** — reading
+"(sha, tree)" off that transcript line as the cache key is the natural mistake and it is wrong, since
+a different commit with the same tree hits the same entry. That agrees with the independent source
+read in the next section (phaze-qsyc0); the live ledger, re-read 2026-08-25, stores
+`{tree, cmd_hash, rc, at, host, sha, shas}`.
+
+**It resolves a documentation conflict, and that is the durable half.** `bh work merge --help` says
+group mode will "validate the shared `wt/batch/<group>` branch once" (bh 0.15.0, re-read 2026-08-25;
+the 2026-08-21 run recorded the then-current wording as "validates the shared branch once" — the same
+claim, differently worded, so the conflict has survived at least one release). `work.validation:
+relaxed`
+scopes validation to submit plus the assembled-molecule pre-land. Those two disagree for a group
+merge, and **measured, `relaxed` is the accurate one and `merge --help` is the misleading one.** A
+future reader hitting both sentences should not have to re-derive that.
+
+**What a group-merge MISS would run, and why this is prose rather than an eighth row above.**
+`merge_group` calls `validate_cmd(cfg, entry)` with **no phase argument at all** — unlike
+`submit --group`, which passes `"submit"` (`work_group.py:413`) — so it can only ever resolve to the
+bare `validate_cmd`, which is `just check-fast` today. **No `work.validate` override key can point it
+anywhere else**, which makes it the one boundary the five-pinned-keys negative control above cannot
+protect: if `validate_cmd` ever reverts to the machine-wide lint-only default, a group merge follows
+it with nothing pinned in the way. Do not be misled by the telemetry beside it —
+`otel.count_validation(..., {"bh.work.phase": "batch"})` labels the span `batch`, and that string is
+**never** passed to the resolver, so a `batch:` key in the config would be inert. This is a
+BOUNDARY → PHASE read from source (**I** in this section's sense) paired with the same **M** block →
+command mapping the table already carries. It is deliberately **not** grafted on as an eighth row,
+because that table's caller citations are `work.py` line numbers and **bh 0.15.0 has split `work.py`
+into `work_merge.py` / `work_group.py` / `work_submission.py`, so none of those seven line numbers
+still resolve** (`bh --version` → 0.15.0, checked 2026-08-25; the table was written against 0.14.0
+the same day). Re-deriving all seven is its own measurement pass, not a side effect of this one.
+
+**What the 2026-08-21 measurement does NOT license.** It was taken before phaze-pv3kk, when
+`validate_cmd` was `just check` rather than `just check-fast`. The *reuse* is unaffected — the ledger
+key is `(tree, cmd_hash)` and that mechanism is unchanged — but the recipe a **miss** would run is a
+different command now, so nothing here says what a group merge costs on a miss today. Nor does it
+upgrade any **I** half in the table above: a run that replayed a verdict resolved no phase to a
+command, and a *group* merge is a different call site from either `bh work finish <epic>` or
+`bh work merge <id>`, both of which remain unrun.
+
+**The ownership rule is not uniform across the mutating verbs (phaze-hr66n).** Re-verified 2026-08-25
+against bh 0.15.0:
+
+- `bh work submit <id>` takes `--as dev/<name>` and enforces the claim — a seat that is not the
+  holder is refused (`held by dev/<name> — <you> no longer holds the claim`, measured 2026-08-21).
+- `bh work check <id>` has **no** `--as` and verifies no ownership at all; its only options are
+  `--hive` and `--help`.
+- `bh work merge <id>` has **no `--as` at all**, and passing it is a usage error rather than a
+  no-op: `bh work merge <bogus-id> --as dev/gatetable` exits **2** with `No such option: --as`,
+  rejected during option parsing before the bead is ever looked up.
+
+**This is the wrapper-vs-delegate lesson above, one step sideways: an inference from one verb to its
+SIBLING VERB is still an inference.** `submit` requiring an identity says nothing about whether
+`merge` accepts one, and a seat that assumes it does gets an exit 2 that reads like a merge failure.
+
 `bh work check` / `submit` / `merge` / `merge-main` run `just check-fast` **because**
 `~/.beadhive/config.yaml` gives the phaze rig `work.validate_cmd: just check-fast` plus a
 `work.validate` block pinning `merge` (`just check-fast`, inert under `relaxed`), `merge-main`
