@@ -742,16 +742,112 @@ a future edit can quietly relax — the two sites must move together or the guar
   safe state — `bh work claim` reports `"start_point": "main"`, the LOCAL ref, so every worktree cut
   while local `main` is ahead inherits those commits and the PR renders foreign files (measured: PRs
   #516 and #517 each showed 5 foreign files including a 423-line test belonging to another bead).
-  If it was skipped, the detection pair is `git log --oneline origin/main..<branch>`, which must list
-  **only** this bead's commits, and `git diff --stat origin/main...<branch>`, which is the
-  authoritative diff. **A GitHub file list lagging a base push and a genuinely contaminated branch
-  look identical in the UI** — on PR #516 `baseRefOid` still named the pre-push tip while git already
-  computed the correct 2-file diff — so only those two commands tell them apart. The fix is
+  If it was skipped, the detection pair for **that** direction — *"do I carry commits that are not
+  mine?"* — is `git log --oneline origin/main..<branch>`, which must list **only** this bead's
+  commits, and `git diff --stat origin/main...<branch>`, which is the authoritative diff. **That
+  pair is half a base check, not a base check**; the other half is the bullet immediately below, and
+  reading this one as complete is what phaze-4hayr cost. **A GitHub file list lagging a base push
+  and a genuinely contaminated branch look identical in the UI** — on PR #516 `baseRefOid` still
+  named the pre-push tip while git already computed the correct 2-file diff — so only those two
+  commands tell them apart. The fix is
   `git rebase --onto origin/main <old-base>`; note that **pushing `main` does not always clear it**,
   because content that reached origin by a different route has a different sha and no shared
   ancestor. *The general form:* content equality does not imply a shared ancestor — "already on
   origin" is a claim about topology, checked with `--is-ancestor`, never inferred from the same work
   having landed.
+- **Before you SUBMIT, and again before the seat that MERGES lands it, check the other direction —
+  has the base moved underneath me?** (phaze-4hayr). The two questions are the same tool pointed in
+  opposite directions, and only both together describe a branch's relationship to `origin/main`:
+
+  ```bash
+  git fetch origin
+  git log --oneline origin/main..HEAD   # "do I carry commits that are not mine?"  — CONTAMINATION
+  git log --oneline HEAD..origin/main   # "what landed since I branched?"          — STALENESS
+  ```
+
+  **The contamination check is CLEAN precisely when you are behind**, and that property is what kept
+  this gap invisible: a branch cut from an older `main` lists only its own commits in
+  `origin/main..HEAD` however far `origin/main` has advanced since. So the documented pair reports
+  healthy in exactly the state that produces a red merge. It is not a weak check — it is one whose
+  green is *produced by* the condition you wanted it to find. This is the mirror of the
+  `--is-ancestor` rule two bullets up, which exists because content equality does not imply shared
+  ancestry: same reachability question, asked the other way round, and the two are meant to be read
+  together rather than restated.
+
+  **Measured cost, 2026-08-25: one bounce paid, and a second avoided only because a seat exceeded
+  the documented check.** `phaze-ooe68`'s merge validation exited 1 with 4 failures in
+  `tests/review/routers/test_exec_hash_client_mode.py`, every one
+  `ValidationError: 2 validation errors for ExecuteBatchProposalItem` — `source_path Field required
+  [type=missing]` and `original_path Extra inputs are not permitted [type=extra_forbidden]` —
+  because `phaze-xzjrr` renamed that wire field and landed while `ooe68` was in flight. `ooe68`'s
+  own gate was correctly green against its base and `origin/main..HEAD` was clean throughout, so
+  nothing documented could have surfaced it; the bill was a ~25-minute merge validation, a bounced
+  bead, a rolled-back local `main`, a rebase and a ~21-minute re-gate. Preparing to resubmit, the
+  same seat ran the mirror unprompted and found `phaze-x533t`'s newly-landed ADR-citation guard — a
+  test that fails the build on an ADR number resolving to no design doc — against a diff that cited
+  `docs/design/0012-verification-fidelity-and-operator-attribution.md` by bare number in five
+  places. It rebased, ran the guard (24 passed) rather than reasoning about whether the regex would
+  match, and reported both. That was the second bounce, not taken.
+
+  **WHERE it belongs: both moments, because they are two different checks.** Before submit is the
+  *cheap* moment — the gate you are about to spend is the expensive thing, and a stale base spends
+  it against a tree nobody will merge onto; caught here, the rebase and re-gate **replace** the run
+  you were about to make instead of adding to it. Before the merge is the *load-bearing* moment,
+  because that is where the failure actually surfaces and where it compounds: **`bh work merge`
+  writes the merge commit BEFORE validating**, so a staleness red arrives after local `main` has
+  already moved, and `bh` then declines to roll it back — it judges `main` "shared" from the
+  **branch** existing on origin, not from whether **this commit** was pushed. Neither moment covers
+  the other: a submit-time green says nothing about a merge forty minutes later, and under fanout
+  dispatch the window between the two is exactly when sibling beads land, by construction. The
+  merge-side check belongs to whoever runs the merge — dispatcher or merger, never the developer,
+  who has no merge to run — and a non-empty result there means **bounce the bead to its seat before
+  spending the merge validation**, not after.
+
+  **WHAT to do with a non-empty result — and it does not conflict with "do not rebase unbidden".**
+  The standing instruction forbids the *silent* rebase: a seat quietly rewriting its branch under a
+  dispatcher that is tracking shas, or rebasing reflexively at every landing so branches churn
+  continuously. It has never forbidden the rebase. **A rebase reported together with what landed and
+  what was re-run is the documented remedy; a rebase nobody hears about is the thing the instruction
+  is about.** The procedure:
+
+  - **Empty → proceed.** The base you gated against is the base you will merge onto.
+  - **Non-empty → read the DIFF, do not count the commits.** `git diff --stat HEAD...origin/main`.
+    How far behind you are is not the question; whether what landed touches what you touch is.
+  - **Intersecting → rebase** (`git rebase --onto origin/main <old-base>`, the same fix as the
+    bullet above), **re-run the guards it implicates, and state both in the submit report.** Run the
+    guard; do not reason about whether it would have fired — that is rule 3 of
+    [ADR-0012](docs/design/0012-verification-fidelity-and-operator-attribution.md) (verify with the
+    artifact's real consumer) at the scale of one test.
+  - **Two shapes make a disjoint file list the WRONG answer**, and the measured record above is one
+    of each: a landed change to a **shared wire contract or schema your tests construct**
+    (`ooe68` and `xzjrr` touched no file in common and it still went red), and a landed **whole-tree
+    guard** under `tests/shared/`, which intersects every diff by construction (`x533t`). Treat
+    either as intersecting whatever `--stat` says.
+  - **Escalate instead of rebasing** when the rebase is not mechanical — conflicts, or a landing
+    that invalidates the bead's premise. That is a question for the dispatcher, not a conflict to
+    resolve alone inside the bead.
+
+  **No mechanical guard is practical, and the reason is worth more than the absence.** Every guard
+  in this repo asserts a property of the **tree** — bytes CI checks out
+  (`tests/shared/test_adr_citation_resolution.py`, `test_coverage_gate.py` and
+  `test_validation_gate_recipes.py` are the pattern). Base staleness is not in the tree at all; it
+  is a property of a branch's relationship to a remote ref at an instant, and there is no byte to
+  assert. A test that tried could not even **observe** it: on a PR build `actions/checkout` takes
+  the **merge** ref, which already has the base merged in, so from inside the suite the branch is
+  never behind; on a push build there is no branch to be behind at all. Either way the assertion is
+  unconditionally true — a guard that exits 0 having measured nothing, the `phaze-jnj90` /
+  `phaze-nqawu` class, and strictly worse than no guard because it reads as coverage. It is
+  self-invalidating besides: a green answer certifies a **moment**, and this repo's guards certify
+  **states**. The two things that could help are not tests. GitHub's "out-of-date with the base
+  branch" banner is genuine mechanical detection, but only on a PR — so it covers docs beads and
+  never a code bead, which lands by direct push. And the fast gate could `git fetch` and print what landed since the
+  base in its header, beside the `phaze test database:` line; that is the shape worth building, it
+  buys a network dependency in a gate that has none today, and it is out of a docs-only bead's
+  scope. *The general form:* a check whose clean result is **produced by** the condition it was
+  meant to catch does not merely miss the failure — it converts the failure into positive evidence
+  of health. Ask of any check *"what does its GREEN look like while the thing I am worried about is
+  happening?"*, and if the answer is "exactly the same as always", it is answering a different
+  question from the one you are asking it.
 - **On a direct push, CI runs after the fact — nothing gates `main`.** The bead's own validation is
   therefore the real gate, but since phaze-pv3kk (2026-08-25) it is no longer necessarily a
   full-suite one: `bh work check`/`submit`/`merge`/`merge-main` all resolve to `just check-fast`, a
