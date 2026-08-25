@@ -99,6 +99,43 @@ downgrades, and the approximately 21-minute Repowise coverage refresh were not r
 documentation-only change. Their commands and static contracts were validated; CI remains the
 integration gate.
 
+## Post-audit drift (not part of the original 2026-08-19 result)
+
+This audit is a dated snapshot, not a maintained index: it has never been edited since the
+commit that created it (`908e3f82`), and every row below reflects the tree as it stood on
+2026-08-19. The `Result` classification in each row is therefore left exactly as recorded —
+rewriting a historical row to match a later tree would make the record say something it did
+not say on its date (`docs/design/0012-verification-fidelity-and-operator-attribution.md`
+rule 2). Paths in the table can still drift out of date after
+the fact; known drift is logged here instead, dated, without touching the rows themselves.
+
+- `docs/design/0004-tracklist-candidate-sets.md` (`architecture decision record`, `unchanged`
+  in the table below) was renumbered to `docs/design/0014-tracklist-candidate-sets.md` by
+  phaze-kbue9 on 2026-08-23. The row's path and classification were correct on 2026-08-19;
+  the file no longer exists at that path. Logged 2026-08-24 (phaze-x2z38). (Line numbers are
+  deliberately not cited here — this section's own insertion above the table shifts every row
+  below it, so a line number pinned at write time goes stale on the next edit; the path is the
+  stable key.)
+- `tests/browser/FLAKE_RECORD.md` (`test documentation/fixture`, `unchanged` in the table
+  below) was deleted by phaze-8p1uq on 2026-08-21 (`4a6c595a`), which moved its "what to watch
+  when CI runs start" guidance into `docs/design/0009-responsive-accessibility-baseline.md`
+  and removed the rest as superseded by the browser contract job's promotion to blocking. The
+  row was correct on 2026-08-19; the file no longer exists at that path. Logged 2026-08-24
+  (phaze-x2z38) — found while re-verifying this document's paths for phaze-x2z38 and out of
+  that bead's scope, so filed separately as phaze-r5vz0 rather than fixed here.
+- The phaze-kbue9 renumber above has a second residue this table cannot show at all: it freed
+  the number 0004 (this audit's own row above for the old path already records a genuine
+  duplicate — `docs/design/0004-ledger-replay-safety.md` and the old
+  `docs/design/0004-tracklist-candidate-sets.md` were both `0004` as of 2026-08-19) and
+  assigned the freed 0014 to a new file. A bare `ADR-0014` or `ADR-0004` prose citation written
+  before the rename can therefore silently resolve to the WRONG document after it, rather than
+  to nothing — undetectable by any path-based check, including the ones this section uses.
+  Demonstrated live: a bead cited "ADR-0014" meaning the shared-`AsyncSession`-gather decision,
+  which is actually `docs/design/0015-shared-session-gather.md`. Logged 2026-08-24
+  (phaze-x2z38), filed separately as phaze-f70y9 rather than fixed here or in phaze-x2z38 —
+  disposition needs a census of the bead corpus, not just tracked files, which is its own
+  scope. Cite ADRs by filename, not bare number, in anything written after this point.
+
 ## Exact inventory
 
 | Path | Classification | Result |
