@@ -904,9 +904,10 @@ gate itself into the redirect target, and no wrapper, list or backgrounding can 
 the same conclusion the redirection-order paragraph below reaches from its own side, which is why it
 is stated once there and not repeated as a fourth rule here.
 
-**And the durable record barely tells these apart either.** `.git/bh-validation-ledger.json` stores
-`{tree, cmd_hash, rc, at, host, sha}`, so a signal death is `rc=143`, a genuine failure is `rc=1`,
-and both are recorded as verdicts. Measured 2026-08-25: **55 of 56** entries carry no counts at all;
+**And the durable record barely tells these apart either.** `.git/bh-validation-ledger.json` records
+an `rc` and nothing else that separates these two cases (its full field list is in the ledger
+section above — do not re-enumerate it here, for the reason that section gives), so a signal death
+is `rc=143`, a genuine failure is `rc=1`, and both are recorded as verdicts. Measured 2026-08-25: **55 of 56** entries carry no counts at all;
 the single exception is one `rc=0` entry carrying a `report` of `{tests, passed, failures, errors,
 skipped}`, a field that had only just begun to be populated. Read that as **dated, not permanent** —
 and note it changes nothing for the case that matters: this bead's own green check, run minutes
@@ -1072,8 +1073,8 @@ validation ran before it died. So one of the kills above is confirmed by artifac
 kill at an unrecorded concurrency, and `phaze-sy8z3`'s re-gate has **no ledger entry at all**. The
 timestamps are the 24th; the percentages above come from session transcripts dated the 25th, the
 wave ran overnight, and nothing reconciles the two beyond that. Take from the ledger only what it
-stores — `{tree, cmd_hash, rc, at, host, sha}`, and for these two entries **no counts** (one recent
-entry does carry them; see the masking section above): it establishes that the kills happened and
+stores (field list in the ledger section above), and for these two entries **no counts** (some
+entries do carry them; see the masking section above): it establishes that the kills happened and
 were recorded as failing verdicts, never the memory state at the moment of the kill, which is the
 gap named above. So the rule
 was wrong in *both* directions at once — it permitted the runs that died, and here it would have
