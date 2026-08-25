@@ -134,7 +134,12 @@ async def patch_proposal_state(
     if body.file_state is not None and file_record is not None:
         # SIDECAR-03 cutover: the proposal outcome is NO LONGER mirrored into the FileRecord row's state.
         # The response echoes the request's file_state (byte-identical wire contract, D-02);
-        # current_path is the real move destination and IS still persisted (Pitfall 3).
+        # current_path is the real move destination and IS still persisted. This comment used to
+        # cite "(Pitfall 3)" while nothing on this path normalized anything (phaze-sy8z3) -- the
+        # NFC fold now happens in `ProposalStatePatch._nfc_normalize_current_path`, so `body`
+        # arrives already in the form every other path writer stores. Named here rather than
+        # re-asserted, because a bare rule name at a site that does not implement it is exactly
+        # what let this ship.
         response_file_state = body.file_state
         if body.current_path is not None:
             file_record.current_path = body.current_path

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 import uuid
 
 import pydantic
@@ -45,6 +46,34 @@ def test_proposal_state_patch_unchanged_without_path() -> None:
         error_message="copy verify failed",
     )
     assert patch.file_state == "unchanged"
+    assert patch.current_path is None
+
+
+def test_proposal_state_patch_nfc_normalizes_current_path() -> None:
+    """phaze-sy8z3: a non-NFC current_path is folded to NFC, the form every path writer stores.
+
+    Validator name: _nfc_normalize_current_path. The seam-level proof (real writer, real route,
+    real column, real downstream consumer) is tests/integration/test_execute_path_nfc_seam.py;
+    this is the unit-level pin on the schema that both ends of the wire share.
+    """
+    nfc = unicodedata.normalize("NFC", "/music/Artist Ångström/Live Set 01 (2024).mp3")
+    nfd = unicodedata.normalize("NFD", nfc)
+    assert nfd != nfc, "fixture is degenerate: the NFD and NFC forms are identical"
+
+    patch = ProposalStatePatch(proposal_state="executed", file_state="moved", current_path=nfd)
+
+    assert patch.current_path == nfc
+    assert unicodedata.is_normalized("NFC", patch.current_path)
+
+
+def test_proposal_state_patch_leaves_an_absent_current_path_as_none() -> None:
+    """The None branch of the NFC validator: nothing to normalize, and no empty string invented.
+
+    Pinned explicitly because ``_require_path_when_moved`` distinguishes None from "" -- a
+    validator that returned "" for an absent path would silently satisfy that check.
+    """
+    patch = ProposalStatePatch(proposal_state="failed", file_state="unchanged")
+
     assert patch.current_path is None
 
 
