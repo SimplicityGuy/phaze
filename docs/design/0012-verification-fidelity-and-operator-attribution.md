@@ -597,6 +597,79 @@ The general form, of which "a mocked essentia cannot hold this line" is one inst
 | `phaze-b2qs9` / `u1n7j` | **Would have caught.** The consumer is real essentia's streaming network; `test_analysis_long_file.py` measured a mock. ADR-0007 §8 states the outcome in its own table: *"it proves that of a **mocked** essentia. On real essentia the same comparison moves **gigabytes**."* |
 | `phaze-3ea41` | **Would have caught — and only this rule would.** The consumer of `extract_audio_track`'s output is `analyze_file` → `_probe_duration_sec`. No test crossed that boundary; the real-`ffmpeg` tests stopped at `probe_audio_streams`, i.e. at `ffprobe` checking `ffmpeg`'s own output. `tests/analyze/services/pipeline/test_extraction_analysis_handoff.py` is what G3 demands, and `phaze-l832u.3` records that every test in it fails against the pre-fix code. |
 
+#### The qualification: an INDEPENDENT consumer is not automatically a DISCRIMINATING one
+
+*Added 2026-08-25 (`phaze-e38cg`), from `phaze-wt9vw`.* G3 as written above says **which** tool not
+to verify with — the producer. It does not say which tool to verify **with**, and the obvious
+substitution a diligent reader makes is "any genuinely different implementation". That is not
+sufficient, and this is the case that shows it: **applied honestly and in full, G3 would still have
+failed on `phaze-wt9vw`.**
+
+The defect was a `.wma` tag write taking `_write_vorbis`'s catch-all and putting literal Vorbis key
+names into an ASF file. The producer is mutagen, so G3 says stop reading the file back with
+mutagen — and the nearest independent reader to hand is `ffprobe`, a different implementation by
+different authors, in a different language, shipped by a different project. Measured against the
+pre-fix code, `ffprobe` reported `TAG:artist=Test Artist` for the **wrong** file as readily as for
+the right one, because ffmpeg's ASF demuxer passes unknown extended-content-description attributes
+through verbatim. It differed on the two writes only in an incidental detail (`TAG:tracknumber` for
+the bogus write against the mapped `TAG:track` for the correct one) — nothing an assertion about
+`artist` would ever have seen.
+
+The cause is a property of the **consumer**, not of the seam. ffmpeg's ASF demuxer is permissive,
+and surfacing unknown attributes is good behaviour for a probe and fatal for an oracle: **a reader
+that accepts anything can tell you an artifact is parseable, never that it is correct.**
+
+So G3's instruction to name the artifact's real consumer carries a second question, and the second
+one is the one that bites:
+
+> Not *"is this a different implementation?"* but *"would this tool have **rejected** the wrong
+> artifact?"* — and the cheap way to find out is to feed it one.
+
+On `phaze-wt9vw` that check was actually performed, before the key map was written: all six
+candidate ASF attribute names were written to real ffmpeg-produced containers, one per file, and
+each file handed to both readers. `es.MetadataReader` discriminated completely; `ffprobe` did not
+discriminate at all.
+
+`es.MetadataReader`, on the two `.wma` writes (recorded in that test module's docstring):
+
+```
+phaze-written .wma  ->  ('', '', '', '', '', '', '')          # every field EMPTY
+spec-correct .wma   ->  ('Real Title', 'Real Artist', ...)    # all fields readable
+```
+
+`ffprobe`, on the same pair: `TAG:artist=...` for **both**, differing only in `TAG:tracknumber`
+(the bogus write) against the mapped `TAG:track` (the correct one). Empty-versus-populated is a
+verdict; a differing incidental key is not one, and no assertion about `artist` would have reached
+it.
+
+That is why `es.MetadataReader` is the reader in
+`tests/review/services/test_tag_write_real_containers.py` and why `ffprobe` is not, and it is the
+same probe that derived every entry of `_WRITE_ASF_MAP` — six attribute names measured against a
+real consumer rather than read off a spec. Both call sites carry the local form of this lesson (the
+module docstring of that test file, and the comment above `_WRITE_ASF_MAP` in
+`src/phaze/services/tag_write_disk.py`); this section is its general form, written here because G5
+requires exactly that and because an unevidenced rule decays into folklore the moment its author
+leaves the room.
+
+**This qualifies G3; it does not replace it.** G3 remains the rule that gets you off the producer
+and onto the artifact's real consumer; the qualification is what stops that substitution from
+landing on a consumer that cannot fail. Usually they agree, because the real consumer is also the
+strict one for the same reason it is the consumer at all — it has to do something with the value.
+Where they pull apart, a verifier satisfying only one of the two is a **finding to escalate**, not
+a choice to make quietly: G4's shape applies, and "the reader I used could not have rejected the
+wrong artifact" is the sentence to write in the bead.
+
+| incident | verdict |
+| --- | --- |
+| `phaze-wt9vw` | **Would have caught, and G3 alone would not.** The `ffprobe` substitution is the move G3 licenses and this qualification forbids: asked whether `ffprobe` would have rejected the wrong `.wma`, the answer is measured and it is no. The check that answers it — write the wrong artifact, hand it to the candidate reader — cost one ffmpeg invocation per candidate. |
+| `phaze-3ea41` | **Would not have caught. Plain G3 catches that one.** There `ffprobe` *was* discriminating about the property in question: it reads Matroska duration correctly, and would have rejected a container whose duration was wrong. Its failure was that it was not the consumer that mattered — `es.MetadataReader` was, and it reads no duration from Matroska on the deployed platform. Discrimination was never the gap; consumer identity was. |
+| `phaze-1b39` | **Would not have caught.** No artifact seam is involved. The claim was about the corpus's duration distribution, discharged by a query and not by any reader, strict or permissive. |
+| `phaze-b2qs9` / `u1n7j` | **Would not have caught.** No artifact seam either: the proxy was a mocked essentia standing in for the real streaming network, which plain G3 already refuses. A mock is not a permissive consumer — it is not the consumer at all. |
+
+Read the two negative verdicts on `1b39` and `b2qs9` as the boundary of the qualification rather
+than as weakness: it says nothing about changes that produce no artifact, and it is not owed on
+them.
+
 #### The seam inventory G3 is owed
 
 `phaze-l832u.3` closed one seam. **§7 R4's inventory of the rest is
