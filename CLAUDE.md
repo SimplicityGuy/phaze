@@ -1203,6 +1203,14 @@ could not, was never handed the file. The general form of the lesson `D-09` reco
 - a claim about **the archive's distribution** is discharged against the archive's distribution —
   a query, not a test. One query over `files.duration` would have stopped `phaze-1b39`.
 
+**And an INDEPENDENT consumer is not automatically a DISCRIMINATING one** (`phaze-wt9vw`) — the
+question is not *"is this a different implementation?"* but *"would this tool have **rejected** the
+wrong artifact?"*, answered by feeding it one. Measured: `ffprobe`, the obvious independent reader
+for a `.wma` tag write, reported `TAG:artist=...` for the **wrong** file too, while
+`es.MetadataReader` returned every field empty for it. This **qualifies** rule 3 rather than
+replacing it; the argument, the evidence and the would-have-caught verdicts are in
+[ADR-0012](docs/design/0012-verification-fidelity-and-operator-attribution.md) §4 G3.
+
 **4. A change to a working production path owes a blast-radius statement.** Three sentences in the
 bead or PR before submit, with the population **measured, not adjectival**: *"This changes the path
 for `<population>`. What currently works that this could break: `<X>`. The test that proves it still
