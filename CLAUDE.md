@@ -969,6 +969,53 @@ a future edit can quietly relax — the two sites must move together or the guar
   of health. Ask of any check *"what does its GREEN look like while the thing I am worried about is
   happening?"*, and if the answer is "exactly the same as always", it is answering a different
   question from the one you are asking it.
+- **A `--soft` reset target is a claim about topology too — never point one at `origin/main`**
+  (phaze-irby2). The two bullets above ask about a branch you **cut**; this one is about a branch you
+  **rewrite**, and it is where those two directions meet and produce a third failure. A seat
+  squashing its checkpoints reaches for `git reset --soft origin/main` because that is where the
+  branch is *going*. `--soft` keeps its promise — the working tree is untouched — but it moves HEAD
+  **forward** onto a ref that has advanced, and the staged diff becomes "my worktree relative to
+  `origin/main`": every intervening commit staged as its **inverse**. Measured 2026-08-25
+  (phaze-pv3kk): a worktree based on `c146842a`, with `origin/main` since moved to `190a9e30`, staged
+  **105 commits of other seats' work as a revert** — `D` lines for files that legitimately exist on
+  `main` included.
+
+  **This is the worse direction, and the reason is the signature, not the size.** The phaze-aox61
+  case produces foreign **additions**, and a 423-line test belonging to another bead announces itself
+  to the first reviewer who scrolls past it. This one produces **deletions and modifications**: a `D`
+  line is indistinguishable from a deliberate removal, an `M` line from an intentional edit. There is
+  no foreign-looking artifact to notice. Committed and merged, it would have silently reverted those
+  105 commits and read as a normal, well-scoped change.
+
+  **Both documented checks go green on it — and the staleness one goes green BECAUSE of it.**
+  Verified 2026-08-25 in two scratch repos independently — the implementing seat's and the
+  dispatcher's — each reproducing the shape above rather than the incident's scale. Once the bad
+  squash is committed, `git log --oneline origin/main..<branch>` lists **exactly one commit, your
+  own squash**, satisfying the "only this bead's commits" criterion; and `git log --oneline
+  <branch>..origin/main` is **empty**, because the reset made your branch a descendant of the moved
+  ref by fiat. Note that the staleness check does not fail to *run* — it correctly reports "nothing
+  landed since I branched", and that is true of the rewritten history it is now being asked about.
+  This is the previous bullet's own lesson arriving one level down, and the **second** instance of
+  it in this section: a check made clean by the very operation it exists to catch. Only the
+  authoritative half sees it: `git diff --stat
+  origin/main...<branch>`, where the revert surfaces as those `D` and `M` lines. So run the pair
+  before you push a squash, and **before you commit one, read what you actually staged** — `git diff
+  --cached --stat`, or `git status --short`, where this failure is a wall of `D` lines beside your
+  one `A`.
+
+  **The safe forms reset to YOUR OWN parent, never to a ref that has moved.** Both were verified
+  against the same fixture to stage only the bead's own work:
+
+  ```bash
+  git reset --soft HEAD~<n>                                # n = your own checkpoint count
+  git reset --soft "$(git merge-base origin/main HEAD)"    # the base you actually cut from
+  ```
+
+  *The general form:* a reset target is a claim about topology, and `origin/main` is not a stable
+  point — it is whatever origin last said, which on this repo moves several times an hour during a
+  dispatch wave. Name a commit you own, or compute the one you branched from. `HEAD~<n>` and
+  `merge-base` are both immune to the ref moving underneath you, because neither one names it as a
+  destination.
 - **On a direct push, CI runs after the fact — nothing gates `main`.** The bead's own validation is
   therefore the real gate, but since phaze-pv3kk (2026-08-25) it is no longer necessarily a
   full-suite one: `bh work check`/`submit`/`merge`/`merge-main` all resolve to `just check-fast`, a
