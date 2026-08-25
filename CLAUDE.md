@@ -975,6 +975,62 @@ rule that survives is **read the output rather than trust the status**: an empty
 capture or a suspiciously short log *is* the finding. Recording that limitation beside the guidance
 is worth more than adding one more confident imperative to a list that has already failed once.
 
+**The summary line is the standard of green; the COUNT in it is not a portable quantity
+(phaze-ljfi5).** Everything above is about a status that **lies**. This is the adjacent case where
+nothing lies and a reader is still misled: the summary line is true, and its number describes **the
+population that ran**, not the suite. Two green lines are therefore not comparable, and neither
+carries what you would need to compare them. This **qualifies** the rule at the top of this section
+and does not weaken it — the pytest summary line remains the only acceptable evidence that a gate
+ran and what it found.
+
+Two mechanisms move the number, and they differ in the way that matters — **whether the line admits
+to it**:
+
+- **The marker filter, which the line DOES declare.** `addopts = "-m 'not browser'"`
+  (`pyproject.toml`) applies to every run in this repo, and pytest reports what it removes: the
+  `180 deselected` in every full-suite line quoted in this file is exactly this, all of it. Measured
+  2026-08-25 on this tree: `uv run pytest --collect-only -q -m browser tests/browser` collects
+  **180 tests**, and `grep -rn -- "--deselect" justfile pyproject.toml .github/ scripts/` returns
+  nothing — there is no separate `--deselect` set, so the marker filter accounts for the whole
+  figure. A `--deselect` set added later lands in the same counter and stays equally visible.
+- **Which branch of the recipe ran, which the line does NOT declare — and this is the one that
+  bites.** `just check-fast` does not run one population. Where it selects, it hands pytest an
+  explicit list of node ids, so the tests it did not select are never collected and leave **no
+  `deselected` and no trace whatever** in the summary line; where it runs the whole suite, the same
+  command produces a figure two orders of magnitude away. Measured 2026-08-25 (dev/fastsuite, the
+  `check-fast` row of the recipes table above): a selected run printed **417 passed, 1 skipped in
+  35.57s**, against roughly **20 minutes** and roughly **8,000** for the whole suite — a **factor of
+  19**, both green, both printing a summary line. **Do not read that as a list of two.** The set of
+  populations one command can produce has already grown once (`phaze-fqfds`, 2026-08-25), so it is
+  the *variation* that is the hazard rather than any particular count of branches; this note
+  deliberately does not enumerate them, and a reader who needs the enumeration should read
+  `scripts/select_impacted_tests.py`, which is the thing that decides.
+
+**And the number moves even with the recipe held fixed.** This file records two green full-suite
+runs eleven apart — **8027 passed** in the ledger section above, and the **8038 passed of 8041**
+carried by the `report` beside it — because the suite itself grew between them. Neither is wrong;
+they measure different populations that share a name. So a remembered figure is the weakest thing
+you can check a fresh one against, and "the suite passes" is not a quantity that survives being
+carried from one run to the next.
+
+**The ledger cannot close the gap, and the reason is not the counts.** The ledger section above
+already establishes when an entry carries a `report` and when it is rc-only, and warns against
+reading that ratio forward; none of it is restated here. The gap this note is about survives a
+`report` being present: **no field records which branch of the recipe ran.** The key is `(tree hash,
+validate-cmd hash)`, the branches are branches of one command, and every phaze boundary hashes that
+same command — so counts replayed from a verdict are a number with no population attached to it.
+
+**What tells you which population you got is the recipe's own output, not this paragraph** — which
+is the point the paragraph above makes about prose in general. `just test-fast` prints
+`🎯 selector: <verdict>` before it runs anything, and every branch that is not the whole suite says
+so in the line it prints afterwards. Those lines are written by the gate into the same log body as
+the pytest summary, the coverage line and the `phaze test database:` header. A replayed verdict
+prints none of them.
+
+**So: cite a count with the recipe that produced it, and never compare one across runs.**
+phaze-qsyc0 above establishes that a gate's **M** is a property of a RUN, never of a command. This
+is that same idea one level down — **a count is a property of a run, never of a suite.**
+
 ### Concurrent gates are bounded by headroom, not by isolation (phaze-rlshw, revised phaze-o24tm)
 
 The isolation rules protect **correctness** and say nothing about **capacity** — and exceeding
