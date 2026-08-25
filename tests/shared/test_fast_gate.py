@@ -13,6 +13,20 @@ SHIPPED classifier over synthetic reports rather than restating its rules, so th
 from the thing it guards. Same precedent as ``tests/shared/test_coverage_floor.py``: load the real
 script from its path and call its real function.
 
+phaze-fqfds added a FOURTH verdict, ``docs``: a diff whose every path is prose runs
+``tests/docs_floor.txt`` -- every test module that reads tracked prose, 193 tests in 9.4-9.9 s -- and
+not the suite. The operator's answer there was PERMISSION rather than a mandate ("for docs only
+changes, no tests are needed!", clarified as "if tests run, ok; if they don't also fine"), so WHAT
+runs is an engineering choice and these tests are what hold it.
+
+Two sections below carry that weight. The ALLOW-LIST section pins that a mixed diff, a
+``justfile``/``pyproject.toml``/YAML/template diff, a doc-extension file inside a shipped tree, a
+chmod, a symlink and an empty diff all refuse the docs path -- widening the allow-list without
+moving them fails the build. The PROSE FLOOR section pins the manifest by DERIVATION rather than by
+name: it scans every test module for a reference to a tracked prose path and fails when one is
+missing from the floor, which is what stops the floor decaying into a curated three that announces
+more coverage than it has.
+
 WHAT THIS FILE CANNOT REACH, and it is more than usual here. Which command each beadhive boundary
 runs lives in ``~/.beadhive/config.yaml`` -- machine-wide, outside this repo. CLAUDE.md already
 records that ``test_validation_gate_recipes.py`` guards the justfile half and nothing can guard the
@@ -30,6 +44,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -88,6 +103,30 @@ REQUIRED_IN_FLOOR: frozenset[str] = frozenset(
 # mode is that the floor quietly grows back into it one "surely this one too" at a time.
 # Measured 2026-08-25 on worktree seat `pv3kk`: 35 modules, ~36 s.
 MAX_FLOOR_MODULES = 45
+
+DOCS_FLOOR_PATH = TESTS_ROOT / "docs_floor.txt"
+
+# The prose floor's load-bearing members, pinned by name on top of the derivation scan below. The
+# scan keeps the floor from UNDER-covering as new guards land; these three keep it from being
+# emptied out, because they are the ones with an incident behind them: phaze-f70y9 (bare ADR
+# numbers resolving to the wrong document after a renumber) and ADR-0012's attribution form, whose
+# guard fired for real on a seat's draft during the 2026-08-25 wave.
+REQUIRED_IN_DOCS_FLOOR: frozenset[str] = frozenset(
+    {
+        "tests/shared/test_adr_citation_resolution.py",
+        "tests/shared/test_adr_numbering.py",
+        "tests/shared/test_operator_attribution_citations.py",
+    }
+)
+
+# The floor exists to be fast; past this it is just the suite with extra steps. Measured
+# 2026-08-25 on seat `docsgate`: 11 modules, 193 tests, 9.4-9.9 s.
+MAX_DOCS_FLOOR_MODULES = 20
+
+# What "reads tracked prose" looks like in a test module. Deliberately BROAD: a false positive
+# costs milliseconds in the floor, a false negative is a guard that never runs on the only gate a
+# docs bead traverses. Written as literals a module would have to contain to touch prose at all.
+PROSE_PATH_MARKERS = ('"docs/', '"docs"', '"CLAUDE.md"', '"README.md"', '"CONVENTIONS.md"', '".planning', '"design/')
 
 
 def _load_selector() -> ModuleType:
@@ -241,6 +280,256 @@ def test_strip_context_only_strips_known_phases(raw: str, expected: str) -> None
 
 
 # --------------------------------------------------------------------------------------------
+# The docs allow-list (phaze-fqfds). A skip runs ZERO tests, so every assertion here is about
+# something REFUSING to skip. `docs_only` and `is_docs_path` are pure, so these exercise the
+# shipped functions over synthetic `git diff --raw -z` records -- the same precedent as the
+# refusal rules above: load the real script, call its real function, never restate the rule.
+# --------------------------------------------------------------------------------------------
+
+
+def _raw(*records: tuple[str, str, str] | tuple[str, str, str, str]) -> str:
+    """Build ``git diff --raw -M -z`` stdout from ``(src_mode, dst_mode, status, *paths)`` records.
+
+    The real thing, byte for byte: ``:<srcmode> <dstmode> <srcsha> <dstsha> <status>`` then the
+    path(s), every field NUL-terminated. Written out rather than captured from a fixture repo so a
+    reader can see exactly which field each assertion below is aimed at.
+    """
+    out = ""
+    for record in records:
+        src_mode, dst_mode, status, *paths = record
+        out += f":{src_mode} {dst_mode} 1111111 2222222 {status}\0" + "".join(f"{p}\0" for p in paths)
+    return out
+
+
+def _modified(*paths: str) -> str:
+    """The ordinary case: each path modified in place, regular non-executable blob."""
+    return _raw(*[("100644", "100644", "M", p) for p in paths])
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "CLAUDE.md",
+        "README.md",
+        "CONVENTIONS.md",
+        "docs/design/0012-verification-fidelity-and-operator-attribution.md",
+        "docs/spikes/phaze-u1n7j-vox-fix-verification.md",
+        ".planning/STATE.md",
+        "design/DESIGN_SYSTEM.md",
+    ],
+)
+def test_prose_paths_are_documentation(path: str) -> None:
+    """The population this bead exists for: root-level Markdown plus the three prose trees."""
+    assert SELECTOR.is_docs_path(path) is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # Outside the coverage map and fully executable -- the exact set a "not a .py file"
+        # negation would have handed the skip to.
+        "justfile",
+        "pyproject.toml",
+        ".github/workflows/ci.yml",
+        ".pre-commit-config.yaml",
+        "src/phaze/templates/pipeline/partials/_diff_row.html",
+        "scripts/provision-test-seat.sh",
+        "src/phaze/main.py",
+        # Doc EXTENSIONS that are not `.md`. `docs/` holds .py benchmarks, .sh drivers, .patch
+        # files and .html prototypes, so "everything under docs/" is not a safe rule.
+        "docs/spikes/phaze-han03/bench_decode.py",
+        "docs/spikes/phaze-0ni3v/make-corpus.sh",
+        "docs/spikes/phaze-bk9el.1-health-baseline-2026-08-21.json",
+        "docs/ui-reference-fixtures.html",
+        "docs/notes.txt",
+        "LICENSE",
+        # phaze-tlo10, stated positively: a doc-extension file inside a shipped tree is code.
+        # naming.md is loaded at runtime by load_prompt_template() and depended on for its exact
+        # placeholder lines; classifying it as prose let a prompt-only PR skip CI entirely.
+        "src/phaze/prompts/naming.md",
+        "src/phaze/agent_watcher/README.md",
+        "tests/identify/fixtures/tracklist_render/README.md",
+        "tests/BUCKETS.md",
+        "scripts/some-notes.md",
+        "services/notes.md",
+        # A new prose directory is not assumed prose; it escalates until someone adds it here.
+        "notes/whatever.md",
+        # Degenerate shapes.
+        "",
+        ".md",
+        "docs/../src/phaze/prompts/naming.md",
+    ],
+)
+def test_everything_else_is_not_documentation(path: str) -> None:
+    """The allow-list is positive, so this is the assertion that it is not vacuously permissive."""
+    assert SELECTOR.is_docs_path(path) is False
+
+
+def test_a_prose_only_diff_skips() -> None:
+    """The whole point: the six beads measured on 2026-08-25 paid ~21 minutes each for this shape."""
+    assert SELECTOR.docs_only(_modified("CLAUDE.md", "docs/design/0007-windowed-analysis.md")) == [
+        "CLAUDE.md",
+        "docs/design/0007-windowed-analysis.md",
+    ]
+
+
+def test_one_python_file_among_twenty_markdown_ones_does_not_skip() -> None:
+    """`every`, not `any`. This is the security property, so it is not a table row.
+
+    A code change riding a docs skip past the last gate before `main` is the phaze-jnj90 defect
+    with a new door: the gate exits 0 having measured nothing, and for an ad-hoc bead nothing
+    downstream runs the suite either.
+    """
+    paths = [f"docs/design/{i:04d}-note.md" for i in range(20)]
+    assert SELECTOR.docs_only(_modified(*paths, "src/phaze/services/analysis.py")) is None
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["justfile", "pyproject.toml", ".github/workflows/ci.yml", ".pre-commit-config.yaml", "src/phaze/templates/pipeline/index.html", "scripts/x.sh"],
+)
+def test_a_build_affecting_diff_does_not_skip_even_with_no_python_in_it(path: str) -> None:
+    """One category per acceptance criterion: none of these has a coverage row either.
+
+    They are what makes "the coverage map cannot speak for this file" the wrong test for a skip:
+    every one of them is unmeasurable AND executable, so the map's silence means the opposite of
+    what it means for prose.
+    """
+    assert SELECTOR.docs_only(_modified(path)) is None
+    assert SELECTOR.docs_only(_modified("CLAUDE.md", path)) is None
+
+
+def test_a_deleted_markdown_file_still_skips() -> None:
+    """Deleting prose is a prose edit; the destination mode is empty, not a mode to reject."""
+    assert SELECTOR.docs_only(_raw(("100644", "000000", "D", "docs/spikes/old.md"))) == ["docs/spikes/old.md"]
+
+
+def test_a_rename_must_be_prose_at_BOTH_ends() -> None:
+    """Renaming a file out of a prose tree into a shipped one is a code change, not a move."""
+    assert SELECTOR.docs_only(_raw(("100644", "100644", "R100", "docs/a.md", "docs/b.md"))) == ["docs/a.md", "docs/b.md"]
+    assert SELECTOR.docs_only(_raw(("100644", "100644", "R100", "docs/a.md", "src/phaze/prompts/a.md"))) is None
+    assert SELECTOR.docs_only(_raw(("100644", "100644", "R100", "src/phaze/prompts/a.md", "docs/a.md"))) is None
+
+
+@pytest.mark.parametrize(
+    ("src_mode", "dst_mode", "why"),
+    [
+        ("100644", "100755", "chmod +x on a Markdown file"),
+        ("100755", "100755", "an already-executable Markdown file"),
+        ("100644", "120000", "a Markdown file replaced by a symlink"),
+        ("120000", "100644", "a symlink replaced by a Markdown file"),
+        ("160000", "160000", "a submodule pointer whose path happens to end in .md"),
+    ],
+)
+def test_a_mode_change_does_not_skip(src_mode: str, dst_mode: str, why: str) -> None:
+    """The reason this reads `--raw` and not `--name-only`: none of these is visible in a path.
+
+    `git diff --name-only` prints `docs/x.md` for every row here, so a classifier built on it
+    would skip a chmod that made a tracked file executable.
+    """
+    assert SELECTOR.docs_only(_raw((src_mode, dst_mode, "M", "docs/x.md"))) is None, why
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["T", "U", "X", "Z"],
+)
+def test_an_unclassifiable_status_does_not_skip(status: str) -> None:
+    """Fail closed on a status this classifier was not written against, including a future one."""
+    assert SELECTOR.docs_only(_raw(("100644", "100644", status, "docs/x.md"))) is None
+
+
+@pytest.mark.parametrize(
+    ("raw", "why"),
+    [
+        ("", "an empty diff is not 'all changed paths are prose'"),
+        ("\0\0", "nothing but separators"),
+        ("docs/x.md\0", "a bare path with no record header — `--name-only` output fed in by mistake"),
+        ("::100644 100644 100644 1111111 2222222 3333333 MM\0docs/x.md\0", "a combined (merge) record"),
+        (":100644 100644 1111111 M\0docs/x.md\0", "a header with too few fields"),
+        (":100644 100644 1111111 2222222 M\0", "a record whose path is missing"),
+        (":100644 100644 1111111 2222222 R100\0docs/a.md\0", "a rename missing its second path"),
+    ],
+)
+def test_anything_unparseable_does_not_skip(raw: str, why: str) -> None:
+    """The classifier cannot decide, so it does not. Every unknown shape falls to the normal path.
+
+    An empty diff is in here on purpose: it is legitimate (a no-op range), and the normal path
+    already handles it by running the always-run floor. Reading it as a skip would turn a broken
+    diff base into a green gate that ran nothing.
+    """
+    assert SELECTOR.docs_only(raw) is None, why
+
+
+def test_the_docs_path_is_reachable_only_after_the_dirty_tree_refusal() -> None:
+    """Order is the guardrail, not a detail (phaze-fqfds).
+
+    `prose_paths` reads a COMMITTED range, which cannot see an uncommitted `.py` edit -- failure
+    mode F. If it ran before `assert_clean_worktree`, a seat with staged code and a committed prose
+    diff would take the narrowed path over code the gate never looked at. It is not callable here
+    without a real repo, so this asserts the source order, which is what actually fixes it.
+    """
+    source = SELECTOR_PATH.read_text(encoding="utf-8")
+    body = source.split("def prose_paths(", 1)[1].split("\ndef ", 1)[0]
+    assert body.index("assert_clean_worktree(repo)") < body.index("docs_only("), "prose_paths() classifies the diff before refusing a dirty worktree"
+    # And main() must ask prose_paths BEFORE select(), or a prose diff escalates on `no_index` --
+    # the default state in a bh worktree, and the exact cost this bead exists to remove.
+    main_body = source.split("def main(", 1)[1]
+    assert main_body.index("prose_paths(") < main_body.index("select(repo, args.base)"), (
+        "main() calls select() before prose_paths(): every prose diff would escalate on `no_index`"
+    )
+
+
+def test_the_docs_verdict_is_exit_4_and_not_exit_2() -> None:
+    """argparse exits 2 on a usage error, so 2 must never mean "do not run the suite"."""
+    assert SELECTOR.VERDICT_EXIT == {"escalate": 3, "fail": 1, "docs": 4}
+
+
+def test_the_allow_list_constants_are_the_shipped_narrow_ones() -> None:
+    """Same job as `test_the_classifier_under_test_is_the_shipped_one`, for the new rule.
+
+    Widening any of these is a decision to argue on a bead; it is not something a later edit gets
+    to do quietly, because this assertion fails the build when it happens.
+    """
+    assert SELECTOR.DOCS_SUFFIX == ".md"
+    assert SELECTOR.DOCS_ROOTS == ("docs/", ".planning/", "design/")
+    assert SELECTOR.DOCS_MODE == "100644"
+    assert sorted(SELECTOR.CLASSIFIABLE_STATUSES) == ["A", "C", "D", "M", "R"]
+    assert sorted(SELECTOR.TWO_PATH_STATUSES) == ["C", "R"]
+
+
+def test_the_ci_classifier_is_deliberately_a_different_and_looser_rule() -> None:
+    """These two must not be merged, and the difference is measurable rather than stylistic.
+
+    `scripts/classify-changed-files.sh` decides whether CI runs its heavy jobs and treats ALL of
+    `docs/` as prose whatever the extension, plus `*.txt` and `LICENSE`. This gate is the last
+    thing before `main` for an ad-hoc bead and is stricter. Sharing one implementation would let a
+    widening of the CI rule silently widen this one.
+    """
+    for path in ("docs/spikes/phaze-han03/bench_decode.py", "docs/notes.txt", "LICENSE"):
+        assert SELECTOR.is_docs_path(path) is False, f"{path} must not be prose to this gate"
+
+
+def test_the_fast_step_honours_the_docs_verdict() -> None:
+    """The recipe half. A verdict the justfile drops on the floor changes nothing.
+
+    Exit 4 would otherwise fall into the recipe's `*)` arm and fail the gate, so this asserts the
+    branch exists, that it passes the prose floor to the selector, that it actually RUNS the
+    selection, and that it announces itself -- a narrowed gate that prints nothing is
+    indistinguishable from one that broke.
+    """
+    recipe = _dry_run("test-fast")
+    assert "docs_floor.txt" in recipe, "`just test-fast` no longer passes the prose floor to the selector"
+    assert "DOCS-ONLY" in recipe, "`just test-fast` no longer announces the docs path"
+    assert "fast-gate-docs-runs.log" in recipe, "`just test-fast` no longer records when it narrowed itself"
+    docs_arm = recipe.split("DOCS-ONLY", 1)[1]
+    assert "uv run pytest" in docs_arm, "the docs arm no longer runs the prose floor — it would report green over zero tests"
+    assert "ensure_seat" in docs_arm, (
+        "the docs arm no longer provisions a seat, so its pytest header reads `unlocked` — the state CLAUDE.md tells readers not to trust"
+    )
+
+
+# --------------------------------------------------------------------------------------------
 # The floor.
 # --------------------------------------------------------------------------------------------
 
@@ -293,6 +582,190 @@ def test_every_floor_module_lives_in_a_known_bucket() -> None:
     buckets = set(json.loads(BUCKETS_PATH.read_text(encoding="utf-8")))
     strays = sorted({p for p in _read_floor() if Path(p).parts[1] not in buckets})
     assert not strays, f"floor modules outside any tests/buckets.json bucket: {strays}"
+
+
+# --------------------------------------------------------------------------------------------
+# The prose floor (phaze-fqfds). What a documentation-only diff runs, and all it runs.
+# --------------------------------------------------------------------------------------------
+
+
+def _read_docs_floor() -> list[str]:
+    lines = DOCS_FLOOR_PATH.read_text(encoding="utf-8").splitlines()
+    return [stripped for line in lines if (stripped := line.strip()) and not stripped.startswith("#")]
+
+
+def test_the_prose_floor_is_non_empty_and_every_path_exists() -> None:
+    """An empty or dangling prose floor turns the docs verdict into a zero-test green gate."""
+    floor = _read_docs_floor()
+    assert floor, "tests/docs_floor.txt names nothing — a docs-only diff would run zero tests"
+    missing = [p for p in floor if not (REPO_ROOT / p).is_file()]
+    assert not missing, f"tests/docs_floor.txt names {len(missing)} path(s) that do not exist: {missing}"
+    outside = [p for p in floor if not p.startswith("tests/")]
+    assert not outside, f"tests/docs_floor.txt names path(s) outside tests/: {outside}"
+    browser = [p for p in floor if Path(p).parts[1] == EXCLUDED_BUCKET]
+    assert not browser, f"the browser bucket is deselected by pyproject's addopts and cannot run here: {browser}"
+
+
+def test_the_prose_floor_is_sorted_and_free_of_duplicates() -> None:
+    """A duplicate runs a module twice; an unsorted file makes every diff unreadable."""
+    floor = _read_docs_floor()
+    duplicates = sorted({p for p in floor if floor.count(p) > 1})
+    assert not duplicates, f"tests/docs_floor.txt lists these more than once: {duplicates}"
+    assert floor == sorted(floor), "tests/docs_floor.txt must be sorted"
+
+
+def test_every_prose_floor_module_lives_in_a_known_bucket() -> None:
+    """Same single source of truth the CI matrix and test_partition_guard.py consume."""
+    buckets = set(json.loads(BUCKETS_PATH.read_text(encoding="utf-8")))
+    strays = sorted({p for p in _read_docs_floor() if Path(p).parts[1] not in buckets})
+    assert not strays, f"prose floor modules outside any tests/buckets.json bucket: {strays}"
+
+
+def test_the_prose_floor_keeps_the_guards_with_an_incident_behind_them() -> None:
+    """The derivation scan stops the floor UNDER-covering; this stops it being emptied.
+
+    test_adr_citation_resolution.py exists because of phaze-f70y9 -- eight bare "ADR-0014"
+    citations that came to resolve to the wrong document after a renumber, caught once by a human
+    reading prose and by nothing else. Removing one of these is an argument to make on a bead.
+    """
+    missing = sorted(REQUIRED_IN_DOCS_FLOOR - set(_read_docs_floor()))
+    assert not missing, f"these are missing from tests/docs_floor.txt: {missing}"
+
+
+def test_the_prose_floor_stays_small() -> None:
+    """It is chosen over the suite for its runtime; past this cap that argument stops holding."""
+    floor = _read_docs_floor()
+    assert len(floor) <= MAX_DOCS_FLOOR_MODULES, (
+        f"tests/docs_floor.txt names {len(floor)} modules, over the {MAX_DOCS_FLOOR_MODULES} cap. "
+        "If they genuinely all read prose, re-measure the runtime and move the cap and its quoted "
+        "measurement together — the cap is only meaningful next to a number."
+    )
+
+
+def test_every_test_module_that_reads_prose_is_in_the_prose_floor() -> None:
+    """THE anti-drift guard, and the reason the floor can be trusted to mean what it says.
+
+    Without this the floor is a curated list, and a curated list decays in the one direction that
+    matters: a prose guard written next month never joins it, a docs bead's gate sails past the
+    break, and the transcript still announces that the prose guards ran. A gate whose output
+    overstates its own coverage is the phaze-jnj90 / phaze-nqawu family.
+
+    The scan OVER-matches on purpose. A module that merely mentions ``docs/`` in a docstring costs
+    a few milliseconds in the floor; one that reads prose and is absent from it is a silent hole.
+    So the fix when this fails is nearly always to add the line, not to narrow the markers.
+    """
+    floor = set(_read_docs_floor())
+    referencing: list[str] = []
+    for path in sorted(TESTS_ROOT.rglob("test_*.py")):
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        if Path(relative).parts[1] == EXCLUDED_BUCKET:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if any(marker in text for marker in PROSE_PATH_MARKERS):
+            referencing.append(relative)
+
+    assert referencing, "the prose scan matched nothing — its markers have stopped matching anything real"
+    missing = sorted(set(referencing) - floor)
+    assert not missing, (
+        f"{len(missing)} test module(s) reference a tracked prose path but are absent from "
+        f"tests/docs_floor.txt, so a documentation-only diff would not run them: {missing}. "
+        "Add them to the floor."
+    )
+
+
+def _throwaway_repo(root: Path, *changed: str) -> str:
+    """A real git repo with a real base commit and a real second commit touching ``changed``.
+
+    Small enough to build per test (~50 ms) and worth it: the alternative is asserting on the
+    selector's SOURCE TEXT, which passes just as happily when the wiring is broken and fails when
+    the formatter moves a line. This runs the shipped ``main()`` over a real diff.
+    """
+    subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)  # noqa: S603, S607
+    git = ["git", "-C", str(root), "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
+    for relative in ("tests/fast_floor.txt", "tests/docs_floor.txt", *changed):
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("tests/placeholder.py\n" if relative.endswith("floor.txt") else "base\n", encoding="utf-8")
+    subprocess.run([*git, "add", "-A"], check=True)  # noqa: S603
+    subprocess.run([*git, "commit", "-q", "--no-verify", "-m", "base"], check=True)  # noqa: S603
+    base = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()  # noqa: S603
+    for relative in changed:
+        (root / relative).write_text("changed\n", encoding="utf-8")
+    subprocess.run([*git, "add", "-A"], check=True)  # noqa: S603
+    subprocess.run([*git, "commit", "-q", "--no-verify", "-m", "change"], check=True)  # noqa: S603
+    return base
+
+
+def _run_selector(root: Path, base: str, out: Path) -> subprocess.CompletedProcess[str]:
+    """Invoke the shipped script exactly as the justfile does, plus an explicit ``--base``."""
+    return subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            str(SELECTOR_PATH),
+            "--repo",
+            str(root),
+            "--base",
+            base,
+            "--out",
+            str(out),
+            "--floor",
+            "tests/fast_floor.txt",
+            "--docs-floor",
+            "tests/docs_floor.txt",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_a_prose_only_diff_writes_the_prose_floor_and_exits_4(tmp_path: Path) -> None:
+    """End to end through the shipped ``main()``: verdict word, exit code, and the file it wrote.
+
+    The exit code and the selection file are the entire contract with the justfile, so they are
+    asserted against a real run rather than against the script's source text.
+    """
+    root = tmp_path / "repo"
+    base = _throwaway_repo(root, "CLAUDE.md", "docs/design/0001-x.md")
+    out = tmp_path / "selection.txt"
+    result = _run_selector(root, base, out)
+
+    assert result.returncode == SELECTOR.VERDICT_EXIT["docs"], result.stdout + result.stderr
+    assert result.stdout.startswith("docs "), result.stdout
+    assert out.read_text(encoding="utf-8").split() == ["tests/placeholder.py"], (
+        "the docs verdict did not write the PROSE floor to --out, so the recipe would run a stale selection"
+    )
+
+
+def test_a_mixed_diff_never_reaches_exit_4(tmp_path: Path) -> None:
+    """The same end-to-end path, proving the docs exit code is not simply always taken.
+
+    One `.py` alongside the prose is a code change. It leaves the docs branch entirely and lands on
+    the normal path, which in a repo with no repowise index escalates -- so the assertion that
+    matters is `!= 4`, and the escalation is the incidental (correct) consequence.
+    """
+    root = tmp_path / "repo"
+    base = _throwaway_repo(root, "CLAUDE.md", "src/phaze/thing.py")
+    result = _run_selector(root, base, tmp_path / "selection.txt")
+
+    assert result.returncode != SELECTOR.VERDICT_EXIT["docs"], f"a mixed diff took the docs path: {result.stdout}"
+    assert result.returncode == SELECTOR.VERDICT_EXIT["escalate"], result.stdout + result.stderr
+
+
+def test_a_dirty_worktree_never_reaches_exit_4(tmp_path: Path) -> None:
+    """Fail closed. The docs check reads a COMMITTED range and cannot see the uncommitted `.py`.
+
+    This is the ordering guardrail measured rather than read off the source: the prose diff IS
+    committed and would classify as documentation, and the uncommitted code edit still stops it.
+    """
+    root = tmp_path / "repo"
+    base = _throwaway_repo(root, "CLAUDE.md")
+    (root / "src").mkdir(parents=True, exist_ok=True)
+    (root / "src" / "uncommitted.py").write_text("x = 1\n", encoding="utf-8")
+    result = _run_selector(root, base, tmp_path / "selection.txt")
+
+    assert result.returncode == SELECTOR.VERDICT_EXIT["fail"], result.stdout + result.stderr
+    assert "uncommitted" in result.stdout
 
 
 # --------------------------------------------------------------------------------------------
