@@ -743,9 +743,7 @@ def _decode_windows_streaming(
         disconnect_network=_disconnect_network,
     )
     return analysis_decoder._decode_windows_streaming(
-        file_path,
-        sample_rate,
-        windows,
+        analysis_decoder.DecodeTarget(file_path, sample_rate, windows),
         runtime=runtime,
         stop_at_sec=stop_at_sec,
     )
@@ -804,14 +802,10 @@ def _decode_windows(
         heartbeat_interval_sec=_DECODE_HEARTBEAT_INTERVAL_SEC,
     )
     return analysis_decoder._decode_windows(
-        file_path,
-        sample_rate,
-        windows,
-        on_skip,
+        analysis_decoder.DecodeTarget(file_path, sample_rate, windows),
+        analysis_decoder.DecodeSignals(on_skip, on_beat, watchdog_enabled=on_beat is not _noop),
         runtime=runtime,
         stop_at_sec=stop_at_sec,
-        on_beat=on_beat,
-        watchdog_enabled=on_beat is not _noop,
     )
 
 
