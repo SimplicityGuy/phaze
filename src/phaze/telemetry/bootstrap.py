@@ -219,41 +219,82 @@ def _install(role: str, service_name: str) -> tuple[TracerProvider, MeterProvide
 
 
 def shutdown_telemetry(timeout_ms: int | None = None) -> bool:
-    """Flush and tear down, within a bounded budget. Returns True if the flush completed.
+    """Flush and tear down, within a bounded budget. Returns True if teardown RAN to completion.
 
     **This is where a short-lived producer's final data is either delivered or lost**
-    (phaze-m1drf.2 acceptance 2). An analyze Job accumulates counters for hours and then
-    exits; there is no scrape to catch the tail, so the final push is the only delivery.
-    The budget is ``PHAZE_TELEMETRY_FLUSH_TIMEOUT_MS`` (default 3,000 ms) and it is a
-    CEILING on the delay a dead collector can add to process exit, not a guarantee of
-    delivery. A False return means the flush did not finish inside it and whatever was
-    still queued is gone -- measured, with the loss quantified, in
-    ``docs/telemetry/exporter.md`` section 4.
+    (phaze-m1drf.2 §2). An analyze Job accumulates counters for hours and then exits; there
+    is no scrape to catch the tail, so the final push is the only delivery. The budget is
+    ``PHAZE_TELEMETRY_FLUSH_TIMEOUT_MS`` (default 3,000 ms) and it is a CEILING on the delay
+    a dead collector can add to process exit, not a guarantee of delivery. A False return
+    means teardown was ABANDONED at the deadline and whatever was still queued is gone.
 
-    Never raises. A telemetry teardown that raises out of a ``finally`` would replace a
+    **A True return does NOT prove delivery, and this is deliberately not dressed up as if
+    it did.** ``force_flush`` reports that the SDK's queue drained, not that the collector
+    accepted anything: measured against a listener that accepts and then stalls for 30 s,
+    both providers' ``force_flush`` returned True while nothing had left the process, because
+    the periodic worker had already taken the batch out of the queue and was sitting on a
+    failing export. The SDK exposes no delivery signal, so this function does not invent one
+    -- what it guarantees is the BOUND. Whether homelab received anything is a question for
+    homelab's collector, and ``docs/telemetry/exporter.md`` §4 says so.
+
+    **THE BUDGET IS ENFORCED BY A JOINED DAEMON THREAD, and it has to be.** Passing a
+    timeout to the providers is NOT sufficient, and this was measured rather than reasoned
+    about: ``TracerProvider.shutdown()`` takes no timeout argument at all and
+    ``MeterProvider.shutdown()`` defaults to **30,000 ms**, so a first implementation that
+    only bounded ``force_flush`` took **40.3 seconds** against a black-holed collector while
+    asking for 3. For a k8s analyze Job that is 40 s of a pod refusing to die and holding a
+    Kueue slot behind it, once per file.
+
+    Abandoning the teardown when the budget expires is safe **because both SDK worker
+    threads are daemons** -- verified against the installed SDK, not assumed:
+    ``_shared_internal.BatchProcessor`` and ``PeriodicExportingMetricReader`` each create
+    their worker with ``daemon=True``, so the interpreter will not wait for one at exit.
+    ``tests/shared/telemetry/test_telemetry_never_breaks_analysis.py`` measures the bound
+    end to end after a real analysis.
+
+    Never raises. A telemetry teardown that raised out of a ``finally`` would replace a
     successful analysis's result with an exporter's stack trace.
     """
     global _tracer_provider, _meter_provider  # process-wide singletons by design
     budget = _env.flush_timeout_ms() if timeout_ms is None else timeout_ms
-    flushed = True
-    for provider in (_tracer_provider, _meter_provider):
-        if provider is None:
-            continue
-        try:
-            flushed = bool(provider.force_flush(budget)) and flushed
-        except Exception:
-            log.debug("telemetry_flush_failed", exc_info=True)
-            flushed = False
-    for provider in (_tracer_provider, _meter_provider):
-        if provider is None:
-            continue
-        try:
-            provider.shutdown()
-        except Exception:
-            log.debug("telemetry_shutdown_failed", exc_info=True)
+    providers = [provider for provider in (_tracer_provider, _meter_provider) if provider is not None]
     _tracer_provider = None
     _meter_provider = None
-    return flushed
+    if not providers:
+        return True
+
+    completed = threading.Event()
+
+    def _teardown() -> None:
+        # Deferred, like every other SDK import in this module: by the time this runs there
+        # IS an SDK provider, but importing the SDK at module scope would put it in the
+        # analysis child's import graph whether or not telemetry is on.
+        from opentelemetry.sdk.metrics import MeterProvider as SDKMeterProvider  # noqa: PLC0415
+
+        for provider in providers:
+            try:
+                provider.force_flush(budget)
+            except Exception:
+                log.debug("telemetry_flush_failed", exc_info=True)
+        for provider in providers:
+            try:
+                # MeterProvider takes a budget; TracerProvider takes none. Both are inside
+                # the joined thread, so the caller is bounded either way.
+                if isinstance(provider, SDKMeterProvider):
+                    provider.shutdown(timeout_millis=budget)
+                else:
+                    provider.shutdown()
+            except Exception:
+                log.debug("telemetry_shutdown_failed", exc_info=True)
+        completed.set()
+
+    worker = threading.Thread(target=_teardown, name="phaze-telemetry-shutdown", daemon=True)
+    worker.start()
+    # +1 s of slack: the budget is what each provider is ASKED for, and asking two of them
+    # for it sequentially costs slightly more than one budget. The point is a small constant,
+    # not the SDK's 30 s.
+    worker.join((budget + 1000) / 1000)
+    return completed.is_set()
 
 
 def _reset_for_tests() -> None:

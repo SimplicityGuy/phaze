@@ -4,10 +4,14 @@ Wired as ordinary SAQ ``before_process`` / ``after_process`` hooks, the same mec
 phaze already uses for ``enforce_stage_pause_on_process`` and ``increment_completed``, so
 there is no new extension point and no wrapper around the function registry.
 
-**The job function name is the label and it is bounded** by the union of the controller's
+**The job function name is the label -- spelled ``saq_function``, never ``job`` -- and it
+is bounded** by the union of the controller's
 and the agent's registered function lists -- a closed set in this repo's source, not a
 value derived from a payload. Job id, file id and kwargs never reach a metric; the job id
-goes on the span.
+goes on the span. ``job`` is reserved by Prometheus for the target derived from
+``service.name``, and a metric that collides with it is DROPPED ENTIRELY by the collector
+rather than renamed; ``catalogue.RESERVED_LABEL_NAMES`` and its guard test are what keep
+that from happening again.
 
 phaze-zaf2l measured SAQ at 0.0939 jobs/s against a burst capacity of 318.3/s and filed no
 bead against it. These metrics are therefore NOT here because the queue is suspected: they
@@ -91,8 +95,8 @@ async def after_process(ctx: dict[str, Any]) -> None:
         name = _job_name(job)
         started = ctx.pop(_START_KEY, None)
         if started is not None:
-            record("phaze.saq.job.duration", time.perf_counter() - started, job=name, outcome=outcome)
-        add("phaze.saq.jobs", 1, job=name, outcome=outcome)
+            record("phaze.saq.job.duration", time.perf_counter() - started, saq_function=name, outcome=outcome)
+        add("phaze.saq.jobs", 1, saq_function=name, outcome=outcome)
         current = ctx.pop(_SPAN_KEY, None)
         if current is not None:
             current.__exit__(None, None, None)

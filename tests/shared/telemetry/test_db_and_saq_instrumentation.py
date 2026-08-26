@@ -112,7 +112,7 @@ async def test_a_job_is_measured_by_function_name_and_outcome(telemetry_sink: Te
     await telemetry_saq.after_process(ctx)
 
     attribute_sets = telemetry_sink.attribute_sets("phaze.saq.jobs")
-    assert attribute_sets == [{"job": "process_file", "outcome": "ok"}]
+    assert attribute_sets == [{"saq_function": "process_file", "outcome": "ok"}]
     assert telemetry_sink.count("phaze.saq.job.duration") == 1
     assert "a-real-uuid" not in repr(attribute_sets)
 
@@ -122,7 +122,7 @@ async def test_a_failed_job_reports_error(telemetry_sink: TelemetrySink) -> None
     ctx: dict[str, Any] = {"job": _Job("process_file", "Status.FAILED")}
     await telemetry_saq.before_process(ctx)
     await telemetry_saq.after_process(ctx)
-    assert telemetry_sink.attribute_sets("phaze.saq.jobs") == [{"job": "process_file", "outcome": "error"}]
+    assert telemetry_sink.attribute_sets("phaze.saq.jobs") == [{"saq_function": "process_file", "outcome": "error"}]
 
 
 @pytest.mark.asyncio
@@ -132,7 +132,7 @@ async def test_a_retried_job_is_not_counted_as_success(telemetry_sink: Telemetry
     ctx: dict[str, Any] = {"job": _Job("process_file", "Status.QUEUED")}
     await telemetry_saq.before_process(ctx)
     await telemetry_saq.after_process(ctx)
-    assert telemetry_sink.attribute_sets("phaze.saq.jobs") == [{"job": "process_file", "outcome": "error"}]
+    assert telemetry_sink.attribute_sets("phaze.saq.jobs") == [{"saq_function": "process_file", "outcome": "error"}]
 
 
 @pytest.mark.asyncio

@@ -182,7 +182,18 @@ def test_shutdown_after_a_real_analysis_is_bounded_against_a_stalling_collector(
     flushed = bootstrap.shutdown_telemetry()
     elapsed = time.perf_counter() - started
 
-    assert elapsed < 15.0, f"shutdown took {elapsed:.2f}s against a stalling collector"
-    # And the loss is REPORTED rather than silently swallowed: a False return is how a
-    # caller (and docs/telemetry/exporter.md section 4) knows data was dropped.
-    assert flushed in {True, False}
+    # MEASURED REGRESSION. A first implementation bounded only `force_flush` and left the
+    # providers' own `shutdown` on their defaults -- `TracerProvider.shutdown()` takes no
+    # timeout at all and `MeterProvider.shutdown()` defaults to 30,000 ms -- and took
+    # **40.3 s** against a black-holed collector while asking for 3. The bound asserted here
+    # is generous against scheduling slack on a loaded machine; what it refutes is that
+    # tens-of-seconds shape, which for a k8s analyze Job is a pod refusing to die with a
+    # Kueue slot behind it.
+    assert elapsed < 8.0, f"shutdown took {elapsed:.2f}s against a stalling collector, budget was 500 ms"
+    # The return value means the teardown RAN, not that anything was delivered -- and that
+    # distinction is asserted here rather than left implicit, because the obvious reading is
+    # wrong. Measured: against this stalling listener BOTH providers' `force_flush` returns
+    # True while nothing has left the process, since the periodic worker had already taken
+    # the batch out of the queue and is sitting on a failing export. The SDK exposes no
+    # delivery signal; phaze does not invent one.
+    assert flushed is True

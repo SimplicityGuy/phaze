@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import time
 
-from opentelemetry import trace
+from opentelemetry import metrics, trace
 import pytest
 
 from phaze.telemetry import _env, bootstrap, tracing
@@ -32,6 +32,13 @@ def _clean_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (_env.ENDPOINT_ENV, _env.TRACES_ENDPOINT_ENV, _env.METRICS_ENDPOINT_ENV, _env.FLUSH_TIMEOUT_ENV):
         monkeypatch.delenv(name, raising=False)
     bootstrap._reset_for_tests()
+    # The API's `set_tracer_provider` is one-way within a process, so a provider installed by
+    # an EARLIER test file is still globally current here. Clearing the private globals is
+    # the only way to give this file the no-provider state it is about -- otherwise these
+    # tests pass or fail on collection order, which is the worst kind of red.
+    trace._TRACER_PROVIDER = None
+    metrics._internal._METER_PROVIDER = None
+    tracing._reset_for_tests()
 
 
 def test_telemetry_is_off_when_no_endpoint_is_configured() -> None:

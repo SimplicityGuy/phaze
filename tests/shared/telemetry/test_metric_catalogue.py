@@ -22,7 +22,7 @@ import pytest
 
 from phaze.services.analysis_models import GENRE_MODEL, MODEL_SETS
 from phaze.telemetry import instruments
-from phaze.telemetry.catalogue import BY_NAME, CATALOGUE, FORBIDDEN_LABEL_SUBSTRINGS, MODEL_COMBINATIONS, total_series
+from phaze.telemetry.catalogue import BY_NAME, CATALOGUE, FORBIDDEN_LABEL_SUBSTRINGS, MODEL_COMBINATIONS, RESERVED_LABEL_NAMES, total_series
 
 
 SRC = Path(__file__).resolve().parents[3] / "src" / "phaze"
@@ -59,6 +59,36 @@ def test_no_label_name_looks_like_an_identifier() -> None:
             lowered = label.name.lower()
             offending = [bad for bad in FORBIDDEN_LABEL_SUBSTRINGS if bad in lowered]
             assert not offending, f"{spec.name} declares label {label.name!r}, which matches forbidden {offending}"
+
+
+def test_no_label_collides_with_a_prometheus_reserved_name() -> None:
+    """A reserved label name does not degrade the metric -- it DELETES it.
+
+    Measured against otel/opentelemetry-collector-contrib 0.140.0: a label named ``job``
+    collides with the ``job`` the exporter derives from ``service.name``, the collector logs
+    ``duplicate label names in constant and variable labels``, and the metric never appears
+    at the scrape endpoint. Nothing downstream can tell that from "the metric was never
+    emitted", which is why this is a build gate and not a review note. It cost two metrics
+    (``phaze_saq_job_duration_seconds`` and ``phaze_saq_jobs_total``) before it was caught
+    by looking at the real collector's output -- ADR-0012 rule 3 in one line.
+    """
+    for spec in CATALOGUE:
+        for label in spec.labels:
+            assert label.name not in RESERVED_LABEL_NAMES, f"{spec.name} declares the Prometheus-reserved label {label.name!r}"
+            assert not label.name.startswith("__"), f"{spec.name} declares the Prometheus-internal label {label.name!r}"
+
+
+def test_a_dimensionless_gauge_never_uses_the_bare_unit_one() -> None:
+    """``unit="1"`` on a GAUGE becomes a ``_ratio`` SUFFIX in the Prometheus name.
+
+    Measured: ``phaze.saq.queue.depth`` with ``unit="1"`` exported as
+    ``phaze_saq_queue_depth_ratio``. A queue depth is not a ratio, and the suffix would be
+    baked into every query homelab ever writes against it. A UCUM annotation (``{jobs}``)
+    is dropped by the translation instead. Counters are NOT affected -- they take
+    ``_total`` -- and that inconsistency is exactly why this is pinned rather than trusted.
+    """
+    offenders = [spec.name for spec in CATALOGUE if spec.unit == "1"]
+    assert not offenders, f"use a UCUM annotation like '{{jobs}}' instead of the bare '1': {offenders}"
 
 
 def test_model_label_bound_matches_the_registry() -> None:

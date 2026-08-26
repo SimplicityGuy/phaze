@@ -37,6 +37,14 @@ from typing import Literal
 
 InstrumentKind = Literal["counter", "histogram", "updowncounter", "gauge"]
 
+#: UNITS ARE PART OF THE PROMETHEUS NAME, and a dimensionless "1" is not neutral: measured
+#: against the real collector, a GAUGE with ``unit="1"`` is exported as
+#: ``phaze_saq_queue_depth_ratio`` -- a queue depth is not a ratio, and the suffix would be
+#: baked into every dashboard query and alert rule homelab writes. An OTel UCUM ANNOTATION
+#: (braces, e.g. ``{jobs}``) is dropped by the translation instead, so the name stays
+#: ``phaze_saq_queue_depth``. Counters were not affected -- they take ``_total`` -- which is
+#: exactly the kind of inconsistency that is only findable by looking at the real output.
+
 
 # Label names that MUST NEVER appear on a metric. Enforced by the catalogue guard test
 # rather than by convention, because the failure is invisible until it has already been
@@ -46,6 +54,17 @@ InstrumentKind = Literal["counter", "histogram", "updowncounter", "gauge"]
 # (file/path/digest/uuid) and identifiers of a POSITION within a run (window/chunk index).
 # The second family looks bounded per file -- a 12-hour set has 1,449 fine windows -- but
 # it is unbounded across the archive, and a Prometheus series lives across files.
+#: Label names Prometheus reserves. A metric carrying one of these is not "slightly wrong"
+#: -- the OTLP -> Prometheus translation FAILS THE WHOLE METRIC and it never appears at the
+#: scrape endpoint at all. Measured against the real collector
+#: (otel/opentelemetry-collector-contrib 0.140.0): a label named ``job`` collides with the
+#: ``job`` label the exporter derives from ``service.name``, and the collector logged
+#: ``duplicate label names in constant and variable labels`` and dropped
+#: ``phaze_saq_job_duration_seconds`` and ``phaze_saq_jobs_total`` entirely -- silently, as
+#: far as anything downstream could see. ``le`` is the histogram bucket label and ``quantile``
+#: the summary one; ``__``-prefixed names are Prometheus-internal.
+RESERVED_LABEL_NAMES: frozenset[str] = frozenset({"job", "instance", "le", "quantile"})
+
 FORBIDDEN_LABEL_SUBSTRINGS: tuple[str, ...] = (
     "file_id",
     "file_path",
@@ -267,9 +286,13 @@ HTTP_STATUS_CLASS = LabelSpec(
 )
 
 SAQ_JOB = LabelSpec(
-    name="job",
+    name="saq_function",
     cardinality=64,
-    description="Registered SAQ function name. Bounded by the union of the controller and agent function lists.",
+    description=(
+        "Registered SAQ function name. Bounded by the union of the controller and agent function lists. "
+        "NOT spelled 'job': that name is reserved by Prometheus for the target derived from service.name, "
+        "and the collector drops the entire metric rather than reporting the collision (see RESERVED_LABEL_NAMES)."
+    ),
 )
 SAQ_QUEUE = LabelSpec(
     name="queue",
@@ -430,14 +453,14 @@ CATALOGUE: tuple[MetricSpec, ...] = (
     MetricSpec(
         name="phaze.analysis.windows",
         kind="counter",
-        unit="1",
+        unit="{windows}",
         description="Windows reaching a terminal state, per tier. 'skipped' is per-window failure isolation firing.",
         labels=(TIER, WINDOW_OUTCOME),
     ),
     MetricSpec(
         name="phaze.analysis.chunks",
         kind="counter",
-        unit="1",
+        unit="{chunks}",
         description="D-07 chunks completed, per tier.",
         labels=(TIER,),
     ),
@@ -468,7 +491,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
     MetricSpec(
         name="phaze.http.server.active_requests",
         kind="updowncounter",
-        unit="1",
+        unit="{requests}",
         description="Requests currently in flight. No route label: this is a whole-process saturation read.",
     ),
     # --- SAQ ----------------------------------------------------------------------
@@ -484,7 +507,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
     MetricSpec(
         name="phaze.saq.jobs",
         kind="counter",
-        unit="1",
+        unit="{jobs}",
         description="SAQ jobs reaching a terminal state, by function name and outcome.",
         labels=(SAQ_JOB, OUTCOME),
         realized_combinations=80,
@@ -492,7 +515,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
     MetricSpec(
         name="phaze.saq.queue.depth",
         kind="gauge",
-        unit="1",
+        unit="{jobs}",
         description="Jobs sitting in each SAQ status, sampled at export time.",
         labels=(SAQ_QUEUE, SAQ_STATUS),
         realized_combinations=24,
@@ -509,7 +532,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
     MetricSpec(
         name="phaze.db.statements",
         kind="counter",
-        unit="1",
+        unit="{statements}",
         description=(
             "Statements executed, by leading keyword. Divided by request count this is the "
             "per-request fan-out phaze-zaf2l measured with pg_stat_user_tables deltas."
@@ -520,7 +543,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
     MetricSpec(
         name="phaze.pipeline.stage.transitions",
         kind="counter",
-        unit="1",
+        unit="{transitions}",
         description=(
             "Scheduling-ledger transitions: a stage SCHEDULED for a file, and that row RESOLVED. "
             "The ledger is the durable record recovery reads, so this is the transition that matters; "
@@ -532,7 +555,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
     MetricSpec(
         name="phaze.pipeline.backlog",
         kind="gauge",
-        unit="1",
+        unit="{files}",
         description=(
             "Files waiting in each pipeline waiting-room -- the 8,079-row `cloud_job` awaiting "
             "backlog phaze-zaf2l had to count in psql, among others. "
