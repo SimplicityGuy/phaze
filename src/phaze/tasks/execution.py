@@ -919,6 +919,75 @@ class _ReportContext:
     start_log: ExecutionLogCreate
 
 
+async def _finalize_execution_log(
+    ctx: _ReportContext,
+    patch: ExecutionLogPatch,
+    *,
+    start_logged: bool,
+    terminal_label: str,
+) -> bool:
+    """Heal the write-ahead audit row via `_ensure_start_log`, then PATCH the execution-log row
+    to its terminal state (COMPLETED or FAILED, carried in `patch`).
+
+    Shared by `_report_success` and `_report_failure` -- the same heal-then-PATCH sequence, only
+    the terminal `ExecutionLogPatch` and the word used in the swallowed-failure warning
+    (`terminal_label`, e.g. "completed"/"failed") differ. A PATCH failure here is swallowed with a
+    warning rather than raised: the move already committed to disk (or the caller is already on
+    the failure path), so this row is reconciliation-recoverable and must not itself fail the
+    batch.
+
+    Returns the (possibly healed) `start_logged` for the caller to carry into its next step.
+    """
+    start_logged = await _ensure_start_log(ctx.api, ctx.start_log, start_logged=start_logged)
+    try:
+        await ctx.api.patch_execution_log(ctx.execution_log_id, patch)
+    except Exception as patch_exc:
+        logger.warning(
+            "execute_approved_batch: could not patch %s log for %s: %s",
+            terminal_label,
+            ctx.item.proposal_id,
+            patch_exc,
+        )
+    return start_logged
+
+
+async def _post_exec_batch_progress_terminal(
+    ctx: _ReportContext,
+    *,
+    terminal_step: Literal["deleted", "failed"],
+    failed_at_step: FailedAtStep | None = None,
+) -> None:
+    """POST the exec-batch progress event for this proposal's terminal step, carrying the
+    `sub_batch_terminal` completion token when this is the batch's last proposal.
+
+    Shared by `_report_success` (`terminal_step="deleted"`) and `_report_failure`
+    (`terminal_step="failed"`, `failed_at_step` set) -- same payload shape, same POST, same
+    failure handling; only the terminal step and (for a failure) the step it failed at differ.
+
+    A POST failure is routed through `_report_progress_failure`, which applies D-16's swallow
+    rule to the telemetry half but re-raises `ExecBatchTerminalReportError` for a lost completion
+    token (phaze-j7u8) -- see that function's docstring. This function does not itself catch that
+    re-raise; it propagates to the caller (`_report_success`/`_report_failure`) unchanged, same as
+    before this was split out.
+    """
+    try:
+        await ctx.api.post_exec_batch_progress(
+            ctx.payload.batch_id,
+            ExecBatchProgressPayload(
+                request_id=ctx.progress_request_id,
+                batch_id=ctx.payload.batch_id,
+                agent_id=ctx.payload.agent_id,
+                sub_batch_index=ctx.payload.sub_batch_index,
+                proposal_id=ctx.item.proposal_id,
+                terminal_step=terminal_step,
+                failed_at_step=failed_at_step,
+                sub_batch_terminal=ctx.is_last,
+            ),
+        )
+    except Exception as progress_exc:
+        _report_progress_failure(ctx.item, ctx.is_last, progress_exc)
+
+
 async def _report_success(
     ctx: _ReportContext,
     proposed: Path,
@@ -939,21 +1008,12 @@ async def _report_success(
     `_report_progress_failure` re-raises as `ExecBatchTerminalReportError` (phaze-j7u8) --
     propagates through this function to `_execute_one`'s dedicated `except` clause.
     """
-    start_logged = await _ensure_start_log(ctx.api, ctx.start_log, start_logged=start_logged)
-    try:
-        await ctx.api.patch_execution_log(
-            ctx.execution_log_id,
-            ExecutionLogPatch(
-                status=ExecutionStatus.COMPLETED,
-                sha256_verified=sha_verified,
-            ),
-        )
-    except Exception as patch_exc:
-        logger.warning(
-            "execute_approved_batch: could not patch completed log for %s: %s",
-            ctx.item.proposal_id,
-            patch_exc,
-        )
+    start_logged = await _finalize_execution_log(
+        ctx,
+        ExecutionLogPatch(status=ExecutionStatus.COMPLETED, sha256_verified=sha_verified),
+        start_logged=start_logged,
+        terminal_label="completed",
+    )
 
     try:
         await ctx.api.patch_proposal_state(
@@ -971,21 +1031,7 @@ async def _report_success(
             report_exc,
         )
 
-    try:
-        await ctx.api.post_exec_batch_progress(
-            ctx.payload.batch_id,
-            ExecBatchProgressPayload(
-                request_id=ctx.progress_request_id,
-                batch_id=ctx.payload.batch_id,
-                agent_id=ctx.payload.agent_id,
-                sub_batch_index=ctx.payload.sub_batch_index,
-                proposal_id=ctx.item.proposal_id,
-                terminal_step="deleted",
-                sub_batch_terminal=ctx.is_last,
-            ),
-        )
-    except Exception as progress_exc:
-        _report_progress_failure(ctx.item, ctx.is_last, progress_exc)
+    await _post_exec_batch_progress_terminal(ctx, terminal_step="deleted")
 
 
 async def _report_failure(
@@ -1005,21 +1051,12 @@ async def _report_failure(
     the same way, so the same rule applies: telemetry is swallowed, the token re-raises out of
     this function into `_execute_one`'s dedicated handler.
     """
-    start_logged = await _ensure_start_log(ctx.api, ctx.start_log, start_logged=start_logged)
-    try:
-        await ctx.api.patch_execution_log(
-            ctx.execution_log_id,
-            ExecutionLogPatch(
-                status=ExecutionStatus.FAILED,
-                error_message=formatted_error,
-            ),
-        )
-    except Exception as patch_exc:
-        logger.warning(
-            "execute_approved_batch: could not patch failed log for %s: %s",
-            ctx.item.proposal_id,
-            patch_exc,
-        )
+    start_logged = await _finalize_execution_log(
+        ctx,
+        ExecutionLogPatch(status=ExecutionStatus.FAILED, error_message=formatted_error),
+        start_logged=start_logged,
+        terminal_label="failed",
+    )
     try:
         await ctx.api.patch_proposal_state(
             ctx.item.proposal_id,
@@ -1038,22 +1075,7 @@ async def _report_failure(
             report_exc,
         )
 
-    try:
-        await ctx.api.post_exec_batch_progress(
-            ctx.payload.batch_id,
-            ExecBatchProgressPayload(
-                request_id=ctx.progress_request_id,
-                batch_id=ctx.payload.batch_id,
-                agent_id=ctx.payload.agent_id,
-                sub_batch_index=ctx.payload.sub_batch_index,
-                proposal_id=ctx.item.proposal_id,
-                terminal_step="failed",
-                failed_at_step=failed_step,
-                sub_batch_terminal=ctx.is_last,
-            ),
-        )
-    except Exception as progress_exc:
-        _report_progress_failure(ctx.item, ctx.is_last, progress_exc)
+    await _post_exec_batch_progress_terminal(ctx, terminal_step="failed", failed_at_step=failed_step)
 
 
 async def _compute_proposed(
