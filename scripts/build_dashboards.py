@@ -633,11 +633,18 @@ def service_health() -> dict[str, Any]:
         _row(6, "SAQ", 19),
         _panel(
             7,
-            "Queue depth by status",
+            "SAQ rows queued and active, by pipeline stage",
             "timeseries",
-            [_target(f"sum by (queue, status) (phaze_saq_queue_depth{J})", "{{queue}} / {{status}}")],
+            [_target(f"sum by (stage, status) (phaze_pipeline_stage_inflight{J})", "{{stage}} / {{status}}")],
             (0, 20, 12, 8),
-            description="phaze-zaf2l measured production depth holding at 9 across 28 samples and filed NO bead against SAQ: a local burst drained 5,000 jobs at 318.3/s against a production load of 0.0939 jobs/s, i.e. 0.03% of capacity.",
+            description=(
+                "phaze-zaf2l measured production depth holding at 9 across 28 samples and filed NO bead "
+                "against SAQ: a local burst drained 5,000 jobs at 318.3/s against a production load of "
+                "0.0939 jobs/s, i.e. 0.03% of capacity. "
+                "Labelled by STAGE, not by queue -- the sampler groups by SAQ function name, and calling "
+                "that a queue would be mislabelled data. POLL-DRIVEN: sampled by the admin UI's own "
+                "/pipeline/stats read, so it goes stale when no tab is open."
+            ),
             unit="short",
             options=_TS,
             custom=_TS_LINE,

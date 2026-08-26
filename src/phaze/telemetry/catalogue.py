@@ -299,16 +299,11 @@ SAQ_JOB = LabelSpec(
         "and the collector drops the entire metric rather than reporting the collision (see RESERVED_LABEL_NAMES)."
     ),
 )
-SAQ_QUEUE = LabelSpec(
-    name="queue",
-    cardinality=16,
-    description="SAQ queue name. Bounded by the controller queue plus one queue per registered agent.",
-)
-SAQ_STATUS = LabelSpec(
+STAGE_INFLIGHT_STATUS = LabelSpec(
     name="status",
-    cardinality=6,
-    description="SAQ job status the depth gauge is counting.",
-    values=("new", "queued", "active", "aborting", "failed", "complete"),
+    cardinality=2,
+    description="Whether the stage's SAQ rows are waiting or being worked.",
+    values=("queued", "active"),
 )
 
 DB_OPERATION = LabelSpec(
@@ -520,12 +515,21 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         realized_combinations=80,
     ),
     MetricSpec(
-        name="phaze.saq.queue.depth",
+        name="phaze.pipeline.stage.inflight",
         kind="gauge",
         unit="{jobs}",
-        description="Jobs sitting in each SAQ status, sampled at export time.",
-        labels=(SAQ_QUEUE, SAQ_STATUS),
-        realized_combinations=24,
+        description=(
+            "SAQ rows queued and active, by pipeline STAGE. phaze-zaf2l sampled this by hand from "
+            "`saq_jobs` every 120 s for the length of a spike; it is the read that settled 'SAQ is not "
+            "a bottleneck' (depth held at 9 across 28 samples against a burst capacity of 318.3 jobs/s). "
+            "Labelled by STAGE and not by QUEUE deliberately: the only sampler phaze has is the stage "
+            "activity snapshot, which groups by the SAQ function name, and publishing that under a "
+            "`queue` label would be mislabelled data. "
+            "POLL-DRIVEN, like `phaze.pipeline.backlog`: sampled by the admin UI's own /pipeline/stats "
+            "read, so it goes stale when no admin tab is open. Dashboard material, never alert material."
+        ),
+        labels=(PIPELINE_STAGE, STAGE_INFLIGHT_STATUS),
+        realized_combinations=12,
     ),
     # --- database -----------------------------------------------------------------
     MetricSpec(

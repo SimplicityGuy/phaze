@@ -22,7 +22,15 @@ import pytest
 
 from phaze.services.analysis_models import GENRE_MODEL, MODEL_SETS
 from phaze.telemetry import instruments
-from phaze.telemetry.catalogue import BY_NAME, CATALOGUE, FORBIDDEN_LABEL_SUBSTRINGS, MODEL_COMBINATIONS, RESERVED_LABEL_NAMES, total_series
+from phaze.telemetry.catalogue import (
+    BY_NAME,
+    CATALOGUE,
+    FORBIDDEN_LABEL_SUBSTRINGS,
+    MODEL_COMBINATIONS,
+    RESERVED_LABEL_NAMES,
+    MetricSpec,
+    total_series,
+)
 
 
 SRC = Path(__file__).resolve().parents[3] / "src" / "phaze"
@@ -30,7 +38,7 @@ SRC = Path(__file__).resolve().parents[3] / "src" / "phaze"
 #: Pinned so a change to the budget is a deliberate edit to this number and shows up in a
 #: diff, rather than drifting a hundred series at a time. Raising it is allowed; doing so
 #: without noticing is what this pin prevents.
-SERIES_CEILING = 8583
+SERIES_CEILING = 8571
 
 
 def test_every_label_states_a_finite_bound() -> None:
@@ -160,3 +168,45 @@ def test_recording_an_undeclared_attribute_drops_it_in_production(monkeypatch: p
     """
     monkeypatch.delenv("PHAZE_TELEMETRY_STRICT", raising=False)
     instruments.record("phaze.analysis.tier.duration", 1.0, tier="fine", file_id="a-real-uuid")
+
+
+def _prometheus_family(spec: MetricSpec) -> str:
+    """The Prometheus family name for a spec, as the REAL translation produces it.
+
+    Recorded from a live otel/opentelemetry-collector-contrib 0.140.0 in
+    ``docs/telemetry/metric-catalogue.md`` section 5 -- not derived from the OTLP ->
+    Prometheus naming rules on paper, which is how the two defects section 5 records were
+    found.
+    """
+    base = "phaze_" + spec.name.removeprefix("phaze.").replace(".", "_")
+    if spec.unit == "s":
+        base += "_seconds"
+    elif spec.unit == "By":
+        base += "_bytes"
+    if spec.kind == "counter":
+        base += "_total"
+    return base
+
+
+def test_the_documented_catalogue_lists_every_metric() -> None:
+    """The committed doc is what homelab wires against, so it is checked BOTH ways.
+
+    A metric missing from it is a contract phaze emits and nobody knows to scrape. A metric
+    in it that phaze no longer emits is a query homelab writes that silently returns nothing
+    -- which reads as a healthy idle system.
+    """
+    doc = (Path(__file__).resolve().parents[3] / "docs" / "telemetry" / "metric-catalogue.md").read_text(encoding="utf-8")
+    missing = [spec.name for spec in CATALOGUE if _prometheus_family(spec) not in doc]
+    assert not missing, f"metrics absent from docs/telemetry/metric-catalogue.md: {missing}"
+
+    documented = set(re.findall(r"`(phaze_[a-z0-9_]+)`", doc))
+    known = {_prometheus_family(spec) for spec in CATALOGUE}
+    stale = sorted(name for name in documented if name not in known and not name.endswith(("_bucket", "_sum", "_count")))
+    assert not stale, f"docs/telemetry/metric-catalogue.md documents metric(s) phaze does not emit: {stale}"
+
+
+def test_the_documented_series_ceiling_matches_the_code() -> None:
+    """The budget in the doc is the number homelab sizes retention against, so it must be
+    THE number and not a stale copy of one."""
+    doc = (Path(__file__).resolve().parents[3] / "docs" / "telemetry" / "metric-catalogue.md").read_text(encoding="utf-8")
+    assert f"{total_series():,}" in doc, f"the doc does not state the current series ceiling ({total_series():,})"

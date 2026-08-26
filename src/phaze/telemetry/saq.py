@@ -1,4 +1,9 @@
-"""SAQ worker instrumentation -- job duration, outcome, and queue depth.
+"""SAQ worker instrumentation -- per-job duration and outcome.
+
+Queue DEPTH is not here. The only sampler phaze has is the admin UI's stage-activity
+snapshot, which groups by pipeline stage rather than by SAQ queue; it is published as
+``phaze.pipeline.stage.inflight`` from ``telemetry/pipeline.py`` under a label that says
+what it actually is.
 
 Wired as ordinary SAQ ``before_process`` / ``after_process`` hooks, the same mechanism
 phaze already uses for ``enforce_stage_pause_on_process`` and ``increment_completed``, so
@@ -25,7 +30,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from phaze.telemetry.instruments import add, record, set_gauge
+from phaze.telemetry.instruments import add, record
 from phaze.telemetry.tracing import span
 
 
@@ -104,19 +109,6 @@ async def after_process(ctx: dict[str, Any]) -> None:
         # NEVER raises: this runs in SAQ's own hook chain, alongside the ledger clear.
         # Logged rather than passed so a systematically broken hook is discoverable.
         log.debug("telemetry_saq_hook_failed", exc_info=True)
-
-
-def record_queue_depth(queue_name: str, counts: dict[str, int]) -> None:
-    """Publish one sample of ``{status: count}`` for ``queue_name``.
-
-    A synchronous gauge fed by whatever already samples the queue, rather than an
-    OBSERVABLE gauge with its own callback: an observable gauge's callback runs on the
-    metric reader's thread, which has no event loop and therefore cannot await the async
-    queue API. Statuses outside the catalogued set are dropped rather than published,
-    because an unrecognised status is exactly how a label set grows silently.
-    """
-    for status, count in counts.items():
-        set_gauge("phaze.saq.queue.depth", float(count), queue=queue_name, status=str(status))
 
 
 def hooks() -> tuple[Callable[[dict[str, Any]], Awaitable[None]], Callable[[dict[str, Any]], Awaitable[None]]]:

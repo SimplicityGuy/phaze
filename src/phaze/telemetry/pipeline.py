@@ -52,3 +52,15 @@ def record_backlog(counts: dict[str, int]) -> None:
     """
     for name, value in counts.items():
         set_gauge("phaze.pipeline.backlog", float(value), backlog=name)
+
+
+def record_stage_inflight(counts: dict[str, dict[str, int]]) -> None:
+    """Publish the stage-activity snapshot: ``{stage: {"queued": n, "active": n}}``.
+
+    Same poll-driven caveat as :func:`record_backlog`, and the same consequence: read it on
+    a dashboard, never alert on it. Statuses outside the catalogued pair are dropped by the
+    instruments layer's attribute check rather than published.
+    """
+    for stage, by_status in counts.items():
+        for status, value in by_status.items():
+            set_gauge("phaze.pipeline.stage.inflight", float(value), stage=stage, status=status)

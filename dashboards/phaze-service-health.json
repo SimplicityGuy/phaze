@@ -261,7 +261,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "phaze-zaf2l measured production depth holding at 9 across 28 samples and filed NO bead against SAQ: a local burst drained 5,000 jobs at 318.3/s against a production load of 0.0939 jobs/s, i.e. 0.03% of capacity.",
+      "description": "phaze-zaf2l measured production depth holding at 9 across 28 samples and filed NO bead against SAQ: a local burst drained 5,000 jobs at 318.3/s against a production load of 0.0939 jobs/s, i.e. 0.03% of capacity. Labelled by STAGE, not by queue -- the sampler groups by SAQ function name, and calling that a queue would be mislabelled data. POLL-DRIVEN: sampled by the admin UI's own /pipeline/stats read, so it goes stale when no tab is open.",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -301,14 +301,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (queue, status) (phaze_saq_queue_depth{job=~\"$job\"})",
+          "expr": "sum by (stage, status) (phaze_pipeline_stage_inflight{job=~\"$job\"})",
           "instant": false,
-          "legendFormat": "{{queue}} / {{status}}",
+          "legendFormat": "{{stage}} / {{status}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Queue depth by status",
+      "title": "SAQ rows queued and active, by pipeline stage",
       "type": "timeseries"
     },
     {

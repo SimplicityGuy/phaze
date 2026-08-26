@@ -19,7 +19,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from phaze.telemetry import db as telemetry_db, saq as telemetry_saq
+from phaze.telemetry import db as telemetry_db, pipeline as telemetry_pipeline, saq as telemetry_saq
 from tests.db_guard import resolve_test_dsn
 
 
@@ -155,10 +155,16 @@ async def test_the_hooks_never_raise_on_a_hostile_job() -> None:
     await telemetry_saq.after_process({"job": Exploding()})
 
 
-def test_queue_depth_publishes_only_catalogued_statuses(telemetry_sink: TelemetrySink) -> None:
-    telemetry_saq.record_queue_depth("controller", {"queued": 9, "active": 4})
-    attribute_sets = telemetry_sink.attribute_sets("phaze.saq.queue.depth")
+def test_stage_inflight_publishes_the_stage_activity_snapshot(telemetry_sink: TelemetrySink) -> None:
+    """Queue DEPTH is published by pipeline stage, not by SAQ queue.
+
+    The only sampler phaze has is the admin UI's stage-activity snapshot, which groups by
+    SAQ function name. Publishing that under a `queue` label would be a label that says
+    something the data does not.
+    """
+    telemetry_pipeline.record_stage_inflight({"analyze": {"queued": 9, "active": 4}})
+    attribute_sets = telemetry_sink.attribute_sets("phaze.pipeline.stage.inflight")
     assert {frozenset(attrs.items()) for attrs in attribute_sets} == {
-        frozenset({("queue", "controller"), ("status", "queued")}),
-        frozenset({("queue", "controller"), ("status", "active")}),
+        frozenset({("stage", "analyze"), ("status", "queued")}),
+        frozenset({("stage", "analyze"), ("status", "active")}),
     }
