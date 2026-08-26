@@ -496,6 +496,74 @@ async def edit_proposal(
     )
 
 
+def _parse_bulk_selection(review_tokens: list[str], proposal_ids: list[str]) -> tuple[list[ProposalReviewToken], list[uuid.UUID]]:
+    """Parse Changes Review's submitted selection into review tokens plus a deduplicated id list.
+
+    phaze-3st0: ``proposal_ids`` is a browser-held id-set that may be arbitrarily stale (request_
+    guards.py contract rule 2, ELEMENT case) -- a malformed/empty entry in EITHER form field is
+    SKIPPED rather than rejecting the whole request; mirrors tracklists.trigger_scan's identical
+    id-list guard.
+
+    ``review_tokens`` carry the concurrency proof (``id|updated_at|content_digest``) that
+    :func:`bulk_approve_selected_above_confidence` needs; ``proposal_ids`` is the wider legacy
+    selection with no such proof, used by the reject path instead. The returned ``uuids`` is the
+    union of both sources, in the order first seen, deduplicated -- ``bulk_action`` relies on that
+    order when it hands the list to ``bulk_update_status``.
+
+    phaze-vu88k.4: the dedup test used to be ``parsed not in uuids`` against a LIST that grows as
+    the loop runs -- O(n*m) over the submitted set. ``seen`` mirrors ``uuids`` for the membership
+    test ONLY; ``uuids`` stays a list because callers depend on its insertion order.
+    """
+    reviewed: list[ProposalReviewToken] = []
+    for token in review_tokens:
+        try:
+            raw_id, raw_updated_at, content_digest = token.split("|", 2)
+            reviewed.append(
+                ProposalReviewToken(
+                    proposal_id=uuid.UUID(raw_id),
+                    updated_at=datetime.fromisoformat(raw_updated_at),
+                    content_digest=content_digest,
+                )
+            )
+        except (TypeError, ValueError):
+            continue
+    uuids = [token.proposal_id for token in reviewed]
+    seen = set(uuids)
+    for pid in proposal_ids:
+        try:
+            parsed = uuid.UUID(pid)
+        except ValueError:
+            continue
+        if parsed not in seen:
+            seen.add(parsed)
+            uuids.append(parsed)
+    return reviewed, uuids
+
+
+async def _transition_selected_proposals(
+    session: AsyncSession, action: str, reviewed: list[ProposalReviewToken], uuids: list[uuid.UUID]
+) -> tuple[int, str]:
+    """Apply the operator's chosen bulk action to the parsed selection.
+
+    Returns ``(applied, toast_action)`` -- the number of rows that ACTUALLY transitioned (never
+    the selection size, phaze-uu17) and the verb ``_bulk_toast`` phrases it with.
+
+    phaze-uu17: only PENDING rows may be bulk approved/rejected; terminal EXECUTED/FAILED rows
+    selected via the "All" tab are skipped, and the returned count reflects only real transitions.
+
+    phaze-a6hm.11: the reject path's single guarded UPDATE is what makes the endpoint safe to
+    double-submit -- ``allowed_from`` is evaluated INSIDE the UPDATE's WHERE clause, in one
+    statement, so there is no read-then-write window for a concurrent submission to slip through
+    (the phaze-u28m TOCTOU shape), and a replay of the same ids after the first submit matches
+    zero rows because those rows are no longer PENDING. The action is idempotent by construction
+    rather than by locking or a client-side guard, and the second submission's count is honestly 0
+    rather than a repeat of the first answer.
+    """
+    if action == "approve_eligible":
+        return await bulk_approve_selected_above_confidence(session, reviewed), "approve"
+    return await bulk_update_status(session, uuids, ProposalStatus.REJECTED, allowed_from=_APPROVE_REJECT_FROM), action
+
+
 @router.patch("/bulk", response_class=HTMLResponse)
 async def bulk_action(
     request: Request,
@@ -506,9 +574,9 @@ async def bulk_action(
 ) -> HTMLResponse:
     """Bulk approve or reject the selection Changes Review submitted.
 
-    phaze-3st0: ``proposal_ids`` is a browser-held id-set that may be arbitrarily stale (request_
-    guards.py contract rule 2, ELEMENT case) -- a malformed/empty entry is SKIPPED rather than
-    rejecting the whole request, and the returned count is the authority on what actually happened.
+    Selection parsing lives in :func:`_parse_bulk_selection` and the transition itself in
+    :func:`_transition_selected_proposals`; see their docstrings for the malformed-id skip
+    (phaze-3st0), the review-token/dedup semantics, and the idempotent-reject guarantee.
 
     ONE ROUTE, ONE RESPONSE SHAPE. This endpoint has twice carried a second, ``HX-Target``-forked
     branch that outlived the surface it answered, and both are now gone:
@@ -531,51 +599,8 @@ async def bulk_action(
     """
     if action not in ("approve_eligible", "reject"):
         raise HTTPException(status_code=400, detail="Action must be 'approve_eligible' or 'reject'")
-    # Parse submitted ids into UUIDs, skipping malformed/empty strings (never a 500); mirrors
-    # tracklists.trigger_scan's identical id-list guard.
-    reviewed: list[ProposalReviewToken] = []
-    for token in review_tokens:
-        try:
-            raw_id, raw_updated_at, content_digest = token.split("|", 2)
-            reviewed.append(
-                ProposalReviewToken(
-                    proposal_id=uuid.UUID(raw_id),
-                    updated_at=datetime.fromisoformat(raw_updated_at),
-                    content_digest=content_digest,
-                )
-            )
-        except (TypeError, ValueError):
-            continue
-    uuids = [token.proposal_id for token in reviewed]
-    # phaze-vu88k.4: the dedup test used to be `parsed not in uuids` against a LIST that grows as
-    # the loop runs -- O(n*m) over the submitted set. `seen` mirrors `uuids` for the membership
-    # test ONLY; `uuids` stays a list because the order it is built in is the order handed to
-    # bulk_update_status, and the same ids are appended in the same sequence as before.
-    seen = set(uuids)
-    for pid in proposal_ids:
-        try:
-            parsed = uuid.UUID(pid)
-        except ValueError:
-            continue
-        if parsed not in seen:
-            seen.add(parsed)
-            uuids.append(parsed)
-    # phaze-uu17: only PENDING rows may be bulk approved/rejected; terminal EXECUTED/FAILED
-    # rows selected via the "All" tab are skipped, and count reflects only real transitions.
-    #
-    # phaze-a6hm.11: this single guarded UPDATE is also what makes the endpoint safe to
-    # double-submit. `allowed_from` is evaluated INSIDE the UPDATE's WHERE clause, in one statement,
-    # so there is no read-then-write window for a concurrent submission to slip through (the
-    # phaze-u28m TOCTOU shape) -- and a replay of the same ids after the first submit matches zero
-    # rows, because those rows are no longer PENDING. The action is therefore idempotent by
-    # construction rather than by locking or by a client-side guard, and `count` on the second
-    # submission is honestly 0 rather than a repeat of the first answer.
-    if action == "approve_eligible":
-        count = await bulk_approve_selected_above_confidence(session, reviewed)
-        toast_action = "approve"
-    else:
-        count = await bulk_update_status(session, uuids, ProposalStatus.REJECTED, allowed_from=_APPROVE_REJECT_FROM)
-        toast_action = action
+    reviewed, uuids = _parse_bulk_selection(review_tokens, proposal_ids)
+    count, toast_action = await _transition_selected_proposals(session, action, reviewed, uuids)
 
     changes_context = await build_changes_review_context(request, session)
     changes_context |= {

@@ -481,6 +481,48 @@ def _natural_id(row: SchedulingLedger) -> str | None:
     return str(fid) if fid is not None else None
 
 
+def _is_metadata_domain_completed(fid: str, enqueued_at: datetime, done_sets: _DoneSets) -> bool:
+    """Return True when ``extract_file_metadata`` is terminal for this file AND for THIS ledger row.
+
+    Skip-first, THEN the D-10 cell. A force-SKIPPED file (``metadata_skipped``) is domain-complete
+    UNCONDITIONALLY and returns True BEFORE the D-10 gate is ever consulted (phaze-3m5n) -- the
+    force-skip writer's additive-only contract (T-87-20) never clears ``failed_at``, so a file skipped
+    after a failed operator retry still carries a stale ``metadata_failed_at`` entry, and the D-10 gate
+    must never be applied to it (that would re-classify the skip as "genuinely pending" and re-drive a
+    stage the operator explicitly terminated). Absent a skip marker, domain-complete when
+    ``done(metadata)`` OR the metadata FAILED AND this row's ``enqueued_at <= metadata.failed_at``.
+
+    metadata is the ONLY stage with this ambiguous failed-only cell: ``retry_metadata_failed`` LEAVES
+    ``failed_at`` set (81 D-11) then re-enqueues, so ``(ledger row AND failed_at)`` is ambiguous.
+    ``enqueued_at > failed_at`` (an orphaned OPERATOR retry) re-drives; ``enqueued_at < failed_at`` (a
+    callback that wrote the marker but crashed before clearing the ledger) stays terminal.
+    ``analysis.failed_at`` is cleared on retry (CR-01), so analyze has no such cell -- the asymmetry is
+    intentional (D-10).
+
+    ``enqueued_at`` is the LEDGER ROW's own stamp, and that is exactly why this gate cannot live in the
+    :class:`_DoneSets` derivation: ``done_sets.metadata_domain_completed`` is the UNGATED clause
+    membership (done OR skipped OR failed), and this refines ONLY its failed-derived subset.
+    """
+    if fid in done_sets.metadata_skipped:
+        return True  # force-skipped -> domain-complete unconditionally, D-10 gate never applies
+    if fid not in done_sets.metadata_domain_completed:
+        return False  # neither done, skipped, nor failed -> genuinely pending -> re-drive
+    failed_at = done_sets.metadata_failed_at.get(fid)
+    if failed_at is None:
+        return True  # done (a metadata row present, failed_at NULL) -> domain-complete
+    # failed -> the D-10 cell: terminal only when the ledger row PRE-DATES the failure marker.
+    # This coercion was load-bearing when ``scheduling_ledger.enqueued_at`` was ``TIMESTAMP WITHOUT TIME
+    # ZONE``: asyncpg returned it NAIVE while ``metadata.failed_at`` came back aware, and a bare
+    # ``naive <= aware`` raises TypeError, aborting the whole recovery run (CR-02). phaze-cz3m /
+    # migration 049 made every timestamp column ``timestamptz``, so a DB-read row is now aware and this
+    # is a no-op on the production path. KEPT deliberately: it costs one attribute check, and it is the
+    # difference between a TypeError that kills a recovery run and a correct comparison should a naive
+    # stamp ever reach here from a caller that did not come through the DB.
+    if enqueued_at.tzinfo is None:
+        enqueued_at = enqueued_at.replace(tzinfo=UTC)
+    return enqueued_at <= failed_at
+
+
 def is_domain_completed(row: SchedulingLedger, done_sets: _DoneSets) -> bool:
     """Return True only for a predicate-covered row whose file is DOMAIN-COMPLETE for that stage.
 
@@ -500,19 +542,9 @@ def is_domain_completed(row: SchedulingLedger, done_sets: _DoneSets) -> bool:
       stamp -- is correctly NOT domain-complete and IS re-driven: the analysis never finished.
     - ``push_file`` / ``s3_upload``: file id in ``cloud_lane_done`` (cloud_job succeeded OR
       domain_completed(analyze); D-07, extended to ``s3_upload`` by phaze-k95r7).
-    - ``extract_file_metadata``: skip-first, THEN the D-10 cell. A force-SKIPPED file (``metadata_skipped``)
-      is domain-complete UNCONDITIONALLY and returns True BEFORE the D-10 gate is ever consulted
-      (phaze-3m5n) -- the force-skip writer's additive-only contract (T-87-20) never clears
-      ``failed_at``, so a file skipped after a failed operator retry still carries a stale
-      ``metadata_failed_at`` entry, and the D-10 gate must never be applied to it (that would
-      re-classify the skip as "genuinely pending" and re-drive a stage the operator explicitly
-      terminated). Absent a skip marker, domain-complete when ``done(metadata)`` OR the metadata FAILED
-      AND the ledger row's ``enqueued_at <= metadata.failed_at``. metadata is the ONLY stage with this
-      ambiguous failed-only cell: ``retry_metadata_failed`` LEAVES ``failed_at`` set (81 D-11) then
-      re-enqueues, so ``(ledger row AND failed_at)`` is ambiguous. ``enqueued_at > failed_at`` (an
-      orphaned OPERATOR retry) re-drives; ``enqueued_at < failed_at`` (a callback that wrote the marker
-      but crashed before clearing the ledger) stays terminal. ``analysis.failed_at`` is cleared on retry
-      (CR-01), so analyze has no such cell -- the asymmetry is intentional (D-10).
+    - ``extract_file_metadata``: :func:`_is_metadata_domain_completed`, the one stage whose verdict is
+      NOT set membership alone -- force-skip precedence first, then the D-10 ``enqueued_at <=
+      failed_at`` gate, which needs this row's own ledger stamp and so cannot be pre-derived.
     """
     function = row.function
     if function not in _DOMAIN_COMPLETED_STAGES:
@@ -524,27 +556,7 @@ def is_domain_completed(row: SchedulingLedger, done_sets: _DoneSets) -> bool:
         return fid in done_sets.analyze_done
     if function in CLOUD_LANE_FUNCTIONS:  # push_file / s3_upload -- one lane, one predicate (phaze-k95r7)
         return fid in done_sets.cloud_lane_done
-    # extract_file_metadata -- force-skip is checked BEFORE the D-10 gate (phaze-3m5n): the gate must
-    # refine ONLY the subset of metadata_domain_completed whose membership derives solely from the
-    # failed disjunct, never a row that is ALSO domain-complete via the skipped disjunct.
-    if fid in done_sets.metadata_skipped:
-        return True  # force-skipped -> domain-complete unconditionally, D-10 gate never applies
-    # D-10 call-site gate via SchedulingLedger.enqueued_at.
-    if fid not in done_sets.metadata_domain_completed:
-        return False  # neither done, skipped, nor failed -> genuinely pending -> re-drive
-    failed_at = done_sets.metadata_failed_at.get(fid)
-    if failed_at is None:
-        return True  # done (a metadata row present, failed_at NULL) -> domain-complete
-    # failed -> the D-10 cell: terminal only when the ledger row PRE-DATES the failure marker.
-    # This coercion was load-bearing when ``scheduling_ledger.enqueued_at`` was ``TIMESTAMP WITHOUT TIME
-    # ZONE``: asyncpg returned it NAIVE while ``metadata.failed_at`` came back aware, and a bare
-    # ``naive <= aware`` raises TypeError, aborting the whole recovery run (CR-02). phaze-cz3m /
-    # migration 049 made every timestamp column ``timestamptz``, so a DB-read row is now aware and this
-    # is a no-op on the production path. KEPT deliberately: it costs one attribute check, and it is the
-    # difference between a TypeError that kills a recovery run and a correct comparison should a naive
-    # stamp ever reach here from a caller that did not come through the DB.
-    enqueued_at = row.enqueued_at if row.enqueued_at.tzinfo is not None else row.enqueued_at.replace(tzinfo=UTC)
-    return enqueued_at <= failed_at
+    return _is_metadata_domain_completed(fid, row.enqueued_at, done_sets)
 
 
 # --- The orphan predicate, spelled as three named tests (phaze-1i0h6.2) ------------------
@@ -1316,7 +1328,7 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
     return {"detected_loss": detected_loss, "forced": force, "unreplayable": unreplayable, "stages": stages}
 
 
-# The eight keyed function names, sourced from ``deterministic_key._KEY_BUILDERS`` (a Postgres-free
+# The keyed function names, sourced from ``deterministic_key._KEY_BUILDERS`` (a Postgres-free
 # ``_shared`` module) so the recovery return shape can never drift from the real keyed-task universe.
 # ``deterministic_key`` is import-safe here -- this module is control-only and never loaded by the
 # agent worker (tests/test_task_split.py enforces the reverse direction).
@@ -1356,43 +1368,62 @@ def _parse_job_blob(blob: object) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _serialized_job_bound(data: dict[str, Any], field: str) -> int | None:
+    """Return an int bound SAQ serialized at a job blob's TOP level, or None when absent / not an int.
+
+    The SAQ default ``json.dumps`` serializer writes ``timeout`` / ``retries`` (Job dataclass fields)
+    at the blob top level. Carrying them through is what lets an in-flight transition cohort recover
+    with its REAL bound rather than the 600s default. (For ``process_file`` this is belt-and-braces
+    since phaze-w55w1: ``apply_project_job_defaults`` pins its ``timeout=0`` + heartbeat regardless.)
+    """
+    value = data.get(field)
+    return value if isinstance(value, int) else None
+
+
+def _keyed_function_from_job_blob(data: dict[str, Any], key: str) -> str | None:
+    """Return the KEYED pipeline function a ``saq_jobs`` row belongs to, or None when it is not keyed.
+
+    Belt-and-suspenders: trust the blob's ``function`` field, but fall back to the ``saq_jobs`` key
+    prefix (``<function>:<natural_id>``) so a row missing the field is still classified correctly.
+    A name absent from :data:`~phaze.tasks._shared.deterministic_key._KEY_BUILDERS` is NOT keyed -- a
+    random-key / non-pipeline job -- and gets no ledger row at all.
+    """
+    blob_function = data.get("function")
+    function = blob_function if isinstance(blob_function, str) else key.split(":", 1)[0]
+    if function not in _KEY_BUILDERS:
+        return None  # a random-key / non-pipeline job -- SKIPPED, no ledger row
+    return function
+
+
 def _classify_saq_job_row(row: Any) -> dict[str, Any] | None:
     """Classify one ``saq_jobs`` row for `backfill_ledger_from_saq_jobs`.
 
-    Returns the pending-insert dict for a KEYED pipeline function, or None to skip (unparseable
-    blob, or not keyed). Split out of that function's per-row loop body so the row-classification
-    logic is legible on its own; same parse order, same fallback, same fields carried through --
-    no behavior change.
+    Returns the pending-insert dict for a KEYED pipeline function, or None to skip (unparseable blob,
+    non-str key, or not keyed). Split out of that function's per-row loop body so the
+    row-classification logic is legible on its own; same parse order, same fallback, same fields
+    carried through -- no behavior change.
 
-    JUSTIFIED FINDING (phaze-as6xh): this still trips ``complex_method`` (ccn 10) after the split
-    -- the branching is inherent to the row shape, not tangled control flow, so isolating it here
-    only relocated the finding rather than resolving it. Cognitive complexity is 9 (< ccn) at
-    nesting 1: a flat sequence of independent parse/validate guards, the same
-    low-cognitive/shallow-nesting signature ``is_domain_completed`` (below) is justified on.
-    Splitting further would fragment one small, cohesive, already-isolated function for the
-    metric alone -- exactly what the epic's own decision-table guidance says not to do.
+    phaze-48ghg.2 SUPERSEDES the ``JUSTIFIED FINDING`` this docstring used to carry, which ruled the
+    ccn-10 branching "inherent to the row shape, not tangled control flow" and therefore unresolvable.
+    Two of the concerns tangled here were separately nameable after all -- WHICH keyed function the row
+    belongs to (:func:`_keyed_function_from_job_blob`) and WHICH int bounds SAQ serialized
+    (:func:`_serialized_job_bound`) -- and naming them takes this function from ccn 10 to ccn 5.
     """
     blob, key = row[0], row[1]
     data = _parse_job_blob(blob)
-    if data is None:
+    if data is None or not isinstance(key, str):
         return None
-    function = data.get("function")
-    # Belt-and-suspenders: trust the blob's function, but fall back to the saq_jobs key prefix
-    # (``<function>:<natural_id>``) so a row missing the field is still classified correctly.
-    if not isinstance(function, str) and isinstance(key, str):
-        function = key.split(":", 1)[0]
-    if not isinstance(function, str) or function not in _KEY_BUILDERS or not isinstance(key, str):
+    function = _keyed_function_from_job_blob(data, key)
+    if function is None:
         return None
     kwargs = data.get("kwargs")
-    if not isinstance(kwargs, dict):
-        kwargs = {}
-    # The SAQ default json.dumps serializer writes timeout/retries (Job dataclass fields) at the
-    # blob top level. Carry them through so an in-flight transition cohort recovers with its
-    # real bound, not the 600s default. (For process_file this is belt-and-braces since
-    # phaze-w55w1: apply_project_job_defaults pins its timeout=0 + heartbeat regardless.)
-    timeout = data.get("timeout") if isinstance(data.get("timeout"), int) else None
-    retries = data.get("retries") if isinstance(data.get("retries"), int) else None
-    return {"key": key, "function": function, "kwargs": dict(kwargs), "timeout": timeout, "retries": retries}
+    return {
+        "key": key,
+        "function": function,
+        "kwargs": dict(kwargs) if isinstance(kwargs, dict) else {},
+        "timeout": _serialized_job_bound(data, "timeout"),
+        "retries": _serialized_job_bound(data, "retries"),
+    }
 
 
 async def backfill_ledger_from_saq_jobs(session: AsyncSession) -> dict[str, int]:

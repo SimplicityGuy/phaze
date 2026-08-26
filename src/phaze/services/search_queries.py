@@ -244,22 +244,30 @@ async def search(
     session: AsyncSession,
     query: str,
     *,
-    artist: str | None = None,
-    genre: str | None = None,
-    date_from: date | None = None,
-    date_to: date | None = None,
-    bpm_min: float | None = None,
-    bpm_max: float | None = None,
+    facets: SearchFacets = SearchFacets(),
     page: int = 1,
     page_size: int = DEFAULT_PAGE_SIZE,
 ) -> tuple[list[SearchResult], SearchPagination]:
     """Search across files and tracklists using full-text search with facet filters.
 
+    phaze-48ghg.12: ``search()`` previously took its six facets (``artist``/``genre``/
+    ``date_from``/``date_to``/``bpm_min``/``bpm_max``) as ten separate parameters -- the most of
+    any function in ``src/phaze``, and a call-site hazard where two same-typed arguments
+    transposed silently type-checks and returns wrong results. They are one concept -- the facet
+    filters a search applies -- and were already modelled as :class:`SearchFacets` for the three
+    branch builders below; this signature now takes that same object directly instead of
+    reconstructing it internally. ``page``/``page_size`` are deliberately left as separate
+    parameters: every other paged surface in this codebase passes them through individually per
+    the paging contract (``phaze.services.pagination``: "pass request values through directly;
+    clamp once, here"), so bundling them here would be the one paged call inconsistent with that
+    convention rather than a real simplification. **Signature change -- every call site (the
+    ``/search`` router and the test suite) was updated; none was left calling the old keyword
+    form.**
+
     The three union branches are built by :func:`_file_branch`, :func:`_tracklist_branch` and
     :func:`_discogs_branch`; each documents which facets it honours and why it ignores the rest.
     """
     ts_query = func.plainto_tsquery("simple", query)
-    facets = SearchFacets(artist=artist, genre=genre, date_from=date_from, date_to=date_to, bpm_min=bpm_min, bpm_max=bpm_max)
 
     # Phase 90 (PR-A, D-11): the pipeline-status facet is gone, so files / tracklists / discogs ALWAYS union.
     combined = union_all(_file_branch(ts_query, facets), _tracklist_branch(ts_query, facets), _discogs_branch(ts_query, facets)).subquery()

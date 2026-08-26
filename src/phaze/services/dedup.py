@@ -65,6 +65,26 @@ def tag_completeness(file_dict: dict[str, Any]) -> tuple[str, int, int]:
     return label, filled, total
 
 
+def _runner_up_value(runner_up: dict[str, Any] | None, key: str) -> int:
+    """The runner-up's value for ``key`` in the rationale cascade, or 0 when there is no runner-up.
+
+    A single-file group has no runner-up at all, and :func:`_canonical_rationale` treats that the
+    same as a runner-up that scored 0 on every criterion -- either way the winner cannot have
+    "beaten" it on anything, so the cascade falls through to "shortest path".
+    """
+    return (runner_up.get(key) or 0) if runner_up else 0
+
+
+def _led_on_bitrate(winner_bitrate: int, runner_bitrate: int) -> bool:
+    """True when ``winner_bitrate`` is a real, strictly higher bitrate than ``runner_bitrate``."""
+    return winner_bitrate > 0 and winner_bitrate > runner_bitrate
+
+
+def _led_on_tag_completeness(winner_tags: int, runner_tags: int) -> bool:
+    """True when ``winner_tags`` is a real, strictly higher filled-tag count than ``runner_tags``."""
+    return winner_tags > 0 and winner_tags > runner_tags
+
+
 def _canonical_rationale(winner: dict[str, Any], runner_up: dict[str, Any] | None) -> str:
     """Name the criterion on which ``winner`` beat the next-best file in its duplicate group.
 
@@ -80,12 +100,12 @@ def _canonical_rationale(winner: dict[str, Any], runner_up: dict[str, Any] | Non
     winner_tags = winner.get("tag_filled", 0)
     winner_tag_total = winner.get("tag_total", len(TAG_FIELDS))
 
-    runner_bitrate = (runner_up.get("bitrate") or 0) if runner_up else 0
-    runner_tags = (runner_up.get("tag_filled", 0)) if runner_up else 0
+    runner_bitrate = _runner_up_value(runner_up, "bitrate")
+    runner_tags = _runner_up_value(runner_up, "tag_filled")
 
-    if winner_bitrate > 0 and winner_bitrate > runner_bitrate:
+    if _led_on_bitrate(winner_bitrate, runner_bitrate):
         return f"highest bitrate ({winner_bitrate // 1000}kbps)"
-    if winner_tags > 0 and winner_tags > runner_tags:
+    if _led_on_tag_completeness(winner_tags, runner_tags):
         return f"most complete tags ({winner_tags}/{winner_tag_total})"
     return "shortest path"
 
@@ -191,29 +211,34 @@ def _select_capped_group_members(hash_filter: ColumnElement[bool], cap: int = _M
     )
 
 
-def _group_member_dict(file_record: FileRecord, metadata: FileMetadata | None) -> dict[str, Any]:
-    """Build one duplicate-group member dict from a ``(FileRecord, FileMetadata | None)`` row.
+_METADATA_DERIVED_FIELDS = ["bitrate", "duration", "artist", "title", "album", "genre", "year", "track_number"]
+
+
+def _metadata_field_values(metadata: FileMetadata | None) -> dict[str, Any]:
+    """Read :data:`_METADATA_DERIVED_FIELDS` off ``metadata``, or ``None`` for every field when there is none.
 
     ``metadata`` is ``None`` for a file whose tag extraction has not run (the readers all
     ``outerjoin`` FileMetadata), so every metadata-derived key degrades to ``None`` rather than the
     row being dropped -- a file with no tags is still a duplicate and must still be rankable by
-    :func:`score_group`, which treats a missing bitrate as 0. The three ``tag_*`` keys are derived
-    from the dict itself via :func:`tag_completeness` so the "Full/Partial/None" label and the
-    numeric tag count a group's ranking uses can never disagree.
+    :func:`score_group`, which treats a missing bitrate as 0.
+    """
+    if metadata is None:
+        return dict.fromkeys(_METADATA_DERIVED_FIELDS)
+    return {field: getattr(metadata, field) for field in _METADATA_DERIVED_FIELDS}
+
+
+def _group_member_dict(file_record: FileRecord, metadata: FileMetadata | None) -> dict[str, Any]:
+    """Build one duplicate-group member dict from a ``(FileRecord, FileMetadata | None)`` row.
+
+    The three ``tag_*`` keys are derived from the dict itself via :func:`tag_completeness` so the
+    "Full/Partial/None" label and the numeric tag count a group's ranking uses can never disagree.
     """
     file_dict: dict[str, Any] = {
         "id": str(file_record.id),
         "original_path": file_record.original_path,
         "file_size": file_record.file_size,
         "file_type": file_record.file_type,
-        "bitrate": metadata.bitrate if metadata else None,
-        "duration": metadata.duration if metadata else None,
-        "artist": metadata.artist if metadata else None,
-        "title": metadata.title if metadata else None,
-        "album": metadata.album if metadata else None,
-        "genre": metadata.genre if metadata else None,
-        "year": metadata.year if metadata else None,
-        "track_number": metadata.track_number if metadata else None,
+        **_metadata_field_values(metadata),
     }
     label, filled, total = tag_completeness(file_dict)
     file_dict["tag_label"] = label
@@ -367,6 +392,24 @@ async def find_duplicate_group_by_hash(session: AsyncSession, group_hash: str) -
     return groups[0]
 
 
+def _duplicate_hash_population() -> Subquery:
+    """The unordered, unpaged subquery of hashes with more than one unresolved file.
+
+    Shared by :func:`count_duplicate_groups` and :func:`get_duplicate_stats`, both of which need an
+    aggregate over the WHOLE duplicate-hash population rather than a displayable page. Unlike
+    :func:`_dup_hash_subquery`, this deliberately carries no ``ORDER BY``/``LIMIT``/``OFFSET``: a
+    PAGE must be stable and bounded, whereas an aggregate over the same grouping is order-independent,
+    and a limit here would silently under-report -- see :func:`count_duplicate_groups`'s docstring.
+    """
+    return (
+        select(FileRecord.sha256_hash)
+        .where(~dedup_resolved_clause())
+        .group_by(FileRecord.sha256_hash)
+        .having(func.count(FileRecord.id) > 1)
+        .subquery()
+    )
+
+
 async def count_duplicate_groups(session: AsyncSession) -> int:
     """Count the total number of duplicate groups (hashes with >1 file).
 
@@ -389,13 +432,7 @@ async def count_duplicate_groups(session: AsyncSession) -> int:
     stable and bounded, whereas a COUNT over the same grouping is order-independent, and a limit here
     would be the very defect described above.
     """
-    subq = (
-        select(FileRecord.sha256_hash)
-        .where(~dedup_resolved_clause())
-        .group_by(FileRecord.sha256_hash)
-        .having(func.count(FileRecord.id) > 1)
-        .subquery()
-    )
+    subq = _duplicate_hash_population()
     stmt = select(func.count()).select_from(subq)
     result = await session.execute(stmt)
     return result.scalar_one()
@@ -409,14 +446,8 @@ async def get_duplicate_stats(session: AsyncSession) -> dict[str, Any]:
     """
     groups = await count_duplicate_groups(session)
 
-    # Subquery: hashes with >1 file (excluding marker-resolved)
-    dup_hashes = (
-        select(FileRecord.sha256_hash)
-        .where(~dedup_resolved_clause())
-        .group_by(FileRecord.sha256_hash)
-        .having(func.count(FileRecord.id) > 1)
-        .subquery()
-    )
+    # Hashes with >1 file (excluding marker-resolved)
+    dup_hashes = _duplicate_hash_population()
 
     # Stats: total files and total size across duplicate groups
     stats_stmt = select(

@@ -7,7 +7,7 @@ import json
 import math
 from pathlib import Path
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 import uuid
 
 from litellm import acompletion
@@ -459,6 +459,33 @@ def _failure_mode(content: str, error: ValidationError, *, finish_reason: str | 
     return "schema_invalid"
 
 
+def _reject_contentless_completion(content: object, *, finish_reason: str | None, log: Any) -> NoReturn:
+    """Name which flavour of "the provider sent nothing" this is, log the lost batch, and raise (rung 2).
+
+    Two distinguishable failures, and telling them apart is the whole point of getting here before
+    the parse ladder rather than inside it: ``content_none`` is litellm's in-contract shape for a
+    reply carrying neither text nor a tool call (``AnthropicConfig`` builds ``content=merged_text or
+    None``), while ``content_empty`` is a reply that DID carry a text part which turned out to be
+    blank. Both lose the whole batch -- there is nothing in an absent completion to recover, so this
+    never descends the ladder -- but they point at different provider behaviour, and the mode is what
+    phaze-02v1s reads back out of the logs.
+
+    Raises:
+        MalformedCompletionError: always. ``model_validate_json(None)`` would otherwise surface this
+            as a confusing pydantic ``json_type`` error rather than the plain "the model returned
+            nothing" it actually is. (Measured correction from phaze-02v1s half 1: that error is a
+            ValidationError, NOT a TypeError, so an ``except TypeError`` guard would never have fired.)
+    """
+    mode = "content_none" if content is None else "content_empty"
+    log.error(
+        "llm proposal batch: provider returned no content — whole batch lost",
+        parse_mode=mode,
+        content_type=type(content).__name__,
+    )
+    msg = f"LLM returned no usable content (mode={mode}, finish_reason={finish_reason})"
+    raise MalformedCompletionError(msg, mode=mode)
+
+
 class ProposalService:
     """Handles LLM-based filename proposal generation."""
 
@@ -531,14 +558,7 @@ class ProposalService:
         # correction from phaze-02v1s half 1: that error is a pydantic ValidationError, NOT a
         # TypeError, so an `except TypeError` guard here would never have fired.
         if not isinstance(content, str) or not content.strip():
-            mode = "content_none" if content is None else "content_empty"
-            log.error(
-                "llm proposal batch: provider returned no content — whole batch lost",
-                parse_mode=mode,
-                content_type=type(content).__name__,
-            )
-            msg = f"LLM returned no usable content (mode={mode}, finish_reason={finish_reason})"
-            raise MalformedCompletionError(msg, mode=mode)
+            _reject_contentless_completion(content, finish_reason=finish_reason, log=log)
 
         # Rung 1: the fast path. Unchanged behaviour for every well-formed completion.
         try:

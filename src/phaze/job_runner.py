@@ -161,6 +161,39 @@ def _resolve_friendly_default() -> bool:
     return _parse_bool(env_value)
 
 
+def _describe_analyzed_file(file_id: str, metadata: PresignDownloadMetadata | None) -> dict[str, Any]:
+    """Everything the banner can honestly say about WHICH file this Job analyzes.
+
+    Only ``file_id`` is guaranteed. Every other field is included exactly when the presign response
+    carried it, so this degrades on two independent axes: an absent metadata block altogether (an
+    older control plane that predates phaze-sfbx.1) and an absent individual field (a partial
+    ``CloudJob``/``FileRecord`` row). The worst case is a ``file_id``-only description -- never a
+    field rendered as ``None``, which would read as "this file has no filename" rather than "this
+    control plane did not tell us one".
+
+    ``file_size`` is the one value translated rather than passed through: it becomes ``file_size_mb``
+    so the console line an operator reads carries a human unit.
+    """
+    fields: dict[str, Any] = {"file_id": file_id}
+    if metadata is None:
+        return fields
+    if metadata.original_filename is not None:
+        fields["filename"] = metadata.original_filename
+    if metadata.current_path is not None:
+        fields["source_path"] = metadata.current_path
+    if metadata.source_agent_id is not None:
+        fields["source_agent_id"] = metadata.source_agent_id
+    if metadata.duration_sec is not None:
+        fields["duration_sec"] = metadata.duration_sec
+    if metadata.file_size is not None:
+        fields["file_size_mb"] = _mb(metadata.file_size)
+    if metadata.staging_bucket is not None:
+        fields["staging_bucket"] = metadata.staging_bucket
+    if metadata.backend_id is not None:
+        fields["backend_id"] = metadata.backend_id
+    return fields
+
+
 def _log_banner(file_id: str, metadata: PresignDownloadMetadata | None) -> None:
     """Emit the one-shot startup banner right after presign succeeds (OBS-02, phaze-sfbx.3).
 
@@ -174,23 +207,7 @@ def _log_banner(file_id: str, metadata: PresignDownloadMetadata | None) -> None:
     -- so the whole build+emit is guarded and a rendering failure never fails the job.
     """
     try:
-        fields: dict[str, Any] = {"file_id": file_id}
-        if metadata is not None:
-            if metadata.original_filename is not None:
-                fields["filename"] = metadata.original_filename
-            if metadata.current_path is not None:
-                fields["source_path"] = metadata.current_path
-            if metadata.source_agent_id is not None:
-                fields["source_agent_id"] = metadata.source_agent_id
-            if metadata.duration_sec is not None:
-                fields["duration_sec"] = metadata.duration_sec
-            if metadata.file_size is not None:
-                fields["file_size_mb"] = _mb(metadata.file_size)
-            if metadata.staging_bucket is not None:
-                fields["staging_bucket"] = metadata.staging_bucket
-            if metadata.backend_id is not None:
-                fields["backend_id"] = metadata.backend_id
-        log.info("job_runner_banner", **fields)
+        log.info("job_runner_banner", **_describe_analyzed_file(file_id, metadata))
     except Exception:  # cosmetic banner: NEVER fail the job for odd/missing metadata (D-01 untouched)
         log.debug("job_runner_banner_failed", file_id=file_id)
 

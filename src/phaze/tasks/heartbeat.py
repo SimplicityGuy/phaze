@@ -95,6 +95,49 @@ def _terminate_worker_process() -> None:
     os.kill(os.getpid(), signal.SIGTERM)  # pragma: no cover -- exercised via the patched form in tests
 
 
+async def _probe_broker_for_queued_jobs(ctx: dict[str, Any]) -> int:
+    """Ask the broker how many jobs are queued, and RECORD whether the probe itself worked.
+
+    Two outputs, and the second is the load-bearing one (phaze-xuec1). The returned depth is
+    reporting payload; the side effect on ``ctx["_broker_probe_failures"]`` -- reset to 0 on any
+    success, incremented on any failure -- is what :func:`send_heartbeat` reads to decide whether
+    the worker can still CONSUME the queue at all, and therefore whether to withhold the beat.
+    ``queue.info()`` is probed precisely because it exercises the SAME psycopg pool ``_dequeue()``
+    needs; a probe that cannot run is evidence the worker is not consuming, however healthy its
+    independent HTTP path to the control plane looks.
+
+    Every failure yields depth 0 and never raises -- a broker blip must not crash the heartbeat.
+
+    Pitfall 8: ctx["queue"] is NOT a valid key -- SAQ exposes the Queue on the Worker instance
+    only. The Worker may not be attached yet when the loop first ticks; that is a startup race,
+    not evidence the broker is unreachable, so it counts NO probe failure -- nothing was probed.
+    """
+    worker = ctx.get("worker")
+    if worker is None:
+        return 0
+    try:
+        # phaze-kaf2: `queue.info()` is UNBOUNDED without this deadline. A hung psycopg
+        # pool acquire/query blocks here forever; the except-Exception below only fires
+        # on a RAISE, never on a hang, so the beat silently never completes and the agent
+        # is classified DEAD while still processing jobs.
+        info = await asyncio.wait_for(worker.queue.info(), timeout=QUEUE_INFO_TIMEOUT_SECONDS)
+        queue_depth = int(info.get("queued", 0))
+        ctx["_broker_probe_failures"] = 0
+    except TimeoutError:
+        # Distinct from the generic failure below: a HANG is the phaze-kaf2 signature and
+        # an operator needs to see it named, not folded into "queue.info() failed".
+        logger.warning("heartbeat: queue.info() timed out after %.1fs; defaulting depth to 0", QUEUE_INFO_TIMEOUT_SECONDS)
+        ctx["_broker_probe_failures"] = ctx.get("_broker_probe_failures", 0) + 1
+        return 0
+    except Exception:
+        # Defensive: any queue error (SAQ internal change, broker blip) must NOT crash
+        # the heartbeat. Default to 0; log + still POST -- unless sustained, see below.
+        logger.warning("heartbeat_tick: queue.info() failed; defaulting to 0", exc_info=True)
+        ctx["_broker_probe_failures"] = ctx.get("_broker_probe_failures", 0) + 1
+        return 0
+    return queue_depth
+
+
 async def send_heartbeat(ctx: dict[str, Any]) -> None:
     """POST one agent heartbeat from the current worker state.
 
@@ -129,35 +172,7 @@ async def send_heartbeat(ctx: dict[str, Any]) -> None:
         logger.warning("heartbeat_tick: ctx not initialized; skipping")
         return
 
-    # Queue depth from SAQ Queue.info()["queued"] via ctx["worker"].queue.
-    # Pitfall 8: ctx["queue"] is NOT a valid key -- SAQ exposes the Queue on the
-    # Worker instance only. The Worker may not be attached yet when the loop first
-    # ticks; that is a startup race, not evidence the broker is unreachable, so it is
-    # handled separately from a probe that actually ran and failed (phaze-xuec1).
-    worker = ctx.get("worker")
-    if worker is None:
-        queue_depth = 0
-    else:
-        try:
-            # phaze-kaf2: `queue.info()` is UNBOUNDED without this deadline. A hung psycopg
-            # pool acquire/query blocks here forever; the except-Exception below only fires
-            # on a RAISE, never on a hang, so the beat silently never completes and the agent
-            # is classified DEAD while still processing jobs.
-            info = await asyncio.wait_for(worker.queue.info(), timeout=QUEUE_INFO_TIMEOUT_SECONDS)
-            queue_depth = int(info.get("queued", 0))
-            ctx["_broker_probe_failures"] = 0
-        except TimeoutError:
-            # Distinct from the generic failure below: a HANG is the phaze-kaf2 signature and
-            # an operator needs to see it named, not folded into "queue.info() failed".
-            logger.warning("heartbeat: queue.info() timed out after %.1fs; defaulting depth to 0", QUEUE_INFO_TIMEOUT_SECONDS)
-            queue_depth = 0
-            ctx["_broker_probe_failures"] = ctx.get("_broker_probe_failures", 0) + 1
-        except Exception:
-            # Defensive: any queue error (SAQ internal change, broker blip) must NOT crash
-            # the heartbeat. Default to 0; log + still POST -- unless sustained, see below.
-            logger.warning("heartbeat_tick: queue.info() failed; defaulting to 0", exc_info=True)
-            queue_depth = 0
-            ctx["_broker_probe_failures"] = ctx.get("_broker_probe_failures", 0) + 1
+    queue_depth = await _probe_broker_for_queued_jobs(ctx)
 
     broker_probe_failures = ctx.get("_broker_probe_failures", 0)
     if broker_probe_failures >= AGENT_BROKER_UNHEALTHY_BEATS:

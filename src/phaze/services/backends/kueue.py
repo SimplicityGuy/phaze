@@ -53,6 +53,23 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+def _seconds_since_last_staging_write(cloud_job: CloudJob, now: datetime) -> float:
+    """How long ago the live path last wrote this staging row -- the age the reaper's bound is spent against.
+
+    ``updated_at`` moves on EVERY live-path write (the initial stage stamp, and ``redrive_upload``'s
+    re-stage -- phaze-2hv9), so this is "silence since the last thing that touched the row", not "age
+    since creation"; ``created_at`` stands in only for a row that has never been updated.
+
+    ``updated_at`` is TIMESTAMP WITHOUT TIME ZONE, so asyncpg hands it back NAIVE in production;
+    assume-UTC before subtracting (a bare naive-minus-aware raises TypeError and would abort the whole
+    sweep -- mirrors reenqueue.py's CR-02 coercion).
+    """
+    ref = cloud_job.updated_at or cloud_job.created_at
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=UTC)
+    return (now - ref).total_seconds()
+
+
 class KueueBackend(_BaseBackend):
     """Kueue-cluster backend -- re-homes today's single-cluster S3-staging + kube submit/reconcile (D-05).
 
@@ -279,13 +296,7 @@ class KueueBackend(_BaseBackend):
                 if live_key in live_keys:
                     await session.rollback()
                     continue
-                # ``updated_at`` is TIMESTAMP WITHOUT TIME ZONE, so asyncpg hands it back NAIVE in
-                # production; assume-UTC before subtracting (a bare naive-minus-aware raises TypeError
-                # and would abort the whole sweep -- mirrors reenqueue.py's CR-02 coercion).
-                ref = cloud_job.updated_at or cloud_job.created_at
-                if ref.tzinfo is None:
-                    ref = ref.replace(tzinfo=UTC)
-                age_sec = (now - ref).total_seconds()
+                age_sec = _seconds_since_last_staging_write(cloud_job, now)
                 bound_sec = self._staging_stale_bound_sec(cfg, observed_status)
                 if age_sec < bound_sec:
                     # YOUNGER THAN THE BOUND: the callback owns this row. Never fire here.
