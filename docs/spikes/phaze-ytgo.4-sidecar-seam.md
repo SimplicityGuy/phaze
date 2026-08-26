@@ -79,9 +79,9 @@ machine (`<scratch>/audio`, `<scratch>/watch-test`):
 | `track1_320` | `<track-04>.mp3` | 441.18 s | 365 kbps | single track |
 | `track1_192` | re-encode of the above (`libmp3lame -b:a 192k`) | 441.18 s | 192 kbps | encode-level near-duplicate, **analysed after** `track1_320` was committed |
 | `track1_96` | re-encode of the above (`libmp3lame -b:a 96k`) | 441.18 s | 141 kbps | encode-level near-duplicate |
-| `set_79min` | `<set-01>.mp3` | 4 721.30 s | 320 kbps | full set |
-| `set_79min_b` | byte-identical copy of `set_79min` (same md5) | 4 721.30 s | 320 kbps | exact-duplicate control |
-| `set_368min` | `<set-02>.mp3` | 22 098.51 s | 128 kbps | 6-hour concert recording |
+| `set_79min` | `<set-01>.mp3` | 4,721.30 s | 320 kbps | full set |
+| `set_79min_b` | byte-identical copy of `set_79min` (same md5) | 4,721.30 s | 320 kbps | exact-duplicate control |
+| `set_368min` | `<set-02>.mp3` | 22,098.51 s | 128 kbps | 6-hour concert recording |
 
 Small **n**. Six items cannot establish an accuracy rate and this document never claims one. What six
 items *can* establish — and did — is **structural** behaviour: whether ingestion works at all, whether
@@ -326,7 +326,7 @@ $ psql -c 'select title, duration from score'
  <set-02> (368 min set) |      600     <- real duration 22 099 s
 ```
 
-The shim advertised the true durations (4 721 s and 22 099 s) in its Subsonic responses. AudioMuse
+The shim advertised the true durations (4,721 s and 22,099 s) in its Subsonic responses. AudioMuse
 stored **600** for both. So this is not merely "analysis is truncated" — **the truncated value is what
 gets persisted as the track's duration.**
 
@@ -342,7 +342,7 @@ Consequences for phaze, in ascending order of severity:
    agrees with every other set to the second.
 3. **Raising the cap is not free, and the arithmetic is unfavourable.** Audio is decoded to mono
    float32 at 16 kHz. At 600 s that is 38.4 MB of waveform. At the six-hour set's true length it is
-   22 099 × 16 000 × 4 ≈ **1.41 GB of waveform for one file**, before the derived mel-patch tensor. The
+   22,099 × 16,000 × 4 ≈ **1.41 GB of waveform for one file**, before the derived mel-patch tensor. The
    cap is what keeps the worker inside AudioMuse's stated 8 GB envelope. (RSS at a raised cap was not
    measured — the arithmetic is derived, the peak is `UNMEASURED`.)
 

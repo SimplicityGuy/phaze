@@ -17,12 +17,12 @@ first attempt. Detail pages still need the renderer; search does not.
 
 | File | Query | Rows | Bytes | Why it was worth a request |
 |------|-------|-----:|------:|----------------------------|
-| `sven-vath-time-warp-2024.html` | `Sven Vath Time Warp 2024` | 30 | 152 854 | The wrong-match case (below) |
-| `sven-vath-time-warp.html` | `Sven Vath Time Warp` | 30 | 153 439 | Recurring festival, no year discriminator |
-| `carl-cox-space-ibiza-2016.html` | `Carl Cox Space Ibiza 2016` | 30 | 155 497 | Long residency: many same-artist, same-venue, near-dated decoys |
-| `amelie-lens-awakenings.html` | `Amelie Lens Awakenings` | 30 | 154 854 | A second artist, so the row shapes aren't Sven Väth-specific |
-| `time-warp-2024.html` | `Time Warp 2024` | 30 | 156 663 | Event-only: many artists, one event, one date — only artist separates them |
-| `no-such-set.html` | `Zzyzx Quorum Nonesuch Festival 2019` | 30 | 154 354 | The below-threshold case (below) |
+| `sven-vath-time-warp-2024.html` | `Sven Vath Time Warp 2024` | 30 | 152,854 | The wrong-match case (below) |
+| `sven-vath-time-warp.html` | `Sven Vath Time Warp` | 30 | 153,439 | Recurring festival, no year discriminator |
+| `carl-cox-space-ibiza-2016.html` | `Carl Cox Space Ibiza 2016` | 30 | 155,497 | Long residency: many same-artist, same-venue, near-dated decoys |
+| `amelie-lens-awakenings.html` | `Amelie Lens Awakenings` | 30 | 154,854 | A second artist, so the row shapes aren't Sven Väth-specific |
+| `time-warp-2024.html` | `Time Warp 2024` | 30 | 156,663 | Event-only: many artists, one event, one date — only artist separates them |
+| `no-such-set.html` | `Zzyzx Quorum Nonesuch Festival 2019` | 30 | 154,354 | The below-threshold case (below) |
 
 Each `.html` has a `.json` sidecar recording the query, the reason it was chosen, the final URL,
 HTTP status, byte count and parsed-row count at capture time.

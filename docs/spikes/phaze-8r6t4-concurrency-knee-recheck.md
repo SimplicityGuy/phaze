@@ -374,10 +374,10 @@ sizing:
 
 | W | files/h | speedup | per-file wall | node CPU | busy cores | proc peak (GiB) | node RSS peak | audio-s analyzed per hour |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 5.42 | 1.00× | 662 s | **43.4%** | 3.47 | 1.436 | 3.34 | 6 500 |
-| **2** | 6.75 | **1.25×** | 1 063 s | 86.4% | 6.91 | 1.438 | 4.53 | 8 099 |
-| 4 | 7.49 | 1.38× | 1 919 s | 97.4% | 7.79 | 1.441 | 6.90 | 8 988 |
-| 8 | 7.59 | 1.40× | 3 780 s | 99.7% | 7.97 | 1.452 | 11.57 | 9 110 |
+| 1 | 5.42 | 1.00× | 662 s | **43.4%** | 3.47 | 1.436 | 3.34 | 6,500 |
+| **2** | 6.75 | **1.25×** | 1,063 s | 86.4% | 6.91 | 1.438 | 4.53 | 8,099 |
+| 4 | 7.49 | 1.38× | 1,919 s | 97.4% | 7.79 | 1.441 | 6.90 | 8,988 |
+| 8 | 7.59 | 1.40× | 3,780 s | 99.7% | 7.97 | 1.452 | 11.57 | 9,110 |
 
 **The long-file knee is at W=2 as well** — **61.2%** of the total gain arrives there, and W=4 → W=8
 buys **+1.4%** for **+97.0%** per-file wall (a 20-minute file takes **63.0 minutes**). Same shape,
@@ -400,7 +400,7 @@ single-threaded share. That share is now zero to measurement precision. The cons
 opposite of the bead's hypothesis: with no idle single-threaded time left to fill, concurrency has
 **less** to recover on long files than it used to (**1.38× at W=4 against 1.49×** before), and the
 long-file curve converges onto the short-file curve rather than diverging from it. Measured in the
-mix-independent unit, the node delivers **8 988 audio-s/h on 20-minute files against 8 948 on the
+mix-independent unit, the node delivers **8,988 audio-s/h on 20-minute files against 8,948 on the
 short mix at the same W=4** — within **0.5%**, against 6% before.
 
 Per-file cost per second of audio is correspondingly flat: solo, wall ÷ duration is **0.552 /
@@ -479,7 +479,7 @@ ______________________________________________________________________
 | **4** | **29.8** | **97%** | **478 s** | **5.75 GiB** | **25.55 GiB** |
 | 6 | 30.3 | 99% | 706 s | 7.87 GiB | 23.43 GiB |
 | 8 | 30.5 | 100% | 936 s | 9.58 GiB | 21.73 GiB |
-| 12 | 30.6 | 100% | 1 400 s | 12.57 GiB | 18.74 GiB |
+| 12 | 30.6 | 100% | 1,400 s | 12.57 GiB | 18.74 GiB |
 
 `cap` should be **the smallest concurrency that reaches the node's throughput ceiling**, because
 every worker past that point multiplies per-file latency for nothing. **4 buys 97% of the ceiling

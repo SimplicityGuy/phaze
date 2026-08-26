@@ -34,7 +34,7 @@ the node or the image. On the second question: the chunk gate **is** taken on th
 but per-chunk decode time is **not proportional to the chunk boundary** — on one file it *falls*
 with chunk index — so `duration × (K+1)/2` does not describe wall clock. Finally, and loudly:
 the longest healthy heartbeat gap rises with duration and with source sample rate, reaching
-**930.719 s** in a real 12-hour run and **1 422.391 s — 79.0% of `analysis_stall_timeout_sec`** for
+**930.719 s** in a real 12-hour run and **1,422.391 s — 79.0% of `analysis_stall_timeout_sec`** for
 one chunk decode of a 10-hour 48 kHz file that is in the archive today.
 
 ______________________________________________________________________
@@ -69,13 +69,13 @@ written back, and no original was opened for write.
 
 | file | duration (s) | duration (h:mm) | container / codec | source rate | bit rate | size (B) | fine windows | coarse windows | fine chunks | coarse chunks |
 | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `<set-01>` — 60 min control | 3 600.091429 | 1:00 | mp3 | 44 100 Hz | 192 006 | 86 405 202 | 120 | 20 | 2 | 1 |
-| `<set-02>` — codec variant | 3 588.922630 | 1:00 | m4a / AAC-LC | 44 100 Hz | 269 193 | 120 764 534 | 120 | 20 | 2 | 1 |
-| `<set-03>` | 7 200.078367 | 2:00 | mp3 | 44 100 Hz | 192 003 | 172 804 890 | 240 | 40 | 4 | 2 |
-| `<set-04>` | 14 400.888000 | 4:00 | mp3 | 48 000 Hz | 231 455 | 416 644 887 | 480 | 80 | 8 | 3 |
-| `<set-05>` | 20 279.872000 | 5:38 | mp3 | 44 100 Hz | 128 000 | 324 477 952 | 676 | 113 | 12 | 4 |
-| `<set-06>` *(decode probe only — see below)* | 36 182.359175 | 10:03 | mp3 | 48 000 Hz | 320 000 | 1 447 298 463 | 1 206 | 201 | 21 | 7 |
-| `<set-07>` — longest in corpus | 43 466.893061 | 12:04 | mp3 | 44 100 Hz | 165 354 | 898 429 776 | 1 449 | 242 | 25 | 9 |
+| `<set-01>` — 60 min control | 3,600.091429 | 1:00 | mp3 | 44,100 Hz | 192,006 | 86,405,202 | 120 | 20 | 2 | 1 |
+| `<set-02>` — codec variant | 3,588.922630 | 1:00 | m4a / AAC-LC | 44,100 Hz | 269,193 | 120,764,534 | 120 | 20 | 2 | 1 |
+| `<set-03>` | 7,200.078367 | 2:00 | mp3 | 44,100 Hz | 192,003 | 172,804,890 | 240 | 40 | 4 | 2 |
+| `<set-04>` | 14,400.888000 | 4:00 | mp3 | 48,000 Hz | 231,455 | 416,644,887 | 480 | 80 | 8 | 3 |
+| `<set-05>` | 20,279.872000 | 5:38 | mp3 | 44,100 Hz | 128,000 | 324,477,952 | 676 | 113 | 12 | 4 |
+| `<set-06>` *(decode probe only — see below)* | 36,182.359175 | 10:03 | mp3 | 48,000 Hz | 320,000 | 1,447,298,463 | 1,206 | 201 | 21 | 7 |
+| `<set-07>` — longest in corpus | 43,466.893061 | 12:04 | mp3 | 44,100 Hz | 165,354 | 898,429,776 | 1,449 | 242 | 25 | 9 |
 
 Window and chunk counts are the shipped geometry: fine = 30 s windows with a 15 s trailing floor
 in chunks of 60; coarse = 180 s windows with no floor in chunks of 30. They are the counts the
@@ -84,8 +84,8 @@ runs actually reported (`analyze_file`'s `*_windows_total`), which is why they a
 `<set-06>`'s are the same arithmetic applied to a file that did not get a full run.
 
 `<set-07>` is the **longest file in the corpus** — the whole library holds exactly one file above
-36 182 s. Both 48 kHz sources are in the sample deliberately: the fine tier resamples 48 000 →
-44 100 Hz, which the 44.1 kHz sources do not pay.
+36,182 s. Both 48 kHz sources are in the sample deliberately: the fine tier resamples 48,000 →
+44,100 Hz, which the 44.1 kHz sources do not pay.
 
 **`<set-06>` was measured partially, on purpose.** Six files ran end to end. `<set-06>` — the
 second-longest, and the only 48 kHz file in the 10-hour class — was projected from the completed
@@ -172,15 +172,15 @@ ______________________________________________________________________
 
 | file | duration (s) | **peak RSS (GiB)** | **wall (s)** | wall ÷ duration | startup (s) | fine tier (s) | coarse tier (s) | fine windows | coarse windows |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `<set-01>` | 3 600.09 | **2.1107** | **2 016.508** | 0.560 | 2.265 | 159.557 | 1 854.649 | 120 / 120 | 20 / 20 |
-| `<set-02>` (m4a) | 3 588.92 | **2.1166** | **2 006.893** | 0.559 | 2.259 | 160.389 | 1 844.185 | 120 / 120 | 20 / 20 |
-| `<set-03>` | 7 200.08 | **2.9287** | **4 171.154** | 0.579 | 2.260 | 337.351 | 3 831.477 | 240 / 240 | 40 / 40 |
-| `<set-04>` (48 kHz) | 14 400.89 | **4.1854** | **11 352.656** | 0.788 | 2.266 | 3 461.933 | 7 888.402 | 480 / 480 | 80 / 80 |
-| `<set-05>` | 20 279.87 | **5.5211** | **12 920.196** | 0.637 | 2.264 | 1 521.660 | 11 396.163 | 676 / 676 | 113 / 113 |
-| `<set-07>` — longest | 43 466.89 | **10.2768** | **33 843.202** | 0.779 | 2.257 | 5 791.331 | 28 049.416 | 1 449 / 1 449 | 242 / 242 |
+| `<set-01>` | 3,600.09 | **2.1107** | **2,016.508** | 0.560 | 2.265 | 159.557 | 1,854.649 | 120 / 120 | 20 / 20 |
+| `<set-02>` (m4a) | 3,588.92 | **2.1166** | **2,006.893** | 0.559 | 2.259 | 160.389 | 1,844.185 | 120 / 120 | 20 / 20 |
+| `<set-03>` | 7,200.08 | **2.9287** | **4,171.154** | 0.579 | 2.260 | 337.351 | 3,831.477 | 240 / 240 | 40 / 40 |
+| `<set-04>` (48 kHz) | 14,400.89 | **4.1854** | **11,352.656** | 0.788 | 2.266 | 3,461.933 | 7,888.402 | 480 / 480 | 80 / 80 |
+| `<set-05>` | 20,279.87 | **5.5211** | **12,920.196** | 0.637 | 2.264 | 1,521.660 | 11,396.163 | 676 / 676 | 113 / 113 |
+| `<set-07>` — longest | 43,466.89 | **10.2768** | **33,843.202** | 0.779 | 2.257 | 5,791.331 | 28,049.416 | 1,449 / 1,449 | 242 / 242 |
 
 Peak RSS is `wait4()`'s `ru_maxrss` for the analysis child. The host-side `VmHWM` sampler agreed
-**to the kibibyte** on every run (`2 213 220 KiB` on `<set-01>`), which is the harness self-test
+**to the kibibyte** on every run (`2,213,220 KiB` on `<set-01>`), which is the harness self-test
 `phaze-8r6t4` §1d recommends.
 
 Every run analyzed **every** natural window of both tiers — `analyzed == total` in all four
@@ -193,10 +193,10 @@ The image ships its own pre-`phaze-w55w1` `services/analysis.py` (`a8c30496…`,
 against `<set-01>` — same node, same file, same pod, the module digest recorded in the run summary
 — isolates the change from everything else:
 
-| `<set-01>`, 3 600.09 s | code | fine windows | coarse windows | **wall (s)** | **peak RSS (GiB)** |
+| `<set-01>`, 3,600.09 s | code | fine windows | coarse windows | **wall (s)** | **peak RSS (GiB)** |
 | --- | --- | ---: | ---: | ---: | ---: |
-| capped (`a8c30496…`, the deployed image's own) | pre-`w55w1` | 60 / 120 *(strided)* | 20 / 20 | **1 962.620** | **1.7450** |
-| exhaustive (`38be362d…`, `main@75e7575d`) | post-`w55w1` | **120 / 120** | 20 / 20 | **2 016.508** | **2.1107** |
+| capped (`a8c30496…`, the deployed image's own) | pre-`w55w1` | 60 / 120 *(strided)* | 20 / 20 | **1,962.620** | **1.7450** |
+| exhaustive (`38be362d…`, `main@75e7575d`) | post-`w55w1` | **120 / 120** | 20 / 20 | **2,016.508** | **2.1107** |
 | **delta** | | **2× the fine work** | — | **+53.888 s (+2.75%)** | **+0.3657 GiB (+21.0%)** |
 
 Two things fall out of this table.
@@ -218,9 +218,9 @@ run against `<set-04>`, the 4-hour file, under the caps it was written for:
 
 | code | file | duration | fine | coarse | **wall (s)** | **peak RSS (GiB)** |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| capped `a8c30496…` | `<set-01>` | 1:00 | 60 / 120 | 20 / 20 | 1 962.620 | **1.7450** |
-| capped `a8c30496…` | `<set-04>` | 4:00 | 60 / 480 | 30 / 80 | 3 370.597 | **1.7681** |
-| exhaustive `38be362d…` | `<set-04>` | 4:00 | **480 / 480** | **80 / 80** | 11 352.656 | **4.1854** |
+| capped `a8c30496…` | `<set-01>` | 1:00 | 60 / 120 | 20 / 20 | 1,962.620 | **1.7450** |
+| capped `a8c30496…` | `<set-04>` | 4:00 | 60 / 480 | 30 / 80 | 3,370.597 | **1.7681** |
+| exhaustive `38be362d…` | `<set-04>` | 4:00 | **480 / 480** | **80 / 80** | 11,352.656 | **4.1854** |
 
 **The capped code's peak moves +1.3% across a 4× duration span.** That is ADR-0005's premise,
 reproduced on this node, on this corpus, on this image, today: *peak is uncorrelated with
@@ -248,7 +248,7 @@ The high-water is built in two places, and both matter:
 | fine chunk 1 of 2 | 1.0586 GiB |
 | fine chunk 2 of 2 (end of FINE tier) | **1.3596 GiB** |
 | ~4 coarse model sweeps in | 2.1072 GiB |
-| remaining 30 coarse sweeps (1 600 s of run) | **2.1107 GiB** (+0.17%) |
+| remaining 30 coarse sweeps (1,600 s of run) | **2.1107 GiB** (+0.17%) |
 
 That second half reproduces `phaze-esut` / `phaze-7i0k` exactly: the coarse sweep sets the peak
 within the first handful of models and then saturates. The **first** half is the new thing.
@@ -356,20 +356,20 @@ the stall watchdog sees — they *are* what it sees.
 ### 4b. Does a non-final chunk's decode scale with its boundary? No.
 
 The direct probe (§1, "Chunk gate" (a)) calls the shipped `_decode_windows_streaming` on
-`<set-05>` — 20 279 s, 676 fine windows, **12 fine chunks** — one **fresh process per
+`<set-05>` — 20,279 s, 676 fine windows, **12 fine chunks** — one **fresh process per
 measurement**, so no run inherits another's allocator or page-cache state. `stop_at_sec` for chunk
 *k* is `1800 × (k+1)`; the last chunk is ungated by design.
 
 | chunk | gate `endTime` (s) | audio the gate should admit (s) | **decode wall (s)** | implied decode rate (× realtime) |
 | ---: | ---: | ---: | ---: | ---: |
-| 0 | 1 800 | 1 801 | **111.415** / **114.754** *(run twice, first and last in the matrix)* | 15.7–16.2 |
-| 1 | 3 600 | 3 601 | **100.057** | 36.0 |
-| 2 | 5 400 | 5 401 | **90.720** | 59.5 |
-| 3 | 7 200 | 7 201 | **91.616** | 78.6 |
-| 6 | 12 600 | 12 601 | **108.587** | 116.0 |
-| 9 | 18 000 | 18 001 | **124.400** | 144.7 |
-| 10 | 19 800 | 19 801 | **129.202** | 153.3 |
-| 9 | *(ungated)* | 20 279 (EOF) | **152.722** | 132.8 |
+| 0 | 1,800 | 1,801 | **111.415** / **114.754** *(run twice, first and last in the matrix)* | 15.7–16.2 |
+| 1 | 3,600 | 3,601 | **100.057** | 36.0 |
+| 2 | 5,400 | 5,401 | **90.720** | 59.5 |
+| 3 | 7,200 | 7,201 | **91.616** | 78.6 |
+| 6 | 12,600 | 12,601 | **108.587** | 116.0 |
+| 9 | 18,000 | 18,001 | **124.400** | 144.7 |
+| 10 | 19,800 | 19,801 | **129.202** | 153.3 |
+| 9 | *(ungated)* | 20,279 (EOF) | **152.722** | 132.8 |
 
 **Read the last column.** If the gate stopped the decode at the boundary, the implied rate would
 be roughly **constant** — the same decoder doing proportionally less work. It is not: it climbs
@@ -382,8 +382,8 @@ comparison is even starker because that file has exactly two fine chunks — one
 
 | `<set-01>` fine chunk | gate | audio admitted (s) | decode wall (s) |
 | --- | --- | ---: | ---: |
-| 0 | `stop_at_sec = 1800` | 1 801 | **62.185** |
-| 1 (last) | *ungated* | 3 600 (EOF) | **49.927** |
+| 0 | `stop_at_sec = 1800` | 1,801 | **62.185** |
+| 1 (last) | *ungated* | 3,600 (EOF) | **49.927** |
 
 The gated chunk, admitting **half** the audio, took **25% longer** than the ungated one.
 
@@ -399,8 +399,8 @@ It is worth something — just not what D-07 claims. Against the only clean like
 So the saving is real, roughly **19–27%** per non-final chunk, and — critically — **it does not
 grow as the boundary shrinks.** D-07's model says total decode falls from `K × duration` to
 `duration × (K+1)/2`, i.e. a **46% saving at K = 12** and asymptotically 50%. Extrapolating the
-measured per-chunk costs over `<set-05>`'s 12 fine chunks gives ≈ **1 310 s gated** against
-≈ **1 832 s** if every chunk paid the ungated cost — a **28.5%** saving, not 46%.
+measured per-chunk costs over `<set-05>`'s 12 fine chunks gives ≈ **1,310 s gated** against
+≈ **1,832 s** if every chunk paid the ungated cost — a **28.5%** saving, not 46%.
 
 **The claim that survives:** the gate is taken, it is correct, and it makes non-final chunk decodes
 cheaper. **The claim that does not:** that a non-final chunk's decode time scales with the chunk
@@ -422,8 +422,8 @@ which no boundary-proportional model can produce:
 | `<set-07>` (25 chunks) | 184.526, 172.714, 164.203, 164.272, 172.529, 174.914, 181.094, 189.290, 195.952, 196.934, 200.926, 210.451, 211.546, 217.525, 222.767, 226.776, 235.282, 239.865, 245.271, 250.380, 257.632, 263.161, 270.215, 273.532, *83.583* |
 
 `<set-04>`'s series **halves** — 565.256 → 274.026 — while its gate boundary grows 8×. `<set-07>`'s
-*rises*, but only **1.48×** across a **24× boundary span** (164.203 s at 5 401 s of admitted audio
-→ 273.532 s at 43 201 s). Neither is proportionality; one of them has the wrong sign for it. And in
+*rises*, but only **1.48×** across a **24× boundary span** (164.203 s at 5,401 s of admitted audio
+→ 273.532 s at 43,201 s). Neither is proportionality; one of them has the wrong sign for it. And in
 **every** run the *ungated* final chunk, which decodes the whole file, is the **cheapest of all** —
 on `<set-07>` it is **83.583 s** against 273.532 s for the gated chunk immediately before it, whose
 boundary admits 0.6% *less* audio.
@@ -453,8 +453,8 @@ fresh processes:
 
 | `<set-06>` fine chunk 0 | audio the decode should read | **wall (s)** |
 | --- | ---: | ---: |
-| gated, `stop_at_sec = 1800` | 1 801 s (**5.0%** of the file) | **1 422.391** |
-| ungated | 36 182 s (EOF) | **2 221.179** |
+| gated, `stop_at_sec = 1800` | 1,801 s (**5.0%** of the file) | **1,422.391** |
+| ungated | 36,182 s (EOF) | **2,221.179** |
 
 **The gate saves 798.788 s — 36.0%** — the largest saving measured anywhere in this spike, and the
 reason is §4d's second bullet: on a 48 kHz source the per-sample resample cost is a larger share of
@@ -465,17 +465,17 @@ That single number also settles §5's extrapolation — see below.
 
 ______________________________________________________________________
 
-## 5. Heartbeat health against the 1 800 s stall threshold
+## 5. Heartbeat health against the 1,800 s stall threshold
 
-`analysis_stall_timeout_sec` is 1 800 s of **silence**, and the derived SAQ outer net is
-`2 ×` that — 3 600 s (`BaseSettings.analysis_job_heartbeat_sec`,
+`analysis_stall_timeout_sec` is 1,800 s of **silence**, and the derived SAQ outer net is
+`2 ×` that — 3,600 s (`BaseSettings.analysis_job_heartbeat_sec`,
 `_ANALYSIS_OUTER_HEARTBEAT_MULTIPLIER = 2`).
 
 The watchdog resets on *any* child output, so in principle these gaps are an upper bound. In
 practice they are exact: across every run the child wrote **one** stderr line in total (§4a), so
 protocol heartbeats are the only thing resetting the deadline.
 
-| file | **longest healthy heartbeat gap (s)** | where | % of the 1 800 s inner threshold | % of the 3 600 s outer net |
+| file | **longest healthy heartbeat gap (s)** | where | % of the 1,800 s inner threshold | % of the 3,600 s outer net |
 | --- | ---: | --- | ---: | ---: |
 | `<set-01>` | 105.762 | `coarse_decode` → first `coarse_model` | 5.9% | 2.9% |
 | `<set-02>` | 104.571 | `coarse_decode` → first `coarse_model` | 5.8% | 2.9% |
@@ -483,7 +483,7 @@ protocol heartbeats are the only thing resetting the deadline.
 | `<set-04>` (48 kHz) | **565.256** | `fine_decode` → first `fine` (chunk 1 of 8) | **31.4%** | 15.7% |
 | `<set-05>` | 454.978 | `coarse_decode` → first `coarse_model` (chunk 1 of 4) | 25.3% | 12.6% |
 | `<set-07>` | **930.719** | `coarse_decode` → first `coarse_model` (chunk 1 of 9) | **51.7%** | 25.9% |
-| `<set-06>` (48 kHz, decode probe — §4e) | **1 422.391** | fine chunk 0 decode, measured in isolation | **79.0%** | 39.5% |
+| `<set-06>` (48 kHz, decode probe — §4e) | **1,422.391** | fine chunk 0 decode, measured in isolation | **79.0%** | 39.5% |
 
 **On the longest file in the corpus the worst healthy silence is 930.719 s — 51.7% of the
 threshold that would have killed it.** That is the margin, measured, not extrapolated: the file
@@ -496,17 +496,17 @@ Three things to take from the table:
 - **The worst silence is a chunk decode**, in both tiers — the one stage that cannot heartbeat,
   because it is a single blocking `essentia.run()` inside C++. D-08 sized the threshold against
   exactly this ("one chunk's decode on a 12-hour file"); the sizing is now measured, and the
-  answer is 930.719 s against 1 800.
+  answer is 930.719 s against 1,800.
 - **It scales with duration.** 105.762 → 197.446 → 565.256 → 454.978 → 930.719 s at 1 / 2 / 4 /
   5.6 / 12.1 hours. A 24-hour file — which the corpus does not currently contain but a
   multi-day festival recording plausibly would — extrapolates past the threshold.
 - **And with source sample rate, which is where the margin nearly runs out today.** `<set-04>` is
   a 4-hour file whose worst gap (565.256 s) is **2.86×** the 2-hour 44.1 kHz file's, because at
   48 kHz the fine tier pays a real resample (§4d). Following that to the corpus's worst shape,
-  `<set-06>`'s **first fine chunk decodes in 1 422.391 s — 79.0% of the threshold** (§4e). One
+  `<set-06>`'s **first fine chunk decodes in 1,422.391 s — 79.0% of the threshold** (§4e). One
   step. One healthy file that exists in the archive today.
 
-**⚠️ This is the loud one, after the memory result.** `1 422.391 / 1 800 = 79.0%`. A 48 kHz source
+**⚠️ This is the loud one, after the memory result.** `1,422.391 / 1,800 = 79.0%`. A 48 kHz source
 of ~12.7 hours — a length the corpus already reaches at 44.1 kHz — puts a *single legitimate chunk
 decode* past `analysis_stall_timeout_sec`, and the failure mode is a `SIGKILL` on a healthy
 multi-hour analysis, reported and stored as a stall, with the file marked terminally failed and
@@ -601,7 +601,7 @@ paragraph in `docs/essentia-analysis.md` should say what was measured.
 
 ### FU-4 — RISK: the stall threshold's margin shrinks with duration *and* source sample rate
 
-§5. The worst healthy silence is already **565.256 s** (31.4% of 1 800 s) on a 4-hour 48 kHz file
+§5. The worst healthy silence is already **565.256 s** (31.4% of 1,800 s) on a 4-hour 48 kHz file
 and it is a **chunk decode** — one blocking `essentia.run` call that cannot beat from Python.
 Options: raise `analysis_stall_timeout_sec` (cheap, but the outer net is derived at 2× and the
 whole point of D-08 is that the number be defensible); or give the chunk decode a heartbeat of its
@@ -612,7 +612,7 @@ cost entirely.
 ### FU-5 — PERF: 48 kHz sources cost 5–8× the fine-tier decode of 44.1 kHz sources
 
 §4d. `<set-04>`'s per-chunk fine decodes are 565 → 274 s against `<set-03>`'s 73 → 53 s on a file
-only 2× longer, and the difference tracks the 48 000 → 44 100 Hz conversion the fine tier forces.
+only 2× longer, and the difference tracks the 48,000 → 44,100 Hz conversion the fine tier forces.
 Worth measuring deliberately and, if it holds, either letting the fine tier follow the source rate
 (the tier's algorithms take no rate-dependent parameter) or documenting the cost so lane
 scheduling can price it. This is also the multiplier that puts FU-4 within 21% of the stall

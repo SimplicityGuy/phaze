@@ -189,9 +189,9 @@ architecture, byte-identical fixtures**:
 
 | muxer (arm64) | essentia decode of the extracted `.mka` | `_probe_duration_sec` `format.duration` |
 | --- | --- | --- |
-| bookworm apt 5.1.9 | 221 184 samples | 5.032000 |
-| BtbN 8.1.2 *(scrapped attempt)* | 221 184 samples | 5.000000 |
-| **trixie apt 7.1.5** | **221 184 samples** | **5.038000** |
+| bookworm apt 5.1.9 | 221,184 samples | 5.032000 |
+| BtbN 8.1.2 *(scrapped attempt)* | 221,184 samples | 5.000000 |
+| **trixie apt 7.1.5** | **221,184 samples** | **5.038000** |
 
 **Both results that matter hold.** Every muxer yields **byte-identical decoded audio** at the
 consumer — `-c:a copy` really is lossless across the version change — and `format.duration` is
@@ -223,7 +223,7 @@ byte-identical fixtures, old image vs new.
 
 | descriptor | bookworm / gcc 12 / libav 5.1 | trixie / gcc 14 / libav 7.1 |
 | --- | --- | --- |
-| decoded samples | 220 500 / 221 184 / 222 208 | **identical** |
+| decoded samples | 220,500 / 221,184 / 222,208 | **identical** |
 | RMS, loudness | — | **identical to 9 dp** |
 | BPM, beat count, beat confidence | 48.075169 / 85.285599 / 85.003197 | **identical to 6 dp** |
 | key, key strength | A minor | **identical** |

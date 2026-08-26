@@ -25,7 +25,7 @@ networks per file**, and because `EasyLoader` does not seek, each decodes and re
 (`phaze-esut` §8). Rebuilding that as **one network per tier with N `Trimmer` sinks** — same
 algorithms, same parameters, one `essentia.run()` — collapses 90 passes into 2 and is **3.5× /
 10.9× / ≈15× / ≈18× faster on decode** for 10 / 60 / 180 / 720-minute files. **End to end at
-saturated caps that is −41.7% wall clock — 3 044.9 s → 1 775.9 s — for byte-identical output**
+saturated caps that is −41.7% wall clock — 3,044.9 s → 1,775.9 s — for byte-identical output**
 (sha256 + `cmp` on the whole `analyze_file` result, on two files, in three hybrid runs, plus **136
 individually hashed buffer comparisons** across five decode runs, including the last window of a
 12-hour file). It costs **+1.079 GiB of
@@ -260,9 +260,9 @@ produce the same window set on the same file. "ARM STREAMING" is the **one-netwo
 | file | duration | windows (fine + coarse) | **ARM STANDARD** | **ARM STREAMING** | **speedup** |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `dur_600` | 10 min | 20 + 4 | **53.4 s** | **15.1 s** | **3.5×** |
-| `dur_3600` | 60 min | 60 + 20 | **1 376.7 s** | **126.6 s** | **10.9×** |
-| `dur_10800` | 180 min | 60 + 30 | **5 510.6 s** † | **350.0 s** ‡ | **15.7×** |
-| `dur_43200` | 720 min | 60 + 30 | **22 141.6 s** † | **1 153.7 s** ‡ | **19.2×** |
+| `dur_3600` | 60 min | 60 + 20 | **1,376.7 s** | **126.6 s** | **10.9×** |
+| `dur_10800` | 180 min | 60 + 30 | **5,510.6 s** † | **350.0 s** ‡ | **15.7×** |
+| `dur_43200` | 720 min | 60 + 30 | **22,141.6 s** † | **1,153.7 s** ‡ | **19.2×** |
 
 † **Extrapolated, and the extrapolation is calibrated.** ARM STANDARD on the two long files is
 measured per window at `--fine-cap 2 --coarse-cap 2` (which keeps the first *and last* window of
@@ -288,13 +288,13 @@ marginally optimistic on the streaming side by about that much; 15.7× and 19.2�
 > | file | duration | windows (f+c) | **STANDARD** | **STREAMING** | **speedup** |
 > | --- | ---: | ---: | ---: | ---: | ---: |
 > | `dur_600` | 10 min | 20 + 4 | **53.09 s** | **15.22 s** | **3.49×** |
-> | `dur_3600` | 60 min | 60 + 20 | **1 370.77 s** | **127.04 s** | **10.79×** |
-> | `dur_10800` | 180 min | 60 + 30 | **5 542.2 s** ※ | **370.22 s** | **15.0×** |
-> | `dur_43200` | 720 min | 60 + 30 | **22 100.4 s** ※ (6.14 h) | **1 233.96 s** (20.6 min) | **17.9×** |
+> | `dur_3600` | 60 min | 60 + 20 | **1,370.77 s** | **127.04 s** | **10.79×** |
+> | `dur_10800` | 180 min | 60 + 30 | **5,542.2 s** ※ | **370.22 s** | **15.0×** |
+> | `dur_43200` | 720 min | 60 + 30 | **22,100.4 s** ※ (6.14 h) | **1,233.96 s** (20.6 min) | **17.9×** |
 >
-> Every figure above sits inside this section's own: 53.4 → 53.09 (−0.6%), 1 376.7 → 1 370.77
+> Every figure above sits inside this section's own: 53.4 → 53.09 (−0.6%), 1,376.7 → 1,370.77
 > (−0.4%), 15.1 → 15.22 (+0.8%), 126.6 → 127.04 (+0.3%). The two long files' streaming figures
-> are 370.22 / 1 233.96 s against this section's 350.0 / 1 153.7 s — **+5.8% / +7.0%, which is
+> are 370.22 / 1,233.96 s against this section's 350.0 / 1,153.7 s — **+5.8% / +7.0%, which is
 > the ‡ footnote's own prediction of the two-pass penalty** (§8: one shared pass is 5.3%
 > faster), arriving from a separate implementation.
 >
@@ -329,7 +329,7 @@ coarse tier is 76% of ARM STANDARD's wall time on the 60-minute file** despite h
 many windows — and, per §7, why the streaming rewrite pays so much more there.
 
 §8's extrapolated "≈5.7 hours of mostly single-threaded resampling for a 724-minute file" is
-confirmed and slightly exceeded: **22 142 s = 6.15 hours** of pure decode at production caps.
+confirmed and slightly exceeded: **22,142 s = 6.15 hours** of pure decode at production caps.
 
 ______________________________________________________________________
 
@@ -373,8 +373,8 @@ fine and 30 coarse sinks of the 12-hour file produced full-length buffers from a
 > | `dur_10800` strided endpoints (cap 2) | 4 | **0** |
 > | `dur_10800` strided (cap 4) | 8 | **0** |
 > | `dur_43200` strided endpoints — the **last** window of a 12-hour file | 4 | **0** |
-> | **end-to-end `analyze_file`, `dur_600`** | sha256 `f46508e8…`, `cmp` identical over 27 484 B | **0** |
-> | **end-to-end `analyze_file`, `dur_3600`, caps saturated** | sha256 `829086a7…`, `cmp` identical over 112 784 B | **0** |
+> | **end-to-end `analyze_file`, `dur_600`** | sha256 `f46508e8…`, `cmp` identical over 27,484 B | **0** |
+> | **end-to-end `analyze_file`, `dur_3600`, caps saturated** | sha256 `829086a7…`, `cmp` identical over 112,784 B | **0** |
 > | **end-to-end, `dur_3600`, all three memory ablations** | sha256 `829086a7…` | **0** |
 >
 > **285 individually hashed buffer comparisons, 0 mismatches** — 181 of them distinct windows,
@@ -405,18 +405,18 @@ and an output difference could only come from the decode.
 
 | `dur_3600` — 60 min, **60 fine + 20 coarse (fine cap saturated)** | wall | peak RSS | result sha256 |
 | --- | ---: | ---: | --- |
-| **BASELINE** (`main`) | **3 044.87 s** | **2.505 GiB** | `d7fde10d…` |
-| **HYBRID** | **1 775.89 s** | **3.584 GiB** | `d7fde10d…` |
+| **BASELINE** (`main`) | **3,044.87 s** | **2.505 GiB** | `d7fde10d…` |
+| **HYBRID** | **1,775.89 s** | **3.584 GiB** | `d7fde10d…` |
 | **Δ** | **−41.7%** | **+43.1%** | **identical** (`cmp`) |
 
 **Output identity holds at the `analyze_file` return value, on both files, by sha256 and by `cmp`.**
 That is the bar `phaze-15sw` met, met again here.
 
 HYBRID's internal breakdown on `dur_3600`: fine decode **83.85 s** (ARM STANDARD: 334.35 s, −74.9%),
-fine extract 31.24 s, coarse decode **43.00 s** (ARM STANDARD: 1 042.34 s, **−95.9%**), coarse
-inference 1 617.80 s. Total decode **126.85 s against 1 376.70 s — 10.9×**, reproducing §4's
-decode-only figure (126.60 s) to 0.2%. The wall-clock saving of 1 268.98 s against a predicted decode
-saving of 1 249.85 s closes the accounting to **1.5%**: the speedup is the decode and nothing else.
+fine extract 31.24 s, coarse decode **43.00 s** (ARM STANDARD: 1,042.34 s, **−95.9%**), coarse
+inference 1,617.80 s. Total decode **126.85 s against 1,376.70 s — 10.9×**, reproducing §4's
+decode-only figure (126.60 s) to 0.2%. The wall-clock saving of 1,268.98 s against a predicted decode
+saving of 1,249.85 s closes the accounting to **1.5%**: the speedup is the decode and nothing else.
 The baseline's 2.505 GiB peak also independently reproduces `phaze-15sw`'s 2.482 GiB envelope
 maximum (+0.9%) and `phaze-3j67`'s 2.566 GiB (−2.4%).
 
@@ -441,9 +441,9 @@ changed:
 
 | `dur_3600`, saturated caps | wall | **peak RSS** | result sha256 |
 | --- | ---: | ---: | --- |
-| BASELINE | 3 044.87 s | **2.505 GiB** | `d7fde10d…` |
-| HYBRID | 1 775.89 s | **3.584 GiB** (+1.079) | `d7fde10d…` |
-| **HYBRID + `malloc_trim(0)` per tier** | **1 778.24 s** (+0.13%) | **3.181 GiB** (+0.677) | `d7fde10d…` |
+| BASELINE | 3,044.87 s | **2.505 GiB** | `d7fde10d…` |
+| HYBRID | 1,775.89 s | **3.584 GiB** (+1.079) | `d7fde10d…` |
+| **HYBRID + `malloc_trim(0)` per tier** | **1,778.24 s** (+0.13%) | **3.181 GiB** (+0.677) | `d7fde10d…` |
 
 **`malloc_trim` recovers 0.403 GiB — 37% of the regression — for 2.4 seconds of a 30-minute run**,
 and output stays byte-identical. That is a clean confirmation: a third of the regression is glibc
@@ -478,13 +478,13 @@ apply them and re-measure rather than assuming they land.**
 >
 > | `dur_3600`, saturated caps (60 fine + 20 coarse) | wall | **peak RSS** | vs baseline | result sha256 |
 > | --- | ---: | ---: | ---: | --- |
-> | **BASELINE** (`main`) | **3 205.05 s** | **1.3999 GiB** | — | `829086a7…` |
-> | **SHIPPED** (rec. 3 + rec. 4) | **1 960.37 s** | **1.7383 GiB** | **+0.338** | `829086a7…` |
-> | ablation: rec. 4 removed (no `malloc_trim`) | 1 956.41 s | 1.7489 GiB | +0.349 | `829086a7…` |
-> | ablation: rec. 3 removed (`Pool` keys kept) | 1 937.01 s | 2.0878 GiB | +0.688 | `829086a7…` |
-> | ablation: both removed (this prototype's shape) | 1 936.98 s | 2.1177 GiB | +0.718 | `829086a7…` |
+> | **BASELINE** (`main`) | **3,205.05 s** | **1.3999 GiB** | — | `829086a7…` |
+> | **SHIPPED** (rec. 3 + rec. 4) | **1,960.37 s** | **1.7383 GiB** | **+0.338** | `829086a7…` |
+> | ablation: rec. 4 removed (no `malloc_trim`) | 1,956.41 s | 1.7489 GiB | +0.349 | `829086a7…` |
+> | ablation: rec. 3 removed (`Pool` keys kept) | 1,937.01 s | 2.0878 GiB | +0.688 | `829086a7…` |
+> | ablation: both removed (this prototype's shape) | 1,936.98 s | 2.1177 GiB | +0.718 | `829086a7…` |
 >
-> **All five configurations produce a byte-identical `analyze_file` result** (`cmp`, 112 784 B) —
+> **All five configurations produce a byte-identical `analyze_file` result** (`cmp`, 112,784 B) —
 > which is the first thing to check about a memory knob, and the thing that would be easiest to
 > lose.
 >
@@ -505,8 +505,8 @@ apply them and re-measure rather than assuming they land.**
 > nothing left for a trim to return — 0.011 GiB. The two mitigations were never independent;
 > they were two ways of attacking the same bytes, and the cheaper one wins on its own.
 >
-> That also settles whether both should ship. **Recommendation 3 costs 1.1% wall** (1 960.37 s
-> against 1 937.01 s — the two `Pool`-kept runs land 0.03 s apart, so the split is real and not
+> That also settles whether both should ship. **Recommendation 3 costs 1.1% wall** (1,960.37 s
+> against 1,937.01 s — the two `Pool`-kept runs land 0.03 s apart, so the split is real and not
 > noise) **for −0.35 GiB**: an easy trade on the resource with the OOM history.
 > **Recommendation 4 costs nothing measurable** (−0.2%, inside run-to-run spread) **for
 > −0.011 GiB**, and is kept as a cheap backstop — the ablation shows it is worth 3× more
@@ -656,7 +656,7 @@ two copies.
 | streaming, COARSE tier only (230 MB PCM) | 42.86 s | 0.689 GiB | +0.301 |
 | streaming, **both tiers off one shared pass** (80 sinks) | **119.93 s** | **1.382 GiB** | +0.994 |
 | **two passes, one per tier** (sum of wall / max of peak) | 126.60 s | **1.018 GiB** | +0.630 |
-| ARM STANDARD, same file (one buffer live at a time) | 1 376.70 s | 0.388 GiB | — |
+| ARM STANDARD, same file (one buffer live at a time) | 1,376.70 s | 0.388 GiB | — |
 
 **The single-shared-pass design double-holds; the two-pass design does not.** Sharing one decode
 across both tiers is **5.3% faster** (119.93 vs 126.60 s — the saving is the one mp3 decode and

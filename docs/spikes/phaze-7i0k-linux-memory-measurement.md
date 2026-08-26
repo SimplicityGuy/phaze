@@ -490,7 +490,7 @@ plus the production ratchet". The ratchet term was wrong, so both numbers inheri
 > **Wall clock: +2.1%** at 30 windows (2115.0 → 2159.0 s) and within noise on the full pipeline
 > (`dur_200` 110.5 → 110.3 s, `dur_600` 345.2 → 345.2 s); model constructions per file unchanged
 > at 34; `analyze_file` output **byte-identical** (sha256 match + `cmp`) on both files. The
-> host-side sampler (14 283 samples) puts instantaneous RSS at 0.754–2.482 GiB, below its own
+> host-side sampler (14,283 samples) puts instantaneous RSS at 0.754–2.482 GiB, below its own
 > running maximum in **100%** of samples — the same sawtooth as §3, one third the height.
 
 

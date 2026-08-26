@@ -12,8 +12,8 @@ markup is suspected of having changed, and then say so in the bead.
 
 | File | Page | Track rows | Bytes |
 |------|------|-----------:|------:|
-| `25fhn7c9-ok.html` | Sven Väth @ Time Warp, Maimarkthalle Mannheim, 2024-10-25 — the spike anchor | 52 | 349 128 |
-| `19h6nw7t-ok.html` | Sven Väth @ BBC Radio 1 Dance Presents Time Warp, 2024-10-12 | 12 | 181 991 |
+| `25fhn7c9-ok.html` | Sven Väth @ Time Warp, Maimarkthalle Mannheim, 2024-10-25 — the spike anchor | 52 | 349,128 |
+| `19h6nw7t-ok.html` | Sven Väth @ BBC Radio 1 Dance Presents Time Warp, 2024-10-12 | 12 | 181,991 |
 
 The anchor is the acceptance criterion's page: its `og:description` states 52 tracks and the
 capture carries exactly 52 `.tlpItem` rows. The second file is a short listing, kept so the parser

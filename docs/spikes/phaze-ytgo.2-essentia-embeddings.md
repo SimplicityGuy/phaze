@@ -99,8 +99,8 @@ eight were used. Dropbox subfolders that appeared to hold more music (`Craig Con
 | `W4` | `<track-04>.mp3` | 441 s | mp3 ~365 kbps | individual track |
 | `W5` | `<track-05>.wav` | 287 s | wav 24-bit | individual track |
 | `W6` | `<track-06>.wav` | 439 s | wav 16-bit | **same work as W5, different edit** |
-| `S1` | `<set-01>.mp3` | 4 721 s (1 h 19 m) | mp3 320 kbps | **long set** |
-| `S2` | `<set-02>.mp3` | 22 098 s (6 h 08 m) | mp3 128 kbps | **long set** (top-100 countdown) |
+| `S1` | `<set-01>.mp3` | 4,721 s (1 h 19 m) | mp3 320 kbps | **long set** |
+| `S2` | `<set-02>.mp3` | 22,098 s (6 h 08 m) | mp3 128 kbps | **long set** (top-100 countdown) |
 
 **Constructed variants for the P1 measurement.** No known encode-duplicate pair existed in the
 archive, so — as the bead's design instructs — they were constructed. For each of `W1..W4`,
@@ -262,9 +262,9 @@ Two integration shapes, two prices:
 | ---- | --- |
 | interpreter + essentia imported | 241.9 MiB |
 | one 180 s coarse window decoded @ 16 kHz | 268.3 MiB |
-| **phaze baseline: 34 classifiers loaded, steady state** | **8 190.0 MiB** |
-| + second `TensorflowPredictEffnetDiscogs` instance | 8 190.3 MiB (**+0.3 MiB**) |
-| + embeddings computed, steady state | 8 251.3 MiB (**+61.3 MiB total, +0.75 %**) |
+| **phaze baseline: 34 classifiers loaded, steady state** | **8,190.0 MiB** |
+| + second `TensorflowPredictEffnetDiscogs` instance | 8,190.3 MiB (**+0.3 MiB**) |
+| + embeddings computed, steady state | 8,251.3 MiB (**+61.3 MiB total, +0.75 %**) |
 
 **Against S1 blocker B2 — and this is the finding that decides the clean-room option.** B2 says
 per-file analysis cost is capped at O(1) by the Phase 43 decision. The track-level embedding
@@ -281,10 +281,10 @@ per file, worst case (a file that saturates coarse_cap=30):
 
 **Storage** (mean-pooled float32):
 
-| | per file | 1 000 | 10 000 | 50 000 | 200 000 |
+| | per file | 1,000 | 10,000 | 50,000 | 200,000 |
 | --- | --- | --- | --- | --- | --- |
-| track-level (1 × 1280-d) | 5 120 B | 0.005 GB | 0.051 GB | 0.256 GB | **1.02 GB** |
-| window-level (30 × 1280-d) | 153 600 B | 0.15 GB | 1.54 GB | 7.68 GB | **30.7 GB** |
+| track-level (1 × 1280-d) | 5,120 B | 0.005 GB | 0.051 GB | 0.256 GB | **1.02 GB** |
+| window-level (30 × 1280-d) | 153,600 B | 0.15 GB | 1.54 GB | 7.68 GB | **30.7 GB** |
 
 For contrast only: at AudioMuse's published 200 dimensions the track-level figure would be
 0.16 GB. The 6.4× is the price of using the model phaze already runs. `phaze-ytgo.6` should treat

@@ -18,7 +18,7 @@ ______________________________________________________________________
 **No. The measured ceiling on a C++ rewrite is 1.12% of a 10-minute file and 0.29% of a 60-minute
 one, and 0% of throughput.** Wrapping every essentia / TensorFlow / numpy / json / gc entry point
 the real `analyze_file` calls and treating the leftover wall clock as Python puts phaze's own
-orchestration at **0.164 s of a 307.9 s run (0.053%)** and **0.197 s of a 1 793.6 s run (0.011%)**
+orchestration at **0.164 s of a 307.9 s run (0.053%)** and **0.197 s of a 1,793.6 s run (0.011%)**
 against the **improved** baseline — flat at **0.0087–0.0547% across six runs** spanning a 41% change
 in wall clock, a 33% change in peak memory and two entirely different decode compositions. Add every
 other Python-attributable cost — `gc.collect()`, essentia's *own* Python binding layer (`standard.py`
@@ -42,7 +42,7 @@ hoisting `RhythmExtractor2013` and `KeyExtractor` out of the per-window loop cut
 **31.50 → 23.93 s (−24.0%) with 0/60 output mismatches** — 38× the entire orchestration residual,
 from moving two lines. Against that, the cost side is a second cross-arch C++ toolchain on an image
 whose Python pin is *already* hostage to a TensorFlow wheel and that already carries four numbered
-link fixups, the loss of 369 lines of measured, docstring-dense Python defended by 2 149 lines of
+link fixups, the loss of 369 lines of measured, docstring-dense Python defended by 2,149 lines of
 direct tests, and an upstream reference pipeline (`MusicExtractor`, 650 lines of C++) that **decodes
 each file three times** — less efficient than the streaming hybrid `phaze-rc1q` designed in Python.
 **Recommendation: NO-GO, and close the question rather than deferring it.**
@@ -83,7 +83,7 @@ directory and one bench pod, both removed (appendix).
 
 Each is wrapped with a `perf_counter` pair — **construction and call timed separately** — via a proxy
 installed on the module's `es` / `np` / `json` / `gc` names. **Everything outside those brackets is
-Python bytecode.** The instrument costs ~1 800 `perf_counter` pairs per file, under 0.5 ms — four
+Python bytecode.** The instrument costs ~1,800 `perf_counter` pairs per file, under 0.5 ms — four
 orders of magnitude below the residual it measures.
 
 The residual is deliberately a **generous upper bound on phaze's Python layer**: it also absorbs the
@@ -162,8 +162,8 @@ The shape `phaze-15sw`, `phaze-3j67`, `phaze-rc1q` and `phaze-mqq5` all sized ag
 
 | arm | wall (s) | **peak (GiB)** | decode (s) | result sha256 | `danceability` |
 | --- | ---: | ---: | ---: | --- | --- |
-| **base** | **3 043.83** | **2.466** | **1 367.83** | `d7fde10d…` | `0.5625221525629361` |
-| **improved** | **1 793.57** | **2.812** | **127.45** | `146673c5…` | `0.562522149582704` |
+| **base** | **3,043.83** | **2.466** | **1,367.83** | `d7fde10d…` | `0.5625221525629361` |
+| **improved** | **1,793.57** | **2.812** | **127.45** | `146673c5…` | `0.562522149582704` |
 | **Δ** | **−41.1%** | **+14.0%** | **10.7× faster** | — | Δ 3.0 × 10⁻⁹ |
 
 Again the baseline lands exactly where the family put it, and again by hashes rather than by
@@ -177,9 +177,9 @@ argument:
 | `phaze-mqq5` `dur_3600` baseline | 2.588 GiB | −4.7% |
 | **this document** | **2.466 GiB** | — |
 
-- **Wall clock: 3 043.83 s against `phaze-rc1q`'s 3 044.87 s — −0.03%**, and the result sha256
+- **Wall clock: 3,043.83 s against `phaze-rc1q`'s 3,044.87 s — −0.03%**, and the result sha256
   `d7fde10d…` is **the prefix that spike published for this exact file and caps**.
-- **Decode: 1 367.83 s → 127.45 s.** `phaze-rc1q` measured 1 376.70 → 126.85 s. **−0.7% / +0.5%.**
+- **Decode: 1,367.83 s → 127.45 s.** `phaze-rc1q` measured 1,376.70 → 126.85 s. **−0.7% / +0.5%.**
 - **`danceability` `0.562522149582704`** is `phaze-mqq5` §5c's batch-32 value, to the digit.
 
 ### 2c. The joint measurement `phaze-mqq5` §5c asked for — and the arithmetic was wrong
@@ -217,10 +217,10 @@ plausible arithmetic argument about freed transients missed (`phaze-rc1q` §6 wa
 >
 > | | `dur_3600` wall | `dur_3600` peak |
 > | --- | ---: | ---: |
-> | this document's `base` (batch 64, per-window decode) | 3 043.83 s | 2.466 GiB |
-> | this document's `improved` (batch 32 + hybrid decode, **without** `phaze-rc1q` rec. 3/4) | 1 793.57 s | **2.812 GiB** |
-> | `main` before `phaze-5lop` (batch 32 + `phaze-rvcn` threads + `phaze-ap8y`) | 3 205.05 s | **1.3999 GiB** |
-> | **shipped (`phaze-5lop`, with rec. 3 + rec. 4)** | **1 960.37 s** | **1.7383 GiB** |
+> | this document's `base` (batch 64, per-window decode) | 3,043.83 s | 2.466 GiB |
+> | this document's `improved` (batch 32 + hybrid decode, **without** `phaze-rc1q` rec. 3/4) | 1,793.57 s | **2.812 GiB** |
+> | `main` before `phaze-5lop` (batch 32 + `phaze-rvcn` threads + `phaze-ap8y`) | 3,205.05 s | **1.3999 GiB** |
+> | **shipped (`phaze-5lop`, with rec. 3 + rec. 4)** | **1,960.37 s** | **1.7383 GiB** |
 >
 > §2c's central claim survives and strengthens: the two changes compose favourably, and the
 > joint peak lands **under** `phaze-3j67`'s 3Gi request. It lands **1.074 GiB further under it**
@@ -230,7 +230,7 @@ plausible arithmetic argument about freed transients missed (`phaze-rc1q` §6 wa
 > deliberately did not apply, and which are worth the difference between +1.078 and +0.338 GiB
 > over that baseline).
 >
-> The wall-clock figures moved too, and in the less flattering direction: **3 043.83 → 3 205.05 s**
+> The wall-clock figures moved too, and in the less flattering direction: **3,043.83 → 3,205.05 s**
 > on the baseline (+5.3%), because `phaze-rvcn` trades wall clock for a hardware-independent
 > peak. So `phaze-5lop`'s end-to-end saving reads **−38.8%** where this section measured −41.1%
 > — the decode saving is the same, the denominator grew. `docs/k8s-burst.md`'s sizing table now
@@ -248,8 +248,8 @@ This is the number the bead says can end the spike on its own.
 | batch32 | `dur_600` | 345.02 | 344.61 | 0.216 | **0.189** | **0.0547%** |
 | hybrid | `dur_600` | 306.39 | 305.96 | 0.269 | **0.160** | **0.0522%** |
 | **improved** | `dur_600` | 307.88 | 307.44 | 0.274 | **0.164** | **0.0532%** |
-| base | `dur_3600` | 3 043.83 | 3 043.35 | 0.213 | **0.265** | **0.0087%** |
-| **improved** | `dur_3600` | **1 793.57** | 1 793.07 | 0.300 | **0.197** | **0.0110%** |
+| base | `dur_3600` | 3,043.83 | 3,043.35 | 0.213 | **0.265** | **0.0087%** |
+| **improved** | `dur_3600` | **1,793.57** | 1,793.07 | 0.300 | **0.197** | **0.0110%** |
 
 **phaze's Python orchestration is one twentieth of one percent of the pipeline, and the figure does
 not move.** Across a 41% change in wall clock, a 33% change in peak memory, two entirely different
@@ -263,8 +263,8 @@ Broken out by phase, `improved` on `dur_3600` (the saturated shape):
 | --- | ---: | ---: | ---: |
 | duration probe | 0.0003 | 0.0002 | **0.0000** |
 | fine tier (fan-out decode + BPM + key, 60 windows) | 115.533 | 115.492 | **0.041** |
-| coarse tier, of which: | 1 678.037 | 1 677.881 | **0.156** |
-| — the 34-model sweep over 20 windows | 1 634.832 | 1 634.677 | **0.155** |
+| coarse tier, of which: | 1,678.037 | 1,677.881 | **0.156** |
+| — the 34-model sweep over 20 windows | 1,634.832 | 1,634.677 | **0.155** |
 | assembly + aggregation + return | — | — | **≈0.001** |
 
 **The entire Python cost of the pipeline lives in one place**: `_run_model_sets_over_windows` building
@@ -319,7 +319,7 @@ Measured (median of 3, on the bench pod):
 
 Adding up, against the **improved** arm:
 
-| tier | `dur_600` (wall 307.88 s) | | `dur_3600` (wall 1 793.57 s) | |
+| tier | `dur_600` (wall 307.88 s) | | `dur_3600` (wall 1,793.57 s) | |
 | --- | ---: | ---: | ---: | ---: |
 | 1 — phaze orchestration | 0.164 s | 0.053% | 0.197 s | 0.011% |
 | 2 — + `gc.collect()` | 0.438 s | 0.142% | 0.497 s | 0.028% |
@@ -414,7 +414,7 @@ between the two solutions: **0% for the one C++ would replace, 98% for the one p
 ### 5d. What in-job overlap would be worth even if it were free
 
 Suppose it were free anyway. On the improved baseline the decode that could overlap with inference is
-**127.45 s of a 1 793.57 s run**, so perfect decode-∥-inference overlap saves at most **7.1%** — and
+**127.45 s of a 1,793.57 s run**, so perfect decode-∥-inference overlap saves at most **7.1%** — and
 **4.9%** on `dur_600`. That is the *ceiling*, and it requires a free core to run the decode on.
 
 **At the production operating point there is no free core.** `phaze-3j67` measured this node at 93.3%
@@ -474,7 +474,7 @@ Mismatches are compared on the full `(window_index, bpm, "key scale", confidence
 windows. **`reset()` is not required**, which is worth recording because it is the thing a reader
 would reasonably worry about.
 
-**7.57 s on a 1 793.57 s improved run is 0.42% of wall — 38× the entire Python orchestration residual
+**7.57 s on a 1,793.57 s improved run is 0.42% of wall — 38× the entire Python orchestration residual
 (0.197 s) — and it comes from moving two lines out of a loop.** It is offered as an observation, not
 a recommendation: it is a product change and belongs to a bead, and it should be re-verified against
 real audio and against the failure-isolation semantics (a raising extractor is currently discarded
@@ -629,10 +629,10 @@ component removes nothing and adds a second cross-arch toolchain.
 | | |
 | --- | --- |
 | code that would be rewritten | **369 lines** (`analysis.py`, excluding 278 docstring + 52 comment lines) |
-| tests directly defending it | **2 149 lines** across 6 files (`test_analysis.py` 855, `test_analysis_model_major.py` 396, `test_analysis_exec.py` 307, `test_analysis_long_file.py` 207, `test_analysis_enqueue.py` 201, `test_analysis_child.py` 183) |
+| tests directly defending it | **2,149 lines** across 6 files (`test_analysis.py` 855, `test_analysis_model_major.py` 396, `test_analysis_exec.py` 307, `test_analysis_long_file.py` 207, `test_analysis_enqueue.py` 201, `test_analysis_child.py` 183) |
 | test files referencing the module or `analyze_file` | **23** |
 | C or C++ currently in the repo (outside `.venv`) | **none** |
-| repo Python | 52 424 lines |
+| repo Python | 52,424 lines |
 
 The docstrings are not decoration — **they are where this molecule's measurements live.**
 `_release_classifier`'s docstring records the 3.751 → 0.263 GiB residency measurement that justified
@@ -665,7 +665,7 @@ ______________________________________________________________________
 
 Buys **≤3.46 s per 10-minute file / ≤5.18 s per 60-minute file** (§4) and **0 throughput** (§5d,
 §7a). Costs a cross-arch C++ toolchain on an image already fighting a TensorFlow ABI (§9a), the loss
-of 369 lines of measured, documented Python and its 2 149 lines of tests (§9c), and a permanent
+of 369 lines of measured, documented Python and its 2,149 lines of tests (§9c), and a permanent
 divergence from a repo that is Python throughout. **The upside is smaller than the difference between
 two arms of this spike that did identical native work** (base and batch32 differ by 0.44 s of wall).
 
@@ -674,7 +674,7 @@ two arms of this spike that did identical native work** (base and batch32 differ
 The decode was the strongest candidate: `phaze-esut` §8 measured `EasyLoader`'s non-seeking
 O(n_windows × duration) behaviour, and a 12-hour file spending 6.15 hours there is exactly the shape
 that justifies going native. **`phaze-rc1q` fixed it in Python** — 10.7× on a 60-minute file
-(reproduced here at 1 367.83 → 127.45 s), ≈18× on a 720-minute one, output byte-identical — because
+(reproduced here at 1,367.83 → 127.45 s), ≈18× on a 720-minute one, output byte-identical — because
 the fix was **compositional, not linguistic**. A C++ version of the same fan-out would run the same
 `scheduler::Network`; §3's phase table measures the Python side of the whole hybrid fine tier at
 **0.041 s**.
@@ -839,8 +839,8 @@ done
 | `dur_600` batch32 | 71.2% | 347 s |
 | `dur_600` hybrid | 78.4% | 308 s |
 | `dur_600` improved | 78.3% | 310 s |
-| `dur_3600` base | **52.9%** | 3 046 s |
-| `dur_3600` improved | 81.0% | 1 796 s |
+| `dur_3600` base | **52.9%** | 3,046 s |
+| `dur_3600` improved | 81.0% | 1,796 s |
 | `dur_600` cProfile | 71.3% | 345 s |
 
 The `dur_3600` base run's 52.9% is the expected value, not an anomaly: 45% of its wall clock is the

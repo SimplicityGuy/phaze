@@ -25,7 +25,7 @@ band to the 12-hour band is **+11.6%** — 1.6 points outside a strict reading o
 asked for, and §2b is the arithmetic for why that residue is a **bounded** step and not duration
 dependence: between the two bands whose coarse chunks are both FULL it is **+1.4%** across 3.1×
 the chunk count, against a defect that fitted chunk count at R² 0.99959. The same file analyzed before and after produces a
-**byte-identical** 128 118-byte result payload — every window, every feature, and all five of
+**byte-identical** 128,118-byte result payload — every window, every feature, and all five of
 `bpm` / `musical_key` / `mood` / `style` / `danceability`. Wall clock moves **−0.22% / −0.52% / −0.83%** across the three bands, i.e. nothing. The mechanism is confirmed rather than inferred:
 under Debian 13 / glibc 2.41 the shipped chunk loop retains **5.42 MiB per window branch per
 gated chunk** before the fix and **0.00 after**, and a **standalone reproducer that imports no
@@ -64,9 +64,9 @@ Identity was verified on the staged copies with `ffprobe`, against that spike's 
 
 | file | duration (s) | h:mm | container / codec | source rate | bit rate | size (B) | fine windows | fine chunks |
 | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |
-| `<set-01>` | 3 600.091429 | 1:00 | mp3 | 44 100 Hz | 192 006 | 86 405 202 | 120 | 2 |
-| `<set-04>` | 14 400.888000 | 4:00 | mp3 | 48 000 Hz | 231 455 | 416 644 887 | 480 | 8 |
-| `<set-07>` — longest in corpus | 43 466.893061 | 12:04 | mp3 | 44 100 Hz | 165 354 | 898 429 776 | 1 449 | 25 |
+| `<set-01>` | 3,600.091429 | 1:00 | mp3 | 44,100 Hz | 192,006 | 86,405,202 | 120 | 2 |
+| `<set-04>` | 14,400.888000 | 4:00 | mp3 | 48,000 Hz | 231,455 | 416,644,887 | 480 | 8 |
+| `<set-07>` — longest in corpus | 43,466.893061 | 12:04 | mp3 | 44,100 Hz | 165,354 | 898,429,776 | 1,449 | 25 |
 
 Every field matches. That matters more than it looks: it makes each band's "before" a measurement
 of the **identical file on the identical node with the identical image**, so the only variable
@@ -76,7 +76,7 @@ between the two columns of §2 is the fix.
 
 `<set-01>` is measured with the leaky module as well as the fixed one, in the same session, in
 the same pod. It does two jobs at once: it re-derives `phaze-b2qs9`'s anchor on this node **today**
-(2.1056 GiB against its 2.1107, **−0.24%**; 2 006.785 s against its 2 016.508, **−0.48%**), which
+(2.1056 GiB against its 2.1107, **−0.24%**; 2,006.785 s against its 2,016.508, **−0.48%**), which
 is the evidence that the node, the image, the corpus copy and the harness have not drifted — and
 it is the **before** side of the analysis-equivalence check in §4, which no prior measurement
 could supply because `phaze-b2qs9` recorded window counts and never recorded feature values.
@@ -110,15 +110,15 @@ zero skips) — the fix does not buy its memory back by doing less work.
 
 | file | fine windows | coarse windows | **wall before (s)** | **wall after (s)** | delta |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `<set-01>` | 120 / 120 | 20 / 20 | 2 016.508 | 2 012.044 | **−0.22%** |
-| `<set-04>` | 480 / 480 | 80 / 80 | 11 352.656 | 11 294.092 | **−0.52%** |
-| `<set-07>` | 1 449 / 1 449 | 242 / 242 | 33 843.202 | 33 562.045 | **−0.83%** |
+| `<set-01>` | 120 / 120 | 20 / 20 | 2,016.508 | 2,012.044 | **−0.22%** |
+| `<set-04>` | 480 / 480 | 80 / 80 | 11,352.656 | 11,294.092 | **−0.52%** |
+| `<set-07>` | 1,449 / 1,449 | 242 / 242 | 33,843.202 | 33,562.045 | **−0.83%** |
 
 **No wall-clock regression.** This was the specific risk the bead flagged: a fix that recreated
 extractors per chunk would land its cost on every chunk and therefore on lane scheduling. This
 one does not recreate anything — it severs edges the teardown was already meant to release — and
 the measurement says so. Against the leaky arm run in the same session on the same file, the
-1-hour band is **+0.26%** (2 012.044 s against 2 006.785 s), which is run-to-run noise on this
+1-hour band is **+0.26%** (2,012.044 s against 2,006.785 s), which is run-to-run noise on this
 node.
 
 ### 2a. Where the high-water goes instead
@@ -170,7 +170,7 @@ catch a fix that has **not worked**, and this one cut the band that breached the
 "flat (within ~10%)". Band 3 is also the **only** run that answers the acceptance criterion as
 written, which compares a 1-hour file with a 12-hour one. And `<set-07>` is 44.1 kHz like
 `<set-01>`, so it drops the sample-rate confounder `<set-04>` carries — `<set-04>` is the one file
-in the set whose fine tier resamples 48 000 → 44 100 Hz.
+in the set whose fine tier resamples 48,000 → 44,100 Hz.
 
 **Outcome: H1 confirmed, H2 refuted.** `<set-07>` measured **1.6725 GiB** — inside H1's 1.60–1.75
 band and **0.41 GiB below** H2's 2.079. Against `<set-04>`, which also has full coarse chunks, it
@@ -193,12 +193,12 @@ process per arm, synthetic audio. The last chunk is ungated, as it is in product
 | chunk | LEAKY rss (MB) | LEAKY hwm (MB) | LEAKY decode (s) | FIXED rss (MB) | FIXED hwm (MB) | FIXED decode (s) |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | base | 389.5 | 389.2 | — | 389.5 | 389.3 | — |
-| 1 | 629.1 | 1 060.9 | 60.05 | 301.3 | 1 055.8 | 59.82 |
-| 2 | 945.3 | 1 408.8 | 60.16 | 301.4 | 1 055.8 | 60.00 |
-| 3 | 1 273.1 | 1 739.4 | 60.02 | 301.5 | 1 055.8 | 60.23 |
-| 4 | 1 600.9 | 2 064.9 | 60.09 | 301.5 | 1 055.8 | 60.06 |
-| 5 | 1 928.8 | 2 390.5 | 60.12 | 301.6 | 1 055.8 | 60.66 |
-| 6 *(ungated)* | 2 222.6 | 2 657.1 | 144.78 | 301.6 | 1 057.5 | 144.84 |
+| 1 | 629.1 | 1,060.9 | 60.05 | 301.3 | 1,055.8 | 59.82 |
+| 2 | 945.3 | 1,408.8 | 60.16 | 301.4 | 1,055.8 | 60.00 |
+| 3 | 1,273.1 | 1,739.4 | 60.02 | 301.5 | 1,055.8 | 60.23 |
+| 4 | 1,600.9 | 2,064.9 | 60.09 | 301.5 | 1,055.8 | 60.06 |
+| 5 | 1,928.8 | 2,390.5 | 60.12 | 301.6 | 1,055.8 | 60.66 |
+| 6 *(ungated)* | 2,222.6 | 2,657.1 | 144.78 | 301.6 | 1,057.5 | 144.84 |
 
 **Leaky: +324.9 MB per gated chunk = 5.42 MiB per window branch = +0.3173 GiB/chunk.** That
 reproduces `phaze-b2qs9`'s production slope of **+0.3108 GiB per fine chunk** to **2.1%**, from a
@@ -220,7 +220,7 @@ upstream report (`phaze-09skl`) needs. Run on the production image, 6 rounds × 
 
 | arm | RSS per round (MiB) | growth after round 1 |
 | --- | --- | ---: |
-| gated, `drop` teardown *(what shipped)* | 640.0 → 956.5 → 1 273.0 → 1 589.6 → 1 906.1 → 2 222.6 | **+1 582.6 MiB** (5.28 MiB/branch/round) |
+| gated, `drop` teardown *(what shipped)* | 640.0 → 956.5 → 1,273.0 → 1,589.6 → 1,906.1 → 2,222.6 | **+1,582.6 MiB** (5.28 MiB/branch/round) |
 | gated, `disconnect` teardown *(the fix)* | 640.0 → 640.3 → 640.3 → 640.3 → 640.3 → 640.4 | **+0.4 MiB** (1.4 KiB/branch/round) |
 | **ungated**, `drop` teardown *(control)* | 639.8 → 659.8 → 629.8 | **−10.0 MiB** |
 
@@ -255,7 +255,7 @@ severing edges, so this is not a formality.
 | `style` | `Electronic/Deep House` | `Electronic/Deep House` | ✅ |
 | `danceability` | 0.93848341802756 | 0.93848341802756 | ✅ |
 
-And the check is stronger than the five fields: the **entire** result payload — 128 118 bytes,
+And the check is stronger than the five fields: the **entire** result payload — 128,118 bytes,
 all 140 per-window records and every feature in them — is **byte-identical** between the two arms.
 
 ______________________________________________________________________
