@@ -844,3 +844,51 @@ async def test_drop_pending_abort_failure_does_not_raise(
     await session.rollback()
 
     assert await cloud_staging.flush_pending_s3_enqueues(session) == 0
+
+
+async def test_failed_abort_says_which_compensation_orphaned_the_multipart(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The two compensation paths share one abort helper, so the LOG must still tell them apart.
+
+    ``_stage_file_to_s3``'s ``except`` (phaze-bbwx) and ``drop_pending_s3_enqueues``' rollback sweep
+    (phaze-cws5) are materially different operational events: the first means THIS staging attempt
+    failed, the second means it succeeded and the CALLER's transaction rolled back underneath it --
+    usually because of a different candidate in the same drain tick. Before the two ``try``/``except``
+    blocks were folded into ``_best_effort_abort_orphaned_multipart`` each carried its own message
+    prefix; now a single message serves both, and ``orphaned_by`` is what preserves the distinction.
+
+    ``exc_info`` CANNOT stand in for it. A traceback records only the frames from the catching frame
+    downward, so with the ``try``/``except`` living in the shared helper both paths render the
+    identical two frames. Without this field an operator greps the log and cannot tell a failed
+    staging attempt from a rolled-back drain tick, so this test pins the field rather than the prose.
+    """
+    from structlog.testing import capture_logs
+
+    async def _boom_abort(*_args: object, **_kwargs: object) -> None:
+        raise s3_staging.S3StagingError("bucket unreachable")
+
+    async def _boom_presign(*_args: object, **_kwargs: object) -> list[str]:
+        raise s3_staging.S3StagingError("presign failed")
+
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    file = await _seed_file(session, fileserver.id, file_size=_PART_SIZE)
+    task_router = FakeTaskRouter()
+
+    # caller_rollback: the staging attempt SUCCEEDS, then the caller drops the parked enqueue.
+    await cloud_staging._stage_file_to_s3(session, file, task_router, bucket)
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", _boom_abort)
+    with capture_logs() as rollback_logs:
+        await cloud_staging.drop_pending_s3_enqueues(session)
+
+    # staging_failure: a re-stage of the same file fails in its own compensating except (the upsert
+    # is idempotent on file_id, so re-using one file keeps this to the two paths under test).
+    monkeypatch.setattr(s3_staging, "presign_upload_parts", _boom_presign)
+    with capture_logs() as staging_logs, pytest.raises(s3_staging.S3StagingError, match="presign failed"):
+        await cloud_staging._stage_file_to_s3(session, file, task_router, bucket)
+
+    assert [log["orphaned_by"] for log in rollback_logs if "orphaned_by" in log] == ["caller_rollback"]
+    assert [log["orphaned_by"] for log in staging_logs if "orphaned_by" in log] == ["staging_failure"]
