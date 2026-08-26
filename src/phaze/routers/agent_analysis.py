@@ -175,6 +175,40 @@ async def _delete_staged_object_if_cloud(session: AsyncSession, file_id: uuid.UU
         logger.warning("inline staged-object delete failed; lifecycle TTL will reap", file_id=str(file_id), exc_info=True)
 
 
+async def _finalize_analysis_outcome(session: AsyncSession, file_id: uuid.UUID) -> None:
+    """Shared post-write tail for both a successful analysis write (``put_analysis``) and a
+    terminal analyze failure (``report_analysis_failed``): clear the agent-stage scheduling-ledger
+    row, reap the file's inert ``awaiting`` cloud_job hold-over row, commit, then best-effort
+    delete its staged S3 object if it has one. Callers have already written their own outcome
+    (the AnalysisResult upsert) in the SAME transaction before calling this.
+
+    Phase 45 (L-02): the ledger clear joins the caller's already-open transaction and is keyed
+    from ``file_id`` alone -- the PATH value only, never a body field (AUTH-01 / T-45-05).
+    ``clear_ledger_entry`` carries its own ownership guard (phaze-3yln), so a re-analysis
+    re-enqueue that lands a fresh ledger + saq_jobs row for this key before this callback runs is
+    not deleted here.
+
+    D-14 reaper: the DELETE against the file's ``awaiting`` cloud_job row (D-05's conjunct, chosen
+    over row deletion) joins the same transaction (no new commit) and is scoped to
+    ``status='awaiting'``, leaving a SUCCEEDED/RUNNING row untouched -- without it
+    ``ix_cloud_job_awaiting`` scans a monotonically growing dead set (phaze-9sqa). phaze-2mwyo:
+    DELIBERATELY UNCHANGED even though this DELETE also destroys the row's ``attempts`` retry
+    budget -- the durable per-file ``cloud_budget`` ledger (``services/cloud_budget.py``) now holds
+    that budget instead, so narrowing this predicate to "preserve" it would be redundant.
+
+    phaze-uoiw: the staged-object S3 delete runs strictly AFTER ``session.commit()``, not inside
+    the transaction -- it is an irreversible external side effect, and running it pre-commit both
+    risked deleting the staged object while a commit failure rolled back the recorded outcome
+    (T-53-21) and pinned the pooled connection across a full S3 round-trip while holding this
+    file's row locks. Best-effort: a miss is backstopped by the lifecycle TTL. No-op (zero S3
+    calls) when no cloud_job row exists (all-local).
+    """
+    await clear_ledger_entry(session, f"process_file:{file_id}")
+    await session.execute(delete(CloudJob).where(CloudJob.file_id == file_id, CloudJob.status == CloudJobStatus.AWAITING.value))
+    await session.commit()
+    await _delete_staged_object_if_cloud(session, file_id)
+
+
 async def _replace_analysis_windows(session: AsyncSession, file_id: uuid.UUID, windows: list[Any]) -> None:
     """Replace this file's AnalysisWindow rows wholesale, in the caller's transaction.
 
@@ -330,44 +364,10 @@ async def put_analysis(
         # proposal convergence gate (analysis_completed_at IS NOT NULL) can never batch it.
         await session.execute(update(AnalysisResult).where(AnalysisResult.file_id == file_id).values(analysis_completed_at=func.now()))
 
-    # Phase 45 (L-02): clear the agent-stage scheduling-ledger row in the SAME transaction
-    # as the result write. The agent worker is Postgres-free, so this control-side callback
-    # is the earliest control-visible moment the analyze outcome is known. Key is reconstructed
-    # from the fixed function name + the PATH file_id ONLY (never a body field -- AUTH-01 /
-    # T-45-05: a body field cannot redirect the clear to another file's key).
-    # phaze-3yln: clear_ledger_entry carries its own ownership guard, so a re-analysis
-    # re-enqueue that lands its fresh ledger row + live saq_jobs row for this key BEFORE this
-    # callback runs is not deleted here -- see scheduling_ledger.clear_ledger_entry's docstring.
-    await clear_ledger_entry(session, f"process_file:{file_id}")
-
-    # D-14 reaper: reap the inert `awaiting` cloud_job hold-over row this file may carry. D-05's
-    # conjunct (chosen over row deletion) means a locally-dispatched long file keeps its `awaiting`
-    # row forever; without this reaper the `*/5` drain tick scans a monotonically growing dead set at
-    # 200K, degrading `ix_cloud_job_awaiting`. The DELETE joins this seam's existing transaction (no new
-    # commit). The `status='awaiting'` filter leaves a cloud-analyzed file's SUCCEEDED/RUNNING row
-    # untouched. `file_id` is the PATH value only (AUTH-01).
-    #
-    # phaze-2mwyo -- DELIBERATELY UNCHANGED, and now safe to leave that way. This DELETE also destroyed
-    # the file's cloud retry budget, because `attempts` lived only on the row it removes: a file that
-    # spent its budget, spilled to local and then failed locally came back with `attempts = 0` and could
-    # spend the whole budget again (phaze-wcrb's eight pods are TWO chains of four, four days apart).
-    # The tempting fix -- retaining budget-spent rows -- re-creates the exact dead-set growth this reaper
-    # exists to prevent (phaze-9sqa). So the budget moved instead: `cloud_budget` is a durable per-file
-    # ledger, written by `hold_awaiting_cloud` when a chain burns out and untouched by anything here. Do
-    # NOT narrow this predicate to "preserve" a budget; the budget no longer lives in this row.
-    await session.execute(delete(CloudJob).where(CloudJob.file_id == file_id, CloudJob.status == CloudJobStatus.AWAITING.value))
-
-    await session.commit()
-
-    # phaze-uoiw: the staged-object S3 DELETE runs AFTER the commit, not inside the transaction. It is
-    # an irreversible external side effect; issuing it pre-commit meant a commit failure deleted the
-    # staged object while ROLLING BACK the recorded result -- violating record-first (T-53-21) exactly
-    # where it matters -- and pinned the pooled connection (holding the analysis + cloud_job row locks
-    # the upsert took) across a full S3 network round-trip, blocking a concurrent progress POST. Now the
-    # result is durably committed before the delete, so "the result is already written" is literally
-    # true; the delete stays best-effort (lifecycle TTL backstops a miss) and takes the S3 round-trip
-    # out of the lock/txn window. No-op (zero S3 calls) when no cloud_job row exists (all-local).
-    await _delete_staged_object_if_cloud(session, file_id)
+    # Ledger clear, awaiting-cloud-job reap, commit, best-effort staged-object delete --
+    # the shared tail with `report_analysis_failed`'s terminal-failure path (D-14, phaze-uoiw,
+    # phaze-2mwyo; see `_finalize_analysis_outcome`'s docstring).
+    await _finalize_analysis_outcome(session, file_id)
     return AnalysisWriteResponse(agent_id=agent.id, file_id=file_id)
 
 
@@ -544,28 +544,10 @@ async def report_analysis_failed(
     # `analysis.failed_at` marker upserted above is now the sole derived failure authority
     # (failed_clause(Stage.ANALYZE), stage_status.py); readers cut over in PR-A.
     # Phase 45 (L-02, locked decision #1 -- THE POISON CASE): a terminal analyze failure must
-    # NOT recovery-re-queue. Clear the process_file:<file_id> ledger row in the SAME transaction
-    # as the failure marker. Key from the PATH file_id ONLY (AUTH-01 / T-45-05).
-    await clear_ledger_entry(session, f"process_file:{file_id}")
-    # D-14 reaper: a terminal failure is also an analyze-terminal seam -- reap the inert `awaiting`
-    # cloud_job hold-over row (D-05's conjunct leaves it behind) so `ix_cloud_job_awaiting` stays
-    # bounded and the `*/5` drain tick does not scan a growing dead set. Joins this seam's existing
-    # transaction (no new commit); `status='awaiting'` leaves a SUCCEEDED/RUNNING row untouched.
-    # `file_id` is the PATH value only (AUTH-01).
-    #
-    # phaze-2mwyo: THIS is the seam the production defect ran through -- budget spent -> spill to local ->
-    # LOCAL failure lands here -> the row (and with it `attempts`) is deleted -> the next re-analysis
-    # starts a fresh chain at 0. The reaper is unchanged and correct; the budget now also lives on the
-    # durable per-file `cloud_budget` row this DELETE cannot reach. See the twin comment in
-    # `put_analysis` and `services/cloud_budget.py`.
-    await session.execute(delete(CloudJob).where(CloudJob.file_id == file_id, CloudJob.status == CloudJobStatus.AWAITING.value))
-    await session.commit()
-    # phaze-uoiw: the staged-object S3 DELETE runs AFTER the commit (see put_analysis). Pre-commit it
-    # deleted the staged object even when the failure marker + ledger clear then rolled back, and pinned
-    # the pooled connection across the S3 round-trip while holding this file's analysis row lock. Post-
-    # commit ordering makes the delete best-effort over durable state (lifecycle TTL backstops a miss)
-    # and keeps the network I/O out of the lock/txn window. No-op (zero S3 calls) when no cloud_job row.
-    await _delete_staged_object_if_cloud(session, file_id)
+    # NOT recovery-re-queue. Ledger clear, awaiting-cloud-job reap, commit, best-effort
+    # staged-object delete -- the shared tail with `put_analysis`'s success path (D-14,
+    # phaze-uoiw, phaze-2mwyo; see `_finalize_analysis_outcome`'s docstring).
+    await _finalize_analysis_outcome(session, file_id)
     logger.warning(
         "analysis_failed reported",
         file_id=str(file_id),
