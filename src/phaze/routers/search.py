@@ -12,7 +12,7 @@ from phaze.database import get_session
 from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_fragment
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE
 from phaze.services.pg_text import sanitize_pg_text
-from phaze.services.search_queries import SearchResult, distinct_artists, search
+from phaze.services.search_queries import SearchFacets, SearchResult, distinct_artists, search
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -77,12 +77,14 @@ async def search_page(
         results, _pagination = await search(
             session,
             q,
-            artist=artist,
-            genre=genre,
-            date_from=date_from,
-            date_to=date_to,
-            bpm_min=bpm_min,
-            bpm_max=bpm_max,
+            facets=SearchFacets(
+                artist=artist,
+                genre=genre,
+                date_from=date_from,
+                date_to=date_to,
+                bpm_min=bpm_min,
+                bpm_max=bpm_max,
+            ),
             page=page,
             page_size=page_size,
         )

@@ -14,7 +14,7 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.pagination import MIN_PAGE_SIZE
-from phaze.services.search_queries import SearchResult, distinct_artists, get_summary_counts, search
+from phaze.services.search_queries import SearchFacets, SearchResult, distinct_artists, get_summary_counts, search
 
 
 if TYPE_CHECKING:
@@ -214,7 +214,7 @@ async def test_search_artist_filter(session: AsyncSession) -> None:
     """Passing artist='deadmau5' narrows results to matching artist."""
     await create_test_file(session, original_filename="strobe.mp3", artist="deadmau5", title="Strobe")
     await create_test_file(session, original_filename="levels.mp3", artist="Avicii", title="Levels")
-    results, _pagination = await search(session, "strobe", artist="deadmau5")
+    results, _pagination = await search(session, "strobe", facets=SearchFacets(artist="deadmau5"))
     # Should only return the deadmau5 file
     assert len(results) >= 1
     assert all("deadmau5" in (r.artist or "").lower() for r in results if r.result_type == "file")
@@ -225,7 +225,7 @@ async def test_search_genre_filter(session: AsyncSession) -> None:
     """Passing genre='house' narrows results to matching genre."""
     await create_test_file(session, original_filename="house_track.mp3", artist="DJ House", genre="house", title="Deep Vibes")
     await create_test_file(session, original_filename="techno_track.mp3", artist="DJ Techno", genre="techno", title="Dark Energy")
-    results, _pagination = await search(session, "dj", genre="house")
+    results, _pagination = await search(session, "dj", facets=SearchFacets(genre="house"))
     assert len(results) >= 1
     assert all(r.genre == "house" for r in results if r.result_type == "file")
 
@@ -236,7 +236,7 @@ async def test_search_artist_filter_underscore_is_literal(session: AsyncSession)
     or `Coachella_Radio` would also over-match `CoachellaXRadio`."""
     await create_test_file(session, original_filename="a.mp3", artist="Coachella_Radio", title="Test Set")
     await create_test_file(session, original_filename="b.mp3", artist="CoachellaXRadio", title="Test Set")
-    results, _pagination = await search(session, "test set", artist="Coachella_Radio")
+    results, _pagination = await search(session, "test set", facets=SearchFacets(artist="Coachella_Radio"))
     file_results = [r for r in results if r.result_type == "file"]
     assert len(file_results) == 1
     assert file_results[0].artist == "Coachella_Radio"
@@ -247,7 +247,7 @@ async def test_search_artist_filter_backslash_round_trips(session: AsyncSession)
     """phaze-ba79: an artist tag containing a literal backslash (e.g. `AC\\DC`) must match itself --
     without escaping, `\\D` is consumed as a LIKE escape sequence and collapses to a literal `D`."""
     await create_test_file(session, original_filename="a.mp3", artist="AC\\DC", title="Thunderstruck")
-    results, _pagination = await search(session, "thunderstruck", artist="AC\\DC")
+    results, _pagination = await search(session, "thunderstruck", facets=SearchFacets(artist="AC\\DC"))
     file_results = [r for r in results if r.result_type == "file"]
     assert len(file_results) == 1
     assert file_results[0].artist == "AC\\DC"
@@ -258,7 +258,7 @@ async def test_search_genre_filter_percent_is_literal(session: AsyncSession) -> 
     """phaze-ba79: `%` in the genre facet must match only itself -- not "zero or more characters"."""
     await create_test_file(session, original_filename="a.mp3", artist="DJ", genre="80% House", title="Retro Mix")
     await create_test_file(session, original_filename="b.mp3", artist="DJ", genre="House", title="Retro Mix")
-    results, _pagination = await search(session, "retro mix", genre="80% House")
+    results, _pagination = await search(session, "retro mix", facets=SearchFacets(genre="80% House"))
     file_results = [r for r in results if r.result_type == "file"]
     assert len(file_results) == 1
     assert file_results[0].genre == "80% House"
@@ -269,7 +269,7 @@ async def test_search_tracklist_artist_filter_underscore_is_literal(session: Asy
     """phaze-ba79: the tracklist branch's artist ILIKE (line 111) must escape `_` too."""
     await create_test_tracklist(session, artist="Deep_House_Crew", event="Underscore Test")
     await create_test_tracklist(session, artist="DeepXHouseXCrew", event="Underscore Test")
-    results, _pagination = await search(session, "underscore test", artist="Deep_House_Crew")
+    results, _pagination = await search(session, "underscore test", facets=SearchFacets(artist="Deep_House_Crew"))
     tracklist_results = [r for r in results if r.result_type == "tracklist"]
     assert len(tracklist_results) == 1
     assert tracklist_results[0].artist == "Deep_House_Crew"
@@ -280,7 +280,7 @@ async def test_search_bpm_filter(session: AsyncSession) -> None:
     """Passing bpm_min=120, bpm_max=130 narrows results to files with BPM in range."""
     await create_test_file(session, original_filename="fast_track.mp3", artist="DJ Fast", bpm=150.0)
     await create_test_file(session, original_filename="mid_track.mp3", artist="DJ Mid", bpm=125.0)
-    results, _pagination = await search(session, "dj", bpm_min=120.0, bpm_max=130.0)
+    results, _pagination = await search(session, "dj", facets=SearchFacets(bpm_min=120.0, bpm_max=130.0))
     assert len(results) >= 1
     # Only the mid-BPM track should match
     assert any("mid" in r.title.lower() for r in results)
@@ -310,7 +310,7 @@ async def test_search_bpm_filter_excludes_partial_analysis_row(session: AsyncSes
     )
     await session.commit()
 
-    results, _pagination = await search(session, "dj", bpm_min=120.0, bpm_max=130.0)
+    results, _pagination = await search(session, "dj", facets=SearchFacets(bpm_min=120.0, bpm_max=130.0))
     assert not any("partial" in r.title.lower() for r in results), "a NULL-bpm partial row must not surface in a bpm-filtered search"
 
 
@@ -320,7 +320,7 @@ async def test_search_date_filter(session: AsyncSession) -> None:
     today = date.today()
     await create_test_tracklist(session, artist="DJ Recent", event="Recent Fest", tl_date=today)
     await create_test_tracklist(session, artist="DJ Old", event="Old Fest", tl_date=today - timedelta(days=365))
-    results, _pagination = await search(session, "fest", date_from=today - timedelta(days=30), date_to=today + timedelta(days=1))
+    results, _pagination = await search(session, "fest", facets=SearchFacets(date_from=today - timedelta(days=30), date_to=today + timedelta(days=1)))
     # Should only return the recent tracklist
     tracklist_results = [r for r in results if r.result_type == "tracklist"]
     assert len(tracklist_results) >= 1
@@ -341,7 +341,7 @@ async def test_search_date_to_is_inclusive_of_the_full_end_day_for_files(session
     late_file.created_at = afternoon
     await session.commit()
 
-    results, _pagination = await search(session, "fest", date_from=today - timedelta(days=1), date_to=today)
+    results, _pagination = await search(session, "fest", facets=SearchFacets(date_from=today - timedelta(days=1), date_to=today))
     file_results = [r for r in results if r.result_type == "file"]
     assert any("latefest" in r.title.lower() for r in file_results), (
         "a file created in the afternoon of date_to's day must be included, not excluded by a midnight cutoff"
@@ -357,7 +357,7 @@ async def test_search_date_to_still_excludes_files_created_the_next_day(session:
     next_day_file.created_at = tomorrow_early
     await session.commit()
 
-    results, _pagination = await search(session, "fest", date_from=today - timedelta(days=1), date_to=today)
+    results, _pagination = await search(session, "fest", facets=SearchFacets(date_from=today - timedelta(days=1), date_to=today))
     file_results = [r for r in results if r.result_type == "file"]
     assert not any("nextdayfest" in r.title.lower() for r in file_results), "a file created after midnight the day AFTER date_to must remain excluded"
 
@@ -371,7 +371,7 @@ async def test_search_date_to_at_date_max_does_not_overflow(session: AsyncSessio
     """
     file_record = await create_test_file(session, original_filename="farfuture.mp3", artist="DJ Far Future Fest")
 
-    results, _pagination = await search(session, "fest", date_to=date.max)
+    results, _pagination = await search(session, "fest", facets=SearchFacets(date_to=date.max))
     file_results = [r for r in results if r.result_type == "file"]
     assert any(r.id == str(file_record.id) for r in file_results), "date_to=date.max must be an inclusive upper bound, not just non-crashing"
 
@@ -613,7 +613,7 @@ async def test_discogs_artist_filter(session: AsyncSession) -> None:
     """Artist filter applies to Discogs results via discogs_artist ilike."""
     await create_test_discogs_link(session, discogs_artist="Bonobo", discogs_title="Migration")
     await create_test_discogs_link(session, discogs_artist="Four Tet", discogs_title="Rounds")
-    results, _pagination = await search(session, "migration rounds", artist="Bonobo")
+    results, _pagination = await search(session, "migration rounds", facets=SearchFacets(artist="Bonobo"))
     discogs_results = [r for r in results if r.result_type == "discogs_release"]
     assert all(r.artist == "Bonobo" for r in discogs_results)
 
@@ -622,7 +622,7 @@ async def test_discogs_artist_filter(session: AsyncSession) -> None:
 async def test_discogs_artist_filter_backslash_round_trips(session: AsyncSession) -> None:
     """phaze-ba79: the Discogs branch's artist ILIKE (line 138) must escape a literal backslash too."""
     await create_test_discogs_link(session, discogs_artist="AC\\DC", discogs_title="Back In Black")
-    results, _pagination = await search(session, "back in black", artist="AC\\DC")
+    results, _pagination = await search(session, "back in black", facets=SearchFacets(artist="AC\\DC"))
     discogs_results = [r for r in results if r.result_type == "discogs_release"]
     assert len(discogs_results) == 1
     assert discogs_results[0].artist == "AC\\DC"
@@ -677,7 +677,7 @@ async def test_distinct_artists_backslash_artist_round_trips_into_search(session
     suggested = await distinct_artists(session, "AC")
     assert "AC\\DC" in suggested
 
-    results, _pagination = await search(session, "thunderstruck", artist=suggested[0])
+    results, _pagination = await search(session, "thunderstruck", facets=SearchFacets(artist=suggested[0]))
     file_results = [r for r in results if r.result_type == "file"]
     assert len(file_results) == 1
     assert file_results[0].artist == "AC\\DC"
