@@ -265,11 +265,16 @@ BUCKETS_RSS: tuple[float, ...] = (
 
 HTTP_ROUTE = LabelSpec(
     name="http_route",
-    cardinality=200,
+    # MEASURED against the real app, not estimated: `create_app()` declares 105 distinct
+    # route templates and 106 distinct (method, template) pairs today
+    # (POST 51 / GET 42 / PATCH 10 / PUT 2 / DELETE 1). 160 is that with headroom for growth;
+    # it is a BOUND on a closed set declared in this repo's source, not a hope about traffic.
+    cardinality=160,
     description=(
-        "The matched Starlette route TEMPLATE -- '/record/{file_id}', never '/record/<a-real-uuid>'. "
+        "The matched route TEMPLATE -- '/record/{file_id}', never '/record/<a-real-uuid>'. "
         "A request matching no route reports the literal '__unmatched__', which is what keeps a 404 "
-        "scan from minting one series per probed path."
+        "scan from minting one series per probed path. Bounded by the app's own route table: 105 "
+        "templates measured against phaze.main.create_app()."
     ),
 )
 HTTP_METHOD = LabelSpec(
@@ -483,10 +488,12 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         description="Server-side handler duration, by matched route template.",
         labels=(HTTP_METHOD, HTTP_ROUTE, HTTP_STATUS_CLASS),
         buckets=BUCKETS_REQUEST,
-        # Cartesian is 8 x 200 x 6 = 9,600; realized is one combination per (method, route)
-        # actually served times the status classes it actually returns. Measured in
-        # docs/telemetry/metric-catalogue.md section 5.
-        realized_combinations=400,
+        # Cartesian is 8 x 160 x 6 = 7,680 and is not the number to budget. A series exists
+        # only for a (method, route, status_class) combination actually OBSERVED, and a route
+        # serves the one or two methods it declares, not eight. MEASURED: 106 distinct
+        # (method, template) pairs in the real app. At two status classes each -- a success
+        # and one error class -- that is 212; 320 carries headroom.
+        realized_combinations=320,
     ),
     MetricSpec(
         name="phaze.http.server.active_requests",

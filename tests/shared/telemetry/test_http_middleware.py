@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
 import pytest
 from starlette.responses import PlainTextResponse
@@ -28,22 +28,32 @@ METRIC = "phaze.http.server.request.duration"
 
 
 def _app() -> FastAPI:
-    app = FastAPI()
-    app.add_middleware(TelemetryMiddleware)
+    """A small app that includes its routes through an APIRouter, as phaze's real app does.
 
-    @app.get("/record/{file_id}")
+    ``include_router`` rather than decorators straight on the app is the point: this FastAPI
+    version keeps an included router as a lazy ``_IncludedRouter`` object instead of
+    flattening it into ``Route``s, and a middleware written against flattened routes recovers
+    nothing. ``test_the_real_phaze_app_reports_route_templates`` below is the version of this
+    that has no toy in it at all.
+    """
+    router = APIRouter()
+
+    @router.get("/record/{file_id}")
     async def record(file_id: str) -> dict[str, str]:
         return {"ok": "yes"}
 
-    @app.get("/health")
+    @router.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.post("/boom")
+    @router.post("/boom")
     async def boom() -> None:
         msg = "deliberate"
         raise RuntimeError(msg)
 
+    app = FastAPI()
+    app.add_middleware(TelemetryMiddleware)
+    app.include_router(router)
     app.router.routes.append(Mount("/static", routes=[Route("/x", lambda _request: PlainTextResponse("x"))]))
     return app
 
@@ -125,3 +135,37 @@ def test_non_http_scopes_pass_straight_through(scope_type: str) -> None:
 
     asyncio.run(TelemetryMiddleware(app)({"type": scope_type}, None, None))
     assert seen == [scope_type]
+
+
+def test_the_real_phaze_app_reports_route_templates(telemetry_sink: TelemetrySink, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ADR-0012 rule 3, and the test that would have caught the defect the toy app hid.
+
+    A first implementation recovered route templates from a table built by walking
+    ``app.router.routes``. Against a hand-built Starlette app that works. Against phaze's
+    REAL app it recovered FOUR templates out of 36 routes -- because this FastAPI version
+    keeps an included router as a lazy ``_IncludedRouter`` rather than flattening it -- so
+    every request in production would have reported ``__unmatched__`` and the whole HTTP
+    surface would have collapsed onto one series.
+
+    This drives ``phaze.main.create_app()`` itself. It does not start the lifespan (no
+    database, no queue): it only asks the real router to match a real path.
+    """
+    monkeypatch.setenv("PHAZE_ROLE", "api")
+    from phaze.main import create_app  # after the env is set and the sink is installed
+    from phaze.telemetry.http import TelemetryMiddleware as _MW
+
+    app = create_app()
+    middleware = _MW(app)
+    templates = set()
+    for route in app.routes:
+        for scope_route in (route, *(getattr(getattr(route, "original_router", None), "routes", []) or [])):
+            path_format = getattr(scope_route, "path_format", None)
+            if path_format:
+                templates.add(middleware._template_for({"route": scope_route}))
+
+    assert len(templates) > 20, f"the real app recovered only {len(templates)} route templates: {sorted(templates)[:10]}"
+    assert UNMATCHED_ROUTE not in templates
+    parameterised = {template for template in templates if "{" in template}
+    assert parameterised, "the real app has parameterised routes; none were recovered as templates"
+    # And the one that matters: a real file UUID must never be able to reach a label.
+    assert any("{file_id}" in template for template in parameterised), sorted(parameterised)[:10]

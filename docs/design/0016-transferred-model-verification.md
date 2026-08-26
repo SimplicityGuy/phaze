@@ -187,6 +187,28 @@ a Form B reading would prescribe *"look at the particular"*, and the seat **had*
 particular. The check that would have caught this is the Form A one — `which -a grep`, three
 seconds — and no amount of re-observing the output would have produced it.
 
+### 3.6 "`OTEL_EXPORTER_OTLP_TIMEOUT` is in milliseconds, like every knob next to it"
+
+The OpenTelemetry **specification** says milliseconds. opentelemetry-python reads it in
+**seconds**, while every `OTEL_BSP_*` and `OTEL_METRIC_EXPORT_*` variable set beside it in the same
+dict really is in milliseconds. So a value written in the spec's units, sitting in a block of
+four-digit millisecond values that all look identical, is wrong by **1000x** — in the direction that
+does not fail, it just waits.
+
+| | |
+| --- | --- |
+| **True where** | the OTel specification, and in SDKs that implement it as written. It is also true of every neighbouring variable in this repo's own defaults block, which is what made the wrong value look consistent rather than anomalous. |
+| **False here** | `opentelemetry-exporter-otlp-proto-http` **1.44.0** reads it in **seconds** and feeds it straight to `requests`' `timeout=`. `.venv/lib/python3.14/site-packages/opentelemetry/exporter/otlp/proto/http/trace_exporter/__init__.py:68` — `DEFAULT_TIMEOUT = 10  # in seconds` — and line 120 reads the environment variable into that same slot. The SDK's own docstring for the variable (`opentelemetry/sdk/environment_variables/__init__.py:320`) also says *"in seconds"*, i.e. the library documents its divergence from the spec; nobody read it, because nobody thought there was a question. |
+| **Measured** | 2026-08-26, `dev/telemetry`, worktree `wt/batch/phaze-m1drf`. `uv run python -c "from opentelemetry.exporter.otlp.proto.http.trace_exporter import DEFAULT_TIMEOUT; print(DEFAULT_TIMEOUT)"` → **`10`**. Versions from `importlib.metadata.version`: `opentelemetry-sdk` **1.44.0**, `opentelemetry-exporter-otlp-proto-http` **1.44.0**. The value phaze had set was `"5000"`, meaning five seconds; it was read as **5,000 seconds — 83 minutes** — as the deadline for one batch export attempt. |
+| **How it surfaced** | not by review. A real analysis measured against a black-holed collector (RFC 5737 `192.0.2.1`) finished its work in 258.04 s and then **would not exit**. The analysis itself was never at risk — export runs on its own thread — but process teardown sat behind the exporter. |
+| **What it cost** | one measurement arm abandoned, a stuck background run to kill, and roughly 20 minutes. In production it would have been a k8s analyze Job refusing to die, holding a Kueue slot, once per file — and it would have been read as a phaze bug, not an SDK units question. |
+
+`tests/shared/telemetry/test_export_timeout_units.py` now pins it by constructing the real exporter
+and reading back the timeout it resolved, so the day upstream unifies the units — the fix everyone
+wants — phaze finds out from a red test rather than from a timeout 1000x too short.
+
+______________________________________________________________________
+
 ## 4. The trigger
 
 Not "be careful". This repo has the receipts on what exhortations achieve — `CLAUDE.md`'s five
@@ -329,6 +351,8 @@ ______________________________________________________________________
 
 ## Sources
 
+- **Bead** `phaze-m1drf.1` / `phaze-m1drf.2` (§3.6, measured 2026-08-26 while wiring the OTLP
+  exporter; the pin is `tests/shared/telemetry/test_export_timeout_units.py`).
 - **Bead** `phaze-0vsqf` (description and acceptance criteria — §§3.1–3.4 as measured by
   `dev/bhcite`, 2026-08-25); `phaze-ea6kp` (§3.1's source bead, landed as `e81b7a17`);
   `phaze-g9cus` (the dangling caller line numbers); `phaze-b62ri`; `phaze-f70y9` (the

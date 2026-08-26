@@ -30,7 +30,7 @@ SRC = Path(__file__).resolve().parents[3] / "src" / "phaze"
 #: Pinned so a change to the budget is a deliberate edit to this number and shows up in a
 #: diff, rather than drifting a hundred series at a time. Raising it is allowed; doing so
 #: without noticing is what this pin prevents.
-SERIES_CEILING = 9783
+SERIES_CEILING = 8583
 
 
 def test_every_label_states_a_finite_bound() -> None:

@@ -12,14 +12,23 @@ This middleware reports the route TEMPLATE (``/record/{file_id}``) and, for anyt
 matched no route at all, the literal ``__unmatched__``. Those are the only two shapes it
 can emit; there is no path through it that reaches a raw URL.
 
-**How the template is recovered, verified in THIS environment rather than assumed.**
-Starlette 1.6.0's router writes only ``endpoint`` and ``path_params`` into the ASGI scope
--- it does NOT write ``scope["route"]`` (checked against the installed
-``starlette/routing.py``: ``child_scope = {"endpoint": self.endpoint, "path_params": ...}``).
-So the template is recovered by mapping the matched ``endpoint`` callable back to the
-``path_format`` of the route that declared it, using a table built once from ``app.routes``.
-Two routes sharing one endpoint function collapse onto whichever was declared first; that
-is a bounded, documented imprecision and never an unbounded label.
+**How the template is recovered, verified against THIS app rather than assumed.** FastAPI's
+router writes the matched ``APIRoute`` into ``scope["route"]``, and that object carries
+``path_format`` -- the template. That is the primary and it is what phaze's real app uses.
+
+The fallback exists because a **plain Starlette route or Mount does not set
+``scope["route"]``** (checked against the installed Starlette 1.6.0:
+``routing.py`` writes only ``{"endpoint": ..., "path_params": ...}`` into the child scope),
+and this app mounts ``/static`` that way. For those, the matched ``endpoint`` is mapped back
+to the path of the route that declared it, using a table built once from the app's routes.
+
+**Both halves were earned.** A first version had only the table, was tested against a
+hand-built Starlette app, and passed -- while recovering exactly FOUR templates from
+phaze's real 36-route app, because this FastAPI version keeps included routers as lazy
+``_IncludedRouter`` objects rather than flattening them into ``Route``s. Every request would
+have reported ``__unmatched__`` in production. ``test_http_middleware.py`` now drives the
+REAL ``create_app()``, which is the only version of this test that could have failed.
+
 """
 
 from __future__ import annotations
@@ -50,28 +59,32 @@ def _status_class(status: int | None) -> str:
     return "error"
 
 
-def _route_table(routes: Any, prefix: str = "") -> dict[int, str]:
-    """Map ``id(endpoint callable)`` -> route template, recursing through mounts.
+def _mount_table(routes: Any, prefix: str = "") -> dict[int, str]:
+    """Map ``id(endpoint)`` -> path, for the routes that do NOT set ``scope["route"]``.
 
-    Keyed on ``id`` rather than the callable itself because a Starlette endpoint may be an
-    unhashable partial or a bound method whose identity is recreated per access; the table
-    is built once from objects the app holds for its whole life, so the ids stay valid.
+    Only a fallback: FastAPI's own routes are recovered from ``scope["route"]`` directly.
+    This exists for plain Starlette ``Route``s and ``Mount``s -- ``/static`` here -- where the
+    scope carries an ``endpoint`` and nothing else.
+
+    Recurses through ``original_router`` as well as ``routes``, because this FastAPI version
+    represents an included router as a lazy ``_IncludedRouter`` holding the original router
+    rather than as flattened ``Route`` objects.
     """
     table: dict[int, str] = {}
     for route in routes:
-        path_format = prefix + str(getattr(route, "path_format", getattr(route, "path", "")))
+        path_format = prefix + str(getattr(route, "path_format", getattr(route, "path", "")) or "")
         endpoint = getattr(route, "endpoint", None)
         if endpoint is not None:
             table.setdefault(id(endpoint), path_format)
-        mounted = getattr(route, "routes", None)
-        if mounted:
-            mount_app = getattr(route, "app", None)
-            if mount_app is not None:
-                # A Mount reports ITSELF as the endpoint for everything below it, so the
-                # mount's own prefix is the only template its children can be attributed to
-                # without re-implementing Starlette's matching.
-                table.setdefault(id(mount_app), path_format)
-            for child_id, child_path in _route_table(mounted, path_format).items():
+        mount_app = getattr(route, "app", None)
+        if mount_app is not None and getattr(route, "routes", None) is not None:
+            table.setdefault(id(mount_app), path_format)
+        nested = getattr(route, "routes", None)
+        if nested is None:
+            original = getattr(route, "original_router", None)
+            nested = getattr(original, "routes", None)
+        if nested:
+            for child_id, child_path in _mount_table(nested, path_format).items():
                 table.setdefault(child_id, child_path)
     return table
 
@@ -92,15 +105,21 @@ class TelemetryMiddleware:
         self._table: dict[int, str] | None = None
 
     def _template_for(self, scope: dict[str, Any]) -> str:
+        """The matched route TEMPLATE, or ``__unmatched__``. Never a raw path."""
+        route = scope.get("route")
+        if route is not None:
+            template = getattr(route, "path_format", None) or getattr(route, "path", None)
+            if template:
+                return str(template)
         endpoint = scope.get("endpoint")
         if endpoint is None:
             return UNMATCHED_ROUTE
         if self._table is None:
-            # Built lazily: at __init__ time this middleware wraps an app whose routers
-            # may not all be included yet (phaze's factory adds routers after building the
-            # app), so a table built then would be missing most of them.
+            # Built lazily: at __init__ time this middleware wraps an app whose routers may
+            # not all be included yet (phaze's factory adds routers after building the app),
+            # so a table built then would be missing most of them.
             root = scope.get("app")
-            self._table = _route_table(getattr(getattr(root, "router", None), "routes", []) or [])
+            self._table = _mount_table(getattr(getattr(root, "router", None), "routes", []) or [])
         return self._table.get(id(endpoint), UNMATCHED_ROUTE)
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
