@@ -7,9 +7,10 @@ tests (ADR-0012 rule 3) and needs a Prometheus binary CI does not have:
       prom/prometheus:v3.10.0 test rules /alerts/phaze-alerts.test.yml
 
 What CI holds instead is the set of properties that are about what the rules must NOT do.
-Those are the ones that decay: a rule added later, in a hurry, that fires on a settled
-operator decision or bounds an analysis by wall clock would pass every syntax check ever
-written and would be exactly the regression this epic must not ship.
+Those are the ones that decay: a rule added later, in a hurry, that fires on something the
+operator has already settled (2026-08-26, bead phaze-m1drf.5 -- the drain rate) or that
+bounds an analysis by wall clock (phaze-1b39) would pass every syntax check ever written and
+would be exactly the regression this epic must not ship.
 """
 
 from __future__ import annotations
@@ -42,8 +43,10 @@ def test_the_rules_parse_and_are_all_alerts() -> None:
 
 
 def test_no_rule_fires_on_backlog_depth() -> None:
-    """OPERATOR DECISION 2026-08-26 (repowise decision e1e3374e): the current drain rate is
-    ACCEPTED, so backlog DEPTH is explicitly not a fault condition.
+    """OPERATOR DECISION 2026-08-26, bead phaze-m1drf.5: asked how the 8,079-row awaiting
+    backlog should be handled, the operator chose the option labelled "Accept the drain rate"
+    (durable record: repowise decision e1e3374e; the question as put is quoted in
+    docs/telemetry/alerting.md). Backlog DEPTH is therefore not a fault condition.
 
     An alert that fires on a settled decision trains the operator to ignore alerts, which is
     worse than having none. `phaze_pipeline_backlog` is also POLL-DRIVEN -- it is sampled by

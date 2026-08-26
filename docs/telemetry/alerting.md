@@ -106,18 +106,31 @@ ______________________________________________________________________
 
 ### Backlog depth — a settled decision, not a fault
 
-> **Operator decision 2026-08-26.** Durable record: repowise decision `e1e3374e`. The
-> current drain rate is **ACCEPTED**.
+> **Operator decision 2026-08-26** (bead `phaze-m1drf.5`). Question as put: *"The xenolab
+> burst backend has been commented out in `backends.toml` since 2026-07-14 (power incident;
+> nominal cap 7, last cap 2) and its Tailscale node has been offline 24 days. So the whole
+> archive drains through vox's cap=4 alone. Measured backlog: 8,079 `cloud_job` rows awaiting
+> = 94-156 days at the observed 2.7183 audio-hours per wall-hour. How should this be
+> handled?"* Answer as given (the selected option LABEL, verbatim): **"Accept the drain
+> rate"**. Asked 2026-08-26T04:46:17Z, answered 2026-08-26T04:54:30Z. Durable record: repowise
+> decision `e1e3374e`, and this bead. Recovered from the primary record with
+> `scripts/recover_operator_decisions.py --since 2026-08-25 --until 2026-08-27`, not from
+> memory.
 
 So an 8,079-file `awaiting` queue and a 137.5-day projected drain are the expected state,
-not a fault. An alert firing on a settled operator decision is worse than no alert: it
-teaches the operator that phaze's alerts are noise.
+not a fault — that is the 2026-08-26 decision on bead `phaze-m1drf.5` quoted above. An alert
+firing on a settled decision is worse than no alert: it teaches the operator that phaze's
+alerts are noise.
 
 There is a second, independent reason. `phaze_pipeline_backlog` is **poll-driven** — it is
 sampled by the admin UI's own `/pipeline/stats` read, so the series go stale the moment
 nobody has a tab open. A rule built on it would be silent exactly when nobody is watching.
 `tests/shared/telemetry/test_alert_rules.py::test_no_rule_fires_on_backlog_depth` forbids
 both.
+
+The decision's scope is exactly what was asked and no wider: it settles that the *drain rate*
+is acceptable. It says nothing about whether analysis should ever *stop*, which is what
+`PhazeAnalysisProgressStalled` above is for.
 
 ### An analysis "running too long" — the phaze-1b39 incident
 

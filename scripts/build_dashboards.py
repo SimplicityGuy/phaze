@@ -528,8 +528,10 @@ def throughput_backlog() -> dict[str, Any]:
             [_target(f"max by (backlog) (phaze_pipeline_backlog{J})", "{{backlog}}")],
             (0, 17, 16, 9),
             description=(
-                "OPERATOR DECISION 2026-08-26 (repowise decision e1e3374e): the current drain rate is ACCEPTED, so "
-                "backlog DEPTH is explicitly NOT a fault condition and nothing alerts on it. "
+                "OPERATOR DECISION 2026-08-26, bead phaze-m1drf.5: asked how the 8,079-row awaiting backlog should be "
+                "handled, the operator chose the option labelled 'Accept the drain rate' (durable record: repowise "
+                "decision e1e3374e; the question as put is quoted in docs/telemetry/alerting.md). So backlog DEPTH is "
+                "explicitly NOT a fault condition and nothing alerts on it. "
                 "CAVEAT: these series are POLL-DRIVEN -- they are sampled by the admin UI's own /pipeline/stats read, "
                 "so they go stale when no admin tab is open. Read them here; never alert on them."
             ),

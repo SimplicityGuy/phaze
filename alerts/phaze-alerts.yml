@@ -9,9 +9,13 @@
 # ONES IT DOES. See docs/telemetry/alerting.md for the full reasoning.
 # ==========================================================================
 #
-#   * NO backlog-DEPTH alert. Operator decision 2026-08-26 (repowise decision e1e3374e):
-#     the current drain rate is ACCEPTED. An alert that fires on a settled decision trains
-#     the operator to ignore alerts, which is worse than having none.
+#   * NO backlog-DEPTH alert. Operator decision 2026-08-26, bead phaze-m1drf.5: asked how the
+#     8,079-row awaiting backlog (94-156 days at the measured 2.7183 audio-hours per
+#     wall-hour, with xenolab offline since 2026-07-14) should be handled, the operator chose
+#     the option labelled "Accept the drain rate". Durable record: repowise decision e1e3374e
+#     and that bead; the citation with the question as put is in docs/telemetry/alerting.md.
+#     An alert that fires on a settled decision trains the operator to ignore alerts, which is
+#     worse than having none.
 #   * NO wall-clock bound on any analysis. phaze-1b39 is the incident where one SIGTERM'd
 #     legitimate 2-6 hour analyses and stalled the whole burst lane. A multi-hour set is
 #     EXPECTED to take hours; liveness is progress-based, never elapsed-based.

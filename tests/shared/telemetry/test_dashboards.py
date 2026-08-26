@@ -80,10 +80,12 @@ def test_the_committed_json_matches_its_generator() -> None:
 def test_no_hard_coded_datasource_uid(path: Path) -> None:
     """THE importability requirement, and it is structural.
 
-    Operator decision 2026-08-26: the dashboards must import into a RUNNING Grafana, not
-    only be provisioned into a container this repo controls. That instance's Prometheus has
-    a uid phaze cannot know, so every reference must be the ``${datasource}`` template
-    variable.
+    Operator decision 2026-08-26, bead phaze-m1drf.4: the dashboards must import into a
+    RUNNING Grafana, not only be provisioned into a container this repo controls -- the
+    operator asked for "grafana dashboards that can be imported in running grafana
+    instances", recorded verbatim in epic phaze-m1drf's description. That instance's
+    Prometheus has a uid phaze cannot know, so every reference must be the ``${datasource}``
+    template variable.
     """
     dashboard = json.loads(path.read_text(encoding="utf-8"))
     uids = re.findall(r'"uid":\s*"([^"]*)"', json.dumps(dashboard))

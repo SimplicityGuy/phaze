@@ -191,6 +191,13 @@ def warm_service_metrics(otlp_endpoint: str, instance: str) -> None:
 
     Everything here is synthetic TRAFFIC against REAL code. It proves the panels resolve; it
     is not a claim about production volumes.
+
+    **THIS WRITES TO THE DATABASE `PHAZE_DATABASE_URL` POINTS AT.** Starting the real lifespan
+    runs `run_migrations()` and the dev-agent seed, and those rows OUTLIVE this process. Point
+    it at a database of its own, never at a seat's pytest database: doing exactly that cost a
+    full-suite gate run here -- ten unrelated tests failed on `UniqueViolationError` for
+    `route_control` and `pipeline_stage_control` rows this harness had left behind, which
+    reads like ten regressions and is one contaminated fixture.
     """
     import asyncio  # noqa: PLC0415
 
@@ -207,6 +214,10 @@ def warm_service_metrics(otlp_endpoint: str, instance: str) -> None:
 
     if not configure_telemetry("api"):
         raise SystemExit("telemetry did not configure; is OTEL_EXPORTER_OTLP_ENDPOINT reachable-looking?")
+
+    from phaze.config import settings  # noqa: PLC0415
+
+    emit(f"# WARNING: this MIGRATES AND SEEDS {str(settings.database_url).rsplit('/', 1)[-1]!r}; its rows outlive this process")
 
     from fastapi.testclient import TestClient  # noqa: PLC0415
 
