@@ -1,0 +1,80 @@
+---
+# ============================================================================
+# A DEVELOPMENT ILLUSTRATION. THIS IS NOT PHAZE'S PRODUCTION TOPOLOGY.
+# ============================================================================
+#
+# phaze does NOT own the observability stack. The collector, Prometheus and
+# Grafana that phaze's telemetry actually lands in belong to homelab and are
+# already running there. This file exists so a developer can bring up a
+# collector on their own machine, point phaze at it, and SEE the data -- and so
+# the metric catalogue in docs/telemetry/metric-catalogue.md can be measured
+# against a real OTLP -> Prometheus translation rather than a guess about one.
+#
+# Nothing here is a recommendation about production. In particular this file
+# makes NO decision about retention, storage sizing, scrape topology, high
+# availability or alert routing -- those are homelab's, deliberately, and
+# phaze-m1drf.3 acceptance 7 and phaze-m1drf.5 acceptance 5 say so.
+#
+# The Prometheus below keeps 24 hours on an ephemeral volume purely so a
+# developer's laptop does not fill up. Do not read that as guidance.
+#
+#   docker compose -f docker-compose.telemetry.example.yml up -d
+#   export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+#   # ... then run phaze normally; see docs/telemetry/exporter.md
+#
+# Images are pinned by DIGEST, the way this repo pins everything else: a
+# floating tag would make a "reproduce the measurement" instruction reproduce
+# a different collector six months from now.
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.140.0
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./deploy/telemetry/otel-collector.example.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      # OTLP/HTTP -- what phaze speaks. The gRPC receiver (4317) is deliberately
+      # NOT published: phaze's exporter is HTTP/protobuf (see
+      # pyproject.toml's opentelemetry dependency comment for why).
+      - "127.0.0.1:4318:4318"
+      # The collector's own Prometheus exposition, i.e. the surface a Prometheus
+      # scrapes. This is the port homelab's Prometheus would target.
+      - "127.0.0.1:8889:8889"
+    healthcheck:
+      test: ["CMD", "/otelcol-contrib", "components"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  prometheus:
+    image: prom/prometheus:v3.10.0
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      # 24h, on a laptop, for a developer looking at a dashboard. NOT a
+      # retention decision -- see the header.
+      - "--storage.tsdb.retention.time=24h"
+    volumes:
+      - ./deploy/telemetry/prometheus.example.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      - otel-collector
+
+  grafana:
+    image: grafana/grafana:12.3.1
+    restart: unless-stopped
+    environment:
+      # Development only. A real deployment authenticates; this one is bound to
+      # loopback on a developer's own machine and exists to render a dashboard.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+    volumes:
+      - ./deploy/telemetry/grafana-datasource.example.yml:/etc/grafana/provisioning/datasources/phaze.yml:ro
+      - ./deploy/telemetry/grafana-dashboards.example.yml:/etc/grafana/provisioning/dashboards/phaze.yml:ro
+      - ./dashboards:/var/lib/grafana/dashboards/phaze:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus

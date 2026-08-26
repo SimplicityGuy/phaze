@@ -52,6 +52,21 @@ dependencies = [
     "lxml>=6.1.2",
     "mutagen>=1.48.1",
     "numpy>=2.5.2",
+    # phaze-m1drf.1: OpenTelemetry. THREE packages, deliberately -- api + sdk + the
+    # OTLP **HTTP/protobuf** exporter. No `opentelemetry-instrumentation-*` package is
+    # taken: phaze writes its own HTTP / SAQ / SQLAlchemy hooks so that every metric
+    # LABEL is a bounded value this repo chose (see docs/telemetry/metric-catalogue.md).
+    # Auto-instrumentation labels HTTP by the RAW path, which puts a file UUID in a
+    # Prometheus label the first time anyone requests /record/<uuid> -- an unbounded
+    # series explosion in a Prometheus phaze does not own (phaze-m1drf.3 §cardinality).
+    #
+    # HTTP/protobuf rather than gRPC on purpose: the gRPC exporter needs `grpcio` (a
+    # heavy binary wheel that must build for every platform in the essentia/TF matrix)
+    # and its channel keeps its own retry state across a shutdown, which is exactly the
+    # blocking-at-exit shape phaze-m1drf.2 §2 has to bound for a k8s analyze Job.
+    "opentelemetry-api>=1.40.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.40.0",
+    "opentelemetry-sdk>=1.40.0",
     # phaze-fq9h.1: 1001Tracklists detail pages deliver their track listing via JS behind a
     # Cloudflare Turnstile widget, and spike phaze-dmvs proved a HEADFUL Patchright (a
     # CDP-patched Playwright fork) is the only non-evasive client that clears it -- vanilla

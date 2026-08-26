@@ -1,0 +1,14 @@
+---
+# DEVELOPMENT ILLUSTRATION. The committed dashboards under ../../dashboards/ do
+# NOT depend on this file or on this uid: every one of them declares a
+# `datasource` TEMPLATE VARIABLE, which is what makes them importable into an
+# unrelated running Grafana whose Prometheus has a different uid
+# (phaze-m1drf.4 acceptance 2).
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    uid: phaze-example-prometheus

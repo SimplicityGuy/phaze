@@ -1,0 +1,50 @@
+---
+# DEVELOPMENT ILLUSTRATION -- not phaze's production collector configuration.
+# See the header of docker-compose.telemetry.example.yml. homelab owns the real one.
+#
+# What this file IS good for: it is the configuration the measured figures in
+# docs/telemetry/metric-catalogue.md section 5 were taken against, so the
+# Prometheus metric NAMES recorded there are the names this translation actually
+# produces rather than a guess about the OTLP -> Prometheus naming rules.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Bounded, so a burst of analyze pods cannot make the collector itself the
+  # thing that falls over.
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+  memory_limiter:
+    check_interval: 5s
+    limit_percentage: 75
+    spike_limit_percentage: 20
+
+exporters:
+  # The scrape surface. `resource_to_telemetry_conversion` is deliberately LEFT
+  # OFF (its default): turning it on promotes every resource attribute to a
+  # metric label, which would put `process.pid`, `host.name` and `k8s.pod.name`
+  # -- all of them per-pod and therefore unbounded across an 11,428-file archive
+  # -- onto every analysis series. phaze keeps those on SPANS for exactly this
+  # reason (src/phaze/telemetry/bootstrap.py::_trace_resource_attributes).
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    # service.name -> `job`, service.instance.id -> `instance`, and nothing else.
+    resource_to_telemetry_conversion:
+      enabled: false
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]

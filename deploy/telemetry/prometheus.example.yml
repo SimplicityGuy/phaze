@@ -1,0 +1,15 @@
+---
+# DEVELOPMENT ILLUSTRATION -- not phaze's production Prometheus configuration.
+# homelab owns scrape topology, retention and storage sizing. See
+# docker-compose.telemetry.example.yml's header and docs/telemetry/metric-catalogue.md.
+global:
+  # 15s matches the collector's OTLP export cadence (phaze sets
+  # OTEL_METRIC_EXPORT_INTERVAL=15000 by default), so a scrape never
+  # straddles two export windows on a laptop.
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: phaze-otel-collector
+    static_configs:
+      - targets: ["otel-collector:8889"]
