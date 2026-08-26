@@ -276,7 +276,11 @@ def warm_service_metrics(otlp_endpoint: str, instance: str) -> None:
         telemetry_pipeline.record_backlog(
             {"awaiting_cloud": 8079, "analyzing_cloud": 4, "pushing": 0, "inadmissible": 0, "analysis_failed": 4, "analysis_stalled": 1459}
         )
-        telemetry_pipeline.record_stage_inflight({"analyze": {"queued": 9, "active": 4}, "metadata": {"queued": 0, "active": 0}})
+        from phaze.services.pipeline import StageActivitySnapshot  # noqa: PLC0415
+
+        telemetry_pipeline.record_stage_inflight(
+            StageActivitySnapshot(counts={"analyze": {"queued": 9, "active": 4}, "metadata": {"queued": 0, "active": 0}}, available=True)
+        )
         for _ in range(5):
             telemetry_pipeline.record_transition("process_file", "scheduled")
             telemetry_pipeline.record_transition("process_file", "resolved")

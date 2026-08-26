@@ -20,7 +20,13 @@ through the pipeline, and a metric is never worth a lost file.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from phaze.telemetry.instruments import add, set_gauge
+
+
+if TYPE_CHECKING:
+    from phaze.services.pipeline import StageActivitySnapshot as StageActivity
 
 
 #: Ledger function name -> the Stage the operator calls it. Only two stages route through
@@ -54,13 +60,23 @@ def record_backlog(counts: dict[str, int]) -> None:
         set_gauge("phaze.pipeline.backlog", float(value), backlog=name)
 
 
-def record_stage_inflight(counts: dict[str, dict[str, int]]) -> None:
-    """Publish the stage-activity snapshot: ``{stage: {"queued": n, "active": n}}``.
+def record_stage_inflight(snapshot: StageActivity) -> None:
+    """Publish a stage-activity snapshot: ``{stage: {"queued": n, "active": n}}``.
+
+    **A DEGRADED READ PUBLISHES NOTHING.** ``get_stage_activity_snapshot`` returns
+    ``available=False`` with empty counts rather than raising, precisely so a failed
+    ``saq_jobs`` read stays distinguishable from a measured empty queue. Publishing those
+    zeros would turn *"we could not tell"* into *"the queue is empty"* on a dashboard, which
+    is the confusion that type was introduced to remove. The check lives HERE, with the
+    publisher, rather than at the call site: it is a property of what may be published, not
+    of who happens to be publishing.
 
     Same poll-driven caveat as :func:`record_backlog`, and the same consequence: read it on
     a dashboard, never alert on it. Statuses outside the catalogued pair are dropped by the
     instruments layer's attribute check rather than published.
     """
-    for stage, by_status in counts.items():
+    if not snapshot.available:
+        return
+    for stage, by_status in snapshot.counts.items():
         for status, value in by_status.items():
             set_gauge("phaze.pipeline.stage.inflight", float(value), stage=stage, status=status)

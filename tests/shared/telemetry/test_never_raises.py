@@ -192,3 +192,24 @@ def test_hooks_returns_the_pair_a_worker_settings_dict_needs() -> None:
     before, after = telemetry_saq.hooks()
     assert before is telemetry_saq.before_process
     assert after is telemetry_saq.after_process
+
+
+def test_a_degraded_stage_activity_read_publishes_nothing(telemetry_sink: Any) -> None:
+    """A read that FAILED must not be published as zeros.
+
+    ``get_stage_activity_snapshot`` returns ``available=False`` with empty counts rather than
+    raising, precisely so a failed ``saq_jobs`` read stays distinguishable from a measured
+    empty queue. Publishing those zeros would turn "we could not tell" into "the queue is
+    empty" on a dashboard -- the confusion that type exists to remove.
+
+    This drives the REAL recorder, not a copy of its guard: the check lives with the
+    publisher for exactly that reason.
+    """
+    from phaze.services.pipeline import StageActivitySnapshot
+    from phaze.telemetry import pipeline as telemetry_pipeline
+
+    telemetry_pipeline.record_stage_inflight(StageActivitySnapshot(counts={"analyze": {"queued": 0, "active": 0}}, available=False))
+    assert telemetry_sink.attribute_sets("phaze.pipeline.stage.inflight") == [], "a degraded read published something"
+
+    telemetry_pipeline.record_stage_inflight(StageActivitySnapshot(counts={"analyze": {"queued": 9, "active": 4}}, available=True))
+    assert len(telemetry_sink.attribute_sets("phaze.pipeline.stage.inflight")) == 2

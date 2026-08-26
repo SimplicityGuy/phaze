@@ -274,11 +274,10 @@ async def _build_dag_context(
 
     stage_activity = await get_stage_activity_snapshot(session)
     # phaze-m1drf.1: publish the per-stage queued/active depths phaze-zaf2l sampled by hand
-    # from `saq_jobs` every 120 s. Only when the read SUCCEEDED -- `available` is False on a
-    # degraded read, and publishing its zeros would report an empty queue rather than an
-    # unknown one, which is the failure `get_stage_activity_snapshot` exists to avoid.
-    if stage_activity.available:
-        record_stage_inflight(stage_activity.counts)
+    # from `saq_jobs` every 120 s. Unconditional here on purpose -- the recorder itself drops
+    # a DEGRADED snapshot rather than publishing its zeros as a measured empty queue, because
+    # that is a property of what may be published and not of this call site.
+    record_stage_inflight(stage_activity)
     dag["metadataQueued"] = int(stage_activity.counts["metadata"]["queued"])
     dag["metadataActive"] = int(stage_activity.counts["metadata"]["active"])
     dag["metadataQueueKnown"] = int(stage_activity.available)

@@ -162,7 +162,9 @@ def test_stage_inflight_publishes_the_stage_activity_snapshot(telemetry_sink: Te
     SAQ function name. Publishing that under a `queue` label would be a label that says
     something the data does not.
     """
-    telemetry_pipeline.record_stage_inflight({"analyze": {"queued": 9, "active": 4}})
+    from phaze.services.pipeline import StageActivitySnapshot
+
+    telemetry_pipeline.record_stage_inflight(StageActivitySnapshot(counts={"analyze": {"queued": 9, "active": 4}}, available=True))
     attribute_sets = telemetry_sink.attribute_sets("phaze.pipeline.stage.inflight")
     assert {frozenset(attrs.items()) for attrs in attribute_sets} == {
         frozenset({("stage", "analyze"), ("status", "queued")}),
