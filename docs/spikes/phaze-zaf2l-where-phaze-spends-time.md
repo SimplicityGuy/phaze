@@ -131,6 +131,13 @@ FROM metadata;
 | 4–8 h | 39 | 196.73 |
 | ≥ 8 h | 4 | 39.64 |
 
+**The corpus is continuous with `phaze-b2qs9`'s.** That spike's `<set-07>`, described as "the
+longest file in the corpus", measured **43 466.893061 s** by `ffprobe`; the longest duration in
+`metadata` today is **43 466.880 s** — the same file, differing only by the truncation `phaze-b2qs9`
+§1a already documents between `ffprobe`'s fractional duration and `_probe_duration_sec`'s. Both
+spikes are therefore measuring the same archive, and the count in CLAUDE.md ("all 11 428 files in
+the corpus") is still exact.
+
 **8 508 of 11 412 files (74.55%) fall in the 30 m – 2 h range and carry 9 154.35 of the 11 492.22
 audio-hours (79.66%).** This matters for §3: the four files measured there have durations
 3 514.648 / 3 906.363 / 4 200.281 / 4 761.835 s, all inside that dominant band and clustered on the
@@ -341,8 +348,11 @@ and are not evidence about a loaded one (§1a).
      hx-trigger="every 5s [document.visibilityState === 'visible'], refresh"
 ```
 
-That div is in **`shell.html`** — the global shell, present on **every** admin page. So the
-534.0 ms is paid **every 5 seconds for as long as any admin tab is visible**:
+That div is in **`shell.html`**, which `src/phaze/routers/shell/__init__.py:215` returns for every
+stage. Confirmed against the **served HTML** rather than the template — `/s/cue`, `/s/agents`,
+`/s/dedupe` and `/s/files` each return **exactly one** `hx-get="/pipeline/stats"` — so this is the
+page the browser actually gets, not an inference from reading Jinja. The 534.0 ms is therefore paid
+**every 5 seconds for as long as any admin tab is visible**:
 
 | | |
 | --- | --- |
@@ -493,8 +503,18 @@ cheapest real work this document found.
 than 7 days old**. Narrowing to rows that did real work and are queued nowhere:
 
 ```sql
--- rows with fine-window work done, not completed, not failed, and with NO cloud_job row
+SELECT count(*), sum(m.duration)/3600.0
+FROM analysis a JOIN metadata m ON m.file_id = a.file_id
+WHERE a.analysis_completed_at IS NULL
+  AND a.failed_at IS NULL
+  AND a.fine_windows_analyzed > 0
+  AND NOT EXISTS (SELECT 1 FROM cloud_job cj WHERE cj.file_id = a.file_id);
 ```
+
+The `NOT EXISTS` is what makes this bucket the interesting one. Of the wider 864-file set that has
+fine-window work and no completion, **4 were genuinely running** (the live pods — the `analysis` row
+is written when analysis *begins*, so "no completion" alone does not mean stranded) and **199 were
+`cloud_job` `awaiting`** and will be redone. Only the remaining **661** are queued nowhere.
 
 | | |
 | --- | --- |
@@ -516,7 +536,8 @@ Weekly creation, which is the interesting part:
 | **2026-08-10** | **373** |
 | 2026-08-17 onward | **0** |
 
-**644 of 661 were created in the three weeks 2026-07-27 → 2026-08-16, and none since.** That window
+**644 of 661 fall in the three week-buckets beginning 2026-07-27, 2026-08-03 and 2026-08-10 — the
+latest row of all is 2026-08-12 — and nothing has entered this bucket since.** That window
 brackets the analysis-memory work (`phaze-b2qs9`'s measurement of duration-linear peak RSS is dated
 2026-08-11/12, and `phaze-15sw`/D-09 followed), and `backends.toml` explicitly warns to *"EXPECT
 pod-scoped OOMKills"*. A pod OOMKilled during the coarse tier — 94.69% of the run, per §3b — would
@@ -547,6 +568,7 @@ ______________________________________________________________________
 | **Analysis staging path** | **1.694 s of 7 121.167 s = 0.02%** | **no bead — result recorded (§3a)** |
 | **Analysis memory** | sampled **823–1 364 MiB** against a 4Gi limit | **no bead — result recorded (§3d)** |
 | **The record slide-in** | **20.6 ms** against the real corpus | **no bead — result recorded (§4)** |
+| `/s/files` payload size | **681 013 bytes**, 6.7× the next largest page, but **50.5 ms** to render | **no bead — no measured client-side cost** |
 | Review surfaces under load | **not measured** — `proposals` = 0 rows | **gap recorded (§1a), no bead** |
 | Solo (`W=1`) analysis ratio | **not measured** — would require a production mutation | **gap recorded (§1a), no bead** |
 
