@@ -21,6 +21,7 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.util._once import Once
 import pytest
 
 from phaze.telemetry import _env, bootstrap, instruments, tracing
@@ -48,6 +49,35 @@ def strict_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setenv(_env.STRICT_ENV, "1")
     monkeypatch.delenv(_env.SDK_DISABLED_ENV, raising=False)
+
+
+def reset_otel_globals() -> None:
+    """Clear the PROCESS-GLOBAL OpenTelemetry providers.
+
+    Any test that calls ``configure_telemetry`` more than once in a process needs this, and
+    needing it is the point rather than an inconvenience. ``set_tracer_provider`` and
+    ``set_meter_provider`` are ONE-WAY: the second call is a silent no-op. In production a
+    process configures telemetry exactly once, so a test that configures twice is simulating
+    something that cannot happen and must reset the state it is pretending to start from --
+    otherwise it is asserting against a provider from a previous test.
+
+    ``bootstrap._require_provider_took`` is what turned this from an invisible assumption into
+    a visible requirement: before that guard, a second `configure_telemetry` returned True and
+    quietly emitted into the FIRST test's provider.
+
+    **THE `Once` IS THE MECHANISM, NOT THE GLOBAL** -- and getting that wrong the first time
+    is instructive. ``set_tracer_provider`` does not check whether ``_TRACER_PROVIDER`` is
+    already set; it calls ``_TRACER_PROVIDER_SET_ONCE.do_once(...)``. So clearing only the
+    global leaves the spent ``Once`` in place and NO later provider can be installed at all --
+    ``get_tracer_provider()`` then returns the PROXY, not the provider you assigned. And the
+    converse: assigning the global without firing the ``Once`` does not simulate "somebody got
+    there first", because the next real ``set_tracer_provider`` fires the unspent ``Once`` and
+    overwrites you. Both halves have to be reset together.
+    """
+    trace._TRACER_PROVIDER = None
+    trace._TRACER_PROVIDER_SET_ONCE = Once()
+    metrics._internal._METER_PROVIDER = None
+    metrics._internal._METER_PROVIDER_SET_ONCE = Once()
 
 
 def _install_providers() -> tuple[InMemoryMetricReader, InMemorySpanExporter, MeterProvider, TracerProvider]:

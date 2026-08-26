@@ -17,9 +17,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from opentelemetry import trace
 import pytest
 
 from phaze.telemetry import _env, bootstrap, context as telemetry_context, http as telemetry_http, instruments, saq as telemetry_saq, tracing
+from tests.shared.telemetry.conftest import reset_otel_globals
 
 
 BLACK_HOLE = "http://192.0.2.1:4318"
@@ -262,3 +264,67 @@ def test_a_disabled_sdk_provider_really_does_record_nothing(monkeypatch: pytest.
     ]
     assert recorded == [], f"OTEL_SDK_DISABLED=true no longer silences the SDK; it recorded {recorded}"
     provider.shutdown()
+
+
+def test_configure_reports_OFF_when_someone_else_owns_the_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A caller that believes telemetry is on when it is not is worse off than one that knows.
+
+    ``set_tracer_provider`` and ``set_meter_provider`` are ONE-WAY: the first provider
+    installed in a process wins and a second call is a silent no-op that warns to a logger
+    nobody reads. Verified in this environment against opentelemetry-sdk 1.44.0.
+
+    Without the guard, phaze would emit into a provider it does not own -- one with no
+    exporter, or somebody else's -- while `configure_telemetry` returned True and the boot log
+    said `telemetry_on`. Telemetry silently dead, no error, no scrape-side signal. That is the
+    same failure family as a metric the collector drops for a reserved-label collision, and it
+    is the blindness this whole epic exists to end; shipping a fresh instance of it in the
+    bootstrap would be the joke writing itself.
+
+    Anything can win that race in a real process -- a library, an import side effect, a future
+    dependency -- so this is not a test-only concern. It is driven here through the REAL
+    `configure_telemetry`, with a foreign provider genuinely installed first.
+    """
+    from opentelemetry.sdk.trace import TracerProvider
+
+    monkeypatch.setenv(_env.ENDPOINT_ENV, BLACK_HOLE)
+    monkeypatch.delenv(_env.SDK_DISABLED_ENV, raising=False)
+    bootstrap._reset_for_tests()
+
+    # Somebody else gets there first, and the API will refuse to replace it.
+    foreign = TracerProvider(shutdown_on_exit=False)
+    # Installed the REAL way, because the `Once` inside `set_tracer_provider` is what makes it
+    # one-way. Assigning the private global instead leaves that `Once` unspent, and phaze's own
+    # call then fires it and quietly OVERWRITES the "foreign" provider -- simulating nothing.
+    # That is exactly what the first version of this test did, and it passed for the wrong
+    # reason until the guard it was written for reported success.
+    trace.set_tracer_provider(foreign)
+    assert trace.get_tracer_provider() is foreign, "the foreign provider did not install; the simulation is not set up"
+    try:
+        assert bootstrap.configure_telemetry("api") is False, "configure_telemetry claimed success while a foreign provider owns the API"
+        assert trace.get_tracer_provider() is foreign, "the foreign provider should still be installed; phaze must not have fought it"
+    finally:
+        reset_otel_globals()
+        foreign.shutdown()
+        bootstrap._reset_for_tests()
+
+
+def test_the_one_way_setter_is_still_one_way(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the SDK behaviour the guard above exists for, so an upgrade cannot silently retire it.
+
+    If OpenTelemetry ever makes the setters replaceable, this fails and the guard can be
+    reconsidered deliberately -- rather than the guard quietly becoming dead code that still
+    rejects a configuration which would now have worked.
+    """
+    from opentelemetry.sdk.trace import TracerProvider
+
+    monkeypatch.delenv(_env.SDK_DISABLED_ENV, raising=False)
+    first, second = TracerProvider(shutdown_on_exit=False), TracerProvider(shutdown_on_exit=False)
+    reset_otel_globals()
+    try:
+        trace.set_tracer_provider(first)
+        trace.set_tracer_provider(second)
+        assert trace.get_tracer_provider() is first, "set_tracer_provider is no longer one-way; revisit bootstrap._require_provider_took"
+    finally:
+        reset_otel_globals()
+        first.shutdown()
+        second.shutdown()

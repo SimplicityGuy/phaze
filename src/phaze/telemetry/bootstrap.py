@@ -179,6 +179,14 @@ def configure_telemetry(role: str, *, service_name: str | None = None) -> bool:
             _env.apply_export_defaults()
             resolved = service_name or SERVICE_NAMES.get(role, f"phaze-{role}")
             _tracer_provider, _meter_provider = _install(role, resolved)
+        except ProviderNotInstalledError:
+            # Distinguished from a generic failure because the operator's action differs:
+            # nothing is misconfigured, something else owns the provider, and the fix is to
+            # find out what installed one first.
+            log.warning("telemetry_off_provider_not_installed role=%s", role, exc_info=True)
+            _tracer_provider = None
+            _meter_provider = None
+            return False
         except Exception:
             # An endpoint was configured and we could not honour it. Log and carry on --
             # this is the acceptance-7 contract at its most literal.
@@ -188,6 +196,41 @@ def configure_telemetry(role: str, *, service_name: str | None = None) -> bool:
             return False
         log.info("telemetry_on role=%s endpoint=%s", role, os.environ.get(_env.ENDPOINT_ENV, "<signal-specific>"))
         return True
+
+
+class ProviderNotInstalledError(RuntimeError):
+    """Raised when the SDK silently kept somebody ELSE's provider instead of phaze's."""
+
+
+def _require_provider_took(current: object, expected: object, what: str) -> None:
+    """Verify the provider phaze just set is the one the API will actually hand out.
+
+    **``set_tracer_provider`` and ``set_meter_provider`` are ONE-WAY.** The first provider
+    installed in a process wins; a second call is a silent no-op that warns to a logger
+    nobody is reading. Verified in this environment against opentelemetry-sdk **1.44.0**:
+    setting a second provider leaves ``get_tracer_provider()``/``get_meter_provider()``
+    returning the FIRST, with only ``Overriding of current TracerProvider is not allowed``
+    on the log.
+
+    Without this check phaze would emit into a provider it does not own -- one with no
+    exporter, or somebody else's -- while ``configure_telemetry`` returned True and the boot
+    log said ``telemetry_on``. Telemetry would be silently dead with no error and no
+    scrape-side signal, which is the same failure family as a metric the collector drops for
+    a reserved-label collision, and precisely the blindness this epic exists to end. A caller
+    that believes telemetry is on when it is not is worse off than one that knows it is off.
+
+    Anything can win that race in a real process -- a library, an import side effect, a future
+    dependency -- so this is not a test-only concern.
+    """
+    if current is expected:
+        return
+    msg = (
+        f"phaze set a {what} but the OpenTelemetry API kept a different one -- "
+        f"{type(current).__name__} at {id(current):#x} rather than phaze's at {id(expected):#x}. "
+        f"set_{what.lower().removesuffix('provider')}_provider is one-way, so something installed a provider first. "
+        "Telemetry is OFF for this process rather than silently emitting into a provider phaze does not own."
+    )
+    raise ProviderNotInstalledError(msg)
 
 
 def _install(role: str, service_name: str) -> tuple[TracerProvider, MeterProvider]:
@@ -209,6 +252,7 @@ def _install(role: str, service_name: str) -> tuple[TracerProvider, MeterProvide
     )
     tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
     trace.set_tracer_provider(tracer_provider)
+    _require_provider_took(trace.get_tracer_provider(), tracer_provider, "TracerProvider")
 
     meter_provider = MeterProvider(
         resource=Resource.create(_resource_attributes(role, service_name)),
@@ -217,6 +261,7 @@ def _install(role: str, service_name: str) -> tuple[TracerProvider, MeterProvide
         shutdown_on_exit=False,
     )
     metrics.set_meter_provider(meter_provider)
+    _require_provider_took(metrics.get_meter_provider(), meter_provider, "MeterProvider")
     # The proxy meter created at import forwards to whatever provider is installed later,
     # but its instruments were built before the Views existed. Rebuild so every histogram
     # picks up its ladder.
