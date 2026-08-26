@@ -28,10 +28,12 @@ import uuid
 import pytest
 from sqlalchemy import text
 
+from phaze.enums.stage import Stage
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
+from phaze.services.pipeline.files import get_file_orphan_details
 
 
 if TYPE_CHECKING:
@@ -120,6 +122,88 @@ async def test_orphaned_analyze_shows_ledger_diagnostics(client: AsyncClient, se
     assert "The analysis never started." in body
     assert "timeout 7200s" in body
     assert "retries 2" in body
+
+
+@pytest.mark.asyncio
+async def test_both_enrich_stages_orphaned_populate_both_diagnostics(session: AsyncSession) -> None:
+    """phaze-cmy1e: both enrich stages orphaned on the SAME file -- BOTH loop iterations in
+    ``get_file_orphan_details`` run their per-stage ``SchedulingLedger`` SELECT (files.py:223-232),
+    a branch neither existing guarding test reached (phaze-o8sie.6, closed REFUTED -- the finding
+    was escalated rather than covered by that bead's own tests).
+
+    Calls the service function directly (rather than through the HTML slide-in) so the assertions
+    can pin the exact per-stage dict shape and values, not just substring presence in rendered text.
+    """
+    await _pin_empty_saq_jobs(session)
+    file_id = await _seed_file(session)
+    session.add_all(
+        [
+            SchedulingLedger(
+                key=f"extract_file_metadata:{file_id}",
+                function="extract_file_metadata",
+                routing="agent",
+                payload={"file_id": str(file_id)},
+                timeout=3600,
+                retries=1,
+            ),
+            SchedulingLedger(
+                key=f"process_file:{file_id}",
+                function="process_file",
+                routing="agent",
+                payload={"file_id": str(file_id)},
+                timeout=7200,
+                retries=2,
+            ),
+        ]
+    )
+    await session.commit()
+
+    details = await get_file_orphan_details(session, file_id)
+
+    # Every stage in _ORPHAN_DETAIL_STAGES is always a key -- the mapping never collapses one out.
+    assert set(details) == {Stage.METADATA.value, Stage.ANALYZE.value}
+
+    metadata_details = details[Stage.METADATA.value]
+    assert metadata_details is not None
+    assert metadata_details["timeout"] == 3600
+    assert metadata_details["retries"] == 1
+    assert metadata_details["enqueued_at"] is not None
+    assert metadata_details["redrive_attempt"] is None  # never set on this row -- NULL == 0 (never re-driven)
+
+    analyze_details = details[Stage.ANALYZE.value]
+    assert analyze_details is not None
+    assert analyze_details["timeout"] == 7200
+    assert analyze_details["retries"] == 2
+    assert analyze_details["enqueued_at"] is not None
+    assert analyze_details["redrive_attempt"] is None  # never set on this row -- NULL == 0 (never re-driven)
+
+
+@pytest.mark.asyncio
+async def test_non_orphaned_stage_maps_to_none_alongside_an_orphaned_one(session: AsyncSession) -> None:
+    """A stage with no ``SchedulingLedger`` row is not orphaned and maps to ``None`` -- even when the
+    OTHER stage on the same file IS orphaned and populated, so the ``None`` default from
+    ``get_file_orphan_details``'s initial dict (files.py:213) survives untouched rather than being
+    overwritten or dropped. Every stage in ``_ORPHAN_DETAIL_STAGES`` stays a key either way (phaze-cmy1e).
+    """
+    await _pin_empty_saq_jobs(session)
+    file_id = await _seed_file(session)
+    session.add(
+        SchedulingLedger(
+            key=f"process_file:{file_id}",
+            function="process_file",
+            routing="agent",
+            payload={"file_id": str(file_id)},
+            timeout=7200,
+            retries=2,
+        )
+    )
+    await session.commit()
+
+    details = await get_file_orphan_details(session, file_id)
+
+    assert set(details) == {Stage.METADATA.value, Stage.ANALYZE.value}
+    assert details[Stage.METADATA.value] is None
+    assert details[Stage.ANALYZE.value] is not None
 
 
 @pytest.mark.asyncio
