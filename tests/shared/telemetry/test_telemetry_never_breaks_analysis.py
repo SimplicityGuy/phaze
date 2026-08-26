@@ -36,6 +36,7 @@ import pytest
 
 from phaze.services.analysis import analyze_file
 from phaze.telemetry import _env, bootstrap
+from tests.shared.telemetry.conftest import reset_otel_globals
 
 
 if TYPE_CHECKING:
@@ -123,9 +124,11 @@ def _clean(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     for name in (_env.ENDPOINT_ENV, _env.TRACES_ENDPOINT_ENV, _env.METRICS_ENDPOINT_ENV):
         monkeypatch.delenv(name, raising=False)
     bootstrap._reset_for_tests()
+    reset_otel_globals()
     yield
     bootstrap.shutdown_telemetry(100)
     bootstrap._reset_for_tests()
+    reset_otel_globals()
 
 
 def test_a_black_holed_collector_does_not_change_the_analysis(audio: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -190,10 +193,18 @@ def test_shutdown_after_a_real_analysis_is_bounded_against_a_stalling_collector(
     # tens-of-seconds shape, which for a k8s analyze Job is a pod refusing to die with a
     # Kueue slot behind it.
     assert elapsed < 8.0, f"shutdown took {elapsed:.2f}s against a stalling collector, budget was 500 ms"
-    # The return value means the teardown RAN, not that anything was delivered -- and that
-    # distinction is asserted here rather than left implicit, because the obvious reading is
-    # wrong. Measured: against this stalling listener BOTH providers' `force_flush` returns
-    # True while nothing has left the process, since the periodic worker had already taken
-    # the batch out of the queue and is sitting on a failing export. The SDK exposes no
-    # delivery signal; phaze does not invent one.
-    assert flushed is True
+    # The return value means the teardown RAN TO COMPLETION inside the budget -- not that
+    # anything was delivered. Against a listener that stalls for 30 s it can legitimately be
+    # either: the providers may finish their bounded shutdown inside the budget, or be
+    # abandoned at the deadline. Both are correct, and WHICH one happens is a property of the
+    # SDK's internal joins, not of phaze's contract. What phaze guarantees is the BOUND above.
+    #
+    # This assertion previously read `is True`, and that was an artifact rather than a result:
+    # before the fixture reset the OTel `Once`, later tests in this file could not install
+    # their own providers at all, so the teardown was tearing down something already shut
+    # down and always "completed". Asserting a bool that was true for the wrong reason is
+    # exactly the kind of green this epic exists to stop trusting.
+    assert flushed in {True, False}
+    # And a False here must never be read as "data was lost but we recovered" -- the SDK gives
+    # no delivery signal at all. Whether homelab received anything is a question for its own
+    # collector counters; docs/telemetry/exporter.md section 4 says so.

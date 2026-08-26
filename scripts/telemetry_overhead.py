@@ -91,6 +91,33 @@ def write_sine_wav(path: str, total_sec: int) -> None:
             handle.writeframes((samples * 32767).astype("<i2").tobytes())
 
 
+def probe_duration_sec(path: str) -> float:
+    """Duration of a REAL file, via ffprobe -- the container's own FFmpeg 7.1.x.
+
+    Used only for ``--file``. Synthetic cases already know their duration exactly; a real
+    corpus file's duration is the x-axis of the whole result and must be MEASURED, not
+    inferred from byte size (measured 2026-08-26: a 100-190 MB band in this archive spans
+    2h02m to 2h52m, so size is not a usable proxy).
+    """
+    # BOTH tools report the SAME two concerns at DIFFERENT lines of this one statement, and a
+    # suppression on the wrong line is simply not seen. bandit reports B603 and B607 at the
+    # `subprocess.run(` call site; ruff reports S603 here and S607 at the argv line below. So
+    # the comments are split accordingly rather than kept together, which is why this reads
+    # oddly. Fixed argv, no shell; `ffprobe` is resolved by name from the image's own PATH,
+    # exactly as `services/analysis_probe.py` already does it.
+    completed = subprocess.run(  # noqa: S603  # nosec B603 B607
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    text = completed.stdout.strip()
+    if not text:
+        msg = f"ffprobe returned no duration for the --file argument (exit {completed.returncode})"
+        raise SystemExit(msg)
+    return float(text)
+
+
 #: The child arm. Kept as source rather than a module so the whole measurement is one file
 #: and so each arm's process starts with nothing of phaze imported.
 _ARM = r"""
@@ -161,6 +188,13 @@ def run_arm(arm: str, audio: str, models_dir: str, endpoint: str | None) -> dict
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--minutes", type=int, nargs="+", default=[10], help="audio durations to measure, in minutes")
+    parser.add_argument(
+        "--file",
+        dest="files",
+        nargs="+",
+        default=[],
+        help="REAL audio file(s) to measure instead of synthesizing. Durations are probed with ffprobe. When given, --minutes is ignored.",
+    )
     parser.add_argument("--models-dir", default="", help="the real essentia model set; without it the coarse tier runs its failure path")
     parser.add_argument("--arms", nargs="+", default=["off", "blackhole"], choices=["off", "blackhole", "local"])
     parser.add_argument("--endpoint", default="", help="OTLP endpoint for the 'local' arm")
@@ -172,34 +206,52 @@ def main() -> int:
     models_dir = args.models_dir or str(scratch / "no-models")
     reports: list[dict[str, Any]] = []
 
-    for minutes in args.minutes:
-        audio = str(scratch / f"sine-{minutes}min.wav")
-        emit(f"# synthesizing {minutes} min of audio -> {audio}")
-        write_sine_wav(audio, minutes * 60)
+    # (label, audio path, duration_sec, synthesized). A REAL file is never synthesized and never
+    # deleted; its path is deliberately NOT carried into any report field, because the reports are
+    # written to JSON and quoted in committed docs, and these are the operator's archive paths
+    # (CONVENTIONS.md). The label and the exact duration are the evidence; the identity is not.
+    cases: list[tuple[str, str, float, bool]] = []
+    if args.files:
+        for index, path in enumerate(args.files, start=1):
+            cases.append((f"file-{index}", path, probe_duration_sec(path), False))
+    else:
+        for minutes in args.minutes:
+            cases.append((f"{minutes}min", str(scratch / f"sine-{minutes}min.wav"), float(minutes * 60), True))
+
+    for label, audio, duration_sec, synthesized in cases:
+        if synthesized:
+            emit(f"# synthesizing {duration_sec / 60:.0f} min of audio -> {audio}")
+            write_sine_wav(audio, int(duration_sec))
+        else:
+            emit(f"# real file {label}: {duration_sec:.3f} s ({duration_sec / 3600:.4f} h)")
         for arm in args.arms:
-            emit(f"# {minutes} min / arm={arm} ...")
+            emit(f"# {label} / arm={arm} ...")
             started = time.perf_counter()
             report = run_arm(arm, audio, models_dir, args.endpoint or None)
-            report["minutes"] = minutes
+            report["label"] = label
+            report["duration_sec"] = duration_sec
+            report["synthesized"] = synthesized
+            report["minutes"] = duration_sec / 60.0
             report["arm_total_sec"] = time.perf_counter() - started
             reports.append(report)
             emit(f"#   wall {report['wall_sec']:.2f}s  peak {report['peak_rss_gib']} GiB  flush {report['flush_sec']:.3f}s")
-        if not args.keep_audio:
+        if synthesized and not args.keep_audio:
             Path(audio).unlink(missing_ok=True)
 
     emit()
-    emit("| minutes | arm | wall (s) | ratio to duration | peak RSS (GiB) | flush (s) | overhead vs off |")
-    emit("| ---: | --- | ---: | ---: | ---: | ---: | ---: |")
-    baseline = {report["minutes"]: report["wall_sec"] for report in reports if report["arm"] == "off"}
+    emit("| case | duration (s) | synthetic | arm | wall (s) | ratio to duration | peak RSS (GiB) | flush (s) | overhead vs off |")
+    emit("| --- | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |")
+    baseline = {report["label"]: report["wall_sec"] for report in reports if report["arm"] == "off"}
     for report in reports:
         wall = float(report["wall_sec"])
-        minutes = int(report["minutes"])
-        base = baseline.get(minutes)
+        duration_sec = float(report["duration_sec"])
+        base = baseline.get(report["label"])
         overhead = f"{(wall / float(base) - 1) * 100:+.2f}%" if base else "-"
         peak = report["peak_rss_gib"]
         peak_text = f"{float(peak):.4f}" if peak is not None else "n/a"
         emit(
-            f"| {minutes} | {report['arm']} | {wall:.2f} | {wall / (minutes * 60):.4f}x | {peak_text} | {float(report['flush_sec']):.3f} | {overhead} |"
+            f"| {report['label']} | {duration_sec:.3f} | {'yes' if report['synthesized'] else 'NO'} | {report['arm']} "
+            f"| {wall:.2f} | {wall / duration_sec:.4f}x | {peak_text} | {float(report['flush_sec']):.3f} | {overhead} |"
         )
 
     if args.json:

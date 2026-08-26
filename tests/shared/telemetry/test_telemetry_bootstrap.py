@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import time
 
-from opentelemetry import metrics, trace
+from opentelemetry import trace
 import pytest
 
 from phaze.telemetry import _env, bootstrap, tracing
+from tests.shared.telemetry.conftest import reset_otel_globals
 
 
 #: RFC 5737 TEST-NET-1. Reserved for documentation, not routed -- a connect here hangs
@@ -33,11 +34,10 @@ def _clean_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
     bootstrap._reset_for_tests()
     # The API's `set_tracer_provider` is one-way within a process, so a provider installed by
-    # an EARLIER test file is still globally current here. Clearing the private globals is
-    # the only way to give this file the no-provider state it is about -- otherwise these
-    # tests pass or fail on collection order, which is the worst kind of red.
-    trace._TRACER_PROVIDER = None
-    metrics._internal._METER_PROVIDER = None
+    # an EARLIER test -- or by an earlier test in THIS file -- is still globally current here.
+    # Clearing the globals is the only way to give each test the no-provider state it is
+    # about; without it these pass or fail on collection order, which is the worst kind of red.
+    reset_otel_globals()
     tracing._reset_for_tests()
 
 
