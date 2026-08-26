@@ -24,8 +24,38 @@ if TYPE_CHECKING:
 
 
 class FileRecord(TimestampMixin, Base):
-    """Central file record tracking each file through the processing pipeline."""
+    """Central file record tracking each file through the processing pipeline.
 
+    phaze-48ghg.7: repowise's health index flags this file as 54% duplicated (``dry_violation``,
+    4 clone pairs, worst pair 15 lines shared with :class:`~phaze.models.filename_convention.
+    FilenameConvention`). Checked against the actual bytes rather than the score: every "cloned"
+    line is the standard SQLAlchemy declarative shape this repo uses for EVERY model -- an ``id``
+    primary key column plus a handful of ``name: Mapped[T] = mapped_column(...)`` typed-column
+    declarations. The exact ``id`` line below appears verbatim in 19 of the 24 files under
+    ``models/``, and the ``agent_id`` foreign-key block a few lines down is byte-identical to
+    :class:`~phaze.models.scan_batch.ScanBatch`'s. It is schema-declaration syntax, not shared
+    business logic: there is no behavior that could drift out of sync (consistent with the worst
+    clone partner's co-change count of 0 -- the two files have never needed synchronized
+    maintenance). Extracting a mixin would relocate one obvious, self-documenting line behind an
+    extra layer of indirection across up to 19 files for zero behavior change -- the "abstraction
+    costs more than it saves" case this repo's own convention warns against.
+    :class:`~phaze.models.base.TimestampMixin` remains the bar for what earns extraction here: it
+    exists because of real, non-obvious runtime behavior (see its docstring), not because two
+    models happen to declare columns the same way. Reasoned no-change.
+    """
+
+    # phaze-48ghg.7: repowise's health index also flags a ``hidden_coupling`` with
+    # ``phaze.tasks.controller`` -- 3 shared commits, 60% of that file's co-changes, with NO static
+    # dependency (``controller.py`` never imports this model). Checked against the actual git
+    # history rather than the score: every shared commit is a "Phase N" pipeline-feature landing
+    # (e.g. Phase 49 duration routing, Phase 69 tiered drain scheduling) that adds a new pipeline
+    # stage -- which means BOTH a new tracked-state signal here (a column, or previously a
+    # ``FileState`` member before Phase 90's MIG-04 removed that enum) AND a new task function that
+    # ``controller.py`` must register in its ``settings["functions"]`` / ``settings["cron_jobs"]``
+    # lists (see that module). ``controller.py`` never needs to import ``FileRecord`` directly --
+    # it is a composition root that wires together the task modules under ``phaze.tasks`` which DO
+    # read/write this table -- so the coupling is real but travels through an intermediate layer a
+    # static import graph cannot see. Recorded here rather than invented as a fake import.
     __tablename__ = "files"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
