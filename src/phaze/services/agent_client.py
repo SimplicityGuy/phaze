@@ -26,6 +26,8 @@ body so this module loads independent of Plan 03's merge order.
 
 from __future__ import annotations
 
+from pathlib import Path
+import ssl
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -34,7 +36,6 @@ from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait
 
 
 if TYPE_CHECKING:
-    import ssl
     import uuid
 
     # Phase 26 Plan 03 schemas (now merged; type: ignore tripwires retired).
@@ -133,6 +134,34 @@ def _should_retry(exc: BaseException) -> bool:
     return False
 
 
+def _resolve_verify(verify: ssl.SSLContext | str | bool) -> ssl.SSLContext | bool:
+    """Turn a CA-bundle PATH into an :class:`ssl.SSLContext`, passing anything else through.
+
+    httpx 0.28's ``create_ssl_context`` deprecated ``verify=<str>``: it still accepts a path,
+    warns, and then does exactly the two-branch mapping below. This function is that mapping,
+    lifted from the implementation being deprecated (``httpx/_config.py``), so today's behaviour
+    is byte-for-byte what httpx already does and tomorrow's is pinned here instead of removed
+    upstream.
+
+    Doing it here rather than at each call site is deliberate. ``verify`` is phaze's ONLY TLS
+    trust anchor for agent callbacks (Phase 29 D-03/D-04 / AUTH-02) and every production caller
+    reaches it through this class -- ``construct_agent_client`` passes ``cfg.agent_ca_file``, a
+    path string, and the analysis job pod inherits that. The failure mode of letting the
+    deprecation run to removal is not a warning going away: it is a client that stops verifying
+    against the internal CA while still reporting that it verifies.
+
+    A DIRECTORY resolves through ``capath`` and a file through ``cafile``, matching httpx.
+    ``cfg.agent_ca_file`` is always a file (``agent_bootstrap`` stats it and refuses a zero-byte
+    one), so the directory branch is for parity with what callers were previously allowed to
+    pass, not for a caller that exists today.
+    """
+    if not isinstance(verify, str):
+        return verify
+    if Path(verify).is_dir():
+        return ssl.create_default_context(capath=verify)
+    return ssl.create_default_context(cafile=verify)
+
+
 class PhazeAgentClient:
     """HTTP client adapter for the internal agent API on the application server.
 
@@ -165,6 +194,11 @@ class PhazeAgentClient:
         respx-based tests (RESEARCH Pitfall 10) -- respx mocks below
         the TLS layer so cert validation is bypassed there.
 
+        A path string is resolved to an ``ssl.SSLContext`` by
+        :func:`_resolve_verify` before it reaches httpx, which deprecated
+        ``verify=<str>`` in 0.28 -- see that function for why the mapping
+        lives here rather than at each call site.
+
         Production callers (``construct_agent_client`` in
         ``phaze.tasks._shared.agent_bootstrap``) pass
         ``verify=cfg.agent_ca_file`` so the agent's httpx client trusts
@@ -175,7 +209,7 @@ class PhazeAgentClient:
             base_url=base_url,
             headers={"Authorization": f"Bearer {token}"},
             timeout=timeout,
-            verify=verify,
+            verify=_resolve_verify(verify),
         )
 
     async def close(self) -> None:

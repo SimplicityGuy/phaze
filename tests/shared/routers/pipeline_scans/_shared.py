@@ -35,7 +35,7 @@ import re
 import shutil
 from typing import TYPE_CHECKING
 import unicodedata  # noqa: F401 -- re-exported for test_path_and_auth.py
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 from fastapi import FastAPI
@@ -80,6 +80,18 @@ def _make_smoke_app(session: AsyncSession) -> tuple[FastAPI, AsyncMock]:
     app.include_router(shell.router)
     app.dependency_overrides[get_session] = lambda: session
     mock_router = AsyncMock()
+    # `all_lane_queues` and `legacy_base_queue` are SYNC accessors on AgentTaskRouter -- they
+    # build Queue objects and return them; only the Queue's own `connect`/`count` are awaited.
+    # A bare `AsyncMock()` makes them async, so `services/pipeline/agents.get_queue_activity`
+    # unpacked two coroutines, raised TypeError into the per-agent `except Exception`, and logged
+    # `queue_activity_degraded` -- meaning the stats tests measured the DEGRADE branch and the
+    # only evidence was a `coroutine ... was never awaited` RuntimeWarning. Stubbing them as sync
+    # accessors over an empty queue keeps every existing assertion's NUMBER identical (both paths
+    # yield a depth of 0) while making the loop the tests are named for actually run.
+    _empty_queue = AsyncMock()
+    _empty_queue.count = AsyncMock(return_value=0)
+    mock_router.all_lane_queues = MagicMock(return_value=[_empty_queue])
+    mock_router.legacy_base_queue = MagicMock(return_value=_empty_queue)
     app.state.task_router = mock_router
     # The pipeline router's existing trigger endpoints reference app.state.queue;
     # install a benign mock to keep the dashboard handler import-safe even

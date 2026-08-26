@@ -12,6 +12,13 @@ import pytest
 def _make_ctx() -> dict[str, Any]:
     """Create a minimal SAQ context dict with async_session factory."""
     mock_session = AsyncMock()
+    # `AsyncSession.add` is SYNC. A bare `AsyncMock()` makes every attribute async, so
+    # `session.add(link)` in tasks/discogs.py returned a coroutine nobody awaited -- the
+    # DiscogsMatch rows the matcher builds were never handed to the session at all, and the only
+    # surviving evidence was a `RuntimeWarning: coroutine ... was never awaited` in the run's
+    # warnings summary. The general form: a mock that gets a method's SYNC/ASYNC nature wrong
+    # does not fail the test, it silently deletes the call.
+    mock_session.add = MagicMock()
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)

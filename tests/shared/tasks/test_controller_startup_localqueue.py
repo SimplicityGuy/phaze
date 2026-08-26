@@ -31,6 +31,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests.shared.tasks._shared import make_stub_session_factory
+
 
 def _stub_collaborators(monkeypatch: pytest.MonkeyPatch, fake_redis: AsyncMock) -> None:
     """Patch controller.startup's heavyweight collaborators (no ``get_settings`` stub).
@@ -41,7 +43,7 @@ def _stub_collaborators(monkeypatch: pytest.MonkeyPatch, fake_redis: AsyncMock) 
     (the registry-log test drives the actual ``log_effective_registry`` projection through it).
     """
     monkeypatch.setattr("phaze.database.create_async_engine", lambda *_a, **_kw: MagicMock())
-    monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: make_stub_session_factory())
     monkeypatch.setattr("phaze.tasks.controller.DiscogsographyClient", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.load_prompt_template", lambda: "stub")
     monkeypatch.setattr("phaze.tasks.controller.ProposalService", lambda *_a, **_kw: MagicMock())

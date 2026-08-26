@@ -16,6 +16,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests.shared.tasks._shared import make_stub_session_factory
+
 
 def _stub_controller(monkeypatch: pytest.MonkeyPatch, *, buckets: list[Any]) -> MagicMock:
     """Patch controller.startup's heavyweight collaborators + a MagicMock ``get_settings``.
@@ -25,7 +27,7 @@ def _stub_controller(monkeypatch: pytest.MonkeyPatch, *, buckets: list[Any]) -> 
     an explicit ``buckets`` list, the surface this module's new startup step reads.
     """
     monkeypatch.setattr("phaze.database.create_async_engine", lambda *_a, **_kw: MagicMock())
-    monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr("phaze.tasks.controller.async_sessionmaker", lambda *_a, **_kw: make_stub_session_factory())
     monkeypatch.setattr("phaze.tasks.controller.DiscogsographyClient", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr("phaze.tasks.controller.load_prompt_template", lambda: "stub")
     monkeypatch.setattr("phaze.tasks.controller.ProposalService", lambda *_a, **_kw: MagicMock())
