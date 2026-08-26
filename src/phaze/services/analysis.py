@@ -29,6 +29,7 @@ import os
 from pathlib import Path
 import platform
 import resource
+import time
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -75,6 +76,7 @@ from phaze.services.analysis_windows import (
     aggregate_dominant,
     aggregate_key,
 )
+from phaze.telemetry import instruments as telemetry, tracing as otel
 
 
 if TYPE_CHECKING:
@@ -247,6 +249,34 @@ def _get_classifier(model: ModelConfig, models_dir: str) -> Any:
     graph_path = str(Path(models_dir) / (model.filename + ".pb"))
     batch_size = _resolve_tf_batch_size(model)
 
+    # phaze-m1drf.1 acceptance 2: graph CONSTRUCTION is timed separately from inference.
+    # It is timed HERE rather than around the whole call because a cache hit -- which is
+    # every window after the first of a sweep -- constructs nothing, and folding those
+    # zero-cost returns into the histogram would report a build cost near zero for the
+    # models whose graphs are most expensive to build. D-07 pays this once per model per
+    # CHUNK, which is the cost the chunking trades for a duration-independent peak, and
+    # this metric is how much that trade actually costs.
+    with otel.timed_metric("phaze.analysis.model.graph.build.duration", **_model_labels(model)):
+        classifier = _construct_classifier(model, graph_path, batch_size)
+
+    _classifier_cache[model.filename] = classifier
+    return classifier
+
+
+def _model_labels(model: ModelConfig) -> dict[str, str]:
+    """The bounded 34-combination metric label set for one model.
+
+    The ONLY dimension the analysis metrics carry beyond ``tier``. Model identity is
+    bounded by the registry in ``analysis_models.py`` (11 sets x 3 variants + the genre
+    model); file, window and chunk identity are span attributes and never reach a metric.
+    See ``phaze/telemetry/catalogue.py`` for the budget this label set is costed in.
+    """
+    return {"model_name": model.name, "model_variant": model.variant, "classifier_type": model.classifier_type}
+
+
+def _construct_classifier(model: ModelConfig, graph_path: str, batch_size: int) -> Any:
+    """Build one ``TensorflowPredict*`` graph. Extracted from :func:`_get_classifier` so
+    the construction can be timed without the cache-hit path in the same measurement."""
     if model.classifier_type == "musicnn":
         classifier = es.TensorflowPredictMusiCNN(graphFilename=graph_path, batchSize=batch_size)
     elif model.classifier_type == "vggish":
@@ -268,8 +298,6 @@ def _get_classifier(model: ModelConfig, models_dir: str) -> Any:
     else:
         msg = f"Unknown classifier type: {model.classifier_type}"
         raise ValueError(msg)
-
-    _classifier_cache[model.filename] = classifier
     return classifier
 
 
@@ -308,7 +336,14 @@ def _predict_single(audio_16k: Any, model: ModelConfig, models_dir: str) -> Any:
     already-2D array.
     """
     classifier = _get_classifier(model, models_dir)
-    activations = classifier(audio_16k)
+    # phaze-m1drf.1 acceptance 2 + 8: INFERENCE PROPER, separated from the construction
+    # timed inside ``_get_classifier`` above. This is the histogram phaze-8ifq8 reads to
+    # answer "what does a window cost, per model, by classifier_type" -- musicnn, vggish
+    # and effnet_discogs do not cost the same and this is where that becomes visible.
+    # The window index is deliberately NOT a label; it would be unbounded across a corpus
+    # whose longest file has 241 coarse windows.
+    with otel.timed_metric("phaze.analysis.model.inference.duration", **_model_labels(model)):
+        activations = classifier(audio_16k)
     return np.mean(np.atleast_2d(activations), axis=0)
 
 
@@ -335,6 +370,18 @@ def _release_classifier(model_filename: str) -> None:
     if _classifier_cache.pop(model_filename, None) is None:
         return
     gc.collect()
+
+
+def _release_classifier_timed(model: ModelConfig) -> None:
+    """:func:`_release_classifier` with the release duration recorded (acceptance 2).
+
+    A separate function rather than a context manager inside ``_release_classifier``
+    because that one is called from a ``finally`` on the failure path with only a
+    filename in hand, and the metric needs the whole ``ModelConfig`` for its labels.
+    Both callers reach the same eviction; only the timed one carries labels.
+    """
+    with otel.timed_metric("phaze.analysis.model.graph.release.duration", **_model_labels(model)):
+        _release_classifier(model.filename)
 
 
 def _vm_hwm_from_status_lines(status_lines: Iterable[str]) -> float | None:
@@ -669,6 +716,30 @@ def _release_decode_network() -> None:
     analysis_decoder._release_decode_network(collect=gc.collect, trim=_malloc_trim)
 
 
+def _record_chunk_peak_rss(tier: str) -> None:
+    """Record whole-process peak RSS at a chunk boundary (phaze-m1drf.1 acceptance 2).
+
+    A HISTOGRAM, not a gauge, and the reason is the deployment rather than the datum: an
+    analyze Job is a k8s pod that runs for hours and exits, so a gauge's last value is
+    simply never scraped. A histogram's buckets are counters and survive the final push.
+
+    ``_peak_rss_gib`` is a HIGH-WATER MARK, not an instantaneous sample, so this reports
+    the peak of the run SO FAR at each chunk boundary rather than that chunk's own peak.
+    That is exactly the series D-07 and D-09 need: a flat line across chunks is the
+    invariant holding, and a line with slope is the duration-linear growth phaze-b2qs9
+    measured at +0.31 GiB per fine chunk before the D-09 fix. Nothing here is a sizing
+    input -- growth is a bug, not a reason to raise a limit.
+
+    Returns silently on a platform whose unit was never verified (``_peak_rss_gib``
+    returns ``None`` rather than guess), because a wrong-by-1024x memory series is worse
+    than no memory series.
+    """
+    peak_gib = _peak_rss_gib()
+    if peak_gib is None:
+        return
+    telemetry.record("phaze.analysis.chunk.peak_rss", peak_gib * (1024**3), tier=tier)
+
+
 def _chunked(windows: list[tuple[int, float, float]], size: int) -> list[list[tuple[int, float, float]]]:
     """Split a tier's window list into consecutive chunks of at most ``size`` entries.
 
@@ -856,10 +927,20 @@ def _sweep_one_model(
     even when the consumer raises partway through a sweep -- including the bare ``raise``
     :func:`_run_model_sets` reports with, which travels out through it from two frames down.
     """
-    try:
-        return _infer_live_windows(model, buffers, models_dir, failed, on_failure)
-    finally:
-        _release_classifier(model.filename)
+    labels = _model_labels(model)
+    with otel.timed(
+        "phaze.analysis.model.sweep.duration",
+        "analysis.model_sweep",
+        # SPAN attributes (free-form, per-occurrence) vs METRIC labels (catalogued,
+        # bounded). The buffer count belongs on the span: it varies with the chunk and
+        # with per-window failures, and as a label it would be unbounded.
+        attributes={**labels, "phaze.analysis.buffer_count": len(buffers)},
+        **labels,
+    ):
+        try:
+            return _infer_live_windows(model, buffers, models_dir, failed, on_failure)
+        finally:
+            _release_classifier_timed(model)
 
 
 def _infer_live_windows(
@@ -1113,32 +1194,61 @@ def _analyze_fine_windows(
 
     def _skip(idx: int, start: float, end: float, exc_info: bool = True) -> None:
         log.warning("fine window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=exc_info)
+        # Counted HERE rather than at the call sites because this one function is what
+        # both failure paths -- a window the decode produced no audio for, and a
+        # measurement that raised -- already funnel through.
+        telemetry.add("phaze.analysis.windows", 1, tier="fine", outcome="skipped")
 
     rhythm_extractor = es.RhythmExtractor2013(method="multifeature")
     key_extractor = es.KeyExtractor(profileType="edma")
     fine_windows: list[FineWindow] = []
     chunks = _chunked(natural, _FINE_CHUNK_WINDOWS)
-    for position, chunk in enumerate(chunks):
-        signals.beat("fine_decode", len(fine_windows), total)
-        decoded = _decode_windows(
-            file_path,
-            _FINE_SAMPLE_RATE,
-            chunk,
-            _skip,
-            stop_at_sec=_chunk_stop_sec(chunks, position),
-            # Keeps the per-window EasyLoader fallback audible to the stall watchdog; see
-            # _decode_windows' docstring for why an unbeaten fallback is always killed.
-            on_beat=lambda: signals.beat("fine_decode", len(fine_windows), total),
-        )
-        for idx, start, end in chunk:
-            measured = _measure_fine_window(rhythm_extractor, key_extractor, (idx, start, end), decoded, _skip)
-            if measured is None:
-                continue  # no audio, or a failed measurement already reported in-handler
-            fine_windows.append(measured)
-            signals.progress(len(fine_windows), total)  # bump (throttle lives downstream, not here)
-            signals.beat("fine", len(fine_windows), total)
-        decoded.clear()  # this chunk's PCM is consumed; nothing crosses the chunk boundary
-        _malloc_trim()
+    with otel.timed(
+        "phaze.analysis.tier.duration",
+        "analysis.tier",
+        attributes={"phaze.analysis.tier": "fine", "phaze.analysis.window_total": total, "phaze.analysis.chunk_total": len(chunks)},
+        tier="fine",
+    ):
+        for position, chunk in enumerate(chunks):
+            with otel.span(
+                "analysis.chunk",
+                {"phaze.analysis.tier": "fine", "phaze.analysis.chunk_index": position, "phaze.analysis.chunk_windows": len(chunk)},
+            ):
+                signals.beat("fine_decode", len(fine_windows), total)
+                with otel.timed(
+                    "phaze.analysis.chunk.decode.duration",
+                    "analysis.chunk.decode",
+                    attributes={"phaze.analysis.tier": "fine", "phaze.analysis.chunk_index": position},
+                    tier="fine",
+                ):
+                    decoded = _decode_windows(
+                        file_path,
+                        _FINE_SAMPLE_RATE,
+                        chunk,
+                        _skip,
+                        stop_at_sec=_chunk_stop_sec(chunks, position),
+                        # Keeps the per-window EasyLoader fallback audible to the stall watchdog; see
+                        # _decode_windows' docstring for why an unbeaten fallback is always killed.
+                        on_beat=lambda: signals.beat("fine_decode", len(fine_windows), total),
+                    )
+                for idx, start, end in chunk:
+                    # The fine tier's counterpart to a coarse model sweep: this is the tier's
+                    # "inference proper", so it gets the same per-unit histogram treatment
+                    # (acceptance 1 -- the two tiers must be comparable).
+                    with otel.timed_metric("phaze.analysis.fine_window.duration"):
+                        measured = _measure_fine_window(rhythm_extractor, key_extractor, (idx, start, end), decoded, _skip)
+                    if measured is None:
+                        continue  # no audio, or a failed measurement already reported in-handler
+                    fine_windows.append(measured)
+                    telemetry.add("phaze.analysis.windows", 1, tier="fine", outcome="analyzed")
+                    signals.progress(len(fine_windows), total)  # bump (throttle lives downstream, not here)
+                    signals.beat("fine", len(fine_windows), total)
+                decoded.clear()  # this chunk's PCM is consumed; nothing crosses the chunk boundary
+                _malloc_trim()
+                # AFTER the trim, so the reading is the peak the chunk actually left behind
+                # rather than the peak plus a transient the trim was about to return.
+                _record_chunk_peak_rss("fine")
+                telemetry.add("phaze.analysis.chunks", 1, tier="fine")
     return fine_windows, total
 
 
@@ -1252,40 +1362,77 @@ def _analyze_coarse_windows(
 
     def _skip(idx: int, start: float, end: float, exc_info: bool = True) -> None:
         log.warning("coarse window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=exc_info)
+        # As in the fine tier: the one funnel every coarse failure path already reaches --
+        # a decode that produced no audio, a model that killed the window, a derivation
+        # that raised. The window index is a log field, never a metric label.
+        telemetry.add("phaze.analysis.windows", 1, tier="coarse", outcome="skipped")
 
     coarse_windows: list[CoarseWindow] = []
 
     chunks = _chunked(natural, _COARSE_CHUNK_WINDOWS)
-    for position, chunk in enumerate(chunks):
-        # (1) decode
-        signals.beat("coarse_decode", len(coarse_windows), total)
-        decoded = _decode_windows(
-            file_path,
-            _COARSE_SAMPLE_RATE,
-            chunk,
-            _skip,
-            stop_at_sec=_chunk_stop_sec(chunks, position),
-            on_beat=lambda: signals.beat("coarse_decode", len(coarse_windows), total),
-        )
-        spans: list[tuple[int, float, float]] = [(idx, start, end) for idx, start, end in chunk if idx in decoded]
-        buffers: list[tuple[int, Any]] = [(idx, decoded.pop(idx)) for idx, _start, _end in spans]
+    # THE 94.69% BLIND SPOT (phaze-zaf2l section 3b). Everything below this line was, until
+    # phaze-m1drf.1, invisible from outside the process: the UI progress channel is
+    # fine-tier-only by design, so the bar reached 100% at 5.31% of the job and then
+    # reported nothing for the remaining 1 h 52 m of a measured production run. The three
+    # phases are given three separate instruments, deliberately, because the whole point of
+    # the exercise is to see how the tier SPLITS -- an aggregate would restore the blind
+    # spot at a finer granularity.
+    with otel.timed(
+        "phaze.analysis.tier.duration",
+        "analysis.tier",
+        attributes={"phaze.analysis.tier": "coarse", "phaze.analysis.window_total": total, "phaze.analysis.chunk_total": len(chunks)},
+        tier="coarse",
+    ):
+        for position, chunk in enumerate(chunks):
+            with otel.span(
+                "analysis.chunk",
+                {"phaze.analysis.tier": "coarse", "phaze.analysis.chunk_index": position, "phaze.analysis.chunk_windows": len(chunk)},
+            ):
+                # (1) decode
+                signals.beat("coarse_decode", len(coarse_windows), total)
+                with otel.timed(
+                    "phaze.analysis.chunk.decode.duration",
+                    "analysis.chunk.decode",
+                    attributes={"phaze.analysis.tier": "coarse", "phaze.analysis.chunk_index": position},
+                    tier="coarse",
+                ):
+                    decoded = _decode_windows(
+                        file_path,
+                        _COARSE_SAMPLE_RATE,
+                        chunk,
+                        _skip,
+                        stop_at_sec=_chunk_stop_sec(chunks, position),
+                        on_beat=lambda: signals.beat("coarse_decode", len(coarse_windows), total),
+                    )
+                spans: list[tuple[int, float, float]] = [(idx, start, end) for idx, start, end in chunk if idx in decoded]
+                buffers: list[tuple[int, Any]] = [(idx, decoded.pop(idx)) for idx, _start, _end in spans]
 
-        # (2) infer, model-major. The failure reporter is built by a factory rather than
-        # closed over the loop variable, so each chunk's callback holds ITS OWN geometry map
-        # instead of whatever the last iteration left behind (ruff B023).
-        features_by_window, failed = _run_model_sets_over_windows(
-            buffers, models_dir, _make_span_reporter(spans, _skip), lambda: signals.beat("coarse_model", len(coarse_windows), total)
-        )
-        buffers.clear()  # the peak is behind us; do not carry ~345 MB of PCM through assembly
-        _malloc_trim()
+                # (2) infer, model-major. The failure reporter is built by a factory rather than
+                # closed over the loop variable, so each chunk's callback holds ITS OWN geometry map
+                # instead of whatever the last iteration left behind (ruff B023). The per-model
+                # build / inference / release timings are taken INSIDE the sweep, one level down.
+                features_by_window, failed = _run_model_sets_over_windows(
+                    buffers, models_dir, _make_span_reporter(spans, _skip), lambda: signals.beat("coarse_model", len(coarse_windows), total)
+                )
+                buffers.clear()  # the peak is behind us; do not carry ~345 MB of PCM through assembly
+                _malloc_trim()
 
-        # (3) derive + assemble, in window order
-        for span in spans:
-            derived = _derive_coarse_window(span, features_by_window, failed, _skip)
-            if derived is None:
-                continue  # killed by the sweep, or a failed derivation -- either way already reported in-handler
-            coarse_windows.append(derived)
-        signals.beat("coarse", len(coarse_windows), total)
+                # (3) derive + assemble, in window order
+                with otel.timed(
+                    "phaze.analysis.chunk.derive.duration",
+                    "analysis.chunk.derive",
+                    attributes={"phaze.analysis.tier": "coarse", "phaze.analysis.chunk_index": position},
+                    tier="coarse",
+                ):
+                    for span in spans:
+                        derived = _derive_coarse_window(span, features_by_window, failed, _skip)
+                        if derived is None:
+                            continue  # killed by the sweep, or a failed derivation -- either way already reported in-handler
+                        coarse_windows.append(derived)
+                        telemetry.add("phaze.analysis.windows", 1, tier="coarse", outcome="analyzed")
+                signals.beat("coarse", len(coarse_windows), total)
+                _record_chunk_peak_rss("coarse")
+                telemetry.add("phaze.analysis.chunks", 1, tier="coarse")
     return coarse_windows, total
 
 
@@ -1379,10 +1526,76 @@ def analyze_file(
     # keeps the two raw callbacks unchanged (analysis_child.py passes both by keyword), and
     # builds the seam once here rather than threading progress_cb/heartbeat_cb separately.
     signals = AnalysisSignals(progress_cb, heartbeat_cb)
-    total_sec = _probe_duration_sec(file_path)
+    with otel.span("analysis.file", {"phaze.file.path": file_path}) as file_span:
+        return _analyze_file_traced(
+            file_path,
+            models_dir,
+            signals,
+            file_span,
+            fine_window_sec=fine_window_sec,
+            coarse_window_sec=coarse_window_sec,
+            fine_min_sec=fine_min_sec,
+        )
 
-    fine_windows, fine_total = _analyze_fine_windows(file_path, total_sec, fine_window_sec, fine_min_sec, signals=signals)
-    coarse_windows, coarse_total = _analyze_coarse_windows(file_path, total_sec, coarse_window_sec, models_dir, signals=signals)
+
+def _analyze_file_traced(
+    file_path: str,
+    models_dir: str,
+    signals: AnalysisSignals,
+    file_span: Any,
+    *,
+    fine_window_sec: int,
+    coarse_window_sec: int,
+    fine_min_sec: int,
+) -> dict[str, Any]:
+    """:func:`analyze_file`'s body, inside its root span (phaze-m1drf.1).
+
+    Extracted rather than nested so ``analyze_file``'s own docstring and signature -- the
+    contract every caller and the exec'd child are written against -- stay exactly as they
+    were, and so the span/measurement bookkeeping does not add a level of indentation to
+    every line of the pipeline it observes.
+
+    The ``finally`` records the run even when it RAISES. An ``AnalysisDecodeError`` on a
+    12-hour set still cost twelve hours of node time, and a histogram that only sees
+    successes reports a throughput the operator does not have.
+    """
+    started = time.perf_counter()
+    outcome = "error"
+    total_sec = 0.0
+    try:
+        total_sec = _probe_duration_sec(file_path)
+        file_span.set_attribute("phaze.analysis.audio_duration_sec", total_sec)
+
+        fine_windows, fine_total = _analyze_fine_windows(file_path, total_sec, fine_window_sec, fine_min_sec, signals=signals)
+        coarse_windows, coarse_total = _analyze_coarse_windows(file_path, total_sec, coarse_window_sec, models_dir, signals=signals)
+        result = _assemble_analysis_result(file_path, fine_windows, fine_total, coarse_windows, coarse_total)
+        outcome = "ok"
+    finally:
+        telemetry.record("phaze.analysis.run.duration", time.perf_counter() - started, outcome=outcome)
+        # Audio-seconds admitted. Divided by wall clock this is the audio-hours-per-wall-hour
+        # figure phaze-zaf2l derived by joining analysis_completed_at to metadata.duration by
+        # hand over a 7-day window -- 2.7183 there, and continuously available here.
+        telemetry.add("phaze.analysis.audio.duration", total_sec, outcome=outcome)
+    if file_span.is_recording():
+        file_span.set_attributes(
+            {
+                "phaze.analysis.fine_windows_analyzed": result["fine_windows_analyzed"],
+                "phaze.analysis.fine_windows_total": result["fine_windows_total"],
+                "phaze.analysis.coarse_windows_analyzed": result["coarse_windows_analyzed"],
+                "phaze.analysis.coarse_windows_total": result["coarse_windows_total"],
+            }
+        )
+    return result
+
+
+def _assemble_analysis_result(
+    file_path: str,
+    fine_windows: list[FineWindow],
+    fine_total: int,
+    coarse_windows: list[CoarseWindow],
+    coarse_total: int,
+) -> dict[str, Any]:
+    """The zibn floor plus the returned aggregate dict, unchanged. See :func:`analyze_file`."""
 
     # phaze-zibn: per-window failure isolation must not mask TOTAL decode failure. If the
     # file naturally had windows to analyze but every single one failed in BOTH passes, the

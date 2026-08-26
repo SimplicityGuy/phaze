@@ -1,0 +1,453 @@
+{
+  "description": "How fast the archive is draining and how much is left -- the figures phaze-zaf2l had to obtain by hand-querying Postgres.",
+  "editable": true,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "panels": [],
+      "title": "Throughput",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Audio-seconds admitted per wall-second, which is the same number as audio-hours per wall-hour. phaze-zaf2l measured 2.7183 across 410 completions over 7 days by joining analysis_completed_at to metadata.duration in psql. This is that figure, live.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "decimals": 4,
+          "unit": ""
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(phaze_analysis_audio_duration_seconds_total{job=~\"$job\", outcome=\"ok\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "audio-h / wall-h",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Audio-hours per wall-hour",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "The 1.4951x phaze-zaf2l measured at the production operating point (cap = 4 concurrent pods on the burst node). Note this counts one file's own wall clock, so it rises with concurrency by design -- phaze-8r6t4 priced W=4 at +83.6% per-file wall against W=2.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "decimals": 4,
+          "unit": ""
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(phaze_analysis_run_duration_seconds_sum{job=~\"$job\"}[$__rate_interval])) / sum(rate(phaze_analysis_audio_duration_seconds_total{job=~\"$job\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "x duration",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Wall clock per second of audio",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "phaze-zaf2l measured 2.4480 files/hour over a 7-day window, and noted it is the LESS stable of the two throughput reads because it is blind to the mix of durations.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "decimals": 4,
+          "unit": ""
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(phaze_analysis_run_duration_seconds_count{job=~\"$job\", outcome=\"ok\"}[$__rate_interval])) * 3600",
+          "instant": false,
+          "legendFormat": "files/h",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Files completed / hour",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Measured baseline: 4 hard failures against 4,383 completed analyses (0.0913%) at the time of phaze-zaf2l -- 3 AnalysisDecodeError, 1 AnalysisProbeError.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "id": 5,
+      "options": {
+        "colorMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(phaze_analysis_run_duration_seconds_count{job=~\"$job\", outcome=\"error\"}[$__rate_interval])) / clamp_min(sum(rate(phaze_analysis_run_duration_seconds_count{job=~\"$job\"}[$__rate_interval])), 1e-12)",
+          "instant": false,
+          "legendFormat": "failed",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Analysis failure share",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": ""
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 7
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(phaze_analysis_audio_duration_seconds_total{job=~\"$job\", outcome=\"ok\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "audio-h / wall-h",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(phaze_analysis_run_duration_seconds_count{job=~\"$job\", outcome=\"ok\"}[$__rate_interval])) * 3600",
+          "instant": false,
+          "legendFormat": "files / h",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Throughput over time",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "id": 7,
+      "panels": [],
+      "title": "Backlog -- a settled operator decision, not a fault",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "OPERATOR DECISION 2026-08-26, bead phaze-m1drf.5: asked how the 8,079-row awaiting backlog should be handled, the operator chose the option labelled 'Accept the drain rate' (durable record: repowise decision e1e3374e; the question as put is quoted in docs/telemetry/alerting.md). So backlog DEPTH is explicitly NOT a fault condition and nothing alerts on it. CAVEAT: these series are POLL-DRIVEN -- they are sampled by the admin UI's own /pipeline/stats read, so they go stale when no admin tab is open. Read them here; never alert on them.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 16,
+        "x": 0,
+        "y": 17
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max by (backlog) (phaze_pipeline_backlog{job=~\"$job\"})",
+          "instant": false,
+          "legendFormat": "{{backlog}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Files waiting, by stage",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "phaze-zaf2l computed 137.5 days (band 94-156) for 8,079 awaiting rows at 2.4480 files/hour. Informational: the drain rate is a settled decision, so a large number here is expected, not a fault.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "decimals": 1,
+          "unit": "d"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 17
+      },
+      "id": 9,
+      "options": {
+        "colorMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max(phaze_pipeline_backlog{job=~\"$job\", backlog=\"awaiting_cloud\"}) / clamp_min(sum(rate(phaze_analysis_run_duration_seconds_count{job=~\"$job\", outcome=\"ok\"}[$__rate_interval])) * 86400, 1e-12)",
+          "instant": false,
+          "legendFormat": "days",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Days to drain the awaiting queue at the current rate",
+      "type": "stat"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "tags": [
+    "phaze",
+    "throughput"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Prometheus",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(phaze_analysis_run_duration_seconds_count, job)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Service",
+        "multi": true,
+        "name": "job",
+        "options": [],
+        "query": {
+          "query": "label_values(phaze_analysis_run_duration_seconds_count, job)",
+          "refId": "job"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "title": "phaze / Throughput and backlog",
+  "uid": "phaze-throughput-backlog",
+  "version": 0
+}

@@ -55,6 +55,7 @@ from phaze.agent_watcher.poster import Poster
 from phaze.config import AgentSettings, get_settings
 from phaze.logging_config import configure_logging
 from phaze.tasks._shared.agent_bootstrap import construct_agent_client, whoami_with_retry
+from phaze.telemetry import configure_telemetry, shutdown_telemetry
 
 
 if TYPE_CHECKING:
@@ -210,6 +211,12 @@ async def main() -> None:
     every subsequent log line actually reaches ``docker logs``.
     """
     _configure_logging()
+    # phaze-m1drf.1: the watcher is its own OS process (asyncio.run, never uvicorn, never
+    # SAQ), so it installs its own SDK. Off unless an OTLP endpoint is configured. It emits
+    # no metrics of its own today -- what it contributes is a `phaze-watcher` service on the
+    # traces, so a file's journey from settled-on-disk to analyzed is one trace rather than
+    # starting at the API.
+    configure_telemetry("watcher")
     try:
         cfg = get_settings()
     except ValidationError as exc:
@@ -342,6 +349,10 @@ async def main() -> None:
                     logger.warning("watcher: observer thread for scan root %s did not stop within 10s; abandoning", root)
     finally:
         await client.close()
+        # LAST, after every resource that could still emit. Bounded by
+        # PHAZE_TELEMETRY_FLUSH_TIMEOUT_MS (default 3,000 ms) and never raises, so a
+        # collector that is down cannot hold the watcher's shutdown open.
+        shutdown_telemetry()
 
 
 if __name__ == "__main__":

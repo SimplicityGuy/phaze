@@ -70,6 +70,8 @@ from phaze.tasks.push import push_file
 from phaze.tasks.s3_upload import upload_file_s3
 from phaze.tasks.scan import scan_directory
 from phaze.tasks.tag_write import write_file_tags
+from phaze.telemetry import configure_telemetry, shutdown_telemetry
+from phaze.telemetry.saq import after_process as telemetry_after_process, before_process as telemetry_before_process
 
 
 if TYPE_CHECKING:
@@ -295,6 +297,12 @@ async def startup(ctx: dict[str, Any]) -> None:
     # logger.info, so worker logs render through the same JSON/console pipeline.
     configure_logging(level=cfg.log_level, json_logs=cfg.log_json)
 
+    # phaze-m1drf.1: the agent worker is its own OS process (and, on a compute agent, the
+    # process that SPAWNS the analysis child), so it installs its own SDK. Off unless an
+    # OTLP endpoint is configured; never raises. The child inherits the endpoint through
+    # its environment and configures its own -- see phaze/telemetry/context.py.
+    configure_telemetry("agent")
+
     # quick-260707-g84: record the EFFECTIVE dispatch concurrency (post-clamp), the lane, and
     # whether the worker_max_jobs ceiling bit. In lane mode WORKER_MAX_JOBS is a ceiling on the
     # per-lane knob (concurrency = min(lane knob, worker_max_jobs)); logging it here (AFTER
@@ -445,6 +453,9 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     if queue_cache_redis is not None:
         await queue_cache_redis.aclose()
 
+    # LAST. Bounded flush, never raises -- see phaze/telemetry/bootstrap.py.
+    shutdown_telemetry()
+
 
 # Module-level Queue construction. SAQ's `saq <module>.settings` CLI imports
 # this module and reads `settings` as a top-level attribute (RESEARCH §A2). All four
@@ -535,18 +546,33 @@ _concurrency_clamped = _lane_raw_concurrency is not None and _concurrency < _lan
 queue = build_pipeline_queue(_queue_name, _settings_obj.queue_url, cache_redis_url=_settings_obj.redis_url, min_size=1, max_size=4)
 
 
+async def _before_process(ctx: dict[str, Any]) -> None:
+    """``enforce_stage_pause_on_process`` then the telemetry hook, in that order.
+
+    Composed here rather than passed as a list because SAQ's ``before_process`` is a
+    single callable (only ``after_process`` accepts a list). Order is load-bearing: the
+    pause check may repark the job, and a reparked job should still be measured, so
+    telemetry runs after it and unconditionally.
+    """
+    await enforce_stage_pause_on_process(ctx)
+    await telemetry_before_process(ctx)
+
+
 settings = {
     "queue": queue,
     # phaze-geuq: re-check a stage's paused flag right before its function runs, so a job
     # that reached `status='queued'` via SAQ's `_retry` re-queue path (which bypasses
     # `before_enqueue` -- see tasks/_shared/stage_control.py module docstring) is reparked
     # instead of starting a fresh full-length attempt on a paused stage.
-    "before_process": enforce_stage_pause_on_process,
+    # phaze-m1drf.1 acceptance 3: SAQ takes ONE before_process callable, not a list, so
+    # the two hooks are composed explicitly. The pause check stays FIRST and unchanged --
+    # it is what reparks a job that must not start -- and telemetry follows it.
+    "before_process": _before_process,
     # `repark_if_stage_paused` MUST run BEFORE `increment_completed`: it authoritatively
     # restores a pause-bounced job to QUEUED/parked, so `increment_completed` never sees a
     # bounce as a genuine COMPLETE/FAILED terminal outcome (Phase 35 D-02 completed-counter +
     # scheduling-ledger clear must both stay no-ops for a bounce).
-    "after_process": [repark_if_stage_paused, increment_completed],
+    "after_process": [repark_if_stage_paused, increment_completed, telemetry_after_process],
     # quick-260707-dh1: register ONLY this lane's functions (LANE_TASKS[_lane]); all-mode
     # registers all 8. The union of the four lanes' registered names == AGENT_TASKS (mirror
     # contract, asserted in tests/shared/core/test_task_split.py).

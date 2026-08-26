@@ -87,6 +87,9 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from phaze import telemetry
+from phaze.telemetry import tracing as otel
+
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -283,14 +286,51 @@ async def run_analysis_subprocess(
         coarse_window_sec=coarse_window_sec,
         fine_min_sec=fine_min_sec,
     )
+    # The PARENT half of the process boundary. Opening it here (rather than letting the
+    # child's root span be the trace's root) is what makes one file's analysis ONE trace
+    # even though it spans two processes: the traceparent injected into the child's
+    # environment below is THIS span's.
+    with otel.span("analysis.subprocess", {"phaze.file.path": file_path, "phaze.analysis.stall_timeout_sec": stall_timeout}):
+        return await _run_analysis_subprocess_traced(
+            argv,
+            file_path,
+            progress_cb=progress_cb,
+            heartbeat_cb=heartbeat_cb,
+            stall_timeout=stall_timeout,
+        )
+
+
+async def _run_analysis_subprocess_traced(
+    argv: list[str],
+    file_path: str,
+    *,
+    progress_cb: Callable[[int, int], None] | None,
+    heartbeat_cb: Callable[[str, int, int], None] | None,
+    stall_timeout: float | None,
+) -> dict[str, Any]:
+    """:func:`run_analysis_subprocess`'s body, inside the parent-side span (phaze-m1drf.1).
+
+    Extracted rather than nested so the public function's signature and docstring -- the
+    contract both lanes are written against -- stay byte-identical, and so the D-08 stall
+    machinery below does not gain an indentation level.
+    """
     try:
         # Fixed list argv, no shell (push.py convention): neither ruff S603 nor bandit
         # B603 flags create_subprocess_exec with a list argv.
+        #
+        # phaze-m1drf.1 acceptance 4: `env` is passed EXPLICITLY, where before the child
+        # simply inherited this process's environment. That inheritance is what would have
+        # left the traceparent out -- `telemetry.child_environment()` returns a COPY of
+        # os.environ carrying this span's W3C `TRACEPARENT`, so the child's spans join this
+        # file's trace instead of starting a second, unrelated one. Copying rather than
+        # mutating os.environ matters: a mutated os.environ would leak this span's context
+        # into every other subprocess this worker ever spawns.
         proc = await asyncio.create_subprocess_exec(
             *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=_STREAM_LIMIT,
+            env=telemetry.child_environment(),
         )
     except FileNotFoundError as exc:
         # sys.executable vanished out from under us — a broken venv, not a job failure.

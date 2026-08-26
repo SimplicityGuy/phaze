@@ -51,6 +51,9 @@ from phaze.services.agent_bootstrap import ensure_dev_agent
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.pipeline import _ORPHAN_TTL_SECONDS, refresh_stage_orphan_counts
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
+from phaze.telemetry import configure_telemetry, shutdown_telemetry
+from phaze.telemetry.db import instrument_engine
+from phaze.telemetry.http import TelemetryMiddleware
 from phaze.web.saq_mount import build_saq_app
 from phaze.web.static import STATIC_DIR, STATIC_VERSION, RevalidatingStaticFiles
 
@@ -110,6 +113,14 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # run_migrations() or any DB access -- so every startup log line (including
     # migration / connectivity failures) flows through the JSON/console pipeline.
     configure_logging(level=settings.log_level, json_logs=settings.log_json)
+
+    # phaze-m1drf.1: install the OTel SDK for the api role. A no-op returning False unless
+    # OTEL_EXPORTER_OTLP_ENDPOINT (or a signal-specific one) is set, which is the default --
+    # see phaze/telemetry/bootstrap.py. It is configured BEFORE run_migrations so a slow or
+    # failing migration is inside the trace rather than before it, and it never raises: a
+    # misconfigured endpoint leaves the api serving with telemetry off.
+    configure_telemetry("api")
+    instrument_engine(engine)
 
     # Phase 27 UAT Gap 2: bring the schema to head BEFORE the engine is used
     # for normal traffic. Idempotent + gated by settings.auto_migrate.
@@ -232,6 +243,10 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         await controller_cache_redis.aclose()
     await _app.state.controller_queue.disconnect()
     await engine.dispose()
+    # LAST, after every resource that could still emit. Bounded by
+    # PHAZE_TELEMETRY_FLUSH_TIMEOUT_MS (default 3,000 ms) and never raises, so a collector
+    # that is down cannot hold a container restart open.
+    shutdown_telemetry()
 
 
 # phaze-bk9el.12: the ordered router registration list, extracted out of a run of ~24
@@ -313,6 +328,11 @@ _ROUTERS: tuple[APIRouter, ...] = (
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(title="Phaze", version="0.1.0", lifespan=lifespan)
+    # phaze-m1drf.1 acceptance 3. Added BEFORE the routers so it wraps every one of them,
+    # and it is phaze's own middleware rather than opentelemetry-instrumentation-fastapi:
+    # the library labels an unmatched request by its RAW PATH, and this app serves
+    # /record/{file_id} against an 11,428-file archive. See phaze/telemetry/http.py.
+    app.add_middleware(TelemetryMiddleware)
     for router in _ROUTERS:
         app.include_router(router)
     # phaze-315t (supersedes phaze-mw9l): fingerprinted, cache-forever static serving.

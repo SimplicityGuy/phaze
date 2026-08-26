@@ -1,0 +1,228 @@
+"""The cardinality guard (phaze-m1drf.3 acceptance 4) and the catalogue's own invariants.
+
+**Why this file is a build gate rather than a review checklist.** phaze does not own the
+Prometheus that scrapes these metrics -- homelab does. A high-cardinality label added here
+damages a SHARED system, and it does so silently: nothing fails, nothing logs, the series
+count simply grows until someone else's storage is in trouble. The archive holds 11,428
+files and analysis touches up to 34 models per window, so the difference between a safe
+label and a catastrophic one is one identifier.
+
+The guard has two halves and needs both. This file is the STATIC half: it reads the
+catalogue and the source tree. ``instruments._checked_attributes`` is the RUNTIME half,
+because an attribute assembled from a variable at a call site is invisible to any static
+check -- and a value read out of a payload is exactly how a file id becomes a label.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+import re
+
+import pytest
+
+from phaze.services.analysis_models import GENRE_MODEL, MODEL_SETS
+from phaze.telemetry import instruments
+from phaze.telemetry.catalogue import (
+    BY_NAME,
+    CATALOGUE,
+    FORBIDDEN_LABEL_SUBSTRINGS,
+    MODEL_COMBINATIONS,
+    RESERVED_LABEL_NAMES,
+    MetricSpec,
+    total_series,
+)
+
+
+SRC = Path(__file__).resolve().parents[3] / "src" / "phaze"
+
+#: Pinned so a change to the budget is a deliberate edit to this number and shows up in a
+#: diff, rather than drifting a hundred series at a time. Raising it is allowed; doing so
+#: without noticing is what this pin prevents.
+SERIES_CEILING = 8587
+
+#: Names the catalogue doc mentions in order to say phaze does NOT emit them. The reverse
+#: doc-sync check would otherwise flag the very passages that exist to stop someone
+#: re-introducing them -- a guard that punishes recording a defect is a guard that gets the
+#: record deleted rather than the defect fixed. Each entry is a name a REAL collector produced
+#: from an earlier, wrong catalogue entry, documented in section 5 with what it cost.
+_NAMED_AS_REJECTED: frozenset[str] = frozenset(
+    {
+        # `unit="1"` on a gauge appends `_ratio`; the metric is now
+        # `phaze_pipeline_stage_inflight` with a UCUM annotation instead.
+        "phaze_saq_queue_depth_ratio",
+        "phaze_saq_queue_depth",
+    }
+)
+
+
+def test_every_label_states_a_finite_bound() -> None:
+    """A label with no stated bound is a label nobody costed."""
+    for spec in CATALOGUE:
+        for label in spec.labels:
+            assert label.cardinality > 0, f"{spec.name}.{label.name} has no bound"
+            assert label.description.strip(), f"{spec.name}.{label.name} has no description"
+
+
+def test_enumerated_labels_match_their_stated_cardinality() -> None:
+    """When a label lists its values, the count and the bound must agree.
+
+    They drift in the direction that matters: someone adds a value and leaves the number.
+    """
+    for spec in CATALOGUE:
+        for label in spec.labels:
+            if label.values is not None:
+                assert len(set(label.values)) == label.cardinality, f"{spec.name}.{label.name}: {len(label.values)} values, bound {label.cardinality}"
+
+
+def test_no_label_name_looks_like_an_identifier() -> None:
+    """The whole point. A file id, a path or a window index must never be a label."""
+    for spec in CATALOGUE:
+        for label in spec.labels:
+            lowered = label.name.lower()
+            offending = [bad for bad in FORBIDDEN_LABEL_SUBSTRINGS if bad in lowered]
+            assert not offending, f"{spec.name} declares label {label.name!r}, which matches forbidden {offending}"
+
+
+def test_no_label_collides_with_a_prometheus_reserved_name() -> None:
+    """A reserved label name does not degrade the metric -- it DELETES it.
+
+    Measured against otel/opentelemetry-collector-contrib 0.140.0: a label named ``job``
+    collides with the ``job`` the exporter derives from ``service.name``, the collector logs
+    ``duplicate label names in constant and variable labels``, and the metric never appears
+    at the scrape endpoint. Nothing downstream can tell that from "the metric was never
+    emitted", which is why this is a build gate and not a review note. It cost two metrics
+    (``phaze_saq_job_duration_seconds`` and ``phaze_saq_jobs_total``) before it was caught
+    by looking at the real collector's output -- ADR-0012 rule 3 in one line.
+    """
+    for spec in CATALOGUE:
+        for label in spec.labels:
+            assert label.name not in RESERVED_LABEL_NAMES, f"{spec.name} declares the Prometheus-reserved label {label.name!r}"
+            assert not label.name.startswith("__"), f"{spec.name} declares the Prometheus-internal label {label.name!r}"
+
+
+def test_a_dimensionless_gauge_never_uses_the_bare_unit_one() -> None:
+    """``unit="1"`` on a GAUGE becomes a ``_ratio`` SUFFIX in the Prometheus name.
+
+    Measured: ``phaze.saq.queue.depth`` with ``unit="1"`` exported as
+    ``phaze_saq_queue_depth_ratio``. A queue depth is not a ratio, and the suffix would be
+    baked into every query homelab ever writes against it. A UCUM annotation (``{jobs}``)
+    is dropped by the translation instead. Counters are NOT affected -- they take
+    ``_total`` -- and that inconsistency is exactly why this is pinned rather than trusted.
+    """
+    offenders = [spec.name for spec in CATALOGUE if spec.unit == "1"]
+    assert not offenders, f"use a UCUM annotation like '{{jobs}}' instead of the bare '1': {offenders}"
+
+
+def test_model_label_bound_matches_the_registry() -> None:
+    """34 is not a magic number: it is ``len(MODEL_SETS) * 3 + 1``, read from the registry.
+
+    If a twelfth characteristic set is added, this fails and the budget is recomputed --
+    which is the only way the documented arithmetic in the metric catalogue stays true.
+    """
+    registry_models = [model for model_set in MODEL_SETS for model in model_set.models] + [GENRE_MODEL]
+    assert len(registry_models) == MODEL_COMBINATIONS
+
+    spec = BY_NAME["phaze.analysis.model.inference.duration"]
+    declared = {label.name: set(label.values or ()) for label in spec.labels}
+    assert {model.name for model in registry_models} <= declared["model_name"]
+    assert {model.variant for model in registry_models} <= declared["model_variant"]
+    assert {model.classifier_type for model in registry_models} <= declared["classifier_type"]
+
+
+def test_every_instrument_is_catalogued_and_every_catalogue_entry_is_built() -> None:
+    assert instruments.instrument_names() == {spec.name for spec in CATALOGUE}
+
+
+def test_no_instrument_is_created_outside_the_instruments_module() -> None:
+    """The chokepoint. An instrument built elsewhere would carry no catalogue entry, and
+    therefore no bound -- so this is what makes the other assertions in this file total."""
+    pattern = re.compile(r"\.create_(counter|histogram|gauge|up_down_counter|observable_\w+)\s*\(")
+    offenders = [
+        path.relative_to(SRC).as_posix()
+        for path in SRC.rglob("*.py")
+        if path.name != "instruments.py" and pattern.search(path.read_text(encoding="utf-8"))
+    ]
+    assert not offenders, f"instruments must be created only in telemetry/instruments.py; found in {offenders}"
+
+
+def test_every_histogram_carries_measured_buckets() -> None:
+    """The SDK default ladder is 5 ms .. 10 s. This workload runs from a sub-millisecond
+    graph release to a twelve-hour coarse tier, so a histogram on the default is useless at
+    both ends -- every observation lands in the first or the last bucket."""
+    for spec in CATALOGUE:
+        if spec.kind == "histogram":
+            assert spec.buckets, f"{spec.name} has no explicit bucket ladder"
+            assert list(spec.buckets) == sorted(spec.buckets), f"{spec.name} bucket ladder is not ascending"
+
+
+def test_the_series_ceiling_is_pinned() -> None:
+    """Costed with histogram buckets counted, which is the arithmetic that gets skipped:
+    a histogram is ``len(buckets) + 3`` series per label combination, not one."""
+    assert total_series() == SERIES_CEILING, (
+        f"the catalogue now mints up to {total_series()} series (was {SERIES_CEILING}). "
+        "Update SERIES_CEILING and docs/telemetry/metric-catalogue.md together, deliberately."
+    )
+
+
+def test_recording_an_undeclared_attribute_raises_under_strict(strict_telemetry: None) -> None:
+    """The runtime half of the guard: what a static check structurally cannot see.
+
+    A file id reaching a label does not arrive as the literal string ``file_id`` in the
+    catalogue -- it arrives as a variable at a call site. This is what catches it.
+    """
+    with pytest.raises(ValueError, match="undeclared attribute"):
+        instruments.record("phaze.analysis.tier.duration", 1.0, tier="fine", file_id="a-real-uuid")
+
+
+def test_recording_an_undeclared_attribute_drops_it_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
+    """...and never raises when strict is off, because instrumentation may not fail the work.
+
+    The label is dropped, the observation is kept. A wrong label is worse than a missing
+    one; a raised exception in the analysis path is worse than both.
+    """
+    monkeypatch.delenv("PHAZE_TELEMETRY_STRICT", raising=False)
+    instruments.record("phaze.analysis.tier.duration", 1.0, tier="fine", file_id="a-real-uuid")
+
+
+def _prometheus_family(spec: MetricSpec) -> str:
+    """The Prometheus family name for a spec, as the REAL translation produces it.
+
+    Recorded from a live otel/opentelemetry-collector-contrib 0.140.0 in
+    ``docs/telemetry/metric-catalogue.md`` section 5 -- not derived from the OTLP ->
+    Prometheus naming rules on paper, which is how the two defects section 5 records were
+    found.
+    """
+    base = "phaze_" + spec.name.removeprefix("phaze.").replace(".", "_")
+    if spec.unit == "s":
+        base += "_seconds"
+    elif spec.unit == "By":
+        base += "_bytes"
+    if spec.kind == "counter":
+        base += "_total"
+    return base
+
+
+def test_the_documented_catalogue_lists_every_metric() -> None:
+    """The committed doc is what homelab wires against, so it is checked BOTH ways.
+
+    A metric missing from it is a contract phaze emits and nobody knows to scrape. A metric
+    in it that phaze no longer emits is a query homelab writes that silently returns nothing
+    -- which reads as a healthy idle system.
+    """
+    doc = (Path(__file__).resolve().parents[3] / "docs" / "telemetry" / "metric-catalogue.md").read_text(encoding="utf-8")
+    missing = [spec.name for spec in CATALOGUE if _prometheus_family(spec) not in doc]
+    assert not missing, f"metrics absent from docs/telemetry/metric-catalogue.md: {missing}"
+
+    documented = set(re.findall(r"`(phaze_[a-z0-9_]+)`", doc))
+    known = {_prometheus_family(spec) for spec in CATALOGUE}
+    stale = sorted(
+        name for name in documented if name not in known and not name.endswith(("_bucket", "_sum", "_count")) and name not in _NAMED_AS_REJECTED
+    )
+    assert not stale, f"docs/telemetry/metric-catalogue.md documents metric(s) phaze does not emit: {stale}"
+
+
+def test_the_documented_series_ceiling_matches_the_code() -> None:
+    """The budget in the doc is the number homelab sizes retention against, so it must be
+    THE number and not a stale copy of one."""
+    doc = (Path(__file__).resolve().parents[3] / "docs" / "telemetry" / "metric-catalogue.md").read_text(encoding="utf-8")
+    assert f"{total_series():,}" in doc, f"the doc does not state the current series ceiling ({total_series():,})"

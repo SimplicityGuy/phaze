@@ -1,0 +1,16 @@
+---
+# DEVELOPMENT ILLUSTRATION: provision the committed dashboard JSON into the
+# example Grafana. An operator adopting these into their own Grafana does NOT
+# need this file -- they import the JSON from ../../dashboards/ through the
+# standard Dashboards -> Import flow and pick their own datasource.
+apiVersion: 1
+providers:
+  - name: phaze
+    orgId: 1
+    folder: phaze
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards/phaze
+      foldersFromFilesStructure: false
