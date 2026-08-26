@@ -55,6 +55,7 @@ from phaze.models.file import FileRecord
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from datetime import datetime
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -201,6 +202,55 @@ def non_local_backend_kinds(settings: ControlSettings) -> dict[str, str]:
     return {backend.id: backend.kind for backend in settings.backends if backend.kind != "local"}
 
 
+def _attribute_cloud_job_counts_to_lanes(kinds: dict[str, str], rows: Sequence[Any]) -> list[ComputeLane]:
+    """Attribute one grouped ``CloudJob`` count row to each registry backend, and the NULL-backend remainder to one trailing lane.
+
+    ``kinds`` is the Phase-67 registry projection (``non_local_backend_kinds``) and ``rows`` is the
+    ``GROUP BY backend_id`` result carrying ``(backend_id, running, waiting, queued, working)``. The two
+    are joined on ``backend_id``: EVERY configured cluster gets a lane, IDLE and all-zero when it holds
+    no in-flight work (liveness is work, never a reachability probe), and in-flight rows whose
+    ``backend_id`` is NULL -- attributable to no cluster -- collapse into ONE trailing
+    :data:`UNATTRIBUTED_LANE_ID` lane, emitted only when its counts are non-zero.
+
+    Registry insertion order is preserved, so lane ordering stays registry-deterministic (COMPUTE-01).
+    """
+    counts = {
+        backend_id: (int(running or 0), int(waiting or 0), int(queued or 0), int(working or 0))
+        for backend_id, running, waiting, queued, working in rows
+    }
+
+    lanes: list[ComputeLane] = []
+    for backend_id, kind in kinds.items():
+        running, waiting, queued, working = counts.get(backend_id, (0, 0, 0, 0))
+        lanes.append(
+            ComputeLane(
+                backend_id=backend_id,
+                kind=kind,
+                state=_lane_state(running, waiting),
+                running=running,
+                waiting=waiting,
+                queued=queued,
+                working=working,
+            )
+        )
+
+    null_running, null_waiting, null_queued, null_working = counts.get(None, (0, 0, 0, 0))
+    if null_running or null_waiting or null_queued or null_working:
+        lanes.append(
+            ComputeLane(
+                backend_id=UNATTRIBUTED_LANE_ID,
+                kind="cloud",
+                state=_lane_state(null_running, null_waiting),
+                running=null_running,
+                waiting=null_waiting,
+                queued=null_queued,
+                working=null_working,
+            )
+        )
+
+    return lanes
+
+
 async def derive_compute_lane_identities(session: AsyncSession) -> list[ComputeLane]:
     """Return one :class:`ComputeLane` per non-local registry backend + a trailing unattributed lane (COMPUTE-01).
 
@@ -270,41 +320,7 @@ async def derive_compute_lane_identities(session: AsyncSession) -> list[ComputeL
             for backend_id, kind in kinds.items()
         ]
 
-    counts = {
-        backend_id: (int(running or 0), int(waiting or 0), int(queued or 0), int(working or 0))
-        for backend_id, running, waiting, queued, working in rows
-    }
-
-    lanes: list[ComputeLane] = []
-    for backend_id, kind in kinds.items():
-        running, waiting, queued, working = counts.get(backend_id, (0, 0, 0, 0))
-        lanes.append(
-            ComputeLane(
-                backend_id=backend_id,
-                kind=kind,
-                state=_lane_state(running, waiting),
-                running=running,
-                waiting=waiting,
-                queued=queued,
-                working=working,
-            )
-        )
-
-    null_running, null_waiting, null_queued, null_working = counts.get(None, (0, 0, 0, 0))
-    if null_running or null_waiting or null_queued or null_working:
-        lanes.append(
-            ComputeLane(
-                backend_id=UNATTRIBUTED_LANE_ID,
-                kind="cloud",
-                state=_lane_state(null_running, null_waiting),
-                running=null_running,
-                waiting=null_waiting,
-                queued=null_queued,
-                working=null_working,
-            )
-        )
-
-    return lanes
+    return _attribute_cloud_job_counts_to_lanes(kinds, rows)
 
 
 # --- phaze-2u8v.5: burst-lane workload drill-down --------------------------------------------

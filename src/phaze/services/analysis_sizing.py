@@ -332,6 +332,26 @@ def _physical_cores_from_darwin() -> int | None:
         return None
 
 
+def _physical_cores_from_host_topology(schedulable: set[int]) -> tuple[int | None, str]:
+    """The first host topology source that answers, and its name -- ``None`` when none of them does.
+
+    The dispatcher over this module's three per-source readers, in the order
+    :func:`detect_physical_cores` trusts them: Darwin's ``sysctl`` on macOS, and elsewhere sysfs
+    ``thread_siblings_list`` falling back to ``/proc/cpuinfo``. Darwin has no sysfs/procfs fallback
+    chain to descend, so it is asked once and its answer -- including ``None`` -- stands.
+
+    The returned name is the ``source`` label :func:`detect_physical_cores` reports, so it always
+    describes the reader that actually produced the number; the caller supplies its own label for
+    the schedulable-logical last resort this function declines to guess at.
+    """
+    if platform.system() == "Darwin":
+        return _physical_cores_from_darwin(), "darwin:hw.physicalcpu_max"
+    detected = _physical_cores_from_sysfs(schedulable)
+    if detected is None:
+        return _physical_cores_from_proc_cpuinfo(schedulable), "proc:cpuinfo"
+    return detected, "sysfs:thread_siblings_list"
+
+
 def detect_physical_cores() -> tuple[int, str]:
     """Schedulable physical cores, and the name of the source that produced the number.
 
@@ -361,17 +381,7 @@ def detect_physical_cores() -> tuple[int, str]:
     schedulable = _schedulable_cpus()
     quota = _cgroup_cpu_quota()
 
-    detected: int | None = None
-    source = "logical:sched_getaffinity"
-    if platform.system() == "Darwin":
-        detected = _physical_cores_from_darwin()
-        source = "darwin:hw.physicalcpu_max"
-    else:
-        detected = _physical_cores_from_sysfs(schedulable)
-        source = "sysfs:thread_siblings_list"
-        if detected is None:
-            detected = _physical_cores_from_proc_cpuinfo(schedulable)
-            source = "proc:cpuinfo"
+    detected, source = _physical_cores_from_host_topology(schedulable)
 
     if detected is None:
         detected = len(schedulable) or 1
