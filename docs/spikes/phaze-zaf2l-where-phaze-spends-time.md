@@ -49,8 +49,9 @@ observed doing. On the admin UI the heaviest surface is not a page but a **poll*
 index scans per request against tables holding **~38 000 rows total**, and `shell.html` fires it
 **every 5 s on every page** — a **10.68%** continuous duty cycle, **384.5 s of handler time per
 wall hour**, for a browser tab left open. `/pipeline/tracklist-drain-status` costs **1 378.6 ms**
-for a **6 095-byte** response while touching the database essentially not at all (**0.07** scans
-per request), so its cost is `build_drain_queue` building the whole queue to report a status.
+for a **6 095-byte** response, and its database fan-out is **below the measurement noise floor** —
+so unlike the two above, its cost is *not* database time, and `build_drain_queue` building the
+whole queue to report a status is a lead rather than an attribution.
 **SAQ is not a bottleneck and gets no bead:** production queue depth held at **9** across
 **28 samples**, dequeue latency measured **11–24 ms**, and a local burst drained **5 000 jobs at
 318.3/s** — within **3.0%** of the 500-job rate, i.e. flat in depth — against a production
@@ -69,7 +70,7 @@ ______________________________________________________________________
 | --- | --- |
 | **Analysis host** | `vox` — Debian 13 (trixie), kernel 6.12.100+deb13-amd64, k0s v1.36.2, **8 logical CPU**, 32 829 576 KiB (31.31 GiB) capacity. The k0s burst node, **in the production registry and serving real traffic throughout** — it was *not* taken out for this measurement |
 | **Control-plane host** | `host-prod` — Debian 13 (trixie), kernel 6.12.96+deb13-amd64, **14 cores, 125 GB RAM**. Runs `phaze-api`, `phaze-worker`, `phaze-redis` (redis:8-alpine) and `postgres` (**PostgreSQL 18.6**) as Docker containers |
-| **Fileserver host** | `host-store` — 8 cores, 62 GB. Runs the agent workers (`-meta` / `-io` / `-analyze`) and the watcher; it is backend `nox`, `kind = "local"`, `rank 99`, `cap 1` |
+| **Fileserver host** | `host-store` — 8 cores, 62 GB. Runs the agent workers (`-meta` / `-io` / `-analyze`) and the watcher; it backs the registry's local catch entry — `kind = "local"`, `rank 99`, `cap 1` |
 | **Local host** | MacBookPro18,1, macOS 26.6.2, 10 cores, 34 359 738 368 B (32 GiB), Python 3.14.5 — used **only** for the SAQ burst of §5, never for any production figure |
 | **Concurrency** | `backends.toml` sets `vox` to `rank 10`, **`cap = 4`**, `cpu_request 1500m`, `memory_request 3Gi`, `memory_limit 4Gi`. The second Kueue backend, `xenolab`, is **commented out** (disabled 2026-07-14, power incident), so `cap 4` on `vox` plus `cap 1` local is the whole analysis capacity. Four analyze pods were running for the entire measurement window |
 | **Per-file analysis wall clock** | the job's **own** `job_runner_step_ok` line for `step=analyze`, whose `elapsed_ms` the runner takes from its own clock — not an inferred pod age, and not the `kubectl` `AGE` column |
@@ -177,18 +178,28 @@ The staging path — presign, download, verify, extract, callback — costs **1.
 | fine tier (159 windows, 30 s each) | **378.266** | **5.31%** |
 | **coarse tier + model sweep** | **6 741.207** | **94.69%** |
 
-All four pods observed showed the same shape — fine tier complete within minutes of start, then
-silence:
+**Every** pod observed showed the same shape — fine tier complete within minutes, then silence.
+Fine elapsed is measured from each job's own `job_runner_analyze_begin` to its own final
+`job_runner_progress` line, not from pod start:
 
-| pod | file duration (s) | fine windows | pod start (UTC) | fine 100% at (UTC) | fine elapsed |
-| --- | ---: | ---: | --- | --- | ---: |
-| `<set-01>` | 4 761.835 | 159 | 02:20:03 | 02:26:26 | ~378 s |
-| `<set-02>` | 3 906.363 | 130 | 03:00:03 | 03:12:49 | ~762 s |
-| `<set-03>` | 3 514.648 | 117 | 03:40:03 | 03:44:55 | ~288 s |
-| `<set-04>` | 4 200.281 | 140 | 03:45:03 | 03:51:09 | ~362 s |
+| file | duration (s) | fine windows | **fine elapsed (s)** | s / window | fine as % of duration |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `<set-01>` | 4 761.835 | 159 | **378.266** | 2.379 | 7.94% |
+| `<set-02>` | 3 906.363 | 130 | **759.831** | 5.845 | 19.45% |
+| `<set-03>` | 3 514.648 | 117 | **286.066** | 2.445 | 8.14% |
+| `<set-04>` | 4 200.281 | 140 | **360.220** | 2.573 | 8.58% |
+| `<set-05>` | 5 789.803 | 193 | **519.875** | 2.694 | 8.98% |
 
-`<set-01>` then emitted **not one further log line for 1 h 52 m 21 s** while holding **1.6–2.2 CPU
-cores**, until its completion block at 04:18:47.
+Four of the five sit in a tight **2.379–2.694 s per fine window**; `<set-02>` at **5.845 s** is a
+2.4× outlier this spike does not explain and does not guess at — `phaze-b2qs9` §1a records that a
+48 kHz source pays a 48 000 → 44 100 Hz resample in the fine tier that a 44.1 kHz source does not,
+which is a candidate. It could not be settled from the database: `metadata` stores `bitrate` and
+**no sample-rate column at all**, so confirming or refuting it means reading the audio itself.
+Named as an open question rather than answered.
+
+`<set-01>` — the one file that ran to completion inside the window — then emitted **not one
+further log line for 1 h 52 m 21 s** while holding **1.6–2.2 CPU cores**, until its completion
+block at 04:18:47.
 
 **This is by construction, not a fault in the run.** `AnalysisSignals.progress` in
 `src/phaze/services/analysis.py` carries the docstring *"Fire the UI progress channel (fine tier
@@ -214,6 +225,16 @@ the production number:
 | derived — `W ÷ throughput`, from 410 completions over 167.487 h (below) | **1.4715×** |
 | **agreement** | **1.58%** |
 
+A **third**, fully independent corroboration falls out of an existing spike. `phaze-8r6t4`'s
+throughput sweep measured **29.8 files/hour at W=4** (§ its "files/hour vs concurrency — NEW"
+figure) on **synthesized sine files of 180 / 300 / 420 s — mean exactly 300 s**. That is
+**2.4833 audio-hours per wall-hour**, against the **2.7183** measured here from seven days of real
+production completions: **agreement to 9.46%**, with production the faster of the two, which is the
+expected direction because the real corpus's mean file is 3 625.306 s and amortises per-file fixed
+cost over twelve times more audio. Two caveats stated rather than buried: that sweep ran
+`release/2026.8.1-prep` where production now runs `2026.8.5`, and its inputs were synthetic sine
+pairs rather than real mp3. It is a cross-check, not a substitute for the two rows above.
+
 The reconciliation is the operating point, and it was already priced: `phaze-b2qs9` §1b states its
 runs were solo on an idle node, and `phaze-8r6t4` §10 measured **+83.6% per-file wall at W=4
 against W=2**. A solo 0.56–0.79× and a W=4 1.4951× are consistent with each other and with that
@@ -231,13 +252,30 @@ threads on 4 physical cores.
 | **files per wall-hour** | **2.4480** |
 | **audio-hours per wall-hour** | **2.7183** |
 
-What that buys, at the measured rate:
+**Window sensitivity**, because a single window is not a rate. Re-run at 04:41 UTC over four
+window lengths (the 7-day row differs from the table above only because the window had slid by
+~35 minutes):
 
-| question | answer |
-| --- | ---: |
-| drain the **5 582** files with no analysis row | **2 280.2 h = 95.0 days** |
-| drain the **8 079** `cloud_job` rows in `awaiting` | **3 300.2 h = 137.5 days** |
-| re-analyze the whole **11 492.22**-hour archive | **4 227.7 h = 176.2 days** |
+| window | files | span (h) | files/wall-h | **audio-h/wall-h** | implied ratio at W=4 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 3 days | 152 | 70.622 | 2.1523 | 2.4771 | 1.615× |
+| 7 days | 408 | 167.425 | 2.4369 | **2.7163** | 1.473× |
+| 14 days | 1 001 | 335.650 | 2.9823 | 2.9175 | 1.371× |
+| 30 days | 2 577 | 719.294 | 3.5827 | 2.2348 | 1.790× |
+
+Audio-hours per wall-hour holds in a **2.2348–2.9175** band across every window, and the directly
+measured **1.4951×** sits inside the **1.371–1.790×** ratio band that band implies. Files per
+wall-hour is the *less* stable of the two (2.1523–3.5827) precisely because it is blind to the mix
+of durations — which is why every drain estimate below is given as a band rather than a point.
+
+What that buys, at the measured rate — point estimate from the 7-day window, band from the four
+windows above:
+
+| question | point | band |
+| --- | ---: | ---: |
+| drain the **5 582** files with no analysis row | **2 280.2 h = 95.0 days** | 1 558–2 594 h = **65–108 days** |
+| drain the **8 079** `cloud_job` rows in `awaiting` | **3 300.2 h = 137.5 days** | 2 255–3 754 h = **94–156 days** |
+| re-analyze the whole **11 492.22**-hour archive | **4 227.7 h = 176.2 days** | 3 939–5 142 h = **164–214 days** |
 
 ### 3d. Memory
 
