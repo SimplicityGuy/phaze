@@ -127,6 +127,44 @@ def _cue_quote(value: str) -> str:
     return _CUE_CONTROL_CHARS_RE.sub(" ", value).replace('"', "")
 
 
+def _cue_track_record(track_number: int, track: CueTrackData) -> list[str]:
+    """One track's CUE record: its ``TRACK`` header, its REM/TITLE/PERFORMER fields, and its ``INDEX 01``.
+
+    ``track_number`` is the sheet's 1-based sequence number, which is NOT
+    :attr:`CueTrackData.position` -- untimestamped tracks are dropped before numbering, so the sheet
+    always counts 01, 02, 03 without gaps.
+
+    Every field is optional and an absent one emits no line at all, so a track carrying only a
+    timestamp renders as a bare ``TRACK``/``INDEX`` pair. Every value interpolated inside CUE's
+    double quotes goes through :func:`_cue_quote` (phaze-oo35 / phaze-4ea3), not just the filename:
+    a literal quote or control character would otherwise terminate the field or the record early.
+    The Discogs REM block (D-08, D-09) is emitted before the track metadata, matching the order a
+    reader expects to find it in.
+    """
+    record = [f"  TRACK {track_number:02d} AUDIO"]
+
+    # REM comments from Discogs metadata (D-08, D-09) -- phaze-oo35: every value interpolated
+    # inside CUE's double quotes must be sanitized the same way, not just the filename.
+    if track.genre:
+        record.append(f'    REM GENRE "{_cue_quote(track.genre)}"')
+    if track.label:
+        record.append(f'    REM LABEL "{_cue_quote(track.label)}"')
+    if track.year:
+        record.append(f'    REM YEAR "{track.year}"')
+
+    # Track metadata
+    if track.title:
+        record.append(f'    TITLE "{_cue_quote(track.title)}"')
+    if track.artist:
+        record.append(f'    PERFORMER "{_cue_quote(track.artist)}"')
+
+    # INDEX command with converted timestamp (timestamp_seconds guaranteed non-None by the caller's filter)
+    if track.timestamp_seconds is None:  # pragma: no cover — defensive guard; valid_tracks filters None above
+        return record
+    record.append(f"    INDEX 01 {seconds_to_cue_timestamp(track.timestamp_seconds)}")
+    return record
+
+
 def generate_cue_content(audio_filename: str, file_type: str, tracks: list[CueTrackData]) -> str:
     """Generate CUE sheet content as a string.
 
@@ -155,27 +193,7 @@ def generate_cue_content(audio_filename: str, file_type: str, tracks: list[CueTr
     )
 
     for i, track in enumerate(valid_tracks, start=1):
-        lines.append(f"  TRACK {i:02d} AUDIO")
-
-        # REM comments from Discogs metadata (D-08, D-09) -- phaze-oo35: every value interpolated
-        # inside CUE's double quotes must be sanitized the same way, not just the filename.
-        if track.genre:
-            lines.append(f'    REM GENRE "{_cue_quote(track.genre)}"')
-        if track.label:
-            lines.append(f'    REM LABEL "{_cue_quote(track.label)}"')
-        if track.year:
-            lines.append(f'    REM YEAR "{track.year}"')
-
-        # Track metadata
-        if track.title:
-            lines.append(f'    TITLE "{_cue_quote(track.title)}"')
-        if track.artist:
-            lines.append(f'    PERFORMER "{_cue_quote(track.artist)}"')
-
-        # INDEX command with converted timestamp (timestamp_seconds guaranteed non-None by filter above)
-        if track.timestamp_seconds is None:  # pragma: no cover — defensive guard; valid_tracks filters None above
-            continue
-        lines.append(f"    INDEX 01 {seconds_to_cue_timestamp(track.timestamp_seconds)}")
+        lines.extend(_cue_track_record(i, track))
 
     return "\n".join(lines) + "\n"
 
