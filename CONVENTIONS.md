@@ -69,6 +69,69 @@ a rewrite and a force-push — which is disruptive, and on a shared branch may n
 **Prefer never committing the identifier over fixing it later.** When writing up a measurement, use
 the placeholder in the first draft rather than the real name you intend to replace before pushing.
 
+## Group thousands with a comma, never a space
+
+This sits beside "Replace identifiers, never quantities" above — it is the other half of how numbers
+are written in tracked prose: not just that a quantity must survive a scrub intact, but which digits
+it is written with.
+
+Grouped numbers use a **comma**: `4,383`, `11,428`, `350,000`. Four-digit numbers are grouped too —
+`4,383`, never the bare `4383` — so there is one rule, not a threshold to remember for "big enough"
+numbers. Decimals keep the comma on the integer part and the period as the decimal point: `4,761.835`,
+never `4.761,835`.
+
+> **Good:** "11,428 files totalling 11,492 h"
+> **Bad:** "11 428 files totalling 11 492 h" — space grouping, matches no rule, and now disagrees
+> with the rest of the corpus
+
+**Never group an identifier that merely looks numeric** — years (`2026`), ports (`5433`), bead ids
+(`phaze-b2qs9`), version numbers (`3.14`), line numbers, SHAs. Grouping is for quantities, not for
+labels, and telling the two apart is a judgement call about what the digits *mean*, not a pattern a
+script can apply: `.planning/milestones/2026.7.5-ROADMAP.md` contains the string `PERF-02 200K`,
+where `02 200` matches "digits, space, three digits" exactly as well as a genuine quantity would, and
+must never be grouped — the `02` belongs to the identifier `PERF-02`, not to `200K`. That is also why
+this rule has no mechanical guard: a check that grouped numbers on pattern match would reproduce
+exactly this false positive.
+
+### Where this applies
+
+Tracked prose: `docs/**`, root-level `*.md`, spike and design docs, planning notes, commit messages
+and PR bodies. **Not source code** — there, the language's own literal syntax governs, and this rule
+has no opinion on it.
+
+### Why this is written down now
+
+MEASURED 2026-08-26: the corpus already splits on this, and it splits by **genre, not by author**.
+The six MEASUREMENT spikes are space-grouped —
+`docs/spikes/phaze-b2qs9-exhaustive-analysis-measurement.md` (105 space / 0 comma),
+`phaze-han03-essentia-seek.md` (61/0), `phaze-u1n7j-vox-fix-verification.md` (50/0),
+`phaze-rc1q-streaming-vs-standard-mode.md` (36/0), `phaze-i93a-cpp-rewrite-evaluation.md` (33/1),
+`phaze-8r6t4-concurrency-knee-recheck.md` (10/0) — while the DIAGNOSIS spikes and the rest of the
+docs are comma-grouped: `phaze-p3hj.1-audfprint-total-outage-diagnosis.md` (0/13),
+`phaze-d2hgv.6-artifact-seam-inventory.md` (0/3), and the non-spike docs overall (41 space / 105
+comma). Neither style was ever written down anywhere in this repo, so the two families forked
+independently and both look locally consistent.
+
+That gap surfaced concretely: bead `phaze-zaf2l`'s spike (PR #542) came out space-grouped because its
+brief pointed it at `phaze-b2qs9` and `phaze-u1n7j` as "the house standard for a measurement record
+here" — a correct read of those two exemplars, which are 105/0 and 50/0 space-grouped. Matching your
+exemplars exactly is how a convention forks when there is no rule to check against, only neighbours to
+imitate.
+
+**Operator decision 2026-08-26.** Question as put: *"Still open from earlier: whether to write the
+number-formatting convention into CONVENTIONS.md."* Answer as given, verbatim: *"YES. Write the
+convention there. that's why we have that file."* Durable record: bead `phaze-xp9nx`. In the same
+discussion the operator named comma grouping as the standard and space grouping as the deviation —
+*"US standards: 4,383"* against *"European standards of numbers: 4 383"* — which is why the rule
+above is comma grouping rather than space grouping.
+
+**The existing corpus is being converted, not left as-is.** Writing the rule down does not by itself
+touch the ~440 space-grouped matches across 44 tracked files measured above (six spikes alone account
+for 295 of them). Converting them is bead `phaze-3x7xt`, dispatched separately so the rule and the
+backfill do not ride the same diff. A reader who greps `phaze-b2qs9` mid-transition and still finds
+space-grouped numbers there is looking at a corpus in the middle of `phaze-3x7xt`, not at a
+disagreement with this rule.
+
 ## Cite ADRs by filename, never by bare number
 
 Write `docs/design/0015-shared-session-gather.md`, not "ADR-0015". Where the prose reads better
