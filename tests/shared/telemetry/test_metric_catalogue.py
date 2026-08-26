@@ -38,7 +38,21 @@ SRC = Path(__file__).resolve().parents[3] / "src" / "phaze"
 #: Pinned so a change to the budget is a deliberate edit to this number and shows up in a
 #: diff, rather than drifting a hundred series at a time. Raising it is allowed; doing so
 #: without noticing is what this pin prevents.
-SERIES_CEILING = 8571
+SERIES_CEILING = 8587
+
+#: Names the catalogue doc mentions in order to say phaze does NOT emit them. The reverse
+#: doc-sync check would otherwise flag the very passages that exist to stop someone
+#: re-introducing them -- a guard that punishes recording a defect is a guard that gets the
+#: record deleted rather than the defect fixed. Each entry is a name a REAL collector produced
+#: from an earlier, wrong catalogue entry, documented in section 5 with what it cost.
+_NAMED_AS_REJECTED: frozenset[str] = frozenset(
+    {
+        # `unit="1"` on a gauge appends `_ratio`; the metric is now
+        # `phaze_pipeline_stage_inflight` with a UCUM annotation instead.
+        "phaze_saq_queue_depth_ratio",
+        "phaze_saq_queue_depth",
+    }
+)
 
 
 def test_every_label_states_a_finite_bound() -> None:
@@ -201,7 +215,9 @@ def test_the_documented_catalogue_lists_every_metric() -> None:
 
     documented = set(re.findall(r"`(phaze_[a-z0-9_]+)`", doc))
     known = {_prometheus_family(spec) for spec in CATALOGUE}
-    stale = sorted(name for name in documented if name not in known and not name.endswith(("_bucket", "_sum", "_count")))
+    stale = sorted(
+        name for name in documented if name not in known and not name.endswith(("_bucket", "_sum", "_count")) and name not in _NAMED_AS_REJECTED
+    )
     assert not stale, f"docs/telemetry/metric-catalogue.md documents metric(s) phaze does not emit: {stale}"
 
 

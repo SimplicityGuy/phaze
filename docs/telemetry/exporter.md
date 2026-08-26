@@ -164,6 +164,21 @@ does the work** (the worker and the analysis child, not only the api); the colle
 for `failed to convert metric` (a label collision drops a metric silently at the scrape
 endpoint while logging there); and that at least one export interval (15 s) has elapsed.
 
+## 5a. Dashboards and alert rules
+
+Both are artifacts you may adopt; neither is deployed from this repo.
+
+- **Dashboards** — `dashboards/*.json`, four of them. Import through Grafana's normal
+  Dashboards → Import flow and pick your own Prometheus: every panel references a
+  `${datasource}` **template variable** and no hard-coded uid appears anywhere. Verified by
+  importing all four into a running **Grafana 12.3.1** against a datasource whose uid was
+  chosen to be unrelated to anything this repo provisions, and running every panel's PromQL
+  through the query API: **30 of 30 panels returned real data**
+  (`measurements/dashboard-verification.md`).
+- **Alert rules** — `alerts/phaze-alerts.yml`, three of them, with four candidates
+  documented for *not* being shipped. `docs/telemetry/alerting.md` has the reasoning and the
+  `promtool` commands.
+
 ## 6. What is explicitly NOT decided here
 
 Retention. Storage sizing. Scrape intervals. High availability. Alert routing. Dashboard

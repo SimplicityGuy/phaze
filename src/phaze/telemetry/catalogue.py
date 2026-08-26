@@ -222,16 +222,41 @@ MODEL_COMBINATIONS = 34
 # label combination, so the 34-model instruments pay 34x whatever is added here; a
 # 20-bucket ladder on those three instruments alone would mint 2,346 series.
 
-#: Sub-millisecond to a minute. For per-inference and per-graph work.
-BUCKETS_MODEL_OP: tuple[float, ...] = (0.001, 0.005, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0)
+#: Milliseconds to a few seconds. GRAPH construction and release only.
+#:
+#: MEASURED (docs/telemetry/measurements/, 30-minute file, real 34-graph sweep): graph BUILD
+#: is 61.8% at or under 20 ms and 97.1% at or under 250 ms; graph RELEASE is 79.4% under
+#: 20 ms and 97.1% under 50 ms. Both distributions live almost entirely inside what the
+#: original shared ladder covered with a single 0.005 -> 0.02 -> 0.05 step, so this ladder is
+#: densest exactly there. It stops at 10 s: a graph construction that takes longer than that
+#: is a fault, not a distribution.
+BUCKETS_GRAPH_OP: tuple[float, ...] = (0.002, 0.005, 0.01, 0.02, 0.035, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 10.0)
+
+#: Tens of milliseconds to a minute. Per-INFERENCE and per-fine-window work.
+#:
+#: MEASURED: inference is 2.6% at or under 1 s, 94.7% at or under 2.5 s and 100% at or under
+#: 5 s -- i.e. the whole distribution sat in ONE bucket of the original ladder, so its p95 was
+#: a bucket boundary rather than a number. Fine-window measurement was 100% inside
+#: (0.25, 0.5]: also one bucket. Split off from the graph ladder because the two populations
+#: are two orders of magnitude apart and no single short ladder resolves both.
+BUCKETS_INFERENCE: tuple[float, ...] = (0.05, 0.1, 0.25, 0.4, 0.6, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0, 30.0, 60.0)
 
 #: Seconds to tens of minutes. For a chunk decode or a whole-model sweep over a chunk.
-BUCKETS_CHUNK: tuple[float, ...] = (0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0)
+#:
+#: MEASURED: a model sweep over a 10-window chunk was 2.9% at or under 10 s and 100% at or
+#: under 30 s -- again a single bucket. Production chunks hold up to 30 windows, so a sweep
+#: there is around 3x longer; 15 / 45 / 90 give the 10-90 s band the resolution the measured
+#: shape says it needs, without lengthening a ladder that three 34-model instruments pay for.
+BUCKETS_CHUNK: tuple[float, ...] = (0.5, 1.0, 2.5, 5.0, 10.0, 15.0, 30.0, 45.0, 90.0, 180.0, 300.0, 600.0, 1800.0)
 
 #: Seconds to twelve hours. For a whole tier or a whole file -- the archive's longest
 #: file is 43,466.880 s (12 h 04 m), so the ladder must reach past it or the top bucket
 #: is +Inf for every long set and the p99 is unreadable exactly where it matters.
-BUCKETS_RUN: tuple[float, ...] = (10.0, 30.0, 60.0, 300.0, 900.0, 1800.0, 3600.0, 7200.0, 14400.0, 28800.0, 43200.0, 86400.0)
+#: MEASURED: on a 30-minute file the fine tier landed in (60, 300] and the coarse tier in
+#: (300, 900]. Production's own split is 378.266 s fine against 6,741.207 s coarse
+#: (phaze-zaf2l section 3b), so 150 and 600 are added to resolve the fine tier, which would
+#: otherwise share one bucket across a 5x range.
+BUCKETS_RUN: tuple[float, ...] = (10.0, 30.0, 60.0, 150.0, 300.0, 600.0, 900.0, 1800.0, 3600.0, 7200.0, 14400.0, 28800.0, 43200.0, 86400.0)
 
 #: Milliseconds to ten seconds. For HTTP handlers and database statements. The admin UI's
 #: two heavy partials measure 534.0 ms and 1,378.6 ms (phaze-zaf2l section 4), so the ladder
@@ -406,7 +431,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         kind="histogram",
         unit="s",
         description="Wall clock of one fine window's RhythmExtractor2013 + KeyExtractor measurement.",
-        buckets=BUCKETS_MODEL_OP,
+        buckets=BUCKETS_INFERENCE,
     ),
     MetricSpec(
         name="phaze.analysis.model.inference.duration",
@@ -417,7 +442,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
             "that phaze-8ifq8 asks for. Recorded per window and per model; the WINDOW is not a label."
         ),
         labels=MODEL_LABELS,
-        buckets=BUCKETS_MODEL_OP,
+        buckets=BUCKETS_INFERENCE,
         realized_combinations=MODEL_COMBINATIONS,
     ),
     MetricSpec(
@@ -429,7 +454,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
             "rather than once per file, which is the cost the chunking trades for a duration-independent peak."
         ),
         labels=MODEL_LABELS,
-        buckets=BUCKETS_MODEL_OP,
+        buckets=BUCKETS_GRAPH_OP,
         realized_combinations=MODEL_COMBINATIONS,
     ),
     MetricSpec(
@@ -438,7 +463,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         unit="s",
         description="Releasing one TensorflowPredict* graph -- the phaze-15sw one-graph-resident invariant's other half.",
         labels=MODEL_LABELS,
-        buckets=BUCKETS_MODEL_OP,
+        buckets=BUCKETS_GRAPH_OP,
         realized_combinations=MODEL_COMBINATIONS,
     ),
     MetricSpec(

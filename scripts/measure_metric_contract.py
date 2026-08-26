@@ -125,10 +125,17 @@ def main() -> int:
     parser.add_argument("--collector-metrics", default="http://localhost:8889/metrics", help="the collector's Prometheus exposition")
     parser.add_argument("--instance", default="measurement-host")
     parser.add_argument("--out", default="", help="directory to write the raw exposition and a JSON summary into")
+    parser.add_argument(
+        "--settle-sec", type=int, default=20, help="wait for the collector's batch processor before scraping; see the note at the call site"
+    )
+    parser.add_argument("--scrape-only", action="store_true", help="skip the analysis and report on what the collector already holds")
     args = parser.parse_args()
 
     before = parse(scrape(args.collector_metrics))[1]
     emit(f"# collector already exposing {sum(before.values())} phaze series before the run")
+
+    if args.scrape_only:
+        return _report(scrape(args.collector_metrics), {}, 0, args)
 
     scratch = Path(tempfile.mkdtemp(prefix="phaze-metric-contract-"))
     audio = str(scratch / f"sine-{args.minutes}min.wav")
@@ -162,7 +169,23 @@ def main() -> int:
         raise SystemExit(msg)
     emit(f"#   wall {report['wall_sec']:.2f}s  peak {report['peak_rss_gib']} GiB  flushed={report['flushed']}")
 
-    exposition = scrape(args.collector_metrics)
+    # MEASURED, and it cost a whole 13-minute run to learn: the collector's `batch` processor
+    # holds a push for up to its own timeout (5 s in the example config) before the Prometheus
+    # exporter ever sees it. Scraping the instant the producer exits therefore reports
+    # everything EXCEPT the final export -- which for an analysis is the last model sweeps,
+    # the derive phase and the whole-run totals, i.e. exactly the tail that matters. The first
+    # run of this script scraped immediately and reported 2,058 series and 32 of 34 models;
+    # the same collector, read a minute later, held 2,242 series and all 34.
+    #
+    # This is not a harness quirk -- it is what homelab sees too. A short-lived analyze pod's
+    # final push is not at the scrape endpoint until the collector's batcher has flushed it.
+    emit(f"# waiting {args.settle_sec}s for the collector's batch processor to flush the final export")
+    time.sleep(args.settle_sec)
+
+    return _report(scrape(args.collector_metrics), report, wall, args)
+
+
+def _report(exposition: str, report: dict[str, object], wall: float, args: argparse.Namespace) -> int:
     types, series, buckets = parse(exposition)
 
     emit()
@@ -178,11 +201,14 @@ def main() -> int:
     emit()
     emit("## Emission rate")
     emit()
-    emit(f"- analysis wall clock: **{report['wall_sec']:.2f} s** for **{args.minutes * 60} s** of audio")
-    emit(f"- fine windows: **{report['fine_windows_analyzed']} / {report['fine_windows_total']}**")
-    emit(f"- coarse windows: **{report['coarse_windows_analyzed']} / {report['coarse_windows_total']}**")
-    emit(f"- total series at the scrape endpoint after the run: **{sum(series.values())}**")
-    emit(f"- harness wall clock including synthesis: **{wall:.2f} s**")
+    if report:
+        emit(f"- analysis wall clock: **{report['wall_sec']:.2f} s** for **{args.minutes * 60} s** of audio")
+        emit(f"- fine windows: **{report['fine_windows_analyzed']} / {report['fine_windows_total']}**")
+        emit(f"- coarse windows: **{report['coarse_windows_analyzed']} / {report['coarse_windows_total']}**")
+        emit(f"- harness wall clock including synthesis: **{wall:.2f} s**")
+    emit(f"- total series at the scrape endpoint: **{sum(series.values())}**")
+    model_combinations = len(set(re.findall(r'model_name="[^"]+",model_variant="[^"]+"', exposition)))
+    emit(f"- distinct model combinations observed: **{model_combinations}** (the registry declares 34)")
 
     emit()
     emit("## Measured histogram distributions")

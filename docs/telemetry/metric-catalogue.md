@@ -62,16 +62,16 @@ not what the naming rules suggest on paper.
 
 | Prometheus family | type | labels (each label's bound) | budgeted combinations | series |
 | --- | --- | --- | ---: | ---: |
-| `phaze_analysis_run_duration_seconds` | histogram | `outcome` (2) | 2 | 30 |
-| `phaze_analysis_tier_duration_seconds` | histogram | `tier` (2) | 2 | 30 |
-| `phaze_analysis_chunk_decode_duration_seconds` | histogram | `tier` (2) | 2 | 28 |
-| `phaze_analysis_chunk_derive_duration_seconds` | histogram | `tier` (2) | 2 | 28 |
+| `phaze_analysis_run_duration_seconds` | histogram | `outcome` (2) | 2 | 34 |
+| `phaze_analysis_tier_duration_seconds` | histogram | `tier` (2) | 2 | 34 |
+| `phaze_analysis_chunk_decode_duration_seconds` | histogram | `tier` (2) | 2 | 32 |
+| `phaze_analysis_chunk_derive_duration_seconds` | histogram | `tier` (2) | 2 | 32 |
 | `phaze_analysis_chunk_peak_rss_bytes` | histogram | `tier` (2) | 2 | 26 |
 | `phaze_analysis_fine_window_duration_seconds` | histogram | *none* | 1 | 16 |
 | `phaze_analysis_model_inference_duration_seconds` | histogram | `model_name` (12), `model_variant` (4), `classifier_type` (3) | 34 *(not 144)* | 544 |
-| `phaze_analysis_model_graph_build_duration_seconds` | histogram | `model_name` (12), `model_variant` (4), `classifier_type` (3) | 34 *(not 144)* | 544 |
-| `phaze_analysis_model_graph_release_duration_seconds` | histogram | `model_name` (12), `model_variant` (4), `classifier_type` (3) | 34 *(not 144)* | 544 |
-| `phaze_analysis_model_sweep_duration_seconds` | histogram | `model_name` (12), `model_variant` (4), `classifier_type` (3) | 34 *(not 144)* | 476 |
+| `phaze_analysis_model_graph_build_duration_seconds` | histogram | `model_name` (12), `model_variant` (4), `classifier_type` (3) | 34 *(not 144)* | 510 |
+| `phaze_analysis_model_graph_release_duration_seconds` | histogram | `model_name` (12), `model_variant` (4), `classifier_type` (3) | 34 *(not 144)* | 510 |
+| `phaze_analysis_model_sweep_duration_seconds` | histogram | `model_name` (12), `model_variant` (4), `classifier_type` (3) | 34 *(not 144)* | 544 |
 | `phaze_analysis_windows_total` | counter | `tier` (2), `outcome` (2) | 4 | 4 |
 | `phaze_analysis_chunks_total` | counter | `tier` (2) | 2 | 2 |
 | `phaze_analysis_audio_duration_seconds_total` | counter | `outcome` (2) | 2 | 2 |
@@ -84,7 +84,7 @@ not what the naming rules suggest on paper.
 | `phaze_db_statements_total` | counter | `db_operation` (8) | 8 | 8 |
 | `phaze_pipeline_stage_transitions_total` | counter | `stage` (64), `transition` (2) | 64 *(not 128)* | 64 |
 | `phaze_pipeline_backlog` | gauge | `backlog` (12) | 12 | 12 |
-| | | | **total** | **8,571** |
+| | | | **total** | **8,587** |
 
 ### The arithmetic, where the budget is not the cartesian product
 
@@ -143,6 +143,102 @@ per-instrument bucket argument, because aggregation is a provider concern. `crea
 does accept an `explicit_bucket_boundaries_advisory`, and phaze deliberately does not use it —
 an advisory is a hint a provider may ignore, and having two mechanisms that can disagree is
 worse than having one that binds.
+
+## 5. Measured against a real collector
+
+Everything in this section was read off a **live
+`otel/opentelemetry-collector-contrib` 0.140.0** fed by a **real 30-minute analysis** — real
+essentia, the real 34-graph model set, the real D-07 chunk loop. Recorded output: `measurements/metric-contract-2026-08-26.md`; the run's own report is
+`measurements/analysis-run.json`. The raw 588 KB collector exposition is deliberately NOT
+committed — it is reproducible in one command and its parsed form is the table below.
+Reproduce with:
+
+```bash
+docker compose -f docker-compose.telemetry.example.yml up -d
+uv run python scripts/measure_metric_contract.py --minutes 30 --models-dir <models>
+```
+
+**Why against a real collector and not against the naming rules.** The OTLP → Prometheus
+translation is the artifact's real consumer (ADR-0012 rule 3), and reading the rules on
+paper would have shipped three defects:
+
+| what the real collector showed | what it would have cost |
+| --- | --- |
+| a metric label named `job` collides with the `job` Prometheus derives from `service.name`; the collector logs `duplicate label names in constant and variable labels` and **drops the whole metric** | `phaze_saq_job_duration_seconds` and `phaze_saq_jobs_total` would have been **invisible in production**, with nothing at the scrape endpoint to notice |
+| `unit="1"` on a **gauge** becomes a `_ratio` **suffix** — `phaze_saq_queue_depth_ratio` — while a counter with the same unit is unaffected | a queue depth named `_ratio`, baked into every dashboard query and alert rule homelab writes |
+| the collector's `batch` processor holds a push for up to its timeout; scraping the instant a producer exits misses the **final** export | the first run of the harness reported **2,058** series and **32 of 34** models; the same collector read a minute later held **2,242** and all **34**. For homelab this is real: a short-lived analyze pod's final push is not at the scrape endpoint until the batcher flushes |
+
+A fourth, in `deploy/telemetry/otel-collector.example.yaml`: the Prometheus exporter drops a
+series it has not seen updated within `metric_expiration` (**default 5 m**), so an analyze
+pod's counters vanish from the endpoint five minutes after it exits. Observed directly: 203
+phaze series, then zero, with the collector healthy and the Prometheus target still `up`.
+
+### 5a. Series minted by ONE analysis
+
+A single 30-minute analysis (60 fine windows, 10 coarse windows, 798.25 s wall clock,
+34/34 model combinations observed):
+
+| Prometheus family | series |
+| --- | ---: |
+| `phaze_analysis_model_graph_build_duration_seconds` | 544 |
+| `phaze_analysis_model_graph_release_duration_seconds` | 544 |
+| `phaze_analysis_model_inference_duration_seconds` | 544 |
+| `phaze_analysis_model_sweep_duration_seconds` | 476 |
+| `phaze_analysis_tier_duration_seconds` | 30 |
+| `phaze_analysis_chunk_decode_duration_seconds` | 28 |
+| `phaze_analysis_chunk_peak_rss_bytes` | 26 |
+| `phaze_analysis_fine_window_duration_seconds` | 16 |
+| `phaze_analysis_run_duration_seconds` | 15 |
+| `phaze_analysis_chunk_derive_duration_seconds` | 14 |
+| `phaze_analysis_windows_total` | 2 |
+| `phaze_analysis_chunks_total` | 2 |
+| `phaze_analysis_audio_duration_seconds_total` | 1 |
+| **total** | **2,242** |
+
+*(Series counts are from the ladders in force at measurement time; the retuning in §4
+changes some of them. The ceiling in §3 is authoritative.)*
+
+**The number that matters for homelab is that this is a CEILING already reached.** 2,242 is
+the analysis role's *whole* contribution — the 34 models are all observed within one file,
+so the **second** file adds **zero** new series. It does not grow with the archive. That is
+the entire point of keeping file identity off the labels: 11,428 files cost the same 2,242
+series as one.
+
+Emission rate: those 2,242 series were minted over **798.25 s** and are then refreshed once
+per `OTEL_METRIC_EXPORT_INTERVAL` (15 s by default), i.e. **~150 datapoint-updates per
+second** at steady state with one analysis running, and four times that at the production
+`cap = 4`.
+
+### 5b. The distributions the buckets in §4 were chosen from
+
+Measured on the same run. Cumulative share at each boundary of the ladder **in force at the
+time** — these are the observations §4's retuning responds to.
+
+| instrument | n | what the measurement showed |
+| --- | ---: | --- |
+| graph **build** | 34 | 61.8% ≤ 20 ms, 67.6% ≤ 100 ms, 97.1% ≤ 250 ms, 100% ≤ 500 ms |
+| graph **release** | 34 | 79.4% ≤ 20 ms, 97.1% ≤ 50 ms, 100% ≤ 100 ms |
+| **inference** (per model, per window) | 340 | 0% ≤ 500 ms, 2.6% ≤ 1 s, **94.7% ≤ 2.5 s**, 100% ≤ 5 s |
+| **model sweep** (per model, per chunk) | 34 | 2.9% ≤ 10 s, **100% ≤ 30 s** |
+| **fine window** | 60 | 0% ≤ 250 ms, **100% ≤ 500 ms** |
+| chunk **decode** | 2 | one ≤ 5 s (fine), one ≤ 60 s (coarse) |
+| chunk **derive** | 1 | ≤ 500 ms |
+| chunk **peak RSS** | 2 | one in (1.07, 1.61] GiB at the fine boundary, one in (4.29, 6.44] GiB at the coarse boundary |
+| **tier** | 2 | one in (60, 300] s (fine), one in (300, 900] s (coarse) |
+| **run** | 1 | in (300, 900] s |
+
+**Three of these sat entirely inside a single bucket** — inference, model sweep and fine
+window — which means their p95 was a bucket boundary rather than a number. That is exactly
+the failure a default ladder produces, reproduced on a ladder that had been reasoned about
+rather than measured. §4's ladders are the response: `BUCKETS_GRAPH_OP` and
+`BUCKETS_INFERENCE` split apart because the two populations are two orders of magnitude
+apart, `BUCKETS_CHUNK` gains 15 / 45 / 90 s, and `BUCKETS_RUN` gains 150 / 600 s.
+
+**What this run does NOT establish.** It is one 30-minute file of synthetic audio on macOS.
+Absolute values do not transfer to the Linux burst node (peak RSS here is ~4.7 GiB against a
+measured 1.50–1.67 GiB there), and a production coarse chunk holds up to 30 windows rather
+than 10, so a sweep there is roughly 3× longer. The ladders are sized with that in mind, and
+the first weeks of real telemetry are what will confirm or refute them.
 
 ## 6. The guard that fails loudly
 
