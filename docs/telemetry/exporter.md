@@ -32,6 +32,15 @@ Signal-specific endpoints (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`,
 `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`) work too, and either one alone is enough to turn
 telemetry on.
 
+**`OTEL_SDK_DISABLED=true` turns it off again, and phaze says so.** That is the OpenTelemetry
+SDK's own kill switch, so it is the right way to disable telemetry for a process without
+touching the endpoint configuration — a CI runner, a one-off script, a tool that wraps phaze.
+phaze checks it explicitly and logs `telemetry_off_sdk_disabled` rather than installing
+providers that would accept every call and record nothing: under the kill switch the SDK hands
+out no-op meters and tracers from providers that construct perfectly happily, so "configured"
+and "recording" would otherwise part company silently. Only a case-insensitive `true` counts,
+matching the SDK's own parsing.
+
 Every phaze process configures itself independently, because each is its own OS process:
 the api through its FastAPI lifespan, the control and agent workers through their SAQ
 startup hooks, and the exec'd analysis child through its `main`. **A k8s analyze Job

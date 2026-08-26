@@ -169,6 +169,12 @@ def configure_telemetry(role: str, *, service_name: str | None = None) -> bool:
         if not _env.endpoint_configured():
             log.debug("telemetry_off_no_endpoint")
             return False
+        if _env.sdk_disabled():
+            # The SDK's own kill switch. Installing providers anyway would "succeed" and then
+            # record nothing, which is the worst of both: an operator reading the boot log
+            # would believe telemetry is on. Say so instead.
+            log.info("telemetry_off_sdk_disabled role=%s (%s=true)", role, _env.SDK_DISABLED_ENV)
+            return False
         try:
             _env.apply_export_defaults()
             resolved = service_name or SERVICE_NAMES.get(role, f"phaze-{role}")

@@ -213,3 +213,52 @@ def test_a_degraded_stage_activity_read_publishes_nothing(telemetry_sink: Any) -
 
     telemetry_pipeline.record_stage_inflight(StageActivitySnapshot(counts={"analyze": {"queued": 9, "active": 4}}, available=True))
     assert len(telemetry_sink.attribute_sets("phaze.pipeline.stage.inflight")) == 2
+
+
+def test_the_sdk_kill_switch_is_honoured_loudly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``OTEL_SDK_DISABLED=true`` means OFF, and phaze says so rather than pretending.
+
+    It is the SDK's own kill switch, and the SDK honours it by handing out NO-OP meters and
+    tracers from providers that construct fine and accept every call. Installing providers
+    anyway would have `configure_telemetry` return True and log `telemetry_on` while nothing
+    was ever recorded -- an operator reading the boot log would believe telemetry was
+    running.
+
+    MEASURED: `bh work submit` sets this in its clean-checkout validation environment, which
+    is how it was found -- 24 of this package's tests failed there and nowhere else.
+    """
+    monkeypatch.setenv(_env.ENDPOINT_ENV, BLACK_HOLE)
+    monkeypatch.setenv(_env.SDK_DISABLED_ENV, "true")
+    bootstrap._reset_for_tests()
+    assert bootstrap.configure_telemetry("api") is False
+
+    # The SDK's own spelling, matched exactly: anything but a case-insensitive "true" is not
+    # the kill switch, and reading it more loosely would turn telemetry off by surprise.
+    for value, expected in (("true", True), ("TRUE", True), ("  True  ", True), ("false", False), ("1", False), ("", False)):
+        monkeypatch.setenv(_env.SDK_DISABLED_ENV, value)
+        assert _env.sdk_disabled() is expected, f"{value!r} parsed as {not expected}"
+
+
+def test_a_disabled_sdk_provider_really_does_record_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The mechanism itself, pinned against the installed SDK rather than assumed.
+
+    This is what makes the guard above load-bearing: a provider built under the kill switch
+    is not an error, it is a silence. Verified here so an SDK upgrade that changed the
+    behaviour would fail this test instead of quietly re-enabling a path phaze reports as off.
+    """
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    monkeypatch.setenv(_env.SDK_DISABLED_ENV, "true")
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader], shutdown_on_exit=False)
+    provider.get_meter("probe").create_counter("probe.counter").add(1)
+    data = reader.get_metrics_data()
+    recorded = [
+        metric.name
+        for resource_metric in getattr(data, "resource_metrics", ()) or ()
+        for scope_metric in resource_metric.scope_metrics
+        for metric in scope_metric.metrics
+    ]
+    assert recorded == [], f"OTEL_SDK_DISABLED=true no longer silences the SDK; it recorded {recorded}"
+    provider.shutdown()

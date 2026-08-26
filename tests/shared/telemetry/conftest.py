@@ -32,8 +32,22 @@ if TYPE_CHECKING:
 
 @pytest.fixture(autouse=True)
 def strict_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make an undeclared metric attribute a test failure rather than a dropped label."""
+    """Make an undeclared metric attribute a test failure rather than a dropped label.
+
+    Also clears ``OTEL_SDK_DISABLED``, and that is the important half. It is the SDK's own
+    kill switch: with it set to ``true`` a provider constructs fine, accepts every call and
+    hands out NO-OP meters and tracers. These tests exercise phaze's instrumentation and must
+    not inherit the ambient environment's preference about whether telemetry runs.
+
+    MEASURED, and it cost two 23-minute validation runs: `bh work submit` sets
+    ``OTEL_SDK_DISABLED=true`` in its clean-checkout validation environment -- a perfectly
+    reasonable thing for a tool with its own telemetry to do. Twenty-four of this package's
+    tests failed there, deterministically, and passed everywhere else, including in a bare
+    `git worktree` provisioned from scratch. Read off the live process with
+    ``ps eww -p $(pgrep -f bin/pytest)``.
+    """
     monkeypatch.setenv(_env.STRICT_ENV, "1")
+    monkeypatch.delenv(_env.SDK_DISABLED_ENV, raising=False)
 
 
 def _install_providers() -> tuple[InMemoryMetricReader, InMemorySpanExporter, MeterProvider, TracerProvider]:

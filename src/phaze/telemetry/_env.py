@@ -68,6 +68,30 @@ DEFAULT_FLUSH_TIMEOUT_MS = 3000
 
 STRICT_ENV = "PHAZE_TELEMETRY_STRICT"
 
+#: The OpenTelemetry SDK's OWN kill switch, and it is not phaze's to reinterpret. When it is
+#: ``true`` the SDK's providers hand out no-op meters and tracers -- they construct fine, they
+#: accept every call, and they record nothing. phaze honours it, and honours it LOUDLY: an
+#: operator who has configured an endpoint AND set this deserves to be told telemetry is off,
+#: rather than to find a live-looking provider that emits nothing.
+#:
+#: MEASURED 2026-08-26: `bh work submit` sets `OTEL_SDK_DISABLED=true` in the environment of
+#: its clean-checkout validation, which is a perfectly reasonable thing for a tool with its own
+#: telemetry to do. It made 24 of phaze's own telemetry tests fail there and nowhere else --
+#: the tests exercise phaze's instrumentation and must not inherit the ambient environment's
+#: preference about whether telemetry runs. `tests/shared/telemetry/conftest.py` clears it.
+SDK_DISABLED_ENV = "OTEL_SDK_DISABLED"
+
+
+def sdk_disabled(environ: dict[str, str] | None = None) -> bool:
+    """True when ``OTEL_SDK_DISABLED`` is set to ``true``, matching the SDK's own parsing.
+
+    The SDK compares ``environ.get(...).lower().strip() == "true"``, so this does the same:
+    reading it differently would leave phaze reporting telemetry ON while every provider
+    handed out no-ops.
+    """
+    env = os.environ if environ is None else environ
+    return env.get(SDK_DISABLED_ENV, "").lower().strip() == "true"
+
 
 def endpoint_configured(environ: dict[str, str] | None = None) -> bool:
     """True when ANY OTLP endpoint variable carries a non-empty value.
