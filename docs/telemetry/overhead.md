@@ -14,6 +14,21 @@ drained and uncontended.
 | off | 2,001.06 | 0.5591× | **1.4956** | 0.000 | — |
 | blackhole | 2,001.93 | 0.5594× | **1.5089** | 4.001 | **+0.04%** |
 
+**Provenance of the harness, because reproducibility is the point of this criterion.** The
+figures were produced by `scripts/telemetry_overhead.py` as committed here, invoked with
+`--file` against the corpus file. The copy that executed on the node is **not byte-identical**
+to the committed one: verified on the node by the dispatcher, a comment-stripped token-stream
+comparison matches and a plain `diff` shows the only differing lines are **lint-suppression
+comments** — the split `noqa` / `nosec` form the repo needs (see `CONVENTIONS.md`) versus the
+single-line form the node copy carried. The executable code is the same; the bytes differ only
+in comments.
+
+> An earlier draft of this provenance note quoted an `ast.dump` fingerprint as if it were a
+> portable identity. It is not — `ast.dump` output is not stable across Python versions, and
+> the job image runs **3.13** while the development worktree runs **3.14**, so the same file
+> hashes differently in the two places. Use `git hash-object` for a byte identity, or a
+> token-stream comparison for a code identity; do not use an AST dump for either.
+
 **The rig is calibrated against a recorded value, not free-floating.**
 `docs/spikes/phaze-u1n7j-vox-fix-verification.md` records **1.50 GiB at 1:00** post-D-09, on
 this node, on the deployed image. This run measured **1.4956 GiB at 59 m 39 s** — agreement to
