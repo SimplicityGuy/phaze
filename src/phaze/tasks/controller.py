@@ -13,6 +13,17 @@ This module does NOT import `phaze.tasks.pool` (that belongs to the agent role p
 controller and agent_worker are forbidden -- the import-boundary test in
 Plan 10 enforces the symmetric invariant for agent_worker.
 
+phaze-48ghg.7: repowise's health index flags a `hidden_coupling` between this module and
+`phaze.models.file` (60% of their shared commits, no static dependency -- this module never
+imports `FileRecord`). That is by design: this module is a composition root that registers task
+functions from `phaze.tasks.*`, and it is THOSE modules (reenqueue, scan_reaper,
+release_awaiting_cloud, submit_cloud_job, reconcile_cloud_jobs, ...) that read/write the `files`
+table. The coupling is real, not spurious -- every shared commit in the git history is a "Phase N"
+pipeline-feature landing that adds a new tracked-file signal AND a new/changed entry in
+`settings["functions"]` / `settings["cron_jobs"]` below in the same change -- it just travels
+through the task-module layer rather than a direct import, so a static import graph cannot see it.
+See `phaze.models.file.FileRecord`'s docstring for the matching note.
+
 Docker invocation (set by Plan 13's docker-compose.yml update):
     services:
       worker:
