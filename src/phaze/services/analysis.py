@@ -78,7 +78,7 @@ from phaze.services.analysis_windows import (
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
 
 
 # Suppress TF C++ logging before any essentia/TF import
@@ -337,6 +337,35 @@ def _release_classifier(model_filename: str) -> None:
     gc.collect()
 
 
+def _vm_hwm_from_status_lines(status_lines: Iterable[str]) -> float | None:
+    """``VmHWM`` in GiB from ``/proc/self/status``'s lines, or ``None`` if the field is absent.
+
+    Split out of :func:`_peak_rss_gib` (phaze-48ghg.3) so the kB divisor -- the one number an
+    error here would misreport by 1024x -- sits next to the ``proc(5)`` citation that fixes
+    it, rather than four levels inside a platform dispatch. It parses lines and reads nothing.
+    """
+    for line in status_lines:
+        if line.startswith("VmHWM:"):
+            vm_hwm_kib = int(line.split()[1])  # proc(5): always kB, never bytes
+            return vm_hwm_kib / (1024 * 1024)
+    return None
+
+
+def _vm_hwm_gib() -> float | None:
+    """The Linux kernel's own peak-RSS accounting, or ``None`` when ``/proc`` is unreadable.
+
+    ``None`` covers both ways the source can fail to answer -- ``/proc/self/status`` cannot be
+    opened or read (a sandboxed or non-Linux-proc container), or it can but carries no
+    ``VmHWM:`` line -- because :func:`_peak_rss_gib` falls back to ``ru_maxrss`` in exactly
+    the same way for both.
+    """
+    try:
+        with Path("/proc/self/status").open() as status_file:
+            return _vm_hwm_from_status_lines(status_file)
+    except OSError:
+        return None
+
+
 def _peak_rss_gib() -> float | None:
     """This process's peak (high-water) RSS in GiB so far, or ``None`` if unreadable.
 
@@ -362,14 +391,9 @@ def _peak_rss_gib() -> float | None:
     """
     system = platform.system()
     if system == "Linux":
-        try:
-            with Path("/proc/self/status").open() as status_file:
-                for line in status_file:
-                    if line.startswith("VmHWM:"):
-                        vm_hwm_kib = int(line.split()[1])  # proc(5): always kB, never bytes
-                        return vm_hwm_kib / (1024 * 1024)
-        except OSError:
-            pass
+        kernel_peak_gib = _vm_hwm_gib()
+        if kernel_peak_gib is not None:
+            return kernel_peak_gib
         # /proc unreadable (e.g. a sandboxed or non-Linux-proc container): ru_maxrss is KiB
         # on Linux, unlike Darwin's bytes -- see the docstring's platform note.
         return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024)
@@ -823,37 +847,82 @@ def _sweep_one_model(
     earlier model already failed on and added to when this model fails on one.
     Returns ``{window_index: (mean_activations, labels)}`` for the windows that succeeded.
 
-    The prediction call order per window is ``_predict_single`` then ``_get_labels``,
-    identical to the window-major loop this replaced, so a raising ``_get_labels`` fails
-    exactly the same windows it failed before (all of them, one at a time).
+    This function is now exactly the residency contract -- build implicitly on first use,
+    sweep, release -- with the sweep itself in :func:`_infer_live_windows` and one window's
+    inference in :func:`_infer_one_window` (phaze-48ghg.3, nesting only; the call order,
+    the kill-list writes and the log lines are unchanged).
+
+    The ``finally`` is the load-bearing line here: it is what bounds residency to one graph
+    even when the consumer raises partway through a sweep -- including the bare ``raise``
+    :func:`_run_model_sets` reports with, which travels out through it from two frames down.
+    """
+    try:
+        return _infer_live_windows(model, buffers, models_dir, failed, on_failure)
+    finally:
+        _release_classifier(model.filename)
+
+
+def _infer_live_windows(
+    model: ModelConfig,
+    buffers: list[tuple[int, Any]],
+    models_dir: str,
+    failed: set[int],
+    on_failure: Callable[[int], None],
+) -> dict[int, tuple[Any, list[str]]]:
+    """Run one already-resident model across every buffer no earlier model has killed.
+
+    The sweep half of :func:`_sweep_one_model`, which owns the graph's lifetime around it.
+    Windows are visited in ``buffers`` order and the result preserves that order, which is
+    what keeps the assembled feature dicts byte-identical to the window-major build.
+    """
+    out: dict[int, tuple[Any, list[str]]] = {}
+    for key, buf in buffers:
+        if key in failed:
+            continue  # a previous model already killed this window; the window-major loop had abandoned it too
+        inferred = _infer_one_window(model, models_dir, key, buf, failed, on_failure)
+        if inferred is None:
+            continue  # killed and reported in-handler by the call above
+        out[key] = inferred
+    return out
+
+
+def _infer_one_window(
+    model: ModelConfig,
+    models_dir: str,
+    window_index: int,
+    audio_16k: Any,
+    failed: set[int],
+    on_failure: Callable[[int], None],
+) -> tuple[Any, list[str]] | None:
+    """One model's inference on ONE window, or ``None`` once that window has been killed.
+
+    The prediction call order is ``_predict_single`` then ``_get_labels``, identical to the
+    window-major loop this replaced, so a raising ``_get_labels`` fails exactly the same
+    windows it failed before (all of them, one at a time).
 
     ``on_failure(window_index)`` is invoked from INSIDE the ``except`` block, and only the
     index is retained afterwards. That is deliberate and memory-load-bearing: keeping the
     caught exception would keep its traceback, whose ``_predict_single`` frame holds a
-    reference to ``classifier`` -- pinning for the rest of the file the very graph the
-    ``finally`` below is about to evict, and re-creating in the failure path exactly the
-    co-residency this restructure exists to remove. Reporting in-handler also keeps
-    ``log.warning(..., exc_info=True)`` rendering the same traceback it always did.
+    reference to ``classifier`` -- pinning for the rest of the file the very graph
+    :func:`_sweep_one_model`'s ``finally`` is about to evict, and re-creating in the failure
+    path exactly the co-residency this restructure exists to remove. Reporting in-handler
+    also keeps ``log.warning(..., exc_info=True)`` rendering the same traceback it always
+    did, and keeps :func:`_run_model_sets`' bare-``raise`` reporter re-raising a live
+    exception rather than ``RuntimeError: No active exception to reraise``. That is why the
+    handler was extracted WITH this call and not left behind at the loop.
 
-    The ``finally`` is the other load-bearing line: it is what bounds residency to one
-    graph even when the consumer raises partway through a sweep.
+    The kill list is written HERE rather than by the caller, and before the report, so that the
+    two statements keep the order and the frame they had when this was one inlined ``except``:
+    ``failed.add`` then ``on_failure``, both inside the handler.
     """
-    out: dict[int, tuple[Any, list[str]]] = {}
     try:
-        for key, buf in buffers:
-            if key in failed:
-                continue  # a previous model already killed this window; the window-major loop had abandoned it too
-            try:
-                predictions = _predict_single(buf, model, models_dir)
-                labels = _get_labels(model.filename, models_dir)
-            except Exception:  # per-window failure isolation, hoisted from _analyze_coarse_windows
-                failed.add(key)
-                on_failure(key)  # report NOW; see the docstring on why the exception is not retained
-                continue
-            out[key] = (predictions, labels)
-    finally:
-        _release_classifier(model.filename)
-    return out
+        predictions = _predict_single(audio_16k, model, models_dir)
+        labels = _get_labels(model.filename, models_dir)
+    except Exception:  # per-window failure isolation, hoisted from _analyze_coarse_windows
+        failed.add(window_index)
+        on_failure(window_index)  # report NOW; see the docstring on why the exception is not retained
+        return None
+    return predictions, labels
 
 
 def _run_model_sets_over_windows(
@@ -939,6 +1008,54 @@ def _chunk_stop_sec(chunks: list[list[tuple[int, float, float]]], position: int)
     return chunks[position][-1][2]
 
 
+def _measure_fine_window(
+    rhythm_extractor: Any,
+    key_extractor: Any,
+    span: tuple[int, float, float],
+    decoded_chunk: dict[int, Any],
+    on_skip: Callable[[int, float, float, bool], None],
+) -> FineWindow | None:
+    """Consume ONE window's PCM out of a decoded chunk and measure its tempo and key.
+
+    Returns ``None`` when the chunk holds no audio for this window (already reported by the
+    decode) or when the measurement fails (reported here, in-handler). Extracted from
+    :func:`_analyze_fine_windows` (phaze-48ghg.3) so the D-07 chunk/window iteration reads at
+    two levels instead of four; the iteration itself is untouched.
+
+    **The buffer's lifetime is this call.** It is ``pop``-ed rather than indexed so the chunk's
+    map stops holding it, and ``del`` in a ``finally`` drops this frame's reference on every
+    path -- the same two lines the loop used to carry, moved together so nothing outlives the
+    window it belongs to and ``_malloc_trim`` at the chunk boundary has nothing pinned.
+
+    The two extractors are the caller's file-scoped ones (phaze-ap8y) -- passed in, never
+    constructed here, because rebuilding either per window cost 7.55 s of a 31.50 s fine tier
+    on a 60-window file (measured, phaze-i93a section 6a).
+
+    The ``except`` travels with the extractor calls rather than staying at the loop so that
+    ``on_skip``'s ``exc_info=True`` still renders the live exception's traceback.
+    """
+    idx, start, end = span
+    buf = decoded_chunk.pop(idx, None)  # pop, not [], so each window's PCM dies as it is consumed
+    if buf is None:
+        return None  # no audio for this window; already reported by the decode
+    try:
+        bpm, _beats, confidence, _, _beats_intervals = rhythm_extractor(buf)
+        key, scale, _strength = key_extractor(buf)
+        return FineWindow(
+            window_index=idx,
+            start_sec=start,
+            end_sec=end,
+            bpm=round(float(bpm), 1),
+            musical_key=f"{key} {scale}",
+            confidence=float(confidence),
+        )
+    except Exception:  # per-window failure isolation: skip, never fail the file
+        on_skip(idx, start, end, True)
+        return None
+    finally:
+        del buf
+
+
 def _analyze_fine_windows(
     file_path: str,
     total_sec: float,
@@ -984,6 +1101,11 @@ def _analyze_fine_windows(
     Decode failures within a chunk are discovered, and logged, before that chunk's extraction
     rather than interleaved with it (phaze-5lop): only the ORDER of the warnings moves, never
     which windows are dropped.
+
+    One window's measurement lives in :func:`_measure_fine_window` (phaze-48ghg.3). The D-07
+    structure above it is deliberately whole and stays here: the chunk list, the per-chunk
+    decode with its ``stop_at_sec`` gate, the window loop, and the ``clear`` + ``_malloc_trim``
+    that close each chunk. Nothing about the chunk bound moved with the extraction.
     """
     natural = _iter_windows(total_sec, win_sec, min_sec, drop_short_trailing=True)
     total = len(natural)
@@ -1009,27 +1131,10 @@ def _analyze_fine_windows(
             on_beat=lambda: signals.beat("fine_decode", len(fine_windows), total),
         )
         for idx, start, end in chunk:
-            buf = decoded.pop(idx, None)  # pop, not [], so each window's PCM dies as it is consumed
-            if buf is None:
-                continue  # no audio for this window; already reported by the decode above
-            try:
-                bpm, _beats, confidence, _, _beats_intervals = rhythm_extractor(buf)
-                key, scale, _strength = key_extractor(buf)
-                fine_windows.append(
-                    FineWindow(
-                        window_index=idx,
-                        start_sec=start,
-                        end_sec=end,
-                        bpm=round(float(bpm), 1),
-                        musical_key=f"{key} {scale}",
-                        confidence=float(confidence),
-                    )
-                )
-            except Exception:  # per-window failure isolation: skip, never fail the file
-                _skip(idx, start, end)
-                continue
-            finally:
-                del buf
+            measured = _measure_fine_window(rhythm_extractor, key_extractor, (idx, start, end), decoded, _skip)
+            if measured is None:
+                continue  # no audio, or a failed measurement already reported in-handler
+            fine_windows.append(measured)
             signals.progress(len(fine_windows), total)  # bump (throttle lives downstream, not here)
             signals.beat("fine", len(fine_windows), total)
         decoded.clear()  # this chunk's PCM is consumed; nothing crosses the chunk boundary
@@ -1054,6 +1159,45 @@ def _make_span_reporter(
         on_skip(window_index, start, end, True)
 
     return _report
+
+
+def _derive_coarse_window(
+    span: tuple[int, float, float],
+    features_by_window: dict[int, dict[str, Any]],
+    failed: set[int],
+    on_skip: Callable[[int, float, float, bool], None],
+) -> CoarseWindow | None:
+    """Derive mood / style / danceability for ONE swept window and assemble its record.
+
+    Phase (3) of a coarse chunk, for one window. Returns ``None`` when the window is on the
+    sweep's kill list -- already reported, in-handler, by the model that failed it -- and when
+    the derivation itself raises, reported here: per-window failure isolation, never fail the
+    file. Extracted from :func:`_analyze_coarse_windows` (phaze-48ghg.3) so the D-07 chunk
+    loop and its three phases read at two levels instead of four; the chunking is untouched.
+
+    The feature lookup is INSIDE the ``try`` on purpose -- a window absent from the sweep's
+    output is skipped exactly like a derivation that raises, which is the behaviour the
+    inlined version had and what keeps a surprise there from failing the whole file. The
+    handler travels with the derivation so ``on_skip``'s ``exc_info=True`` still renders the
+    live exception's traceback.
+    """
+    idx, start, end = span
+    if idx in failed:
+        return None  # already reported, in-handler, by the model sweep that failed it
+    try:
+        features = features_by_window[idx]
+        return CoarseWindow(
+            window_index=idx,
+            start_sec=start,
+            end_sec=end,
+            mood=derive_mood(features),
+            style=derive_style(features["genre"]),
+            danceability=derive_danceability(features),
+            features=features,
+        )
+    except Exception:  # per-window failure isolation: skip, never fail the file
+        on_skip(idx, start, end, True)
+        return None
 
 
 def _analyze_coarse_windows(
@@ -1097,6 +1241,11 @@ def _analyze_coarse_windows(
     tier is the part of a long analysis that goes longest without completing a window, so it
     beats at chunk-decode start, after EVERY one of the 34 model sweeps, and at chunk
     assembly -- enough that a live multi-hour analysis is never mistaken for a hang.
+
+    Phase (3) for one window lives in :func:`_derive_coarse_window` (phaze-48ghg.3). The D-07
+    structure stays here in full: the chunk list, the gated per-chunk decode, the model-major
+    sweep over exactly that chunk's buffers, and the ``clear`` + ``_malloc_trim`` between the
+    peak and assembly. Only the innermost per-window body moved.
     """
     natural = _iter_windows(total_sec, win_sec, 0, drop_short_trailing=False)
     total = len(natural)
@@ -1131,25 +1280,11 @@ def _analyze_coarse_windows(
         _malloc_trim()
 
         # (3) derive + assemble, in window order
-        for idx, start, end in spans:
-            if idx in failed:
-                continue  # already reported, in-handler, by the model sweep that failed it
-            try:
-                features = features_by_window[idx]
-                coarse_windows.append(
-                    CoarseWindow(
-                        window_index=idx,
-                        start_sec=start,
-                        end_sec=end,
-                        mood=derive_mood(features),
-                        style=derive_style(features["genre"]),
-                        danceability=derive_danceability(features),
-                        features=features,
-                    )
-                )
-            except Exception:  # per-window failure isolation: skip, never fail the file
-                _skip(idx, start, end)
-                continue
+        for span in spans:
+            derived = _derive_coarse_window(span, features_by_window, failed, _skip)
+            if derived is None:
+                continue  # killed by the sweep, or a failed derivation -- either way already reported in-handler
+            coarse_windows.append(derived)
         signals.beat("coarse", len(coarse_windows), total)
     return coarse_windows, total
 

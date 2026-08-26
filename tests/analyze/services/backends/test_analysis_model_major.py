@@ -346,6 +346,28 @@ def test_failures_are_reported_without_retaining_the_exception() -> None:
     Retaining the exception retains its traceback, which holds ``_predict_single``'s frame,
     which holds ``classifier`` -- pinning the graph past ``_release_classifier`` and quietly
     rebuilding the co-residency this restructure removes.
+
+    **WHAT THIS TEST DOES NOT CHECK -- read this before trusting its name (phaze-c3v6q).**
+    The name and the paragraph above carry the traceback-retention lesson; the ASSERTIONS below
+    do not check it. ``reported`` records that a report HAPPENED, not the frame it happened in --
+    it would hold ``[0, 1, 2]`` identically with ``on_failure`` fired from OUTSIDE the handler.
+    ``all(isinstance(x, int) for x in failed)`` pins the KILL LIST's element type, which is a
+    different property from the handler frame's lifetime: it passes with a retained exception
+    sitting in a local. Nothing here weighs the classifier's referrers or this process's RSS.
+
+    What DOES guard the extraction that split this path (phaze-48ghg.3, ``_sweep_one_model`` ->
+    ``_infer_live_windows`` -> ``_infer_one_window``) is the CONTROL-FLOW half, in two other
+    tests. :func:`test_single_buffer_wrapper_still_propagates` asserts ``pytest.raises(
+    RuntimeError, match="graph is broken")`` and the ``match=`` is what makes it bite -- calling
+    a bare-``raise`` reporter from outside its handler also yields a RuntimeError, namely
+    ``No active exception to reraise`` (measured on Python 3.14.5, this checkout), so without the
+    ``match=`` both outcomes pass. :func:`test_sweep_releases_the_graph_even_when_the_sweep_raises`
+    expects ``MemoryError`` and so goes red outright.
+
+    Closing the memory half needs ``gc.get_referrers`` on the classifier, or an RSS delta across a
+    failing sweep with REAL graphs. That needs the 34-model set, which is absent from this
+    repository and from CI -- the same absence that leaves the coarse tier unpinned end-to-end in
+    ``test_analysis_output_equivalence.py``. One gap, not two.
     """
     mock_es = _build_mock_es()
     buffers = [(i, np.full(1024, float(i * 180), dtype=np.float32)) for i in range(3)]
