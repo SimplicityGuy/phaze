@@ -29,7 +29,7 @@ from phaze.telemetry.instruments import record
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from opentelemetry.context import Context
 
@@ -103,7 +103,15 @@ def current_trace_id() -> str | None:
     return format(context.trace_id, "032x") if context.is_valid else None
 
 
-def _reset_for_tests() -> None:
-    """Rebind the module tracer against the CURRENT provider. Tests only."""
+def _reset_for_tests(factory: Callable[[], trace.Tracer] | None = None) -> None:
+    """Rebind the module tracer. Tests only.
+
+    ``factory`` binds DIRECTLY to a tracer the caller created, rather than to whatever
+    ``get_tracer`` resolves out of process-global state. That matters because
+    ``trace.set_tracer_provider`` is ONE-WAY -- the first provider installed in a process
+    wins -- and the API's proxy tracer caches the first real tracer it resolves to. A fixture
+    that depends on winning that race against ~8,000 other tests passes on some orderings and
+    fails on others. Mirrors ``instruments._reset_for_tests``.
+    """
     global _tracer  # test seam, mirrors instruments._reset_for_tests
-    _tracer = trace.get_tracer("phaze")
+    _tracer = trace.get_tracer("phaze") if factory is None else factory()

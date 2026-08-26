@@ -37,27 +37,113 @@ def strict_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _install_providers() -> tuple[InMemoryMetricReader, InMemorySpanExporter, MeterProvider, TracerProvider]:
+    """Give this test its OWN providers, and bind phaze's seams to them EXPLICITLY.
+
+    **The explicit binding is the whole point, and it was bought with a red run.** Both
+    ``trace.set_tracer_provider`` and ``metrics.set_meter_provider`` are ONE-WAY: the first
+    provider installed in a process wins and later calls are ignored with a log line. Writing
+    the private globals gets around that, but it is still a RACE -- the API's proxy tracer and
+    proxy meter CACHE whatever they first resolved to, so once anything else in an
+    8,000-test suite has installed a provider, seams rebuilt "against the current provider"
+    can still be holding the old one's.
+
+    That produced exactly one red run out of six: ``bh work submit``'s clean-checkout
+    validation failed 21 of this package's own tests, while five full-suite runs at other
+    pytest-randomly seeds passed. The signature was unmistakable -- every test using
+    ``telemetry_sink`` failed, and the single test that would pass VACUOUSLY against an empty
+    sink was the only one of them that did not. Re-running until green would have been the
+    wrong move; binding explicitly removes the race instead of re-rolling it.
+    """
     reader = InMemoryMetricReader()
     meter_provider = MeterProvider(metric_readers=[reader], views=bootstrap._views(), shutdown_on_exit=False)
     exporter = InMemorySpanExporter()
     tracer_provider = TracerProvider(shutdown_on_exit=False)
     tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
-    # The API refuses a SECOND set_*_provider in a process, logging a warning and keeping
-    # the first -- so the private globals are set directly. That is the only way to give
-    # each test a clean provider, and it is confined to this fixture.
-    metrics._internal._METER_PROVIDER = meter_provider
+
+    # The global state is still set, because production code paths OUTSIDE phaze.telemetry
+    # read it (the HTTP middleware's spans, for one). Nothing below DEPENDS on this write
+    # having won, which is the difference from the version that flaked.
+    #
     # `_PROXY_METER_PROVIDER` is deliberately left alone: it is what `get_meter_provider`
-    # falls back to once `_METER_PROVIDER` is cleared again in teardown, and nulling it
-    # turns that fallback into an AttributeError on the next `get_meter`.
+    # falls back to once `_METER_PROVIDER` is cleared again in teardown, and nulling it turns
+    # that fallback into an AttributeError on the next `get_meter`.
+    metrics._internal._METER_PROVIDER = meter_provider
     trace._TRACER_PROVIDER = tracer_provider
-    instruments._reset_for_tests()
-    tracing._reset_for_tests()
+
+    # ...and phaze's own seams are bound to THESE providers by hand. This is what makes the
+    # fixture order-independent rather than merely usually-right.
+    instruments._reset_for_tests(factory=lambda: meter_provider.get_meter("phaze"))
+    tracing._reset_for_tests(factory=lambda: tracer_provider.get_tracer("phaze"))
     return reader, exporter, meter_provider, tracer_provider
+
+
+def _prove_the_binding_takes() -> None:
+    """Bind a THROWAWAY provider pair the same way, and prove an observation reaches it.
+
+    Run before the test's own providers are installed, and on providers that are then
+    discarded -- so the probe cannot pollute the sink the test reads. An
+    ``InMemoryMetricReader`` reports CUMULATIVE state, so a probe recorded into the test's own
+    provider would still be visible to it afterwards, and a test asserting an exact count
+    would be silently off by one.
+
+    What this checks is the BINDING MECHANISM on the identical code path, immediately before
+    it is used for real. It cannot catch a failure that afflicts only the second call; that is
+    the honest limit of it, and it is still the difference between one loud line and
+    twenty-one confusing ones.
+
+    A sink that silently records nothing is the worst possible failure shape for this
+    package. It does not raise; it turns every assertion in every test that uses it into a
+    plain "expected X, got nothing", and it turns the one test that asserts an ABSENCE
+    (``test_no_analysis_metric_carries_an_identifier``) green. Twenty-one failures and one
+    misleading pass, with no line pointing at the fixture.
+
+    That is exactly what one clean-checkout run produced, and working back from the symptom
+    cost far more than this probe does. So the fixture now proves itself with a throwaway
+    observation and a throwaway span, and fails LOUDLY and in one place if the wiring is
+    wrong -- whatever the cause turns out to be.
+    """
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader], shutdown_on_exit=False)
+    exporter = InMemorySpanExporter()
+    tracer_provider = TracerProvider(shutdown_on_exit=False)
+    tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    instruments._reset_for_tests(factory=lambda: provider.get_meter("phaze"))
+    tracing._reset_for_tests(factory=lambda: tracer_provider.get_tracer("phaze"))
+
+    instruments.add("phaze.analysis.chunks", 1, tier="fine")
+    with tracing.span("telemetry_sink.probe"):
+        pass
+
+    data = reader.get_metrics_data()
+    recorded = [
+        metric.name
+        for resource_metric in getattr(data, "resource_metrics", ()) or ()
+        for scope_metric in resource_metric.scope_metrics
+        for metric in scope_metric.metrics
+    ]
+    if "phaze.analysis.chunks" not in recorded:
+        msg = (
+            "the telemetry_sink fixture is not wired: a probe observation did not reach its own "
+            f"InMemoryMetricReader (saw {recorded}). phaze.telemetry.instruments is bound to some "
+            "other meter -- do not debug the test that reported this, debug the binding."
+        )
+        raise AssertionError(msg)
+    if not exporter.get_finished_spans():
+        msg = "the telemetry_sink fixture is not wired: a probe span did not reach its own InMemorySpanExporter."
+        raise AssertionError(msg)
+
+    provider.shutdown()
+    tracer_provider.shutdown()
 
 
 @pytest.fixture
 def telemetry_sink() -> Iterator[TelemetrySink]:
     """A live SDK wired to memory. Yields a reader for both signals."""
+    # Forget any configuration another test left behind BEFORE installing this one's
+    # providers: `configure_telemetry` is idempotent by design, so a leaked `_configured`
+    # would make a later `configure_telemetry` in a test silently no-op.
+    bootstrap._reset_for_tests()
+    _prove_the_binding_takes()
     reader, exporter, meter_provider, tracer_provider = _install_providers()
     try:
         yield TelemetrySink(reader, exporter)

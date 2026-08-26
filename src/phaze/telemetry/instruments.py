@@ -127,6 +127,12 @@ def _reset_for_tests(factory: Callable[[], Any] | None = None) -> None:
     been imported. The API's proxy meter does forward to a provider installed later, but a
     test that installs a SECOND provider (the next test) would keep the first one's
     instruments, so the reader would see nothing. Rebuilding is the reliable seam.
+
+    **Pass ``factory``.** ``metrics.set_meter_provider`` is ONE-WAY -- the first provider
+    installed in a process wins -- so a fixture that resolves its meter through the global
+    provider is depending on winning that race against ~8,000 other tests, and will pass on
+    some orderings and fail on others. A factory binds the instruments to the caller's own
+    meter and takes global state out of it entirely.
     """
     global _meter  # module-level rebind is the point of this seam
     _meter = metrics.get_meter(_METER_NAME) if factory is None else factory()
