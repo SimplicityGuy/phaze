@@ -150,6 +150,15 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 curl -s http://localhost:8889/metrics | grep '^phaze_'
 ```
 
+**One collector behaviour worth knowing before you size a scrape interval.** The collector's
+Prometheus exporter drops a series it has not seen an update for within its
+`metric_expiration` (**default 5 minutes**), so an analyze Job's final counters disappear
+from the scrape endpoint five minutes after the pod exits. Observed directly while building
+this: 203 phaze series at the endpoint, then zero, with the collector healthy and the
+Prometheus target still `up`. At a 15 s scrape interval Prometheus still catches roughly
+twenty scrapes of the final value, so the default is fine — but a long scrape interval and
+this default together lose whole jobs silently.
+
 If nothing appears, check in this order: the endpoint variable is set **in the process that
 does the work** (the worker and the analysis child, not only the api); the collector's log
 for `failed to convert metric` (a label collision drops a metric silently at the scrape

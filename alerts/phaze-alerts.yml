@@ -1,0 +1,134 @@
+---
+# Portable Prometheus alert rules for phaze. ADOPTABLE, NOT DEPLOYED.
+#
+# phaze-m1drf.5. Nothing in this repo loads this file. It is an artifact homelab may drop
+# into its own Prometheus; wiring, routing and any Alertmanager are homelab's.
+#
+# ==========================================================================
+# THE RULES THIS FILE DELIBERATELY DOES NOT CONTAIN ARE AS IMPORTANT AS THE
+# ONES IT DOES. See docs/telemetry/alerting.md for the full reasoning.
+# ==========================================================================
+#
+#   * NO backlog-DEPTH alert. Operator decision 2026-08-26 (repowise decision e1e3374e):
+#     the current drain rate is ACCEPTED. An alert that fires on a settled decision trains
+#     the operator to ignore alerts, which is worse than having none.
+#   * NO wall-clock bound on any analysis. phaze-1b39 is the incident where one SIGTERM'd
+#     legitimate 2-6 hour analyses and stalled the whole burst lane. A multi-hour set is
+#     EXPECTED to take hours; liveness is progress-based, never elapsed-based.
+#   * NO burst-node-unreachable alert. phaze cannot write one from its own telemetry: "the
+#     node is unreachable" and "there is no work right now" produce the IDENTICAL absence of
+#     series. That rule needs node-level facts (Kueue admission, kubelet readiness) that
+#     belong to homelab's own cluster monitoring.
+#   * NO window-skip-rate alert. Every threshold here traces to a measured baseline, and no
+#     baseline for the skip rate exists yet -- phaze-zaf2l did not measure one. Inventing a
+#     number would be exactly the unmeasured arithmetic these rules exist to avoid.
+#
+# Every threshold below cites the measurement it comes from. The measurements live in
+# docs/spikes/phaze-zaf2l-where-phaze-spends-time.md and
+# docs/design/0005-analyze-job-memory-limits.md.
+groups:
+  - name: phaze-analysis
+    interval: 1m
+    rules:
+      # --------------------------------------------------------------------
+      - alert: PhazeAnalysisProgressStalled
+        # WORK IS BEING SCHEDULED AND NO WINDOW IS COMPLETING ANYWHERE.
+        #
+        # The two halves together are what make this a fault rather than an idle system:
+        # an idle phaze schedules nothing, so the first term is zero and the rule is silent.
+        #
+        # THRESHOLD PROVENANCE: 1h of zero window completions. The analysis child's own
+        # stall watchdog (D-08, `analysis_stall_timeout_sec`) kills a child after 1800 s of
+        # TOTAL SILENCE, so one hour is twice the interval at which the system already calls
+        # itself stuck -- it is not a round number, it is the existing production constant
+        # doubled. It is deliberately NOT a completion-rate alert: at the measured 2.4480
+        # files/hour a single 12 h 04 m file takes ~18 h of wall clock at 1.4951x, so four
+        # concurrent long files can legitimately produce no COMPLETION for most of a day
+        # while producing window completions the whole time.
+        expr: |
+          (
+            sum(increase(phaze_pipeline_stage_transitions_total{stage="analyze", transition="scheduled"}[1h])) > 0
+          )
+          and
+          (
+            sum(rate(phaze_analysis_windows_total{outcome="analyzed"}[1h])) == 0
+          )
+        for: 30m
+        labels:
+          severity: warning
+          service: phaze
+        annotations:
+          summary: "phaze scheduled analysis work in the last hour and completed no analysis window"
+          description: >-
+            No window completed in either tier for an hour while the analyze stage was still being
+            scheduled. The analysis child's own stall watchdog gives up after 1800 s of silence, so
+            this is already past the point the system calls itself stuck. Check that analyze pods are
+            being admitted and that the agent workers are running.
+          runbook: "docs/telemetry/alerting.md#phazeanalysisprogressstalled"
+
+      # --------------------------------------------------------------------
+      - alert: PhazeAnalysisFailureRateElevated
+        # THRESHOLD PROVENANCE: the measured baseline is 4 hard failures against 4,383
+        # completed analyses -- 0.0913% (phaze-zaf2l section 2: 3 AnalysisDecodeError, 1
+        # AnalysisProbeError). 5% is ~55x that baseline.
+        #
+        # The `> 40` denominator guard is what stops a quiet window from firing: without it
+        # a SINGLE failure among 19 runs is 5%. At 40 runs the baseline expectation is 0.037
+        # failures, so crossing 5% needs at least two -- P(>=2) is about 0.0007 under the
+        # measured rate. 6h at the measured 2.4480 files/hour is ~14.7 runs, so this rule
+        # only evaluates once the window genuinely holds enough work to be evidence.
+        expr: |
+          (
+            sum(increase(phaze_analysis_run_duration_seconds_count{outcome="error"}[6h]))
+            /
+            clamp_min(sum(increase(phaze_analysis_run_duration_seconds_count[6h])), 1)
+          ) > 0.05
+          and
+          sum(increase(phaze_analysis_run_duration_seconds_count[6h])) > 40
+        for: 30m
+        labels:
+          severity: warning
+          service: phaze
+        annotations:
+          summary: "phaze analysis failure share above 5% over 6h (measured baseline 0.0913%)"
+          description: >-
+            More than one analysis in twenty failed over the last six hours, against a measured
+            baseline of 4 failures in 4,383 completed analyses. A partial failure (some windows
+            skipped) does NOT count here -- these are file-level failures.
+          runbook: "docs/telemetry/alerting.md#phazeanalysisfailurerateelevated"
+
+      # --------------------------------------------------------------------
+      - alert: PhazeAnalysisChunkPeakRssApproachingLimit
+        # THRESHOLD PROVENANCE: the deployed pod limit is 4Gi = 4,294,967,296 B
+        # (docs/design/0005-analyze-job-memory-limits.md, backends.toml). The measured
+        # post-D-09 whole-process peak on the burst node is 1.50 / 1.65 / 1.67 GiB at
+        # 1:00 / 4:00 / 12:04 of audio (docs/spikes/phaze-u1n7j-vox-fix-verification.md).
+        # 3.5 GiB is 87.5% of the limit and more than TWICE the measured peak, so nothing
+        # healthy reaches it and a breach is not yet an OOMKill.
+        #
+        # WHAT THIS IS REALLY FOR: duration-linear growth. phaze-b2qs9 measured +0.31 GiB
+        # per fine chunk (R^2 0.99959) reaching 10.28 GiB at 12 h, and every file past ~3
+        # hours OOMKilled. Growth is a BUG, not a sizing input -- if this fires, do NOT raise
+        # the memory limit.
+        #
+        # DO NOT EVALUATE THIS AGAINST A DEVELOPER MACHINE. macOS reports a much higher peak
+        # for the same work (4.5-4.9 GiB measured locally for a 10-minute file), because the
+        # thread sizing and the allocator differ. The threshold is a statement about the
+        # Linux burst node under its cgroup.
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le, tier) (rate(phaze_analysis_chunk_peak_rss_bytes_bucket{job=~"phaze/phaze-analysis.*"}[1h]))
+          ) > 3758096384
+        for: 15m
+        labels:
+          severity: warning
+          service: phaze
+        annotations:
+          summary: "phaze analysis chunk peak RSS p99 above 3.5 GiB against a 4Gi pod limit"
+          description: >-
+            Measured post-D-09 peak on the burst node is 1.50-1.67 GiB and does not grow with
+            duration. If this figure is RISING with file length, that is the phaze-b2qs9 defect
+            class (+0.31 GiB per fine chunk, OOMKill past ~3 hours) and the fix is the chunk
+            teardown, never a larger limit.
+          runbook: "docs/telemetry/alerting.md#phazeanalysischunkpeakrssapproachinglimit"

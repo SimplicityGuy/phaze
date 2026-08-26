@@ -32,6 +32,15 @@ exporters:
   # reason (src/phaze/telemetry/bootstrap.py::_trace_resource_attributes).
   prometheus:
     endpoint: 0.0.0.0:8889
+    # MEASURED, and it matters for phaze's shape of producer. The prometheus exporter drops
+    # a series it has not seen an update for within `metric_expiration` (DEFAULT 5m), so an
+    # analyze Job's final counters vanish from this endpoint five minutes after the pod
+    # exits -- observed directly while building this: 203 phaze series at the scrape
+    # endpoint, then zero, with the collector still healthy and the Prometheus target still
+    # up. At a 15s scrape interval Prometheus still catches ~20 scrapes of the final value,
+    # which is enough; raise this only if a scrape interval is long relative to it.
+    # homelab owns the real value -- this is a development illustration.
+    metric_expiration: 10m
     # service.name -> `job`, service.instance.id -> `instance`, and nothing else.
     resource_to_telemetry_conversion:
       enabled: false
