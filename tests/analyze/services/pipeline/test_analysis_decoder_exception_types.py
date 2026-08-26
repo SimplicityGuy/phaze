@@ -32,6 +32,16 @@ Line numbers are as of the bead; the structural test below keys on ENCLOSING FUN
 so it does not rot when the file moves. "Not enumerable" is a real answer, and where it appears
 it is the strongest available argument for keeping that catch broad PERMANENTLY.
 
+FOUR OF THE SEVEN CHANGED ENCLOSING FUNCTION IN phaze-48ghg.5, and none of them changed at all
+otherwise. That bead flattened ``_disconnect_network``'s three compounded tiers and split the
+streaming ladder's two rungs into a function each, so ``@171``/``@177`` now sit in
+``_readable_edges_of``/``_sever_algorithm_edges`` and ``@324``/``@329`` in
+``_try_gated_rung``/``_try_ungated_rung``. Every handler is still ``except Exception``, still
+carries its own ``phaze-bk9el.29: BROAD BY REVIEW`` comment, and still guards exactly the failure
+analysed below -- the count is still seven and the analysis is unchanged. This is the map doing
+its job rather than rotting: an extraction that MOVES a catch has to come here and say so, which
+is why the assertion below is keyed on the function and not on a total.
+
 ``@160`` -- ``_malloc_trim``, around ``trim(0)``.
     NOT ENUMERABLE. ``trim`` is a ``ctypes`` foreign function pointer into glibc, resolved at
     import by ``ctypes.CDLL(None).malloc_trim``. ctypes converts a foreign-call failure into
@@ -43,7 +53,7 @@ it is the strongest available argument for keeping that catch broad PERMANENTLY.
     clear that ``malloc_trim`` cannot fix D-09's leak, because those pages are live-referenced
     rather than merely un-returned. A trim that fails must not fail an already-decoded chunk.
 
-``@171`` -- ``_disconnect_network``, around reading ``algo.connections`` and flattening it.
+``@171`` -- ``_readable_edges_of``, around reading ``algo.connections`` and flattening it.
     PARTIALLY ENUMERABLE, and narrower than it looks -- the guarded expression is
     ``getattr(algo, "connections", None) or {}``, and ``getattr`` with a default SWALLOWS
     ``AttributeError`` raised anywhere inside a property getter. So ``AttributeError`` is NOT
@@ -54,7 +64,7 @@ it is the strongest available argument for keeping that catch broad PERMANENTLY.
     two lists. D-09 LEAK GUARD (one of only two). It runs in a ``finally`` on the failure path,
     so raising here would REPLACE the decode's real exception and skip the retry rung.
 
-``@177`` -- ``_disconnect_network``, around ``connector.disconnect(target)``.
+``@177`` -- ``_sever_algorithm_edges``, around ``connector.disconnect(target)``.
     NOT ENUMERABLE. ``disconnect`` is a SWIG-bound C++ call; essentia surfaces
     ``EssentiaException`` as ``RuntimeError``, but the binding layer itself can raise
     ``TypeError``/``ValueError`` on a proxy shape it no longer recognises, ``SystemError`` when
@@ -72,8 +82,8 @@ it is the strongest available argument for keeping that catch broad PERMANENTLY.
     the silence as a hang, and SIGTERMs a HEALTHY multi-hour analysis. This is the site where
     "cannot be enumerated" is not a shrug but the argument.
 
-``@324`` -- ``_try_streaming_ladder``, around the GATED streaming attempt.
-``@329`` -- ``_try_streaming_ladder``, around the UNGATED streaming attempt.
+``@324`` -- ``_try_gated_rung``, around the GATED streaming attempt.
+``@329`` -- ``_try_ungated_rung``, around the UNGATED streaming attempt.
     NOT ENUMERABLE. Both wrap ``essentia.run`` on a real streaming network -- one blocking C++
     call, plus the SWIG-bound construction and wiring of every algorithm in the fan-out.
     Reachable and demonstrated below: ``MemoryError`` (the deployed 4Gi cgroup makes this
@@ -210,9 +220,11 @@ def test_the_seven_analysed_sites_are_still_the_modules_only_broad_catches() -> 
     assert _broad_catch_sites() == Counter(
         {
             "_malloc_trim": 1,  # @160 -- the ctypes trim
-            "_disconnect_network": 2,  # @171 connections map, @177 the disconnect call (D-09 guards)
+            "_readable_edges_of": 1,  # @171 -- the connections map (a D-09 guard)
+            "_sever_algorithm_edges": 1,  # @177 -- the disconnect call (the other D-09 guard)
             "_watch": 1,  # @300 -- the caller-supplied heartbeat callback
-            "_try_streaming_ladder": 2,  # @324 gated, @329 ungated
+            "_try_gated_rung": 1,  # @324 -- the gated streaming attempt
+            "_try_ungated_rung": 1,  # @329 -- the ungated streaming attempt
             "_decode_per_window": 1,  # @345 -- the per-window EasyLoader
         }
     ), (
