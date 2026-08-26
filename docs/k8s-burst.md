@@ -510,7 +510,7 @@ than falling. Priced from `phaze-8r6t4` §5/§10:
 | 3 | 29.2 | 95% | 366 s |
 | **4** | **29.8** | **97%** | **478 s** |
 | 8 | 30.5 | 100% | 936 s |
-| 12 | 30.6 | 100% | 1 400 s |
+| 12 | 30.6 | 100% | 1,400 s |
 
 `cap` should be **the smallest concurrency that reaches the node's throughput ceiling** — 4 buys
 **97% of the ceiling at a third of cap 12's per-file latency**. Going to 6 buys +1.6% throughput

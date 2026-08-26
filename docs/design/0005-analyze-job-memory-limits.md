@@ -155,8 +155,8 @@ compatible change that ships first. The actual reduction is spike follow-up A â€
 >
 > | configuration | wall | **peak** |
 > | --- | ---: | ---: |
-> | `main` before `phaze-5lop` (batch 32 + derived threads + hoisted extractors) | 3 205.05 s | **1.3999 GiB** |
-> | **`main` with the streaming decode (shipped)** | **1 960.37 s** | **1.7383 GiB** |
+> | `main` before `phaze-5lop` (batch 32 + derived threads + hoisted extractors) | 3,205.05 s | **1.3999 GiB** |
+> | **`main` with the streaming decode (shipped)** | **1,960.37 s** | **1.7383 GiB** |
 >
 > **`1.7383 GiB` is the number to derive from** â€” a whole-process `VmHWM`, not a stage figure,
 > on a 4-physical-core host, with the thread pools pinned. The caution above was warranted:

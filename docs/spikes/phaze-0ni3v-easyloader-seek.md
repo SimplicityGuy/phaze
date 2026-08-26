@@ -73,8 +73,8 @@ It truncates **in `double`** rather than in `Real`, which is a deliberate diverg
 place the patch is knowingly *not* bit-compatible with the old path. `Trimmer` multiplies in
 float32, whose 24-bit mantissa cannot represent every sample index past 2²⁴ samples — **380.4 s at
 44.1 kHz** — so its cut points quantise onto a coarsening grid (`phaze-han03` §6b). The benchmark
-caught this in the wild: a 30 s window at 3540 s comes back as **1 322 992 samples on the pre-patch
-build and 1 323 000 on the patched one**. The patched number is the correct one. Anyone slicing
+caught this in the wild: a 30 s window at 3540 s comes back as **1,322,992 samples on the pre-patch
+build and 1,323,000 on the patched one**. The patched number is the correct one. Anyone slicing
 past ~6 minutes gets a slightly different — better — cut, and the PR body says so.
 
 ### 1b. Correction: an empty range is not an error

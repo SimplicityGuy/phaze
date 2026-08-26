@@ -63,8 +63,8 @@ file:
 
 | Tier | Peak PCM per chunk | Arithmetic |
 | ---- | ---: | --- |
-| FINE | ~317 MB | 60 × 30 s × 44 100 Hz × 4 B |
-| COARSE | ~345 MB | 30 × 180 s × 16 000 Hz × 4 B |
+| FINE | ~317 MB | 60 × 30 s × 44,100 Hz × 4 B |
+| COARSE | ~345 MB | 30 × 180 s × 16,000 Hz × 4 B |
 
 The chunk sizes are the old cap values **on purpose**: they reproduce exactly the per-tier
 residency the capped implementation was measured at, so ADR-0005's Job memory limits stay valid
@@ -160,9 +160,9 @@ Corollaries already settled in prior investigation:
 >
 > | | before `phaze-5lop` | after `phaze-5lop` |
 > | --- | ---: | ---: |
-> | total wall | 3 205.05 s | **1 960.37 s** |
-> | audio decode + resample | 1 370.77 s (**42.8%**) | **126.98 s (6.5%)** |
-> | everything else (34 TF graphs × 20 windows, + `RhythmExtractor2013`/`KeyExtractor` × 60) | 1 834.28 s (57.2%) | 1 833.39 s (**93.5%**) |
+> | total wall | 3,205.05 s | **1,960.37 s** |
+> | audio decode + resample | 1,370.77 s (**42.8%**) | **126.98 s (6.5%)** |
+> | everything else (34 TF graphs × 20 windows, + `RhythmExtractor2013`/`KeyExtractor` × 60) | 1,834.28 s (57.2%) | 1,833.39 s (**93.5%**) |
 
 > *(That measurement predates `phaze-w55w1` and was taken at the then-saturated caps. Its
 > proportions still hold — the model step still dominates — but the absolute figures are now a
@@ -175,7 +175,7 @@ Corollaries already settled in prior investigation:
 > decode fell to **6.5%**. The compute lever *was* the decode path, and it has now been pulled.
 >
 > **What does not survive: "the TF model step is a negligible slice."** It was 57% of the wall
-> before and is **93%** after — the two rightmost cells above are the same 1 834 seconds, which
+> before and is **93%** after — the two rightmost cells above are the same 1,834 seconds, which
 > is the point: nothing about the model step changed, it simply stopped being hidden behind the
 > decode. So the corollaries below are now *load-bearing in the opposite direction*: replacing
 > the classifiers with something cheaper, or `#4`'s ONNX/TFLite re-export, is no longer "image
@@ -290,7 +290,7 @@ for another reason.
 > (`phaze-rc1q` §8, shipped as `phaze-5lop` 2026-08-06).** Sharing ONE decode across both
 > tiers was built and measured: it is **5.3% faster and costs +0.364 GiB** of peak, because
 > the two tiers cannot share the expensive stage at all — their **resamplers differ**
-> (44 100→44 100 is a near no-op, 44 100→16 000 is real libsamplerate work), so all a shared
+> (44,100→44,100 is a near no-op, 44,100→16,000 is real libsamplerate work), so all a shared
 > pass shares is the mp3 decode and downmix, while both tiers' PCM is live at once. Bad trade.
 > phaze therefore runs **two passes, one per tier.**
 >

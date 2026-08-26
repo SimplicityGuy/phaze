@@ -35,28 +35,28 @@ ______________________________________________________________________
 **The analysis pipeline is where the wall clock goes, the coarse tier is where the analysis goes,
 and the operator can see none of it.** At the production operating point — `cap = 4` concurrent
 analyze pods on `vox` — one file costs **1.4951× its own duration** end to end, measured on a
-completed production run of a 4 761.835 s file that took **7 119.473 s**; a second, independent
+completed production run of a 4,761.835 s file that took **7,119.473 s**; a second, independent
 derivation from seven days of completions (**2.7183 audio-hours per wall-hour** across **410
 files**) predicts **1.4715×**, agreeing to **1.58%**. That does **not** contradict
 `phaze-b2qs9`'s **0.56–0.79×**: that figure was measured **solo on an idle node** and this one is
 at `W=4`, and `phaze-8r6t4` §10 already priced W=4 at **+83.6%** per-file wall against W=2. Inside
 that run the **fine tier is 5.31%** (378.266 s) and **coarse + the model sweep is 94.69%**
-(6 741.207 s) — and `AnalysisSignals.progress` is documented **"fine tier only"**, so the pod log
+(6,741.207 s) — and `AnalysisSignals.progress` is documented **"fine tier only"**, so the pod log
 *and* the web progress bar (one throttle, one counter, OBS-02) reach 100% at 5.31% of the job and
 then sit there in silence for **1 h 52 m**, which is exactly what all four in-flight pods were
 observed doing. On the admin UI the heaviest surface is not a page but a **poll**:
-`/pipeline/stats` costs **534.0 ms**, reads **~350 000 rows** and initiates **~47 000–55 000**
-index scans per request against tables holding **~38 000 rows total**, and `shell.html` fires it
+`/pipeline/stats` costs **534.0 ms**, reads **~350,000 rows** and initiates **~47,000–55,000**
+index scans per request against tables holding **~38,000 rows total**, and `shell.html` fires it
 **every 5 s on every page** — a **10.68%** continuous duty cycle, **384.5 s of handler time per
-wall hour**, for a browser tab left open. `/pipeline/tracklist-drain-status` costs **1 378.6 ms**
-for a **6 095-byte** response, and its database fan-out is **below the measurement noise floor** —
+wall hour**, for a browser tab left open. `/pipeline/tracklist-drain-status` costs **1,378.6 ms**
+for a **6,095-byte** response, and its database fan-out is **below the measurement noise floor** —
 so unlike the two above, its cost is *not* database time, and `build_drain_queue` building the
 whole queue to report a status is a lead rather than an attribution.
 **SAQ is not a bottleneck and gets no bead:** production queue depth held at **9** across
-**28 samples**, dequeue latency measured **11–24 ms**, and a local burst drained **5 000 jobs at
+**28 samples**, dequeue latency measured **11–24 ms**, and a local burst drained **5,000 jobs at
 318.3/s** — within **3.0%** of the 500-job rate, i.e. flat in depth — against a production
 controller load of **0.0939 jobs/s**, which is **0.03%** of that capacity. The real backlog is not
-in the queue at all: it is **8 079 `cloud_job` rows in `awaiting`**, a table, which at the measured
+in the queue at all: it is **8,079 `cloud_job` rows in `awaiting`**, a table, which at the measured
 **2.4480 files/hour** is **137.5 days** of drain. And one finding was invisible to every surface
 above: **661 files (223.99 audio-hours) hold analysis rows with 100.0% of their fine windows
 complete, sit in state `discovered`, and have no `cloud_job` row at all** — stranded, queued
@@ -68,10 +68,10 @@ ______________________________________________________________________
 
 | | |
 | --- | --- |
-| **Analysis host** | `vox` — Debian 13 (trixie), kernel 6.12.100+deb13-amd64, k0s v1.36.2, **8 logical CPU**, 32 829 576 KiB (31.31 GiB) capacity. The k0s burst node, **in the production registry and serving real traffic throughout** — it was *not* taken out for this measurement |
+| **Analysis host** | `vox` — Debian 13 (trixie), kernel 6.12.100+deb13-amd64, k0s v1.36.2, **8 logical CPU**, 32,829,576 KiB (31.31 GiB) capacity. The k0s burst node, **in the production registry and serving real traffic throughout** — it was *not* taken out for this measurement |
 | **Control-plane host** | `host-prod` — Debian 13 (trixie), kernel 6.12.96+deb13-amd64, **14 cores, 125 GB RAM**. Runs `phaze-api`, `phaze-worker`, `phaze-redis` (redis:8-alpine) and `postgres` (**PostgreSQL 18.6**) as Docker containers |
 | **Fileserver host** | `host-store` — 8 cores, 62 GB. Runs the agent workers (`-meta` / `-io` / `-analyze`) and the watcher; it backs the registry's local catch entry — `kind = "local"`, `rank 99`, `cap 1` |
-| **Local host** | MacBookPro18,1, macOS 26.6.2, 10 cores, 34 359 738 368 B (32 GiB), Python 3.14.5 — used **only** for the SAQ burst of §5, never for any production figure |
+| **Local host** | MacBookPro18,1, macOS 26.6.2, 10 cores, 34,359,738,368 B (32 GiB), Python 3.14.5 — used **only** for the SAQ burst of §5, never for any production figure |
 | **Concurrency** | `backends.toml` sets `vox` to `rank 10`, **`cap = 4`**, `cpu_request 1500m`, `memory_request 3Gi`, `memory_limit 4Gi`. The second Kueue backend, `xenolab`, is **commented out** (disabled 2026-07-14, power incident), so `cap 4` on `vox` plus `cap 1` local is the whole analysis capacity. Four analyze pods were running for the entire measurement window |
 | **Per-file analysis wall clock** | the job's **own** `job_runner_step_ok` line for `step=analyze`, whose `elapsed_ms` the runner takes from its own clock — not an inferred pod age, and not the `kubectl` `AGE` column |
 | **Tier split** | the timestamp of the last `job_runner_progress` line (`fine_windows_analyzed == fine_windows_total`) against `job_runner_analyze_begin` and the `analyze` step's own `elapsed_ms`. Both are shipped log lines; no instrumentation was added |
@@ -114,47 +114,47 @@ FROM metadata;
 
 | | |
 | --- | --- |
-| rows in `files` / `metadata` | **11 428** / **11 428** |
-| rows carrying a duration | **11 412** (16 NULL) |
-| shortest / longest | **8.470 s** / **43 466.880 s** (12 h 04 m 27 s) |
-| mean / **median** | 3 625.306 s / **3 531.967 s** (58 m 52 s) |
-| p90 / p99 | 7 046.040 s (1 h 57 m) / 10 789.232 s (2 h 59 m) |
-| **total audio in the archive** | **11 492.22 hours** |
+| rows in `files` / `metadata` | **11,428** / **11,428** |
+| rows carrying a duration | **11,412** (16 NULL) |
+| shortest / longest | **8.470 s** / **43,466.880 s** (12 h 04 m 27 s) |
+| mean / **median** | 3,625.306 s / **3,531.967 s** (58 m 52 s) |
+| p90 / p99 | 7,046.040 s (1 h 57 m) / 10,789.232 s (2 h 59 m) |
+| **total audio in the archive** | **11,492.22 hours** |
 
 | duration band | files | audio hours |
 | --- | ---: | ---: |
-| < 10 m | 1 604 | 128.06 |
+| < 10 m | 1,604 | 128.06 |
 | 10–30 m | 551 | 219.93 |
-| **30–60 m** | **4 748** | **4 200.18** |
-| **1–2 h** | **3 760** | **4 954.17** |
-| 2–4 h | 706 | 1 753.52 |
+| **30–60 m** | **4,748** | **4,200.18** |
+| **1–2 h** | **3,760** | **4,954.17** |
+| 2–4 h | 706 | 1,753.52 |
 | 4–8 h | 39 | 196.73 |
 | ≥ 8 h | 4 | 39.64 |
 
 **The corpus is continuous with `phaze-b2qs9`'s.** That spike's `<set-07>`, described as "the
-longest file in the corpus", measured **43 466.893061 s** by `ffprobe`; the longest duration in
-`metadata` today is **43 466.880 s** — the same file, differing only by the truncation `phaze-b2qs9`
+longest file in the corpus", measured **43,466.893061 s** by `ffprobe`; the longest duration in
+`metadata` today is **43,466.880 s** — the same file, differing only by the truncation `phaze-b2qs9`
 §1a already documents between `ffprobe`'s fractional duration and `_probe_duration_sec`'s. Both
-spikes are therefore measuring the same archive, and the count in CLAUDE.md ("all 11 428 files in
+spikes are therefore measuring the same archive, and the count in CLAUDE.md ("all 11,428 files in
 the corpus") is still exact.
 
-**8 508 of 11 412 files (74.55%) fall in the 30 m – 2 h range and carry 9 154.35 of the 11 492.22
+**8,508 of 11,412 files (74.55%) fall in the 30 m – 2 h range and carry 9,154.35 of the 11,492.22
 audio-hours (79.66%).** This matters for §3: the four files measured there have durations
-3 514.648 / 3 906.363 / 4 200.281 / 4 761.835 s, all inside that dominant band and clustered on the
-**3 531.967 s median**. The analysis measurement is therefore taken on the modal file of the
+3,514.648 / 3,906.363 / 4,200.281 / 4,761.835 s, all inside that dominant band and clustered on the
+**3,531.967 s median**. The analysis measurement is therefore taken on the modal file of the
 archive, not on a convenient one.
 
 Pipeline state at the time of measurement:
 
 | | |
 | --- | --- |
-| `analysis` rows / distinct files | 5 846 / **5 846** (exactly one row per file — no superseded duplicates) |
-| of those, completed | **4 383** |
+| `analysis` rows / distinct files | 5,846 / **5,846** (exactly one row per file — no superseded duplicates) |
+| of those, completed | **4,383** |
 | of those, hard-failed | **4** (3 `AnalysisDecodeError`, 1 `AnalysisProbeError`) |
-| of those, **neither** completed nor failed | **1 459**, of which **1 455 are older than 7 days**, oldest **2026-06-14** |
-| files with no `analysis` row at all | **5 582** |
-| `analysis_window` rows | 316 159 |
-| `cloud_job` by status | **awaiting 8 079–8 080**, succeeded 799, uploaded 32, uploading 3, running 4 |
+| of those, **neither** completed nor failed | **1,459**, of which **1,455 are older than 7 days**, oldest **2026-06-14** |
+| files with no `analysis` row at all | **5,582** |
+| `analysis_window` rows | 316,159 |
+| `cloud_job` by status | **awaiting 8,079–8,080**, succeeded 799, uploaded 32, uploading 3, running 4 |
 
 ______________________________________________________________________
 
@@ -166,24 +166,24 @@ ______________________________________________________________________
 
 | | |
 | --- | --- |
-| file | `<set-01>` — mp3, 4 761.835 s (1 h 19 m 22 s), 100.2 MB |
+| file | `<set-01>` — mp3, 4,761.835 s (1 h 19 m 22 s), 100.2 MB |
 | fine windows | 159 / 159 analyzed |
 | presign / download / verify / extract | 152 ms / 992 ms / 360 ms / 156 ms |
-| **`analyze` step (`elapsed_ms`)** | **7 119 473 ms = 7 119.473 s** |
+| **`analyze` step (`elapsed_ms`)** | **7,119,473 ms = 7,119.473 s** |
 | callback | 175 ms |
-| **end to end** (banner → `job_runner_complete`) | **7 121.167 s** |
+| **end to end** (banner → `job_runner_complete`) | **7,121.167 s** |
 | **everything that is not `analyze`** | **1.694 s — 0.02% of the job** |
 | **ratio to the file's own duration** | **1.4951×** |
 
 The staging path — presign, download, verify, extract, callback — costs **1.694 s against
-7 121.167 s**. It is not where the time goes, and it gets no bead.
+7,121.167 s**. It is not where the time goes, and it gets no bead.
 
 ### 3b. The tier split — and the observability gap it exposes
 
 | phase | seconds | share of `analyze` |
 | --- | ---: | ---: |
 | fine tier (159 windows, 30 s each) | **378.266** | **5.31%** |
-| **coarse tier + model sweep** | **6 741.207** | **94.69%** |
+| **coarse tier + model sweep** | **6,741.207** | **94.69%** |
 
 **Every** pod observed showed the same shape — fine tier complete within minutes, then silence.
 Fine elapsed is measured from each job's own `job_runner_analyze_begin` to its own final
@@ -191,15 +191,15 @@ Fine elapsed is measured from each job's own `job_runner_analyze_begin` to its o
 
 | file | duration (s) | fine windows | **fine elapsed (s)** | s / window | fine as % of duration |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `<set-01>` | 4 761.835 | 159 | **378.266** | 2.379 | 7.94% |
-| `<set-02>` | 3 906.363 | 130 | **759.831** | 5.845 | 19.45% |
-| `<set-03>` | 3 514.648 | 117 | **286.066** | 2.445 | 8.14% |
-| `<set-04>` | 4 200.281 | 140 | **360.220** | 2.573 | 8.58% |
-| `<set-05>` | 5 789.803 | 193 | **519.875** | 2.694 | 8.98% |
+| `<set-01>` | 4,761.835 | 159 | **378.266** | 2.379 | 7.94% |
+| `<set-02>` | 3,906.363 | 130 | **759.831** | 5.845 | 19.45% |
+| `<set-03>` | 3,514.648 | 117 | **286.066** | 2.445 | 8.14% |
+| `<set-04>` | 4,200.281 | 140 | **360.220** | 2.573 | 8.58% |
+| `<set-05>` | 5,789.803 | 193 | **519.875** | 2.694 | 8.98% |
 
 Four of the five sit in a tight **2.379–2.694 s per fine window**; `<set-02>` at **5.845 s** is a
 2.4× outlier this spike does not explain and does not guess at — `phaze-b2qs9` §1a records that a
-48 kHz source pays a 48 000 → 44 100 Hz resample in the fine tier that a 44.1 kHz source does not,
+48 kHz source pays a 48,000 → 44,100 Hz resample in the fine tier that a 44.1 kHz source does not,
 which is a candidate. It could not be settled from the database: `metadata` stores `bitrate` and
 **no sample-rate column at all**, so confirming or refuting it means reading the audio itself.
 Named as an open question rather than answered.
@@ -237,7 +237,7 @@ throughput sweep measured **29.8 files/hour at W=4** (§ its "files/hour vs conc
 figure) on **synthesized sine files of 180 / 300 / 420 s — mean exactly 300 s**. That is
 **2.4833 audio-hours per wall-hour**, against the **2.7183** measured here from seven days of real
 production completions: **agreement to 9.46%**, with production the faster of the two, which is the
-expected direction because the real corpus's mean file is 3 625.306 s and amortises per-file fixed
+expected direction because the real corpus's mean file is 3,625.306 s and amortises per-file fixed
 cost over twelve times more audio. Two caveats stated rather than buried: that sweep ran
 `release/2026.8.1-prep` where production now runs `2026.8.5`, and its inputs were synthetic sine
 pairs rather than real mp3. It is a cross-check, not a substitute for the two rows above.
@@ -245,7 +245,7 @@ pairs rather than real mp3. It is a cross-check, not a substitute for the two ro
 The reconciliation is the operating point, and it was already priced: `phaze-b2qs9` §1b states its
 runs were solo on an idle node, and `phaze-8r6t4` §10 measured **+83.6% per-file wall at W=4
 against W=2**. A solo 0.56–0.79× and a W=4 1.4951× are consistent with each other and with that
-correction. `vox` sat at **98–99% CPU** for the entire window (7 903–7 955 m of 8 000 m), which is
+correction. `vox` sat at **98–99% CPU** for the entire window (7,903–7,955 m of 8,000 m), which is
 the deliberate oversubscription `backends.toml` describes: 4 pods × 1 process × 4 TF threads = 16
 threads on 4 physical cores.
 
@@ -267,8 +267,8 @@ window lengths (the 7-day row differs from the table above only because the wind
 | --- | ---: | ---: | ---: | ---: | ---: |
 | 3 days | 152 | 70.622 | 2.1523 | 2.4771 | 1.615× |
 | 7 days | 408 | 167.425 | 2.4369 | **2.7163** | 1.473× |
-| 14 days | 1 001 | 335.650 | 2.9823 | 2.9175 | 1.371× |
-| 30 days | 2 577 | 719.294 | 3.5827 | 2.2348 | 1.790× |
+| 14 days | 1,001 | 335.650 | 2.9823 | 2.9175 | 1.371× |
+| 30 days | 2,577 | 719.294 | 3.5827 | 2.2348 | 1.790× |
 
 Audio-hours per wall-hour holds in a **2.2348–2.9175** band across every window, and the directly
 measured **1.4951×** sits inside the **1.371–1.790×** ratio band that band implies. Files per
@@ -280,13 +280,13 @@ windows above:
 
 | question | point | band |
 | --- | ---: | ---: |
-| drain the **5 582** files with no analysis row | **2 280.2 h = 95.0 days** | 1 558–2 594 h = **65–108 days** |
-| drain the **8 079** `cloud_job` rows in `awaiting` | **3 300.2 h = 137.5 days** | 2 255–3 754 h = **94–156 days** |
-| re-analyze the whole **11 492.22**-hour archive | **4 227.7 h = 176.2 days** | 3 939–5 142 h = **164–214 days** |
+| drain the **5,582** files with no analysis row | **2,280.2 h = 95.0 days** | 1,558–2,594 h = **65–108 days** |
+| drain the **8,079** `cloud_job` rows in `awaiting` | **3,300.2 h = 137.5 days** | 2,255–3,754 h = **94–156 days** |
+| re-analyze the whole **11,492.22**-hour archive | **4,227.7 h = 176.2 days** | 3,939–5,142 h = **164–214 days** |
 
 ### 3d. Memory
 
-`kubectl top` sampled the four pods across the window at **823–1 364 MiB** against a
+`kubectl top` sampled the four pods across the window at **823–1,364 MiB** against a
 `memory_limit` of **4Gi**, with the node at **19–21%** of 31.31 GiB. This is a **sampled gauge and
 not a peak**, so it cannot confirm a high-water figure — but nothing in the window approached the
 limit, and it is consistent with the **1.7383 GiB** joint peak `backends.toml` records from
@@ -298,42 +298,42 @@ ______________________________________________________________________
 
 ## 4. Surface 2 — the admin UI read paths
 
-Measured on `host-prod`, against the live 11 428-file corpus. 2 warm-up + 7 timed requests each;
+Measured on `host-prod`, against the live 11,428-file corpus. 2 warm-up + 7 timed requests each;
 `time_starttransfer` in ms.
 
 | route | http | min | **p50** | max | mean | bytes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `/health` | 200 | 4.0 | 4.3 | 4.5 | 4.3 | 15 |
-| **`/s/analyze`** | 200 | 574.3 | **633.6** | 658.6 | **627.0** | 100 711 |
-| `/` and `/s/summary` | 200 | 262.0 | 282.1 | 305.0 | 283.0 | 90 239 |
-| `/s/tracklist` | 200 | 218.2 | 219.4 | 234.5 | 221.8 | 81 614 |
-| `/s/metadata` | 200 | 83.0 | 97.8 | 242.7 | 114.9 | 88 834 |
-| `/s/files` | 200 | 42.3 | 51.6 | 53.3 | 50.5 | **681 013** |
-| `/s/dedupe` | 200 | 18.1 | 18.8 | 20.5 | 19.1 | 111 775 |
-| `/s/discover` | 200 | 14.7 | 17.0 | 17.6 | 16.3 | 91 568 |
-| `/s/apply` | 200 | 20.7 | 23.6 | 149.2 | 40.7 | 80 043 |
-| `/s/propose` * | 200 | 12.7 | 15.2 | 57.4 | 23.1 | 83 909 |
-| `/s/rename` * | 200 | 11.8 | 13.9 | 16.0 | 14.1 | 84 438 |
-| `/s/tagwrite` * | 200 | 11.3 | 12.8 | 13.8 | 12.7 | 84 440 |
-| `/s/move` * | 200 | 10.7 | 12.6 | 13.7 | 12.5 | 84 436 |
-| `/s/audit` | 200 | 11.6 | 12.6 | 13.9 | 12.6 | 79 049 |
-| `/s/agents` | 200 | 9.2 | 9.9 | 11.7 | 10.1 | 87 359 |
-| `/s/cue` | 200 | 9.1 | 9.3 | 11.2 | 9.7 | 76 676 |
-| `/s/operations` | 200 | 5.8 | 6.2 | 6.9 | 6.3 | 76 573 |
+| **`/s/analyze`** | 200 | 574.3 | **633.6** | 658.6 | **627.0** | 100,711 |
+| `/` and `/s/summary` | 200 | 262.0 | 282.1 | 305.0 | 283.0 | 90,239 |
+| `/s/tracklist` | 200 | 218.2 | 219.4 | 234.5 | 221.8 | 81,614 |
+| `/s/metadata` | 200 | 83.0 | 97.8 | 242.7 | 114.9 | 88,834 |
+| `/s/files` | 200 | 42.3 | 51.6 | 53.3 | 50.5 | **681,013** |
+| `/s/dedupe` | 200 | 18.1 | 18.8 | 20.5 | 19.1 | 111,775 |
+| `/s/discover` | 200 | 14.7 | 17.0 | 17.6 | 16.3 | 91,568 |
+| `/s/apply` | 200 | 20.7 | 23.6 | 149.2 | 40.7 | 80,043 |
+| `/s/propose` * | 200 | 12.7 | 15.2 | 57.4 | 23.1 | 83,909 |
+| `/s/rename` * | 200 | 11.8 | 13.9 | 16.0 | 14.1 | 84,438 |
+| `/s/tagwrite` * | 200 | 11.3 | 12.8 | 13.8 | 12.7 | 84,440 |
+| `/s/move` * | 200 | 10.7 | 12.6 | 13.7 | 12.5 | 84,436 |
+| `/s/audit` | 200 | 11.6 | 12.6 | 13.9 | 12.6 | 79,049 |
+| `/s/agents` | 200 | 9.2 | 9.9 | 11.7 | 10.1 | 87,359 |
+| `/s/cue` | 200 | 9.1 | 9.3 | 11.2 | 9.7 | 76,676 |
+| `/s/operations` | 200 | 5.8 | 6.2 | 6.9 | 6.3 | 76,573 |
 
 \* **measured against `proposals` = 0 rows.** These four numbers characterize an *empty* surface
 and are not evidence about a loaded one (§1a).
 
 | partial / fragment | http | min | **p50** | max | mean | bytes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **`/pipeline/tracklist-drain-status`** | 200 | 1 236.8 | **1 419.0** | 1 473.9 | **1 378.6** | 6 095 |
-| **`/pipeline/stats`** | 200 | 510.1 | **536.1** | 569.3 | **534.0** | 20 001 |
+| **`/pipeline/tracklist-drain-status`** | 200 | 1,236.8 | **1,419.0** | 1,473.9 | **1,378.6** | 6,095 |
+| **`/pipeline/stats`** | 200 | 510.1 | **536.1** | 569.3 | **534.0** | 20,001 |
 | `/pipeline/pending-files` | 200 | 34.9 | 35.8 | 41.2 | 37.0 | 625 |
-| `/pipeline/analyze-files` | 200 | 29.8 | 30.5 | 31.6 | 30.6 | 64 177 |
-| `/api/v1/duplicates` | 200 | 19.2 | 20.2 | 21.0 | 20.2 | 4 058 |
-| **`/record/<uuid-1>`** (the record slide-in) | 200 | 17.1 | 19.7 | 24.7 | **20.6** | 29 419 |
-| `/admin/agents/_table` | 200 | 8.6 | 9.3 | 9.6 | 9.2 | 12 142 |
-| `/pipeline/tracklist-sets` | 200 | 7.2 | 8.3 | 8.5 | 7.9 | 15 742 |
+| `/pipeline/analyze-files` | 200 | 29.8 | 30.5 | 31.6 | 30.6 | 64,177 |
+| `/api/v1/duplicates` | 200 | 19.2 | 20.2 | 21.0 | 20.2 | 4,058 |
+| **`/record/<uuid-1>`** (the record slide-in) | 200 | 17.1 | 19.7 | 24.7 | **20.6** | 29,419 |
+| `/admin/agents/_table` | 200 | 8.6 | 9.3 | 9.6 | 9.2 | 12,142 |
+| `/pipeline/tracklist-sets` | 200 | 7.2 | 8.3 | 8.5 | 7.9 | 15,742 |
 | `/pipeline/recover/status` | 200 | 3.0 | 3.3 | 3.4 | 3.2 | 211 |
 
 **The record slide-in is fast — 20.6 ms against the real corpus — and gets no bead.**
@@ -366,20 +366,20 @@ independent rounds at N=15:
 
 | table | rows in table | scans/request (r1) | scans/request (r2) | **rows read/request** |
 | --- | ---: | ---: | ---: | ---: |
-| `scheduling_ledger` | 3 245 | 19 177.7 | 15 467.9 | 8 505.4 |
-| `analysis` | 5 846 | 17 007.0 | 15 079.8 | 18 325.3 |
-| `files` | 11 428 | 9 022.7 | 7 943.8 | **115 132.5** |
-| `stage_skip` | **0** | 8 083.9 | 7 006.4 | — |
-| `cloud_job` | 9 281 | 1 007.8 | 1 006.3 | **174 289.5** |
-| `metadata` | 11 428 | 871.7 | 871.0 | 33 575.2 |
+| `scheduling_ledger` | 3,245 | 19,177.7 | 15,467.9 | 8,505.4 |
+| `analysis` | 5,846 | 17,007.0 | 15,079.8 | 18,325.3 |
+| `files` | 11,428 | 9,022.7 | 7,943.8 | **115,132.5** |
+| `stage_skip` | **0** | 8,083.9 | 7,006.4 | — |
+| `cloud_job` | 9,281 | 1,007.8 | 1,006.3 | **174,289.5** |
+| `metadata` | 11,428 | 871.7 | 871.0 | 33,575.2 |
 | `saq_jobs` | 13 | 32.9 | 31.0 | 41.2 |
 | `agents` | 3 | 5.3 | 5.4 | 13.1 |
-| **total** | **~38 000** | **~55 200** | **~47 400** | **~350 000** |
+| **total** | **~38,000** | **~55,200** | **~47,400** | **~350,000** |
 
-One request initiates **~47 000–55 000 index scans** and reads **~350 000 rows** from tables holding
-**~38 000 rows in total** — it re-reads `cloud_job` **18.8×** over and `files` **10.1×** over. The
+One request initiates **~47,000–55,000 index scans** and reads **~350,000 rows** from tables holding
+**~38,000 rows in total** — it re-reads `cloud_job` **18.8×** over and `files` **10.1×** over. The
 scan counts scale with the *file* table, not with the answer: `stage_skip` holds **zero rows** and
-is probed **~7 000–8 100 times per request**.
+is probed **~7,000–8,100 times per request**.
 
 The shape is a correlated subquery evaluated per file row, not a Python-level loop —
 `src/phaze/services/stage_status.py:266`:
@@ -400,17 +400,17 @@ operation in the admin UI.
 
 | | |
 | --- | --- |
-| cost | **1 378.6 ms** mean, 1 473.9 ms max |
-| response | **6 095 bytes** |
+| cost | **1,378.6 ms** mean, 1,473.9 ms max |
+| response | **6,095 bytes** |
 | **scans per request** | **below the noise floor** — see below |
 | trigger | `hx-trigger="load, drain-refresh from:body"` — **on load, NOT polled** |
 
 Its database fan-out could **not** be measured: over a 16.418 s window at N=12 the idle control
-recorded *more* scans than the test window on every table (`analysis` 25 968 idle vs 19 476 test,
-`cloud_job` 12 988 vs 9 741, `metadata` 12 984 vs 9 750), so the background-corrected per-request
+recorded *more* scans than the test window on every table (`analysis` 25,968 idle vs 19,476 test,
+`cloud_job` 12,988 vs 9,741, `metadata` 12,984 vs 9,750), so the background-corrected per-request
 figure comes out **negative**. The honest reading is that this endpoint's own scan fan-out is
 **indistinguishable from zero** against the production worker's own background traffic — which is
-itself ~26 000 scans per 16 s. It is emphatically **not** the `/pipeline/stats` shape.
+itself ~26,000 scans per 16 s. It is emphatically **not** the `/pipeline/stats` shape.
 
 So the 1.4 s is not database time. It is in `build_drain_queue`
 (`src/phaze/tasks/tracklist_drain.py:148`), which the status endpoint calls to build the **entire**
@@ -425,18 +425,18 @@ the same DAG/stage context. Corrected per-request scans, N=12:
 
 | table | scans/request |
 | --- | ---: |
-| `scheduling_ledger` | 15 469.2 |
-| `analysis` | 13 216.1 |
-| `files` | 6 926.0 |
-| `stage_skip` | 6 063.5 |
+| `scheduling_ledger` | 15,469.2 |
+| `analysis` | 13,216.1 |
+| `files` | 6,926.0 |
+| `stage_skip` | 6,063.5 |
 | `cloud_job` | 939.1 |
 | `metadata` | 816.6 |
 | `saq_jobs` | 32.2 |
 | `agents` | 4.7 |
-| **total** | **~43 500** |
+| **total** | **~43,500** |
 
 At **627.0 ms** mean / **633.6 ms** p50 this is the slowest first paint in the admin UI, and it is
-also the stage an operator watching an 8 079-file backlog drain will keep open — where it then also
+also the stage an operator watching an 8,079-file backlog drain will keep open — where it then also
 pays §4a's 534.0 ms every 5 s.
 
 ______________________________________________________________________
@@ -451,7 +451,7 @@ ______________________________________________________________________
 | `saq_jobs` queued, every sample | **9** |
 | `saq_jobs` active, every sample | **0** |
 | what the 9 are | periodic maintenance only — `reap_stuck_aborting_jobs`, `reap_stalled_scans`, `continue_armed_tracklist_drain`, `reap_stranded_active_jobs`, `reconcile_stale_stage_parks`, `stage_cloud_window`, `reap_resolved_ledger_rows`, `reconcile_cloud_jobs`, `refresh_tracklists` |
-| controller lifetime throughput | **51 626 complete**, 4 failed, 12 retried, over **549 747.192 s (6.3628 days)** = **0.0939 jobs/s** |
+| controller lifetime throughput | **51,626 complete**, 4 failed, 12 retried, over **549,747.192 s (6.3628 days)** = **0.0939 jobs/s** |
 
 Per-job latency, from the jobs' own `queued` / `started` / `completed` fields (n=4, all that the
 table retains):
@@ -460,8 +460,8 @@ table retains):
 | --- | --- | ---: | ---: |
 | `controller` | `submit_cloud_job` | **16 ms** | 63 ms |
 | `controller` | `submit_cloud_job` | **11 ms** | 67 ms |
-| `phaze-agent-<host-store>-io` | `s3_upload` | **16 ms** | 1 763 ms |
-| `phaze-agent-<host-store>-io` | `s3_upload` | **24 ms** | 2 171 ms |
+| `phaze-agent-<host-store>-io` | `s3_upload` | **16 ms** | 1,763 ms |
+| `phaze-agent-<host-store>-io` | `s3_upload` | **24 ms** | 2,171 ms |
 
 ### 5b. Burst, measured
 
@@ -475,10 +475,10 @@ elsewhere.
 | burst | enqueue | enqueue rate | drain | **drain rate** | concurrency |
 | ---: | ---: | ---: | ---: | ---: | ---: |
 | **500 jobs** | 1.6478 s | 303.4/s | 1.5240 s | **328.1/s** | 10 |
-| **5 000 jobs** | 11.2633 s | 443.9/s | 15.7063 s | **318.3/s** | 10 |
+| **5,000 jobs** | 11.2633 s | 443.9/s | 15.7063 s | **318.3/s** | 10 |
 
 **Drain rate is flat in depth: a 10× larger burst cost 3.0% in throughput**, and the depth curve
-was linear from 5 000 to 0 with no inflection.
+was linear from 5,000 to 0 with no inflection.
 
 ### 5c. Verdict — no bead
 
@@ -488,7 +488,7 @@ at **9** and dequeue latency of **11–24 ms**. Per the bead's acceptance criter
 recorded as a result with its figures rather than as an absence.
 
 **The backlog is real, but it is not in the queue.** It sits in **`cloud_job.status = 'awaiting'`,
-8 079 rows** — a table, drained by `stage_cloud_window` against the `cap = 4` admission limit. Queue
+8,079 rows** — a table, drained by `stage_cloud_window` against the `cap = 4` admission limit. Queue
 depth is *structurally* bounded by that cap, so a burst cannot form in SAQ no matter how deep the
 backlog gets. Making SAQ faster would not move a single file.
 
@@ -499,7 +499,7 @@ ______________________________________________________________________
 This was not on the list of surfaces to measure; it fell out of §2's state query and is the
 cheapest real work this document found.
 
-**1 459** `analysis` rows carry neither `analysis_completed_at` nor `failed_at`; **1 455 are more
+**1,459** `analysis` rows carry neither `analysis_completed_at` nor `failed_at`; **1,455 are more
 than 7 days old**. Narrowing to rows that did real work and are queued nowhere:
 
 ```sql
@@ -551,7 +551,7 @@ lane. Across the wider 864-file set (562.14 audio-hours) it is **206.8 wall-hour
 These files are invisible to the dashboard: `get_analysis_stalled_count`
 (`src/phaze/services/pipeline/failures.py:81`) counts only files in `ANALYSIS_FAILED` carrying a
 `"timeout:"` error — deliberately a **subset of failed** — and these rows have `failed_at IS NULL`.
-They are also excluded from the 5 582 "no analysis row" count, because they *have* one.
+They are also excluded from the 5,582 "no analysis row" count, because they *have* one.
 
 ______________________________________________________________________
 
@@ -559,16 +559,16 @@ ______________________________________________________________________
 
 | surface | measured | bead |
 | --- | --- | --- |
-| Analysis — coarse tier invisible | fine tier **5.31%** of a 7 119.473 s run; **1 h 52 m** of silence | **`phaze-bp9kz`** |
-| Admin UI — `/pipeline/stats` poll | **534.0 ms** every 5 s, **10.68%** duty cycle, **~350 000 rows/request** | **`phaze-ajnaa`** |
-| Admin UI — `/pipeline/tracklist-drain-status` | **1 378.6 ms** for 6 095 bytes, DB fan-out below the noise floor | **`phaze-ih3zd`** |
-| Admin UI — `/s/analyze` | **627.0 ms**, **~43 500** scans/request (same shape as stats) | **`phaze-y0upq`** |
+| Analysis — coarse tier invisible | fine tier **5.31%** of a 7,119.473 s run; **1 h 52 m** of silence | **`phaze-bp9kz`** |
+| Admin UI — `/pipeline/stats` poll | **534.0 ms** every 5 s, **10.68%** duty cycle, **~350,000 rows/request** | **`phaze-ajnaa`** |
+| Admin UI — `/pipeline/tracklist-drain-status` | **1,378.6 ms** for 6,095 bytes, DB fan-out below the noise floor | **`phaze-ih3zd`** |
+| Admin UI — `/s/analyze` | **627.0 ms**, **~43,500** scans/request (same shape as stats) | **`phaze-y0upq`** |
 | Stranded analysis rows | **661 files / 223.99 audio-h / 82.4 wall-h** to redo | **`phaze-hia9z`** |
 | **SAQ latency + depth** | **11–24 ms**, depth **9**, **318.3 jobs/s** drain, **0.03%** utilised | **no bead — result recorded (§5c)** |
-| **Analysis staging path** | **1.694 s of 7 121.167 s = 0.02%** | **no bead — result recorded (§3a)** |
-| **Analysis memory** | sampled **823–1 364 MiB** against a 4Gi limit | **no bead — result recorded (§3d)** |
+| **Analysis staging path** | **1.694 s of 7,121.167 s = 0.02%** | **no bead — result recorded (§3a)** |
+| **Analysis memory** | sampled **823–1,364 MiB** against a 4Gi limit | **no bead — result recorded (§3d)** |
 | **The record slide-in** | **20.6 ms** against the real corpus | **no bead — result recorded (§4)** |
-| `/s/files` payload size | **681 013 bytes**, 6.7× the next largest page, but **50.5 ms** to render | **no bead — no measured client-side cost** |
+| `/s/files` payload size | **681,013 bytes**, 6.7× the next largest page, but **50.5 ms** to render | **no bead — no measured client-side cost** |
 | Review surfaces under load | **not measured** — `proposals` = 0 rows | **gap recorded (§1a), no bead** |
 | Solo (`W=1`) analysis ratio | **not measured** — would require a production mutation | **gap recorded (§1a), no bead** |
 

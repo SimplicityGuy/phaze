@@ -412,8 +412,8 @@ assert the categorical fields plus a tolerance instead.
 
 | arm | **VmHWM** | sampled peak | wall | Δ peak | Δ wall |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| **TensorFlow, shipped (`batchSize` 64)** | **2.588 GiB** | 2.583 | 3 058.55 s | — | — |
-| **TensorFlow, `batchSize` 32** | **1.715 GiB** | 1.681 | 3 069.57 s | **−33.7%** | **+0.36%** |
+| **TensorFlow, shipped (`batchSize` 64)** | **2.588 GiB** | 2.583 | 3,058.55 s | — | — |
+| **TensorFlow, `batchSize` 32** | **1.715 GiB** | 1.681 | 3,069.57 s | **−33.7%** | **+0.36%** |
 
 `bpm` / `key` / `mood` / `style` identical; `danceability` `0.5625221525629361` vs
 `0.562522149582704` — **Δ 3.0 × 10⁻⁹**, the §5b ulp effect again.

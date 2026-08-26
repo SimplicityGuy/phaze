@@ -45,9 +45,9 @@ Alembic head is **031** (`031_add_route_control.py`); next migration is **032**.
 1. **`NOT EXISTS` and the correctly-written `LEFT JOIN … IS NULL` produce the *identical* `Hash Anti Join` plan.** The PG16 "Right Anti Join" improvement (planner may hash the *smaller* side) is active in 18 — on the 1:N fingerprint table the planner chose `Parallel Hash Right Anti Join`, hashing the 200K `files` rows rather than the 300K `fingerprint_results` rows. So performance is a wash between these two forms; **the tiebreaker is correctness and readability.**
 
 2. **`LEFT JOIN … IS NULL` has a silent-wrong-answer trap that `NOT EXISTS` does not.** The predicate must go in the **`ON` clause**, not the `WHERE`. Measured on the per-engine `fingerprint_results` table (2 rows/file):
-   - `NOT EXISTS (… status IN ('success','completed'))` → **51 507** pending (correct)
-   - `LEFT JOIN … ON file_id=id AND status IN (…) WHERE r.file_id IS NULL` → 51 507 (correct)
-   - `LEFT JOIN … ON file_id=id WHERE r.status IS NULL` → **50 000 (WRONG)** — the pre-filter join emitted 350 000 rows and the `WHERE` dropped every file that had *any* engine row, silently under-counting by 1 507.
+   - `NOT EXISTS (… status IN ('success','completed'))` → **51,507** pending (correct)
+   - `LEFT JOIN … ON file_id=id AND status IN (…) WHERE r.file_id IS NULL` → 51,507 (correct)
+   - `LEFT JOIN … ON file_id=id WHERE r.status IS NULL` → **50,000 (WRONG)** — the pre-filter join emitted 350,000 rows and the `WHERE` dropped every file that had *any* engine row, silently under-counting by 1,507.
    Because three of this milestone's stages are 1:N (`fingerprint_results` per-engine, `tracklists`, `proposals`), the LEFT JOIN form is an active footgun here. `NOT EXISTS` cannot express it wrong.
 
 3. **`EXCEPT` deduplicates its left input** (it is a set operation). `SELECT f.id FROM files EXCEPT …` happens to be safe only because `id` is unique; the moment anyone writes `SELECT f.file_type …` it collapses 200K rows to 3. It also cannot carry extra projected columns. Avoid.
@@ -248,7 +248,7 @@ def downgrade() -> None:
 |-------|-----|-------------|
 | `NOT IN (subquery)` for anti-joins | NULL-unsafe (one NULL → zero rows); measured 418M cost / >170 s with `work_mem` spill on the 1:N table | `NOT EXISTS` |
 | `EXCEPT` for "pending" sets | Deduplicates the left input; can't carry extra columns; slowest correct form | `NOT EXISTS` |
-| `LEFT JOIN` with the stage predicate in `WHERE` (not `ON`) | Silently under-counted the 1:N fingerprint set by 1 507 rows | `NOT EXISTS` (or predicate strictly in `ON`) |
+| `LEFT JOIN` with the stage predicate in `WHERE` (not `ON`) | Silently under-counted the 1:N fingerprint set by 1,507 rows | `NOT EXISTS` (or predicate strictly in `ON`) |
 | `GROUP BY (CASE WHEN EXISTS…)` over the corpus | 792 ms, JIT-triggered, ~30× slower than per-stage counts | Per-stage anti-join `count(*)` or `count(*) FILTER (…)` |
 | `EXISTS` in the SELECT list over an un-materialized `files` scan | Planner can't push LIMIT through correlated subplans → whole-table hashed subplans (1875 buffers for 50 rows) | `WITH page AS MATERIALIZED (… LIMIT n)` then correlate (0.9 ms) |
 | A mapped model / `Base.metadata` entry for `saq_jobs` | `autogenerate` would try to emit DDL for the SAQ-owned table (020/030 banner) | Unregistered Core `table("saq_jobs", column(...))`, or static `text()` SQL in a SAVEPOINT |

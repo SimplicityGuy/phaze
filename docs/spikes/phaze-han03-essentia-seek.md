@@ -86,14 +86,14 @@ same samples anywhere, and it is shaped to serve three purposes at once:
 
 | file | duration | container / codec | source rate | purpose |
 | --- | ---: | --- | ---: | --- |
-| `synth-600s.wav` | 600 s | WAV / pcm_s16le | 44 100 Hz | lossless reference |
-| `synth-600s.mp3` | 600 s | MP3 / libmp3lame 192k | 44 100 Hz | accuracy |
-| `synth-600s.m4a` | 600 s | MP4 / AAC-LC 192k | 44 100 Hz | accuracy |
-| `synth-600s.flac` | 600 s | FLAC | 44 100 Hz | accuracy |
-| `synth-600s.opus` | 600 s | Ogg / Opus 192k | 48 000 Hz out | accuracy — hardest case (pre-skip + forced 48 kHz) |
-| `synth-3600s.mp3` | 3 600 s | MP3 192k | 44 100 Hz | timing, ratio-1.0 tier |
-| `synth-3600s-48k.mp3` | 3 600 s | MP3 192k | 48 000 Hz | timing, resampling tier |
-| `synth-7200s.mp3` | 7 200 s | MP3 192k | 44 100 Hz | timing, multi-chunk |
+| `synth-600s.wav` | 600 s | WAV / pcm_s16le | 44,100 Hz | lossless reference |
+| `synth-600s.mp3` | 600 s | MP3 / libmp3lame 192k | 44,100 Hz | accuracy |
+| `synth-600s.m4a` | 600 s | MP4 / AAC-LC 192k | 44,100 Hz | accuracy |
+| `synth-600s.flac` | 600 s | FLAC | 44,100 Hz | accuracy |
+| `synth-600s.opus` | 600 s | Ogg / Opus 192k | 48,000 Hz out | accuracy — hardest case (pre-skip + forced 48 kHz) |
+| `synth-3600s.mp3` | 3,600 s | MP3 192k | 44,100 Hz | timing, ratio-1.0 tier |
+| `synth-3600s-48k.mp3` | 3,600 s | MP3 192k | 48,000 Hz | timing, resampling tier |
+| `synth-7200s.mp3` | 7,200 s | MP3 192k | 44,100 Hz | timing, multi-chunk |
 
 ______________________________________________________________________
 
@@ -269,12 +269,12 @@ its exact waveform is perceptually irrelevant.
 
 | source | tier rate | ratio | bit-identical | `max|diff|` | relative RMS |
 | --- | ---: | ---: | --- | ---: | ---: |
-| MP3 44.1 kHz | 44 100 | **1.0** | **yes** | 0 | — |
-| MP3 44.1 kHz | 16 000 | 0.3628 | no | 3.19e-02 | **−49.0 dB** |
-| AAC 44.1 kHz | 44 100 | **1.0** | no *(PNS only, §4b)* | 3.80e-04 | **−98.0 dB** |
-| AAC 44.1 kHz | 16 000 | 0.3628 | no | 3.24e-02 | −49.0 dB |
-| Opus 48 kHz | 44 100 | 0.91875 | no | 1.77e-02 | −56.8 dB |
-| Opus 48 kHz | 16 000 | 0.3333 | no | 3.31e-02 | −50.1 dB |
+| MP3 44.1 kHz | 44,100 | **1.0** | **yes** | 0 | — |
+| MP3 44.1 kHz | 16,000 | 0.3628 | no | 3.19e-02 | **−49.0 dB** |
+| AAC 44.1 kHz | 44,100 | **1.0** | no *(PNS only, §4b)* | 3.80e-04 | **−98.0 dB** |
+| AAC 44.1 kHz | 16,000 | 0.3628 | no | 3.24e-02 | −49.0 dB |
+| Opus 48 kHz | 44,100 | 0.91875 | no | 1.77e-02 | −56.8 dB |
+| Opus 48 kHz | 16,000 | 0.3333 | no | 3.31e-02 | −50.1 dB |
 
 Read the two ratio-1.0 rows against the rest: MP3 is **exact**, and AAC's −98.0 dB is the PNS
 residual of §4b and nothing else. Every row at −49 to −57 dB is a row where libsamplerate ran.
@@ -312,12 +312,12 @@ Same window, seeked vs decode-and-discard, across codecs and both tier rates:
 
 | file | tier rate | BPM | key | key strength | loudness | centroid |
 | --- | ---: | --- | --- | ---: | ---: | ---: |
-| mp3 | 44 100 | **exact** | **same** | exact | exact | exact |
-| mp3 | 16 000 | **exact** | **same** | 4.66e-05 | 6.97e-07 | 7.77e-07 |
-| m4a | 44 100 | **exact** | **same** | 1.25e-07 | 9.45e-08 | exact |
-| m4a | 16 000 | **exact** | **same** | 9.28e-05 | 4.49e-06 | 3.93e-07 |
-| opus | 44 100 | **exact** | **same** | 3.66e-06 | 9.90e-06 | 1.60e-06 |
-| opus | 16 000 | **exact** | **same** | 4.80e-05 | 8.83e-06 | 2.48e-06 |
+| mp3 | 44,100 | **exact** | **same** | exact | exact | exact |
+| mp3 | 16,000 | **exact** | **same** | 4.66e-05 | 6.97e-07 | 7.77e-07 |
+| m4a | 44,100 | **exact** | **same** | 1.25e-07 | 9.45e-08 | exact |
+| m4a | 16,000 | **exact** | **same** | 9.28e-05 | 4.49e-06 | 3.93e-07 |
+| opus | 44,100 | **exact** | **same** | 3.66e-06 | 9.90e-06 | 1.60e-06 |
+| opus | 16,000 | **exact** | **same** | 4.80e-05 | 8.83e-06 | 2.48e-06 |
 
 **BPM is exact and key is identical in all twelve comparisons.** The largest disagreement anywhere
 is 9.3 × 10⁻⁵ relative. **Not covered:** the 34 TensorFlow model outputs, because this build has no
@@ -341,9 +341,9 @@ error bar on every absolute figure in this document.
 
 | case | full `[0, 3600)` | seek `[1800, 3600)` | seek **one window** | `EasyLoader` one window | **speedup** |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 44.1 kHz src → 44 100 (ratio 1.0, fastcopy) | 2.100 / 2.087 s | **1.065 / 1.013 s** | **0.086 / 0.048 s** | 2.142 / 2.064 s | **25.0× / 43.0×** |
-| 48 kHz src → 44 100 (ratio 0.91875, SRC) | 19.681 / 19.402 s | **9.925 / 9.757 s** | **0.235 / 0.195 s** | 53.375 / 52.490 s | **227.4× / 268.6×** |
-| 44.1 kHz src → 16 000 (coarse tier, SRC) | 16.947 / 16.667 s | **8.563 / 8.391 s** | **0.921 / 0.864 s** | 28.308 / 27.760 s | **30.7× / 32.1×** |
+| 44.1 kHz src → 44,100 (ratio 1.0, fastcopy) | 2.100 / 2.087 s | **1.065 / 1.013 s** | **0.086 / 0.048 s** | 2.142 / 2.064 s | **25.0× / 43.0×** |
+| 48 kHz src → 44,100 (ratio 0.91875, SRC) | 19.681 / 19.402 s | **9.925 / 9.757 s** | **0.235 / 0.195 s** | 53.375 / 52.490 s | **227.4× / 268.6×** |
+| 44.1 kHz src → 16,000 (coarse tier, SRC) | 16.947 / 16.667 s | **8.563 / 8.391 s** | **0.921 / 0.864 s** | 28.308 / 27.760 s | **30.7× / 32.1×** |
 
 The full-file and half-file columns agree between runs to **within 1.5%**; the single-window column
 is the one that moves (up to 1.8×), because at 48–86 ms it is small enough for scheduler noise to
@@ -367,7 +367,7 @@ Two things to read off this table.
 `phaze-b2qs9` §4b, **does not scale with the chunk boundary**. With real seek, chunk *k* decodes
 only its own span, so the `Trimmer` gate becomes unnecessary and D-07's `duration × (K+1)/2` model
 is replaced by `duration` — one file-length decode per tier, total, regardless of chunk count.
-On `<set-05>`'s 12 fine chunks that is ≈ 1 310 s of gated decode today against a floor of one pass.
+On `<set-05>`'s 12 fine chunks that is ≈ 1,310 s of gated decode today against a floor of one pass.
 
 **This spike does not claim that end-to-end number**, because it never ran an end-to-end analysis
 (§9.3). What it does establish is the per-chunk half of it, measured in §5c: the decode term
@@ -384,12 +384,12 @@ is within 2% on every cell**, so the deltas below are signal, not host noise.
 
 | file | tier rate | chunk | final? | windows | baseline (s), 2 runs | seek (s), 2 runs | **delta** | PCM md5 |
 | --- | ---: | ---: | :---: | ---: | ---: | ---: | ---: | :---: |
-| `synth-3600s-48k.mp3` | 44 100 | 0 | no | 60 | 107.37 / 107.37 | 59.36 / 58.36 | **−45.2%** | same |
-| `synth-3600s-48k.mp3` | 44 100 | 1 | yes | 60 | 58.91 / 58.30 | 59.22 / 58.22 | +0.2% | differs |
-| `synth-3600s.mp3` | 44 100 | 0 | no | 60 | 53.44 / 54.46 | 49.74 / 50.37 | **−7.2%** | same |
-| `synth-3600s.mp3` | 44 100 | 1 | yes | 60 | 40.23 / 40.43 | 49.42 / 49.86 | **+23.1%** | same |
-| `synth-7200s.mp3` | 16 000 | 0 | no | 30 | 55.34 / 54.12 | 32.19 / 31.99 | **−41.4%** | same |
-| `synth-7200s.mp3` | 16 000 | 1 | yes | 10 | 36.97 / 36.16 | 9.43 / 9.22 | **−74.5%** | differs |
+| `synth-3600s-48k.mp3` | 44,100 | 0 | no | 60 | 107.37 / 107.37 | 59.36 / 58.36 | **−45.2%** | same |
+| `synth-3600s-48k.mp3` | 44,100 | 1 | yes | 60 | 58.91 / 58.30 | 59.22 / 58.22 | +0.2% | differs |
+| `synth-3600s.mp3` | 44,100 | 0 | no | 60 | 53.44 / 54.46 | 49.74 / 50.37 | **−7.2%** | same |
+| `synth-3600s.mp3` | 44,100 | 1 | yes | 60 | 40.23 / 40.43 | 49.42 / 49.86 | **+23.1%** | same |
+| `synth-7200s.mp3` | 16,000 | 0 | no | 30 | 55.34 / 54.12 | 32.19 / 31.99 | **−41.4%** | same |
+| `synth-7200s.mp3` | 16,000 | 1 | yes | 10 | 36.97 / 36.16 | 9.43 / 9.22 | **−74.5%** | differs |
 
 **On every NON-final chunk — the case the `phaze-w55w1` gate exists for — `endTime` beats the
 `Trimmer` gate: −45.2%, −41.4%, −7.2%.** That is the headline of this table. `phaze-b2qs9` §4c
@@ -399,7 +399,7 @@ a chunk that the gate could not. **The gate becomes unnecessary, not merely impr
 
 **The md5 column is an independent confirmation of §4c**, and it lines up exactly: the PCM differs
 in precisely the two rows where a real seek happens *and* the ratio is not 1.0. Where `startTime`
-is 0 (chunk 0, no seek) or the ratio is 1.0 (`synth-3600s.mp3` at 44 100), the two arms are
+is 0 (chunk 0, no seek) or the ratio is 1.0 (`synth-3600s.mp3` at 44,100), the two arms are
 **byte-identical**. Nothing else differs.
 
 **One row is a reproducible REGRESSION and is not explained.** `synth-3600s.mp3` chunk 1 costs
@@ -444,27 +444,27 @@ if (_data.src_ratio == 1.0) {
 which bypasses libsamplerate entirely. **b2qs9's measurement stands and its conclusion is
 strengthened** — the 5.2–7.7× penalty it measured on 48 kHz sources is now explained by mechanism
 rather than inferred: ratio 1.0 is a `memcpy`, ratio 0.91875 is the full sinc resampler.
-Independently reproduced here: 2.100 s vs 19.681 s for the same 3 600 s at the same tier rate,
+Independently reproduced here: 2.100 s vs 19.681 s for the same 3,600 s at the same tier rate,
 a **9.4× penalty** for a non-unity ratio.
 
 ### 6b. `Trimmer` loses sample accuracy on long files — phaze's windows are not where it thinks
 
 While proving the two benchmark arms equivalent, the concatenated PCM matched **but the window
-lengths did not**: the baseline produced windows of 1 323 008 / 1 322 992 samples where the seeked
-arm produced exactly 1 323 000. The stream is the same; the **cut points move**.
+lengths did not**: the baseline produced windows of 1,323,008 / 1,322,992 samples where the seeked
+arm produced exactly 1,323,000. The stream is the same; the **cut points move**.
 
 Cause: essentia's `Real` is `float32`, and `Trimmer` converts `startTime × sampleRate` in it. A
-float32 mantissa is 24 bits, so past 2²⁴ = 16 777 216 samples — **380.4 s at 44.1 kHz** — the
+float32 mantissa is 24 bits, so past 2²⁴ = 16,777,216 samples — **380.4 s at 44.1 kHz** — the
 representable spacing exceeds one sample and doubles every octave:
 
 | position in file | exact sample | float32 result | error | grid spacing |
 | ---: | ---: | ---: | ---: | ---: |
-| 300 s | 13 230 000 | 13 230 000 | 0 | 1 |
-| 380 s | 16 758 000 | 16 758 000 | 0 | 1 |
-| 1 800 s | 79 380 000 | 79 380 000 | 0 | 8 |
-| 3 090 s | 136 269 000 | 136 268 992 | **−8** | 16 |
-| 20 279 s (5:38) | 894 303 900 | 894 303 872 | **−28** | 64 |
-| 43 466 s (12:04) | 1 916 850 600 | 1 916 850 560 | **−40** | **128** |
+| 300 s | 13,230,000 | 13,230,000 | 0 | 1 |
+| 380 s | 16,758,000 | 16,758,000 | 0 | 1 |
+| 1,800 s | 79,380,000 | 79,380,000 | 0 | 8 |
+| 3,090 s | 136,269,000 | 136,268,992 | **−8** | 16 |
+| 20,279 s (5:38) | 894,303,900 | 894,303,872 | **−28** | 64 |
+| 43,466 s (12:04) | 1,916,850,600 | 1,916,850,560 | **−40** | **128** |
 
 **Consequence for phaze today:** every fine window past ~6 minutes into a file starts and ends off
 the exact sample grid, by up to 8 samples at the 1-hour mark and up to ~128 samples (2.9 ms) at the
@@ -473,7 +473,7 @@ a descriptor, and **it has never been measured** — but it means the shipped wi
 approximate in a duration-dependent way, which is precisely the kind of thing that makes
 "reproducible analysis" quietly untrue. The seek design removes it as a side effect, because the
 loader tracks absolute position in `int64` samples and the `Trimmer` bounds become chunk-relative
-(≤ 1 800 s) instead of absolute.
+(≤ 1,800 s) instead of absolute.
 
 ______________________________________________________________________
 

@@ -352,15 +352,15 @@ defaults:
 
 | W | files/h | speedup | per-file wall | node CPU | proc peak (GiB) | audio-seconds analyzed per hour |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 4.64 | 1.00× | 776 s | **65.1%** | 2.168 | 5 567 |
-| 4 | 6.92 | **1.49×** | 2 078 s | 94.1% | 2.301 | 8 304 |
+| 1 | 4.64 | 1.00× | 776 s | **65.1%** | 2.168 | 5,567 |
+| 4 | 6.92 | **1.49×** | 2,078 s | 94.1% | 2.301 | 8,304 |
 
 **The direction of the hypothesis is confirmed; the magnitude is not.** A 20-minute file leaves the
 node at **65.1%** CPU solo against **74.7%** for the 3–7 minute mix, exactly as a growing
 single-threaded decode share predicts, and concurrency does convert some of that idle time:
 **1.49× at W=4 against 1.34× for short files**. But it is not super-linear and it does not change
 the ceiling. Measured in audio-seconds analyzed per hour — the mix-independent unit — the node
-delivers **8 304 s/h on 20-minute files against 8 800 s/h on the short mix at the same W=4**, i.e.
+delivers **8,304 s/h on 20-minute files against 8,800 s/h on the short mix at the same W=4**, i.e.
 within 6%. **Duration changes what the node is doing, not how much of it the node can do.**
 
 Two things worth carrying forward:
@@ -408,7 +408,7 @@ every worker past that point multiplies per-file latency for nothing:
 | 3 | 28.9 | 96% | 374 s | 5.4 GiB |
 | **4** | **29.4–29.6** | **98%** | **485 s** | 3.7–6.5 GiB |
 | 8 | 30.0–30.3 | 100% | 950 s | 7.6–12.5 GiB |
-| 12 | 30.2 | 100% | 1 428 s | 17.0 GiB |
+| 12 | 30.2 | 100% | 1,428 s | 17.0 GiB |
 
 **4 buys 98% of the ceiling at a third of cap 12's per-file latency**, and it is the concurrency at
 which the 4-thread configuration first saturates the cores (98.5% CPU at W=4 against 82.8% at W=2),

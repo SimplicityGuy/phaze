@@ -275,10 +275,10 @@ Measured, in the deployed image, on the deployed node:
 
 | file | rate | window | samples returned | RSS delta | wall |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `dur_600` (10 min) | 44 100 | 0–30 s | 1 323 000 | 0.018 GiB | 0.8 s |
-| `dur_7200` (2 h) | 44 100 | 0–30 s | **1 323 000** | 0.029 GiB | **9.0 s** |
-| `dur_600` (10 min) | 16 000 | 0–180 s | 2 880 000 | 0.012 GiB | 10.2 s |
-| `dur_7200` (2 h) | 16 000 | 0–180 s | **2 880 000** | 0.043 GiB | **139.0 s** |
+| `dur_600` (10 min) | 44,100 | 0–30 s | 1,323,000 | 0.018 GiB | 0.8 s |
+| `dur_7200` (2 h) | 44,100 | 0–30 s | **1,323,000** | 0.029 GiB | **9.0 s** |
+| `dur_600` (10 min) | 16,000 | 0–180 s | 2,880,000 | 0.012 GiB | 10.2 s |
+| `dur_7200` (2 h) | 16,000 | 0–180 s | **2,880,000** | 0.043 GiB | **139.0 s** |
 
 **A 12× increase in file duration changes the returned buffer by zero samples and the resident
 set by tens of MB, while multiplying wall clock by 11–14×.** essentia's standard-mode `EasyLoader`
@@ -298,7 +298,7 @@ tractable); its only **production-caps** runs were 3.3 min, 10 min and 60 min. S
 lane sees nothing under 90 minutes, no long file had ever been run at the caps production
 actually uses. That gap is now closed.
 
-**Setup:** synthetic ffmpeg sine-pair stereo mp3, **21 600 s (6 h)**, 192 kbps; deployed image
+**Setup:** synthetic ffmpeg sine-pair stereo mp3, **21,600 s (6 h)**, 192 kbps; deployed image
 `job:2026.8.0` (whose `analysis.py` is the pre-`phaze-15sw` **window-major** code — i.e. the exact
 code that produced the kills); deployed models PVC read-only; **no cap flags**, so
 `analyze_file`'s production defaults (`fine_cap=60`, `coarse_cap=30`) apply; pod

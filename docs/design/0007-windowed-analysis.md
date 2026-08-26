@@ -51,8 +51,8 @@ result carries a five-field coverage contract per file:
 
 **The caps only bite on long files.** Doing the arithmetic on the defaults:
 
-- FINE strides once duration exceeds `60 × 30 s = 1 800 s` = **30 minutes**.
-- COARSE strides once duration exceeds `30 × 180 s = 5 400 s` = **90 minutes**.
+- FINE strides once duration exceeds `60 × 30 s = 1,800 s` = **30 minutes**.
+- COARSE strides once duration exceeds `30 × 180 s = 5,400 s` = **90 minutes**.
 
 Given the archive's two file classes (CLAUDE.md "Project"): individual tracks are essentially
 always under 30 minutes and are **never** sampled — every window they have is analyzed. The
@@ -113,9 +113,9 @@ measurement):
 
 | | before `phaze-5lop` | after `phaze-5lop` |
 | --- | ---: | ---: |
-| total wall | 3 205.05 s | **1 960.37 s** |
-| audio decode + resample | 1 370.77 s (42.8%) | **126.98 s (6.5%)** |
-| 34 TF graphs × N windows + `RhythmExtractor2013`/`KeyExtractor` × N windows | 1 834.28 s (57.2%) | **1 833.39 s (93.5%)** |
+| total wall | 3,205.05 s | **1,960.37 s** |
+| audio decode + resample | 1,370.77 s (42.8%) | **126.98 s (6.5%)** |
+| 34 TF graphs × N windows + `RhythmExtractor2013`/`KeyExtractor` × N windows | 1,834.28 s (57.2%) | **1,833.39 s (93.5%)** |
 
 The root cause `phaze-esut` §8 found: `es.EasyLoader` does not seek (`Trimmer`'s
 "tell my parent to stop" optimization cannot cross the `MonoLoader` composite boundary), so
@@ -157,10 +157,10 @@ Individual tracks are unaffected either way — they never hit the cap.
 **Memory.** Each pass holds all of its *kept* windows' PCM concurrently by design (§2b). That
 scales linearly with window count once uncapped:
 
-- FINE: ~30 s × 44 100 Hz × 4 B (float32) ≈ 5.05 MB/window. At the default cap (60) that's the
-  documented ~317 MB. Uncapped on a 12-hour set (natural window count 1 440, a 24× increase over
+- FINE: ~30 s × 44,100 Hz × 4 B (float32) ≈ 5.05 MB/window. At the default cap (60) that's the
+  documented ~317 MB. Uncapped on a 12-hour set (natural window count 1,440, a 24× increase over
   the cap): **≈ 7.3 GiB** held transiently for the fine pass alone.
-- COARSE: ~180 s × 16 000 Hz × 4 B ≈ 11.52 MB/window. At the default cap (30) that's the
+- COARSE: ~180 s × 16,000 Hz × 4 B ≈ 11.52 MB/window. At the default cap (30) that's the
   documented ~345 MB. Uncapped on the same 12-hour set (natural window count 240, an 8× increase):
   **≈ 2.8 GiB** held transiently for the coarse pass.
 
@@ -179,12 +179,12 @@ mode, but still a failure, not a completed analysis).
 **Wall clock.** Decode cost is unaffected by the cap either way (§2c) — a 12-hour file's two-tier
 decode is ~19–21 minutes regardless of sampling. What scales is the now-dominant (93.5%) model
 work: exhaustive mode on the same 12-hour set runs **24× more fine windows and 8× more coarse
-windows** than the capped default. Applying that multiplier to the 1 833.39 s of model work
+windows** than the capped default. Applying that multiplier to the 1,833.39 s of model work
 measured on a 60-minute file at capped defaults (not a rigorous extrapolation — window-processing
 cost need not be perfectly linear, but no evidence in the corpus suggests otherwise) lands in the
 range of many hours to over a day for the coarse (dominant) pass alone. That exceeds
-`analysis_inner_timeout_sec` (6 600 s / 110 min, `config.py`) and the SAQ `process_file` outer net
-(7 200 s) by a wide margin on the SAQ worker path, where the inner timeout SIGKILLs the child
+`analysis_inner_timeout_sec` (6,600 s / 110 min, `config.py`) and the SAQ `process_file` outer net
+(7,200 s) by a wide margin on the SAQ worker path, where the inner timeout SIGKILLs the child
 deterministically. On the k8s burst path specifically, `phaze-esut` §8 records that
 `job_runner` passes `timeout=None` and emits no `activeDeadlineSeconds` — so an exhaustive job
 would not be killed, it would simply occupy a lane slot for an unpredictable, multi-hour-to-day
@@ -355,7 +355,7 @@ to keep it survivable. The implementation bead is scoped to:
   peak stays a function of chunk size, not of duration, and ADR-0005's memory limits (§2b) remain
   valid against the reworked passes rather than being invalidated by this decision.
 - **Replace the wall-clock timeout (`analysis_inner_timeout_sec` / the SAQ `process_file` outer
-  net, currently 6 600 s / 7 200 s, `config.py`) with progress-based (heartbeat/stall) liveness
+  net, currently 6,600 s / 7,200 s, `config.py`) with progress-based (heartbeat/stall) liveness
   detection, not merely raise or remove it.** The operator's direction is explicit: the analysis
   child heartbeats window-completion progress, and the supervising layer kills it only when no
   progress occurs for a configurable stall threshold — elapsed wall time alone must never kill an
@@ -388,7 +388,7 @@ The decision above shipped. What landed, and where the reasoning now lives:
 | Remove the caps; analyze every window | `analysis_fine_cap` / `analysis_coarse_cap`, `ProcessFilePayload.fine_cap`/`.coarse_cap`, `_stride_to_cap`, the `sampled` result field and the `analysis.sampled` column (migration 060) are all gone. `analyze_file` emits four progress counts where it emitted five coverage fields. |
 | Remove the `deepen` path | `deepen_analysis` / `deepen_progress` routes, `sampled_badge.html`, `deepen_response.html`, `deepen_progress.html`, and the "Deepen analysis" button are deleted. |
 | Chunked, bounded-memory passes | Both tiers process bounded chunks (60 fine / 30 coarse windows), so peak PCM is ~317 MB / ~345 MB **independent of duration**. The rationale, the arithmetic and the two costs it pays are the **D-07 decision record** in `services/analysis.py` (above `_FINE_CHUNK_WINDOWS`). The phaze-15sw model-major invariant is preserved — one resident TF graph at any instant, within and across chunks. |
-| Heartbeat/stall liveness replacing the wall clock | The **D-08 decision record** in `services/analysis_exec.py`. `analysis_inner_timeout_sec` is deleted and replaced by `analysis_stall_timeout_sec` (default 1800 s, on `BaseSettings` so both roles agree). The SAQ `process_file` job moves to `timeout=0` + SAQ's own `heartbeat`, touched by the lane off the child's heartbeat channel; the burst lane passes the same `stall_timeout` where it previously passed nothing. Since `phaze-esn0g`, each blocking streaming chunk decode also has a watchdog thread emitting `fine_decode` / `coarse_decode` liveness every 60 s while `essentia.run` is in C++. This is structural rather than a larger timeout: `phaze-b2qs9` §5 measured a 930.719 s maximum healthy full-run gap, and one fine chunk-0 decode of a 10-hour 48 kHz archive file took 1 422.391 s — 79.0% of the 1 800 s threshold. The periodic decode beat decouples that threshold from duration and source sample rate. |
+| Heartbeat/stall liveness replacing the wall clock | The **D-08 decision record** in `services/analysis_exec.py`. `analysis_inner_timeout_sec` is deleted and replaced by `analysis_stall_timeout_sec` (default 1800 s, on `BaseSettings` so both roles agree). The SAQ `process_file` job moves to `timeout=0` + SAQ's own `heartbeat`, touched by the lane off the child's heartbeat channel; the burst lane passes the same `stall_timeout` where it previously passed nothing. Since `phaze-esn0g`, each blocking streaming chunk decode also has a watchdog thread emitting `fine_decode` / `coarse_decode` liveness every 60 s while `essentia.run` is in C++. This is structural rather than a larger timeout: `phaze-b2qs9` §5 measured a 930.719 s maximum healthy full-run gap, and one fine chunk-0 decode of a 10-hour 48 kHz archive file took 1,422.391 s — 79.0% of the 1,800 s threshold. The periodic decode beat decouples that threshold from duration and source sample rate. |
 
 **Chunk sizes are the old cap values, deliberately.** 60/30 reproduce exactly the per-tier PCM
 residency §2b documented (~317 MB / ~345 MB), which is what keeps ADR-0005's memory limits valid
@@ -432,7 +432,7 @@ the whole finding:
 The wall-clock half of the ask is answered and is usable: end-to-end exhaustive analysis runs at
 **0.56–0.79× the file's own duration** on this node, one file at a time, and the longest healthy
 heartbeat gap observed rises with duration (105.762 s at 1:00 → 565.256 s at 4:00 against a
-1 800 s stall threshold).
+1,800 s stall threshold).
 
 **None of this regresses correctness** — coverage was exhaustive and complete in every run
 (`analyzed == total`, zero skips, on all seven files) — but the memory result invalidates the

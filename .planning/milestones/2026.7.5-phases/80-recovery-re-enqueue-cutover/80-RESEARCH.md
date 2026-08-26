@@ -165,7 +165,7 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 # one bind param (the array), no 32767 ceiling, index still usable:
 stmt = select(FileRecord.id).where(FileRecord.id == sa.func.any(sa.bindparam("ids", value=list(fids), type_=ARRAY(PGUUID(as_uuid=True)))))
 ```
-This is cleaner and faster than chunk-and-union. If the team prefers a project-native pattern over introducing `= ANY`, fall back to chunking `fids` into batches of ≤10 000 and union the id-sets in Python (mirrors the `batch_size` chunk at `pipeline.py:1472`). Either is acceptable; the array bind is the primary recommendation. **Do not** ship a bare `.in_(fids)` without one of these — it is a latent crash at the incident-scale tail.
+This is cleaner and faster than chunk-and-union. If the team prefers a project-native pattern over introducing `= ANY`, fall back to chunking `fids` into batches of ≤10,000 and union the id-sets in Python (mirrors the `batch_size` chunk at `pipeline.py:1472`). Either is acceptable; the array bind is the primary recommendation. **Do not** ship a bare `.in_(fids)` without one of these — it is a latent crash at the incident-scale tail.
 
 ---
 

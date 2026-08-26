@@ -460,7 +460,7 @@ than an allowlist. Encode mutation directions as crafted-string tests.
    file_ids = sorted(str(f.id) for f in result.scalars().all())
    return [file_ids[i : i + batch_size] for i in range(0, len(file_ids), batch_size)]
    ```
-   Chunk `fids` into batches of ≤10 000, run one `.in_(chunk)` per batch, union the id-sets in Python.
+   Chunk `fids` into batches of ≤10,000, run one `.in_(chunk)` per batch, union the id-sets in Python.
 
 **Do NOT ship a bare `.in_(fids)` without one of these.**
 
