@@ -89,7 +89,7 @@ import structlog
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Coroutine
 
 
 log = structlog.get_logger(__name__)
@@ -160,6 +160,95 @@ def _build_argv(
         if value is not None:
             argv.extend((flag, str(value)))
     return argv
+
+
+async def _kill_and_reap(proc: asyncio.subprocess.Process) -> None:
+    """Kill the child if it is still running and reap its exit status (no-orphan contract).
+
+    Every non-clean exit from :func:`run_analysis_subprocess` -- stall, cancellation, or any
+    other exception escaping the drive -- funnels through this single kill point, so exactly
+    one code path ever sends SIGKILL and awaits the exit so no orphan essentia process survives
+    its parent's interest.
+    """
+    if proc.returncode is None:
+        proc.kill()
+    with contextlib.suppress(Exception):
+        await proc.wait()
+
+
+async def _settle(*tasks: asyncio.Future[Any]) -> None:
+    """Cancel every unfinished task and AWAIT them all before returning.
+
+    Awaiting is the load-bearing half. A cancelled-but-unawaited task is still scheduled:
+    it resumes on a later loop iteration, and until it does, the pumps it owns keep running
+    -- reading a child this function's caller is about to reap, and invoking ``progress_cb``
+    / ``heartbeat_cb`` for a job nobody is waiting on any more. On the SAQ lane those
+    callbacks touch the job's heartbeat, so an orphaned pump reports a dead analysis as
+    alive. ``return_exceptions=True`` because a pump exception on the way out must not
+    displace the outcome (stall, cancellation) that is already propagating.
+    """
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _watchdog(threshold: float, loop: asyncio.AbstractEventLoop, last_activity_at: Callable[[], float]) -> None:
+    """Sleep-and-compare stall detector (D-08). Returns only when the child has gone
+    ``threshold`` seconds without ANY output; the caller then kills and reports.
+
+    ``last_activity_at`` reads the driving call's activity stamp, which the pumps advance on
+    every line -- protocol or raw stderr alike -- so this function itself holds no state.
+    """
+    tick = max(_WATCHDOG_MIN_TICK_S, threshold * _WATCHDOG_TICK_FRACTION)
+    while True:
+        idle = loop.time() - last_activity_at()
+        if idle >= threshold:
+            return
+        # Floored at the minimum tick so a deadline a hair away cannot busy-spin the loop.
+        await asyncio.sleep(max(_WATCHDOG_MIN_TICK_S, min(tick, threshold - idle)))
+
+
+async def _drive(stdout_pump: Coroutine[Any, Any, None], stderr_pump: Coroutine[Any, Any, None], proc: asyncio.subprocess.Process) -> int:
+    """Run both pumps to completion, then wait for the child's exit code."""
+    await asyncio.gather(stdout_pump, stderr_pump)
+    return await proc.wait()
+
+
+async def _drive_with_watchdog(
+    drive_coro: Coroutine[Any, Any, int],
+    threshold: float,
+    loop: asyncio.AbstractEventLoop,
+    last_activity_at: Callable[[], float],
+    last_stage_at: Callable[[], str | None],
+) -> int:
+    """Race ``drive_coro`` against the stall watchdog; raise :class:`AnalysisStalledError` on stall.
+
+    ``last_activity_at`` and ``last_stage_at`` read the driving call's activity stamp and most
+    recently reported heartbeat stage, so the stall report names where the child last was.
+    """
+    drive = asyncio.ensure_future(drive_coro)
+    watch = asyncio.ensure_future(_watchdog(threshold, loop, last_activity_at))
+    try:
+        done, _pending = await asyncio.wait({drive, watch}, return_when=asyncio.FIRST_COMPLETED)
+    except BaseException:
+        # The CALLER was cancelled while we were waiting (SAQ job cancellation, pod
+        # teardown). `asyncio.wait` does not cancel what it was waiting on, so BOTH tasks
+        # -- crucially `drive`, which owns the pumps -- must be settled here or they outlive
+        # the reap. Cancelling only the watchdog (the original shape) left the pumps live.
+        await _settle(drive, watch)
+        raise
+    await _settle(watch)
+    if drive in done:
+        return drive.result()
+    # The watchdog fired: the child is silent past the threshold. Settle the pumps and
+    # let the caller's handler kill + reap, so there is exactly one kill path.
+    await _settle(drive)
+    raise AnalysisStalledError(
+        f"analysis child stalled: no progress for {threshold}s (last stage: {last_stage_at() or 'none reported'})",
+        stall_timeout=threshold,
+        last_stage=last_stage_at(),
+    )
 
 
 async def run_analysis_subprocess(
@@ -290,83 +379,27 @@ async def run_analysis_subprocess(
             stderr_tail.append(line[:_STDERR_LINE_MAX])
             log.info("analysis_child_output", line=line[:_STDERR_LINE_MAX])
 
-    async def _drive() -> int:
-        await asyncio.gather(_pump_stdout(), _pump_stderr())
-        return await proc.wait()
-
-    async def _kill_and_reap() -> None:
-        if proc.returncode is None:
-            proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
-
-    async def _watchdog(threshold: float) -> None:
-        """Sleep-and-compare stall detector (D-08). Returns only when the child has gone
-        ``threshold`` seconds without ANY output; the caller then kills and reports."""
-        tick = max(_WATCHDOG_MIN_TICK_S, threshold * _WATCHDOG_TICK_FRACTION)
-        while True:
-            idle = loop.time() - last_activity
-            if idle >= threshold:
-                return
-            # Floored at the minimum tick so a deadline a hair away cannot busy-spin the loop.
-            await asyncio.sleep(max(_WATCHDOG_MIN_TICK_S, min(tick, threshold - idle)))
-
-    async def _settle(*tasks: asyncio.Future[Any]) -> None:
-        """Cancel every unfinished task and AWAIT them all before returning.
-
-        Awaiting is the load-bearing half. A cancelled-but-unawaited task is still scheduled:
-        it resumes on a later loop iteration, and until it does, the pumps it owns keep running
-        -- reading a child this function's caller is about to reap, and invoking ``progress_cb``
-        / ``heartbeat_cb`` for a job nobody is waiting on any more. On the SAQ lane those
-        callbacks touch the job's heartbeat, so an orphaned pump reports a dead analysis as
-        alive. ``return_exceptions=True`` because a pump exception on the way out must not
-        displace the outcome (stall, cancellation) that is already propagating.
-        """
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-    async def _drive_with_watchdog(threshold: float) -> int:
-        drive = asyncio.ensure_future(_drive())
-        watch = asyncio.ensure_future(_watchdog(threshold))
-        try:
-            done, _pending = await asyncio.wait({drive, watch}, return_when=asyncio.FIRST_COMPLETED)
-        except BaseException:
-            # The CALLER was cancelled while we were waiting (SAQ job cancellation, pod
-            # teardown). `asyncio.wait` does not cancel what it was waiting on, so BOTH tasks
-            # -- crucially `drive`, which owns the pumps -- must be settled here or they outlive
-            # the reap. Cancelling only the watchdog (the original shape) left the pumps live.
-            await _settle(drive, watch)
-            raise
-        await _settle(watch)
-        if drive in done:
-            return drive.result()
-        # The watchdog fired: the child is silent past the threshold. Settle the pumps and
-        # let the caller's handler kill + reap, so there is exactly one kill path.
-        await _settle(drive)
-        raise AnalysisStalledError(
-            f"analysis child stalled: no progress for {threshold}s (last stage: {last_stage or 'none reported'})",
-            stall_timeout=threshold,
-            last_stage=last_stage,
-        )
-
+    drive_coro = _drive(_pump_stdout(), _pump_stderr(), proc)
     try:
-        returncode = await (_drive_with_watchdog(stall_timeout) if stall_timeout is not None else _drive())
+        returncode = await (
+            _drive_with_watchdog(drive_coro, stall_timeout, loop, lambda: last_activity, lambda: last_stage)
+            if stall_timeout is not None
+            else drive_coro
+        )
     except AnalysisStalledError:
-        await _kill_and_reap()
+        await _kill_and_reap(proc)
         log.warning("analysis_child_stalled", file=file_path, stall_timeout=stall_timeout, last_stage=last_stage)
         raise
     except asyncio.CancelledError:
         # The caller lost interest (SAQ job cancellation / pod teardown): reap the
         # child so no orphan essentia process keeps burning CPU, then propagate.
-        await _kill_and_reap()
+        await _kill_and_reap(proc)
         raise
     except BaseException:
         # phaze-702y: ANY other escape from the pump/drive — e.g. a readline ValueError
         # when a single protocol line exceeds _STREAM_LIMIT — must honor the same
         # no-orphan contract as timeout/cancellation before it propagates.
-        await _kill_and_reap()
+        await _kill_and_reap(proc)
         raise
 
     if returncode == 0 and result is not None:
