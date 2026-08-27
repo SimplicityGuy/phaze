@@ -1,0 +1,48 @@
+---
+# DEVELOPMENT ILLUSTRATION -- not phaze's production trace store. homelab owns that, exactly
+# as it owns Prometheus and Grafana (docs/design/0017-telemetry-export-topology.md section 8).
+#
+# Single-binary Tempo with local-filesystem storage: the smallest thing that makes a phaze
+# trace viewable. It makes NO retention, sizing or high-availability decision -- the 1 h block
+# retention below exists so a developer's laptop does not fill up, and is not guidance.
+stream_over_http_enabled: true
+server:
+  http_listen_port: 3200
+  log_level: warn
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+
+ingester:
+  # `max_block_duration` MUST EXCEED THE LIFETIME OF A TRACE YOU WANT TO READ WHOLE, and that
+  # is not a tuning preference -- it is the difference between a readable trace and a partial
+  # one. Measured 2026-08-27: with this set to 1m, a 12-minute analysis had its ONE trace cut
+  # across 8 blocks, and `GET /api/traces/<id>` then returned 28 spans on one call and 16 on
+  # the next, out of 45. Tempo had accepted all 45 and discarded none
+  # (`tempo_discarded_spans_total` = 0 for every reason) -- nothing was lost in transit; the
+  # read path simply did not return a trace that had been split while it was still open.
+  #
+  # phaze's defining trace is a MULTI-HOUR one: an analysis span stays open for the length of
+  # the file, which reaches 12 h 04 m on this corpus. See
+  # docs/design/0017-telemetry-export-topology.md section 7d for what that means for a real
+  # deployment; this development value simply keeps a demo trace inside one block.
+  max_block_duration: 2h
+  complete_block_timeout: 15m
+
+compactor:
+  compaction:
+    # A developer's laptop, not a retention decision. Raised above the block duration above so
+    # a block is never eligible for deletion before it has been completed.
+    block_retention: 24h
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks

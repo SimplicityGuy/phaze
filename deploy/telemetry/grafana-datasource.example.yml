@@ -12,3 +12,22 @@ datasources:
     url: http://prometheus:9090
     isDefault: true
     uid: phaze-example-prometheus
+    jsonData:
+      # Metrics -> traces. phaze's histograms carry OTel exemplars whenever a span is
+      # recording, so a point on an analysis panel can link to the trace that produced it.
+      # See docs/design/0017-telemetry-export-topology.md section 7c for what this does and
+      # does not deliver.
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: phaze-example-tempo
+
+  - name: Tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    uid: phaze-example-tempo
+    jsonData:
+      # Traces -> metrics and logs are deliberately NOT configured here. This file is a
+      # development illustration; a real deployment wires those to its own stores.
+      nodeGraph:
+        enabled: true

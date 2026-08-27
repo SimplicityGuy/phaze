@@ -1,6 +1,20 @@
 {
   "description": "How the coarse tier splits between decode, graph construction, inference and assembly, and what each of the 34 models costs. Built for phaze-8ifq8.",
   "editable": true,
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": true,
+      "title": "Find the trace for one file",
+      "tooltip": "Per-FILE and per-CHUNK detail lives only in traces -- metrics carry no file dimension by construction.",
+      "type": "link",
+      "url": "/explore?left={\"datasource\":\"${tracesource}\",\"queries\":[{\"query\":\"{ resource.service.name = \"phaze-analysis\" }\"}]}"
+    }
+  ],
   "panels": [
     {
       "collapsed": false,
@@ -523,6 +537,20 @@
         "name": "datasource",
         "options": [],
         "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Traces",
+        "multi": false,
+        "name": "tracesource",
+        "options": [],
+        "query": "tempo",
         "refresh": 1,
         "regex": "",
         "skipUrlSync": false,

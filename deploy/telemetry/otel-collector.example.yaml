@@ -44,6 +44,14 @@ exporters:
     # service.name -> `job`, service.instance.id -> `instance`, and nothing else.
     resource_to_telemetry_conversion:
       enabled: false
+  # THE TRACE DESTINATION. Before phaze-m1drf.8 the traces pipeline ended at `debug`, i.e.
+  # phaze emitted a complete per-file trace and the collector printed a line and dropped it.
+  # Emission was built in phaze-m1drf.1; the destination was never specified.
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
   debug:
     verbosity: basic
 
@@ -56,4 +64,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [debug]
+      # `debug` stays alongside Tempo deliberately: it is what makes a "did anything arrive?"
+      # question answerable from `docker logs` without opening a UI, which is the first thing
+      # anyone wiring this up wants to know.
+      exporters: [otlp/tempo, debug]

@@ -64,6 +64,25 @@ _TEMPLATING: dict[str, Any] = {
             "type": "datasource",
         },
         {
+            "current": {},
+            "hide": 0,
+            "includeAll": False,
+            # phaze-m1drf.8 acceptance 6 asks for a path from a metrics panel to the
+            # corresponding trace. A hard-coded Tempo uid would break the importability
+            # requirement exactly as a hard-coded Prometheus uid would, so the trace store is
+            # picked at import time the same way. A Grafana with no trace datasource leaves
+            # this unset and the link is simply inert -- the panels are unaffected.
+            "label": "Traces",
+            "multi": False,
+            "name": "tracesource",
+            "options": [],
+            "query": "tempo",
+            "refresh": 1,
+            "regex": "",
+            "skipUrlSync": False,
+            "type": "datasource",
+        },
+        {
             # Lets one Grafana show several phaze deployments without editing a query.
             # `job` is the Prometheus label the collector derives from `service.name`.
             "current": {},
@@ -138,7 +157,28 @@ def _row(panel_id: int, title: str, y: int) -> dict[str, Any]:
     return {"id": panel_id, "title": title, "type": "row", "gridPos": {"x": 0, "y": y, "w": 24, "h": 1}, "collapsed": False, "panels": []}
 
 
-def _dashboard(uid: str, title: str, description: str, panels: list[dict[str, Any]], tags: list[str]) -> dict[str, Any]:
+#: Metrics -> traces, as a dashboard link rather than an exemplar. MEASURED 2026-08-27: phaze
+#: DOES attach exemplars -- an `InMemoryMetricReader` shows a valid trace_id and span_id on
+#: `phaze.analysis.model.inference.duration` recorded inside an active span -- but they do not
+#: survive the collector's Prometheus exposition, which returned zero exemplar markers even
+#: under OpenMetrics content negotiation. So the link is the fallback acceptance 6 allows, and
+#: the exemplar finding is recorded in docs/design/0017-telemetry-export-topology.md section 7c
+#: because the missing half is on the collector's side, not phaze's.
+_TRACE_LINK: dict[str, Any] = {
+    "title": "Find the trace for one file",
+    "type": "link",
+    "icon": "external link",
+    "tooltip": "Per-FILE and per-CHUNK detail lives only in traces -- metrics carry no file dimension by construction.",
+    "url": "/explore?left=" + '{"datasource":"${tracesource}","queries":[{"query":"{ resource.service.name = "phaze-analysis" }"}]}',
+    "targetBlank": True,
+    "asDropdown": False,
+    "keepTime": True,
+    "includeVars": False,
+    "tags": [],
+}
+
+
+def _dashboard(uid: str, title: str, description: str, panels: list[dict[str, Any]], tags: list[str], *, trace_link: bool = False) -> dict[str, Any]:
     return {
         # No `id`, and `version` 0: an import into an unrelated Grafana must not carry this
         # instance's numbering with it.
@@ -153,6 +193,7 @@ def _dashboard(uid: str, title: str, description: str, panels: list[dict[str, An
         "refresh": "30s",
         "time": {"from": "now-6h", "to": "now"},
         "templating": _TEMPLATING,
+        "links": [_TRACE_LINK] if trace_link else [],
         "panels": panels,
     }
 
@@ -292,6 +333,7 @@ def analysis_pipeline() -> dict[str, Any]:
         "What an analysis is doing right now, including the coarse tier that used to be invisible from outside the process.",
         panels,
         ["analysis"],
+        trace_link=True,
     )
 
 
@@ -437,6 +479,7 @@ def analysis_cost() -> dict[str, Any]:
         "How the coarse tier splits between decode, graph construction, inference and assembly, and what each of the 34 models costs. Built for phaze-8ifq8.",
         panels,
         ["analysis", "cost"],
+        trace_link=True,
     )
 
 

@@ -1,6 +1,7 @@
 {
   "description": "HTTP, SAQ and database health for the api and worker processes.",
   "editable": true,
+  "links": [],
   "panels": [
     {
       "collapsed": false,
@@ -625,6 +626,20 @@
         "name": "datasource",
         "options": [],
         "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Traces",
+        "multi": false,
+        "name": "tracesource",
+        "options": [],
+        "query": "tempo",
         "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
