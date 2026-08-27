@@ -53,7 +53,8 @@ extra is needed for the burst node beyond the variable being present in the Job'
 | --- | --- |
 | protocol | **OTLP over HTTP/protobuf** (`opentelemetry-exporter-otlp-proto-http`) |
 | default port | **4318** — the OTLP/HTTP convention. phaze does NOT speak gRPC (4317) |
-| paths | the SDK's own: `/v1/traces` and `/v1/metrics`, appended to the endpoint |
+| paths | the SDK's own: **`/v1/traces`** and `/v1/metrics`, appended to the endpoint |
+| traces only | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` overrides the generic endpoint for spans alone, and setting it ALONE is enough to turn telemetry on |
 | compression | the SDK default (`OTEL_EXPORTER_OTLP_COMPRESSION` if you want gzip) |
 | direction | **outbound from phaze only.** Nothing scrapes phaze; phaze pushes |
 
@@ -92,8 +93,24 @@ per-occurrence and aged out rather than forever and per-series: `process.pid`, `
 and `k8s.pod.name` / `k8s.node.name` / `phaze.backend.id` from `PHAZE_POD_NAME` /
 `PHAZE_NODE_NAME` / `PHAZE_BACKEND_ID` when the Job sets them.
 
-**One file's analysis is one trace**, across the process boundary: the worker injects a W3C
-`TRACEPARENT` into the exec'd analysis child's environment and the child continues the trace.
+**One file's analysis is one trace**, across the process boundary. `services/analysis_exec.py`
+passes `env=telemetry.child_environment()` when it execs `python -m phaze.analysis_child` — a
+COPY of the environment carrying this span's W3C `TRACEPARENT` — and the child extracts it
+before importing essentia and continues the same trace. Copying rather than mutating
+`os.environ` matters: a mutated environment would leak the span context into every other
+subprocess the worker ever spawns. Both directions are total — an absent, empty or malformed
+`TRACEPARENT` simply starts a new trace rather than raising.
+
+**Where the spans go is `docs/design/0017-telemetry-export-topology.md` §7**, and what one
+looks like is [`traces.md`](traces.md). Two things to know here:
+
+- **The span queue is bounded at 2,048 and drops oldest-first** when no backend is listening,
+  exactly like the metric path. A single file cannot fill it — the worst case in the corpus, a
+  12 h 04 m set, emits **388** spans (18.9%) — so what is lost with a dead collector is older
+  files' traces, never a truncated current one.
+- **Sampling is always-on.** No head or tail sampling, because spans are per CHUNK rather than
+  per window: ~49.6 spans per file, **~566,073 for a whole-corpus re-analysis**, 0.034
+  spans/second at the measured throughput. The arithmetic is in ADR-0017 §7d.
 
 ## 4. What happens when the collector is down, slow or absent
 

@@ -33,6 +33,18 @@ So the rule, enforced rather than remembered:
 the family that looks safe: `window_index` and `chunk_index` are bounded *per file* and
 unbounded *across the archive*, which is the scale a Prometheus series lives at.
 
+> **THE CONSEQUENCE, which is easy to miss and must not be "fixed": these metrics can never
+> answer "how far along is THIS file".** `phaze_analysis_windows_total{tier}` and
+> `phaze_analysis_chunks_total{tier}` are monotonic counters with **no file dimension**, so
+> Prometheus yields fleet-level rate and throughput and nothing per-file. That is the direct
+> price of the rule above, and it is paid on purpose.
+>
+> **Adding a `file_id` label is not the fix.** It is the specific thing this budget exists to
+> prevent, and `test_no_label_name_looks_like_an_identifier` fails the build on it. **Per-file
+> and per-chunk progress lives in TRACES** — see [`traces.md`](traces.md) and
+> [`docs/design/0017-telemetry-export-topology.md`](../design/0017-telemetry-export-topology.md)
+> §7 — where identity is stored per-occurrence and aged out rather than forever and per-series.
+
 **Model identity is the one unbounded-looking label that is genuinely bounded.** There are
 exactly **34** models — 11 characteristic sets × 3 variants, plus the genre model — and
 `test_model_label_bound_matches_the_registry` pins that number against

@@ -22,6 +22,13 @@
 #   export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 #   # ... then run phaze normally; see docs/telemetry/exporter.md
 #
+# Four services: the collector, Prometheus for metrics, TEMPO FOR TRACES, and Grafana with
+# both wired as datasources. Tempo was added by phaze-m1drf.8 -- before it the collector's
+# traces pipeline ended at `debug`, so phaze emitted a complete per-file trace and the
+# collector printed a line and dropped it. Per-file and per-chunk progress exists ONLY in
+# traces (metrics carry no file dimension by construction), so that gap made the epic's
+# defining signal unreadable. See docs/telemetry/traces.md.
+#
 # Images are pinned by DIGEST, the way this repo pins everything else: a
 # floating tag would make a "reproduce the measurement" instruction reproduce
 # a different collector six months from now.
@@ -45,6 +52,23 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+  # The trace store. phaze-m1drf.1 emits a complete per-file trace -- one file is one trace,
+  # crossing the exec'd-analysis process boundary -- and until phaze-m1drf.8 there was nowhere
+  # for it to land. Tempo rather than Jaeger because Grafana is already here and Tempo is its
+  # native trace store; the grounds and the rejected alternatives are in
+  # docs/design/0017-telemetry-export-topology.md section 7.
+  tempo:
+    image: grafana/tempo:2.9.1
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./deploy/telemetry/tempo.example.yaml:/etc/tempo/tempo.yaml:ro
+    ports:
+      # Tempo's query API, which Grafana's datasource talks to. The OTLP receiver on 4317 is
+      # deliberately NOT published: only the collector writes to Tempo, over the compose
+      # network, so nothing outside needs to reach it.
+      - "127.0.0.1:3200:3200"
 
   prometheus:
     image: prom/prometheus:v3.10.0
@@ -78,3 +102,4 @@ services:
       - "127.0.0.1:3000:3000"
     depends_on:
       - prometheus
+      - tempo

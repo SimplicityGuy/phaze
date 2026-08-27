@@ -1,6 +1,7 @@
 {
   "description": "How fast the archive is draining and how much is left -- the figures phaze-zaf2l had to obtain by hand-querying Postgres.",
   "editable": true,
+  "links": [],
   "panels": [
     {
       "collapsed": false,
@@ -412,6 +413,20 @@
         "name": "datasource",
         "options": [],
         "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Traces",
+        "multi": false,
+        "name": "tracesource",
+        "options": [],
+        "query": "tempo",
         "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
