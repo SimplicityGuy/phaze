@@ -41,6 +41,13 @@ groups:
         # The two halves together are what make this a fault rather than an idle system:
         # an idle phaze schedules nothing, so the first term is zero and the rule is silent.
         #
+        # `or vector(0)` because the second term's series is usually ABSENT during this
+        # fault, not zero: phaze_analysis_windows_total is emitted only by short-lived
+        # analysis children, so after the collector's metric_expiration and Prometheus
+        # staleness marking, an hour with no admitted pod leaves an EMPTY vector -- and
+        # `empty == 0` is empty, so a bare sum() form can structurally never fire here.
+        # The absent-series promtool case in phaze-alerts.test.yml pins this.
+        #
         # THRESHOLD PROVENANCE: 1h of zero window completions. The analysis child's own
         # stall watchdog (D-08, `analysis_stall_timeout_sec`) kills a child after 1800 s of
         # TOTAL SILENCE, so one hour is twice the interval at which the system already calls
@@ -55,7 +62,7 @@ groups:
           )
           and
           (
-            sum(rate(phaze_analysis_windows_total{outcome="analyzed"}[1h])) == 0
+            (sum(rate(phaze_analysis_windows_total{outcome="analyzed"}[1h])) or vector(0)) == 0
           )
         for: 30m
         labels:

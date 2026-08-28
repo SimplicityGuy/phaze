@@ -146,3 +146,25 @@ def test_no_local_identifier_in_committed_dashboard_json(path: Path) -> None:
     assert not digests, f"{path.name} contains what looks like a content digest: {digests}"
     for pattern in (r"/mnt/", r"/media/", r"/Volumes/", r"\.mp3", r"\.m4a", r"\.flac"):
         assert not re.search(pattern, text), f"{path.name} matches {pattern!r}, which looks like archive content"
+
+
+@pytest.mark.parametrize("path", DASHBOARDS, ids=lambda p: p.name)
+def test_every_explore_link_payload_is_valid_json(path: Path) -> None:
+    """The `/explore?left=` payload is JSON *inside* a JSON string, and the TraceQL query
+    inside it carries its own double quotes -- three quoting levels, so a hand-written
+    literal lands one escape level short and Grafana's Explore silently fails to parse the
+    state. That exact defect shipped: the committed payload broke at the quote before the
+    service name (`json.loads` error at char 79). Parsing the committed bytes back is what
+    a schema check cannot do and the real consumer would only reveal on click."""
+    dashboard = json.loads(path.read_text(encoding="utf-8"))
+    for link in dashboard.get("links", []):
+        url = link.get("url", "")
+        marker = "/explore?left="
+        if marker not in url:
+            continue
+        payload = url.split(marker, 1)[1]
+        try:
+            state = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            pytest.fail(f"{path.name}: link {link.get('title')!r} carries an invalid /explore payload: {exc}")
+        assert state.get("queries"), f"{path.name}: link {link.get('title')!r} parsed but declares no queries"

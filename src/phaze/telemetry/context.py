@@ -58,14 +58,23 @@ def inject_into(environ: dict[str, str]) -> dict[str, str]:
     tracer produces), so a telemetry-off parent hands the child an unchanged environment
     rather than a ``traceparent`` of all zeroes -- the child would otherwise treat that as
     a valid-looking remote parent and drop its own trace on the floor.
+
+    Guarded like :func:`extract_from`, and for a sharper reason: this runs inside
+    ``run_analysis_subprocess`` BEFORE the child is spawned, where the enclosing ``try``
+    handles only ``FileNotFoundError``. An unguarded propagator fault here would fail every
+    analysis spawn on the worker -- the child degrading to its own fresh trace is the
+    correct outcome, per the module rule that both directions are total.
     """
-    if not trace.get_current_span().get_span_context().is_valid:
+    try:
+        if not trace.get_current_span().get_span_context().is_valid:
+            return environ
+        carrier: dict[str, str] = {}
+        _propagator.inject(carrier)
+        for key, value in carrier.items():
+            if value:
+                environ[key.upper()] = value
+    except Exception:
         return environ
-    carrier: dict[str, str] = {}
-    _propagator.inject(carrier)
-    for key, value in carrier.items():
-        if value:
-            environ[key.upper()] = value
     return environ
 
 

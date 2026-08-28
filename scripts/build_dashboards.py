@@ -169,7 +169,15 @@ _TRACE_LINK: dict[str, Any] = {
     "type": "link",
     "icon": "external link",
     "tooltip": "Per-FILE and per-CHUNK detail lives only in traces -- metrics carry no file dimension by construction.",
-    "url": "/explore?left=" + '{"datasource":"${tracesource}","queries":[{"query":"{ resource.service.name = "phaze-analysis" }"}]}',
+    # json.dumps, never a hand-written literal: the TraceQL query itself contains double
+    # quotes, so a literal here is one escape level short and the /explore?left= payload
+    # ships as invalid JSON that Grafana's Explore state silently fails to parse.
+    # test_dashboards.py parses every committed link payload back for exactly this reason.
+    "url": "/explore?left="
+    + json.dumps(
+        {"datasource": "${tracesource}", "queries": [{"query": '{ resource.service.name = "phaze-analysis" }'}]},
+        separators=(",", ":"),
+    ),
     "targetBlank": True,
     "asDropdown": False,
     "keepTime": True,

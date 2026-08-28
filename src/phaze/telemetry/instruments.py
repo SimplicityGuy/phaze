@@ -73,16 +73,35 @@ def _checked_attributes(name: str, attributes: dict[str, Any]) -> dict[str, Any]
     This is the runtime half of the cardinality guard. The static half -- the catalogue
     test -- cannot see an attribute assembled from a variable at a call site, and that is
     precisely the shape that puts a file id into a label.
+
+    Checked in BOTH dimensions: the attribute NAME against the declared label set, and,
+    for a label whose ``LabelSpec.values`` states its exact domain, the VALUE against that
+    domain. The value half matters for callers like ``pipeline.record_backlog``, where the
+    keys of a dict become label VALUES -- a caller growing that dict would otherwise mint
+    series past the catalogued cardinality bound with no name-level mismatch to catch it.
+    A label whose value set is legitimately computed at runtime declares ``values=None``
+    and is exempt, carrying only its stated cardinality bound.
     """
-    allowed = BY_NAME[name].label_names
-    unknown = set(attributes) - allowed
-    if not unknown:
-        return attributes
-    msg = f"metric {name!r} received undeclared attribute(s) {sorted(unknown)}; declared: {sorted(allowed)}"
-    if _env.strict():
-        raise ValueError(msg)
-    log.warning("telemetry_undeclared_attribute", extra={"detail": msg})
-    return {key: value for key, value in attributes.items() if key in allowed}
+    spec = BY_NAME[name]
+    allowed = spec.label_names
+    checked = attributes
+    unknown = set(checked) - allowed
+    if unknown:
+        msg = f"metric {name!r} received undeclared attribute(s) {sorted(unknown)}; declared: {sorted(allowed)}"
+        if _env.strict():
+            raise ValueError(msg)
+        log.warning("telemetry_undeclared_attribute", extra={"detail": msg})
+        checked = {key: value for key, value in checked.items() if key in allowed}
+    domains = {label.name: label.values for label in spec.labels if label.values is not None}
+    out_of_domain = {key for key, value in checked.items() if key in domains and value not in domains[key]}
+    if out_of_domain:
+        detail = {key: checked[key] for key in sorted(out_of_domain)}
+        msg = f"metric {name!r} received out-of-domain value(s) {detail}; declared domains: { {key: domains[key] for key in sorted(out_of_domain)} }"
+        if _env.strict():
+            raise ValueError(msg)
+        log.warning("telemetry_out_of_domain_value", extra={"detail": msg})
+        checked = {key: value for key, value in checked.items() if key not in out_of_domain}
+    return checked
 
 
 def record(name: str, value: float, **attributes: Any) -> None:

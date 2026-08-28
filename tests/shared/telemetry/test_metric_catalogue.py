@@ -184,6 +184,20 @@ def test_recording_an_undeclared_attribute_drops_it_in_production(monkeypatch: p
     instruments.record("phaze.analysis.tier.duration", 1.0, tier="fine", file_id="a-real-uuid")
 
 
+def test_recording_an_out_of_domain_label_value_raises_under_strict(strict_telemetry: None) -> None:
+    """The VALUE half of the same guard, for labels whose ``LabelSpec.values`` states the
+    exact domain. ``record_backlog`` turns dict KEYS into label VALUES, so a caller growing
+    that dict mints new series with no name-level mismatch -- this is what catches it."""
+    with pytest.raises(ValueError, match="out-of-domain"):
+        instruments.set_gauge("phaze.pipeline.backlog", 1.0, backlog="a_backlog_nobody_catalogued")
+
+
+def test_recording_an_out_of_domain_label_value_drops_it_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
+    """...and in production the offending label is dropped, the observation kept."""
+    monkeypatch.delenv("PHAZE_TELEMETRY_STRICT", raising=False)
+    instruments.set_gauge("phaze.pipeline.backlog", 1.0, backlog="a_backlog_nobody_catalogued")
+
+
 def _prometheus_family(spec: MetricSpec) -> str:
     """The Prometheus family name for a spec, as the REAL translation produces it.
 

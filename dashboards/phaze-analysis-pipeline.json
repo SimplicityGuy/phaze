@@ -12,7 +12,7 @@
       "title": "Find the trace for one file",
       "tooltip": "Per-FILE and per-CHUNK detail lives only in traces -- metrics carry no file dimension by construction.",
       "type": "link",
-      "url": "/explore?left={\"datasource\":\"${tracesource}\",\"queries\":[{\"query\":\"{ resource.service.name = \"phaze-analysis\" }\"}]}"
+      "url": "/explore?left={\"datasource\":\"${tracesource}\",\"queries\":[{\"query\":\"{ resource.service.name = \\\"phaze-analysis\\\" }\"}]}"
     }
   ],
   "panels": [

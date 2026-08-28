@@ -10,9 +10,10 @@ Two very different shapes, deliberately kept apart:
 * :func:`record_backlog` is a GAUGE fed from the admin UI's own ``/pipeline/stats`` read.
   **It is poll-driven and goes stale when no admin tab is open.** That is a real
   limitation, stated here rather than discovered later: it makes these series fine for a
-  dashboard and wrong for an alert. ``phaze-m1drf.5`` builds its rules on
-  ``phaze.analysis.audio.duration``, which the analysis path emits itself, for exactly
-  this reason.
+  dashboard and wrong for an alert. ``phaze-m1drf.5``'s shipped rules alert on
+  ``phaze.analysis.windows``, ``phaze.analysis.run.duration`` and
+  ``phaze.analysis.chunk.peak_rss`` -- all emitted by the analysis path itself -- for
+  exactly this reason.
 
 Neither function raises. Both are called from paths that are already carrying a file
 through the pipeline, and a metric is never worth a lost file.
@@ -51,10 +52,11 @@ def record_transition(function: str, transition: str) -> None:
 def record_backlog(counts: dict[str, int]) -> None:
     """Publish one sample of the pipeline's waiting-room depths.
 
-    Keys outside the catalogued domain are dropped by the instruments layer's attribute
-    check rather than published, so a caller that grows a new counter cannot silently grow
-    the label set with it -- it shows up as a missing series and, under
-    ``PHAZE_TELEMETRY_STRICT``, as a red test.
+    The dict KEYS here become label VALUES, so the name-level attribute check alone would
+    let a new counter mint a new series silently. What actually holds the bound is the
+    instruments layer's label-value domain check against ``BACKLOG_QUEUE.values``: an
+    uncatalogued key is dropped rather than published, and under
+    ``PHAZE_TELEMETRY_STRICT`` it is a red test.
     """
     for name, value in counts.items():
         set_gauge("phaze.pipeline.backlog", float(value), backlog=name)
@@ -72,8 +74,9 @@ def record_stage_inflight(snapshot: StageActivity) -> None:
     of who happens to be publishing.
 
     Same poll-driven caveat as :func:`record_backlog`, and the same consequence: read it on
-    a dashboard, never alert on it. Statuses outside the catalogued pair are dropped by the
-    instruments layer's attribute check rather than published.
+    a dashboard, never alert on it. Statuses outside the catalogued pair are label VALUES,
+    not names, and are dropped by the instruments layer's value-domain check against
+    ``STAGE_INFLIGHT_STATUS.values`` rather than published.
     """
     if not snapshot.available:
         return

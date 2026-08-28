@@ -67,6 +67,23 @@ def test_a_malformed_traceparent_yields_no_context() -> None:
     assert telemetry_context.extract_from({telemetry_context.TRACEPARENT_ENV: "   "}) is None
 
 
+def test_a_raising_propagator_degrades_to_an_unchanged_environment(telemetry_sink: TelemetrySink, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Total in both directions means the INJECT side too, and the stakes are higher there:
+    ``child_environment`` runs in ``run_analysis_subprocess`` before the spawn, inside a
+    ``try`` that handles only ``FileNotFoundError``. A propagator that raises must cost the
+    trace link, never the analysis -- the child simply starts its own trace."""
+
+    def _explode(carrier: object, *args: object, **kwargs: object) -> None:
+        msg = "propagator fault"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(telemetry_context._propagator, "inject", _explode)
+    with span("parent"):
+        child_env = telemetry_context.child_environment()
+    assert telemetry_context.TRACEPARENT_ENV not in child_env
+    assert child_env  # still a full copy of the parent's environment, not an empty dict
+
+
 def test_round_trip_preserves_the_trace_id(telemetry_sink: TelemetrySink) -> None:
     with span("parent") as parent:
         parent_trace_id = parent.get_span_context().trace_id
