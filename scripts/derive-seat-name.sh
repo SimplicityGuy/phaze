@@ -19,14 +19,16 @@
 #    identifier to lowercase behind our back, which would otherwise desync the case a caller
 #    prints/exports from the case Postgres actually created.
 #
-# 2. Normalize hyphens to underscores for the SQL identifier -- but '-' and '_' now collapse onto
-#    the same text, so 'my-seat' and 'my_seat' would otherwise silently land on ONE seat: the exact
-#    shared-database defect this whole mechanism exists to prevent (phaze-fwo7). Disambiguate by
-#    appending a short, DETERMINISTIC hash of the raw, pre-normalization name. Deterministic (not
-#    random) is what keeps `test-db-for` idempotent -- CLAUDE.md and the Redis allocation registry
-#    both rely on the same raw name always resolving to the same seat, database, and Redis index;
-#    a fresh random suffix per invocation would mint a new database and burn a new Redis index on
-#    every re-run.
+# 2. Normalize hyphens AND DOTS to underscores for the SQL identifier -- dots are accepted because
+#    every beadhive epic child id contains one (`phaze-o8sie.3`), and CLAUDE.md's own isolation
+#    instruction is `just test-db-for <bead-id>`, so the id must be usable verbatim. But '-', '_'
+#    and '.' now all collapse onto the same text, so 'my-seat', 'my_seat' and 'my.seat' would
+#    otherwise silently land on ONE seat: the exact shared-database defect this whole mechanism
+#    exists to prevent (phaze-fwo7). Disambiguate by appending a short, DETERMINISTIC hash of the
+#    raw, pre-normalization name. Deterministic (not random) is what keeps `test-db-for` idempotent
+#    -- CLAUDE.md and the Redis allocation registry both rely on the same raw name always resolving
+#    to the same seat, database, and Redis index; a fresh random suffix per invocation would mint a
+#    new database and burn a new Redis index on every re-run.
 #
 # A THIRD rule, easy to miss because Postgres never reports it as an error: unquoted identifiers
 # are capped at 63 bytes (NAMEDATALEN-1) and Postgres SILENTLY TRUNCATES anything longer instead
@@ -53,10 +55,11 @@ fi
 
 raw_name="$1"
 
-if ! [[ "$raw_name" =~ ^[a-z][a-z0-9_-]*$ ]]; then
+if ! [[ "$raw_name" =~ ^[a-z][a-z0-9_.-]*$ ]]; then
   echo "" >&2
   echo "❌ invalid seat name '${raw_name}': must be lowercase, start with a letter, and contain" >&2
-  echo "   only letters, digits, '-', and '_' (e.g. 'laqf', 'review-polite', 'phaze-fq9h-1')." >&2
+  echo "   only letters, digits, '-', '_', and '.' (e.g. 'laqf', 'review-polite', 'phaze-fq9h-1'," >&2
+  echo "   'phaze-o8sie.3')." >&2
   exit 1
 fi
 
@@ -79,7 +82,7 @@ db_prefix="phaze_"
 longest_db_suffix="_migrations_test"
 max_normalized_len=$((postgres_identifier_max - ${#db_prefix} - ${#longest_db_suffix} - ${#name_hash} - 1))
 
-normalized="${raw_name//-/_}"
+normalized="${raw_name//[-.]/_}"
 normalized="${normalized:0:max_normalized_len}"
 
 printf '%s_%s\n' "$normalized" "$name_hash"
