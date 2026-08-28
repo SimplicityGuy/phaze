@@ -67,6 +67,9 @@ from phaze.tasks.submit_cloud_job import submit_cloud_job
 from phaze.tasks.tracklist import refresh_tracklists
 from phaze.tasks.tracklist_drain import drain_tracklists, tracklist_drain_status
 from phaze.tasks.tracklist_drain_control import continue_armed_tracklist_drain, record_drain_slice_completion
+from phaze.telemetry import configure_telemetry, shutdown_telemetry
+from phaze.telemetry.db import instrument_engine
+from phaze.telemetry.saq import after_process as telemetry_after_process, before_process as telemetry_before_process
 
 
 if TYPE_CHECKING:
@@ -211,6 +214,10 @@ async def startup(ctx: dict[str, Any]) -> None:
     # through the same JSON/console pipeline as the api and agent worker.
     configure_logging(level=cfg.log_level, json_logs=cfg.log_json)
 
+    # phaze-m1drf.1: the control worker is its own OS process, so it installs its own SDK.
+    # Off unless an OTLP endpoint is configured; never raises.
+    configure_telemetry("controller")
+
     # Bug A (June 2026): litellm reads provider creds from os.environ, never from
     # ControlSettings. The LLM keys arrive via the <VAR>_FILE secret convention as
     # SecretStr fields, so bridge them into ANTHROPIC_API_KEY / OPENAI_API_KEY here --
@@ -234,6 +241,7 @@ async def startup(ctx: dict[str, Any]) -> None:
     # counterpart (the api process's module-level ``engine``) builds the SAME way, from
     # the api's ``settings`` singleton; this was a 25-line clone between the two.
     task_engine = build_async_engine(cfg)
+    instrument_engine(task_engine)
     ctx["async_session"] = async_sessionmaker(task_engine, class_=AsyncSession, expire_on_commit=False)
     ctx["task_engine"] = task_engine
 
@@ -352,6 +360,9 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     if task_router is not None:
         await task_router.close()
 
+    # LAST. Bounded flush, never raises -- see phaze/telemetry/bootstrap.py.
+    shutdown_telemetry()
+
 
 # Module-level Queue construction. SAQ's `saq <module>.settings` CLI imports
 # this module and reads `settings` as a top-level attribute (RESEARCH §A2).
@@ -371,7 +382,12 @@ settings = {
     # (mirrors agent_worker.py's `[repark_if_stage_paused, increment_completed]`).
     # phaze-6nrrf: record_drain_slice_completion is the continuous-drain cron's own after_process
     # half -- see tasks/tracklist_drain_control.py.
-    "after_process": [increment_completed, record_drain_slice_completion],
+    # phaze-m1drf.1 acceptance 3: telemetry_after_process runs LAST so the duration it
+    # records covers the other hooks' work too -- a ledger clear that becomes slow is part
+    # of what the job cost. Both telemetry hooks swallow every exception; they run in SAQ's
+    # own `finally` alongside the ledger clear and must not be able to displace it.
+    "before_process": telemetry_before_process,
+    "after_process": [increment_completed, record_drain_slice_completion, telemetry_after_process],
     "functions": [
         generate_proposals,
         match_tracklist_to_discogs,

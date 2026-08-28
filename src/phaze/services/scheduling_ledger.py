@@ -54,6 +54,7 @@ import structlog
 
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.enqueue_router import AGENT_TASKS, CONTROLLER_TASKS
+from phaze.telemetry.pipeline import record_transition
 
 
 if TYPE_CHECKING:
@@ -119,6 +120,7 @@ async def upsert_ledger_entry(
         },
     )
     await session.execute(stmt)
+    record_transition(function, "scheduled")
 
 
 async def insert_ledger_if_absent(
@@ -247,6 +249,14 @@ async def clear_ledger_entry(session: AsyncSession, key: str) -> None:
         await session.execute(delete(SchedulingLedger).where(SchedulingLedger.key == key))
     except Exception:
         logger.warning("scheduling_ledger_clear_liveness_probe_degraded_skipped", key=key, exc_info=True)
+        return
+    # phaze-m1drf.1 acceptance 3. AFTER the clear and NOT on the degraded-skip path above,
+    # which returns early: a skipped clear left the row standing, so counting it resolved
+    # would report a transition that did not happen. The ledger key is the deterministic
+    # ``"<function>:<file_id>"`` spelled by ``stage_status.ledger_key_for_function``, so
+    # the function -- the bounded half -- is everything before the first colon and the
+    # file id is simply never read.
+    record_transition(key.split(":", 1)[0], "resolved")
 
 
 async def get_ledger_rows(session: AsyncSession) -> Sequence[SchedulingLedger]:

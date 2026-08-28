@@ -21,6 +21,9 @@ tests/analyze/services/backends/test_kube_env_contract.py
 tests/shared/core/test_docs_beui03.py
 tests/shared/core/test_docs_ia_current.py
 tests/shared/routers/test_pipeline_analysis_bind_param_cap.py
+tests/shared/telemetry/test_alert_rules.py
+tests/shared/telemetry/test_metric_catalogue.py
+tests/shared/telemetry/test_span_budget.py
 tests/shared/test_adr_citation_resolution.py
 tests/shared/test_adr_numbering.py
 tests/shared/test_change_gate.py

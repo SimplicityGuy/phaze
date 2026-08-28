@@ -1,0 +1,223 @@
+---
+# promtool unit tests for alerts/phaze-alerts.yml.
+#
+# phaze-m1drf.5 acceptance 2 is the one that needs a test rather than a reading: *"if rules
+# exist, none may fire on the accepted-drain-rate condition"*. That is a claim about what
+# the rules do NOT do, and the only way to discharge it is to build the condition and watch
+# nothing fire. `promtool` is the REAL consumer of both this file and the rules (ADR-0012
+# rule 3) -- a YAML schema check would accept PromQL that does not parse and would say
+# nothing at all about whether a rule fires.
+#
+#     docker run --rm -v "$PWD/alerts:/alerts" prom/prometheus:v3.10.0 \
+#       promtool test rules /alerts/phaze-alerts.test.yml
+rule_files:
+  - phaze-alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # ======================================================================
+  # THE ACCEPTANCE-2 TEST. A deep backlog draining at exactly the measured
+  # rate must produce SILENCE.
+  # ======================================================================
+  - interval: 1m
+    name: the accepted drain rate is not a fault
+    input_series:
+      # 8,079 files awaiting, the figure phaze-zaf2l measured, holding steady.
+      - series: 'phaze_pipeline_backlog{job="phaze/phaze-api", backlog="awaiting_cloud"}'
+        values: "8079+0x480"
+      # Windows completing steadily -- the pipeline is working, just slowly.
+      - series: 'phaze_analysis_windows_total{job="phaze/phaze-analysis", tier="coarse", outcome="analyzed"}'
+        values: "0+2x480"
+      # Analyze work being scheduled throughout.
+      - series: 'phaze_pipeline_stage_transitions_total{job="phaze/phaze-api", stage="analyze", transition="scheduled"}'
+        values: "0+1x480"
+      # Completions at the measured 2.4480 files/hour, i.e. one per ~24.5 minutes.
+      - series: 'phaze_analysis_run_duration_seconds_count{job="phaze/phaze-analysis", outcome="ok"}'
+        values: "0+1x480"
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: PhazeAnalysisProgressStalled
+        exp_alerts: []
+      - eval_time: 7h
+        alertname: PhazeAnalysisFailureRateElevated
+        exp_alerts: []
+      - eval_time: 7h
+        alertname: PhazeAnalysisChunkPeakRssApproachingLimit
+        exp_alerts: []
+
+  # ======================================================================
+  # An IDLE phaze is not a fault either. Nothing scheduled, nothing running.
+  # This is the other half of "does not cry wolf": without the scheduled-work
+  # term, a stall rule fires every night.
+  # ======================================================================
+  - interval: 1m
+    name: an idle pipeline is silent
+    input_series:
+      - series: 'phaze_analysis_windows_total{job="phaze/phaze-analysis", tier="coarse", outcome="analyzed"}'
+        values: "500+0x240"
+      - series: 'phaze_pipeline_stage_transitions_total{job="phaze/phaze-api", stage="analyze", transition="scheduled"}'
+        values: "77+0x240"
+    alert_rule_test:
+      - eval_time: 3h
+        alertname: PhazeAnalysisProgressStalled
+        exp_alerts: []
+
+  # ======================================================================
+  # THE FAULT: work is being scheduled and nothing is progressing.
+  # ======================================================================
+  - interval: 1m
+    name: scheduled work with no progress fires
+    input_series:
+      - series: 'phaze_analysis_windows_total{job="phaze/phaze-analysis", tier="coarse", outcome="analyzed"}'
+        values: "500+0x240"
+      - series: 'phaze_pipeline_stage_transitions_total{job="phaze/phaze-api", stage="analyze", transition="scheduled"}'
+        values: "0+1x240"
+    alert_rule_test:
+      - eval_time: 3h
+        alertname: PhazeAnalysisProgressStalled
+        exp_alerts:
+          - exp_labels:
+              alertname: PhazeAnalysisProgressStalled
+              severity: warning
+              service: phaze
+            exp_annotations:
+              summary: "phaze scheduled analysis work in the last hour and completed no analysis window"
+              description: >-
+                No window completed in either tier for an hour while the analyze stage was still being
+                scheduled. The analysis child's own stall watchdog gives up after 1800 s of silence, so
+                this is already past the point the system calls itself stuck. Check that analyze pods are
+                being admitted and that the agent workers are running.
+              runbook: "docs/telemetry/alerting.md#phazeanalysisprogressstalled"
+
+  # ======================================================================
+  # THE HARDER FAULT: the windows series is ABSENT, not zero. This is what
+  # the outage actually looks like -- phaze_analysis_windows_total is only
+  # emitted by short-lived analysis children, so after the collector's
+  # metric_expiration (10m in the example config) and Prometheus staleness
+  # marking, an hour with no admitted pod leaves NO series at all. A bare
+  # `sum(rate(...)) == 0` is an empty vector then, and `and empty` is empty:
+  # the alert would stay structurally silent through the exact fault it
+  # names. The `or vector(0)` in the rule is what this test pins.
+  # ======================================================================
+  - interval: 1m
+    name: scheduled work with the windows series entirely absent fires
+    input_series:
+      - series: 'phaze_pipeline_stage_transitions_total{job="phaze/phaze-api", stage="analyze", transition="scheduled"}'
+        values: "0+1x240"
+    alert_rule_test:
+      - eval_time: 3h
+        alertname: PhazeAnalysisProgressStalled
+        exp_alerts:
+          - exp_labels:
+              alertname: PhazeAnalysisProgressStalled
+              severity: warning
+              service: phaze
+            exp_annotations:
+              summary: "phaze scheduled analysis work in the last hour and completed no analysis window"
+              description: >-
+                No window completed in either tier for an hour while the analyze stage was still being
+                scheduled. The analysis child's own stall watchdog gives up after 1800 s of silence, so
+                this is already past the point the system calls itself stuck. Check that analyze pods are
+                being admitted and that the agent workers are running.
+              runbook: "docs/telemetry/alerting.md#phazeanalysisprogressstalled"
+
+  # ======================================================================
+  # Failure rate: the measured baseline must be silent, and a real spike
+  # must fire. The denominator guard is what separates them.
+  # ======================================================================
+  - interval: 1m
+    name: the measured baseline failure rate is silent
+    input_series:
+      # 60 runs over 6h, ZERO failures -- comfortably past the >40 denominator guard.
+      - series: 'phaze_analysis_run_duration_seconds_count{job="phaze/phaze-analysis", outcome="ok"}'
+        values: "0+1x420"
+      - series: 'phaze_analysis_run_duration_seconds_count{job="phaze/phaze-analysis", outcome="error"}'
+        values: "0+0x420"
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: PhazeAnalysisFailureRateElevated
+        exp_alerts: []
+
+  - interval: 1m
+    name: a single failure in a quiet window does not fire
+    input_series:
+      # Only 20 runs in the window: below the >40 guard, so one failure (5%) stays silent.
+      - series: 'phaze_analysis_run_duration_seconds_count{job="phaze/phaze-analysis", outcome="ok"}'
+        values: "0+1x20 20+0x400"
+      - series: 'phaze_analysis_run_duration_seconds_count{job="phaze/phaze-analysis", outcome="error"}'
+        values: "0+0x20 1+0x400"
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: PhazeAnalysisFailureRateElevated
+        exp_alerts: []
+
+  - interval: 1m
+    name: a genuine failure spike fires
+    input_series:
+      # 240 successes and 60 failures over the window: 20%, far past 5%, past the guard.
+      - series: 'phaze_analysis_run_duration_seconds_count{job="phaze/phaze-analysis", outcome="ok"}'
+        values: "0+1x240"
+      - series: 'phaze_analysis_run_duration_seconds_count{job="phaze/phaze-analysis", outcome="error"}'
+        values: "0+1x240"
+    alert_rule_test:
+      - eval_time: 5h
+        alertname: PhazeAnalysisFailureRateElevated
+        exp_alerts:
+          - exp_labels:
+              alertname: PhazeAnalysisFailureRateElevated
+              severity: warning
+              service: phaze
+            exp_annotations:
+              summary: "phaze analysis failure share above 5% over 6h (measured baseline 0.0913%)"
+              description: >-
+                More than one analysis in twenty failed over the last six hours, against a measured
+                baseline of 4 failures in 4,383 completed analyses. A partial failure (some windows
+                skipped) does NOT count here -- these are file-level failures.
+              runbook: "docs/telemetry/alerting.md#phazeanalysisfailurerateelevated"
+
+  # ======================================================================
+  # Peak RSS: the MEASURED post-D-09 peak must be silent, and the
+  # phaze-b2qs9 growth shape must fire.
+  # ======================================================================
+  - interval: 1m
+    name: the measured post-D-09 peak is silent
+    input_series:
+      # 1.67 GiB -- the measured 12h04m figure from phaze-u1n7j. Every observation lands in
+      # the 2 GiB bucket, so the p99 is well under the 3.5 GiB threshold.
+      - series: 'phaze_analysis_chunk_peak_rss_bytes_bucket{job="phaze/phaze-analysis", tier="coarse", le="2.147483648e+09"}'
+        values: "0+1x180"
+      - series: 'phaze_analysis_chunk_peak_rss_bytes_bucket{job="phaze/phaze-analysis", tier="coarse", le="+Inf"}'
+        values: "0+1x180"
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: PhazeAnalysisChunkPeakRssApproachingLimit
+        exp_alerts: []
+
+  - interval: 1m
+    name: duration-linear growth past 3.5 GiB fires
+    input_series:
+      # Nothing at or below 3.5 GiB, everything in +Inf: the p99 is above the threshold.
+      - series: 'phaze_analysis_chunk_peak_rss_bytes_bucket{job="phaze/phaze-analysis", tier="fine", le="3.758096384e+09"}'
+        values: "0+0x180"
+      - series: 'phaze_analysis_chunk_peak_rss_bytes_bucket{job="phaze/phaze-analysis", tier="fine", le="4.294967296e+09"}'
+        values: "0+1x180"
+      - series: 'phaze_analysis_chunk_peak_rss_bytes_bucket{job="phaze/phaze-analysis", tier="fine", le="+Inf"}'
+        values: "0+1x180"
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: PhazeAnalysisChunkPeakRssApproachingLimit
+        exp_alerts:
+          - exp_labels:
+              alertname: PhazeAnalysisChunkPeakRssApproachingLimit
+              severity: warning
+              service: phaze
+              tier: fine
+            exp_annotations:
+              summary: "phaze analysis chunk peak RSS p99 above 3.5 GiB against a 4Gi pod limit"
+              description: >-
+                Measured post-D-09 peak on the burst node is 1.50-1.67 GiB and does not grow with
+                duration. If this figure is RISING with file length, that is the phaze-b2qs9 defect
+                class (+0.31 GiB per fine chunk, OOMKill past ~3 hours) and the fix is the chunk
+                teardown, never a larger limit.
+              runbook: "docs/telemetry/alerting.md#phazeanalysischunkpeakrssapproachinglimit"

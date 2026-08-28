@@ -1,0 +1,592 @@
+{
+  "description": "How the coarse tier splits between decode, graph construction, inference and assembly, and what each of the 34 models costs. Built for phaze-8ifq8.",
+  "editable": true,
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": true,
+      "title": "Find the trace for one file",
+      "tooltip": "Per-FILE and per-CHUNK detail lives only in traces -- metrics carry no file dimension by construction.",
+      "type": "link",
+      "url": "/explore?left={\"datasource\":\"${tracesource}\",\"queries\":[{\"query\":\"{ resource.service.name = \\\"phaze-analysis\\\" }\"}]}"
+    }
+  ],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "panels": [],
+      "title": "Where the coarse tier goes -- phaze-8ifq8's first question",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "THE panel this dashboard exists for. phaze-8ifq8 asks how the coarse tier splits between decode, graph construction, inference and assembly; before this epic that question needed hand-querying Postgres and reading pod log timestamps. Stacked because the interesting reading is the SHARE, and the values are concurrent work-seconds per wall-second -- above 1 means several analyses are running at once.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 60,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            }
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(phaze_analysis_chunk_decode_duration_seconds_sum{job=~\"$job\", tier=\"coarse\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "chunk decode",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(phaze_analysis_model_graph_build_duration_seconds_sum{job=~\"$job\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "graph construction",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(phaze_analysis_model_inference_duration_seconds_sum{job=~\"$job\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "inference proper",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(phaze_analysis_chunk_derive_duration_seconds_sum{job=~\"$job\", tier=\"coarse\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "derive + assemble",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Coarse tier: seconds of work per second of wall clock, by phase",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 11
+      },
+      "id": 3,
+      "panels": [],
+      "title": "Per-model cost by classifier_type -- phaze-8ifq8's second question",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "34 models: 11 characteristic sets x 3 variants, plus the genre model. musicnn, vggish and effnet_discogs do not cost the same, and this is where that becomes a number rather than a belief. The WINDOW is not a label here -- it would be unbounded across a corpus whose longest file has 241 coarse windows -- so this is the mean over every window the range covers.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 14,
+        "x": 0,
+        "y": 12
+      },
+      "id": 4,
+      "options": {
+        "legend": {
+          "showLegend": false
+        },
+        "orientation": "horizontal",
+        "xTickLabelRotation": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(phaze_analysis_model_inference_duration_seconds_sum{job=~\"$job\"}[$__rate_interval])) by (model_name, model_variant, classifier_type) / sum(rate(phaze_analysis_model_inference_duration_seconds_count{job=~\"$job\"}[$__rate_interval])) by (model_name, model_variant, classifier_type)",
+          "instant": true,
+          "legendFormat": "{{model_name}} / {{model_variant}} ({{classifier_type}})",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Mean inference per window, by model",
+      "type": "barchart"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Where the sweep's wall clock actually lands, aggregated to the three inference families.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 10,
+        "x": 14,
+        "y": 12
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (classifier_type) (rate(phaze_analysis_model_inference_duration_seconds_sum{job=~\"$job\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "{{classifier_type}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Total inference time by classifier_type",
+      "type": "piechart"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "id": 6,
+      "panels": [],
+      "title": "What the D-07 chunking costs",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "D-07 chunking pays 34 graph constructions per CHUNK instead of per file -- the deliberate price for a peak that does not scale with duration. This is that price, next to the work it protects.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 25
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(phaze_analysis_model_graph_build_duration_seconds_sum{job=~\"$job\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "graph build",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(phaze_analysis_model_graph_release_duration_seconds_sum{job=~\"$job\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "graph release",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(phaze_analysis_model_inference_duration_seconds_sum{job=~\"$job\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "inference",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Graph construction vs inference",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "phaze-zaf2l measured 5.31% fine / 94.69% coarse by differencing log timestamps on ONE 4,761.835 s file. The split moves with DURATION -- 7.9%/92.1% at 59 m 39 s, 49.3%/50.7% at 10 h 03 m -- because the coarse tier is linear in windows while the fine tier carries a large fixed per-chunk cost (phaze-bg115). This is the same split, continuously and without reading a pod log.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 60,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            }
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 25
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(phaze_analysis_tier_duration_seconds_sum{job=~\"$job\"}[$__rate_interval])) by (tier)",
+          "instant": false,
+          "legendFormat": "{{tier}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Fine vs coarse tier",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "MonoLoader cannot seek, so every chunk decodes from byte 0 up to its own gate. This is what that costs.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 33
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum(rate(phaze_analysis_chunk_decode_duration_seconds_bucket{job=~\"$job\"}[$__rate_interval])) by (le, tier))",
+          "instant": false,
+          "legendFormat": "p95 {{tier}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(phaze_analysis_chunk_decode_duration_seconds_sum{job=~\"$job\"}[$__rate_interval])) by (tier) / sum(rate(phaze_analysis_chunk_decode_duration_seconds_count{job=~\"$job\"}[$__rate_interval])) by (tier)",
+          "instant": false,
+          "legendFormat": "mean {{tier}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Chunk decode duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "The fine tier's counterpart to a model sweep. phaze-zaf2l measured 2.379-2.694 s per fine window on four of five production files and a 5.845 s outlier it could not explain from the database, because `metadata` stores no sample rate. This panel is where that outlier becomes visible while it happens.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 33
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum(rate(phaze_analysis_fine_window_duration_seconds_bucket{job=~\"$job\"}[$__rate_interval])) by (le))",
+          "instant": false,
+          "legendFormat": "p95",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(phaze_analysis_fine_window_duration_seconds_sum{job=~\"$job\"}[$__rate_interval])) / sum(rate(phaze_analysis_fine_window_duration_seconds_count{job=~\"$job\"}[$__rate_interval]))",
+          "instant": false,
+          "legendFormat": "mean",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Fine window measurement (RhythmExtractor2013 + KeyExtractor)",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "tags": [
+    "phaze",
+    "analysis",
+    "cost"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Prometheus",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Traces",
+        "multi": false,
+        "name": "tracesource",
+        "options": [],
+        "query": "tempo",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(phaze_analysis_run_duration_seconds_count, job)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Service",
+        "multi": true,
+        "name": "job",
+        "options": [],
+        "query": {
+          "query": "label_values(phaze_analysis_run_duration_seconds_count, job)",
+          "refId": "job"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "title": "phaze / Analysis cost breakdown",
+  "uid": "phaze-analysis-cost",
+  "version": 0
+}

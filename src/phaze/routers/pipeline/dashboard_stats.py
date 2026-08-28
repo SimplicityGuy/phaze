@@ -47,6 +47,7 @@ from phaze.services.pipeline import (
     queue_progress_percent,
 )
 from phaze.services.pipeline_counters import read_counters
+from phaze.telemetry.pipeline import record_backlog, record_stage_inflight
 
 
 if TYPE_CHECKING:
@@ -272,6 +273,11 @@ async def _build_dag_context(
     dag["metadataEligibleKnown"] = int(selection.available)
 
     stage_activity = await get_stage_activity_snapshot(session)
+    # phaze-m1drf.1: publish the per-stage queued/active depths phaze-zaf2l sampled by hand
+    # from `saq_jobs` every 120 s. Unconditional here on purpose -- the recorder itself drops
+    # a DEGRADED snapshot rather than publishing its zeros as a measured empty queue, because
+    # that is a property of what may be published and not of this call site.
+    record_stage_inflight(stage_activity)
     dag["metadataQueued"] = int(stage_activity.counts["metadata"]["queued"])
     dag["metadataActive"] = int(stage_activity.counts["metadata"]["active"])
     dag["metadataQueueKnown"] = int(stage_activity.available)
@@ -346,6 +352,26 @@ def _shared_stats_context(
     each caller's own page-only or poll-only extras) stays in the caller; only the assembled dict shape
     that must agree between them lives here.
     """
+    # phaze-m1drf.1 acceptance 3: publish the waiting-room depths the operator otherwise
+    # counts in psql. POLL-DRIVEN by construction -- this function runs only when the admin
+    # UI asks -- so these series go stale with no tab open. Dashboard material, never alert
+    # material; see phaze/telemetry/pipeline.py.
+    record_backlog(
+        {
+            "awaiting_cloud": awaiting_cloud_count,
+            "analyzing_cloud": analyzing_cloud_count,
+            "pushing": pushing_count,
+            "inadmissible": inadmissible_count,
+            "analysis_failed": analysis_failed_count,
+            "analysis_stalled": analysis_stalled_count,
+            "queued_behind_quota": cloud_phase_counts["queued_behind_quota"],
+            "admitted": cloud_phase_counts["admitted"],
+            "running": cloud_phase_counts["running"],
+            "finished": cloud_phase_counts["finished"],
+            **({"queued_analyze": analyze_queue_totals["total_queued"]} if analyze_queue_totals["total_queued"] is not None else {}),
+            **({"unrouted_queued_analyze": analyze_queue_totals["unrouted_queued"]} if analyze_queue_totals["unrouted_queued"] is not None else {}),
+        }
+    )
     return {
         "stats": stats,
         "settings_batch_size": settings.llm_batch_size,

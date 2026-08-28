@@ -62,6 +62,10 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
+from phaze.telemetry import configure_telemetry, extract_from, shutdown_telemetry
+from phaze.telemetry.tracing import span
+
+
 _TARGET_ENV = "PHAZE_ANALYSIS_CHILD_TARGET"
 _DEFAULT_TARGET = "phaze.services.analysis:analyze_file"
 # Mirrors the worker-side cap (tasks/functions.py::_ERROR_DETAIL_MAX): bound the error
@@ -158,9 +162,40 @@ def run(args: argparse.Namespace, protocol: IO[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entrypoint: claim the protocol channel FIRST (pre-essentia), then run."""
+    """CLI entrypoint: claim the protocol channel FIRST (pre-essentia), then run.
+
+    Telemetry is configured AFTER the protocol channel is claimed and BEFORE the target is
+    loaded (phaze-m1drf.1). The order is load-bearing in both directions: fd 1 must already
+    be re-routed onto stderr so nothing the SDK or its transport ever writes can land in
+    the middle of a protocol line, and the provider must exist before ``analyze_file``
+    opens its first span.
+
+    ``configure_telemetry`` returns False and does nothing when no OTLP endpoint is set,
+    which is the default and the whole production path today.
+    """
     args = _parse_args(argv)
     with _open_protocol_channel() as protocol:
+        configure_telemetry("analysis")
+        try:
+            return _run_traced(args, protocol)
+        finally:
+            # The short-lived producer's ONE delivery opportunity (phaze-m1drf.2 §2).
+            # There is no scrape to catch an analyze Job's tail: it accumulates counters
+            # for hours and exits. The flush is bounded by
+            # PHAZE_TELEMETRY_FLUSH_TIMEOUT_MS (default 3,000 ms) and never raises, so a
+            # collector that is gone costs at most that delay at exit and never the run.
+            shutdown_telemetry()
+
+
+def _run_traced(args: argparse.Namespace, protocol: IO[str]) -> int:
+    """Run inside the parent's trace, when the parent passed one.
+
+    ``extract_from()`` reads the W3C ``TRACEPARENT`` the parent's
+    ``services/analysis_exec.py`` put in this process's environment; it returns ``None``
+    when there is none, and ``None`` means "use the ambient context", i.e. start a fresh
+    trace. So a child run by hand from a shell traces perfectly well on its own.
+    """
+    with span("analysis.child", {"phaze.file.path": args.file_path}, context=extract_from()):
         return run(args, protocol)
 
 

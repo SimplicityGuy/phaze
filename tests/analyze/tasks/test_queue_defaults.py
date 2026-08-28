@@ -20,6 +20,8 @@ existed.
 
 from __future__ import annotations
 
+import asyncio
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -226,6 +228,15 @@ def test_controller_settings_construct_real_worker(monkeypatch: pytest.MonkeyPat
 # ----------------------------------------------------------------------
 
 
+def _record(sink: list[str], name: str) -> Any:
+    """An async no-op that records that it ran -- for asserting hook ORDER, not hook identity."""
+
+    async def _hook(_ctx: dict[str, Any]) -> None:
+        sink.append(name)
+
+    return _hook
+
+
 def test_agent_worker_settings_construct_real_worker(monkeypatch: pytest.MonkeyPatch) -> None:
     """``saq.Worker(**phaze.tasks.agent_worker.settings)`` must NOT raise TypeError.
 
@@ -251,8 +262,10 @@ def test_agent_worker_settings_construct_real_worker(monkeypatch: pytest.MonkeyP
 
     import saq
 
-    from phaze.tasks._shared.stage_control import enforce_stage_pause_on_process, repark_if_stage_paused
+    from phaze.tasks import agent_worker as agent_worker_module
+    from phaze.tasks._shared.stage_control import repark_if_stage_paused
     from phaze.tasks.agent_worker import settings as agent_settings
+    from phaze.telemetry.saq import after_process as telemetry_after_process
 
     worker = saq.Worker(**agent_settings)
     assert worker is not None
@@ -261,9 +274,24 @@ def test_agent_worker_settings_construct_real_worker(monkeypatch: pytest.MonkeyP
     # function so a job retried via SAQ's `_retry` (which bypasses before_enqueue) is bounced
     # rather than run fresh on a paused stage; repark_if_stage_paused must run BEFORE
     # increment_completed so a bounce is never mistaken for a genuine COMPLETE/FAILED outcome.
-    assert worker.before_process == [enforce_stage_pause_on_process]
+    #
+    # phaze-m1drf.1: SAQ takes ONE before_process callable (only after_process accepts a list),
+    # so the pause check is now composed with the telemetry hook inside
+    # `agent_worker._before_process`. The invariant this test protects is unchanged and is
+    # asserted more directly than before: the pause check still runs, and it still runs FIRST.
+    assert worker.before_process is not None
+    assert len(worker.before_process) == 1
+    composed = worker.before_process[0]
+    assert composed is agent_worker_module._before_process
+    called: list[str] = []
+    monkeypatch.setattr(agent_worker_module, "enforce_stage_pause_on_process", _record(called, "pause"))
+    monkeypatch.setattr(agent_worker_module, "telemetry_before_process", _record(called, "telemetry"))
+    asyncio.run(composed({}))
+    assert called == ["pause", "telemetry"], "the pause check must run, and must run before telemetry"
+
     assert worker.after_process is not None
     assert worker.after_process[0] is repark_if_stage_paused
+    assert worker.after_process[-1] is telemetry_after_process, "telemetry runs LAST so it measures the other hooks' work too"
 
 
 @pytest.mark.asyncio

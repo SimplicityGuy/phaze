@@ -132,6 +132,72 @@ backfill do not ride the same diff. A reader who greps `phaze-b2qs9` mid-transit
 space-grouped numbers there is looking at a corpus in the middle of `phaze-3x7xt`, not at a
 disagreement with this rule.
 
+## Suppress a lint on the line the tool reports it, not the line you think owns it
+
+`bandit` and `ruff` both flag a `subprocess` call, they disagree about **which line of a
+multi-line call the finding belongs to**, and each honours a suppression only on **its own**
+reported line. So one `subprocess.run(...)` spanning several lines needs its two comments in
+two different places, which reads oddly enough that the natural instinct — put them together —
+is wrong.
+
+**Measured 2026-08-26** (bandit **1.9.4**, ruff **0.16.4**), on a nine-line file whose
+`subprocess.run(` is line 5 and whose argv list is line 6:
+
+| tool | `B603` / `S603` | `B607` / `S607` |
+| --- | --- | --- |
+| bandit | line **5** | line **5** |
+| ruff | line **5** | line **6** |
+
+So the working shape puts `noqa: S603` and the `nosec` on the call line, and `noqa: S607` on
+the argv line:
+
+```python
+completed = subprocess.run(  # noqa: S603  # nosec B603 B607
+    ["ffprobe", "-v", "error", path],  # noqa: S607
+    ...
+)
+```
+
+Two things that do **not** work, both measured rather than assumed. A `nosec` on the
+**preceding** line is silently ignored — both findings still fire. And a ruff `noqa` on the
+call line does **not** reach `S607` on the argv line; ruff scopes `noqa` per physical line
+with no statement-level fallback.
+
+### Separate bandit test ids with a SPACE, never a bare comma
+
+`# nosec B603,B607` silences **only `B607`**. `B603` still fires, and nothing warns you.
+`# nosec B603 B607` and `# nosec B603, B607` both silence both. Reproduced 3/3 on each
+spelling.
+
+This is not a quirk to memorise — it falls out of bandit's own parser
+(`bandit/core/manager.py`):
+
+```python
+NOSEC_COMMENT_TESTS = re.compile(r"(?:(B\d+|[a-z\d_]+),?)+", re.IGNORECASE)
+```
+
+A repeated **capturing** group keeps only its last repetition, so a comma with no space
+collapses the ids into one match and only the final id survives:
+
+```
+'# nosec B603,B607'   -> findall = ['B607']            <- B603 silently NOT suppressed
+'# nosec B603, B607'  -> findall = ['B603', 'B607']
+'# nosec B603 B607'   -> findall = ['B603', 'B607']
+```
+
+Check it yourself in one line:
+
+```bash
+uv run python -c "from bandit.core.manager import NOSEC_COMMENT_TESTS as t; print(t.findall('B603,B607'))"
+```
+
+Two agents hit the line-placement half of this independently on the same call in
+`scripts/telemetry_overhead.py`, and one of them hit the comma half as well — reporting it as
+"comma-separated does not work", which is true only without the space. That near-miss is why
+the rule above is stated as *space, never a bare comma* rather than *never a comma*: the
+imprecise version sends the next person to test `B603, B607`, watch it work, and discard the
+whole note.
+
 ## Cite ADRs by filename, never by bare number
 
 Write `docs/design/0015-shared-session-gather.md`, not "ADR-0015". Where the prose reads better
