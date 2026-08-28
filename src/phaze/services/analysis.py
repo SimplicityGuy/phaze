@@ -1370,7 +1370,9 @@ def _analyze_coarse_windows(
     coarse_windows: list[CoarseWindow] = []
 
     chunks = _chunked(natural, _COARSE_CHUNK_WINDOWS)
-    # THE 94.69% BLIND SPOT (phaze-zaf2l section 3b). Everything below this line was, until
+    # THE COARSE-TIER BLIND SPOT (phaze-zaf2l section 3b, and its 2026-08-28 forward note).
+    # 94.69% of wall clock on the 4,761.835 s file that spike measured -- a DURATION-DEPENDENT
+    # share, 50.7% on a 10 h 03 m file -- but blind at any length. Everything below was, until
     # phaze-m1drf.1, invisible from outside the process: the UI progress channel is
     # fine-tier-only by design, so the bar reached 100% at 5.31% of the job and then
     # reported nothing for the remaining 1 h 52 m of a measured production run. The three

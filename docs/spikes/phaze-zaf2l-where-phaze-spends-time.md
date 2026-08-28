@@ -41,7 +41,8 @@ files**) predicts **1.4715×**, agreeing to **1.58%**. That does **not** contrad
 `phaze-b2qs9`'s **0.56–0.79×**: that figure was measured **solo on an idle node** and this one is
 at `W=4`, and `phaze-8r6t4` §10 already priced W=4 at **+83.6%** per-file wall against W=2. Inside
 that run the **fine tier is 5.31%** (378.266 s) and **coarse + the model sweep is 94.69%**
-(6,741.207 s) — and `AnalysisSignals.progress` is documented **"fine tier only"**, so the pod log
+(6,741.207 s) — a split that is **duration-dependent and inverts on a multi-hour file**, see §3b's
+2026-08-28 forward note before citing it — and `AnalysisSignals.progress` is documented **"fine tier only"**, so the pod log
 *and* the web progress bar (one throttle, one counter, OBS-02) reach 100% at 5.31% of the job and
 then sit there in silence for **1 h 52 m**, which is exactly what all four in-flight pods were
 observed doing. On the admin UI the heaviest surface is not a page but a **poll**:
@@ -184,6 +185,51 @@ The staging path — presign, download, verify, extract, callback — costs **1.
 | --- | ---: | ---: |
 | fine tier (159 windows, 30 s each) | **378.266** | **5.31%** |
 | **coarse tier + model sweep** | **6,741.207** | **94.69%** |
+
+> **FORWARD NOTE, added 2026-08-28 by `phaze-bg115`. The measurement above is correct and
+> unchanged. What follows is a limit on how far it generalises.**
+>
+> **This split is a property of the file's DURATION, not of phaze's analysis.** It was taken on
+> a **4,761.835 s** file, and it holds for files of that length — it has since been
+> independently reproduced. It does not hold as duration grows.
+>
+> Measured 2026-08-27/28 on the burst node, deployed job image, real 34-graph model set, node
+> drained and uncontended, two real corpus files, telemetry captured through a real collector
+> (348 spans, `receiver_refused` 0, `exporter_send_failed` 0). Same node, same image, same code,
+> same run — **duration is the only variable**:
+>
+> | file duration | fine | coarse + model sweep | decode, whole analysis |
+> | ---: | ---: | ---: | ---: |
+> | **3,578.964 s** (59 m 39 s) | 7.9% | 92.1% | 7.7% |
+> | **36,182.359 s** (10 h 03 m) | **49.3%** | **50.7%** | **57.5%** |
+>
+> The short file reproduces this section almost exactly, which **confirms** it. The long file
+> inverts the split.
+>
+> **Why the tiers diverge — the partial final chunk of each tier is a natural experiment on
+> whether cost scales with work.** On the 10 h 03 m file:
+>
+> | tier | full chunks | partial final chunk | reading |
+> | --- | --- | --- | --- |
+> | fine | 60 windows at ~12 s/window | **6 windows at 84.75 s/window** | a **7x** per-window jump on identical work — most of a fine chunk's cost is FIXED, not per-window (fitting these two points puts the fixed part at ~67% of a full chunk) |
+> | coarse | 30 windows at ~106 s/window | 22 windows at **106.94 s/window** | unchanged — the coarse tier is **linear in windows** (fixed part ~2%) |
+>
+> The fine tier is **97.7% decode**; the coarse tier **18.4%**. A longer file is more chunks, and
+> chunks are where the fine tier's fixed cost is paid — so the fine share climbs with duration
+> while the coarse share falls.
+>
+> **The consequence for anyone sizing work against the 94.69%:** on a multi-hour file it is
+> roughly **2x wrong**. On a 10-hour set, halving the model sweep cuts total analysis by about
+> **25%**, not about **47%**.
+>
+> **The general form**, per ADR-0012 rule 5: **a tier split measured on one file is a property of
+> that DURATION**, because the tiers scale differently — one is linear in windows and the other
+> carries a large fixed per-chunk cost. Any split, ratio or share taken from a single file
+> inherits that file's duration as a condition, and must be cited with it.
+>
+> Raw capture and the per-chunk figures: beads `phaze-uvln0` and `phaze-8ifq8`. **No analysis
+> parameter changed** — coarse windows remain 180 s and coverage remains exhaustive (operator
+> constraint, `phaze-m1drf`, 2026-08-27).
 
 **Every** pod observed showed the same shape — fine tier complete within minutes, then silence.
 Fine elapsed is measured from each job's own `job_runner_analyze_begin` to its own final

@@ -70,10 +70,12 @@ def _run(audio_path: str, models_dir: str) -> dict[str, object]:
 def test_the_coarse_tier_is_broken_down_per_chunk(telemetry_sink: TelemetrySink, audio: str, tmp_path: Path) -> None:
     """phaze-m1drf.1 acceptance 1: decode / graph work / inference / derive, per chunk.
 
-    This is the 94.69% of a production analysis that emitted NOTHING outside the process
-    before this bead -- ``AnalysisSignals.progress`` is fine-tier-only by design, so the UI
-    bar reached 100% at 5.31% of the job and then went silent for 1 h 52 m on a measured
-    run (phaze-zaf2l section 3b).
+    This is the coarse tier, which emitted NOTHING outside the process before this bead --
+    ``AnalysisSignals.progress`` is fine-tier-only by design, so the UI bar reached 100% at
+    5.31% of the job and then went silent for 1 h 52 m on a measured run (phaze-zaf2l section
+    3b). Those shares are DURATION-DEPENDENT -- 94.69% coarse on that 4,761.835 s file, 50.7%
+    on a 10 h 03 m one (phaze-bg115) -- but the tier is blind at any length, which is what
+    this test is about.
     """
     _run(audio, str(tmp_path / "no-models"))
 

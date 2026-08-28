@@ -87,9 +87,11 @@ Three things that trace settles, none of which a metric could have answered:
 - **The exec boundary is genuinely crossed inside one trace** — two `service.name` values
   (`phaze-agent`, `phaze-analysis`) and two distinct pids, one trace id.
 - **The tier split is visible directly from one file**: fine **19,058 ms (6.2%)** against
-  coarse **289,202 ms (93.8%)**. That independently reproduces the **5.31% / 94.69%** split
-  `phaze-zaf2l` §3b had to reconstruct from pod-log timestamps — the measurement this entire
-  epic was motivated by.
+  coarse **289,202 ms (93.8%)**. That sits where `phaze-zaf2l` §3b's **5.31% / 94.69%** does, which
+  is what a *short* file should give: the split is **duration-dependent** and inverts to 49.3% fine
+  on a 10 h 03 m file (that spike's 2026-08-28 forward note, `phaze-bg115`). The point here is not
+  the number but that **one file's tier split is readable at all** — which is the measurement this
+  entire epic was motivated by, and which `phaze-zaf2l` could only get by differencing pod logs.
 - **`chunk_index` is on the span**, so per-chunk duration against chunk index is a query rather
   than an inference.
 
