@@ -190,28 +190,39 @@ class AnalysisWriteResponse(BaseModel):
 
 
 class AnalysisProgressPayload(BaseModel):
-    """Counter-only mid-flight progress body (Phase 57.1 D-01/D-02).
+    """Counter-only mid-flight progress body (Phase 57.1 D-01/D-02; widened phaze-bp9kz).
 
-    Carries ONLY the two fine-window counts that advance during an in-flight
-    analysis run. Unlike ``AnalysisWritePayload`` the counts are REQUIRED (no
-    ``| None``, no default) -- a progress POST always carries both (the START
-    call sends ``analyzed=0, total=N``; bumps send ``analyzed=k, total=N``).
-    ``extra='forbid'`` rejects any attempt to ride an ``agent_id``/``file_id``
-    along in the body (AUTH-01, T-57.1-02 -> 422 at the route); the ``ge=0``/``le=50000``
-    bound malformed counts at the wire boundary -- same realistic-windows-per-file domain
-    as ``AnalysisWritePayload.fine_windows_analyzed``/``.fine_windows_total`` (wire_bounds
-    rule 3, phaze-01gh): these land in the same ``analysis_results`` int4 counter columns,
-    so an out-of-range value would otherwise raise Postgres ``NumericValueOutOfRange``
-    unhandled, and here the abort happens BEFORE the ledger clear, re-queuing the file.
+    Carries the window counts that advance during an in-flight analysis run. The two fine
+    fields are REQUIRED (no ``| None``, no default) -- a progress POST always carries both
+    (the START call sends ``fine_windows_analyzed=0, fine_windows_total=N``; bumps send
+    ``fine_windows_analyzed=k, fine_windows_total=N``). ``extra='forbid'`` rejects any
+    attempt to ride an ``agent_id``/``file_id`` along in the body (AUTH-01, T-57.1-02 -> 422
+    at the route); the ``ge=0``/``le=50000`` bound malformed counts at the wire boundary --
+    same realistic-windows-per-file domain as ``AnalysisWritePayload.fine_windows_analyzed``/
+    ``.fine_windows_total`` (wire_bounds rule 3, phaze-01gh): these land in the same
+    ``analysis_results`` int4 counter columns, so an out-of-range value would otherwise
+    raise Postgres ``NumericValueOutOfRange`` unhandled, and here the abort happens BEFORE
+    the ledger clear, re-queuing the file.
 
-    Fine-only per Claude's Discretion (CONTEXT D-01): fine-only satisfies
-    WORK-04; coarse counts are intentionally omitted (do NOT add coarse fields).
+    **phaze-bp9kz supersedes the prior fine-only scope cut (WORK-04, Phase 57.1).** That cut
+    left the coarse tier -- 50.7 to 94.69% of wall clock, duration-dependent, phaze-zaf2l §3b
+    / phaze-bg115 -- invisible on this channel, so the in-flight bar read a false 100% for
+    the rest of every run. ``coarse_windows_analyzed``/``coarse_windows_total`` are ADDITIVE
+    fields, ``int | None`` with a ``None`` default rather than required: a job pod running an
+    older image during a rolling upgrade (the same tolerance ``AnalysisWritePayload``'s
+    ``sampled``-drop shim documents) sends only the two fine fields, which still validates,
+    and the router leaves the coarse columns untouched on that POST rather than clobbering
+    them with a false ``0``. A fully-upgraded pod always sends both (real counts, ``0``
+    before the coarse tier begins) -- see ``job_runner._make_progress_cb`` /
+    ``tasks.functions._run_analysis_with_progress``.
     """
 
     model_config = ConfigDict(extra="forbid")  # strict body parsing -- forged agent_id/file_id -> 422
 
     fine_windows_analyzed: int = Field(ge=0, le=50000)
     fine_windows_total: int = Field(ge=0, le=50000)
+    coarse_windows_analyzed: int | None = Field(default=None, ge=0, le=50000)
+    coarse_windows_total: int | None = Field(default=None, ge=0, le=50000)
 
 
 class AnalysisProgressResponse(BaseModel):

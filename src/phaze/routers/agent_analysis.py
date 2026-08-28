@@ -378,12 +378,20 @@ async def post_analysis_progress(
     agent: Annotated[Agent, Depends(get_authenticated_agent)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> AnalysisProgressResponse:
-    """Counter-only mid-flight progress upsert -- a SIBLING of ``put_analysis``, NOT a call into it (Phase 57.1 D-01/D-02).
+    """Counter-only mid-flight progress upsert -- a SIBLING of ``put_analysis``, NOT a call into it (Phase 57.1 D-01/D-02; widened phaze-bp9kz).
 
-    Upserts ONLY ``fine_windows_analyzed`` + ``fine_windows_total`` on the file's
-    ``analysis`` row (``file_id`` UQ natural key). The START call carries
-    ``(analyzed=0, total=N)``; bumps carry ``(analyzed=k, total=N)``. A second POST
+    Upserts ``fine_windows_analyzed`` + ``fine_windows_total`` on the file's ``analysis``
+    row (``file_id`` UQ natural key), and -- when the body carries them -- the matching
+    coarse pair. The START call carries ``(fine_analyzed=0, fine_total=N)``; bumps carry
+    ``(fine_analyzed=k, fine_total=N)``, with the coarse pair riding along once that tier
+    begins (phaze-bp9kz: ``AnalysisProgressPayload`` was fine-only, WORK-04). A second POST
     for the same ``file_id`` overwrites the counts (idempotent counter, NO second row).
+
+    The coarse pair is optional on the body (``int | None``, matching the schema) so a job
+    pod running an older image mid-rolling-upgrade -- sending only the two fine fields --
+    still validates and still updates fine progress; this handler simply leaves the coarse
+    columns untouched on that POST (SET clause omits them) rather than writing a false ``0``
+    that would clobber whatever a later, upgraded run of the same file already reported.
 
     This handler reuses ``put_analysis``'s ``pg_insert…on_conflict_do_update``
     *mechanism* but STRIPS every completion side effect (KEY RISK / T-57.1-03):
@@ -398,27 +406,35 @@ async def post_analysis_progress(
     T-57.1-01); ``file_id`` rides the PATH only; ``extra='forbid'`` on the payload
     makes a forged ``agent_id``/``file_id`` a 422 (T-57.1-02).
     """
-    # Counter-only upsert: SET clause covers ONLY the two count columns. PK `id` is
-    # stamped explicitly because AnalysisResult.id has a Python-only default that
+    # Counter-only upsert: SET clause covers the count columns the body actually carries. PK
+    # `id` is stamped explicitly because AnalysisResult.id has a Python-only default that
     # pg_insert bypasses (mirrors put_analysis). file_id is the PATH value only.
-    payload = {
+    payload: dict[str, Any] = {
         "fine_windows_analyzed": body.fine_windows_analyzed,
         "fine_windows_total": body.fine_windows_total,
         "file_id": file_id,
         "id": uuid.uuid4(),
     }
+    # phaze-bp9kz: coarse fields are optional on the body (rolling-upgrade tolerance, see
+    # AnalysisProgressPayload's docstring) -- included in the INSERT/SET only when BOTH are
+    # present, never a lone one, matching the schema's "always both or neither" pairing.
+    include_coarse = body.coarse_windows_analyzed is not None and body.coarse_windows_total is not None
+    if include_coarse:
+        payload["coarse_windows_analyzed"] = body.coarse_windows_analyzed
+        payload["coarse_windows_total"] = body.coarse_windows_total
     stmt = pg_insert(AnalysisResult).values([payload])
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["file_id"],
-        set_={
-            "fine_windows_analyzed": stmt.excluded.fine_windows_analyzed,
-            "fine_windows_total": stmt.excluded.fine_windows_total,
-            # TimestampMixin.updated_at's ORM onupdate=func.now() never fires on this Core ON
-            # CONFLICT DO UPDATE path -- stamp it explicitly so a progress bump moves updated_at
-            # instead of freezing it at first write (phaze-c8nz). created_at stays pinned.
-            "updated_at": func.now(),
-        },
-    )
+    set_: dict[str, Any] = {
+        "fine_windows_analyzed": stmt.excluded.fine_windows_analyzed,
+        "fine_windows_total": stmt.excluded.fine_windows_total,
+        # TimestampMixin.updated_at's ORM onupdate=func.now() never fires on this Core ON
+        # CONFLICT DO UPDATE path -- stamp it explicitly so a progress bump moves updated_at
+        # instead of freezing it at first write (phaze-c8nz). created_at stays pinned.
+        "updated_at": func.now(),
+    }
+    if include_coarse:
+        set_["coarse_windows_analyzed"] = stmt.excluded.coarse_windows_analyzed
+        set_["coarse_windows_total"] = stmt.excluded.coarse_windows_total
+    stmt = stmt.on_conflict_do_update(index_elements=["file_id"], set_=set_)
     # phaze-wn1l: same concurrently-deleted-FileRecord race as put_analysis (module
     # docstring) -- this is the START-of-analysis progress POST, so it fires at the
     # BEGINNING of every run and is the most frequently-hit of the three vanished-file

@@ -479,21 +479,36 @@ def _log_job_peak_rss() -> None:
 # a caller has to test, so the guards disappear from every call site instead of multiplying
 # with every new signal.
 #
-# Carries NO I/O and no transport -- it emits an ``(int, int)`` progress count or a
-# ``(str, int, int)`` stage beat exactly as the two raw callbacks did. Throttling and the
+# Carries NO I/O and no transport -- it emits an ``(int, int, int, int)`` progress count or a
+# ``(str, int, int)`` stage beat exactly as the raw callbacks did. Throttling and the
 # HTTP/pickle boundary stay downstream in the lane bridge (``analysis_child.py`` /
 # ``services/analysis_exec.py``), so this seam stays importable by the essentia child.
+#
+# phaze-bp9kz WIDENED ``.progress()`` from ``(analyzed, total)`` (fine tier only) to
+# ``(fine_analyzed, fine_total, coarse_analyzed, coarse_total)``. The prior fine-only shape
+# (WORK-04, Phase 57.1) was a deliberate scope cut, not an oversight -- documented in
+# ``analysis_child.py``'s protocol docstring and in ``AnalysisProgressPayload`` -- and this
+# bead's whole acceptance is to lift it: the coarse tier is 50.7-94.69% of wall clock
+# (duration-dependent, phaze-bg115) and was invisible on this channel, so the in-flight bar
+# and the pod log both sat at a false 100% for the remainder of every run (phaze-zaf2l §3b).
 @dataclass(frozen=True)
 class AnalysisSignals:
     """Progress + liveness callbacks for one ``analyze_file`` run, collapsed into one seam."""
 
-    progress_cb: Callable[[int, int], None] | None = None
+    progress_cb: Callable[[int, int, int, int], None] | None = None
     heartbeat_cb: Callable[[str, int, int], None] | None = None
 
-    def progress(self, analyzed: int, total: int) -> None:
-        """Fire the UI progress channel (fine tier only). A no-op when unset."""
+    def progress(self, fine_analyzed: int, fine_total: int, coarse_analyzed: int, coarse_total: int) -> None:
+        """Fire the UI progress channel with BOTH tiers' window counts. A no-op when unset.
+
+        Both totals are the natural (pre-skip) window counts, known and constant for the
+        WHOLE run before either tier starts (phaze-bp9kz) -- identical to the completion
+        PUT's ``fine_windows_total``/``coarse_windows_total`` from the first call, which is
+        what lets a consumer combine them into a whole-job percentage without guessing at a
+        duration-dependent wall-clock weighting (see ``job_runner._make_progress_cb``).
+        """
         if self.progress_cb is not None:
-            self.progress_cb(analyzed, total)
+            self.progress_cb(fine_analyzed, fine_total, coarse_analyzed, coarse_total)
 
     def beat(self, stage: str, done: int, total: int) -> None:
         """Fire the liveness channel. A no-op when unset."""
@@ -1144,6 +1159,7 @@ def _analyze_fine_windows(
     min_sec: int,
     *,
     signals: AnalysisSignals = NO_SIGNALS,
+    coarse_total: int = 0,
 ) -> tuple[list[FineWindow], int]:
     """FINE pass: BPM + key for EVERY ``win_sec`` window, in bounded 44.1 kHz chunks.
 
@@ -1158,19 +1174,26 @@ def _analyze_fine_windows(
     its own streaming decode (``MonoLoader`` cannot seek); the non-final chunks pass a
     ``stop_at_sec`` gate so their decode ends at the chunk boundary instead of at EOF.
 
-    Phase 57.1 (PROG-01): ``signals.progress`` fires a START signal ``signals.progress(0,
-    len(natural))`` BEFORE the loop and then ``signals.progress(len(fine_windows),
-    len(natural))`` after every successful append. The denominator is the natural count --
-    IDENTICAL to the ``fine_windows_total`` the completion PUT reports, so the in-flight bar
-    and final coverage agree (denominator invariant). This seam emits only an ``(int, int)``
-    count and does NO I/O; throttling and transport live DOWNSTREAM in the lane bridge, never
-    here (keeps the compute seam HTTP/pickle-free).
+    Phase 57.1 (PROG-01) / phaze-bp9kz: ``signals.progress`` fires a START signal
+    ``signals.progress(0, len(natural), 0, coarse_total)`` BEFORE the loop and then
+    ``signals.progress(len(fine_windows), len(natural), 0, coarse_total)`` after every
+    successful append. ``coarse_total`` is the coarse tier's OWN natural window count,
+    precomputed by the caller before either tier starts (cheap window-geometry arithmetic,
+    no decode) so the coarse-tier denominator is visible on this channel from the very first
+    call -- not just after the fine tier finishes. The fine denominator is the natural count
+    -- IDENTICAL to the ``fine_windows_total`` the completion PUT reports, so the in-flight
+    bar and final coverage agree (denominator invariant, now extended to both tiers: see
+    :func:`_analyze_coarse_windows`). This seam emits only an ``(int, int, int, int)`` count
+    and does NO I/O; throttling and transport live DOWNSTREAM in the lane bridge, never here
+    (keeps the compute seam HTTP/pickle-free).
 
     phaze-w55w1 adds ``signals.beat(stage, done, total)`` alongside it: the LIVENESS channel.
     It fires on window completions AND on chunk-decode boundaries, because the supervising
     layer now kills only on absence of progress (never on elapsed time) and a chunk decode is
     the longest stretch of this pass that completes no windows. ``signals.progress`` cannot
-    serve that role: it is fine-tier-only by design (WORK-04) and says nothing during decode.
+    serve that role even after phaze-bp9kz widened it to both tiers: it fires only on a
+    COMPLETED window, so it still says nothing during a chunk's decode -- the same stretch
+    ``beat`` exists to cover.
 
     ``RhythmExtractor2013`` and ``KeyExtractor`` are constructed ONCE per file and reused
     across every window and every chunk (phaze-ap8y), not rebuilt per window: neither takes a
@@ -1190,7 +1213,7 @@ def _analyze_fine_windows(
     """
     natural = _iter_windows(total_sec, win_sec, min_sec, drop_short_trailing=True)
     total = len(natural)
-    signals.progress(0, total)  # START: analyzed=0, total=natural
+    signals.progress(0, total, 0, coarse_total)  # START: fine_analyzed=0, fine_total=natural, coarse not yet begun
 
     def _skip(idx: int, start: float, end: float, exc_info: bool = True) -> None:
         log.warning("fine window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=exc_info)
@@ -1241,7 +1264,7 @@ def _analyze_fine_windows(
                         continue  # no audio, or a failed measurement already reported in-handler
                     fine_windows.append(measured)
                     telemetry.add("phaze.analysis.windows", 1, tier="fine", outcome="analyzed")
-                    signals.progress(len(fine_windows), total)  # bump (throttle lives downstream, not here)
+                    signals.progress(len(fine_windows), total, 0, coarse_total)  # bump (throttle lives downstream, not here)
                     signals.beat("fine", len(fine_windows), total)
                 decoded.clear()  # this chunk's PCM is consumed; nothing crosses the chunk boundary
                 _malloc_trim()
@@ -1317,6 +1340,8 @@ def _analyze_coarse_windows(
     models_dir: str,
     *,
     signals: AnalysisSignals = NO_SIGNALS,
+    fine_analyzed: int = 0,
+    fine_total: int = 0,
 ) -> tuple[list[CoarseWindow], int]:
     """COARSE pass: mood/style/danceability for EVERY ``win_sec`` window (no length floor).
 
@@ -1373,12 +1398,16 @@ def _analyze_coarse_windows(
     # THE COARSE-TIER BLIND SPOT (phaze-zaf2l section 3b, and its 2026-08-28 forward note).
     # 94.69% of wall clock on the 4,761.835 s file that spike measured -- a DURATION-DEPENDENT
     # share, 50.7% on a 10 h 03 m file -- but blind at any length. Everything below was, until
-    # phaze-m1drf.1, invisible from outside the process: the UI progress channel is
-    # fine-tier-only by design, so the bar reached 100% at 5.31% of the job and then
-    # reported nothing for the remaining 1 h 52 m of a measured production run. The three
-    # phases are given three separate instruments, deliberately, because the whole point of
-    # the exercise is to see how the tier SPLITS -- an aggregate would restore the blind
-    # spot at a finer granularity.
+    # phaze-m1drf.1's OTEL spans/histograms and phaze-bp9kz's progress-channel fix, invisible
+    # from outside the process on the UI channel specifically: the progress channel was
+    # fine-tier-only by design (WORK-04), so the bar reached 100% at 5.31% of the job and then
+    # reported nothing for the remaining 1 h 52 m of a measured production run. phaze-bp9kz
+    # closes that gap below with ``signals.progress`` calls carrying this tier's own counts
+    # alongside the fine tier's frozen final counts (the denominator invariant, extended). The
+    # OTEL spans below are given three separate instruments, deliberately, because the whole
+    # point of the exercise is to see how the tier SPLITS -- an aggregate would restore the
+    # blind spot at a finer granularity.
+    signals.progress(fine_analyzed, fine_total, 0, total)  # START: coarse not yet begun
     with otel.timed(
         "phaze.analysis.tier.duration",
         "analysis.tier",
@@ -1432,6 +1461,10 @@ def _analyze_coarse_windows(
                             continue  # killed by the sweep, or a failed derivation -- either way already reported in-handler
                         coarse_windows.append(derived)
                         telemetry.add("phaze.analysis.windows", 1, tier="coarse", outcome="analyzed")
+                        # phaze-bp9kz: the coarse-tier bump this docstring's blind-spot note is
+                        # about. fine_analyzed/fine_total are frozen at the fine tier's final
+                        # values (passed in by the caller) for every call in this tier.
+                        signals.progress(fine_analyzed, fine_total, len(coarse_windows), total)
                 signals.beat("coarse", len(coarse_windows), total)
                 _record_chunk_peak_rss("coarse")
                 telemetry.add("phaze.analysis.chunks", 1, tier="coarse")
@@ -1445,7 +1478,7 @@ def analyze_file(
     fine_window_sec: int = _DEFAULT_FINE_WINDOW_SEC,
     coarse_window_sec: int = _DEFAULT_COARSE_WINDOW_SEC,
     fine_min_sec: int = _DEFAULT_FINE_MIN_SEC,
-    progress_cb: Callable[[int, int], None] | None = None,
+    progress_cb: Callable[[int, int, int, int], None] | None = None,
     heartbeat_cb: Callable[[str, int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Analyze a single audio file via essentia as a two-tier time-series.
@@ -1506,14 +1539,25 @@ def analyze_file(
     is none to express — they are the progress denominators the in-flight bar and the
     completion PUT share.
 
-    Phase 57.1 (PROG-01): an optional sync ``progress_cb(analyzed, total)`` is threaded
-    into the FINE per-window loop (``_analyze_fine_windows``) — a START signal then a
-    per-window bump up to ``(len(fine_windows), fine_windows_total)``. The callback emits
-    only an ``(int, int)`` count; ``analyze_file`` itself does NO I/O and imports no HTTP
-    client (the Phase 101 exec'd-child JSON-protocol boundary, ``phaze.analysis_child`` /
-    ``services.analysis_exec``, plus the ``tests/shared/core/test_task_split.py`` essentia import
-    boundary, stay intact). Transport + throttle are the LANE's job. Fine-only is sufficient
-    for the in-flight bar (WORK-04); the COARSE pass is intentionally not on that channel.
+    Phase 57.1 (PROG-01): an optional sync ``progress_cb(fine_analyzed, fine_total,
+    coarse_analyzed, coarse_total)`` is threaded into BOTH tiers' per-window loops
+    (``_analyze_fine_windows`` / ``_analyze_coarse_windows``) — a START signal per tier then a
+    per-window bump. The callback emits only an ``(int, int, int, int)`` count;
+    ``analyze_file`` itself does NO I/O and imports no HTTP client (the Phase 101 exec'd-child
+    JSON-protocol boundary, ``phaze.analysis_child`` / ``services.analysis_exec``, plus the
+    ``tests/shared/core/test_task_split.py`` essentia import boundary, stay intact). Transport
+    + throttle are the LANE's job.
+
+    **phaze-bp9kz widened this from fine-only.** WORK-04 (Phase 57.1) deliberately scoped
+    ``progress_cb`` to the fine tier alone; that scope cut is what left the coarse tier — 50.7
+    to 94.69% of wall clock, duration-dependent, phaze-zaf2l §3b / phaze-bg115 — invisible on
+    this channel, so the in-flight bar and the pod log both read a false 100% for the rest of
+    every run. Both tiers now call ``progress_cb`` with all four counts on every bump; the
+    fine pair is frozen at its final values once the coarse tier starts, and both totals are
+    known and constant from the very first call (computed as pure window-geometry arithmetic
+    before either tier begins), so a consumer can always tell "not done yet" from "100%"
+    without a wall-clock-weighted guess at the split (see ``job_runner._make_progress_cb``'s
+    combined percentage).
 
     phaze-w55w1 adds ``heartbeat_cb(stage, done, total)``: the same shape, but the LIVENESS
     channel rather than the UI one. Both tiers beat on it, and so do the stages between
@@ -1568,8 +1612,17 @@ def _analyze_file_traced(
         total_sec = _probe_duration_sec(file_path)
         file_span.set_attribute("phaze.analysis.audio_duration_sec", total_sec)
 
-        fine_windows, fine_total = _analyze_fine_windows(file_path, total_sec, fine_window_sec, fine_min_sec, signals=signals)
-        coarse_windows, coarse_total = _analyze_coarse_windows(file_path, total_sec, coarse_window_sec, models_dir, signals=signals)
+        # phaze-bp9kz: the coarse tier's natural window count is pure window-geometry
+        # arithmetic (no decode) -- cheap to compute BEFORE either tier starts, so the fine
+        # tier's very first progress call already carries the coarse denominator instead of
+        # reporting it only once the coarse tier begins.
+        coarse_total_natural = len(_iter_windows(total_sec, coarse_window_sec, 0, drop_short_trailing=False))
+        fine_windows, fine_total = _analyze_fine_windows(
+            file_path, total_sec, fine_window_sec, fine_min_sec, signals=signals, coarse_total=coarse_total_natural
+        )
+        coarse_windows, coarse_total = _analyze_coarse_windows(
+            file_path, total_sec, coarse_window_sec, models_dir, signals=signals, fine_analyzed=len(fine_windows), fine_total=fine_total
+        )
         result = _assemble_analysis_result(file_path, fine_windows, fine_total, coarse_windows, coarse_total)
         outcome = "ok"
     finally:

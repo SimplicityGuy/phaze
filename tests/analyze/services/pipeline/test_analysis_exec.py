@@ -48,20 +48,23 @@ def _point_child_at(monkeypatch: pytest.MonkeyPatch, stub: str) -> None:
 
 async def test_result_returned_intact_with_mid_run_progress(monkeypatch: pytest.MonkeyPatch) -> None:
     """The driver returns the child's result dict verbatim, and progress callbacks fire
-    ON the parent loop WHILE the child is still running (the OBS-03 point)."""
+    ON the parent loop WHILE the child is still running (the OBS-03 point) -- for BOTH
+    tiers (phaze-bp9kz widened the callback from fine-only, WORK-04)."""
     _point_child_at(monkeypatch, "slow_analyze")
-    bumps: list[tuple[int, int]] = []
+    bumps: list[tuple[int, int, int, int]] = []
     first_bump_at: list[float] = []
 
-    def _cb(analyzed: int, total: int) -> None:
+    def _cb(fine_analyzed: int, fine_total: int, coarse_analyzed: int, coarse_total: int) -> None:
         if not first_bump_at:
             first_bump_at.append(time.monotonic())
-        bumps.append((analyzed, total))
+        bumps.append((fine_analyzed, fine_total, coarse_analyzed, coarse_total))
 
     result = await run_analysis_subprocess("/fake/audio.mp3", "/fake/models", progress_cb=_cb)
     done_at = time.monotonic()
 
-    assert bumps == [(0, 3), (1, 3), (2, 3), (3, 3)]
+    assert bumps == [(0, 3, 0, 1), (1, 3, 0, 1), (2, 3, 0, 1), (3, 3, 0, 1), (3, 3, 1, 1)]
+    # A 100% reading (both tiers done) is unreachable before the LAST bump.
+    assert not any(fa == ft and ca == ct for fa, ft, ca, ct in bumps[:-1])
     # slow_analyze sleeps 0.15s after each bump: the first bump must have been observed
     # well before the child finished — streamed mid-run, not replayed at completion.
     assert done_at - first_bump_at[0] >= 0.4
@@ -242,7 +245,7 @@ async def test_progress_cb_error_never_fails_the_analysis(monkeypatch: pytest.Mo
     """A raising progress callback is swallowed (logged) — the analysis still completes."""
     _point_child_at(monkeypatch, "fake_analyze")
 
-    def _broken_cb(analyzed: int, total: int) -> None:
+    def _broken_cb(fine_analyzed: int, fine_total: int, coarse_analyzed: int, coarse_total: int) -> None:
         msg = "progress consumer bug"
         raise ValueError(msg)
 
@@ -305,13 +308,15 @@ async def test_protocol_garbage_and_blank_lines_are_skipped_not_fatal(monkeypatc
         returncode=0,
     )
     _fake_spawn(monkeypatch, proc)
-    bumps: list[tuple[int, int]] = []
+    bumps: list[tuple[int, int, int, int]] = []
 
     with capture_logs() as captured:
-        result = await run_analysis_subprocess("/f", "/m", progress_cb=lambda a, t: bumps.append((a, t)))
+        result = await run_analysis_subprocess("/f", "/m", progress_cb=lambda fa, ft, ca, ct: bumps.append((fa, ft, ca, ct)))
 
     assert result == {"ok": True}
-    assert bumps == [(1, 2)]
+    # The raw line carries no coarse_analyzed/coarse_total keys -- they default to 0, the
+    # same defensive default `analyzed`/`total` always had (phaze-bp9kz).
+    assert bumps == [(1, 2, 0, 0)]
     garbage = [entry for entry in captured if entry["event"] == "analysis_child_protocol_garbage"]
     assert len(garbage) == 2  # the non-JSON line and the unknown-type line; blanks are silent
 

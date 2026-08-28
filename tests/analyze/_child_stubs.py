@@ -6,7 +6,11 @@ driver above it) can be exercised end-to-end without an essentia wheel: the chil
 imports THIS module instead of ``phaze.services.analysis``. Each stub mirrors the
 ``analyze_file`` call contract — ``(file_path, models_dir, *, progress_cb=None,
 heartbeat_cb=None, **windowing)`` returning the aggregates + windows + the four
-progress counts.
+progress counts. ``progress_cb``, since phaze-bp9kz, takes FOUR ints
+(``fine_analyzed, fine_total, coarse_analyzed, coarse_total``) — most stubs below only
+ever bump the fine pair (coarse pinned at ``0, 1`` to match ``_result``'s
+``coarse_windows_total``); :func:`slow_analyze` bumps both, deliberately, so the
+mid-run e2e tests can observe a coarse-tier count arriving before completion.
 
 ``heartbeat_cb`` is named EXPLICITLY on every stub rather than swept into ``**windowing``
 (phaze-w55w1). It has to be: ``_result`` echoes ``**windowing`` back through the JSON
@@ -67,14 +71,18 @@ def fake_analyze(
     file_path: str,
     models_dir: str,
     *,
-    progress_cb: Callable[[int, int], None] | None = None,
+    progress_cb: Callable[[int, int, int, int], None] | None = None,
     heartbeat_cb: Callable[[str, int, int], None] | None = None,
     **windowing: Any,
 ) -> dict[str, Any]:
-    """Happy path: START + three bumps, then the deterministic result."""
+    """Happy path: START + three fine bumps, then the deterministic result.
+
+    Coarse stays pinned at ``0, 1`` (matches ``_result``'s ``coarse_windows_total``): this
+    stub is fine-only by design, unlike :func:`slow_analyze`.
+    """
     if progress_cb is not None:
         for analyzed in (0, 1, 2, 3):
-            progress_cb(analyzed, 3)
+            progress_cb(analyzed, 3, 0, 1)
     return _result(file_path, models_dir, **windowing)
 
 
@@ -82,15 +90,19 @@ def slow_analyze(
     file_path: str,
     models_dir: str,
     *,
-    progress_cb: Callable[[int, int], None] | None = None,
+    progress_cb: Callable[[int, int, int, int], None] | None = None,
     heartbeat_cb: Callable[[str, int, int], None] | None = None,
     **windowing: Any,
 ) -> dict[str, Any]:
-    """Like fake_analyze but sleeps between bumps so a parent can observe MID-RUN progress."""
+    """Like fake_analyze but sleeps between bumps so a parent can observe MID-RUN progress
+    across BOTH tiers (phaze-bp9kz widened the callback from fine-only): three fine bumps,
+    then one coarse bump once the fine pair is frozen at its final value."""
     if progress_cb is not None:
-        for analyzed in (0, 1, 2, 3):
-            progress_cb(analyzed, 3)
+        for fine_analyzed in (0, 1, 2, 3):
+            progress_cb(fine_analyzed, 3, 0, 1)
             time.sleep(0.15)
+        progress_cb(3, 3, 1, 1)
+        time.sleep(0.15)
     return _result(file_path, models_dir, **windowing)
 
 
@@ -129,7 +141,7 @@ def hang_analyze(
     file_path: str,
     models_dir: str,
     *,
-    progress_cb: Callable[[int, int], None] | None = None,
+    progress_cb: Callable[[int, int, int, int], None] | None = None,
     heartbeat_cb: Callable[[str, int, int], None] | None = None,
     **windowing: Any,
 ) -> dict[str, Any]:
@@ -139,7 +151,7 @@ def hang_analyze(
     silence. Contrast ``crawling_analyze``, which is equally slow but keeps reporting.
     """
     if progress_cb is not None:
-        progress_cb(0, 5)
+        progress_cb(0, 5, 0, 0)
     _beat(heartbeat_cb, "fine", 0, 5)
     time.sleep(300.0)
     return _result(file_path, models_dir, **windowing)  # pragma: no cover - killed long before
@@ -149,13 +161,13 @@ def crash_analyze(
     file_path: str,
     models_dir: str,
     *,
-    progress_cb: Callable[[int, int], None] | None = None,
+    progress_cb: Callable[[int, int, int, int], None] | None = None,
     heartbeat_cb: Callable[[str, int, int], None] | None = None,
     **windowing: Any,
 ) -> dict[str, Any]:
     """Raises mid-analysis — for the child error line + nonzero exit path."""
     if progress_cb is not None:
-        progress_cb(0, 3)
+        progress_cb(0, 3, 0, 0)
     msg = "essentia exploded"
     raise RuntimeError(msg)
 
@@ -164,7 +176,7 @@ def noisy_analyze(
     file_path: str,
     models_dir: str,
     *,
-    progress_cb: Callable[[int, int], None] | None = None,
+    progress_cb: Callable[[int, int, int, int], None] | None = None,
     heartbeat_cb: Callable[[str, int, int], None] | None = None,
     **windowing: Any,
 ) -> dict[str, Any]:
@@ -176,8 +188,8 @@ def noisy_analyze(
     os.write(1, b"[ INFO ] MusicExtractor: banner straight to fd 1\n")
     print("stray print from the analysis child")  # deliberate: proves sys.stdout is re-routed too
     if progress_cb is not None:
-        progress_cb(0, 1)
-        progress_cb(1, 1)
+        progress_cb(0, 1, 0, 0)
+        progress_cb(1, 1, 0, 0)
     return _result(file_path, models_dir, **windowing)
 
 
@@ -185,7 +197,7 @@ def crawling_analyze(
     file_path: str,
     models_dir: str,
     *,
-    progress_cb: Callable[[int, int], None] | None = None,
+    progress_cb: Callable[[int, int, int, int], None] | None = None,
     heartbeat_cb: Callable[[str, int, int], None] | None = None,
     **windowing: Any,
 ) -> dict[str, Any]:
@@ -208,7 +220,7 @@ def crawling_analyze(
         if gate_after and i + 1 == gate_after:
             _wait_at_gate()
     if progress_cb is not None:
-        progress_cb(beats, beats)
+        progress_cb(beats, beats, 0, 0)
     return _result(file_path, models_dir, **windowing)
 
 
@@ -231,7 +243,7 @@ def real_analyze(
     file_path: str,
     models_dir: str,
     *,
-    progress_cb: Callable[[int, int], None] | None = None,
+    progress_cb: Callable[[int, int, int, int], None] | None = None,
     heartbeat_cb: Callable[[str, int, int], None] | None = None,
     **windowing: Any,
 ) -> dict[str, Any]:
@@ -250,7 +262,7 @@ def numpy_leaf_analyze(
     file_path: str,
     models_dir: str,
     *,
-    progress_cb: Callable[[int, int], None] | None = None,
+    progress_cb: Callable[[int, int, int, int], None] | None = None,
     heartbeat_cb: Callable[[str, int, int], None] | None = None,
     **windowing: Any,
 ) -> dict[str, Any]:
@@ -276,7 +288,7 @@ def nan_leaf_analyze(
     file_path: str,
     models_dir: str,
     *,
-    progress_cb: Callable[[int, int], None] | None = None,
+    progress_cb: Callable[[int, int, int, int], None] | None = None,
     heartbeat_cb: Callable[[str, int, int], None] | None = None,
     **windowing: Any,
 ) -> dict[str, Any]:
@@ -309,7 +321,7 @@ def long_recording_analyze(
     file_path: str,
     models_dir: str,
     *,
-    progress_cb: Callable[[int, int], None] | None = None,
+    progress_cb: Callable[[int, int, int, int], None] | None = None,
     heartbeat_cb: Callable[[str, int, int], None] | None = None,
     **windowing: Any,
 ) -> dict[str, Any]:

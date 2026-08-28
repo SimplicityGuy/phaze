@@ -428,7 +428,14 @@ async def test_post_analysis_progress_posts_path_verb_and_counts_body(client):  
     assert sent.url.path == f"/api/internal/agent/analysis/{file_id}/progress"
     assert sent.headers["Authorization"] == f"Bearer {_TOKEN}"
     body = json.loads(sent.content)
-    assert body == {"fine_windows_analyzed": 7, "fine_windows_total": 40}, "body carries only the counts (no agent_id/file_id)"
+    # coarse_windows_analyzed/total default to None on an unset field (phaze-bp9kz) and
+    # model_dump(mode="json") serializes an unset optional as an explicit null, not an
+    # omitted key -- the schema's own test coverage (test_agent_analysis.py) covers the
+    # "coarse fields present" shape; this test is about the counts-only, no-agent_id/file_id
+    # body contract, which still holds.
+    assert body == {"fine_windows_analyzed": 7, "fine_windows_total": 40, "coarse_windows_analyzed": None, "coarse_windows_total": None}, (
+        "body carries only the counts (no agent_id/file_id)"
+    )
 
 
 @respx.mock

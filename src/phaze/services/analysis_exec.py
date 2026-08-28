@@ -261,16 +261,17 @@ async def run_analysis_subprocess(
     fine_window_sec: int | None = None,
     coarse_window_sec: int | None = None,
     fine_min_sec: int | None = None,
-    progress_cb: Callable[[int, int], None] | None = None,
+    progress_cb: Callable[[int, int, int, int], None] | None = None,
     heartbeat_cb: Callable[[str, int, int], None] | None = None,
     stall_timeout: float | None = None,
 ) -> dict[str, Any]:
     """Run one exhaustive analysis in the child CLI; return the ``analyze_file`` dict.
 
-    ``progress_cb(analyzed, total)`` is invoked on the event loop per protocol
-    progress line (guarded: an exception inside it is logged and swallowed, mirroring
-    the lanes' progress-never-fails-the-job contract). ``heartbeat_cb(stage, done, total)``
-    is the same contract for the liveness channel — lanes use it to touch their own
+    ``progress_cb(fine_analyzed, fine_total, coarse_analyzed, coarse_total)`` is invoked on
+    the event loop per protocol progress line -- fired by EITHER tier (phaze-bp9kz widened
+    this from fine-only) -- guarded: an exception inside it is logged and swallowed,
+    mirroring the lanes' progress-never-fails-the-job contract. ``heartbeat_cb(stage, done,
+    total)`` is the same contract for the liveness channel — lanes use it to touch their own
     supervisor (e.g. the SAQ job heartbeat) without inventing a second protocol.
 
     ``stall_timeout`` bounds SILENCE, not runtime (D-08): the child is killed only after
@@ -304,7 +305,7 @@ async def _run_analysis_subprocess_traced(
     argv: list[str],
     file_path: str,
     *,
-    progress_cb: Callable[[int, int], None] | None,
+    progress_cb: Callable[[int, int, int, int], None] | None,
     heartbeat_cb: Callable[[str, int, int], None] | None,
     stall_timeout: float | None,
 ) -> dict[str, Any]:
@@ -357,11 +358,11 @@ async def _run_analysis_subprocess_traced(
         nonlocal last_activity
         last_activity = loop.time()
 
-    def _safe_progress(analyzed: int, total: int) -> None:
+    def _safe_progress(fine_analyzed: int, fine_total: int, coarse_analyzed: int, coarse_total: int) -> None:
         if progress_cb is None:
             return
         try:
-            progress_cb(analyzed, total)
+            progress_cb(fine_analyzed, fine_total, coarse_analyzed, coarse_total)
         except Exception:  # the lanes' contract: a progress error never fails the analysis
             log.debug("analysis_progress_cb_error", file=file_path)
 
@@ -396,7 +397,18 @@ async def _run_analysis_subprocess_traced(
                 continue
             kind = message.get("type")
             if kind == "progress":
-                _safe_progress(int(message.get("analyzed", 0)), int(message.get("total", 0)))
+                # coarse_analyzed/coarse_total default to 0 the same defensive way analyzed/
+                # total always have (a malformed or truncated protocol line must never raise
+                # here); the child and this parent are always the SAME image (the child is
+                # execed by this process, never independently deployed), so the pair is
+                # present on every real line -- the default only guards a garbled line, not a
+                # version skew. See ``analysis_child.py``'s protocol docstring (phaze-bp9kz).
+                _safe_progress(
+                    int(message.get("analyzed", 0)),
+                    int(message.get("total", 0)),
+                    int(message.get("coarse_analyzed", 0)),
+                    int(message.get("coarse_total", 0)),
+                )
             elif kind == "heartbeat":
                 last_stage = str(message.get("stage", ""))
                 _safe_heartbeat(last_stage, int(message.get("done", 0)), int(message.get("total", 0)))

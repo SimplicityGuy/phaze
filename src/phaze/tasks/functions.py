@@ -97,17 +97,25 @@ _ANALYZABLE_FILE_TYPES = frozenset(ext.lstrip(".") for ext, cat in EXTENSION_MAP
 # unchanged.
 
 
-async def _post_progress_count(api: PhazeAgentClient, file_id: uuid.UUID, count: tuple[int, int]) -> None:
-    """Best-effort counter-only POST of a single ``(analyzed, total)`` count (Phase 57.1, D-16).
+async def _post_progress_count(api: PhazeAgentClient, file_id: uuid.UUID, count: tuple[int, int, int, int]) -> None:
+    """Best-effort counter-only POST of a single fine+coarse count tuple (Phase 57.1, D-16; widened phaze-bp9kz).
 
     Swallows ANY error (the ``AgentApiError`` hierarchy from the client's single-attempt,
     short-timeout progress path (Phase 99 OBS-01), plus anything unexpected) so a dropped
     progress POST can never fail the analysis job — the completion ``put_analysis`` writes
     the final count regardless, so the bar still reaches 100% from completion.
     """
-    analyzed, total = count
+    fine_analyzed, fine_total, coarse_analyzed, coarse_total = count
     try:
-        await api.post_analysis_progress(file_id, AnalysisProgressPayload(fine_windows_analyzed=analyzed, fine_windows_total=total))
+        await api.post_analysis_progress(
+            file_id,
+            AnalysisProgressPayload(
+                fine_windows_analyzed=fine_analyzed,
+                fine_windows_total=fine_total,
+                coarse_windows_analyzed=coarse_analyzed,
+                coarse_windows_total=coarse_total,
+            ),
+        )
     except Exception:  # best-effort progress; never fail the job (mirrors report_analysis_failed discipline)
         logger.debug("process_file: progress POST dropped (best-effort)", file_id=str(file_id))
 
@@ -138,13 +146,15 @@ async def _run_analysis_with_progress(
     """Run exhaustive analysis in the child subprocess while relaying throttled progress.
 
     Phase 101: the shared driver (``run_analysis_subprocess``) execs the analysis child
-    and invokes ``_progress`` ON the event loop per fine window — the Manager-queue
-    drainer this replaced is gone. Throttling stays parent-side and keeps the drainer's
-    semantics: the FIRST emission always posts (``last_post`` starts ``None`` — a ``0.0``
-    baseline would throttle away the START on a freshly-booted host), later emissions
-    post at most every ``interval_sec``, and the last seen count is flushed on the way
-    out even when the throttle swallowed it (D-04 final flush) — belt-and-suspenders
-    with the completion PUT.
+    and invokes ``_progress`` ON the event loop per fine OR coarse window (phaze-bp9kz
+    widened this from fine-only; WORK-04's original scope cut left the coarse tier -- 50.7
+    to 94.69% of wall clock, duration-dependent, phaze-zaf2l §3b / phaze-bg115 -- invisible
+    on this channel) — the Manager-queue drainer this replaced is gone. Throttling stays
+    parent-side and keeps the drainer's semantics: the FIRST emission always posts
+    (``last_post`` starts ``None`` — a ``0.0`` baseline would throttle away the START on a
+    freshly-booted host), later emissions post at most every ``interval_sec``, and the last
+    seen count is flushed on the way out even when the throttle swallowed it (D-04 final
+    flush) — belt-and-suspenders with the completion PUT.
 
     phaze-w55w1 adds the LIVENESS relay alongside it. The driver's ``heartbeat_cb`` fires on
     every unit of analysis progress (both tiers, chunk decodes, model sweeps) and this bridge
@@ -175,8 +185,8 @@ async def _run_analysis_with_progress(
     if interval_sec > 0.0:
         touch_interval_sec = min(interval_sec, touch_interval_sec)
     last_post: float | None = None
-    last_count: tuple[int, int] | None = None
-    last_posted: tuple[int, int] | None = None
+    last_count: tuple[int, int, int, int] | None = None
+    last_posted: tuple[int, int, int, int] | None = None
     last_touch: float | None = None
     pending: set[asyncio.Task[None]] = set()
 
@@ -187,15 +197,16 @@ async def _run_analysis_with_progress(
         pending.add(task)
         task.add_done_callback(pending.discard)
 
-    def _progress(analyzed: int, total: int) -> None:
+    def _progress(fine_analyzed: int, fine_total: int, coarse_analyzed: int, coarse_total: int) -> None:
         nonlocal last_post, last_count, last_posted
-        last_count = (analyzed, total)
+        count = (fine_analyzed, fine_total, coarse_analyzed, coarse_total)
+        last_count = count
         now = time.monotonic()
         if interval_sec > 0.0 and last_post is not None and (now - last_post) < interval_sec:
             return
         last_post = now
-        last_posted = (analyzed, total)
-        _spawn(_post_progress_count(api, file_id, (analyzed, total)))
+        last_posted = count
+        _spawn(_post_progress_count(api, file_id, count))
 
     def _heartbeat(_stage: str, _done: int, _total: int) -> None:
         nonlocal last_touch
