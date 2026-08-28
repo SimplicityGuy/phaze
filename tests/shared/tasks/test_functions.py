@@ -1367,18 +1367,28 @@ async def test_process_file_rejects_extra_kwargs(mock_pool: AsyncMock) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _fake_pool_emitting(counts: list[tuple[int, int]], result: dict[str, Any] | None = None, raise_exc: BaseException | None = None):  # type: ignore[no-untyped-def]
+def _fake_pool_emitting(counts: list[tuple[int, ...]], result: dict[str, Any] | None = None, raise_exc: BaseException | None = None):  # type: ignore[no-untyped-def]
     """Build a fake ``run_analysis_subprocess`` that invokes ``progress_cb`` then returns/raises.
 
     Mirrors the driver call shape ``run_analysis_subprocess(file_path, models_dir, *,
     progress_cb=..., **kwargs)``; the emitted counts go through the REAL parent-side
     throttle + final-flush bridge in ``_run_analysis_with_progress``.
+
+    Each count is a 2-tuple ``(fine_analyzed, fine_total)`` -- coarse pinned at ``(0, 0)``,
+    i.e. no coarse-tier work reported, which is what every EXISTING call site below wants --
+    or a 4-tuple ``(fine_analyzed, fine_total, coarse_analyzed, coarse_total)`` for a test
+    exercising the coarse-tier bridge explicitly (phaze-bp9kz widened ``progress_cb`` from
+    fine-only, WORK-04, to both tiers).
     """
 
     async def _fake(file_path, models_dir, *, progress_cb=None, **kwargs):  # type: ignore[no-untyped-def]
         assert progress_cb is not None, "the bridge must thread a progress_cb into the driver"
-        for analyzed, total in counts:
-            progress_cb(analyzed, total)
+        for count in counts:
+            if len(count) == 2:
+                analyzed, total = count
+                progress_cb(analyzed, total, 0, 0)
+            else:
+                progress_cb(*count)
         if raise_exc is not None:
             raise raise_exc
         return result if result is not None else MOCK_ANALYSIS
@@ -1388,9 +1398,15 @@ def _fake_pool_emitting(counts: list[tuple[int, int]], result: dict[str, Any] | 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess")
 async def test_process_file_posts_advancing_progress_and_final_flush(mock_pool: MagicMock, _patch_agent_settings: MagicMock) -> None:
-    """The drainer POSTs advancing (analyzed,total) counts and always flushes the final count."""
+    """The drainer POSTs advancing counts for BOTH tiers and always flushes the final count.
+
+    phaze-bp9kz widened ``progress_cb`` from fine-only (WORK-04) to both tiers on this lane
+    too (the SAQ worker, not just the pod). The fine tier finishing (``3, 3, 0, 1``) must not
+    itself look like completion — coarse hasn't started — so the true final is the last
+    4-tuple, once coarse also reaches its total.
+    """
     _patch_agent_settings.return_value.analysis_progress_interval_sec = 0.0  # no throttle: every count posts
-    mock_pool.side_effect = _fake_pool_emitting([(0, 3), (1, 3), (2, 3), (3, 3)])
+    mock_pool.side_effect = _fake_pool_emitting([(0, 3, 0, 1), (1, 3, 0, 1), (2, 3, 0, 1), (3, 3, 0, 1), (3, 3, 1, 1)])
 
     file_id = uuid.uuid4()
     api = AsyncMock()
@@ -1402,14 +1418,20 @@ async def test_process_file_posts_advancing_progress_and_final_flush(mock_pool: 
 
     assert result["status"] == "analyzed"
     api.put_analysis.assert_awaited_once()  # completion path unchanged
-    # Extract the (analyzed, total) of every progress POST.
-    posted = [(call.args[1].fine_windows_analyzed, call.args[1].fine_windows_total) for call in api.post_analysis_progress.await_args_list]
+    posted = [
+        (call.args[1].fine_windows_analyzed, call.args[1].fine_windows_total, call.args[1].coarse_windows_analyzed, call.args[1].coarse_windows_total)
+        for call in api.post_analysis_progress.await_args_list
+    ]
     assert posted, "at least one mid-flight progress POST must land"
-    analyzed_seq = [a for a, _t in posted]
-    assert analyzed_seq == sorted(analyzed_seq), "progress counts must be non-decreasing"
-    assert all(total == 3 for _a, total in posted), "denominator must be the fine_windows_total"
-    assert posted[0][0] == 0, "the START count (0, N) is posted first"
-    assert posted[-1] == (3, 3), "the final count is flushed"
+    fine_seq = [fa for fa, _ft, _ca, _ct in posted]
+    coarse_seq = [ca for _fa, _ft, ca, _ct in posted]
+    assert fine_seq == sorted(fine_seq), "fine progress counts must be non-decreasing"
+    assert coarse_seq == sorted(coarse_seq), "coarse progress counts must be non-decreasing"
+    assert all(ft == 3 and ct == 1 for _fa, ft, _ca, ct in posted), "both denominators must be the natural totals"
+    assert posted[0][0] == 0, "the START count is posted first"
+    # 100% (both tiers done) is unreachable before the LAST POST.
+    assert not any(fa == 3 and ca == 1 for fa, _ft, ca, _ct in posted[:-1])
+    assert posted[-1] == (3, 3, 1, 1), "the final count is flushed"
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess")
@@ -1476,7 +1498,7 @@ async def test_process_file_progress_post_failure_swallowed(mock_pool: MagicMock
 
 
 def test_analysis_child_path_imports_no_agent_client() -> None:
-    """Only an (int,int) count crosses into the child: analysis.py imports no httpx/agent_client."""
+    """Only plain int counts cross into the child: analysis.py imports no httpx/agent_client."""
     from pathlib import Path
 
     import phaze.services.analysis as analysis_mod

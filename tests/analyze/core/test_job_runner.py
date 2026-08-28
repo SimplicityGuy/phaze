@@ -1206,12 +1206,23 @@ def test_no_monoloader_source_guard():  # type: ignore[no-untyped-def]
 
 
 def _emitting_analyze(counts):  # type: ignore[no-untyped-def]
-    """Build a fake ``analyze_file`` that invokes its ``progress_cb`` for each count, then returns."""
+    """Build a fake ``analyze_file`` that invokes its ``progress_cb`` for each count, then returns.
+
+    Each count is a 2-tuple ``(fine_analyzed, fine_total)`` — coarse is pinned at ``(0, 0)``,
+    i.e. this stub run reports no coarse-tier work, which is what every EXISTING call site
+    below wants — or a 4-tuple ``(fine_analyzed, fine_total, coarse_analyzed, coarse_total)``
+    for a test that exercises the coarse-tier bridge explicitly (phaze-bp9kz widened
+    ``progress_cb`` from fine-only, WORK-04, to both tiers).
+    """
 
     def _analyze(*_a, progress_cb=None, **_k):  # type: ignore[no-untyped-def]
         assert progress_cb is not None, "the k8s bridge must thread a progress_cb into analyze_file"
-        for analyzed, total in counts:
-            progress_cb(analyzed, total)
+        for count in counts:
+            if len(count) == 2:
+                analyzed, total = count
+                progress_cb(analyzed, total, 0, 0)
+            else:
+                progress_cb(*count)
         return _fake_result()
 
     return _analyze
@@ -1526,7 +1537,16 @@ async def test_step_events_preserve_machine_keys_and_add_human_fields(job_env, m
 
 @respx.mock
 async def test_progress_lines_throttled_and_final_always_emitted(job_env, monkeypatch):  # type: ignore[no-untyped-def]
-    """Console progress lines share the POST throttle; the final N/N (100%) line always emits (OBS-02)."""
+    """Console progress lines share the POST throttle; the final 100% line always emits (OBS-02).
+
+    phaze-bp9kz widened ``progress_cb`` from fine-only (WORK-04) to both tiers, so this run
+    includes a call where the FINE pair alone hits its total (``5, 5, 0, 2``) while the coarse
+    tier has not started -- that call must NOT read as final (acceptance 2: a 100% reading is
+    unreachable while the coarse tier is still running). ``percent`` is the COMBINED
+    fine+coarse window-count fraction, not the fine tier's own (acceptance 4).
+    """
+    import json as _json
+
     import structlog
 
     # A large interval: only the first (unthrottled) count and the final count get through.
@@ -1543,14 +1563,29 @@ async def test_progress_lines_throttled_and_final_always_emitted(job_env, monkey
         return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA}),
     )
     respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
-    respx.post(f"{base}/api/internal/agent/analysis/{file_id}/progress").mock(
+    progress_route = respx.post(f"{base}/api/internal/agent/analysis/{file_id}/progress").mock(
         return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
     )
     respx.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
         return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
     )
 
-    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_emitting_analyze([(0, 5), (1, 5), (2, 5), (5, 5)])))
+    monkeypatch.setattr(
+        jr,
+        "run_analysis_subprocess",
+        _driver_seam(
+            _emitting_analyze(
+                [
+                    (0, 5, 0, 2),
+                    (1, 5, 0, 2),
+                    (2, 5, 0, 2),
+                    (5, 5, 0, 2),  # fine tier done, coarse tier not yet begun -- NOT final
+                    (5, 5, 1, 2),  # coarse mid-flight
+                    (5, 5, 2, 2),  # both tiers done -- the true final
+                ]
+            )
+        ),
+    )
 
     with structlog.testing.capture_logs() as logs, pytest.raises(SystemExit) as exc:
         await jr.run()
@@ -1559,14 +1594,28 @@ async def test_progress_lines_throttled_and_final_always_emitted(job_env, monkey
     assert exc.value.code == 0
     progress = [e for e in logs if e["event"] == "job_runner_progress"]
     # Throttled: NOT one line per emitted count -- only the first + the final pass the gate.
+    # The fine-done-but-coarse-not-done call in the middle is exactly what the throttle
+    # swallows here, which is itself evidence for acceptance 2.
     assert len(progress) == 2
     assert progress[0]["fine_windows_analyzed"] == 0
+    assert progress[0]["coarse_windows_analyzed"] == 0
+    assert progress[0]["coarse_windows_total"] == 2
     assert progress[0]["percent"] == 0.0
-    # The final count ALWAYS emits (is_final bypasses the throttle) at 100%.
+    # The final count ALWAYS emits (is_final bypasses the throttle) at 100% -- and only once
+    # BOTH tiers report done.
     final = progress[-1]
     assert final["fine_windows_analyzed"] == 5
     assert final["fine_windows_total"] == 5
+    assert final["coarse_windows_analyzed"] == 2
+    assert final["coarse_windows_total"] == 2
     assert final["percent"] == 100.0
+
+    # OBS-02's invariant, extended: the console line and the web progress POST share the SAME
+    # throttle/counter, so the POST body must show the identical final combined state.
+    post_bodies = [_json.loads(c.request.content) for c in progress_route.calls]
+    assert post_bodies[-1]["coarse_windows_analyzed"] == 2
+    assert post_bodies[-1]["coarse_windows_total"] == 2
+    assert len(post_bodies) == len(progress), "console lines and POSTs must never diverge in count"
 
 
 @respx.mock

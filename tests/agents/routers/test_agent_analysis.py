@@ -813,6 +813,35 @@ def test_progress_schema_requires_both_counts() -> None:
         AnalysisProgressPayload(fine_windows_total=40)  # type: ignore[call-arg]
 
 
+def test_progress_schema_coarse_fields_default_none() -> None:
+    """coarse_windows_analyzed/total are optional (phaze-bp9kz) -- a body with only the two
+    fine fields still validates, matching an older job pod's rolling-upgrade payload."""
+    from phaze.schemas.agent_analysis import AnalysisProgressPayload
+
+    payload = AnalysisProgressPayload(fine_windows_analyzed=0, fine_windows_total=40)
+    assert payload.coarse_windows_analyzed is None
+    assert payload.coarse_windows_total is None
+
+
+def test_progress_schema_accepts_coarse_fields() -> None:
+    """A body carrying all four counts validates -- the widened wire shape (phaze-bp9kz)."""
+    from phaze.schemas.agent_analysis import AnalysisProgressPayload
+
+    payload = AnalysisProgressPayload(fine_windows_analyzed=40, fine_windows_total=40, coarse_windows_analyzed=3, coarse_windows_total=8)
+    assert payload.coarse_windows_analyzed == 3
+    assert payload.coarse_windows_total == 8
+
+
+def test_progress_schema_rejects_negative_coarse_count() -> None:
+    """coarse_windows_analyzed is ge=0 too, same as the fine pair."""
+    from pydantic import ValidationError
+
+    from phaze.schemas.agent_analysis import AnalysisProgressPayload
+
+    with pytest.raises(ValidationError):
+        AnalysisProgressPayload(fine_windows_analyzed=0, fine_windows_total=40, coarse_windows_analyzed=-1, coarse_windows_total=8)
+
+
 def test_progress_schema_response_exposes_agent_and_file_id() -> None:
     """AnalysisProgressResponse mirrors AnalysisWriteResponse: {agent_id, file_id}."""
     from phaze.schemas.agent_analysis import AnalysisProgressResponse
@@ -858,6 +887,74 @@ async def test_progress_post_start_then_bump_single_row_advancing(
     assert len(rows) == 1, "progress POSTs must upsert ONE row per file_id, never append"
     assert rows[0].fine_windows_analyzed == 17, "counter must advance to the latest bump"
     assert rows[0].fine_windows_total == 40
+
+
+@pytest.mark.asyncio
+async def test_progress_post_upserts_coarse_counts_when_present(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """A body carrying the coarse pair upserts it onto the SAME row (phaze-bp9kz).
+
+    Mirrors ``test_progress_post_start_then_bump_single_row_advancing`` but for the coarse
+    tier: acceptance 1 (coarse progress observable via the POST channel) discharged at the
+    router boundary.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        r_start = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/progress",
+            json={"fine_windows_analyzed": 40, "fine_windows_total": 40, "coarse_windows_analyzed": 0, "coarse_windows_total": 8},
+        )
+        assert r_start.status_code == 200, r_start.text
+
+        r_bump = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/progress",
+            json={"fine_windows_analyzed": 40, "fine_windows_total": 40, "coarse_windows_analyzed": 3, "coarse_windows_total": 8},
+        )
+        assert r_bump.status_code == 200, r_bump.text
+
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    assert row.coarse_windows_analyzed == 3, "the coarse counter must advance to the latest bump"
+    assert row.coarse_windows_total == 8
+    assert row.fine_windows_analyzed == 40
+
+
+@pytest.mark.asyncio
+async def test_progress_post_without_coarse_fields_does_not_clobber_prior_coarse_counts(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """A body carrying only the fine pair leaves any existing coarse counts untouched.
+
+    The rolling-upgrade tolerance ``AnalysisProgressPayload``'s docstring documents: an
+    older job pod POSTing only ``fine_windows_*`` must not overwrite the coarse counters a
+    later, upgraded run of the same file already reported with a false ``0``.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        r_coarse = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/progress",
+            json={"fine_windows_analyzed": 40, "fine_windows_total": 40, "coarse_windows_analyzed": 3, "coarse_windows_total": 8},
+        )
+        assert r_coarse.status_code == 200, r_coarse.text
+
+        # A fine-only POST -- the shape an older pod image sends -- must leave coarse alone.
+        r_fine_only = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/progress",
+            json={"fine_windows_analyzed": 40, "fine_windows_total": 40},
+        )
+        assert r_fine_only.status_code == 200, r_fine_only.text
+
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    assert row.coarse_windows_analyzed == 3, "a fine-only POST must not clobber the coarse counters with a false 0"
+    assert row.coarse_windows_total == 8
 
 
 @pytest.mark.asyncio

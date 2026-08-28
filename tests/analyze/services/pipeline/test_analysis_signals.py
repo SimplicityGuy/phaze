@@ -81,25 +81,31 @@ def test_unset_signals_are_a_total_noop() -> None:
     guards into one seam.
     """
     for signals in (NO_SIGNALS, AnalysisSignals()):
-        signals.progress(0, 10)
-        signals.progress(10, 10)
+        signals.progress(0, 10, 0, 3)
+        signals.progress(10, 10, 3, 3)
         signals.beat("fine_decode", 0, 10)
         signals.beat("coarse", 10, 10)
 
 
 def test_signals_forward_every_argument_verbatim_on_both_channels() -> None:
-    """Every argument reaches the underlying callback unchanged, on both channels."""
-    progress_calls: list[tuple[int, int]] = []
+    """Every argument reaches the underlying callback unchanged, on both channels.
+
+    `progress` carries both tiers' counts since phaze-bp9kz widened it from fine-only
+    (WORK-04) -- all four ints must reach the callback verbatim, in order.
+    """
+    progress_calls: list[tuple[int, int, int, int]] = []
     beat_calls: list[tuple[str, int, int]] = []
     signals = AnalysisSignals(
-        progress_cb=lambda analyzed, total: progress_calls.append((analyzed, total)),
+        progress_cb=lambda fine_analyzed, fine_total, coarse_analyzed, coarse_total: progress_calls.append(
+            (fine_analyzed, fine_total, coarse_analyzed, coarse_total)
+        ),
         heartbeat_cb=lambda stage, done, total: beat_calls.append((stage, done, total)),
     )
 
-    signals.progress(3, 7)
+    signals.progress(3, 7, 1, 4)
     signals.beat("coarse_model", 5, 34)
 
-    assert progress_calls == [(3, 7)]
+    assert progress_calls == [(3, 7, 1, 4)]
     assert beat_calls == [("coarse_model", 5, 34)]
 
 
@@ -125,7 +131,7 @@ def test_analyze_file_builds_one_signals_object_shared_by_both_tiers() -> None:
         captured["coarse"] = signals
         return [], 0
 
-    def _progress_cb(_analyzed: int, _total: int) -> None:
+    def _progress_cb(_fine_analyzed: int, _fine_total: int, _coarse_analyzed: int, _coarse_total: int) -> None:
         return None
 
     def _heartbeat_cb(_stage: str, _done: int, _total: int) -> None:

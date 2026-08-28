@@ -888,31 +888,55 @@ def test_analyze_file_decodes_each_tier_in_bounded_chunks(_mock_es: MagicMock, m
 @patch("phaze.services.analysis._get_labels")
 @patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
 def test_analyze_file_progress_cb_start_then_bumps(_mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
-    """progress_cb fires START(0, natural_total) then non-decreasing bumps up to len(fine).
+    """progress_cb fires START then non-decreasing bumps through BOTH tiers (phaze-bp9kz).
 
-    600s @ 30s fine windows = 20 natural windows; under the default cap none are strided,
-    so the START carries (0, 20) and the final bump carries (20, 20). Every call's
-    denominator is the natural pre-stride count — identical to the completion PUT's
-    fine_windows_total (the denominator invariant the in-flight bar depends on).
+    600s @ 30s fine windows = 20 natural fine windows; @ 180s coarse windows = 4 natural
+    coarse windows (180/180/180/60). WORK-04 (Phase 57.1) originally scoped this callback to
+    the fine tier alone; phaze-bp9kz widened it so a consumer can tell "not done yet" from
+    "100% of the whole job" without guessing at the (duration-dependent, phaze-bg115)
+    fine/coarse wall-clock split. So: the very first call already carries BOTH natural totals
+    (0, 20, 0, 4) — coarse_total is known before either tier starts, pure window-geometry
+    arithmetic — the fine tier bumps only its own pair up to (20, 20, 0, 4), the coarse tier
+    then bumps its own pair up from that frozen fine pair, and the FINAL call is (20, 20, 4,
+    4). Every call's two denominators are the natural pre-stride counts — identical to the
+    completion PUT's fine_windows_total/coarse_windows_total (the denominator invariant the
+    in-flight bar depends on, now covering both tiers).
     """
     mock_get_labels.side_effect = _mock_labels_file
-    calls: list[tuple[int, int]] = []
+    calls: list[tuple[int, int, int, int]] = []
 
-    result = analyze_file("/fake/audio.mp3", "/fake/models", progress_cb=lambda a, t: calls.append((a, t)))
+    result = analyze_file(
+        "/fake/audio.mp3",
+        "/fake/models",
+        progress_cb=lambda fa, ft, ca, ct: calls.append((fa, ft, ca, ct)),
+    )
 
-    natural_total = result["fine_windows_total"]
+    fine_total = result["fine_windows_total"]
+    coarse_total = result["coarse_windows_total"]
     assert calls, "progress_cb must be invoked at least for the START signal"
-    # START signal first.
-    assert calls[0] == (0, natural_total)
-    # Every call carries the same denominator == the completion PUT's fine_windows_total.
-    assert all(total == natural_total for _a, total in calls)
-    # analyzed is non-decreasing and never exceeds the analyzed count.
-    analyzed_seq = [a for a, _t in calls]
-    assert analyzed_seq == sorted(analyzed_seq)
-    assert max(analyzed_seq) == result["fine_windows_analyzed"]
+    # START signal first: coarse_total is already known even though coarse hasn't begun.
+    assert calls[0] == (0, fine_total, 0, coarse_total)
+    # Every call carries the same two denominators == the completion PUT's totals.
+    assert all(ft == fine_total and ct == coarse_total for _fa, ft, _ca, ct in calls)
+    # Both analyzed counts are non-decreasing across the whole call sequence.
+    fine_seq = [fa for fa, _ft, _ca, _ct in calls]
+    coarse_seq = [ca for _fa, _ft, ca, _ct in calls]
+    assert fine_seq == sorted(fine_seq)
+    assert coarse_seq == sorted(coarse_seq)
+    # The fine tier runs to completion (frozen at its final value) before ANY coarse bump —
+    # a 100% reading (both tiers done) is unreachable while the coarse tier is still running.
+    first_coarse_bump = next(i for i, (_fa, _ft, ca, _ct) in enumerate(calls) if ca > 0)
+    assert all(fa == fine_total for fa, _ft, _ca, _ct in calls[first_coarse_bump:]), (
+        "the fine pair must be frozen at its final value for every coarse-tier call"
+    )
+    assert not any(fa == fine_total and ca == coarse_total for fa, _ft, ca, _ct in calls[:-1]), (
+        "100% (both tiers done) must not be reachable before the LAST call"
+    )
     # A bump landed after the START (mid-flight progress was emitted, not just START).
     assert len(calls) >= 2
-    assert calls[-1] == (result["fine_windows_analyzed"], natural_total)
+    # The final call is the true 100% reading: both tiers' analyzed counts hit their totals.
+    assert calls[-1] == (result["fine_windows_analyzed"], fine_total, result["coarse_windows_analyzed"], coarse_total)
+    assert calls[-1] == (fine_total, fine_total, coarse_total, coarse_total)
 
 
 @patch("phaze.services.analysis._probe_duration_sec", return_value=600.0)
@@ -923,7 +947,7 @@ def test_analyze_file_progress_cb_default_none_is_inert(_mock_es: MagicMock, moc
     mock_get_labels.side_effect = _mock_labels_file
 
     with_none = analyze_file("/fake/audio.mp3", "/fake/models")
-    with_cb = analyze_file("/fake/audio.mp3", "/fake/models", progress_cb=lambda _a, _t: None)
+    with_cb = analyze_file("/fake/audio.mp3", "/fake/models", progress_cb=lambda _fa, _ft, _ca, _ct: None)
 
     # Same progress-count contract regardless of whether a callback was supplied.
     for key in _COVERAGE_KEYS:
