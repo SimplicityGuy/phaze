@@ -17,7 +17,8 @@ channel stays machine-clean. This closes the capture/routing TODO the in-process
 
 Protocol — one JSON object per line on the saved protocol channel:
 
-    {"type": "progress", "analyzed": N, "total": M}          per fine-window bump
+    {"type": "progress", "analyzed": N, "total": M,           per fine OR coarse window bump
+     "coarse_analyzed": C, "coarse_total": T}
     {"type": "heartbeat", "stage": S, "done": N, "total": M} per liveness tick
     {"type": "result", "result": {...}}                      terminal success line → exit 0
     {"type": "error", "message": "..."}                      terminal failure line → exit 1
@@ -27,11 +28,22 @@ aggregates + ``windows`` + the four progress counts). It already crosses
 HTTP JSON to the control plane today, so the protocol's JSON round-trip introduces
 no representation change (byte-identical windowed output — success criterion 4).
 
+**phaze-bp9kz widened ``progress`` from fine-only to both tiers.** ``analyzed``/``total``
+keep their original meaning (the fine tier's own counts, unchanged so a rolling upgrade
+that still reads only these two keys degrades to the old behaviour rather than breaking);
+``coarse_analyzed``/``coarse_total`` are additive fields carrying the coarse tier's own
+counts, 0 until the coarse tier begins. Both totals are known and constant for the whole
+run from the first line (pure window-geometry arithmetic, computed before either tier
+starts — see ``services/analysis.py::_analyze_file_traced``), so a consumer can always
+tell "not done yet" from "100% of the whole job" without guessing at the duration-
+dependent fine/coarse wall-clock split (phaze-zaf2l §3b / phaze-bg115).
+
 ``heartbeat`` is the LIVENESS line (phaze-w55w1). It is deliberately a SECOND line type
-rather than a widening of ``progress``: ``progress`` is the UI bar's channel and is
-fine-tier-only by design (WORK-04), while liveness must also cover the coarse pass, the
-per-chunk decodes, and the model sweeps — every stage of an exhaustive analysis that can
-run for many minutes without completing a fine window. The parent resets its stall
+rather than a widening of ``progress`` (WORK-04's original reasoning for a separate
+channel still holds even though ``progress`` itself is no longer fine-tier-only): liveness
+must also cover the per-chunk decodes and the 34 model sweeps — every stage of an
+exhaustive analysis that can run for many minutes without completing a WINDOW, whereas
+``progress`` only fires on a completed window in either tier. The parent resets its stall
 watchdog on either line and forwards only ``progress`` to the bar, so the two channels
 stay independent and neither has to lie for the other.
 
@@ -139,8 +151,17 @@ def run(args: argparse.Namespace, protocol: IO[str]) -> int:
     try:
         target = _load_target()
 
-        def _progress(analyzed: int, total: int) -> None:
-            _emit(protocol, {"type": "progress", "analyzed": analyzed, "total": total})
+        def _progress(fine_analyzed: int, fine_total: int, coarse_analyzed: int, coarse_total: int) -> None:
+            _emit(
+                protocol,
+                {
+                    "type": "progress",
+                    "analyzed": fine_analyzed,
+                    "total": fine_total,
+                    "coarse_analyzed": coarse_analyzed,
+                    "coarse_total": coarse_total,
+                },
+            )
 
         def _heartbeat(stage: str, done: int, total: int) -> None:
             _emit(protocol, {"type": "heartbeat", "stage": stage, "done": done, "total": total})

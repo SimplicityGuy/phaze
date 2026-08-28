@@ -327,17 +327,31 @@ async def _safe_post_progress(client: Any, file_id: uuid.UUID, payload: Analysis
 
 
 def _make_progress_cb(client: Any, file_id: uuid.UUID, interval_sec: float) -> tuple[Any, set[asyncio.Task[None]]]:
-    """Build the sync ``progress_cb`` the analysis-child driver invokes per FINE window.
+    """Build the sync ``progress_cb`` the analysis-child driver invokes per fine OR coarse window.
 
     Phase 101: ``analyze_file`` runs in a real child process, so this callback fires ON the
     event loop (from the driver's protocol pump) — the POST is a fire-and-forget loop task
     (strong-ref'd in the returned ``pending`` set so it is never GC'd mid-flight), no
     cross-thread scheduling needed. The caller drains ``pending`` after analysis so the
     one-shot process never exits with POSTs still in flight. Throttled to ``interval_sec``
-    (``monotonic()``-keyed); the START count and the final count (``analyzed >= total``)
-    always post so the bar gets an early total and a final value even inside the throttle
-    window. Any exception is swallowed so a progress failure can never escape into the
-    analysis outcome (KJOB-04 contract).
+    (``monotonic()``-keyed); the START count and the final count always post so the bar gets
+    an early total and a final value even inside the throttle window. Any exception is
+    swallowed so a progress failure can never escape into the analysis outcome (KJOB-04
+    contract).
+
+    **phaze-bp9kz widened the callback from fine-only to both tiers** (WORK-04's original
+    fine-only scope cut left the coarse tier — 50.7 to 94.69% of wall clock, duration-
+    dependent, phaze-zaf2l §3b / phaze-bg115 — invisible on this channel). ``is_final`` now
+    requires BOTH tiers done, so a 100% reading is unreachable while the coarse tier is still
+    running (acceptance 2); ``percent`` is the COMBINED fine+coarse window-count fraction —
+    a count-based combined fraction, not a wall-clock-weighted guess at the (duration-
+    dependent, per phaze-bg115) tier split, so it never bakes in one file's measured ratio as
+    a constant (acceptance 4). The wire payload keeps the fine and coarse counters SEPARATE
+    (``AnalysisProgressPayload``'s four fields, matching the ``analysis`` table's four
+    columns) rather than sending the combined number under the ``fine_windows_*`` names —
+    doing that would corrupt the documented denominator invariant (the in-flight
+    ``fine_windows_total`` must equal the completion PUT's), so ``percent`` is a DERIVED
+    display value computed here, never a wire field.
     """
     # Seed to -inf, NOT 0.0: time.monotonic()'s epoch is boot-relative, so on a freshly booted
     # host (a one-shot pod ALWAYS is) with uptime < interval_sec, `now - 0.0` would be < the
@@ -347,14 +361,22 @@ def _make_progress_cb(client: Any, file_id: uuid.UUID, interval_sec: float) -> t
     state = {"last_post": float("-inf")}
     pending: set[asyncio.Task[None]] = set()
 
-    def _cb(analyzed: int, total: int) -> None:
+    def _cb(fine_analyzed: int, fine_total: int, coarse_analyzed: int, coarse_total: int) -> None:
         try:
             now = time.monotonic()
-            is_final = total > 0 and analyzed >= total
+            # Both tiers must be done -- a tier with a 0 natural window count (theoretically
+            # possible for coarse on a sub-window-length file) is trivially "done" by this
+            # comparison, never a false completion for the tier that actually has work.
+            is_final = fine_analyzed >= fine_total and coarse_analyzed >= coarse_total
             if interval_sec > 0.0 and not is_final and (now - state["last_post"]) < interval_sec:
                 return
             state["last_post"] = now
-            payload = AnalysisProgressPayload(fine_windows_analyzed=analyzed, fine_windows_total=total)
+            payload = AnalysisProgressPayload(
+                fine_windows_analyzed=fine_analyzed,
+                fine_windows_total=fine_total,
+                coarse_windows_analyzed=coarse_analyzed,
+                coarse_windows_total=coarse_total,
+            )
             # Fire-and-forget loop task (we're already ON the loop); the pending set keeps a
             # strong reference so the task is never garbage-collected before it runs.
             task = asyncio.get_running_loop().create_task(_safe_post_progress(client, file_id, payload))
@@ -363,14 +385,18 @@ def _make_progress_cb(client: Any, file_id: uuid.UUID, interval_sec: float) -> t
             # OBS-02 (phaze-sfbx.3): the console progress line shares the SAME throttle gate and
             # counter as the UI progress POST above -- one throttle, one counter -- so the tailed
             # pod log and the web progress bar can never diverge. `is_final` bypasses the throttle,
-            # so a final "N/N (100%)" line is ALWAYS emitted. This log sits INSIDE the same swallow
+            # so a final "100%" line is ALWAYS emitted. This log sits INSIDE the same swallow
             # contract below: a rendering failure never escapes the analysis thread (KJOB-04).
-            percent = round(100.0 * analyzed / total, 1) if total > 0 else 0.0
+            combined_total = fine_total + coarse_total
+            combined_analyzed = fine_analyzed + coarse_analyzed
+            percent = round(100.0 * combined_analyzed / combined_total, 1) if combined_total > 0 else 0.0
             log.info(
                 "job_runner_progress",
                 file_id=str(file_id),
-                fine_windows_analyzed=analyzed,
-                fine_windows_total=total,
+                fine_windows_analyzed=fine_analyzed,
+                fine_windows_total=fine_total,
+                coarse_windows_analyzed=coarse_analyzed,
+                coarse_windows_total=coarse_total,
                 percent=percent,
             )
         except Exception:  # a progress-cb error must never escape into the analysis outcome
