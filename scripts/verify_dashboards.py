@@ -38,8 +38,8 @@ from pathlib import Path
 import re
 import sys
 import time
-import urllib.error
-import urllib.request
+
+import httpx
 
 
 DASHBOARD_DIR = Path(__file__).resolve().parent.parent / "dashboards"
@@ -56,26 +56,33 @@ def emit(text: str = "") -> None:
 
 
 def _request(base: str, path: str, payload: dict | None = None, method: str | None = None) -> tuple[int, dict]:
-    url = f"{base.rstrip('/')}{path}"
-    data = json.dumps(payload).encode() if payload is not None else None
+    """One Grafana API call, returning ``(status, parsed body)``.
+
+    ``httpx`` rather than ``urllib.request``: it is the repo's HTTP client, it speaks only
+    http(s) -- so ruff S310 / bandit B310 / semgrep's dynamic-urllib rule have nothing to flag,
+    the class of concern being ``urlopen``'s support for ``file:`` and custom schemes -- and it
+    does not raise on 4xx/5xx, which removes the HTTPError branch this used to need. The scheme
+    check below is kept for the error message, not as a security control.
+
+    A non-JSON body is returned as ``{"raw": ...}`` for ANY status; the urllib version did that
+    only on the error path and would raise on a malformed 2xx. Uniform is the intent.
+    """
     if not base.startswith(("http://", "https://")):
-        # Bandit B310's actual concern: urlopen honours file:/ and custom schemes. The base
-        # comes from --grafana on this operator's own command line, so refusing anything but
-        # http(s) here is the check rather than a suppression of it.
         msg = f"--grafana must be an http(s) URL, got {base!r}"
         raise SystemExit(msg)
-    request = urllib.request.Request(url, data=data, method=method or ("POST" if data else "GET"))  # noqa: S310  # nosec B310 - scheme checked immediately above
-    request.add_header("Content-Type", "application/json")
+    response = httpx.request(
+        method or ("POST" if payload is not None else "GET"),
+        f"{base.rstrip('/')}{path}",
+        json=payload,
+        timeout=30,
+    )
+    body = response.text
+    if not body:
+        return response.status_code, {}
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310  # nosec B310 - scheme checked above
-            body = response.read().decode()
-            return response.status, (json.loads(body) if body else {})
-    except urllib.error.HTTPError as error:
-        body = error.read().decode()
-        try:
-            return error.code, json.loads(body)
-        except json.JSONDecodeError:
-            return error.code, {"raw": body}
+        return response.status_code, json.loads(body)
+    except json.JSONDecodeError:
+        return response.status_code, {"raw": body}
 
 
 def ensure_unrelated_datasource(base: str, prometheus_url: str) -> None:

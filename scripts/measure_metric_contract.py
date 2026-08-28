@@ -31,8 +31,9 @@ import subprocess  # nosec B404 - runs the analysis in its own process so its pe
 import sys
 import tempfile
 import time
-import urllib.request
 import wave
+
+import httpx
 
 
 _SOURCE_RATE = 8000
@@ -78,12 +79,20 @@ print("PHAZE_RUN " + json.dumps({
 
 
 def scrape(endpoint: str) -> str:
+    """GET the collector's Prometheus exposition.
+
+    ``httpx`` rather than ``urllib.request`` deliberately: it is what the rest of this repo
+    uses, and it speaks only http(s). ``urlopen`` additionally honours ``file:`` and custom
+    schemes, which is what ruff S310 / bandit B310 / semgrep's dynamic-urllib rule all flag --
+    so switching client REMOVES that class rather than suppressing three warnings about it.
+    The scheme check below is kept for the error message, not as a security control.
+    """
     if not endpoint.startswith(("http://", "https://")):
         msg = f"--collector-metrics must be an http(s) URL, got {endpoint!r}"
         raise SystemExit(msg)
-    with urllib.request.urlopen(endpoint, timeout=15) as response:  # noqa: S310  # nosec B310 - scheme checked above
-        decoded: str = response.read().decode()
-        return decoded
+    response = httpx.get(endpoint, timeout=15)
+    response.raise_for_status()
+    return response.text
 
 
 def parse(text: str) -> tuple[dict[str, str], collections.Counter[str], dict[str, list[tuple[float, float]]]]:
