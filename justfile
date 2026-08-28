@@ -1056,6 +1056,10 @@ test-db-release name *flags:
     # after `just test-db-seats` shows you why, if you know better.
     name="$(bash scripts/derive-seat-name.sh "{{name}}")"
     echo "Seat '{{name}}' -> identifier '${name}'."
+    # phaze-robzi.5: the script exits 5 (not 0) when the derived identifier holds no Redis index --
+    # e.g. a wrong-guessed name, hyphen vs. underscore. `set -euo pipefail` above means that non-zero
+    # exit stops THIS recipe right here, so the trailing paragraph below never runs for a no-op --
+    # it is reachable only after a REAL release, which is what it describes.
     bash scripts/redis-seat-registry.sh release \
         --redis-container "{{test_redis_container}}" \
         --pg-container "{{test_db_container}}" \

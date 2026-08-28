@@ -148,7 +148,13 @@
 #                                   [--apply] [--include-unstamped]
 #
 # Exit codes: 0 ok, 1 error, 2 usage, 3 capacity exhausted (allocate), 4 refused because the seat
-# is in use (release).
+# is in use (release), 5 nothing to release -- the named seat holds no Redis logical DB (release).
+# 5 is deliberately its own code rather than folded into 0: `release` already gives every other
+# outcome (a real free, a refusal, exhaustion) a distinct code, and a caller that only checked "was
+# it 0" is exactly the phaze-o8sie shape -- a wrong-guessed name read the honest "nothing to
+# release" prose as success. Scripted callers can `case $? in 5) ... ;; esac` without parsing
+# English; a human reading the terminal still sees the same prose, on stderr like every other
+# non-zero release outcome.
 set -euo pipefail
 
 readonly REGISTRY_KEY="phaze:test:redis-db-index"
@@ -663,8 +669,15 @@ cmd_release() {
   cap="$(effective_capacity)"
   raw="$(registry_cli HGET "$REGISTRY_KEY" "$seat")"
   if [ -z "$raw" ]; then
-    echo "🟢 '${seat}' holds no Redis logical DB; nothing to release."
-    return 0
+    # Exit 5, not 0 (phaze-robzi.5): a name that resolves to no allocated seat is not a release,
+    # and the observed failure was exactly a wrong-guessed name -- hyphen vs. underscore -- read as
+    # success because this used to return 0. Point at the two non-destructive ways to find the real
+    # identifier or free what is actually stale, same as the exhaustion message does.
+    echo "🟡 '${seat}' holds no Redis logical DB; nothing was released." >&2
+    echo "   If this name was a guess, \`just test-db-seats\` lists every real identifier and the" >&2
+    echo "   evidence behind it. \`just test-db-reclaim\` (dry run) / \`just test-db-reclaim --apply\`" >&2
+    echo "   frees whatever is genuinely stale by reading liveness, not by trusting a name." >&2
+    exit 5
   fi
 
   # Sanitize exactly as classify_seats does, and for the same reason (phaze-nbfuc). The registry
