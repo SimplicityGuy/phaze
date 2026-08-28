@@ -252,7 +252,9 @@ def analysis_pipeline() -> dict[str, Any]:
             (0, 1, 12, 8),
             description=(
                 "The signal that did not exist before this epic. The UI progress channel is fine-tier-only by design, "
-                "so a running analysis reported nothing at all for the 94.69% of its wall clock spent in the coarse tier."
+                "so a running analysis reported nothing at all for the coarse tier -- 94.69% of wall clock on the 4,761.835 s file "
+                "phaze-zaf2l measured. That share is DURATION-DEPENDENT: on a 10 h 03 m file the coarse tier is 50.7% and the "
+                "fine tier 49.3% (phaze-bg115). The blind spot is the same either way; only its size moves."
             ),
             unit="/min",
             options=_TS,
@@ -433,7 +435,9 @@ def analysis_cost() -> dict[str, Any]:
             [_target(_histogram_share("phaze_analysis_tier_duration_seconds", by="tier"), "{{tier}}")],
             (12, 25, 12, 8),
             description=(
-                "phaze-zaf2l measured 5.31% fine / 94.69% coarse on one production run by differencing log timestamps. "
+                "phaze-zaf2l measured 5.31% fine / 94.69% coarse by differencing log timestamps on ONE 4,761.835 s file. "
+                "The split moves with DURATION -- 7.9%/92.1% at 59 m 39 s, 49.3%/50.7% at 10 h 03 m -- because the coarse tier is "
+                "linear in windows while the fine tier carries a large fixed per-chunk cost (phaze-bg115). "
                 "This is the same split, continuously and without reading a pod log."
             ),
             unit="s",

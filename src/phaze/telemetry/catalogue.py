@@ -378,7 +378,9 @@ BACKLOG_QUEUE = LabelSpec(
 
 
 CATALOGUE: tuple[MetricSpec, ...] = (
-    # --- analysis: the 94.69% blind spot this epic exists to open up --------------
+    # --- analysis: the coarse-tier blind spot this epic exists to open up ---------
+    # 94.69% of wall clock on the 4,761.835 s file phaze-zaf2l measured; the share is
+    # DURATION-DEPENDENT (49.3% fine at 10 h 03 m -- phaze-bg115). The blindness is not.
     MetricSpec(
         name="phaze.analysis.run.duration",
         kind="histogram",
@@ -393,7 +395,8 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         unit="s",
         description=(
             "Wall clock of one complete tier. The fine/coarse split this measures is the "
-            "5.31% / 94.69% figure phaze-zaf2l had to reconstruct from log timestamps."
+            "5.31% / 94.69% figure phaze-zaf2l had to reconstruct from log timestamps for ONE 4,761.835 s file. "
+            "That split is duration-dependent (phaze-bg115); this metric measures whatever the current file actually is."
         ),
         labels=(TIER,),
         buckets=BUCKETS_RUN,

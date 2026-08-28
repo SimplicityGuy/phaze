@@ -330,7 +330,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "phaze-zaf2l measured 5.31% fine / 94.69% coarse on one production run by differencing log timestamps. This is the same split, continuously and without reading a pod log.",
+      "description": "phaze-zaf2l measured 5.31% fine / 94.69% coarse by differencing log timestamps on ONE 4,761.835 s file. The split moves with DURATION -- 7.9%/92.1% at 59 m 39 s, 49.3%/50.7% at 10 h 03 m -- because the coarse tier is linear in windows while the fine tier carries a large fixed per-chunk cost (phaze-bg115). This is the same split, continuously and without reading a pod log.",
       "fieldConfig": {
         "defaults": {
           "custom": {
