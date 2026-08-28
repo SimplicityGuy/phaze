@@ -694,12 +694,23 @@ def test_free_seat_folds_the_registry_delete_and_the_flush_into_one_atomic_scrip
     assert _redis(registry, "-n", str(reused), "DBSIZE") == "1", "nothing from the finished `release` call may still act on this index"
 
 
-def test_release_of_an_unknown_seat_is_a_no_op(registry: str) -> None:
-    """Releasing a seat that holds nothing succeeds quietly — the recipe is safe to re-run."""
+def test_release_of_an_unknown_seat_is_distinguishable_from_a_real_release(registry: str) -> None:
+    """A no-op release is scriptable by exit code, not only by parsing prose (phaze-robzi.5).
+
+    Before this fix, releasing a name that resolved to no allocated seat returned 0 and printed
+    reassuring-looking prose — indistinguishable from a real release to any caller checking only
+    the exit code. The observed incident (epic phaze-o8sie) was exactly a wrong-guessed name
+    (hyphen vs. underscore derive to different identifiers by design): the command exited 0, the
+    dispatcher recorded the seat as released, and the real seat stayed allocated. A no-op must also
+    say what to do next, since the failure mode IS a wrong guess at the name.
+    """
     result = _run(registry, "release", "--seat", "seat_absent", "--capacity", str(_CAPACITY))
 
-    assert result.returncode == 0, result.stderr
-    assert "nothing to release" in result.stdout
+    assert result.returncode == 5, result.stderr
+    assert result.returncode != 0
+    assert "nothing was released" in result.stderr
+    assert "just test-db-seats" in result.stderr, "point at the command that lists real identifiers"
+    assert "just test-db-reclaim" in result.stderr, "point at the command that reads liveness instead of a guessed name"
 
 
 def test_release_of_a_corrupt_registry_value_does_not_read_it_as_a_regex(registry: str, tmp_path: Path) -> None:
@@ -1327,3 +1338,42 @@ def test_the_teardown_guards_point_at_reclaim_instead() -> None:
     for recipe in ("test-db-down:", "test-db:"):
         body = _recipe_body(recipe)
         assert "test-db-reclaim" in body, f"`{recipe}`'s guard should offer reclaim before a teardown"
+
+
+def test_a_no_op_release_through_the_real_recipe_never_prints_the_left_in_place_paragraph(registry: str) -> None:
+    """End to end through ``just test-db-release`` itself, not just the script (phaze-robzi.5).
+
+    The "Postgres databases ... were left in place / re-running test-db-for reuses them" paragraph
+    lives in the JUSTFILE recipe, not in the script -- ``cmd_release`` never prints it. Proving it
+    is absent after a no-op therefore means running the real recipe. ``--set`` points the recipe's
+    container variables at this module's throwaway Redis and at a Postgres container name nothing
+    answers to; that is safe here because the no-op path returns before any Postgres evidence is
+    gathered (see ``cmd_release``'s empty-``raw`` branch), so the shared ``phaze-test-db`` is never
+    touched and never needs to be.
+    """
+    just = shutil.which("just")
+    assert just is not None
+    result = subprocess.run(  # noqa: S603 - fixed executable; every argument is a test literal or the throwaway container name
+        [
+            just,
+            "--set",
+            "test_redis_container",
+            registry,
+            "--set",
+            "test_db_container",
+            _ABSENT_PG_CONTAINER,
+            "test-db-release",
+            "never-allocated-seat-xyz",
+        ],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    combined = result.stdout + result.stderr
+
+    assert result.returncode != 0, combined
+    assert "were left in place" not in combined, f"the real-release paragraph must not appear after a no-op: {combined}"
+    assert "nothing was released" in combined, combined
+    assert "just test-db-seats" in combined, combined
+    assert "just test-db-reclaim" in combined, combined
