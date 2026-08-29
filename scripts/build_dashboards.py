@@ -86,16 +86,14 @@ _TEMPLATING: dict[str, Any] = {
             # Lets one Grafana show several phaze deployments without editing a query.
             # `job` is the Prometheus label the collector derives from `service.name`.
             #
-            # Seeded from ANY live phaze series, not from an analysis metric, and with an
-            # explicit allValue (phaze-cxg9v). The original seed
-            # (phaze_analysis_run_duration_seconds_count) does not exist until the first
-            # analysis COMPLETES, and with includeAll but no allValue Grafana expands
-            # "All" to the union of the options — an empty option set interpolated
-            # job=~"" and every panel in all four dashboards rendered "No data" on an
-            # idle deployment even though the service-health series existed. Hit in
-            # production on homelab minutes after the 2026.8.6 rollout; the live
-            # verification (verify_dashboards.py) could not catch it because its corpus
-            # had completed analyses, so the seed metric existed there.
+            # phaze-cxg9v: seeded from ANY phaze series, not from an analysis-only metric.
+            # `phaze_analysis_run_duration_seconds_count` does not exist until an analysis
+            # has completed, so on an idle deployment the old seed left the option set
+            # empty and Grafana interpolated "All" as job=~"" -- a no-match that blanked
+            # every panel, including Service health panels whose own series (http_server,
+            # db, saq) were present the whole time. `allValue` closes the same hole for a
+            # deployment with literally zero phaze series: "All" becomes job=~".+", which
+            # still matches nothing rather than turning into an interpolation-level bug.
             "allValue": ".+",
             "current": {},
             "datasource": DATASOURCE_REF,

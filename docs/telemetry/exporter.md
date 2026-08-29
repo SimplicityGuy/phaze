@@ -200,7 +200,14 @@ Both are artifacts you may adopt; neither is deployed from this repo.
   importing all four into a running **Grafana 12.3.1** against a datasource whose uid was
   chosen to be unrelated to anything this repo provisions, and running every panel's PromQL
   through the query API: **30 of 30 panels returned real data**
-  (`measurements/dashboard-verification.md`).
+  (`measurements/dashboard-verification.md`). That measurement did NOT catch phaze-cxg9v (the
+  `$job` variable seeded from an analysis-only metric blanked every panel on an idle
+  deployment): the panel-query step strips `job=~"$job"` out of each expr before querying, so
+  it never resolved the variable itself, and the corpus behind the 30/30 run already held
+  completed analyses, so the seed metric happened to exist. `scripts/verify_dashboards.py` now
+  also resolves the `$job` variable's own query directly against an idle instance (service
+  metrics present, no analysis metrics) and fails if the option set is empty or `allValue` is
+  missing — run it after `--warm-service-metrics`, before any analysis has completed.
 - **Alert rules** — `alerts/phaze-alerts.yml`, three of them, with four candidates
   documented for *not* being shipped. `docs/telemetry/alerting.md` has the reasoning and the
   `promtool` commands.
