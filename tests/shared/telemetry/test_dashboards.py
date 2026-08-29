@@ -149,6 +149,48 @@ def test_no_local_identifier_in_committed_dashboard_json(path: Path) -> None:
 
 
 @pytest.mark.parametrize("path", DASHBOARDS, ids=lambda p: p.name)
+def test_the_job_variable_is_seeded_from_any_live_phaze_series(path: Path) -> None:
+    """phaze-cxg9v: the ``$job`` variable used to be seeded from
+    ``phaze_analysis_run_duration_seconds_count`` alone -- a metric that does not exist until
+    an analysis has completed. On an idle deployment that left the option set empty, and
+    Grafana interpolated the default "All" selection as ``job=~""``, which blanked every
+    panel in every dashboard, including Service health panels whose own backing series
+    (``phaze_http_server_*``, ``phaze_db_*``, ``phaze_saq_*``) were live the whole time.
+
+    This is the honest CI-side discharge of that regression: there is no live Grafana in this
+    suite to render a panel against, so what is asserted here is structural -- the seed
+    selector matches ANY phaze series (a strict superset of the old single-metric seed, so a
+    busy deployment is unaffected) rather than one that only exists post-analysis. The live
+    render was verified downstream against a real Grafana + Prometheus (homelab commit
+    47db9fa, 2026-08-29): with this seed, ``$job`` enumerates the live jobs and Service health
+    renders data on an idle deployment.
+    """
+    dashboard = json.loads(path.read_text(encoding="utf-8"))
+    variables = {var["name"]: var for var in dashboard["templating"]["list"]}
+    assert "job" in variables, f"{path.name} has no $job variable"
+    job = variables["job"]
+    query = job["query"]["query"] if isinstance(job["query"], dict) else job["query"]
+    assert query == job["definition"], f"{path.name}: $job's query and definition have drifted apart"
+    assert re.search(r'label_values\(\{__name__=~"phaze_\.\+"\},\s*job\)', query), (
+        f"{path.name}: $job must be seeded from any live phaze_* series (a metric that always exists once "
+        f"anything is running), not a single analysis-only metric that is absent on an idle deployment: {query!r}"
+    )
+
+
+@pytest.mark.parametrize("path", DASHBOARDS, ids=lambda p: p.name)
+def test_the_job_variable_carries_allvalue(path: Path) -> None:
+    """phaze-cxg9v: without ``allValue``, Grafana's "All" for a `multi: true` variable with an
+    EMPTY option set interpolates to ``job=~""`` -- a regex that matches every series with no
+    `job` label at all, which is none of them, rather than every series. `allValue: ".+"`
+    makes "All" degrade to "match everything" even with zero phaze series present (acceptance
+    2): still no data, but not an interpolation-level bug on top of a legitimately idle system.
+    """
+    dashboard = json.loads(path.read_text(encoding="utf-8"))
+    variables = {var["name"]: var for var in dashboard["templating"]["list"]}
+    assert variables["job"].get("allValue") == ".+", f'{path.name}: $job must carry allValue: ".+" so "All" does not interpolate to a no-match'
+
+
+@pytest.mark.parametrize("path", DASHBOARDS, ids=lambda p: p.name)
 def test_every_explore_link_payload_is_valid_json(path: Path) -> None:
     """The `/explore?left=` payload is JSON *inside* a JSON string, and the TraceQL query
     inside it carries its own double quotes -- three quoting levels, so a hand-written

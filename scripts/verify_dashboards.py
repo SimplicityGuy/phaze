@@ -18,7 +18,12 @@ So this script:
    query that does not parse, or names a metric that does not exist, is a failure here
    rather than an empty panel someone notices in a month;
 5. **reports which panels returned real data**, which is acceptance 5 -- a dashboard that
-   renders only in theory is not done.
+   renders only in theory is not done;
+6. **resolves the `$job` variable's own query against an idle deployment** (phaze-cxg9v) --
+   step 4 strips every `job=~"$job"` filter out of a panel's PromQL before querying it, which
+   never exercises the variable's own resolution, and that gap is exactly how the 30/30
+   measurement missed a regression where the variable's seed metric did not exist yet and
+   Grafana interpolated "All" as a no-match, blanking every panel.
 
 Not a pytest: it needs a live Grafana and a Prometheus holding a real analysis run, which
 CI has neither of. ``tests/shared/telemetry/test_dashboards.py`` holds the CI-runnable half
@@ -38,6 +43,7 @@ from pathlib import Path
 import re
 import sys
 import time
+import urllib.parse
 
 import httpx
 
@@ -178,6 +184,53 @@ def check_dashboard(base: str, path: Path) -> tuple[int, int, list[str], list[st
         if not panel_had_data:
             empty.append(str(panel.get("title", "?")))
     return len(panels), with_data, problems, empty
+
+
+def check_job_variable_idle(base: str) -> list[str]:
+    """The idle-deployment check (phaze-cxg9v): exercise the ``$job`` variable's OWN query.
+
+    ``check_dashboard()`` strips every ``job=~"$job"`` filter out of a panel's PromQL before
+    querying it (see the ``.replace()`` chain above) -- correct for testing a panel's query in
+    isolation, but it means the panel loop never asks Grafana to resolve the ``$job`` variable
+    itself. That is exactly how the 30/30 measurement in ``dashboard-verification.md`` missed
+    this bug: it ran against a corpus that already held completed analyses, so
+    ``phaze_analysis_run_duration_seconds_count`` existed and the old seed query
+    (``label_values(phaze_analysis_run_duration_seconds_count, job)``) happened to resolve. A
+    fresh deployment spends its first hours or days with zero completed analyses -- service
+    metrics (``phaze_http_server_*`` / ``phaze_db_*`` / ``phaze_saq_*``) present, analysis
+    metrics absent -- and nothing here exercised that shape.
+
+    Run this against an instance that has NOT had an analysis run (e.g. right after
+    ``warm_service_metrics()``, which drives HTTP/DB/SAQ traffic but no analysis). Reads the
+    seed straight out of the committed dashboard JSON rather than hard-coding it a second
+    time, so a future change to the seed query is exercised here without an edit.
+    """
+    dashboard = json.loads((DASHBOARD_DIR / "phaze-service-health.json").read_text(encoding="utf-8"))
+    job_var = next(v for v in dashboard["templating"]["list"] if v["name"] == "job")
+    query = job_var["query"]["query"] if isinstance(job_var["query"], dict) else job_var["query"]
+    match = re.search(r"label_values\((.*), job\)", query)
+    selector = match.group(1) if match else query
+    # The selector carries `{`, `"`, `~`, `=`, `.` -- all reserved in a query string -- so it
+    # MUST be percent-encoded here, unlike every other call in this file, which sends a JSON
+    # body instead. An unencoded `{__name__=~"phaze_.+"}` in the URL is a malformed request.
+    encoded_selector = urllib.parse.quote(selector, safe="")
+    status, body = _request(base, f"/api/datasources/proxy/uid/{UNRELATED_UID}/api/v1/label/job/values?match[]={encoded_selector}", method="GET")
+
+    problems: list[str] = []
+    if status >= 300:
+        problems.append(f"$job variable query HTTP {status}: {body}")
+        return problems
+    values = body.get("data", [])
+    if not values:
+        problems.append(
+            "$job variable resolved to an EMPTY option set on an idle deployment (service metrics "
+            "present, no analysis metrics) -- this is the phaze-cxg9v regression shape: Grafana "
+            'interpolates "All" as job=~"" and every panel, including ones whose own series exist, '
+            "goes blank."
+        )
+    if job_var.get("allValue") != ".+":
+        problems.append('$job variable carries no allValue=".+" -- "All" interpolates to a no-match selector on zero phaze series')
+    return problems
 
 
 def warm_service_metrics(otlp_endpoint: str, instance: str) -> None:
@@ -322,6 +375,15 @@ def main() -> int:
         warm_service_metrics(args.otlp_endpoint, args.instance)
 
     failures = 0
+    emit()
+    idle_problems = check_job_variable_idle(args.grafana)
+    if idle_problems:
+        failures += len(idle_problems)
+        emit("## idle-deployment check ($job variable, phaze-cxg9v)")
+        for problem in idle_problems:
+            emit(f"- FAIL: {problem}")
+    else:
+        emit("# idle-deployment check ($job variable, phaze-cxg9v): OK")
     emit()
     emit("| dashboard | panels | panels returning real data | verdict |")
     emit("| --- | ---: | ---: | --- |")

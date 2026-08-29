@@ -85,16 +85,26 @@ _TEMPLATING: dict[str, Any] = {
         {
             # Lets one Grafana show several phaze deployments without editing a query.
             # `job` is the Prometheus label the collector derives from `service.name`.
+            #
+            # phaze-cxg9v: seeded from ANY phaze series, not from an analysis-only metric.
+            # `phaze_analysis_run_duration_seconds_count` does not exist until an analysis
+            # has completed, so on an idle deployment the old seed left the option set
+            # empty and Grafana interpolated "All" as job=~"" -- a no-match that blanked
+            # every panel, including Service health panels whose own series (http_server,
+            # db, saq) were present the whole time. `allValue` closes the same hole for a
+            # deployment with literally zero phaze series: "All" becomes job=~".+", which
+            # still matches nothing rather than turning into an interpolation-level bug.
+            "allValue": ".+",
             "current": {},
             "datasource": DATASOURCE_REF,
-            "definition": "label_values(phaze_analysis_run_duration_seconds_count, job)",
+            "definition": 'label_values({__name__=~"phaze_.+"}, job)',
             "hide": 0,
             "includeAll": True,
             "label": "Service",
             "multi": True,
             "name": "job",
             "options": [],
-            "query": {"query": "label_values(phaze_analysis_run_duration_seconds_count, job)", "refId": "job"},
+            "query": {"query": 'label_values({__name__=~"phaze_.+"}, job)', "refId": "job"},
             "refresh": 2,
             "regex": "",
             "skipUrlSync": False,

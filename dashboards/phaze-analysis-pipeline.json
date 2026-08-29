@@ -439,12 +439,13 @@
         "type": "datasource"
       },
       {
+        "allValue": ".+",
         "current": {},
         "datasource": {
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(phaze_analysis_run_duration_seconds_count, job)",
+        "definition": "label_values({__name__=~\"phaze_.+\"}, job)",
         "hide": 0,
         "includeAll": true,
         "label": "Service",
@@ -452,7 +453,7 @@
         "name": "job",
         "options": [],
         "query": {
-          "query": "label_values(phaze_analysis_run_duration_seconds_count, job)",
+          "query": "label_values({__name__=~\"phaze_.+\"}, job)",
           "refId": "job"
         },
         "refresh": 2,
