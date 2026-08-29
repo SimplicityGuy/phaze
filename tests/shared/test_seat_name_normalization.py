@@ -19,11 +19,15 @@ Two properties matter as much as "hyphens no longer explode":
   raw seat name always resolving to the same derived identifier. The derivation uses a
   deterministic hash (sha256 of the raw name), not a random one, specifically to preserve this;
   :func:`test_derivation_is_idempotent_across_repeated_calls` pins it.
-* **No hyphen/underscore collision** -- normalizing ``-`` to ``_`` means ``my-seat`` and
-  ``my_seat`` would otherwise collapse onto the identical identifier and silently share ONE
-  Postgres database and ONE Redis logical DB -- the exact shared-database defect (phaze-fwo7) this
-  whole mechanism exists to prevent. The derived name disambiguates them with a hash of the raw,
-  pre-normalization name; :func:`test_hyphen_and_underscore_variants_do_not_collide` pins it.
+* **No hyphen/underscore/dot collision** -- normalizing ``-`` and ``.`` to ``_`` means
+  ``my-seat``, ``my_seat`` and ``my.seat`` would otherwise collapse onto the identical identifier
+  and silently share ONE Postgres database and ONE Redis logical DB -- the exact shared-database
+  defect (phaze-fwo7) this whole mechanism exists to prevent. The derived name disambiguates them
+  with a hash of the raw, pre-normalization name; :func:`test_hyphen_and_underscore_variants_do_not_collide`
+  and :func:`test_hyphen_underscore_and_dot_variants_do_not_collide` pin it. Dots are accepted at
+  all (phaze-robzi.4) because every beadhive epic-child bead id contains one (``phaze-o8sie.3``),
+  and CLAUDE.md's own isolation instruction, ``just test-db-for <bead-id>``, requires the id to be
+  usable verbatim; :func:`test_dotted_bead_id_succeeds_with_a_safe_identifier` pins it.
 * **The 63-byte Postgres identifier limit** -- an unquoted identifier longer than 63 bytes
   (``NAMEDATALEN - 1``) is not rejected, it is SILENTLY TRUNCATED, so two long seat names that
   agree on their first 63 characters would otherwise land on one database with no error at all --
@@ -103,6 +107,35 @@ def test_hyphenated_name_succeeds_with_a_safe_identifier(raw_name: str) -> None:
     assert "-" not in derived, f"derived identifier {derived!r} still contains a hyphen"
 
 
+# --- phaze-robzi.4: a dotted bead id must succeed too, not just a hyphenated one -----------------
+
+
+@pytest.mark.parametrize(
+    "raw_name",
+    [
+        "phaze-o8sie.3",  # a real beadhive epic-child bead id, dot and all
+        "phaze-o8sie.9",
+        "a.b",  # minimal dotted case
+    ],
+)
+def test_dotted_bead_id_succeeds_with_a_safe_identifier(raw_name: str) -> None:
+    """Every beadhive epic-child bead id contains a dot, and CLAUDE.md's own isolation
+    instruction is `just test-db-for <bead-id>` -- the id must be usable verbatim rather than
+    forcing every seat to hand-hyphenate it (the observed cost: nine seats, two divergent
+    improvisations, phaze-robzi.4).
+    """
+    derived = _derive_ok(raw_name)
+    assert _SAFE_UNQUOTED_IDENTIFIER.match(derived), f"{derived!r} derived from {raw_name!r} is not a safe unquoted Postgres identifier"
+    assert "." not in derived, f"derived identifier {derived!r} still contains a dot"
+
+
+def test_dotted_name_derivation_is_idempotent_across_repeated_calls() -> None:
+    """Criterion 3: re-running `test-db-for` for the same dotted bead id must reuse one seat."""
+    first = _derive_ok("phaze-o8sie.3")
+    second = _derive_ok("phaze-o8sie.3")
+    assert first == second
+
+
 # --- invalid input is rejected with a message stating the rule, not a raw parse error -----------
 
 
@@ -110,7 +143,7 @@ def test_hyphenated_name_succeeds_with_a_safe_identifier(raw_name: str) -> None:
     "raw_name",
     [
         "Bad-Name",  # uppercase
-        "bad.name",  # disallowed punctuation
+        "bad!name",  # disallowed punctuation -- '.' is now accepted, but not arbitrary punctuation
         "1leading-digit",  # must start with a letter
         "bad name",  # whitespace
         "bad;drop table",  # a genuinely hostile name must be refused, not sanitized-and-run
@@ -170,6 +203,25 @@ def test_hyphen_and_underscore_variants_are_each_individually_idempotent() -> No
     """The collision-avoidance discriminator must not itself reintroduce nondeterminism."""
     assert _derive_ok("my-seat") == _derive_ok("my-seat")
     assert _derive_ok("my_seat") == _derive_ok("my_seat")
+
+
+def test_hyphen_underscore_and_dot_variants_do_not_collide() -> None:
+    """Criterion 2 (phaze-robzi.4): 'phaze-o8sie-3', 'phaze_o8sie_3' and 'phaze-o8sie.3' all
+    normalize to the same text but must derive THREE DISTINCT identifiers, because the hash is
+    taken over the raw, pre-normalization string. A fix that folded dots into the existing
+    hyphen/underscore class WITHOUT keeping the original in the hash would reintroduce exactly
+    the silent collision the hash exists to prevent -- and would do so specifically for the
+    dotted form every beadhive epic-child bead id takes (`phaze-o8sie.3`).
+    """
+    hyphenated = _derive_ok("phaze-o8sie-3")
+    underscored = _derive_ok("phaze_o8sie_3")
+    dotted = _derive_ok("phaze-o8sie.3")
+
+    derived = {hyphenated, underscored, dotted}
+    assert len(derived) == 3, f"expected three distinct identifiers, got {derived}"
+    for value in derived:
+        assert _SAFE_UNQUOTED_IDENTIFIER.match(value)
+        assert value.startswith("phaze_o8sie_3_"), value
 
 
 # --- the 63-byte Postgres identifier limit: silently truncated, never rejected -------------------
