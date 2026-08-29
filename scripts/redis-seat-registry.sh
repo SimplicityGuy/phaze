@@ -24,8 +24,16 @@
 # Redis isolation altogether -- i.e. straight back into phaze-fwo7.
 #
 # So: allocation now takes the LOWEST FREE index rather than the next one, and there are two
-# non-destructive ways to make an index free again (`release`, `reclaim`) that never touch the
-# shared containers.
+# ways to make an index free again (`release`, `reclaim`) that never touch the shared CONTAINERS.
+#
+# CONTRACT CHANGE (phaze-robzi.1): `reclaim --apply` is no longer Postgres-non-destructive. A
+# freed seat's REDIS entries are all that named its `phaze_<name>_test` /
+# `phaze_<name>_migrations_test` pair -- once `free_seat` deletes them, those two databases have no
+# owner left at all, which is exactly how 652 orphaned databases (6974 MB) accumulated on the
+# shared harness with no tool able to reap them short of a full `test-db-down`. So `reclaim --apply`
+# now drops a freed seat's OWN two databases in the same operation that frees its Redis index (see
+# `drop_seat_databases`, called from `free_seat`'s success path). `release` is UNCHANGED and stays
+# the non-destructive-of-Postgres counterpart it always was -- see its own header comment.
 #
 # THE LIVENESS TEST (the part that must not be guessed at)
 #
@@ -490,7 +498,10 @@ cmd_allocate() {
 
 # Hand an index back: wipe the seat's keys so the next holder starts clean, then drop the three
 # registry fields. Touches nothing outside logical DB `index` and the registry hashes -- the
-# containers, every other seat's keys, and every Postgres database are untouched.
+# containers and every OTHER seat's keys and databases are untouched. As of phaze-robzi.1, a
+# `drop_pg=1` caller (only `cmd_reclaim`'s `--apply` loop passes it) ALSO drops this seat's own two
+# Postgres databases on the success path below (see `drop_seat_databases`) -- `cmd_release`, force
+# or not, never passes it, so a plain `release` still touches no Postgres database at all.
 #
 # Freeing is CONDITIONAL, and that is the whole of phaze-r311e. `reclaim` classifies every seat
 # ONCE and then destroys them one at a time from that snapshot; a 5-seat sweep measured 5.46s
@@ -600,12 +611,32 @@ raise_highwater() {
   registry_cli EVAL "$RAISE_HIGHWATER_LUA" 2 "$HIGHWATER_KEY" "$REGISTRY_KEY" "$cap" >/dev/null
 }
 
+# Drop a freed seat's own two Postgres databases (phaze-robzi.1). Reached ONLY from free_seat's
+# success path below, and only when the caller asked for it (`drop_pg=1`) -- in practice only
+# `cmd_reclaim`'s `--apply` loop ever passes that, never `cmd_release`. `name` is already the
+# DERIVED identifier (the registry key, straight from `derive-seat-name.sh`), so this composes the
+# two database names directly rather than re-deriving anything.
+#
+# Best-effort per database rather than all-or-nothing: a failure to drop one must not be reported
+# as though the seat were still allocated (the Redis EVAL above already succeeded, atomically, by
+# the time this runs), and must not stop the sweep from moving on to the next seat.
+drop_seat_databases() {
+  local name="$1" db
+  for db in "phaze_${name}_test" "phaze_${name}_migrations_test"; do
+    if docker exec "$pg_container" psql -U phaze -d postgres -tAc "DROP DATABASE IF EXISTS \"${db}\"" >/dev/null 2>&1; then
+      echo "   dropped Postgres database '${db}'"
+    else
+      echo "⚠️  could not drop Postgres database '${db}' for freed seat '${name}' -- check ${pg_container}'s logs; its Redis index was freed regardless." >&2
+    fi
+  done
+}
+
 # Set by free_seat when it declines, so the caller can say which guard objected.
 free_seat_refusal=""
 
 # Returns 0 having freed the seat, or non-zero having touched nothing at all.
 free_seat() {
-  local name="$1" index="$2" cap="$3" expected_seen="$4" raw="$5"
+  local name="$1" index="$2" cap="$3" expected_seen="$4" raw="$5" drop_pg="${6:-0}"
   free_seat_refusal=""
 
   # Index 0 is the registry's own connection, so it is always "live" and must never be tested here;
@@ -617,6 +648,35 @@ free_seat() {
   if [ "$index" -ge 1 ] && seat_is_redis_live "$index" "$redis_live"; then
     free_seat_refusal="a Redis client connected to DB ${index} since classification (L1)"
     return 1
+  fi
+
+  # phaze-robzi.1: when this free will also drop the seat's own Postgres databases, re-derive the
+  # L2 evidence FRESH here too -- the identical re-read-before-acting shape as L1 just above, and
+  # for the identical reason: `reclaim` classifies every seat ONCE from a stale snapshot (a 5-seat
+  # sweep already measures 5.46s end to end), and a suite that started running in that gap must not
+  # have its databases dropped out from under it.
+  #
+  # `pg_evidence` can land on `obtained` (a container answered) or on `unavailable`/`waived`
+  # (`--no-postgres-check` with no reachable Postgres, or no `--pg-container` passed at all --
+  # `cmd_reclaim`'s own top-level `require_postgres_evidence` already refuses the WHOLE sweep
+  # outright on `unavailable` evidence before classify_seats ever runs, unless the operator opted
+  # out with `--no-postgres-check`; this is only reached once that gate has already been satisfied
+  # or waived). A LIVE backend on `obtained` evidence refuses the whole free -- the Redis EVAL below
+  # is never reached -- because leaving the Redis index allocated while the database it names has
+  # already vanished would be the exact orphan-accumulation mechanism this bead exists to close.
+  # Anything short of `obtained` evidence does NOT refuse the free: it only means the drop step
+  # below is skipped for this seat (never a blind `DROP DATABASE`), and the Redis half proceeds
+  # exactly as `reclaim --no-postgres-check` has always behaved.
+  local drop_databases_this_seat=0
+  if [ "$drop_pg" -eq 1 ]; then
+    collect_postgres_evidence
+    if [ "$pg_evidence" = "obtained" ]; then
+      if seat_is_postgres_live "$name" "$pg_live"; then
+        free_seat_refusal="a Postgres backend connected to phaze_${name}_test or its migrations database since classification (L2)"
+        return 1
+      fi
+      drop_databases_this_seat=1
+    fi
   fi
 
   # `cap` rides along as a 4th ARGV so the script itself can decide, atomically alongside the
@@ -643,6 +703,12 @@ free_seat() {
       return 1
       ;;
   esac
+
+  if [ "$drop_databases_this_seat" -eq 1 ]; then
+    drop_seat_databases "$name"
+  elif [ "$drop_pg" -eq 1 ]; then
+    echo "⚠️  freed '${name}''s Redis index without dropping its Postgres databases: L2 evidence was not obtained (${pg_evidence}). Its two databases are now orphaned; a later, evidenced sweep will still find them." >&2
+  fi
 }
 
 # Unconditional. Only `release --force` reaches this: naming a seat AND passing --force is the
@@ -745,7 +811,10 @@ cmd_release() {
   # "$cap"` below), leaves the registry untouched. There is deliberately no separate raise_highwater
   # call on this path (phaze-4xsbe): a second, non-atomic EVAL here would reopen the exact window
   # this fix closes -- refuse first, mutate never.
-  if ! free_seat "$seat" "$index" "$cap" "$seen_at" "$raw"; then
+  # drop_pg=0, explicitly: `release` -- force or not -- never drops a Postgres database. Only
+  # `cmd_reclaim`'s `--apply` loop passes 1 (phaze-robzi.1's operator-approved contract change is
+  # scoped to reclaim alone).
+  if ! free_seat "$seat" "$index" "$cap" "$seen_at" "$raw" 0; then
     echo "❌ Did not release '${seat}': ${free_seat_refusal}." >&2
     echo "   Nothing was cleared. Re-run \`just test-db-seats\` to see where the seat stands now." >&2
     exit 4
@@ -939,6 +1008,13 @@ cmd_reclaim() {
     return 0
   fi
 
+  # A prediction for the messages below, not a gate: `free_seat` re-derives this FRESH per seat
+  # (immediately before it would drop anything) and is the actual authority. This is `obtained`
+  # precisely when `free_seat`'s own drop step will run at all -- see its comment -- so it is what
+  # tells the dry run and the per-seat success line whether to mention dropping databases.
+  local will_drop_databases=0
+  [ "$pg_evidence" != "obtained" ] || will_drop_databases=1
+
   # Before the first entry is destroyed, not after: a sweep is the one moment that can erase the
   # evidence of which indices have been handed out, and an index freed by a sweep is precisely the
   # one a shell somewhere is most likely to still have exported (phaze-08sww). A dry run mutates
@@ -957,17 +1033,27 @@ cmd_reclaim() {
     fi
     if [ "$apply" -ne 1 ]; then
       freed=$((freed + 1))
-      echo "•  would reclaim DB ${index} from '${name}' — ${reason}"
+      if [ "$will_drop_databases" -eq 1 ]; then
+        echo "•  would reclaim DB ${index} from '${name}' (would also drop phaze_${name}_test, phaze_${name}_migrations_test) — ${reason}"
+      else
+        echo "•  would reclaim DB ${index} from '${name}' (its 2 Postgres databases would NOT be dropped: L2 evidence is ${pg_evidence}) — ${reason}"
+      fi
       continue
     fi
     raw="$(decode_field "$raw")"
     seen="$(decode_field "$seen")"
     # The verdict above was reached before any of this loop's other seats were touched. free_seat
     # re-derives its own evidence and declines if the seat moved underneath the snapshot; a decline
-    # counts as kept, because the seat is still held (phaze-r311e).
-    if free_seat "$name" "$index" "$cap" "$seen" "$raw"; then
+    # counts as kept, because the seat is still held (phaze-r311e). `1` here is drop_pg: reclaim's
+    # `--apply` is the only caller that ever asks free_seat to also drop the seat's own databases
+    # (phaze-robzi.1) -- `release`'s call site above always passes 0.
+    if free_seat "$name" "$index" "$cap" "$seen" "$raw" 1; then
       freed=$((freed + 1))
-      echo "✅ reclaimed DB ${index} from '${name}' — ${reason}"
+      if [ "$will_drop_databases" -eq 1 ]; then
+        echo "✅ reclaimed DB ${index} from '${name}' (and dropped phaze_${name}_test, phaze_${name}_migrations_test) — ${reason}"
+      else
+        echo "✅ reclaimed DB ${index} from '${name}' — ${reason}"
+      fi
     else
       raced=$((raced + 1))
       echo "🟥 left '${name}' alone: ${free_seat_refusal}. Nothing was cleared."
@@ -976,7 +1062,12 @@ cmd_reclaim() {
 
   echo ""
   if [ "$apply" -eq 1 ]; then
-    echo "🧹 reclaimed ${freed} seat(s); left ${kept} in-use seat(s) alone. The shared containers were not touched."
+    if [ "$will_drop_databases" -eq 1 ]; then
+      echo "🧹 reclaimed ${freed} seat(s) (Redis index freed and its own 2 Postgres databases dropped); left ${kept} in-use seat(s) alone."
+    else
+      echo "🧹 reclaimed ${freed} seat(s) (Redis index freed; Postgres databases NOT dropped -- L2 evidence is ${pg_evidence}); left ${kept} in-use seat(s) alone."
+    fi
+    echo "   Every other Postgres database, and both containers, were left alone."
     if [ "$raced" -gt 0 ]; then
       echo "${raced} seat(s) classified as stale came back to life during the sweep and were left alone."
     fi

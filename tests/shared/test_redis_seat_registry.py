@@ -1114,9 +1114,9 @@ def test_a_seat_that_connects_mid_sweep_survives_the_sweep(registry: str, tmp_pa
 # ---------------------------------------------------------------------------------------------
 
 
-def _reclaim_with_postgres(container: str, pg: str, *extra: str) -> subprocess.CompletedProcess[str]:
+def _reclaim_with_postgres(container: str, pg: str, *extra: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     """The justfile's real argument shape: --pg-container present, no --no-postgres-check."""
-    return _run(container, "reclaim", "--capacity", str(_CAPACITY), "--pg-container", pg, *extra)
+    return _run(container, "reclaim", "--capacity", str(_CAPACITY), "--pg-container", pg, *extra, env=env)
 
 
 def _stale_seat(container: str, seat: str, tmp_path: Path) -> int:
@@ -1240,6 +1240,199 @@ def test_list_reports_the_evidence_behind_every_verdict(registry: str, tmp_path:
 
 
 # ---------------------------------------------------------------------------------------------
+# Reclaim's Postgres CONTRACT CHANGE (phaze-robzi.1) -- --apply now drops a freed seat's own two
+# databases, since its Redis registry entry was the only thing naming them. Leaving them behind on
+# every reclaim is exactly how 652 orphaned databases (6974 MB) accumulated with no non-destructive
+# tool able to reap them (see the epic phaze-robzi). `release` is UNCHANGED -- see the plain L2
+# tests above, none of which assert on database survival because release never drops one.
+# ---------------------------------------------------------------------------------------------
+
+
+def _database_names(container: str) -> set[str]:
+    return {row.strip() for row in _psql(container, "select datname from pg_database where datname like 'phaze%'").splitlines() if row.strip()}
+
+
+def test_reclaim_apply_drops_the_freed_seats_own_two_postgres_databases(registry: str, postgres: str, tmp_path: Path) -> None:
+    """The FLOW half the epic closes: freeing a seat's Redis entry must not orphan its databases.
+
+    The dry run must NAME both databases (criterion 1's first half) and drop neither; `--apply`
+    must drop exactly the two databases this seat owns and nothing else.
+    """
+    index = _stale_seat(registry, "seat_flowclose", tmp_path)
+    _seat_database(postgres, "phaze_seat_flowclose_test")
+    _seat_database(postgres, "phaze_seat_flowclose_migrations_test")
+    _seat_database(postgres, "phaze_seat_bystander_test")  # must survive: it belongs to nobody in this sweep
+
+    preview = _reclaim_with_postgres(registry, postgres)
+    assert preview.returncode == 0, preview.stderr
+    assert "phaze_seat_flowclose_test" in preview.stdout
+    assert "phaze_seat_flowclose_migrations_test" in preview.stdout
+    assert _allocated_seats(registry) == {"seat_flowclose": str(index)}, "a dry run must free nothing"
+    assert {"phaze_seat_flowclose_test", "phaze_seat_flowclose_migrations_test"} <= _database_names(postgres), "a dry run must drop nothing"
+
+    applied = _reclaim_with_postgres(registry, postgres, "--apply")
+    assert applied.returncode == 0, applied.stderr
+    assert _allocated_seats(registry) == {}
+    remaining = _database_names(postgres)
+    assert "phaze_seat_flowclose_test" not in remaining
+    assert "phaze_seat_flowclose_migrations_test" not in remaining
+    assert "phaze_seat_bystander_test" in remaining, "a database not owned by the freed seat must survive"
+
+
+def test_reclaim_refuses_to_free_or_drop_a_seat_with_a_live_postgres_backend(registry: str, postgres: str, tmp_path: Path) -> None:
+    """L2 must protect the DATABASE now, not merely the Redis index (criterion 2).
+
+    Companion to ``test_reclaim_refuses_to_free_a_seat_with_a_live_postgres_backend`` above, which
+    predates this bead and only checked the registry; this asserts the database itself survives.
+    """
+    index = _stale_seat(registry, "seat_protected", tmp_path)
+    _seat_database(postgres, "phaze_seat_protected_test")
+    _attach_backend(postgres, "phaze_seat_protected_test")
+
+    swept = _reclaim_with_postgres(registry, postgres, "--apply")
+
+    assert swept.returncode == 0, swept.stderr
+    assert _allocated_seats(registry) == {"seat_protected": str(index)}, swept.stdout
+    assert "phaze_seat_protected_test" in _database_names(postgres), "a live seat's database must survive the sweep"
+
+
+def test_reclaim_without_postgres_evidence_frees_the_index_but_never_drops_a_database_blind(registry: str, postgres: str, tmp_path: Path) -> None:
+    """Missing L2 evidence must fail closed on the DESTRUCTIVE drop specifically (criterion 2).
+
+    ``--no-postgres-check`` with no ``--pg-container`` at all waives the REFUSAL (the Redis half
+    frees exactly as it always has), but must never turn into a blind ``DROP DATABASE``: the fresh
+    per-seat evidence this bead adds stays ``waived`` throughout, so the drop step is skipped for
+    this seat rather than either refusing the whole free or acting without evidence.
+    """
+    index = _stale_seat(registry, "seat_blind", tmp_path)
+    _seat_database(postgres, "phaze_seat_blind_test")
+
+    swept = _reclaim(registry, "--apply")  # no --pg-container: pg_evidence stays 'waived' throughout
+
+    assert swept.returncode == 0, swept.stderr
+    assert _allocated_seats(registry) == {}, "the Redis half must still free, exactly as before this bead"
+    assert "not obtained" in swept.stderr, f"the operator must be told the drop was skipped, not silently done: {swept.stderr}"
+    assert "phaze_seat_blind_test" in _database_names(postgres), "without L2 evidence the database must not be dropped blind"
+    assert index >= 1
+
+
+def test_the_drop_refuses_when_a_backend_appears_on_the_database_between_classification_and_the_drop(
+    registry: str, postgres: str, tmp_path: Path
+) -> None:
+    """Criterion 3: the drop re-derives its OWN evidence immediately before acting.
+
+    The identical re-read-before-acting shape ``free_seat`` already applies to L1 (phaze-r311e),
+    now extended to L2 for the new destructive step. Without this, a suite that started running in
+    the gap between reclaim's one-time classification snapshot and the moment THIS seat is
+    destroyed would have its database DROPPED out from under it -- strictly worse than phaze-r311e,
+    which only ever risked a Redis FLUSHDB.
+
+    Uses the same deterministic PATH-shim technique as
+    ``test_a_seat_that_connects_mid_sweep_survives_the_sweep``, generalized via
+    ``_interleave_at_docker_call`` (the L1 test is keyed on ``CLIENT LIST``; this one is keyed on
+    the ``pg_stat_activity`` query both the initial classification AND free_seat's fresh recheck
+    issue) rather than a real timing race: occurrence 1 is classification's one-time evidence
+    collection at the top of ``cmd_reclaim``; occurrence 2 is free_seat's fresh re-check for this
+    (the only) candidate seat -- exactly the boundary this bead added.
+    """
+    index = _stale_seat(registry, "seat_lateconnect", tmp_path)
+    _seat_database(postgres, "phaze_seat_lateconnect_test")
+    connect = (
+        f"docker exec -d {shlex.quote(postgres)} psql -U phaze -d phaze_seat_lateconnect_test -c 'select pg_sleep(600)' >/dev/null\n"
+        "for _ in $(seq 1 80); do\n"
+        f"  n=$(docker exec {shlex.quote(postgres)} psql -U phaze -d phaze_seat_lateconnect_test -tAc {shlex.quote(_BACKENDS_ON_THIS_DATABASE)})\n"
+        '  if [ "${n:-0}" -ge 1 ]; then exit 0; fi\n'
+        "  sleep 0.1\n"
+        "done\n"
+        "exit 1\n"
+    )
+    env, _counter = _interleave_at_docker_call(tmp_path, "pg_stat_activity", connect, occurrence=2)
+
+    swept = _reclaim_with_postgres(registry, postgres, "--apply", env=env)
+
+    assert swept.returncode == 0, swept.stderr
+    assert _allocated_seats(registry) == {"seat_lateconnect": str(index)}, swept.stdout
+    assert "phaze_seat_lateconnect_test" in _database_names(postgres), "a database a backend connected to mid-sweep must survive"
+
+
+def test_release_never_drops_a_postgres_database_even_with_force(registry: str, postgres: str, tmp_path: Path) -> None:
+    """The negative space of the contract change: ``release`` -- forced or not -- stays untouched.
+
+    The epic's operator decision (2026-08-25, epic phaze-robzi's own description: "Drop the
+    seat's own 2 DBs under --apply") scoped the drop to ``reclaim --apply`` alone; ``test-db-release``
+    keeps its documented non-destructive-of-Postgres behaviour, force included.
+    """
+    index = _index_of(_allocate(registry, "seat_release_only", origin=str(tmp_path)))
+    _seat_database(postgres, "phaze_seat_release_only_test")
+    _seat_database(postgres, "phaze_seat_release_only_migrations_test")
+
+    forced = _run(registry, "release", "--seat", "seat_release_only", "--capacity", str(_CAPACITY), "--pg-container", postgres, "--force")
+
+    assert forced.returncode == 0, forced.stderr
+    assert _allocated_seats(registry) == {}
+    assert index >= 1
+    assert {"phaze_seat_release_only_test", "phaze_seat_release_only_migrations_test"} <= _database_names(postgres), (
+        "release must never drop a Postgres database, force or not"
+    )
+
+
+def _record_every_docker_subcommand(tmp_path: Path) -> tuple[dict[str, str], Path]:
+    """Env that logs every docker SUBCOMMAND (``$1``) this process issues, then forwards for real.
+
+    Not a filter or an interception like ``_interleave_at_docker_call`` -- a full audit trail, so
+    "no container is stopped, removed or recreated" (criterion 5) is something a test can assert on
+    the ACTUAL sequence of docker verbs used by a real ``--apply`` run, not merely infer from the
+    outcome.
+    """
+    real_docker = shutil.which("docker")
+    assert real_docker is not None, "the module-level skip should have caught this"
+    log = tmp_path / "docker-subcommands.log"
+    bin_dir = tmp_path / "docker-audit-shim"
+    bin_dir.mkdir()
+    shim = bin_dir / "docker"
+    shim.write_text(
+        f'#!/usr/bin/env bash\nprintf \'%s\\n\' "$1" >>{shlex.quote(str(log))}\nexec {shlex.quote(real_docker)} "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}, log
+
+
+def test_reclaim_apply_never_stops_removes_or_recreates_a_container_even_while_dropping_databases(
+    registry: str, postgres: str, tmp_path: Path
+) -> None:
+    """Criterion 5, ASSERTED rather than merely observed.
+
+    The full docker-verb audit trail from a real ``--apply`` sweep that frees a seat AND drops its
+    two databases must contain only ``exec`` -- never ``stop``, ``rm``, ``create``, or ``run``.
+    """
+    _stale_seat(registry, "seat_audited", tmp_path)
+    _seat_database(postgres, "phaze_seat_audited_test")
+    _seat_database(postgres, "phaze_seat_audited_migrations_test")
+    env, log = _record_every_docker_subcommand(tmp_path)
+
+    applied = _reclaim_with_postgres(registry, postgres, "--apply", env=env)
+
+    assert applied.returncode == 0, applied.stderr
+    assert _allocated_seats(registry) == {}
+    assert "phaze_seat_audited_test" not in _database_names(postgres), "the drop must actually have run for this assertion to mean anything"
+    subcommands = {line.strip() for line in log.read_text(encoding="utf-8").splitlines() if line.strip()}
+    assert subcommands, "the shim must have recorded at least one docker call"
+    assert subcommands == {"exec"}, f"reclaim --apply must only ever `docker exec`, never stop/rm/create/run: saw {subcommands}"
+
+
+def test_the_script_source_never_uses_a_docker_verb_other_than_exec() -> None:
+    """The narrower, static form of criterion 5.
+
+    No ``docker stop``/``rm``/``create``/``run`` anywhere in the script source, so the runtime
+    audit above is not the only thing standing between a future edit and a container teardown.
+    """
+    source = _SCRIPT.read_text(encoding="utf-8")
+    for verb in ("stop", "rm", "create", "run"):
+        assert f"docker {verb}" not in source, f"scripts/redis-seat-registry.sh must never call `docker {verb}`"
+
+
+# ---------------------------------------------------------------------------------------------
 # Wiring — the recipes an operator actually reaches for
 # ---------------------------------------------------------------------------------------------
 
@@ -1338,6 +1531,42 @@ def test_the_teardown_guards_point_at_reclaim_instead() -> None:
     for recipe in ("test-db-down:", "test-db:"):
         body = _recipe_body(recipe)
         assert "test-db-reclaim" in body, f"`{recipe}`'s guard should offer reclaim before a teardown"
+
+
+def _doc_line_for(recipe_signature: str) -> str:
+    """The ``[doc('...')]`` attribute line immediately preceding one recipe's signature."""
+    lines = _JUSTFILE.read_text(encoding="utf-8").splitlines()
+    for i, line in enumerate(lines):
+        if line.strip() == recipe_signature.strip():
+            for j in range(i - 1, -1, -1):
+                if lines[j].startswith("[doc("):
+                    return lines[j]
+            break
+    raise AssertionError(f"could not find a `[doc(...)]` line preceding `{recipe_signature}`")
+
+
+def test_the_reclaim_doc_states_the_revised_postgres_contract() -> None:
+    """Criterion 6: the operator-facing `just --list` line must say --apply drops databases too.
+
+    Before phaze-robzi.1 this line, and the recipe's own comment, said nothing about Postgres at
+    all -- accurate under the old contract, silently wrong under the new one.
+    """
+    doc = _doc_line_for("test-db-reclaim *flags:")
+    assert "drop" in doc.lower(), f"the reclaim doc must state the new database-dropping behaviour: {doc}"
+    assert "postgres database" in doc.lower(), f"the reclaim doc must name what it now drops: {doc}"
+
+
+def test_no_tracked_text_still_claims_reclaim_leaves_every_postgres_database_untouched() -> None:
+    """Criterion 6's negative half: the OLD contract's exact claim must not survive for RECLAIM.
+
+    Scoped to the reclaim recipe and the whole script -- ``test-db-release``'s own comment still
+    says this, correctly: ``release`` genuinely never touches a Postgres database, force or not
+    (see ``test_release_never_drops_a_postgres_database_even_with_force`` above), so that phrase
+    surviving THERE is not the defect this test guards against.
+    """
+    for phrase in ("every Postgres database are untouched", "every Postgres database is untouched"):
+        assert phrase not in _SCRIPT.read_text(encoding="utf-8"), f"the script still claims the old, now-false reclaim contract: {phrase!r}"
+        assert phrase not in _recipe_body("test-db-reclaim *flags:"), f"the reclaim recipe still claims the old, now-false contract: {phrase!r}"
 
 
 def test_a_no_op_release_through_the_real_recipe_never_prints_the_left_in_place_paragraph(registry: str) -> None:

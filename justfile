@@ -1070,7 +1070,7 @@ test-db-release name *flags:
     echo "The Postgres databases for this seat were left in place (they hold no index and block nobody);"
     echo "re-running \`just test-db-for {{name}}\` reuses them and takes a fresh Redis index."
 
-[doc('Sweep every Redis logical DB whose seat is no longer in use back into the pool -- dry run by default, --apply to free them; never touches the containers')]
+[doc('Sweep every Redis logical DB whose seat is no longer in use back into the pool -- dry run by default, --apply to free them AND drop each freed seats own 2 Postgres databases; never touches the containers')]
 [group('test')]
 test-db-reclaim *flags:
     #!/usr/bin/env bash
@@ -1080,6 +1080,12 @@ test-db-reclaim *flags:
     # database (pytest holds one for its whole session), or if its lease is still live; everything
     # else is freed. See scripts/redis-seat-registry.sh for the full rule set, and run
     # `just test-db-seats` first to see the evidence behind each verdict.
+    #
+    # phaze-robzi.1 CONTRACT CHANGE: `--apply` also drops each freed seat's own two Postgres
+    # databases (`phaze_<seat>_test` / `phaze_<seat>_migrations_test`) -- their Redis registry
+    # entry was the only thing naming them, so leaving them behind is exactly how 652 orphaned
+    # databases (6974 MB) accumulated with no non-destructive way to reap them. Every OTHER
+    # Postgres database, and both containers, are still never touched.
     bash scripts/redis-seat-registry.sh reclaim \
         --redis-container "{{test_redis_container}}" \
         --pg-container "{{test_db_container}}" \
