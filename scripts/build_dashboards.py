@@ -85,16 +85,28 @@ _TEMPLATING: dict[str, Any] = {
         {
             # Lets one Grafana show several phaze deployments without editing a query.
             # `job` is the Prometheus label the collector derives from `service.name`.
+            #
+            # Seeded from ANY live phaze series, not from an analysis metric, and with an
+            # explicit allValue (phaze-cxg9v). The original seed
+            # (phaze_analysis_run_duration_seconds_count) does not exist until the first
+            # analysis COMPLETES, and with includeAll but no allValue Grafana expands
+            # "All" to the union of the options — an empty option set interpolated
+            # job=~"" and every panel in all four dashboards rendered "No data" on an
+            # idle deployment even though the service-health series existed. Hit in
+            # production on homelab minutes after the 2026.8.6 rollout; the live
+            # verification (verify_dashboards.py) could not catch it because its corpus
+            # had completed analyses, so the seed metric existed there.
+            "allValue": ".+",
             "current": {},
             "datasource": DATASOURCE_REF,
-            "definition": "label_values(phaze_analysis_run_duration_seconds_count, job)",
+            "definition": 'label_values({__name__=~"phaze_.+"}, job)',
             "hide": 0,
             "includeAll": True,
             "label": "Service",
             "multi": True,
             "name": "job",
             "options": [],
-            "query": {"query": "label_values(phaze_analysis_run_duration_seconds_count, job)", "refId": "job"},
+            "query": {"query": 'label_values({__name__=~"phaze_.+"}, job)', "refId": "job"},
             "refresh": 2,
             "regex": "",
             "skipUrlSync": False,

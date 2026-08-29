@@ -102,6 +102,40 @@ def test_the_datasource_variable_exists(path: Path) -> None:
     assert variables["datasource"]["query"] == "prometheus"
 
 
+@pytest.mark.parametrize("path", DASHBOARDS, ids=lambda p: p.name)
+def test_the_job_variable_survives_an_idle_deployment(path: Path) -> None:
+    """Every panel filters on ``$job``, so the variable must resolve on a deployment
+    where no analysis has ever completed (phaze-cxg9v).
+
+    The original seed, ``phaze_analysis_run_duration_seconds_count``, first exists when
+    an analysis COMPLETES — and with ``includeAll`` but no ``allValue`` Grafana expands
+    "All" to the union of the options, so an empty option set interpolated ``job=~""``
+    and every panel in all four dashboards rendered "No data" on an idle deployment
+    even though the service-health series existed. The live verification could not see
+    it: its corpus had completed analyses, so the seed metric existed there. Two
+    properties close the hole, and both are asserted:
+
+    * the seed selector must not depend on any analysis-lifecycle metric — it matches
+      ANY phaze series, so the api/controller heartbeat series that exist from first
+      boot are enough to populate the dropdown;
+    * ``allValue`` is an explicit match-all, so even with ZERO phaze series the "All"
+      interpolation degrades to an empty panel instead of a structurally impossible
+      ``job=~""``.
+    """
+    dashboard = json.loads(path.read_text(encoding="utf-8"))
+    variables = {var["name"]: var for var in dashboard["templating"]["list"]}
+    assert "job" in variables, f"{path.name} panels filter on $job but declare no such variable"
+    job = variables["job"]
+    query = job["query"]["query"] if isinstance(job.get("query"), dict) else job.get("query", "")
+    assert "phaze_analysis_" not in query, (
+        f"{path.name}: $job is seeded from an analysis metric, which does not exist "
+        "until the first analysis completes — seed from any live phaze series instead"
+    )
+    assert job.get("allValue"), (
+        f'{path.name}: $job declares includeAll without an allValue, so an empty option set interpolates job=~"" and every panel goes "No data"'
+    )
+
+
 def _panels(dashboard: dict) -> list[dict]:
     panels: list[dict] = []
     for panel in dashboard.get("panels", []):
