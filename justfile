@@ -1092,6 +1092,21 @@ test-db-reclaim *flags:
         --capacity "{{test_redis_databases}}" \
         {{flags}}
 
+[doc('Reap the STOCK of phaze%test% databases with no registry seat, no Postgres backend, and past an age floor -- dry run by default, --apply to drop them; never touches the containers or the shared phaze_test/phaze_migrations_test pair')]
+[group('test')]
+test-db-gc *flags:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # phaze-robzi.2: the STOCK half of the epic that phaze-robzi.1's reclaim fix cannot reach --
+    # once a seat is reclaimed, its Redis registry entry (the only thing that ever named its two
+    # Postgres databases) is gone, and nothing points at them again. See scripts/test-db-gc.sh for
+    # the full three-signal rule set (unregistered + no backends + past an age floor) and the
+    # measurement behind the age clock it uses.
+    bash scripts/test-db-gc.sh \
+        --pg-container "{{test_db_container}}" \
+        --redis-container "{{test_redis_container}}" \
+        {{flags}}
+
 [doc('Stop and remove the SHARED test-harness Postgres + Redis (phaze-test-db/phaze-test-redis) -- affects every concurrent worktree/session using them')]
 [group('test')]
 test-db-down:
