@@ -1056,6 +1056,10 @@ test-db-release name *flags:
     # after `just test-db-seats` shows you why, if you know better.
     name="$(bash scripts/derive-seat-name.sh "{{name}}")"
     echo "Seat '{{name}}' -> identifier '${name}'."
+    # phaze-robzi.5: the script exits 5 (not 0) when the derived identifier holds no Redis index --
+    # e.g. a wrong-guessed name, hyphen vs. underscore. `set -euo pipefail` above means that non-zero
+    # exit stops THIS recipe right here, so the trailing paragraph below never runs for a no-op --
+    # it is reachable only after a REAL release, which is what it describes.
     bash scripts/redis-seat-registry.sh release \
         --redis-container "{{test_redis_container}}" \
         --pg-container "{{test_db_container}}" \
@@ -1066,7 +1070,7 @@ test-db-release name *flags:
     echo "The Postgres databases for this seat were left in place (they hold no index and block nobody);"
     echo "re-running \`just test-db-for {{name}}\` reuses them and takes a fresh Redis index."
 
-[doc('Sweep every Redis logical DB whose seat is no longer in use back into the pool -- dry run by default, --apply to free them; never touches the containers')]
+[doc('Sweep every Redis logical DB whose seat is no longer in use back into the pool -- dry run by default, --apply to free them AND drop each freed seats own 2 Postgres databases; never touches the containers')]
 [group('test')]
 test-db-reclaim *flags:
     #!/usr/bin/env bash
@@ -1076,10 +1080,31 @@ test-db-reclaim *flags:
     # database (pytest holds one for its whole session), or if its lease is still live; everything
     # else is freed. See scripts/redis-seat-registry.sh for the full rule set, and run
     # `just test-db-seats` first to see the evidence behind each verdict.
+    #
+    # phaze-robzi.1 CONTRACT CHANGE: `--apply` also drops each freed seat's own two Postgres
+    # databases (`phaze_<seat>_test` / `phaze_<seat>_migrations_test`) -- their Redis registry
+    # entry was the only thing naming them, so leaving them behind is exactly how 652 orphaned
+    # databases (6974 MB) accumulated with no non-destructive way to reap them. Every OTHER
+    # Postgres database, and both containers, are still never touched.
     bash scripts/redis-seat-registry.sh reclaim \
         --redis-container "{{test_redis_container}}" \
         --pg-container "{{test_db_container}}" \
         --capacity "{{test_redis_databases}}" \
+        {{flags}}
+
+[doc('Reap the STOCK of phaze%test% databases with no registry seat, no Postgres backend, and past an age floor -- dry run by default, --apply to drop them; never touches the containers or the shared phaze_test/phaze_migrations_test pair')]
+[group('test')]
+test-db-gc *flags:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # phaze-robzi.2: the STOCK half of the epic that phaze-robzi.1's reclaim fix cannot reach --
+    # once a seat is reclaimed, its Redis registry entry (the only thing that ever named its two
+    # Postgres databases) is gone, and nothing points at them again. See scripts/test-db-gc.sh for
+    # the full three-signal rule set (unregistered + no backends + past an age floor) and the
+    # measurement behind the age clock it uses.
+    bash scripts/test-db-gc.sh \
+        --pg-container "{{test_db_container}}" \
+        --redis-container "{{test_redis_container}}" \
         {{flags}}
 
 [doc('Stop and remove the SHARED test-harness Postgres + Redis (phaze-test-db/phaze-test-redis) -- affects every concurrent worktree/session using them')]
