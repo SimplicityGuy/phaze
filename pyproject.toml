@@ -17,7 +17,7 @@ dependencies = [
     "alembic>=1.19.1",
     "asyncpg>=0.31.0",
     "beautifulsoup4>=4.15.0",
-    "cryptography>=50.0.0",
+    "cryptography>=50.0.1",
     "essentia-tensorflow>=2.1b6.dev1438; sys_platform != 'linux' or platform_machine == 'x86_64'",
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
@@ -64,9 +64,9 @@ dependencies = [
     # heavy binary wheel that must build for every platform in the essentia/TF matrix)
     # and its channel keeps its own retry state across a shutdown, which is exactly the
     # blocking-at-exit shape phaze-m1drf.2 §2 has to bound for a k8s analyze Job.
-    "opentelemetry-api>=1.40.0",
-    "opentelemetry-exporter-otlp-proto-http>=1.40.0",
-    "opentelemetry-sdk>=1.40.0",
+    "opentelemetry-api>=1.44.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.44.0",
+    "opentelemetry-sdk>=1.44.0",
     # phaze-fq9h.1: 1001Tracklists detail pages deliver their track listing via JS behind a
     # Cloudflare Turnstile widget, and spike phaze-dmvs proved a HEADFUL Patchright (a
     # CDP-patched Playwright fork) is the only non-evasive client that clears it -- vanilla
