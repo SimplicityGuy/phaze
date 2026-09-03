@@ -47,11 +47,21 @@ def test_model_sets_count() -> None:
 
 
 def test_streaming_decode_longer_than_stall_threshold_keeps_beating(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A healthy blocking C++ decode stays live even when it outlasts the watchdog bound."""
+    """A healthy blocking C++ decode stays live even when it outlasts the watchdog bound.
+
+    The claim is "repeated liveness during one blocking call", so the assertion is on the
+    beat COUNT, which is bounded below by decode duration / heartbeat interval. That ratio
+    is what makes this deterministic, and it must stay comfortably large: at 0.08 s / 0.01 s
+    (nominally 7 beats) the watchdog's ``Event.wait(0.01)`` overshoots under ordinary
+    scheduler jitter and only 2 beats arrived -- measured 6/15 red in isolation on an idle
+    macOS host and 1/15 on untouched main, and three consecutive full-suite gates red on
+    this one test (phaze-163w3). 0.3 s / 0.01 s (nominally 30) against ``>= 3`` leaves a
+    10x margin; 50/50 green under eight CPU burners.
+    """
     beats: list[float] = []
 
     def _slow_streaming(*_args: Any, **_kwargs: Any) -> dict[int, Any]:
-        time.sleep(0.08)
+        time.sleep(0.3)
         return {}
 
     monkeypatch.setattr(analysis_mod, "_DECODE_HEARTBEAT_INTERVAL_SEC", 0.01)
