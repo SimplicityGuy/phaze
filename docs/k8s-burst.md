@@ -1045,8 +1045,9 @@ backend's `[backends.kube].models_pvc_name`. When set, `build_job_manifest` moun
 **read-only** at `/models`, a **second volume entirely separate** from the `/certs` CA Secret mount
 (§7). The PVC carries **only** model weights — never secrets, never certs.
 
-**One-time populate Job.** Create the PVC and fill it once with a short RW Job that runs the same
-downloader the agent uses, then leave the volume read-only forever after:
+**One-time populate Job.** Create the PVC and fill it once with a short RW Job that runs the
+explicit provisioning tool (the analyze pods, like the compose workers, never download models —
+phaze-ynv6w), then leave the volume read-only forever after:
 
 ```yaml
 # PVC the weights live on. Size for the essentia model set; the StorageClass must support

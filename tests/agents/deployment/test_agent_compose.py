@@ -725,3 +725,16 @@ def test_every_agent_service_pins_container_side_models_path() -> None:
     for svc_name in _ALL_WORKERS | {"watcher"}:
         env = _env_to_strs(data["services"][svc_name].get("environment", []))
         assert "MODELS_PATH=/models" in env, f"{svc_name} must pin MODELS_PATH=/models in environment (phaze-bvkah); got {env!r}"
+
+
+def test_every_models_mount_is_read_only() -> None:
+    """phaze-ynv6w: the worker only VALIDATES the operator-provisioned set at boot -- it never
+    downloads into /models -- so no service needs, or gets, a writable models mount."""
+    data = _load_agent_compose()
+    checked = 0
+    for svc_name, svc in data["services"].items():
+        for vol in svc.get("volumes", []) or []:
+            if isinstance(vol, str) and ":/models" in vol:
+                checked += 1
+                assert vol.endswith(":ro"), f"{svc_name} must mount /models :ro (phaze-ynv6w); got {vol!r}"
+    assert checked >= 5, f"expected every worker + watcher to mount /models; found {checked}"

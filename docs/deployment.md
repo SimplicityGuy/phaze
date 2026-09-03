@@ -207,7 +207,7 @@ The env vars that gate this bootstrap on the agent side are `PHAZE_AGENT_CA_FILE
 - Both hosts on the same private LAN; no firewall blocking ports 6379 (Redis cache), 5432 (Postgres SAQ broker — agents reach it directly as of Phase 36), or 8000 (API) between them
 - Postgres + Redis are NOT directly exposed to the public internet (LAN-only; the agent→Postgres:5432 edge is private-LAN scoped)
 - On the app-server host: `./certs/` (materialized by `git clone` via a committed `.gitkeep`, then cert-populated on first start; must be owned by uid 1000 — phaze-he8m), `.env`
-- On each file-server host: `./certs/` (CA only, scp'd from app-server), `./models/` (materialized by `git clone`, weights auto-download on first agent start; both owned by uid 1000 — phaze-he8m), `.env`
+- On each file-server host: `./certs/` (CA only, scp'd from app-server), `./models/` (or whatever `MODELS_PATH` names) **already holding the essentia model set** — the worker validates it at boot and never downloads it (phaze-ynv6w); both owned by uid 1000 — phaze-he8m), `.env`
 
 ## Step 1 — Bring up the application server
 
@@ -353,15 +353,20 @@ On the **file-server host**, get the compose file and the `.env` template. All a
 git clone https://github.com/simplicityguy/phaze.git
 cd phaze
 cp .env.example.agent .env
-mkdir -p models certs   # phaze-he8m: own ./models (weights auto-download) and ./certs as uid 1000
+mkdir -p models certs   # phaze-he8m: own ./models and ./certs as uid 1000
 ```
 
 The `mkdir -p models certs` (also run for you by `just up-agent`) is required for the same
-reason as Step 1 (phaze-he8m): the uid-1000 worker auto-downloads essentia weights into
-`./models:/models:rw` and reads the CA from `./certs`, so both bind-mount sources must exist
-owned by uid 1000 before `up` — otherwise rootful dockerd creates them `root:root` and the
-download fails with `EACCES`. A `git clone` already materializes both via committed `.gitkeep`
-files.
+reason as Step 1 (phaze-he8m): both bind-mount sources must exist owned by uid 1000 before
+`up`, otherwise rootful dockerd creates them `root:root`. A `git clone` already materializes
+both via committed `.gitkeep` files.
+
+**The models must be there before the first `up`.** Since phaze-ynv6w the worker mounts
+`MODELS_PATH` read-only (`./models:/models:ro`) and only **validates** it at boot — every one
+of the 68 `.pb`/`.json` files at its pinned byte size — and exits naming the directory and the
+missing files otherwise. It never downloads them. Either set `MODELS_PATH` in `.env` to a
+directory that already holds the consolidated set, or provision `./models` once with
+`just download-models models` (see [Provisioning models](#provisioning-models)).
 
 Edit `.env` to set the required variables. The agent stack uses `${VAR:?msg}` interpolation on `SCAN_PATH`, so docker compose fails fast at parse time if it is unset:
 
@@ -396,7 +401,7 @@ On the **file-server host**:
 just up-agent
 ```
 
-`just up-agent` runs `docker compose -f docker-compose.agent.yml up -d`, which brings up all three lane workers (`worker-analyze`, `worker-meta`, `worker-io`) plus `watcher` (the off-by-default `worker-drain` profile service is not included). On first start, the lane workers call `/api/internal/agent/whoami` to verify their token and validate ~3.1 GB of essentia weights (68 model/config files) in the shared `./models/` volume. A file lock lets one lane perform the download while its siblings wait and then revalidate; a fresh multi-GB transfer can take many minutes. The watcher comes up in parallel.
+`just up-agent` runs `docker compose -f docker-compose.agent.yml up -d`, which brings up all three lane workers (`worker-analyze`, `worker-meta`, `worker-io`) plus `watcher` (the off-by-default `worker-drain` profile service is not included). On first start, the lane workers call `/api/internal/agent/whoami` to verify their token and validate ~3.1 GB of essentia weights (68 model/config files) in the read-only `./models/` mount — a per-file size check that takes well under a second. A lane that finds a file missing or wrong-size exits naming it and is restarted until the set is provisioned; nothing is downloaded (phaze-ynv6w). The watcher comes up in parallel.
 
 Watch any lane's logs. Every active lane worker publishes its own heartbeat; `worker-analyze` is
 usually the most useful stream when checking audio-analysis startup:
@@ -661,16 +666,20 @@ PHAZE_IMAGE_TAG=2026.8.4
 
 Then `just up-agent` pulls exactly that version. The `docker-publish.yml` workflow tags both `:latest` and `:<version>` on tagged releases. The pin MUST be a 3-part CalVer `YYYY.M.REVISION` value (for example, `2026.8.4`) matching a published release tag (`ci.yml` only publishes on `push` of a `[0-9]+.[0-9]+.[0-9]+` tag).
 
-## Pre-warming models (skip the first-start wait)
+## Provisioning models
 
-To avoid the multi-GB model download on first agent boot:
+phaze never downloads models at runtime (phaze-ynv6w): the worker validates the set it is
+given and refuses to start without it. On a host that has no copy, provision one explicitly
+**before** `just up-agent`:
 
 ```bash
 # On the file-server host BEFORE just up-agent:
-just download-models
+just download-models models        # -> ./models, the default MODELS_PATH bind source
 ```
 
-This runs `bash scripts/download-models.sh models`, populating `./models/` directly; the agent's auto-download check then no-ops.
+This runs `bash scripts/download-models.sh models` (the output directory is required; nothing
+pulls ~3.1 GB by default). On a host that already holds the consolidated model directory, set
+`MODELS_PATH` in `.env` to it instead and provision nothing.
 
 ## 1001Tracklists render worker: residential-IP constraint (phaze-fq9h.5)
 

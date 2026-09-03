@@ -268,7 +268,7 @@ The compose file is worker-only: a single `worker` service (no media-bound sidec
 `network_mode: host`, the `-arm64` image, a **host bind** of `${PHAZE_CLOUD_SCRATCH_DIR}` to the
 identical container path for scratch (phaze-cri2 — the pushed files land on the host filesystem, so
 the container must bind that same host dir to read + reap them; provision it uid-1000-owned per
-Step 1), the models mount `rw` (auto-download), and the CA cert mount `ro`. It declares no
+Step 1), the models mount `ro` (the set is operator-provisioned and only validated at boot — phaze-ynv6w), and the CA cert mount `ro`. It declares no
 `postgres`/`redis` service and no `DATABASE_URL` (DIST-04).
 
 Populate the A1's `.env` with the compute-agent variables. The cloud-burst knobs are documented

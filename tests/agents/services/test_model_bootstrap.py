@@ -1,334 +1,179 @@
-"""Tests for ``phaze.tasks._shared.model_bootstrap.ensure_models_present`` (260608-jbg).
+"""Tests for ``phaze.tasks._shared.model_bootstrap.ensure_models_present`` (phaze-ynv6w).
 
-Always-validate contract (the count gate was removed in 260608-jbg):
-- any dir (empty/partial/full) -> ``download_to`` is invoked exactly once; the
-  per-file HEAD size validation lives in ``download_to`` (proven in
-  tests/test_scripts/test_download_models.py case d), not here
-- the startup INFO log reflects the ~3.1 GB / 34-file reality, NOT "150MB"/"2-5min"
-- network-fail -> ``RuntimeError("Model download failed")`` wrapping the underlying exception
+Validate-only contract (supersedes the Phase 29 D-21 auto-download and its 260608-jbg /
+260608-u8g / phaze-mb8d refinements):
+- a complete, size-valid set -> succeeds, ZERO network, ZERO writes, works on a read-only dir
+- a missing dir / missing file / wrong-size file -> ``RuntimeError`` naming the directory and
+  every offending file; nothing is downloaded, deleted or created
+- ``download_to`` / ``_download_one`` are never reached from the bootstrap
+- the startup INFO log reflects the ~3.1 GB / 34-model reality, NOT "150MB"/"2-5min"
 """
 
 from __future__ import annotations
 
-import fcntl
 import logging
-import subprocess
-import sys
+import os
+import stat
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
 
 import httpx
 import pytest
+
+from phaze.scripts import download_models
+from phaze.scripts.download_models import MANIFEST
+import phaze.tasks._shared.model_bootstrap as mb
 
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 
+def _write_complete_set(models_dir: Path) -> None:
+    """Lay down every manifest file at exactly its pinned byte size (sparse, so it is instant)."""
+    models_dir.mkdir(parents=True, exist_ok=True)
+    for name, size in MANIFEST.items():
+        with (models_dir / name).open("wb") as fh:
+            fh.truncate(size)
+
+
+@pytest.fixture(autouse=True)
+def _no_network_no_repair(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Any attempt to fetch or repair from the bootstrap is a test failure, not a slow test."""
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("the model bootstrap must never touch the network or the downloader")
+
+    monkeypatch.setattr(httpx, "stream", _boom)
+    monkeypatch.setattr(httpx, "get", _boom)
+    monkeypatch.setattr(download_models, "download_to", _boom)
+    monkeypatch.setattr(download_models, "_download_one", _boom)
+    monkeypatch.setattr(download_models, "_ensure_present_local", _boom)
+
+
 def _assert_estimate_log(text: str) -> None:
-    """The startup log must reflect the ~3.1 GB / 34-file reality, not the stale estimate."""
+    """The startup log must reflect the ~3.1 GB / 34-model reality, not the stale estimate."""
     assert "3.1 GB" in text, f"expected the corrected ~3.1 GB estimate, got: {text!r}"
     assert "150MB" not in text, f"stale 150MB estimate must be gone, got: {text!r}"
     assert "2-5min" not in text, f"stale 2-5min estimate must be gone, got: {text!r}"
 
 
-def test_ensure_models_present_empty_dir_downloads(
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An empty models directory triggers ``download_to`` and logs the corrected estimate."""
-    import phaze.tasks._shared.model_bootstrap as mb
-
-    def fake_download(target: Path) -> tuple[int, int]:
-        # Simulate a real download by writing a sentinel .pb file.
-        (target / "test_model.pb").touch()
-        return (0, 1)  # (present_count, repaired_count) tally surfaced by download_to
-
-    mock = MagicMock(side_effect=fake_download)
-    monkeypatch.setattr(mb, "download_to", mock)
-
-    with caplog.at_level(logging.INFO, logger="phaze.tasks._shared.model_bootstrap"):
-        mb.ensure_models_present(tmp_path)
-
-    mock.assert_called_once_with(tmp_path)
-    _assert_estimate_log("\n".join(rec.getMessage() for rec in caplog.records))
-
-
-def test_ensure_models_present_populated_still_calls_download_to(
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A fully-populated dir still calls ``download_to`` once (no count short-circuit).
-
-    260608-jbg: the count gate is gone. ``download_to`` owns the per-file HEAD size
-    validation and issues no GET when sizes match (proven in download_models case d),
-    so a valid set returns without error after a single ``download_to`` call here.
-    """
-    import phaze.tasks._shared.model_bootstrap as mb
-
-    for idx in range(mb._EXPECTED_MODEL_COUNT):
-        (tmp_path / f"model_{idx:03d}.pb").touch()
-
-    mock = MagicMock(return_value=(mb._EXPECTED_MODEL_COUNT, 0))
-    monkeypatch.setattr(mb, "download_to", mock)
-
-    with caplog.at_level(logging.INFO, logger="phaze.tasks._shared.model_bootstrap"):
-        mb.ensure_models_present(tmp_path)
-
-    mock.assert_called_once_with(tmp_path)
-    _assert_estimate_log("\n".join(rec.getMessage() for rec in caplog.records))
-
-
-def test_ensure_models_present_partial_still_calls_download_to(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """260608-jbg: a partial dir calls ``download_to`` once -- no special partial branch.
-
-    A truncated file can satisfy a glob count, so the old count gate was removed.
-    Completeness is decided entirely by ``download_to``'s per-file size validation,
-    so a partial dir is handled identically to an empty or full one here.
-    """
-    import phaze.tasks._shared.model_bootstrap as mb
-
-    # 1 out of N: clearly partial.
-    (tmp_path / "first_model.pb").touch()
-    assert len(list(tmp_path.glob("*.pb"))) < mb._EXPECTED_MODEL_COUNT
-
-    mock = MagicMock(return_value=(1, mb._EXPECTED_MODEL_COUNT - 1))
-    monkeypatch.setattr(mb, "download_to", mock)
-
-    mb.ensure_models_present(tmp_path)
-
-    mock.assert_called_once_with(tmp_path)
-
-
-def test_ensure_models_present_download_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Network failure during download is wrapped in ``RuntimeError`` with the original cause chained."""
-    import phaze.tasks._shared.model_bootstrap as mb
-
-    underlying = httpx.HTTPError("network down")
-
-    def boom(target: Path) -> None:
-        raise underlying
-
-    monkeypatch.setattr(mb, "download_to", boom)
-
-    with pytest.raises(RuntimeError, match="Model download failed") as excinfo:
-        mb.ensure_models_present(tmp_path)
-    assert excinfo.value.__cause__ is underlying
-
-
-def test_ensure_models_present_holds_exclusive_flock_during_download(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """phaze-mb8d: the download runs UNDER an exclusive flock on the models-dir lockfile.
-
-    The probe opens an independent fd on the lockfile mid-``download_to`` and
-    verifies a non-blocking exclusive flock is denied (flock conflicts across
-    independent open file descriptions, including within one process), i.e. a
-    sibling lane worker booting concurrently would block until the download ends.
-    """
-    import phaze.tasks._shared.model_bootstrap as mb
-
-    lock_states: list[str] = []
-
-    def probing_download(target: Path) -> tuple[int, int]:
-        with (target / mb._LOCK_FILENAME).open("a") as probe:
-            try:
-                fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                lock_states.append("held")
-            else:
-                lock_states.append("unlocked")
-                fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
-        return (0, 0)
-
-    monkeypatch.setattr(mb, "download_to", probing_download)
-
-    mb.ensure_models_present(tmp_path)
-
-    assert lock_states == ["held"], "the exclusive download lock must be held while download_to runs"
-
-
-def test_ensure_models_present_sweeps_stale_scratch_files_not_the_lockfile(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """phaze-mb8d: stale ``*.part*`` leftovers from crashed writers are swept under the lock.
-
-    Both the pre-fix fixed name (``.part``) and the pid-suffixed name
-    (``.part.<pid>``) are garbage once the exclusive lock is held; the lockfile
-    itself and real weight files must survive.
-    """
-    import phaze.tasks._shared.model_bootstrap as mb
-
-    (tmp_path / "discogs-effnet-bs64-1.pb.part").write_bytes(b"crashed legacy writer")
-    (tmp_path / "mood_happy-musicnn-msd-2.pb.part.12345").write_bytes(b"crashed pid writer")
-    (tmp_path / "gender-musicnn-mtt-2.json.part.99").write_bytes(b"{}")
-    (tmp_path / "intact.pb").write_bytes(b"real weight")
-
-    monkeypatch.setattr(mb, "download_to", MagicMock(return_value=(0, 0)))
-
-    mb.ensure_models_present(tmp_path)
-
-    assert list(tmp_path.glob("*.part*")) == [], "every stale scratch file must be removed"
-    assert (tmp_path / "intact.pb").read_bytes() == b"real weight", "real weights must survive the sweep"
-    assert (tmp_path / mb._LOCK_FILENAME).exists(), "the lockfile itself must not be swept"
-
-
-_CONCURRENT_BOOT_CHILD = """
-import sys
-import time
-from pathlib import Path
-
-import phaze.tasks._shared.model_bootstrap as mb
-
-models_dir = Path(sys.argv[1])
-log_path = Path(sys.argv[2])
-
-
-def slow_download(target):
-    with log_path.open("a") as fh:
-        fh.write(f"start {time.monotonic()}\\n")
-    time.sleep(0.2)
-    with log_path.open("a") as fh:
-        fh.write(f"end {time.monotonic()}\\n")
-    return (0, 0)
-
-
-mb.download_to = slow_download
-mb.ensure_models_present(models_dir)
-"""
-
-
-def test_ensure_models_present_serializes_across_processes(tmp_path: Path) -> None:
-    """phaze-mb8d: three concurrent OS processes never overlap inside download_to.
-
-    Reproduces the first-boot topology (multiple lane workers, one shared models
-    dir) with real subprocesses: each child patches ``download_to`` to log a
-    start/end interval around a sleep, then calls ``ensure_models_present`` on
-    the SAME directory. With the exclusive flock the intervals must be strictly
-    serialized (start/end pairs never interleave); without it all three starts
-    land before any end.
-    """
+def test_ensure_models_present_accepts_a_complete_size_valid_set(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """The healthy path: every manifest file present at its pinned size -> success, no side effects."""
     models_dir = tmp_path / "models"
-    log_path = tmp_path / "intervals.log"
+    _write_complete_set(models_dir)
+    before = sorted(p.name for p in models_dir.iterdir())
 
-    procs = [
-        subprocess.Popen(  # noqa: S603
-            [sys.executable, "-c", _CONCURRENT_BOOT_CHILD, str(models_dir), str(log_path)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        for _ in range(3)
-    ]
-    for proc in procs:
-        _stdout, stderr = proc.communicate(timeout=120)
-        assert proc.returncode == 0, f"child worker failed: {stderr.decode()}"
+    with caplog.at_level(logging.INFO):
+        mb.ensure_models_present(models_dir)
 
-    events = []
-    for line in log_path.read_text().splitlines():
-        kind, stamp = line.split()
-        events.append((float(stamp), kind))
-    events.sort()
+    assert sorted(p.name for p in models_dir.iterdir()) == before, "validation must create nothing (no lockfile, no scratch)"
+    _assert_estimate_log(caplog.text)
+    assert "never downloads" in caplog.text
 
-    assert len(events) == 6, "each of the 3 workers must log exactly one start and one end"
-    assert [kind for _, kind in events] == ["start", "end"] * 3, "download intervals must never overlap across processes"
+
+def test_ensure_models_present_works_on_a_read_only_directory(tmp_path: Path) -> None:
+    """The compose mounts are now ``:ro`` -- the validator must not need write access."""
+    if os.geteuid() == 0:  # pragma: no cover  # root ignores mode bits, so the guard would prove nothing
+        pytest.skip("read-only directory semantics are not enforced for root")
+    models_dir = tmp_path / "models"
+    _write_complete_set(models_dir)
+    models_dir.chmod(stat.S_IRUSR | stat.S_IXUSR)
+    try:
+        with pytest.raises(PermissionError):
+            (models_dir / "probe").touch()  # the directory really is read-only for this test
+        mb.ensure_models_present(models_dir)
+    finally:
+        models_dir.chmod(stat.S_IRWXU)
+
+
+def test_ensure_models_present_missing_dir_names_the_path_and_creates_nothing(tmp_path: Path) -> None:
+    """A missing directory is the operator's mistake to fix: name it, do not ``mkdir`` it."""
+    models_dir = tmp_path / "absent"
+
+    with pytest.raises(RuntimeError) as excinfo:
+        mb.ensure_models_present(models_dir)
+
+    message = str(excinfo.value)
+    assert str(models_dir) in message
+    assert f"{len(MANIFEST)} missing" in message
+    assert "never downloads" in message
+    assert not models_dir.exists(), "the validator must not create the models directory"
+
+
+def test_ensure_models_present_missing_file_is_named_and_not_downloaded(tmp_path: Path) -> None:
+    models_dir = tmp_path / "models"
+    _write_complete_set(models_dir)
+    (models_dir / "mood_happy-musicnn-msd-2.pb").unlink()
+    (models_dir / "discogs-effnet-bs64-1.json").unlink()
+
+    with pytest.raises(RuntimeError) as excinfo:
+        mb.ensure_models_present(models_dir)
+
+    message = str(excinfo.value)
+    assert str(models_dir) in message
+    assert "2 missing, 0 wrong-size" in message
+    assert "missing: mood_happy-musicnn-msd-2.pb" in message
+    assert "missing: discogs-effnet-bs64-1.json" in message
+    assert not (models_dir / "mood_happy-musicnn-msd-2.pb").exists(), "nothing may be (re-)downloaded"
+
+
+def test_ensure_models_present_wrong_size_file_is_named_and_kept(tmp_path: Path) -> None:
+    """A truncated weight is reported with both sizes and left in place -- the validator owns no writes."""
+    models_dir = tmp_path / "models"
+    _write_complete_set(models_dir)
+    truncated = models_dir / "danceability-vggish-audioset-1.pb"
+    truncated.write_bytes(b"\x00" * 10)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        mb.ensure_models_present(models_dir)
+
+    message = str(excinfo.value)
+    assert "0 missing, 1 wrong-size" in message
+    assert f"wrong size: danceability-vggish-audioset-1.pb is 10 bytes, manifest expects {MANIFEST['danceability-vggish-audioset-1.pb']}" in message
+    assert truncated.stat().st_size == 10, "the validator must not delete or repair a bad file"
+
+
+def test_validate_models_reports_in_manifest_order(tmp_path: Path) -> None:
+    """The structured result lists files in manifest order so the log is stable across runs."""
+    models_dir = tmp_path / "models"
+    _write_complete_set(models_dir)
+    names = list(MANIFEST)
+    for name in (names[5], names[0], names[40]):
+        (models_dir / name).unlink()
+
+    result = mb.validate_models(models_dir)
+
+    assert bool(result) is True
+    assert result.missing == (names[0], names[5], names[40])
+    assert result.wrong_size == ()
+    assert result.models_dir == models_dir
+
+
+def test_validate_models_complete_set_is_falsy(tmp_path: Path) -> None:
+    models_dir = tmp_path / "models"
+    _write_complete_set(models_dir)
+
+    result = mb.validate_models(models_dir)
+
+    assert bool(result) is False
+    assert result.missing == () and result.wrong_size == ()
+
+
+def test_bootstrap_module_has_no_network_or_write_surface() -> None:
+    """The bootstrap imports only the manifest: no downloader, no lock, no scratch sweep."""
+    assert not hasattr(mb, "download_to")
+    assert not hasattr(mb, "_sweep_stale_part_files")
+    assert not hasattr(mb, "_LOCK_FILENAME")
+    assert "fcntl" not in mb.__dict__
+    assert "httpx" not in mb.__dict__
 
 
 def test_download_models_classifier_count_matches_bash() -> None:
-    """CLASSIFIER_MODELS contains exactly the 33 paths declared in scripts/download-models.sh."""
+    """CLASSIFIER_MODELS contains exactly the 33 paths the provisioning tool fetches."""
     from phaze.scripts.download_models import CLASSIFIER_MODELS, GENRE_MODELS
 
     assert len(CLASSIFIER_MODELS) == 33
     assert len(GENRE_MODELS) == 1
     assert GENRE_MODELS == ("discogs-effnet-bs64-1",)
-
-
-def test_ensure_models_present_waits_out_a_sibling_holding_the_lock(
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """phaze-mb8d: a non-blocking flock denial (sibling lane worker mid-download) waits, logs, then
-    re-validates with zero network once the lock is free.
-
-    A separate fd (mirroring a sibling OS process's independent open file description) holds the
-    exclusive lock FIRST; ``ensure_models_present`` in a background thread must hit the
-    ``BlockingIOError`` branch, log the "waiting for it to finish" line, then block on the
-    subsequent blocking ``LOCK_EX`` until the main thread releases -- proven by the thread still
-    being alive immediately after the non-blocking denial, and finishing (with ``download_to``
-    called) only after the lock is released.
-    """
-    import fcntl
-    import threading
-    import time
-
-    import phaze.tasks._shared.model_bootstrap as mb
-
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    lock_path = tmp_path / mb._LOCK_FILENAME
-    holder_fh = lock_path.open("a")
-    fcntl.flock(holder_fh.fileno(), fcntl.LOCK_EX)  # simulates a sibling process's in-flight download
-
-    mock = MagicMock(return_value=(0, 0))
-    monkeypatch.setattr(mb, "download_to", mock)
-
-    result: dict[str, bool] = {}
-
-    def _run() -> None:
-        mb.ensure_models_present(tmp_path)
-        result["completed"] = True
-
-    with caplog.at_level(logging.INFO, logger="phaze.tasks._shared.model_bootstrap"):
-        thread = threading.Thread(target=_run)
-        thread.start()
-        time.sleep(0.2)  # give the thread time to hit the non-blocking denial and start waiting
-        assert thread.is_alive(), "the waiter must still be blocked on LOCK_EX while the holder has it"
-        assert "waiting for it to finish before re-validating" in caplog.text
-
-        fcntl.flock(holder_fh.fileno(), fcntl.LOCK_UN)
-        holder_fh.close()
-        thread.join(timeout=10)
-
-    assert result.get("completed") is True
-    mock.assert_called_once_with(tmp_path)
-
-
-def test_download_to_creates_pb_and_json_pairs(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``download_to`` routes a .pb + .json pair through ``_ensure_present_local`` for every model.
-
-    260608-u8g: ``download_to`` no longer calls ``_download_one`` directly -- the
-    validate-or-download decision lives in ``_ensure_present_local`` (local size
-    compare) -- so this patches that boundary instead.
-    """
-    from phaze.scripts import download_models
-
-    fetched: list[tuple[str, Path]] = []
-
-    def fake_ensure_present_local(url: str, dest: Path, expected_size: int) -> None:
-        fetched.append((url, dest))
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(b"\x00")
-
-    monkeypatch.setattr(download_models, "_ensure_present_local", fake_ensure_present_local)
-
-    download_models.download_to(tmp_path)
-
-    # 33 classifier models x 2 files (.pb + .json) + 1 genre x 2 = 68 files.
-    expected_file_count = (len(download_models.CLASSIFIER_MODELS) + len(download_models.GENRE_MODELS)) * 2
-    assert len(fetched) == expected_file_count
-    pb_files = sorted(p.name for _, p in fetched if p.suffix == ".pb")
-    json_files = sorted(p.name for _, p in fetched if p.suffix == ".json")
-    assert len(pb_files) == len(download_models.CLASSIFIER_MODELS) + len(download_models.GENRE_MODELS)
-    assert len(json_files) == len(download_models.CLASSIFIER_MODELS) + len(download_models.GENRE_MODELS)
+    assert mb._EXPECTED_MODEL_COUNT == 34
+    assert len(MANIFEST) == 68

@@ -179,8 +179,9 @@ up-dev: tailwind
 [doc('Start file-server agent stack (standalone docker-compose.agent.yml)')]
 [group('dev')]
 up-agent:
-    # phaze-he8m: pre-create ./models and ./certs so the uid-1000 worker can
-    # auto-download models and read the CA (avoids a root-owned daemon-created dir).
+    # phaze-he8m: pre-create the default bind sources ./models and ./certs owned by the
+    # operator (avoids a root-owned daemon-created dir). phaze-ynv6w: the worker only
+    # VALIDATES ./models (or whatever MODELS_PATH names) -- it never downloads into it.
     mkdir -p models certs
     docker compose -f docker-compose.agent.yml up -d
 
@@ -199,9 +200,9 @@ cloud-agent-down:
 [doc('Start both stacks on one host (developer convenience)')]
 [group('dev')]
 up-all:
-    # phaze-he8m: pre-create ./certs (api cert bootstrap) and ./models (agent
-    # model auto-download) owned by the operator (uid 1000) before the daemon
-    # auto-creates them root:root.
+    # phaze-he8m: pre-create ./certs (api cert bootstrap) and ./models (the default
+    # models bind source; provisioned by the operator, never downloaded -- phaze-ynv6w)
+    # owned by the operator (uid 1000) before the daemon auto-creates them root:root.
     mkdir -p certs models
     docker compose -f docker-compose.yml -f docker-compose.agent.yml up -d
 
@@ -1474,9 +1475,16 @@ parity-golden-regen TAG="latest":
     # CI publishes the api image at the bare-repo URL (image_suffix="" for api,
     # Phase 29 D-15) — ghcr.io/<owner>/<repo>:<tag>, NOT a /api sub-path. Match it.
     IMAGE="${REGISTRY}/${OWNER}/${REPO}:{{TAG}}"
-    # 1. Provision the essentia model weights locally (host ./models).
-    echo "📥 Provisioning models into ./models ..."
-    bash scripts/download-models.sh models
+    # 1. Use the operator's provisioned model set when MODELS_PATH names one (phaze-ynv6w:
+    #    never re-download a set that already exists); provision ./models only as a fallback.
+    if [ -n "${MODELS_PATH:-}" ]; then
+        MODELS_DIR="$(cd "${MODELS_PATH}" && pwd)"
+        echo "📂 Using provisioned models at ${MODELS_DIR} ..."
+    else
+        MODELS_DIR="$(pwd)/models"
+        echo "📥 Provisioning models into ./models (set MODELS_PATH to reuse an existing set) ..."
+        bash scripts/download-models.sh models
+    fi
     # 2. Run the SHARED dump tool inside the x86 api image over the committed reference clip.
     #    This writes scripts/parity/golden-x86.json for offline inspection.
     #    NOTE: CI (plan 47-04) is the AUTHORITATIVE golden producer; this is the operator regen path.
@@ -1488,7 +1496,7 @@ parity-golden-regen TAG="latest":
     chmod 777 "${OUT_DIR}"
     docker run --rm \
         -v "$(pwd)/scripts/parity:/parity:ro" \
-        -v "$(pwd)/models:/models:ro" \
+        -v "${MODELS_DIR}:/models:ro" \
         -v "${OUT_DIR}:/out" \
         "${IMAGE}" \
         uv run python /parity/dump_analysis.py /parity/reference.wav /models --out /out/golden-x86.json
@@ -1533,11 +1541,18 @@ parity-check TAG="latest":
     OWNER=$(echo "$(git remote get-url origin)" | sed 's|.*github.com[:/]||;s|/.*||' | tr '[:upper:]' '[:lower:]')
     REPO=$(basename -s .git "$(git remote get-url origin)" | tr '[:upper:]' '[:lower:]')
     IMAGE="${REGISTRY}/${OWNER}/${REPO}:{{TAG}}-arm64"
-    # 1. Provision the essentia model weights locally (host ./models).
-    echo "📥 Provisioning models into ./models ..."
-    bash scripts/download-models.sh models
+    # 1. Use the operator's provisioned model set when MODELS_PATH names one (phaze-ynv6w:
+    #    never re-download a set that already exists); provision ./models only as a fallback.
+    if [ -n "${MODELS_PATH:-}" ]; then
+        MODELS_DIR="$(cd "${MODELS_PATH}" && pwd)"
+        echo "📂 Using provisioned models at ${MODELS_DIR} ..."
+    else
+        MODELS_DIR="$(pwd)/models"
+        echo "📥 Provisioning models into ./models (set MODELS_PATH to reuse an existing set) ..."
+        bash scripts/download-models.sh models
+    fi
     # 2. Dump the arm64 actual via the shared recipe — direct python3 for the agent image.
-    just parity-dump "${IMAGE}" ./models scripts/parity/actual.json python3
+    just parity-dump "${IMAGE}" "${MODELS_DIR}" scripts/parity/actual.json python3
     # 3. Compare against the committed/CI golden (non-zero exit on any parity break).
     echo "🔬 Comparing scripts/parity/actual.json against scripts/parity/golden-x86.json ..."
     uv run python scripts/parity/compare_analysis.py scripts/parity/golden-x86.json scripts/parity/actual.json
@@ -1666,10 +1681,10 @@ perf-seed N='200000':
 perf-explain ITER='20':
     uv run python scripts/perf_explain.py --dsn "{{perf_db_dsn}}" --iterations {{ITER}}
 
-[doc('Download essentia ML models for audio analysis')]
+[doc('Provision the essentia ML models into DIR (explicit; phaze never downloads them at runtime -- phaze-ynv6w)')]
 [group('models')]
-download-models:
-    bash scripts/download-models.sh models
+download-models DIR:
+    bash scripts/download-models.sh "{{DIR}}"
 
 [doc('Update pre-commit hooks (with frozen SHAs)')]
 [group('maintenance')]

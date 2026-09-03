@@ -25,7 +25,8 @@ Everything else that mentions essentia is plumbing:
 
 | File | Role (no DSP) |
 | ---- | ------------- |
-| `src/phaze/scripts/download_models.py` | Fetches the `.pb`/`.json` weights from `essentia.upf.edu` (~3.1 GB) |
+| `src/phaze/scripts/download_models.py` | Explicit provisioning tool: fetches the `.pb`/`.json` weights from `essentia.upf.edu` (~3.1 GB) into a named directory. Never called at runtime (phaze-ynv6w) |
+| `src/phaze/tasks/_shared/model_bootstrap.py` | Worker-boot validator: every manifest file present at its pinned size, or exit naming the directory and the missing files. Never downloads |
 | `src/phaze/tasks/_shared/model_bootstrap.py` | Auto-downloads weights when `/models` is empty |
 | `src/phaze/services/kube_staging.py` | Mounts the read-only models PVC at `/models` for Kueue Jobs |
 | `src/phaze/schemas/agent_tasks.py`, `tasks/functions.py`, `job_runner.py` | Carry `models_path`; defer the heavy import to call time |
