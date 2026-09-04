@@ -53,7 +53,8 @@
 #   - ${SCAN_PATH:?SCAN_PATH required} fail-fast on ALL services — docker compose up
 #     errors at parse time on a misconfigured host (WARNING-2/-3).
 #   - SCAN_PATH is rw on the meta + drain workers and ro everywhere else (phaze-6bkk).
-#   - MODELS_PATH bind mount is rw on every worker + watcher (D-21 auto-download).
+#   - MODELS_PATH bind mount is ro on every worker + watcher (phaze-ynv6w: the set is
+#     operator-provisioned and validated at boot, never downloaded, so nothing writes there).
 #   - Every worker + watcher pins container-side MODELS_PATH=/models in its own
 #     `environment:` block (phaze-bvkah). MODELS_PATH is ALSO the compose bind-source var
 #     (`${MODELS_PATH:-./models}` above) — one name serving two coordinate systems, a HOST
@@ -106,7 +107,7 @@ services:
       - MODELS_PATH=/models
     volumes:
       - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
-      - "${MODELS_PATH:-./models}:/models:rw"
+      - "${MODELS_PATH:-./models}:/models:ro"
       - "${CA_PATH:-./certs}:/certs:ro"
     restart: unless-stopped
 
@@ -126,7 +127,7 @@ services:
       # lives behind this mount: execute_approved_batch (move/rename), write_file_tags (mutagen
       # save), write_cue_sheet (CUE write). A :ro mount here fails all three with EROFS.
       - "${SCAN_PATH:?SCAN_PATH required}:/data/music:rw"
-      - "${MODELS_PATH:-./models}:/models:rw"
+      - "${MODELS_PATH:-./models}:/models:ro"
       - "${CA_PATH:-./certs}:/certs:ro"
     restart: unless-stopped
 
@@ -144,7 +145,7 @@ services:
       - MODELS_PATH=/models
     volumes:
       - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
-      - "${MODELS_PATH:-./models}:/models:rw"
+      - "${MODELS_PATH:-./models}:/models:ro"
       - "${CA_PATH:-./certs}:/certs:ro"
     restart: unless-stopped
 
@@ -178,7 +179,7 @@ services:
       # three archive-mutating meta-lane tasks, so a :ro mount here silently fails legacy-queue
       # drain jobs that a lane worker would have completed.
       - "${SCAN_PATH:?SCAN_PATH required}:/data/music:rw"
-      - "${MODELS_PATH:-./models}:/models:rw"
+      - "${MODELS_PATH:-./models}:/models:ro"
       - "${CA_PATH:-./certs}:/certs:ro"
     restart: unless-stopped
 
@@ -192,6 +193,6 @@ services:
       - MODELS_PATH=/models
     volumes:
       - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
-      - "${MODELS_PATH:-./models}:/models:rw"
+      - "${MODELS_PATH:-./models}:/models:ro"
       - "${CA_PATH:-./certs}:/certs:ro"
     restart: unless-stopped

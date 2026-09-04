@@ -24,7 +24,7 @@ phaze/
 │   ├── utils/                  # Pure helpers (no deps)
 │   │   └── humanize.py         #   Relative-time formatter ("4m ago", "2h ago")
 │   ├── scripts/                # Python-callable utility scripts
-│   │   └── download_models.py  #   Fetch essentia weight files (shared by bash + agent bootstrap)
+│   │   └── download_models.py  #   Explicit model provisioning (operator/CI only; never called at runtime)
 │   ├── static/                 # Static assets (favicons, web manifest, OG image)
 │   ├── models/                 # SQLAlchemy ORM models
 │   │   ├── base.py             #   DeclarativeBase + TimestampMixin
@@ -249,7 +249,7 @@ phaze/
 │   ├── cleanup-cache.yml       #   Prune GitHub Actions caches
 │   └── cleanup-images.yml      #   Prune published container images
 ├── scripts/                    # Utility, CI, and perf-tooling scripts
-│   ├── download-models.sh      #   Download essentia ML models
+│   ├── download-models.sh      #   Provision essentia ML models into a named dir (explicit)
 │   ├── update-project.sh       #   Sync/update project tooling
 │   ├── classify-changed-files.sh # Classify changed files as docs-only vs code (CI doc-only skip gate)
 │   ├── derive-seat-name.sh     #   Derive the safe, collision-free Postgres/Redis identifier for a `test-db-for` seat
