@@ -1437,7 +1437,7 @@ image-push:
         echo "✅ ${SERVICE} pushed"
     done
 
-[doc('Build the arm64 essentia agent image locally (operator fallback to the CI build-arm64 job)')]
+[doc('Build the arm64 essentia agent image locally (operator fallback to the CI build-arm64 job; BuildKit required -- the essentia compile runs through an sccache cache mount)')]
 [group('docker')]
 image-build-arm64 TAG="latest":
     #!/usr/bin/env bash
@@ -1447,7 +1447,7 @@ image-build-arm64 TAG="latest":
     REPO=$(basename -s .git "$(git remote get-url origin)" | tr '[:upper:]' '[:lower:]')
     IMAGE="${REGISTRY}/${OWNER}/${REPO}:{{TAG}}-arm64"
     echo "🐳 Building ${IMAGE} (Dockerfile.agent-arm64, native arm64 essentia)..."
-    docker build --build-arg TF_VERSION=2.20.0 -f Dockerfile.agent-arm64 -t "${IMAGE}" .
+    DOCKER_BUILDKIT=1 docker build --build-arg TF_VERSION=2.20.0 -f Dockerfile.agent-arm64 -t "${IMAGE}" .
     echo "✅ built ${IMAGE}"
 
 [doc('Build + push the arm64 essentia agent image to GHCR (operator fallback; CI push is parity-gated in 47-04)')]
@@ -1460,7 +1460,7 @@ image-push-arm64 TAG="latest":
     REPO=$(basename -s .git "$(git remote get-url origin)" | tr '[:upper:]' '[:lower:]')
     IMAGE="${REGISTRY}/${OWNER}/${REPO}:{{TAG}}-arm64"
     echo "🐳 Building and pushing ${IMAGE}..."
-    docker build --build-arg TF_VERSION=2.20.0 -f Dockerfile.agent-arm64 -t "${IMAGE}" .
+    DOCKER_BUILDKIT=1 docker build --build-arg TF_VERSION=2.20.0 -f Dockerfile.agent-arm64 -t "${IMAGE}" .
     docker push "${IMAGE}"
     echo "✅ ${IMAGE} pushed"
 
