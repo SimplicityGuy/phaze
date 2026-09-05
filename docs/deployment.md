@@ -478,7 +478,7 @@ Called from the CI `docker-publish` job, which runs only after `aggregate-result
 This workflow produces **three** GHCR artifacts across three build stages (`push` is `true` for non-PR events):
 
 - A **single-image matrix** (`build-and-push`) builds `Dockerfile` (api) on `linux/amd64`.
-- A native-arm64 stage builds `Dockerfile.agent-arm64` on an `ubuntu-24.04-arm` runner. It `load`s (does not push) the image, runs an import smoke test, and hands the resolved `-arm64` tags + OCI labels to a **parity-gated pusher** (`parity-guard`) — the arm64 image reaches GHCR only after its analysis output matches the x86 golden byte-for-byte, so a parity-divergent image can never publish ahead of the guard.
+- A native-arm64 stage builds `Dockerfile.agent-arm64` on an `ubuntu-24.04-arm` runner, with the essentia C++ compile going through an `sccache` cache mount that the job restores from `actions/cache` (see `docs/arm64-agent-image.md`). It `load`s (does not push) the image, runs an import smoke test, and hands the resolved `-arm64` tags + OCI labels to a **parity-gated pusher** (`parity-guard`) — the arm64 image reaches GHCR only after its analysis output matches the x86 golden byte-for-byte, so a parity-divergent image can never publish ahead of the guard.
 - A `build-job-runner` stage builds `Dockerfile.job` **FROM** the freshly-pushed x86 api image (a `needs: build-and-push` dependent, not a matrix row) — the Kueue one-shot Job image.
 
 | Artifact | Dockerfile | Platform | Consumed by |

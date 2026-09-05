@@ -207,6 +207,26 @@ does not fail, it just waits.
 and reading back the timeout it resolved, so the day upstream unifies the units — the fix everyone
 wants — phaze finds out from a red test rather than from a timeout 1000x too short.
 
+### 3.7 "A BuildKit cache mount survives `--no-cache`; only `docker builder prune` clears it"
+
+Written into `Dockerfile.agent-arm64` and `docs/arm64-agent-image.md` as the reason an sccache
+object cache in a `--mount=type=cache` would make a `--no-cache` rebuild warm. It was the model
+the verification run was designed around: "`--no-cache` discards every layer but keeps the
+mount, so a second build must show hits". The second build showed **0 hits / 338 misses**, and
+the first reading of that was "the hash key is unstable", which is the wrong system entirely.
+
+| | |
+| --- | --- |
+| **True where** | older BuildKit, where the standing complaint was the opposite — cache mounts could *not* be cleared by `--no-cache` and needed `docker builder prune --filter type=exec.cachemount`. Every write-up of `RUN --mount=type=cache` the seat had read was about that era. |
+| **False here** | Docker Engine **29.5.2** (colima, `Server Version: 29.5.2`, containerd v2.2.4) with the `docker/dockerfile:1` frontend: a `--no-cache` build is given a **fresh, empty** cache mount for the same `target`, and that fresh mount then becomes the one subsequent normal builds see. The previous mount's contents are orphaned, not deleted — `docker system df -v` listed two `exec.cachemount` records for one target. |
+| **Measured** | 2026-09-04, worktree `wt/bead/issue/phaze-jfhr0`. A three-line Dockerfile writing `stamp-$STAMP` into the mount and listing it first: two `--no-cache` builds printed `before:` **empty** both times; two following builds *without* `--no-cache` (layer busted by a changed `--build-arg`) printed `before: stamp-2` and then `before: stamp-2 stamp-3`. The full image then confirmed it: a `--no-cache` rebuild of `Dockerfile.agent-arm64` compiled **338 / 338 misses in 394.4 s**; a layer-bust rebuild with no intervening `--no-cache` compiled **338 / 338 hits in 55.0 s** (cold: 417.8 s). `docker --version` client 20.10.12, `docker info` server 29.5.2. |
+| **How it surfaced** | the zero-hit result was investigated as a hash-key problem first: two images' compilers, headers and generated waf caches were diffed byte-for-byte (identical), before a stamp file in the mount showed the mount itself was new. |
+| **What it cost** | two full arm64 image builds (~14 min) spent proving nothing, plus the diffing — about 25 minutes. It could have cost more: the docs would have told the next operator to verify the cache with exactly the command that empties it. |
+
+The general form is the one this ADR already states, with the twist that this belief was true
+*of the same tool* — the neighbouring system was an earlier version of BuildKit, and the
+mitigation was the three-line stamp probe, which took under a minute once it was run.
+
 ______________________________________________________________________
 
 ## 4. The trigger
@@ -351,6 +371,9 @@ ______________________________________________________________________
 
 ## Sources
 
+- **Bead** `phaze-jfhr0` (§3.7, measured 2026-09-04 while verifying the sccache cache mount on
+  the arm64 agent image; the stamp probe and the four build logs are described in the bead's
+  submit comment).
 - **Bead** `phaze-m1drf.1` / `phaze-m1drf.2` (§3.6, measured 2026-08-26 while wiring the OTLP
   exporter; the pin is `tests/shared/telemetry/test_export_timeout_units.py`).
 - **Bead** `phaze-0vsqf` (description and acceptance criteria — §§3.1–3.4 as measured by

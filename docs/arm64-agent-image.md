@@ -163,7 +163,8 @@ multi-stage split that drops the `-dev` packages can't silently regress the conf
 ## Build commands
 
 Native arm64 host required (`ubuntu-24.04-arm` in CI, or Apple Silicon / colima) — the
-essentia C++ compile is ~324 s cold; **no QEMU** (a cross-compile is prohibitively slow).
+essentia C++ compile is ~324 s cold, less with a warm sccache (below); **no QEMU** (a
+cross-compile is prohibitively slow).
 
 ```bash
 # Operator fallback (mirrors the CI build-arm64 job):
@@ -179,6 +180,47 @@ docker build --build-arg TF_VERSION=2.20.0 -f Dockerfile.agent-arm64 \
 + import-smokes the image on a native `ubuntu-24.04-arm` runner and warms the shared
 `type=gha,scope=arm64` build cache. It does **not** push — the registry push is gated on
 the parity guard (below).
+
+### The essentia compile runs through sccache (phaze-jfhr0)
+
+The compile layer is the only from-source C++ build in the repo, and the Docker **layer**
+cache only replays it while nothing above it changed. A `python:3.13-slim-trixie` refresh
+(every Debian / Python security update), any edit above the compile, or any local
+Dockerfile iteration busts the layer, and before this bead each of those re-ran the full
+~324 s compile even though the sources at `ESSENTIA_SHA` and the compiler were unchanged.
+
+[sccache](https://github.com/mozilla/sccache) wraps `gcc`/`g++` for that one `RUN`
+(`CC="sccache gcc" CXX="sccache g++"`, which waf's `compiler_cxx` honours and stores at
+`configure` time) and keeps its object cache in a BuildKit **cache mount**
+(`--mount=type=cache,target=/root/.cache/sccache`), which lives in the builder rather than
+in any layer — so it survives busted layers and never reaches the image. It does **not**
+survive `--no-cache`: on this repo's Docker 29.5.2 / BuildKit a `--no-cache` build gets a
+fresh, empty mount that then becomes the current one (measured 2026-09-04, see
+`docs/design/0016-transferred-model-verification.md` §3.7 — the belief that it would was a
+transferred one). To re-run the compile warm, bust the layer; never pass `--no-cache`. A hit returns the bytes `g++` produced last time, so the parity guard sees identical
+objects either way. The binary itself is installed from a pinned release tag with the asset
+sha256 verified before it is made executable (the same discipline as the Tailwind binary).
+
+- **Reading the evidence.** The layer ends with `sccache --show-stats`; in the build log
+  read the `Cache hits` / `Cache misses` lines. A cold build is all misses; a rebuild after
+  a busted layer should be nearly all hits. The 3 `Non-cacheable calls` (`-E`) are waf
+  configure's preprocessor probes and are expected. Measured 2026-09-04 on colima (native
+  aarch64, Docker 29.5.2): cold **338 misses, compile layer 417.8 s**; layer-bust rebuild
+  **338 hits, 55.0 s**; the cache is 15 MiB.
+- **Locally** (`just image-build-arm64`, which now forces `DOCKER_BUILDKIT=1` because the
+  legacy builder rejects `RUN --mount`) the mount persists in colima's builder across
+  builds. `docker builder prune` discards it, and `--no-cache` replaces it with an empty one.
+- **In CI** a hosted runner's builder is empty every run, so `build-arm64` restores the
+  mount from `actions/cache` before the build and saves it after, via
+  `reproducible-containers/buildkit-cache-dance`. The `cache-map` target there must equal
+  the Dockerfile's mount target — `tests/agents/deployment/test_sccache.py` pins the two,
+  because a mismatch is not a build error, it is a cache that is silently never restored.
+  The `parity-guard` job does not restore it: that job rebuilds from the warmed
+  `scope=arm64` layer cache and, on a hit, never runs the compile at all.
+- **Known limit.** The `actions/cache` key is the hash of `Dockerfile.agent-arm64`, so a
+  compiler bump that arrives *inside* an unchanged Dockerfile (a trixie `gcc` security
+  update) invalidates every object, and the recompiled set is not saved until the
+  Dockerfile next changes. That is a bounded ~324 s per affected run, never a wrong image.
 
 ---
 
