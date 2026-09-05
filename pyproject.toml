@@ -434,7 +434,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
-    "ruff>=0.16.4",
+    "ruff>=0.16.5",
     "types-defusedxml>=0.7.0.20260504",
     "vulture>=2.16",
 ]
