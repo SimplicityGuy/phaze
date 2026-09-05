@@ -136,7 +136,7 @@ git clone https://github.com/SimplicityGuy/phaze.git
 cd phaze
 cp .env.example .env
 just install
-just download-models
+just download-models models   # only on a host with no model set; see docs/quick-start.md
 just up
 ```
 

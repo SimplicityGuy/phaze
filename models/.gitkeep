@@ -1,4 +1,5 @@
-# phaze-he8m: keep ./models/ in the repo so a git clone materializes it owned by
-# the cloning operator (uid 1000), NOT auto-created root:root by rootful dockerd.
-# The uid-1000 agent worker auto-downloads model weights into ./models:/models:rw
-# on first boot; a root-owned dir fails with EACCES.
+# Keep ./models/ in the repo so a git clone materializes it owned by the cloning
+# operator (uid 1000), NOT auto-created root:root by rootful dockerd (phaze-he8m).
+# It is the DEFAULT bind source (`${MODELS_PATH:-./models}`) only; phaze never
+# downloads weights into it (phaze-ynv6w). Point MODELS_PATH at the consolidated
+# model directory, or provision this one with `just download-models models`.

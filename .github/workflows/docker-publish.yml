@@ -246,12 +246,47 @@ jobs:
             type=ref,event=pr
 
       - name: "🔧 Set up Docker Buildx"
+        id: buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e  # v4.3.0
         with:
           platforms: linux/arm64
           driver-opts: |
             image=moby/buildkit:latest
             network=host
+
+      # sccache (phaze-jfhr0). Dockerfile.agent-arm64 runs the ~324 s essentia C++
+      # compile through sccache with its object cache in a BuildKit cache MOUNT. A
+      # mount is builder-local and a hosted runner's builder is empty every run, so
+      # the mount is restored from actions/cache before the build and saved after it
+      # (buildkit-cache-dance injects/extracts it through the buildx builder). The
+      # `cache-map` target below MUST equal the Dockerfile's `--mount=type=cache,
+      # target=` -- tests/agents/deployment/test_sccache.py pins the two together.
+      # Key = the Dockerfile hash: the compile layer only re-runs when the Dockerfile
+      # or the base image changes, and the object cache is exactly as fresh as the
+      # Dockerfile that produced it. Known limit: a gcc bump inside an UNCHANGED
+      # Dockerfile (a trixie security update) invalidates every object, and the
+      # recompiled set is not saved until the Dockerfile next changes -- a bounded
+      # ~324 s cost per such run, never a wrong image.
+      - name: "💾 Cache sccache (essentia C++ objects)"
+        id: sccache-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: sccache-cache
+          key: sccache-arm64-${{ hashFiles('Dockerfile.agent-arm64') }}
+          restore-keys: |
+            sccache-arm64-
+
+      - name: "💉 Inject the sccache cache into the BuildKit cache mount"
+        uses: reproducible-containers/buildkit-cache-dance@2925f5cfd92896e0f5a155899ff2ed2922b575c6  # v3.4.0
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          cache-map: |
+            {
+              "sccache-cache": "/root/.cache/sccache"
+            }
+          # An exact key hit means the saved cache already reflects this Dockerfile;
+          # actions/cache would not re-save it anyway, so skip the extraction.
+          skip-extraction: ${{ steps.sccache-cache.outputs.cache-hit }}
 
       - name: "🚀 Build (load, no push) the arm64 agent image — phaze:*-arm64"
         id: build

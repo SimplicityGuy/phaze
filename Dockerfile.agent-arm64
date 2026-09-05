@@ -114,16 +114,66 @@ RUN bash src/3rdparty/tensorflow/setup_from_python.sh \
     && ln -sf "$TF/libtensorflow_framework.so.2" /usr/local/lib/libtensorflow_framework.so \
     && ldconfig
 
+# sccache (phaze-jfhr0) -- a compiler cache for the ~324 s essentia C++ compile below. The
+# Docker LAYER cache already replays that compile when nothing above it changed, but the layer
+# is busted by every base-image refresh (python:3.13-slim-trixie is rebuilt on each Debian /
+# Python security update), by any edit above the compile, and locally by every Dockerfile
+# iteration -- and on each of those misses the full compile re-ran even though the essentia
+# sources at ESSENTIA_SHA and the compiler had not changed. sccache caches per OBJECT, keyed
+# on the preprocessed source + compiler binary + flags, so a busted layer still hits on every
+# unchanged translation unit. It is a wrapper, not a different compiler: a hit returns the
+# bytes g++ produced last time, so the 47-04 parity guard sees identical objects either way.
+#
+# Pinned tag + asset sha256, verified BEFORE the binary is made executable (phaze-hvzd: a tag
+# can be moved and a release asset replaced without the version string changing; the digest
+# is the pin). The digest is the `.sha256` sidecar of the aarch64-unknown-linux-musl asset for
+# SCCACHE_VERSION. Static musl binary, so no runtime deps. Placed immediately above the compile
+# layer so adding it invalidated the least possible amount of cache.
+ARG SCCACHE_VERSION=v0.17.0
+ARG SCCACHE_SHA256_LINUX_ARM64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77
+# DL4006: the `| sha256sum -c` is the assertion itself; a mismatch is handled explicitly.
+# hadolint ignore=DL4006
+RUN set -eux; \
+    SCCACHE_ASSET="sccache-${SCCACHE_VERSION}-aarch64-unknown-linux-musl"; \
+    wget -q -O /tmp/sccache.tar.gz \
+        "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VERSION}/${SCCACHE_ASSET}.tar.gz"; \
+    echo "${SCCACHE_SHA256_LINUX_ARM64}  /tmp/sccache.tar.gz" | sha256sum -c - \
+        || { echo "❌ ${SCCACHE_ASSET}.tar.gz failed checksum verification" >&2; rm -f /tmp/sccache.tar.gz; exit 1; }; \
+    tar -xzf /tmp/sccache.tar.gz -C /tmp; \
+    install -m 0755 "/tmp/${SCCACHE_ASSET}/sccache" /usr/local/bin/sccache; \
+    rm -rf /tmp/sccache.tar.gz "/tmp/${SCCACHE_ASSET}"; \
+    sccache --version
+
 # FIX #2 (LIBRARY_PATH = link-time -L search; /usr/local/lib isn't on Debian gcc's default)
 # + FIX #3 partial (LD_LIBRARY_PATH = runtime; covers our symlinks + the wheel dir).
 ENV LIBRARY_PATH=/usr/local/lib \
     LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib/python3.13/site-packages/tensorflow
 
-# ~324 s C++ compile against the installed TF wheel.
-RUN python3 waf configure --build-static --with-python --with-tensorflow \
+# ~324 s C++ compile against the installed TF wheel, through sccache.
+#
+# The cache mount is BuildKit's, not a layer: it persists in the builder across builds and
+# busted layers and is never copied into the image. It does NOT survive `--no-cache`: on
+# Docker 29.5.2's BuildKit a `--no-cache` build gets a fresh, EMPTY mount that then becomes
+# the current one (measured 2026-09-04, docs/design/0016-transferred-model-verification.md
+# §3.7), so to re-run this compile warm, bust the layer -- never pass `--no-cache`.
+# `sharing=locked` serialises concurrent builds on it because sccache's disk backend
+# supports one server per directory. In CI the mount is empty on a fresh runner, so the
+# build-arm64 job in docker-publish.yml restores it from actions/cache before this build
+# and saves it after (buildkit-cache-dance); the `cache-map` target there MUST equal the
+# `target=` here -- tests/agents/deployment/test_sccache.py pins the two together.
+# waf's compiler_cxx honours CC/CXX from the environment and stores them at configure
+# time, so both steps run in ONE shell with the exports in scope. `--show-stats` is the
+# build-log evidence (read the "Cache hits" / "Cache misses" lines); `--stop-server`
+# flushes the disk cache inside the layer so nothing is left running when it ends.
+RUN --mount=type=cache,target=/root/.cache/sccache,sharing=locked \
+    export SCCACHE_DIR=/root/.cache/sccache SCCACHE_CACHE_SIZE=2G \
+        CC="sccache gcc" CXX="sccache g++" \
+    && python3 waf configure --build-static --with-python --with-tensorflow \
     && python3 waf -j"$(nproc)" \
     && python3 waf install \
-    && ldconfig
+    && ldconfig \
+    && sccache --show-stats \
+    && sccache --stop-server
 
 # FIX #3 final — libtensorflow_cc.so.2 has a transitive DT_NEEDED on the pip-wheel-vendored
 # libomp-<hash>.so.5 in the sibling tensorflow.libs/ dir. Add it so essentia can dlopen the

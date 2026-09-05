@@ -22,8 +22,8 @@ Covers the cloud-agent invariants for ``docker-compose.cloud-agent.yml``:
    docker-managed named volume disconnected write from read/delete).
 6. NEW — NO volume string contains ``SCAN_PATH`` or ``/data/music`` (a compute
    agent has no media bind — the inverse of the agent compose's fail-fast check).
-7. The MODELS mount is ``:rw`` (D-07 model auto-download) and the CA mount is
-   ``:ro`` (operator-distributed cert).
+7. The MODELS mount is ``:ro`` (phaze-ynv6w: the set is operator-provisioned and only
+   validated at boot, never downloaded) and the CA mount is ``:ro`` (operator-distributed cert).
 8. ``network_mode: host`` is present on the worker (D-05 — host tailscaled +
    MagicDNS reach lux Postgres/Redis/API over the tailnet).
 
@@ -267,14 +267,14 @@ def test_no_media_mount() -> None:
     assert not offenders, "cloud-agent compose must have NO media mount (no SCAN_PATH / /data/music):\n" + "\n".join(offenders)
 
 
-def test_models_mount_rw_and_ca_mount_ro() -> None:
-    """D-07: the MODELS mount is rw (model auto-download) and the CA mount is ro."""
+def test_models_mount_ro_and_ca_mount_ro() -> None:
+    """phaze-ynv6w: the MODELS mount is ro (provisioned, never downloaded) and the CA mount is ro."""
     data = _load_cloud_agent_compose()
     volumes = [v for v in (data["services"]["worker"].get("volumes", []) or []) if isinstance(v, str)]
     models_mounts = [v for v in volumes if "MODELS_PATH" in v or ":/models" in v]
     ca_mounts = [v for v in volumes if "CA_PATH" in v or ":/certs" in v]
     assert models_mounts, f"worker must mount a MODELS volume at /models; got volumes={volumes!r}"
-    assert all(v.endswith(":rw") for v in models_mounts), f"the MODELS mount must be :rw (D-07 model auto-download); got {models_mounts!r}"
+    assert all(v.endswith(":ro") for v in models_mounts), f"the MODELS mount must be :ro (phaze-ynv6w: no runtime writer); got {models_mounts!r}"
     assert ca_mounts, f"worker must mount a CA volume at /certs; got volumes={volumes!r}"
     assert all(v.endswith(":ro") for v in ca_mounts), f"the CA mount must be :ro (operator-distributed cert); got {ca_mounts!r}"
 
