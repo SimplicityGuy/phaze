@@ -340,19 +340,17 @@ async def startup(ctx: dict[str, Any]) -> None:
     # Step 3: /whoami probe with bounded retry.
     identity = await _whoami_with_retry(client)
 
-    # Step 3a (Phase 29 D-21 / 260608-u8g): ensure essentia weights present.
-    # The healthy path is a pure local os.stat size-manifest check (zero network,
-    # near-instant). Placed AFTER whoami so auth fails fast (~60s). WORKER-ONLY
-    # (Phase 29 WARNING-7): the watcher does not call this. Since quick-260707-dh1
-    # FOUR lane workers boot this same startup concurrently against one shared rw
-    # /models mount, so single-owner no longer holds by topology; concurrent-boot
-    # safety is an exclusive flock inside ensure_models_present plus per-process
-    # unique .part.<pid> scratch names in the downloader (phaze-mb8d) -- the
-    # winner downloads, waiters block then re-validate to a zero-network no-op.
-    # asyncio.to_thread keeps even the rare repair path (network + time.sleep
-    # backoff) off the event loop, preventing the scan_directory job
-    # starvation/timeout that motivated this change (260608-u8g). to_thread accepts
-    # a sync callable and propagates its return value and exceptions unchanged.
+    # Step 3a (phaze-ynv6w, supersedes Phase 29 D-21 / 260608-u8g): VALIDATE that the
+    # essentia weights are provisioned -- never download them. A pure local os.stat
+    # size-manifest check (zero network, no writes, so the /models mount is :ro);
+    # a missing or wrong-size file raises with the directory and file names, the
+    # container exits non-zero and restart: unless-stopped retries until the
+    # operator provisions the set. Placed AFTER whoami so auth fails fast (~60s).
+    # WORKER-ONLY (Phase 29 WARNING-7): the watcher does not call this. Since
+    # quick-260707-dh1 FOUR lane workers run this concurrently against the same
+    # read-only mount, which needs no serialization -- nothing writes any more.
+    # asyncio.to_thread keeps the 68 stats off the event loop; it propagates the
+    # sync callable's exceptions unchanged.
     await asyncio.to_thread(ensure_models_present, Path(cfg.models_path))
 
     # Step 3b (Phase 50 D-14): compute-only scratch janitor. Sweep orphaned push scratch off the

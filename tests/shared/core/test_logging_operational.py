@@ -60,11 +60,15 @@ async def test_scan_directory_emits_started_completed_and_per_file_events(tmp_pa
     assert discovered and discovered[0]["log_level"] == "debug"
 
 
-def test_ensure_models_present_emits_validating_at_info(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ensure_models_present_emits_validating_at_info(tmp_path: Path) -> None:
     """ensure_models_present announces 'validating model weights' + 'models validated' at INFO."""
+    from phaze.scripts.download_models import MANIFEST
     import phaze.tasks._shared.model_bootstrap as mb
 
-    monkeypatch.setattr(mb, "download_to", lambda _target: (10, 2))
+    # phaze-ynv6w: no downloader to stub any more -- lay down a complete, size-valid set.
+    for name, size in MANIFEST.items():
+        with (tmp_path / name).open("wb") as fh:
+            fh.truncate(size)
 
     with capture_logs() as captured:
         mb.ensure_models_present(tmp_path)
@@ -76,8 +80,8 @@ def test_ensure_models_present_emits_validating_at_info(tmp_path: Path, monkeypa
     assert validating and validating[0]["log_level"] == "info"
     assert validating[0]["count"] == mb._EXPECTED_MODEL_COUNT
     assert validated and validated[0]["log_level"] == "info"
-    assert validated[0]["present_count"] == 10
-    assert validated[0]["repaired_count"] == 2
+    assert validated[0]["present_count"] == len(MANIFEST)
+    assert "repaired_count" not in validated[0], "nothing is ever repaired at runtime (phaze-ynv6w)"
 
 
 @pytest.mark.asyncio

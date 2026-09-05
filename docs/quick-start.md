@@ -69,10 +69,15 @@ Run these steps from a terminal. Each `just` recipe is defined in the `justfile`
    See [Configuration](configuration.md) for every variable, its default, and whether
    it is required.
 
-4. **Download the essentia audio-analysis models.**
+4. **Provision the essentia audio-analysis models.**
+
+   phaze never downloads models on its own (phaze-ynv6w): the worker validates the directory
+   `MODELS_PATH` names at boot and exits naming the missing files otherwise. If you already
+   hold the consolidated model directory, point `MODELS_PATH` in `.env` at it. Otherwise
+   provision the default bind source once:
 
    ```bash
-   just download-models     # runs scripts/download-models.sh -> models/
+   just download-models models     # runs scripts/download-models.sh -> ./models/
    ```
 
    This is required before the analyze stage can run. Skipping it causes the analysis
@@ -278,15 +283,17 @@ unprotected. See [CLAUDE.md](../CLAUDE.md) for the full rules.
 
 ## 🩹 Common Setup Issues
 
-- **Analysis fails with missing essentia models.**
-  The analyze stage needs the pre-trained TensorFlow models. If they were never
-  downloaded (or `MODELS_PATH` points at an empty directory), run:
+- **The worker exits with `essentia models are not provisioned at /models`.**
+  The analyze stage needs the pre-trained TensorFlow models, and phaze never downloads
+  them (phaze-ynv6w). The message lists every missing or wrong-size file. Point
+  `MODELS_PATH` at the consolidated model directory, or provision the default one:
 
   ```bash
-  just download-models
+  just download-models models
   ```
 
-  Confirm files exist under the directory named by `MODELS_PATH` (default `./models`).
+  Confirm the 68 `.pb`/`.json` files exist under the directory named by `MODELS_PATH`
+  (default `./models`).
 
 - **API returns 500s about missing tables / relations.**
   The schema has not been migrated. Apply migrations and confirm the current revision:

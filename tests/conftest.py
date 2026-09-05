@@ -5,6 +5,8 @@ from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 import hashlib
 import itertools
+import os
+from pathlib import Path
 import secrets
 from typing import Any
 import uuid
@@ -30,6 +32,7 @@ from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from tests import bh_test_report
 from tests._background_drain import leaked_background_tasks_message, pending_router_background_tasks
 from tests._queue_fakes import install_fake_queues
+from tests._real_models import apply_default as _apply_real_models_default
 from tests.db_guard import (
     SharedTestDatabaseError,
     acquire_exclusive_session_lock,
@@ -38,6 +41,20 @@ from tests.db_guard import (
     release_exclusive_session_lock,
     resolve_test_dsn,
 )
+
+
+# phaze-ynv6w: the real-model tests skip unless PHAZE_TEST_MODELS_DIR is set. Supply it from
+# the operator's consolidated ~/essentia-models when (and only when) that directory holds the
+# complete pinned set, so the development host runs them without a per-shell export. Done at
+# import time because ``skipif`` markers evaluate at collection, before any fixture runs.
+# CI runners and containers may have no resolvable home directory: ``Path.home()`` raising
+# must leave the test unset (skipped) rather than break collection for the whole suite.
+try:
+    _real_models_home: Path | None = Path.home()
+except (RuntimeError, KeyError, OSError):
+    _real_models_home = None
+if _real_models_home is not None:
+    _apply_real_models_default(os.environ, _real_models_home)
 
 
 # Re-exported under its historical private name: `tests/shared/test_conftest_dsn_coercion.py`

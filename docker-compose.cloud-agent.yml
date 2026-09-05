@@ -30,7 +30,8 @@
 #   - the scratch mount is a HOST BIND of ${PHAZE_CLOUD_SCRATCH_DIR} to the
 #     identical container path (phaze-cri2: it MUST be the same host dir sshd/rsync
 #     writes pushed files into — a named volume disconnected write from read/reap);
-#     MODELS mount is rw (D-07 model auto-download), CA mount is ro (operator cert).
+#     MODELS mount is ro (phaze-ynv6w: provisioned, validated at boot, never downloaded),
+#     CA mount is ro (operator cert).
 #   - network_mode: host is present on the worker (D-05 host tailscaled).
 #
 # Image tag pinning (D-08/D-16): default `latest-arm64` is convenient for first
@@ -102,6 +103,6 @@ services:
       # such that container uid-1000 (phaze) can read AND delete pushed files
       # (see docs/cloud-burst.md).
       - "${PHAZE_CLOUD_SCRATCH_DIR:?PHAZE_CLOUD_SCRATCH_DIR required}:${PHAZE_CLOUD_SCRATCH_DIR}:rw"
-      - "${MODELS_PATH:-./models}:/models:rw"
+      - "${MODELS_PATH:-./models}:/models:ro"
       - "${CA_PATH:-./certs}:/certs:ro"
     restart: unless-stopped

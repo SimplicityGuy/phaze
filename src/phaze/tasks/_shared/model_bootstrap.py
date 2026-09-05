@@ -1,51 +1,46 @@
-"""Auto-download essentia weights when /models is empty (Phase 29 D-21).
+"""Validate that the essentia weights are PROVISIONED at the models dir -- never download them.
+
+Operator instruction, 2026-09-02 (bead phaze-ynv6w): the model set lives in ONE
+operator-provisioned directory and phaze must use it from there and must never
+re-download it. This module used to be the Phase 29 D-21 auto-download hook
+(``download_to`` on every boot, repairing any missing / wrong-size file from
+essentia.upf.edu under an exclusive ``flock`` in the models dir). That path is
+gone: a missing or wrong-size file is now a startup FAILURE whose message names
+the directory and the offending files, so the operator provisions the set
+(``python -m phaze.scripts.download_models <dir>`` on a host that has no copy,
+or a bind mount of the consolidated directory) instead of the worker silently
+pulling ~3.1 GB.
+
+Consequences that follow from "no writer":
+    - No ``mkdir``, no lockfile, no ``*.part*`` scratch sweep. Nothing here ever
+      opens a file for writing, so the models mount can be -- and now is --
+      read-only (``:ro`` in docker-compose.agent.yml / docker-compose.cloud-agent.yml).
+    - No network. The whole check is one ``os.stat`` per manifest entry, so the
+      startup hook that used to block the event loop on essentia.upf.edu's TLS
+      cannot block on anything.
+    - Cross-process serialization is unnecessary: four lane workers validating
+      the same read-only directory concurrently cannot interfere.
 
 IMPORT-BOUNDARY (extends Phase 26 D-25 + Phase 27 D-22):
-    Postgres-free. Imports: stdlib + phaze.scripts.download_models only.
-    Verified by tests/shared/core/test_task_split.py::test_model_bootstrap_stays_postgres_free
-    (Phase 29 BLOCKER-1: explicit subprocess case for this module, parallel
-    to the existing test_shared_bootstrap_stays_postgres_free which covers
-    agent_bootstrap.py only).
-
-Race avoidance (Phase 29 WARNING-7, superseded for multi-worker by phaze-mb8d):
-    Only phaze.tasks.agent_worker.startup invokes ensure_models_present.
-    phaze.agent_watcher.__main__ does NOT -- the watcher does file discovery
-    only and cannot dispatch analysis jobs until the worker is up anyway.
-    Since quick-260707-dh1 the "worker" is FOUR lane containers
-    (worker-analyze/meta/io) booting concurrently against the same
-    rw /models mount, so single-owner is no longer a topology guarantee.
-    Cross-process serialization is now explicit: ensure_models_present takes a
-    blocking exclusive ``fcntl.flock`` on ``.models.download.lock`` inside
-    models_dir around the whole validate+repair pass. The winner downloads;
-    each waiter acquires afterwards, re-runs the per-file size check via
-    ``download_to``, sees everything present+size-valid, and no-ops with zero
-    network. Beneath the lock, ``_download_one`` streams to a per-process
-    unique ``<dest>.part.<pid>`` scratch name as defense in depth, so even an
-    unserialized caller (e.g. a manual CLI run racing an agent boot) can never
-    truncate another process's in-flight stream. Stale ``*.part*`` leftovers
-    from crashed processes are swept while the exclusive lock is held.
+    Postgres-free. Imports: stdlib + phaze.scripts.download_models (for the
+    baked-in size ``MANIFEST`` only). Verified by
+    tests/shared/core/test_task_split.py::test_model_bootstrap_stays_postgres_free.
 
 Public exports:
-    - ensure_models_present(models_dir): local size-manifest validation (per-file
-      os.stat compare via download_to) + (re-)download missing/wrong-size files
-
-Local-validation contract (260608-u8g, supersedes 260608-jbg): the healthy path is
-now a pure ``os.stat`` size-manifest check -- ZERO network, near-instant -- and the
-network is touched ONLY to repair a missing or wrong-size file. The previous
-contract issued a remote ``HEAD`` per weight file on EVERY boot; inside the async
-startup hook that blocked the event loop for minutes whenever essentia.upf.edu's TLS
-flaked, starving the ``scan_directory`` SAQ job. That per-boot remote validation was
-removed because it depended on a flaky remote and blocked startup.
+    - ensure_models_present(models_dir): validate every manifest file's presence
+      and byte size; raise ``RuntimeError`` naming the dir and every offending file.
+    - MissingModels: the structured result behind that error, for callers that want
+      the file lists rather than the message.
 """
 
 from __future__ import annotations
 
-import fcntl
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import structlog
 
-from phaze.scripts.download_models import CLASSIFIER_MODELS, GENRE_MODELS, download_to
+from phaze.scripts.download_models import CLASSIFIER_MODELS, GENRE_MODELS, MANIFEST
 
 
 if TYPE_CHECKING:
@@ -59,106 +54,87 @@ _EXPECTED_MODEL_COUNT = len(CLASSIFIER_MODELS) + len(GENRE_MODELS)
 """Total model configurations the production agent must have on disk (each
 contributing a ``.pb`` + ``.json`` pair, i.e. ``_EXPECTED_MODEL_COUNT * 2`` files).
 
-Used only for the operator-facing startup estimate. It is NOT a completeness
-gate: a glob count cannot tell a truncated `.pb` from a full one, so a count
-short-circuit blessed corrupt files as "present" (260608-jbg). Completeness is
-now "all canonical files present AND size-valid", enforced per file by
-``download_to``'s local size-manifest comparison (`_ensure_present_local`, 260608-u8g).
+Used for the operator-facing log lines. Completeness is "every manifest file
+present AND size-valid", checked per file below -- a glob count cannot tell a
+truncated ``.pb`` from a full one (260608-jbg), so no count ever short-circuits.
 """
 
 
-_LOCK_FILENAME = ".models.download.lock"
-"""Lockfile name inside ``models_dir`` guarding the validate+repair pass (phaze-mb8d).
+@dataclass(frozen=True)
+class MissingModels:
+    """What a failed validation found, in the order the manifest lists the files.
 
-Deliberately does NOT match the ``*.part*`` stale-scratch sweep glob or the
-bootstrap's ``*.pb`` completeness glob.
-"""
-
-
-def _sweep_stale_part_files(models_dir: Path) -> int:
-    """Remove leftover ``*.part*`` scratch files; return how many were removed.
-
-    MUST only be called while the exclusive download lock is held: under the lock
-    no other agent process can have an in-flight stream, so any surviving scratch
-    file (fixed-name ``.part`` from pre-phaze-mb8d builds, or ``.part.<pid>`` from
-    a hard-killed process) is garbage from a crashed writer.
+    ``missing`` names files that do not exist; ``wrong_size`` pairs each present
+    file whose ``st_size`` disagrees with the manifest with ``(actual, expected)``.
     """
-    stale = list(models_dir.glob("*.part*"))
-    for stray in stale:
-        stray.unlink(missing_ok=True)
-    return len(stale)
+
+    models_dir: Path
+    missing: tuple[str, ...] = field(default=())
+    wrong_size: tuple[tuple[str, int, int], ...] = field(default=())
+
+    def __bool__(self) -> bool:
+        return bool(self.missing or self.wrong_size)
+
+    def message(self) -> str:
+        """The operator-facing failure text: the directory, the count, and every offending file."""
+        lines = [
+            f"essentia models are not provisioned at {self.models_dir}: "
+            f"{len(self.missing)} missing, {len(self.wrong_size)} wrong-size of {len(MANIFEST)} expected files. "
+            "phaze never downloads models -- point MODELS_PATH / PHAZE_MODELS_DIR at the consolidated model directory, "
+            "or provision this one with `python -m phaze.scripts.download_models <dir>` on a host that has no copy."
+        ]
+        lines.extend(f"  missing: {name}" for name in self.missing)
+        lines.extend(f"  wrong size: {name} is {actual} bytes, manifest expects {expected}" for name, actual, expected in self.wrong_size)
+        return "\n".join(lines)
+
+
+def validate_models(models_dir: Path) -> MissingModels:
+    """Compare every manifest file under ``models_dir`` against its pinned byte size.
+
+    Pure ``os.stat``: no network, no writes, no directory creation. A missing
+    directory reports every file as missing rather than raising, so the caller's
+    one error message covers that case too.
+    """
+    missing: list[str] = []
+    wrong_size: list[tuple[str, int, int]] = []
+    for name, expected in MANIFEST.items():
+        path = models_dir / name
+        if not path.is_file():
+            missing.append(name)
+            continue
+        actual = path.stat().st_size
+        if actual != expected:
+            wrong_size.append((name, actual, expected))
+    return MissingModels(models_dir=models_dir, missing=tuple(missing), wrong_size=tuple(wrong_size))
 
 
 def ensure_models_present(models_dir: Path) -> None:
-    """Validate every weight file's size and (re-)download as needed.
+    """Fail fast unless every weight file is present at ``models_dir`` with its pinned size.
 
-    Local-validation contract (260608-u8g): there is no glob-count short-circuit.
-    ``download_to`` is invoked unconditionally and performs the per-file integrity
-    check -- but the healthy path is now a pure ``os.stat`` comparison against a
-    baked-in size manifest (ZERO network, near-instant). It keeps any file whose
-    on-disk byte size matches the manifest (no HTTP call) and re-downloads only a
-    missing or wrong-size one. A fully valid on-disk set therefore returns instantly
-    without touching the network, while a correctly-named-but-truncated `.pb` (which
-    the old count gate accepted) is detected and replaced. The per-boot remote
-    ``HEAD`` validation (260608-jbg) was removed because it blocked the async startup
-    event loop and depended on a flaky remote; the rare repair GET still validates
-    the streamed byte count against the server ``Content-Length``.
-
-    Cross-process serialization (phaze-mb8d): the whole validate+repair pass runs
-    under a blocking exclusive ``fcntl.flock`` on ``.models.download.lock`` inside
-    ``models_dir``, because all four lane workers (plus worker-drain) boot this
-    same startup concurrently against one shared rw /models mount. Exactly one
-    process downloads; each waiter then acquires the lock, re-runs the per-file
-    size check, finds everything present+size-valid, and returns with zero
-    network. Stale ``*.part*`` scratch files from crashed writers are swept while
-    the lock is held. The flock is advisory but every ensure_models_present
-    caller takes it, and it is dropped automatically on process death (fd close),
-    so a hard-killed winner can never wedge the waiters.
-
-    Failures during the download are wrapped in :class:`RuntimeError` so the
+    Raises :class:`RuntimeError` carrying :meth:`MissingModels.message` -- the
+    directory, the counts, and every missing / wrong-size file by name -- so the
     agent_worker container exits non-zero and the ``restart: unless-stopped``
-    policy retries (T-29-05-02). The wrapped cause is the per-file
-    ``RuntimeError`` raised by ``_download_one`` after exhausting its in-process
-    retries (260608-i21), so the surfaced message names the specific file and the
-    attempt count -- a transient TLS/handshake/read drop or a 5xx is retried in
-    place and no longer reaches this wrap. A repair whose promoted size still
-    violates the manifest raises the same way (phaze-10ij).
+    policy keeps retrying until the operator provisions the set (T-29-05-02). A
+    wrong-size file is reported, never deleted: this function owns no writes.
+
+    Succeeds silently (one INFO line) on a complete, size-valid set, including on
+    a read-only mount.
     """
-    models_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = models_dir / _LOCK_FILENAME
-    with lock_path.open("a") as lock_fh:
-        try:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            # A sibling lane worker is mid-download on the shared volume. Block until
-            # it finishes (a fresh full set is ~3.1 GB, so this can take minutes),
-            # then fall through to the zero-network re-validation.
-            logger.info(
-                "another worker holds the model download lock -- waiting for it to finish before re-validating",
-                lock=str(lock_path),
-                dir=str(models_dir),
-            )
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
-        swept = _sweep_stale_part_files(models_dir)
-        if swept:
-            logger.info("swept stale model scratch files", count=swept, dir=str(models_dir))
-        logger.info(
-            "validating model weights -- essentia weights at %s (~3.1 GB across %d files); a fresh "
-            "download is multi-GB and can take many minutes (longer on a slow link) -- a legitimate "
-            "transfer is not a hang",
-            models_dir,
-            _EXPECTED_MODEL_COUNT,
-            count=_EXPECTED_MODEL_COUNT,
+    logger.info(
+        "validating model weights -- %d models (%d files, ~3.1 GB) expected at %s; phaze never downloads them",
+        _EXPECTED_MODEL_COUNT,
+        len(MANIFEST),
+        models_dir,
+        count=_EXPECTED_MODEL_COUNT,
+        dir=str(models_dir),
+    )
+    result = validate_models(models_dir)
+    if result:
+        logger.error(
+            "model weights are not provisioned",
             dir=str(models_dir),
+            missing_count=len(result.missing),
+            wrong_size_count=len(result.wrong_size),
         )
-        try:
-            present_count, repaired_count = download_to(models_dir)
-        except Exception as exc:
-            msg = f"Model download failed: {exc}"
-            raise RuntimeError(msg) from exc
-        logger.info(
-            "models validated",
-            present_count=present_count,
-            repaired_count=repaired_count,
-            dir=str(models_dir),
-        )
+        raise RuntimeError(result.message())
+    logger.info("models validated", present_count=len(MANIFEST), dir=str(models_dir))

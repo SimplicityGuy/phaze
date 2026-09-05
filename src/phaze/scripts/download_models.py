@@ -1,9 +1,13 @@
-"""Python helper that fetches the essentia weight files (Phase 29 D-21).
+"""Explicit PROVISIONING tool that fetches the essentia weight files into a directory.
 
-The same URL list the existing bash script uses, exposed as a Python function so
-both bash (``scripts/download-models.sh``) and the agent bootstrap
-(``phaze.tasks._shared.model_bootstrap.ensure_models_present``) can drive the
-download.
+Since bead phaze-ynv6w (operator instruction, 2026-09-02) this is invoked ONLY by an
+operator or by CI (``scripts/download-models.sh`` -> ``just download-models``, the
+k8s populate Job in docs/k8s-burst.md, the docker-publish parity golden on a cache
+miss). Nothing at runtime calls it: ``phaze.tasks._shared.model_bootstrap`` imports
+only the size ``MANIFEST`` from here and FAILS on a missing file instead of
+repairing it, because the model set lives in one operator-provisioned directory
+and phaze must never re-download it. The output directory is a required CLI
+argument for the same reason -- no default that quietly pulls ~3.1 GB into ``./models``.
 
 Local-validation contract (260608-u8g): on every invocation each expected file's
 on-disk byte size is compared against a baked-in size ``MANIFEST`` -- a pure
@@ -32,14 +36,11 @@ Atomicity (T-29-05-03 / phaze-mb8d): each download writes to a per-process
 unique ``<dest>.part.<pid>`` scratch file and is promoted to ``<dest>`` via
 ``os.replace`` (atomic on POSIX) only after the byte stream completes and any
 ``Content-Length`` is satisfied; a crash mid-download leaves only the
-``.part.<pid>`` file which is NOT counted by ``models_dir.glob("*.pb")`` in the
-bootstrap caller (and is swept by ``ensure_models_present`` under its exclusive
-lock). The pid suffix means a stray concurrent invocation from another process
-can never truncate this process's in-flight stream or steal its scratch file —
-each writer promotes only bytes it streamed itself. Cross-process serialization
-of the whole download belongs to the caller (``ensure_models_present`` takes an
-exclusive ``flock`` in the models dir); the unique temp name is the
-defense-in-depth layer beneath it.
+``.part.<pid>`` file, which no manifest entry matches, so the runtime validator
+reports the real file as missing and a re-run of this tool repairs it. The pid
+suffix means a stray concurrent invocation from another process can never
+truncate this process's in-flight stream or steal its scratch file — each writer
+promotes only bytes it streamed itself.
 
 Resilience (260608-i21 / 260608-u8g): the repair GET is driven through the shared
 ``_with_retries`` helper, which retries transient transport errors and 5xx server
@@ -49,10 +50,10 @@ wedge it indefinitely. A 4xx response fails fast (no retry); only after exhausti
 ``_MAX_ATTEMPTS`` does a per-file named ``RuntimeError`` propagate.
 
 CLI entry:
-    python -m phaze.scripts.download_models [output_dir]
+    python -m phaze.scripts.download_models <output_dir>
 
-The single positional argument defaults to ``./models``. The Bash shim
-``scripts/download-models.sh`` is a thin wrapper that invokes this module.
+The single positional argument is REQUIRED (exit 2 with usage otherwise). The Bash
+shim ``scripts/download-models.sh`` is a thin wrapper that invokes this module.
 """
 
 from __future__ import annotations
@@ -273,8 +274,8 @@ def _download_one(url: str, dest: Path) -> None:
     Always fetches: the validate-or-download decision lives in
     ``_ensure_present_local`` (local size compare), so callers route through it
     rather than calling this directly. A crash mid-stream leaves only
-    ``<dest>.part.<pid>`` which the bootstrap's ``*.pb`` glob does NOT match --
-    the next start will retry. The pid-suffixed scratch name (phaze-mb8d) means
+    ``<dest>.part.<pid>``, which the runtime validator ignores (the real file is
+    reported missing) -- re-run this tool to repair. The pid-suffixed scratch name (phaze-mb8d) means
     a concurrent invocation from another process opens a DIFFERENT temp file, so
     it can never truncate this process's in-flight stream (the shared-``.part``
     tear that could promote an exact-size zero-holed weight).
@@ -347,9 +348,8 @@ def _ensure_present_local(url: str, dest: Path, expected_size: int) -> bool:
     detects truncation but not an upstream re-publish or a proxy/error-page body
     whose size disagrees with the pinned manifest. A repaired file whose on-disk
     size still violates the manifest is deleted (so essentia can never load it)
-    and a per-file ``RuntimeError`` is raised, which ``ensure_models_present``
-    converts to a non-zero container exit (T-29-05-02) instead of blessing the
-    known-bad file as a successful repair.
+    and a per-file ``RuntimeError`` is raised, so the tool exits non-zero instead
+    of blessing the known-bad file as a successful repair.
 
     The missing/mismatch repair path emits INFO ``downloading model`` (with the
     reason) and INFO ``model download complete`` (with the on-disk byte size) so an
@@ -387,9 +387,8 @@ def download_to(target_dir: Path) -> tuple[int, int]:
     """Local-validate + repair all classifier + genre weight files into ``target_dir``.
 
     Returns ``(present_count, repaired_count)``: files kept as-is (size-valid, no
-    network) vs. (re-)downloaded (missing or wrong-size). The model-bootstrap caller
-    logs this tally so an operator can see how much of a fresh-vs-resumed validation
-    actually transferred.
+    network) vs. (re-)downloaded (missing or wrong-size), so an operator can see
+    how much of a fresh-vs-resumed provisioning run actually transferred.
 
     Each file is routed through ``_ensure_present_local``, which compares the on-disk
     byte size against the baked-in ``MANIFEST`` and only GETs a file that is missing
@@ -423,5 +422,10 @@ if __name__ == "__main__":  # pragma: no cover  # CLI invocation guard
     # PR3 observability: configure the central structlog pipeline so the
     # validating/downloading INFO/DEBUG events render when run as a CLI.
     configure_logging()
-    target = Path(sys.argv[1] if len(sys.argv) > 1 else "./models")
-    download_to(target)
+    if len(sys.argv) != 2:
+        sys.stderr.write(
+            "usage: python -m phaze.scripts.download_models <output_dir>\n"
+            "(phaze never downloads models at runtime; this is an explicit provisioning step -- name the directory)\n"
+        )
+        sys.exit(2)
+    download_to(Path(sys.argv[1]))

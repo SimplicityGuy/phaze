@@ -1,4 +1,8 @@
-"""Tests for `phaze.scripts.download_models` (Phase 29 D-21 / 260608-i21 / 260608-u8g).
+"""Tests for `phaze.scripts.download_models` (Phase 29 D-21 / 260608-i21 / 260608-u8g / phaze-ynv6w).
+
+Since phaze-ynv6w this module is an EXPLICIT provisioning tool (operator / CI / the k8s
+populate Job) and nothing at runtime calls it; the runtime validator lives in
+``phaze.tasks._shared.model_bootstrap`` and is tested there.
 
 Covers the local-validation + repair behaviour:
 - `_download_one` streams to `<dest>.part` and atomically renames on success
@@ -530,3 +534,52 @@ def test_download_to_repairs_only_the_missing_file(
     assert get_route.call_count == 1, "exactly one GET for the single missing file"
     assert (tmp_path / missing_name).exists(), "the missing file must now exist"
     assert (tmp_path / missing_name).read_bytes() == b"P"
+
+
+def test_download_to_creates_pb_and_json_pairs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The explicit provisioning tool still routes a .pb + .json pair through ``_ensure_present_local`` per model.
+
+    (Moved here from the bootstrap tests in phaze-ynv6w: ``download_to`` is now operator/CI-only,
+    but its walk over both model tuples is what the k8s populate Job and CI rely on.)
+    """
+    fetched: list[tuple[str, Path]] = []
+
+    def fake_ensure_present_local(url: str, dest: Path, expected_size: int) -> None:
+        fetched.append((url, dest))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"\x00")
+
+    monkeypatch.setattr(download_models, "_ensure_present_local", fake_ensure_present_local)
+
+    download_models.download_to(tmp_path)
+
+    expected_file_count = (len(download_models.CLASSIFIER_MODELS) + len(download_models.GENRE_MODELS)) * 2
+    assert len(fetched) == expected_file_count
+    pb_files = sorted(p.name for _, p in fetched if p.suffix == ".pb")
+    json_files = sorted(p.name for _, p in fetched if p.suffix == ".json")
+    assert len(pb_files) == len(download_models.CLASSIFIER_MODELS) + len(download_models.GENRE_MODELS)
+    assert len(json_files) == len(download_models.CLASSIFIER_MODELS) + len(download_models.GENRE_MODELS)
+
+
+# --------------------------------------------------------------------------- #
+# CLI: the output directory is required (phaze-ynv6w)
+# --------------------------------------------------------------------------- #
+
+
+def test_cli_without_output_dir_exits_2_with_usage_and_fetches_nothing(tmp_path: Path) -> None:
+    """``python -m phaze.scripts.download_models`` with no argument must not default to ./models."""
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "phaze.scripts.download_models"],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        check=False,
+        timeout=120,
+    )
+
+    assert result.returncode == 2, result.stderr
+    assert "usage: python -m phaze.scripts.download_models <output_dir>" in result.stderr
+    assert not (tmp_path / "models").exists(), "no default output directory may be created"
