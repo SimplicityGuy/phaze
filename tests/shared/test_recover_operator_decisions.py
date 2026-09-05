@@ -27,7 +27,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import pytest
 
@@ -629,6 +629,95 @@ def test_main_end_to_end_prints_markdown(tmp_path: Path, capsys: pytest.CaptureF
 # --- Real-transcript integration: the actual bead fixtures ----------------------------------------
 
 
+def _recover_or_skip_if_window_empty(module: ModuleType, *, since: str, until: str, bead: str) -> Any:
+    """Run ``module.recover`` over ``[since, until)`` and skip when the window is empty corpus-wide.
+
+    GENERAL FORM (CLAUDE.md acceptance-criteria rule 5): a real-corpus fixture is only as durable
+    as the corpus it reads. ``~/.claude/projects`` is local-only and unversioned by the tool's own
+    design (see its ``LIMITS_NOTICE``) -- transcripts rotate or get pruned independently of any code
+    change here, so a fixture pinned to one machine's history can start failing for a reason no code
+    change can fix. That failure mode is indistinguishable from a real parser regression unless
+    something checks, ahead of the content assertion, whether the window has ANY transcript activity
+    left at all. This precondition is that check, and the same shape applies to every test in this
+    file (and, generally, to any test asserting against real, external, unversioned data this repo
+    does not control): probe for "is there anything here to assert against", skip with a reason that
+    names the corpus-vs-parser distinction when there is not, and otherwise let the real assertion
+    run and fail on its own evidence if the parser is actually wrong.
+
+    Do not broaden this into "skip on any assertion failure" -- it only short-circuits when the
+    window is COMPLETELY empty (no human turns, no AskUserQuestion events at all). A window that has
+    activity but not the expected match is a real finding and must fail loudly.
+    """
+    result = module.recover(_REAL_PROJECTS_ROOT, since=since, until=until)
+    if not result.human_turns and not result.ask_user_question_events:
+        pytest.skip(
+            f"{bead}: no transcript activity found anywhere in the corpus for [{since}, {until}) -- "
+            "this is corpus rotation/pruning (transcripts are local-only and unversioned), NOT a "
+            "parser regression. If this starts failing again, first widen the date range to confirm "
+            "the corpus still has nothing for the window before suspecting the parser."
+        )
+    return result
+
+
+class _StubEmptyResult:
+    """Stand-in for `RecoveryResult` with no activity at all -- the 'corpus rotated' shape."""
+
+    human_turns: ClassVar[list[object]] = []
+    ask_user_question_events: ClassVar[list[object]] = []
+
+
+class _StubNonEmptyResult:
+    """Stand-in for `RecoveryResult` carrying a human turn -- the 'proceed to assert' shape."""
+
+    human_turns: ClassVar[list[str]] = ["a turn"]
+    ask_user_question_events: ClassVar[list[object]] = []
+
+
+def test_recover_or_skip_if_window_empty_skips_when_corpus_has_no_activity() -> None:
+    """CI-safe unit coverage of the discriminating precondition itself.
+
+    This is the general form from `_recover_or_skip_if_window_empty`'s own docstring, applied to
+    itself: the precondition that tells "input gone" apart from "code wrong" needs its own coverage
+    that does NOT depend on the real corpus -- otherwise a fresh checkout or CI (where
+    `~/.claude/projects` is absent, so the whole `TestRealCorpusRegressionFixtures` class is skipped)
+    would never exercise this branch, and a regression in the skip reason text would go unnoticed
+    exactly where it matters: on someone else's machine, reading someone else's skip.
+    """
+
+    class _StubModule:
+        @staticmethod
+        def recover(root: Path, *, since: str, until: str) -> _StubEmptyResult:  # noqa: ARG004
+            return _StubEmptyResult()
+
+    with pytest.raises(pytest.skip.Exception) as exc_info:
+        _recover_or_skip_if_window_empty(
+            cast("ModuleType", _StubModule),
+            since="2000-01-01T00:00:00Z",
+            until="2000-01-01T00:00:01Z",
+            bead="phaze-fake",
+        )
+    message = str(exc_info.value)
+    assert "phaze-fake" in message
+    assert "NOT a parser regression" in message
+
+
+def test_recover_or_skip_if_window_empty_returns_result_when_activity_present() -> None:
+    """The non-skip branch: any activity in the window means the caller proceeds to assert on it."""
+
+    class _StubModule:
+        @staticmethod
+        def recover(root: Path, *, since: str, until: str) -> _StubNonEmptyResult:  # noqa: ARG004
+            return _StubNonEmptyResult()
+
+    result = _recover_or_skip_if_window_empty(
+        cast("ModuleType", _StubModule),
+        since="2000-01-01T00:00:00Z",
+        until="2000-01-01T00:00:01Z",
+        bead="phaze-fake",
+    )
+    assert result.human_turns == ["a turn"]
+
+
 @pytest.mark.skipif(
     not _HAS_REAL_TRANSCRIPTS,
     reason="~/.claude/projects is absent on this machine -- this tool is local-only by design (see its LIMITS_NOTICE); skip rather than fail.",
@@ -640,11 +729,16 @@ class TestRealCorpusRegressionFixtures:
     tool over real transcripts that has only ever been checked against a synthetic corpus is exactly
     the verification-fidelity gap ADR-0012 (G3) documents: the real consumer of this tool's claims is
     the real transcript format, and only the real corpus can confirm the parser holds against it.
+
+    Each fixture below first calls `_recover_or_skip_if_window_empty` rather than `module.recover`
+    directly: the class-level `skipif` above only covers "the corpus doesn't exist on this machine",
+    not "this particular window rotated out of an otherwise-present corpus" -- exactly what happened
+    to the phaze-6r39 fixture (phaze-cm5ds). See that helper's docstring for the general form.
     """
 
     def test_phaze_3ea41_ask_user_question_is_recovered_with_all_options_and_the_answer(self) -> None:
         module = _load_module()
-        result = module.recover(_REAL_PROJECTS_ROOT, since="2026-08-12T00:30:00Z", until="2026-08-12T00:32:00Z")
+        result = _recover_or_skip_if_window_empty(module, since="2026-08-12T00:30:00Z", until="2026-08-12T00:32:00Z", bead="phaze-3ea41")
 
         matches = [e for e in result.ask_user_question_events if any("phaze-3ea41" in q.text for q in e.questions)]
         assert matches, "expected the phaze-3ea41 AskUserQuestion batch in this window"
@@ -665,7 +759,7 @@ class TestRealCorpusRegressionFixtures:
 
     def test_phaze_kj8dl_pair_is_recovered_by_date_range(self) -> None:
         module = _load_module()
-        result = module.recover(_REAL_PROJECTS_ROOT, since="2026-08-11T19:03:00Z", until="2026-08-11T19:05:00Z")
+        result = _recover_or_skip_if_window_empty(module, since="2026-08-11T19:03:00Z", until="2026-08-11T19:05:00Z", bead="phaze-kj8dl")
 
         matches = [e for e in result.ask_user_question_events if e.ask_timestamp.startswith("2026-08-11T19:03:30")]
         assert matches, "expected the phaze-kj8dl AskUserQuestion batch in this window"
@@ -677,7 +771,7 @@ class TestRealCorpusRegressionFixtures:
 
     def test_phaze_6r39_free_text_statement_is_recovered_by_date_range(self) -> None:
         module = _load_module()
-        result = module.recover(_REAL_PROJECTS_ROOT, since="2026-08-04T19:19:00Z", until="2026-08-04T19:20:00Z")
+        result = _recover_or_skip_if_window_empty(module, since="2026-08-04T19:19:00Z", until="2026-08-04T19:20:00Z", bead="phaze-6r39")
 
         matches = [t for t in result.human_turns if t.timestamp.startswith("2026-08-04T19:19:29")]
         assert matches, "expected the phaze-6r39 human-typed reply in this window"
