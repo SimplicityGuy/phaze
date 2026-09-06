@@ -21,6 +21,7 @@ from phaze.models.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
     from phaze.models.metadata import FileMetadata
+    from phaze.models.set_profile import SetProfile
 
 
 class FileRecord(TimestampMixin, Base):
@@ -80,6 +81,21 @@ class FileRecord(TimestampMixin, Base):
     )
 
     file_metadata: Mapped[FileMetadata | None] = relationship("FileMetadata", foreign_keys="FileMetadata.file_id", uselist=False, lazy="noload")
+    # phaze-x1qr3.1 (migration 063): the per-file set projection, 1:1 and deleted with the file.
+    # `passive_deletes=True` is the load-bearing half -- it tells the ORM NOT to load the child and
+    # NULL its FK on `session.delete(file)`, but to let the FK's own ON DELETE CASCADE remove the
+    # row. Without it, `cascade="all, delete-orphan"` plus `lazy="noload"` is the one combination
+    # that silently does neither: noload leaves the collection unloaded, so the unit of work has
+    # nothing to cascade over. `lazy="noload"` matches `file_metadata` above -- no query on this
+    # repo's many `FileRecord` reads pays for a join it did not ask for.
+    set_profile: Mapped[SetProfile | None] = relationship(
+        "SetProfile",
+        foreign_keys="SetProfile.file_id",
+        uselist=False,
+        lazy="noload",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     __table_args__ = (
         Index("ix_files_sha256_hash", "sha256_hash"),

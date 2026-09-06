@@ -77,6 +77,23 @@ class AnalysisWindow(TimestampMixin, Base):
     Fine-tier windows populate ``bpm``/``musical_key``; coarse-tier windows
     populate ``mood``/``style``/``danceability``/``features``. All analysis
     columns are nullable so either tier can omit the other tier's fields.
+
+    phaze-x1qr3.1 (migration 063) adds three more nullable columns -- ``energy``,
+    ``camelot`` and ``mood_scores`` -- the per-window half of the set projection
+    (section E of the file-viewer epic). They are a NARROW PROJECTION of what
+    ``features`` already holds, not new measurement: reading a ~5 KB JSONB per row
+    does not scale to the 4 million window rows the 200 000-file target implies, so
+    every viewer surface queries these columns instead. Nothing writes them yet --
+    ``phaze-x1qr3.2`` computes them and ``phaze-x1qr3.3`` writes them at analysis
+    completion and backfills existing rows from the stored JSONB with NO
+    re-analysis. Until then every row carries NULL, which is the honest reading of
+    "not yet projected" and is exactly what the lanes must render as a gap.
+
+    ``mood_scores`` keys are the 11 fixed names in the single fixed archive-wide
+    order declared in :data:`phaze.services.set_projection.MOOD_ORDER` -- the same
+    order ``SetProfile.mean_vector`` is positional in, and the same order the mood
+    river, its legend and the tracklist mood dots share. See that constant for why
+    the order is pinned as a literal rather than derived from ``MODEL_SETS``.
     """
 
     __tablename__ = "analysis_window"
@@ -100,3 +117,18 @@ class AnalysisWindow(TimestampMixin, Base):
     style: Mapped[str | None] = mapped_column(String(50), nullable=True)
     danceability: Mapped[float | None] = mapped_column(Float, nullable=True)
     features: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # --- Set projection (phaze-x1qr3.1, migration 063). All nullable; see the class docstring. ---
+    # The energy scalar in [0, 1], one per COARSE window (phaze-x1qr3.2 defines the weighted sum
+    # over danceability/party/aggressive/relaxed/sad and the file-local BPM z-score). The range is a
+    # writer contract documented here rather than a CHECK constraint: this table carries millions of
+    # rows and the bead's whole premise is additive columns that rewrite nothing and take no
+    # validating scan.
+    energy: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Camelot wheel position of this window's key -- "8A", "12B", at most 3 characters. FINE tier
+    # (that is the tier carrying `musical_key`), derived from the "A minor" form via the 24-entry
+    # table phaze-x1qr3.2 adds, which also accepts essentia's sharp/flat spellings.
+    camelot: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    # The 11 positive-class means for this COARSE window, averaged over the 3 model variants, keyed
+    # and ordered by `services.set_projection.MOOD_ORDER`. A flat {name: float} object, ~200 bytes
+    # against `features`' ~5 KB -- which is the entire reason this column exists.
+    mood_scores: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
