@@ -63,7 +63,14 @@ class SetProfile(TimestampMixin, Base):
     # The cached set glyph: per-COARSE-window (camelot_number, energy) cells, from which the
     # `ui/primitives.html` macro renders hue and lightness. Cached rather than recomputed because
     # phaze-x1qr3.9 draws this glyph once per ROW in the Files table.
-    glyph: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    #
+    # `list | dict | None`, not `dict | None` (phaze-x1qr3.3): the writer stores
+    # `SetProfileProjection.glyph` (`list[dict[str, int | float | None]] | None`) here directly.
+    # JSONB has no notion of "object vs array" as a Python-side type distinction -- both round-trip
+    # through the same column -- so widening the annotation to match the value actually written is
+    # the honest fix, not a wrapper that hides a list inside a dict key strict mypy would otherwise
+    # be unable to see through.
+    glyph: Mapped[list | dict | None] = mapped_column(JSONB, nullable=True)
     # The file's modal Camelot position -- "8A", at most 3 characters, matching
     # `AnalysisWindow.camelot`'s width. The set's key, shown under the title and used for the
     # wheel-adjacency term in similarity.

@@ -73,6 +73,7 @@ from phaze.services.agent_upsert import build_field_lww_set_clause
 from phaze.services.bulk_insert import chunk_rows
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.scheduling_ledger import clear_ledger_entry
+from phaze.services.set_projection_writer import annotate_window_rows, upsert_set_profile
 
 
 if TYPE_CHECKING:
@@ -219,12 +220,33 @@ async def _replace_analysis_windows(session: AsyncSession, file_id: uuid.UUID, w
     ATOMICITY: the DELETE and every insert chunk execute on the CALLER's session inside its
     transaction, alongside the aggregate upsert, so the replace stays all-or-nothing -- a
     half-written window set is never committed (it would read as a complete analysis).
+
+    phaze-x1qr3.3: also computes and writes the per-window projection (``energy`` / ``camelot`` /
+    ``mood_scores``) and upserts the file's ``set_profile`` row, in the SAME transaction as the
+    window replace above -- "one projection, then everything rides it" (epic docstring). A
+    projection failure must NEVER fail the analysis this callback is completing: both steps below
+    are guarded by their own try/except, logged, and left for a future successful (re)analysis or
+    the backfill (``services/set_projection_backfill.py``) to fill in -- the profile then reads
+    NULL/stale rather than the whole PUT 500ing and burning a wasted re-analysis retry.
     """
     await session.execute(delete(AnalysisWindow).where(AnalysisWindow.file_id == file_id))
     if windows:
         # pg_insert bypasses the Python-only `default=uuid.uuid4` PK, so stamp `id`
         # explicitly per row (mirrors the aggregate path above).
         rows = [{"id": uuid.uuid4(), "file_id": file_id, **w.model_dump()} for w in windows]
+
+        # Compute BEFORE inserting: `annotate_window_rows` raises atomically (rows untouched on
+        # failure -- see its docstring), so a failure here means every row inserted below simply
+        # omits the three projection columns and they read their column default (NULL) -- exactly
+        # the same "not yet projected" gap a file that has not reached this bead's code at all
+        # would show, never a partially-annotated window set.
+        projected = True
+        try:
+            annotate_window_rows(rows)
+        except Exception:
+            projected = False
+            logger.warning("set_projection_window_annotate_failed", file_id=str(file_id), exc_info=True)
+
         # phaze-syxv: CHUNKED, because an explicit multi-row VALUES binds
         # `len(rows) * params_per_row` parameters in ONE statement and PostgreSQL's Bind
         # message caps that at int16 (32767) -- 2,730 rows at this model's 12 parameters,
@@ -236,6 +258,17 @@ async def _replace_analysis_windows(session: AsyncSession, file_id: uuid.UUID, w
         # a half-written window set is never committed (it would read as a complete analysis).
         for chunk in chunk_rows(rows):
             await session.execute(pg_insert(AnalysisWindow).values(chunk))
+
+        # `build_profile` + the `set_profile` upsert only run when the per-window fields above
+        # were actually computed -- a profile built over an all-NULL window set would itself read
+        # as "no coarse windows, no key" for a file that DOES have them, which is worse than
+        # simply leaving the profile NULL/stale until the next successful (re)analysis.
+        if projected:
+            try:
+                orm_windows = [AnalysisWindow(**row) for row in rows]
+                await upsert_set_profile(session, file_id, orm_windows)
+            except Exception:
+                logger.warning("set_profile_upsert_failed", file_id=str(file_id), exc_info=True)
 
 
 def _fold_wire_fields(dumped: dict[str, Any]) -> None:
