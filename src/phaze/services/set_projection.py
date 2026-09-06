@@ -281,6 +281,13 @@ class SetProfileProjection:
     no column on that model: it is provenance for the writer/backfill to log or fold into
     its own bookkeeping, not persisted data. ``phaze-x1qr3.3`` maps every other field
     directly onto a ``SetProfile(file_id=..., projection_version=..., **the rest)``.
+
+    ``glyph`` is a ``list``, not a ``dict`` -- one cell per COARSE window, in order (see
+    :func:`_glyph_cells`) -- which JSONB stores as a JSON array with no Python-side "object vs
+    array" distinction to violate. ``SetProfile.glyph``'s annotation is ``list | dict | None``
+    (widened by phaze-x1qr3.3) precisely so this field's actual shape has somewhere honest to
+    land under strict mypy, rather than a dict wrapper invented to force a type that never
+    matched what this dataclass produces.
     """
 
     mean_vector: list[float] | None

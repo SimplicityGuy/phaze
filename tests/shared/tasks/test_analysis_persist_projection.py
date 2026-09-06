@@ -27,9 +27,16 @@ from phaze.models.set_profile import SetProfile
 from phaze.routers import agent_analysis
 from phaze.routers.agent_analysis import router as agent_analysis_router
 from phaze.services.agent_client import PhazeAgentClient
+from phaze.services.set_projection import CAMELOT_TABLE
 from phaze.services.set_projection_writer import CURRENT_PROJECTION_VERSION
 from phaze.tasks.functions import _build_analysis_write_payload
 from tests.analyze._real_result import real_analysis_result
+
+
+_VALID_CAMELOT_CODES = frozenset(CAMELOT_TABLE.values())
+"""The only 24 strings `_wheel_adjacent` (set_projection.py) can parse without raising -- a stored
+`camelot` value outside this set (or NULL) would blow up `harmonic_discipline`/glyph rendering on
+read, so the writer must never persist anything else there (reviewer finding on phaze-x1qr3.2)."""
 
 
 if TYPE_CHECKING:
@@ -108,9 +115,16 @@ async def test_persisted_analysis_writes_the_full_projection(
         assert window.energy is not None
         assert 0.0 <= window.energy <= 1.0
         assert window.mood_scores is not None
+        # camelot lives on FINE rows only -- a coarse row must never carry one.
+        assert window.camelot is None
     for window in fine:
         if window.musical_key is not None:
             assert window.camelot is not None, f"fine window with musical_key {window.musical_key!r} has no camelot"
+        # Reviewer finding (phaze-x1qr3.2): `_wheel_adjacent` bare-parses `camelot` with
+        # `int(a[:-1])` and raises on anything not shaped like a table value. The writer must
+        # never persist a raw `musical_key` string or any value outside the 24-entry table.
+        if window.camelot is not None:
+            assert window.camelot in _VALID_CAMELOT_CODES, f"camelot {window.camelot!r} is not a table value"
 
     profile = (await session.execute(select(SetProfile).where(SetProfile.file_id == file_id))).scalar_one()
     assert profile.projection_version == CURRENT_PROJECTION_VERSION

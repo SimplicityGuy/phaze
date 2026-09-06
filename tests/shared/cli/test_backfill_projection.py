@@ -23,8 +23,14 @@ from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisWindow
 from phaze.models.file import FileRecord
 from phaze.models.set_profile import SetProfile
+from phaze.services.set_projection import CAMELOT_TABLE
 from phaze.services.set_projection_writer import CURRENT_PROJECTION_VERSION
 from tests.analyze._real_result import real_analysis_result
+
+
+_VALID_CAMELOT_CODES = frozenset(CAMELOT_TABLE.values())
+"""See the sibling module docstring in test_analysis_persist_projection.py: the backfill must
+never copy a raw stored `musical_key` string into `camelot` either."""
 
 
 if TYPE_CHECKING:
@@ -141,7 +147,11 @@ async def test_backfill_fills_a_corpus_is_idempotent_and_refills_only_stale_rows
     coarse_a = [w for w in windows_a if w.tier == "coarse"]
     fine_a = [w for w in windows_a if w.tier == "fine"]
     assert all(w.energy is not None and w.mood_scores is not None for w in coarse_a)
+    assert all(w.camelot is None for w in coarse_a)
     assert all(w.camelot is not None for w in fine_a if w.musical_key is not None)
+    # Reviewer finding (phaze-x1qr3.2): the backfill must never copy a raw `musical_key` string
+    # into `camelot` -- only a table value or NULL, matching what `camelot_code` can produce.
+    assert all(w.camelot in _VALID_CAMELOT_CODES for w in fine_a if w.camelot is not None)
 
     # Second run: every profile is already current -> a genuine no-op.
     exit_code_2 = await cli._run_backfill_set_projection()
@@ -179,3 +189,39 @@ async def test_backfill_reports_zero_scanned_on_an_empty_corpus(
     out = capsys.readouterr().out
     assert "0 file(s) scanned" in out
     assert "0 file(s) failed" in out
+
+
+def test_build_parser_accepts_backfill_set_projection() -> None:
+    """``phaze backfill set-projection`` parses to the expected namespace (mirrors the sibling
+    ``reenqueue-incomplete-analyses`` parser-acceptance test in ``tests/analyze/cli/test_backfill.py``)."""
+    parser = cli._build_parser()
+
+    args = parser.parse_args(["backfill", "set-projection"])
+
+    assert args.group == "backfill"
+    assert args.backfill_command == "set-projection"
+
+
+def test_main_backfill_set_projection_dispatches_to_the_async_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``main(["backfill", "set-projection"])`` reaches the async runner and returns its exit code."""
+    calls: list[bool] = []
+
+    async def _fake_runner() -> int:
+        calls.append(True)
+        return 0
+
+    monkeypatch.setattr(cli, "_run_backfill_set_projection", _fake_runner)
+    monkeypatch.setattr(cli, "configure_logging", lambda: None)
+
+    assert cli.main(["backfill", "set-projection"]) == 0
+    assert calls == [True]
+
+
+def test_main_backfill_set_projection_propagates_nonzero_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_runner() -> int:
+        return 1
+
+    monkeypatch.setattr(cli, "_run_backfill_set_projection", _fake_runner)
+    monkeypatch.setattr(cli, "configure_logging", lambda: None)
+
+    assert cli.main(["backfill", "set-projection"]) == 1
