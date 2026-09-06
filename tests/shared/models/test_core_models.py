@@ -46,6 +46,9 @@ def test_all_tables_defined() -> None:
         # phaze-6nrrf (migration 059): the durable operator ARM/DISARM flag for the continuous
         # 1001Tracklists drain -- one singleton row, seeded disarmed (DEFAULT OFF).
         "tracklist_drain_arm_state",
+        # phaze-x1qr3.1 (migration 063): the per-file set projection -- mean_vector, arc, glyph,
+        # camelot_modal, harmonic_discipline, peak_sec, projection_version, 1:1 with files.
+        "set_profile",
     }
     assert expected == table_names
 
