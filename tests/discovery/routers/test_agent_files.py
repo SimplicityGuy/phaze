@@ -181,7 +181,16 @@ async def test_rescan_bumps_updated_at_not_created_at(
     )
     await session.commit()
 
-    before_rescan = datetime.now(UTC)
+    # phaze-30ssq: the reference time comes from the SAME TRANSACTION as the write, never from
+    # the Python wall clock. The handler stamps `updated_at` with `func.now()`, and Postgres
+    # `now()` is TRANSACTION-START time; these fixtures point the app at the test's own session
+    # (`app.dependency_overrides[get_session] = lambda: session`), so the whole test runs inside
+    # one outer transaction and that value is as old as fixture setup -- measured 2 m 06 s stale
+    # on a slow freshly-provisioned seat, against a 5 s wall-clock slack this assertion used to
+    # carry. GENERAL FORM: any wall-clock bound on a `func.now()` write is a check on how long
+    # the enclosing fixture has been open, not on the server clock, and will fail whenever the
+    # suite is slow enough -- read the reference from the same transaction instead.
+    before_rescan = (await session.execute(select(sa_func.now()))).scalar_one()
 
     r2 = await authenticated_client.post("/api/internal/agent/files", json={"files": [record]})
     assert r2.status_code == 200, r2.text
@@ -190,9 +199,7 @@ async def test_rescan_bumps_updated_at_not_created_at(
     row = (await session.execute(select(FileRecord).where(FileRecord.original_path == record["original_path"]))).scalar_one()
     assert row.created_at == outage_time, "created_at must stay pinned to the first-discovery value"
     assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
-    assert row.updated_at >= before_rescan - timedelta(seconds=5), (
-        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
-    )
+    assert row.updated_at >= before_rescan, "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
 
 
 @pytest.mark.asyncio
