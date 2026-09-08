@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any
 import uuid
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import func as sa_func, select, update
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
@@ -259,7 +259,10 @@ async def test_resubmit_bumps_updated_at_not_created_at(
     await session.execute(update(CloudJob).where(CloudJob.file_id == fid).values(created_at=outage_time, updated_at=outage_time))
     await session.commit()
 
-    before_resubmit = datetime.now(UTC)
+    # phaze-30ssq: read the reference from the SAME TRANSACTION as the write -- func.now() is
+    # transaction-start time, not the Python wall clock -- rather than a wall-clock read plus a
+    # slack fudge that fails whenever the suite is slow enough to blow it.
+    before_resubmit = (await session.execute(select(sa_func.now()))).scalar_one()
 
     await submit_cloud_job(ctx, fid)
 
@@ -267,9 +270,7 @@ async def test_resubmit_bumps_updated_at_not_created_at(
     row = (await session.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalar_one()
     assert row.created_at == outage_time, "created_at must stay pinned to the first-write value"
     assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
-    assert row.updated_at >= before_resubmit - timedelta(seconds=5), (
-        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
-    )
+    assert row.updated_at >= before_resubmit, "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
 
 
 @pytest.mark.asyncio
