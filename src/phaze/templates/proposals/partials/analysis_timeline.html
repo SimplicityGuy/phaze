@@ -12,9 +12,19 @@
                     Focus the timeline or move a pointer over it to inspect time and values.
                 </p>
             </div>
-            <span data-timeline-scroll-hint hidden class="rounded-full border border-gray-300 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted dark:border-phaze-border dark:bg-phaze-bg">
-                Scroll timeline →
-            </span>
+            <div class="flex flex-wrap items-center gap-2">
+                {# phaze-x1qr3.5: coverage read from the ANALYSIS ROW's own planned-vs-analyzed
+                   counters, not from a count of the rows that exist -- only the analysis row
+                   can know a window was planned and never analyzed. Absent row, absent chip. #}
+                {% if coverage_chip %}
+                <span data-timeline-coverage-chip
+                      class="rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide {% if coverage_chip.has_gaps %}border-amber-300 text-warn dark:border-amber-500/40{% else %}border-gray-300 text-muted dark:border-phaze-border{% endif %}"
+                      title="{{ coverage_chip.detail }}">{{ coverage_chip.text }}</span>
+                {% endif %}
+                <span data-timeline-scroll-hint hidden class="rounded-full border border-gray-300 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted dark:border-phaze-border dark:bg-phaze-bg">
+                    Scroll timeline →
+                </span>
+            </div>
         </div>
 
         <div class="analysis-timeline-layout">
@@ -28,6 +38,17 @@
                     <span>—</span>
                     {% endif %}
                 </div>
+                {# phaze-x1qr3.5: the energy lane's 0..1 scale, in the gutter beside its own lane
+                   and carrying that lane's label between the two bounds -- the same idiom as the
+                   BPM scale above, never an axis drawn inside the plot where a band could cover
+                   it. The river needs no scale: its bands are proportions of a fixed lane height,
+                   so a number on the side would assert a reading the geometry does not carry. #}
+                <div class="analysis-timeline-lane-scale tabular-nums text-muted">
+                    <span>1.0</span>
+                    <span class="analysis-timeline-scale-name">Energy</span>
+                    <span>0.0</span>
+                </div>
+                <div class="analysis-timeline-lane-label is-tall">Mood river</div>
                 <div class="analysis-timeline-axis-label" title="Elapsed time">Elapsed</div>
                 <div class="analysis-timeline-lane-label">Key</div>
                 <div class="analysis-timeline-lane-label">Mood</div>
@@ -68,6 +89,64 @@
                             <div data-timeline-tooltip class="analysis-timeline-tooltip" hidden aria-hidden="true"></div>
                         </div>
 
+                        {# --- phaze-x1qr3.5 ENERGY AREA -------------------------------------
+                           Reads analysis_window.energy (the stored projection column), one
+                           filled area per contiguous run so a coverage gap is drawn as a gap.
+                           The peak is marked because "where does this set peak" is the first
+                           question the lane exists to answer. #}
+                        <div class="analysis-timeline-lane-plot" data-timeline-lane="energy">
+                            {% if energy_area %}
+                            <svg viewBox="0 0 {{ timeline_w }} {{ lane_h }}" preserveAspectRatio="none"
+                                 width="{{ timeline_w | round | int }}" height="{{ lane_h | round | int }}" class="block w-full text-ok"
+                                 role="img" aria-label="Energy from 0.0 to 1.0 over elapsed time{% if energy_peak %}, peaking at {{ energy_peak.energy }} at {{ energy_peak.label }}{% endif %}.">
+                                {% for segment in energy_area %}
+                                <polygon points="{{ segment.area_points }}" fill="currentColor" fill-opacity="0.22" />
+                                {% if segment.single_x is not none %}
+                                <circle cx="{{ segment.single_x }}" cy="{{ segment.single_y }}" r="2.5" fill="currentColor" vector-effect="non-scaling-stroke" />
+                                {% else %}
+                                <polyline points="{{ segment.points }}" fill="none" stroke="currentColor" stroke-width="1.5"
+                                          stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />
+                                {% endif %}
+                                {% endfor %}
+                                {% if energy_peak %}
+                                <line x1="{{ energy_peak.x }}" y1="0" x2="{{ energy_peak.x }}" y2="{{ lane_h }}"
+                                      stroke="currentColor" stroke-width="1" stroke-dasharray="3 2" vector-effect="non-scaling-stroke" />
+                                <circle cx="{{ energy_peak.x }}" cy="{{ energy_peak.y }}" r="3" fill="currentColor" vector-effect="non-scaling-stroke" />
+                                {% endif %}
+                            </svg>
+                            {% if energy_peak %}
+                            <p class="analysis-timeline-lane-note">Peak {{ energy_peak.energy }} at {{ energy_peak.label }}</p>
+                            {% endif %}
+                            {% else %}
+                            <span class="analysis-timeline-no-data">{% if has_coarse_windows %}No energy projection for this file.{% else %}No coarse windows for this file.{% endif %}</span>
+                            {% endif %}
+                        </div>
+
+                        {# --- phaze-x1qr3.5 MOOD RIVER --------------------------------------
+                           The 7 binary mood classifiers stacked in MOOD_ORDER's own order, each
+                           band's thickness its share of that window's total, so the 7 sum to the
+                           lane height exactly. One polygon per contiguous run: the river BREAKS
+                           at a coverage hole and is never bridged across one. Hues come from
+                           services.analysis_timeline.MOOD_HUES and from nowhere else -- this
+                           template carries no colour of its own for a mood. #}
+                        <div class="analysis-timeline-lane-plot" data-timeline-lane="mood-river">
+                            {% if mood_river and mood_river[0].polygons %}
+                            <svg viewBox="0 0 {{ timeline_w }} {{ lane_h }}" preserveAspectRatio="none"
+                                 width="{{ timeline_w | round | int }}" height="{{ lane_h | round | int }}" class="block w-full"
+                                 role="img" aria-label="Mood river: {{ mood_legend | map(attribute='label') | join(', ') }}, stacked as each window's share of the seven mood scores over elapsed time.">
+                                {% for series in mood_river %}
+                                {% for polygon in series.polygons %}
+                                <polygon points="{{ polygon }}" fill="hsl({{ series.hue }}, 62%, 48%)" fill-opacity="0.85">
+                                    <title>{{ series.label }}</title>
+                                </polygon>
+                                {% endfor %}
+                                {% endfor %}
+                            </svg>
+                            {% else %}
+                            <span class="analysis-timeline-no-data">{% if has_coarse_windows %}No mood scores for this file.{% else %}No coarse windows for this file.{% endif %}</span>
+                            {% endif %}
+                        </div>
+
                         <div class="analysis-timeline-time-axis" aria-hidden="true">
                             {% for tick in time_ticks %}
                             <span class="analysis-timeline-tick{% if loop.first %} is-first{% elif loop.last %} is-last{% endif %}"
@@ -81,17 +160,51 @@
                             {% for ribbon in lane[1] %}
                             <div class="analysis-timeline-ribbon"
                                  style="left: {{ ribbon.left_pct }}%; width: {{ ribbon.width_pct }}%; background-color: hsl({{ ribbon.hue }}, 60%, 40%);"
-                                 title="{{ ribbon.label }}">{{ ribbon.label }}</div>
+                                 title="{{ ribbon.display }}">{{ ribbon.display }}</div>
                             {% endfor %}
                             {% else %}
                             <span class="analysis-timeline-no-data">No {{ lane[0] }} data.</span>
                             {% endif %}
                         </div>
                         {% endfor %}
+
+                        {# --- phaze-x1qr3.5/.6 TRACKLIST BOUNDARY TICKS ----------------------
+                           One rule per track that carried a parseable timestamp, drawn across
+                           the whole lane stack so a peak, a key change and a track change can
+                           be read against each other. A track without a timestamp produced no
+                           segment and so gets no tick; a file with no tracklist renders nothing
+                           here at all. The rules are decorative (the numbers beside them are
+                           the content), so the overlay is aria-hidden and the accessible
+                           reading is the ordered list below the timeline. #}
+                        {% if tracklist_ticks %}
+                        <div class="analysis-timeline-boundaries" data-timeline-boundaries aria-hidden="true">
+                            {% for tick in tracklist_ticks %}
+                            <span class="analysis-timeline-boundary" style="left: {{ tick.left_pct }}%;" title="Track {{ tick.label }} at {{ tick.time }}">
+                                <span class="analysis-timeline-boundary-label">{{ tick.label }}</span>
+                            </span>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
                     </div>
                 </div>
             </div>
         </div>
+
+        {% if mood_river and mood_river[0].polygons %}
+        {# The river's legend. Same MOOD_HUES table, same MOOD_ORDER stacking order, and every
+           swatch paired with its label so colour is never the only channel. #}
+        <ul class="analysis-timeline-legend" data-timeline-mood-legend aria-label="Mood river colours">
+            {% for entry in mood_legend %}
+            <li><span class="analysis-timeline-legend-swatch" style="background-color: hsl({{ entry.hue }}, 62%, 48%);"></span>{{ entry.label }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+
+        {% if tracklist_ticks %}
+        <p class="analysis-timeline-lane-note" data-timeline-boundary-text>
+            Track boundaries: {% for tick in tracklist_ticks %}{{ tick.label }} at {{ tick.time }}{% if not loop.last %}, {% endif %}{% endfor %}.
+        </p>
+        {% endif %}
 
         <script type="application/json" data-timeline-inspection>{{ timeline_inspection | tojson }}</script>
     </section>

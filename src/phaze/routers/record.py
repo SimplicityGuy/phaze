@@ -208,7 +208,7 @@ async def build_file_record_context(
         "stage_buckets": stage_buckets,
         "analysis": analysis,
         "file_id": file_id,
-        **build_analysis_timeline_context(windows),
+        **build_analysis_timeline_context(windows, analysis=analysis),
         "pending_rows": pending_rows,
         "identity": identity,
         "history": history,
