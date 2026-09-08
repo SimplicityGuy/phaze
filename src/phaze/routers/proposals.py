@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
-from phaze.models.analysis import AnalysisWindow
+from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.file import FileRecord
 from phaze.models.proposal import APPROVE_REJECT_FROM, UNDO_FROM, ProposalStatus, RenameProposal
 
@@ -395,6 +395,16 @@ async def proposal_timeline(
     # phaze-w55w1: the Phase 44 AnalysisResult fetch that fed the "Sampled" badge and the
     # "Deepen analysis" button is gone with them (ADR-0007 §7) -- the timeline renders from
     # AnalysisWindow rows alone, which is the full coverage now that nothing is sampled.
+    #
+    # phaze-x1qr3.5 reads the row again, for one strictly different purpose: the coverage chip's
+    # PLANNED-vs-ANALYZED counters. This is not the "Sampled" badge returning. That badge claimed
+    # the analysis had deliberately skipped windows and offered a button to go deeper; the chip
+    # states how many of the windows the analysis child itself planned were actually analyzed,
+    # which is a fact only this row holds -- counting the stored AnalysisWindow rows can report
+    # what exists and can therefore never reveal a window that is missing. There is no deepen
+    # path, no cap and no stride to go with it: an incomplete count is a failed or partial run to
+    # be shown honestly, not an invitation to re-analyze.
+    analysis = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
 
     return templates.TemplateResponse(
         request=request,
@@ -403,7 +413,7 @@ async def proposal_timeline(
             "request": request,
             "proposal": proposal,
             "file_id": file_id,
-            **build_analysis_timeline_context(windows),
+            **build_analysis_timeline_context(windows, analysis=analysis),
         },
     )
 
