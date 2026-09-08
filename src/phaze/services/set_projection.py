@@ -407,8 +407,14 @@ def _peak_sec(arc: Sequence[float] | None, total_sec: float, points: int = ARC_P
     return (best_index / denominator) * total_sec
 
 
-def _modal_camelot(windows: Sequence[AnalysisWindow]) -> str | None:
-    """Duration-weighted modal ``camelot`` code across ``windows`` (stable on ties)."""
+def modal_camelot(windows: Sequence[AnalysisWindow]) -> str | None:
+    """Duration-weighted modal ``camelot`` code across ``windows`` (stable on ties).
+
+    Public because ``phaze-x1qr3.6`` asks the same question of a different SLICE of windows:
+    the per-file profile weights every fine window of the file, a track segment weights the
+    fine windows whose midpoint falls inside that track. One implementation, so the key a
+    tracklist row shows and the key the file's profile stores can never disagree by method.
+    """
     weights: dict[str, float] = {}
     for window in windows:
         if window.camelot:
@@ -431,7 +437,7 @@ def _glyph_cells(coarse_windows: Sequence[AnalysisWindow], fine_windows: Sequenc
     cells: list[dict[str, int | float | None]] = []
     for window in sorted(coarse_windows, key=lambda w: (w.window_index, w.start_sec)):
         overlapping = [f for f in fine_windows if f.camelot and f.start_sec < window.end_sec and f.end_sec > window.start_sec]
-        cells.append({"camelot_number": _camelot_number(_modal_camelot(overlapping)), "energy": window.energy})
+        cells.append({"camelot_number": _camelot_number(modal_camelot(overlapping)), "energy": window.energy})
     return cells
 
 
@@ -508,7 +514,7 @@ def build_profile(windows: Sequence[AnalysisWindow]) -> SetProfileProjection:
         mean_vector=_mean_vector(coarse),
         arc=arc,
         glyph=_glyph_cells(coarse, fine),
-        camelot_modal=_modal_camelot(fine),
+        camelot_modal=modal_camelot(fine),
         harmonic_discipline=harmonic_discipline(fine),
         peak_sec=_peak_sec(arc, total_sec),
         sources={"bpm": _bpm_source(fine)},
@@ -526,5 +532,6 @@ __all__ = [
     "camelot_code",
     "energy",
     "harmonic_discipline",
+    "modal_camelot",
     "positive_class_vector",
 ]

@@ -38,6 +38,7 @@ from phaze.models.tag_write_log import TagWriteLog
 from phaze.services.agent_liveness import non_local_backend_kinds
 from phaze.services.analysis_timeline import build_analysis_timeline_context
 from phaze.services.pipeline import derive_file_lane, get_file_orphan_details, get_file_stage_buckets
+from phaze.services.track_segments import build_track_segments
 from phaze.services.tracklist_priority import get_file_tracklist_review
 from phaze.web.static import static_asset_url
 
@@ -201,6 +202,18 @@ async def build_file_record_context(
     # above, so this can never legitimately come back None here.
     tracklist_review = await get_file_tracklist_review(session, file_id)
 
+    # phaze-x1qr3.6: the tracklist as an INDEX into the window projection -- consecutive scraped
+    # timestamps become time segments, each carrying the median BPM, modal key, argmax mood and
+    # mean energy of the windows inside it. Built here rather than in the template because the
+    # timeline's boundary ticks (phaze-x1qr3.5) read the same segments: one join, two surfaces,
+    # so a tick and a table row can never disagree about where a track starts. An empty list is
+    # the whole answer for a file with no tracklist or no timestamps.
+    track_segments = build_track_segments(
+        tracklist_review.tracks if tracklist_review is not None else (),
+        windows,
+        metadata_row.duration if metadata_row is not None else None,
+    )
+
     lane, lane_kind = await _load_lane(session, file_id)
 
     return {
@@ -208,11 +221,12 @@ async def build_file_record_context(
         "stage_buckets": stage_buckets,
         "analysis": analysis,
         "file_id": file_id,
-        **build_analysis_timeline_context(windows, analysis=analysis),
+        **build_analysis_timeline_context(windows, analysis=analysis, track_segments=track_segments),
         "pending_rows": pending_rows,
         "identity": identity,
         "history": history,
         "tracklist_review": tracklist_review,
+        "track_segments": track_segments,
         "lane": lane,
         "lane_kind": lane_kind,
         "stage_failure_reasons": stage_failure_reasons,

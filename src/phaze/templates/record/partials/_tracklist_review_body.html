@@ -10,6 +10,14 @@
      * just_refreshed -- True only on the response immediately after a successful Refresh click
                   (phaze-2akf). The two are mutually exclusive by construction: Prioritize is
                   offered only when there is no tracklist, Refresh only when there is one.
+     * track_segments -- phaze-x1qr3.6's services.track_segments.TrackSegment list: one entry per
+                  track that carried a PARSEABLE TIMESTAMP, joined to the analysis windows whose
+                  midpoints fall inside it. Absent or empty is a perfectly good state (no
+                  tracklist, no timestamps, or nothing analyzed yet) and renders em dashes in the
+                  four measurement columns -- never a zero, and never a borrowed neighbouring
+                  value. The list is NOT positionally parallel to review.tracks; it is joined by
+                  track.position, which is why an untimed track finds no segment rather than
+                  silently picking up the next one's.
 
    THE THREE STATES THIS TEMPLATE MUST NEVER COLLAPSE (the bead's own acceptance criterion):
      1. review.tracklist is set  -> a real result. Distinguish SCRAPED from PROPAGATED
@@ -112,10 +120,17 @@
                         <th class="py-1 pr-3 font-medium">Artist</th>
                         <th class="py-1 pr-3 font-medium">Title</th>
                         <th class="py-1 pr-3 font-medium">Label</th>
+                        {# phaze-x1qr3.6: what the audio inside this track's own time range
+                           measured. Every existing column above is untouched. #}
+                        <th class="py-1 pr-3 font-medium" title="Median BPM of the fine windows inside this track">BPM</th>
+                        <th class="py-1 pr-3 font-medium" title="Modal Camelot key of the fine windows inside this track">Key</th>
+                        <th class="py-1 pr-3 font-medium" title="Strongest of the seven mood classifiers across the coarse windows inside this track">Mood</th>
+                        <th class="py-1 pr-3 font-medium" title="Mean energy of the coarse windows inside this track">Energy</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for track in review.tracks %}
+                    {% set segment = (track_segments | default([], true) | selectattr('position', 'equalto', track.position) | list | first) %}
                     <tr class="border-t border-gray-100 dark:border-white/5">
                         <td class="py-1 pr-3 font-mono text-muted ">{{ track.position }}</td>
                         <td class="py-1 pr-3 font-mono text-muted ">{{ track.timestamp or '—' }}</td>
@@ -125,6 +140,31 @@
                             {% if track.remix_info %}<span class="text-muted"> · {{ track.remix_info }}</span>{% endif %}
                         </td>
                         <td class="py-1 pr-3 text-muted ">{{ track.label or '—' }}</td>
+                        <td class="py-1 pr-3 font-mono tabular-nums text-gray-900 dark:text-gray-200">{{ segment.bpm if segment and segment.bpm is not none else '—' }}</td>
+                        <td class="py-1 pr-3 text-gray-900 dark:text-gray-200">
+                            {% if segment and segment.camelot %}
+                            <span class="inline-flex items-center gap-1">
+                                <span class="tracklist-mood-dot" style="background-color: hsl({{ segment.key_hue }}, 60%, 40%);" aria-hidden="true"></span>
+                                <span>{{ segment.key or segment.camelot }} · {{ segment.camelot }}</span>
+                            </span>
+                            {% else %}—{% endif %}
+                        </td>
+                        <td class="py-1 pr-3 text-gray-900 dark:text-gray-200">
+                            {% if segment and segment.mood %}
+                            <span class="inline-flex items-center gap-1" title="{{ segment.mood_label }}">
+                                <span class="tracklist-mood-dot" style="background-color: hsl({{ segment.mood_hue }}, 62%, 48%);" aria-hidden="true"></span>
+                                <span>{{ segment.mood_label }}</span>
+                            </span>
+                            {% else %}—{% endif %}
+                        </td>
+                        <td class="py-1 pr-3 text-muted ">
+                            {% if segment and segment.energy is not none %}
+                            <span class="inline-flex items-center gap-1">
+                                <span class="tracklist-energy-bar" aria-hidden="true"><span style="width: {{ (segment.energy * 100) | round | int }}%;"></span></span>
+                                <span class="tabular-nums">{{ segment.energy }}</span>
+                            </span>
+                            {% else %}—{% endif %}
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
