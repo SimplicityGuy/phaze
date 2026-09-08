@@ -281,6 +281,13 @@ class SetProfileProjection:
     no column on that model: it is provenance for the writer/backfill to log or fold into
     its own bookkeeping, not persisted data. ``phaze-x1qr3.3`` maps every other field
     directly onto a ``SetProfile(file_id=..., projection_version=..., **the rest)``.
+
+    ``glyph`` is a ``list``, not a ``dict`` -- one cell per COARSE window, in order (see
+    :func:`_glyph_cells`) -- which JSONB stores as a JSON array with no Python-side "object vs
+    array" distinction to violate. ``SetProfile.glyph``'s annotation is ``list | dict | None``
+    (widened by phaze-x1qr3.3) precisely so this field's actual shape has somewhere honest to
+    land under strict mypy, rather than a dict wrapper invented to force a type that never
+    matched what this dataclass produces.
     """
 
     mean_vector: list[float] | None
@@ -299,6 +306,14 @@ def _mean_vector(coarse_windows: Sequence[AnalysisWindow]) -> list[float] | None
     not yet projected) -- the honest gap, never a manufactured zero vector. A ``MOOD_ORDER``
     position that no window supplied a value for is ``NaN`` at that position rather than
     silently dropped, the same "gap stays a gap" convention the arc uses.
+
+    A window whose ``mood_scores`` is a NON-EMPTY dict with every value ``None`` (a coarse window
+    the writer projected with no usable ``features``) counts as carrying NO data here, the same as
+    an absent/empty dict -- ``bool({"k": None, ...})`` is ``True`` in Python, so the naive
+    ``if not window.mood_scores`` truthiness check alone would flip ``seen_any`` for a window that
+    contributed nothing, turning a file with NO real coarse data into an 11-NaN vector instead of
+    the honest ``None`` (phaze-x1qr3.3 review finding 3: caught because the writer briefly produced
+    exactly this all-``None`` dict for a featureless coarse window).
     """
     sums = [0.0] * len(MOOD_ORDER)
     counts = [0] * len(MOOD_ORDER)
@@ -306,9 +321,11 @@ def _mean_vector(coarse_windows: Sequence[AnalysisWindow]) -> list[float] | None
     for window in coarse_windows:
         if not window.mood_scores:
             continue
+        values = [window.mood_scores.get(name) for name in MOOD_ORDER]
+        if all(value is None for value in values):
+            continue
         seen_any = True
-        for i, name in enumerate(MOOD_ORDER):
-            value = window.mood_scores.get(name)
+        for i, value in enumerate(values):
             if value is not None:
                 sums[i] += value
                 counts[i] += 1

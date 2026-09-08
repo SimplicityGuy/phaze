@@ -415,6 +415,35 @@ def test_build_profile_mean_vector_averages_stored_mood_scores_positionally() ->
     assert profile.mean_vector == pytest.approx([0.4] * len(MOOD_ORDER))
 
 
+def test_build_profile_mean_vector_is_none_when_every_coarse_window_is_all_null() -> None:
+    """Review finding 3 (phaze-x1qr3.3): a coarse window whose ``mood_scores`` is a NON-EMPTY dict
+    with every value ``None`` (the writer's own honest shape for a featureless coarse window) must
+    NOT flip ``_mean_vector``'s truthiness check -- ``bool({"k": None, ...})`` is ``True`` in
+    Python, so treating that dict as "real data present" turned a file with NO usable coarse data
+    into an eleven-NaN vector instead of the honest ``None``."""
+    all_null = dict.fromkeys(MOOD_ORDER, None)
+    windows = [
+        _window(0, 0.0, 180.0, mood_scores=all_null),
+        _window(1, 180.0, 360.0, mood_scores=all_null),
+    ]
+    profile = build_profile(windows)
+    assert profile.mean_vector is None
+
+
+def test_build_profile_mean_vector_still_averages_a_mix_of_real_and_all_null_windows() -> None:
+    """A mix is NOT the same as "no data at all": the real window's values must still count, and
+    an all-null window among them must not poison the average or count as a zero contribution."""
+    all_null = dict.fromkeys(MOOD_ORDER, None)
+    real = dict.fromkeys(MOOD_ORDER, 0.4)
+    windows = [
+        _window(0, 0.0, 180.0, mood_scores=all_null),
+        _window(1, 180.0, 360.0, mood_scores=real),
+    ]
+    profile = build_profile(windows)
+    assert profile.mean_vector is not None
+    assert profile.mean_vector == pytest.approx([0.4] * len(MOOD_ORDER))
+
+
 def test_build_profile_peak_sec_is_the_elapsed_time_of_the_arcs_maximum() -> None:
     windows = [
         _window(0, 0.0, 180.0, energy_value=0.1),
