@@ -179,3 +179,138 @@ async def test_a_projection_failure_never_fails_the_analysis(
     assert len(warnings) == 1
     assert warnings[0]["file_id"] == str(file_id)
     assert warnings[0]["log_level"] == "warning"
+
+
+async def test_a_build_profile_failure_never_fails_the_analysis(
+    monkeypatch: pytest.MonkeyPatch,
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """The SECOND, separate try/except this bead's split introduced (review finding 1): a failure
+    in ``build_profile``/building the upsert statement -- as opposed to ``annotate_window_rows``,
+    covered above -- is its own guarded step. Here the per-window fields DO get computed and
+    persisted; only the profile aggregation fails."""
+
+    def _boom(_windows: list[object]) -> object:
+        msg = "synthetic build_profile failure"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(agent_analysis, "build_profile", _boom)
+
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    payload = _build_analysis_write_payload(real_analysis_result())
+
+    with structlog.testing.capture_logs() as logs:
+        async with _real_client(session, raw_token) as client:
+            response = await client.put_analysis(file_id, payload)
+
+    assert response.file_id == file_id
+    session.expire_all()
+
+    analysis = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    assert analysis.analysis_completed_at is not None
+    assert analysis.failed_at is None
+
+    # The per-window projection DID compute (this is the OTHER try/except) -- only the aggregate
+    # profile failed.
+    coarse = (await session.execute(select(AnalysisWindow).where(AnalysisWindow.file_id == file_id, AnalysisWindow.tier == "coarse"))).scalars().all()
+    assert coarse
+    assert all(w.energy is not None for w in coarse)
+
+    profile = (await session.execute(select(SetProfile).where(SetProfile.file_id == file_id))).scalar_one_or_none()
+    assert profile is None
+
+    warnings = [entry for entry in logs if entry["event"] == "set_profile_upsert_failed"]
+    assert len(warnings) == 1
+    assert warnings[0]["file_id"] == str(file_id)
+    assert warnings[0]["log_level"] == "warning"
+
+
+async def test_a_real_database_level_projection_failure_never_fails_the_analysis(
+    monkeypatch: pytest.MonkeyPatch,
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """Review finding 1: the prior version of this guard only proved a Python-level exception
+    raised BEFORE any SQL ran was survivable -- a proxy that cannot exhibit a DB-level failure
+    poisoning the transaction. This test forces a REAL ``ForeignKeyViolation`` (an ``IntegrityError``
+    from Postgres itself, not a monkeypatched Python raise) by building the `set_profile` upsert
+    against a `file_id` with no `files` row at all, then asserts the SAME thing a vanished-file
+    race would need: the analysis still commits (``execute_guarding_vanished_file``'s SAVEPOINT
+    unwinds only the failed statement, per request_guards.py rule 5), the windows themselves ARE
+    fully projected (only the `set_profile` insert failed), and no profile row exists.
+    """
+    real_builder = agent_analysis.build_set_profile_upsert_statement
+
+    def _target_a_vanished_file(_file_id: uuid.UUID, projection: object) -> object:
+        # Build the IDENTICAL statement shape, but against a file_id with NO `files` row --
+        # a genuine FK violation on execution, indistinguishable at the SQL layer from the real
+        # phaze-wn1l race (a file deleted between this transaction starting and this INSERT).
+        return real_builder(uuid.uuid4(), projection)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(agent_analysis, "build_set_profile_upsert_statement", _target_a_vanished_file)
+
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    payload = _build_analysis_write_payload(real_analysis_result())
+
+    with structlog.testing.capture_logs() as logs:
+        async with _real_client(session, raw_token) as client:
+            response = await client.put_analysis(file_id, payload)
+
+    assert response.file_id == file_id
+    session.expire_all()
+
+    # The analysis itself completed -- the transaction was NOT poisoned by the failed INSERT.
+    analysis = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    assert analysis.analysis_completed_at is not None
+    assert analysis.failed_at is None
+
+    # The windows themselves ARE fully projected -- only the set_profile insert failed.
+    windows = (await session.execute(select(AnalysisWindow).where(AnalysisWindow.file_id == file_id))).scalars().all()
+    coarse = [w for w in windows if w.tier == "coarse"]
+    assert coarse
+    assert all(w.energy is not None for w in coarse)
+
+    # No profile was written for the REAL file_id (it went to the fabricated one instead, which
+    # itself never landed either -- the whole point of the guard).
+    profile = (await session.execute(select(SetProfile).where(SetProfile.file_id == file_id))).scalar_one_or_none()
+    assert profile is None
+
+    holds = [entry for entry in logs if "vanished mid-write" in str(entry.get("event", ""))]
+    assert len(holds) == 1
+    assert holds[0]["file_id"] == str(file_id)
+    assert holds[0]["log_level"] == "warning"
+
+
+async def test_a_featureless_coarse_window_gets_a_fully_none_projection_not_a_manufactured_one(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """Review finding 3: a coarse window with no `features` at all must read as a gap (``energy``
+    and ``mood_scores`` both ``None``), never a manufactured ``energy=0.0`` / all-null
+    `mood_scores` dict computed from nothing."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    result = real_analysis_result()
+    for window in result["windows"]:
+        if window["tier"] == "coarse":
+            window["features"] = None
+    payload = _build_analysis_write_payload(result)
+
+    async with _real_client(session, raw_token) as client:
+        response = await client.put_analysis(file_id, payload)
+
+    assert response.file_id == file_id
+    session.expire_all()
+    coarse = (await session.execute(select(AnalysisWindow).where(AnalysisWindow.file_id == file_id, AnalysisWindow.tier == "coarse"))).scalars().all()
+    assert coarse
+    assert all(w.energy is None for w in coarse)
+    assert all(w.mood_scores is None for w in coarse)
+
+    # No coarse window contributed any real mood data -> the file-level mean_vector is the honest
+    # gap (None), never an 11-NaN vector (the compounding _mean_vector truthiness bug this same
+    # review finding traced through to set_projection.py).
+    profile = (await session.execute(select(SetProfile).where(SetProfile.file_id == file_id))).scalar_one()
+    assert profile.mean_vector is None

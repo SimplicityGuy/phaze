@@ -13,10 +13,11 @@ seeded rows live in.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from phaze import cli
 from phaze.models.agent import Agent
@@ -162,8 +163,18 @@ async def test_backfill_fills_a_corpus_is_idempotent_and_refills_only_stale_rows
 
     # Make ONE file's profile stale (simulates a projection_version bump) and confirm the third
     # run re-fills only that one row, never the two already-current ones.
+    #
+    # `updated_at` is forced back to a SENTINEL far in the past via a raw UPDATE, rather than
+    # captured from a prior `func.now()`-stamped write, because Postgres's `now()` is
+    # TRANSACTION-time, not statement-time -- this whole test runs inside the `session` fixture's
+    # one outer transaction (`create_savepoint` join mode never actually commits until teardown),
+    # so two `func.now()` calls anywhere in the test read back bit-identical. The sentinel sidesteps
+    # that: any REAL `now()` read in this transaction is unambiguously later than the year 2000.
     stale_profile = (await session.execute(select(SetProfile).where(SetProfile.file_id == file_b))).scalar_one()
     stale_profile.projection_version = 0
+    await session.commit()
+    sentinel = datetime(2000, 1, 1, tzinfo=UTC)
+    await session.execute(update(SetProfile).where(SetProfile.file_id == file_b).values(updated_at=sentinel))
     await session.commit()
 
     exit_code_3 = await cli._run_backfill_set_projection()
@@ -175,6 +186,53 @@ async def test_backfill_fills_a_corpus_is_idempotent_and_refills_only_stale_rows
     session.expire_all()
     refreshed = (await session.execute(select(SetProfile).where(SetProfile.file_id == file_b))).scalar_one()
     assert refreshed.projection_version == CURRENT_PROJECTION_VERSION
+    # Review finding 2: the Core ON CONFLICT DO UPDATE stamps `updated_at` explicitly (the ORM's
+    # `onupdate=func.now()` never fires on that path) -- a re-projection after a
+    # `projection_version` bump must not leave it frozen at the sentinel.
+    assert refreshed.updated_at is not None
+    assert refreshed.updated_at > sentinel
+
+
+async def test_backfill_gives_a_featureless_coarse_window_a_fully_none_projection(monkeypatch: pytest.MonkeyPatch, session: AsyncSession) -> None:
+    """Review finding 3, backfill side: a stored coarse window with no `features` at all must be
+    projected as a gap (`energy`/`mood_scores` both `None`), never a manufactured `energy=0.0` /
+    all-null `mood_scores` dict -- and the file-level `mean_vector` stays the honest `None` rather
+    than the eleven-NaN vector the compounding `_mean_vector` truthiness bug used to produce."""
+    monkeypatch.setattr(cli, "async_session", lambda: _session_ctx(session))
+    agent_id = await _seed_agent(session)
+    file_id = await _seed_file(session, agent_id=agent_id, sha256_hash="7" * 64)
+    result = real_analysis_result()
+    for w in result["windows"]:
+        if w["tier"] == "coarse":
+            w["features"] = None
+    for w in result["windows"]:
+        session.add(
+            AnalysisWindow(
+                id=uuid.uuid4(),
+                file_id=file_id,
+                tier=w["tier"],
+                window_index=w["window_index"],
+                start_sec=w["start_sec"],
+                end_sec=w["end_sec"],
+                bpm=w.get("bpm"),
+                musical_key=w.get("musical_key"),
+                mood=w.get("mood"),
+                style=w.get("style"),
+                danceability=w.get("danceability"),
+                features=w.get("features"),
+            )
+        )
+    await session.commit()
+
+    exit_code = await cli._run_backfill_set_projection()
+
+    assert exit_code == 0
+    session.expire_all()
+    coarse = (await session.execute(select(AnalysisWindow).where(AnalysisWindow.file_id == file_id, AnalysisWindow.tier == "coarse"))).scalars().all()
+    assert coarse
+    assert all(w.energy is None and w.mood_scores is None for w in coarse)
+    profile = (await session.execute(select(SetProfile).where(SetProfile.file_id == file_id))).scalar_one()
+    assert profile.mean_vector is None
 
 
 async def test_backfill_reports_zero_scanned_on_an_empty_corpus(
