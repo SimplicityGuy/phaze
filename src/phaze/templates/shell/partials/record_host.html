@@ -196,6 +196,13 @@
                                         if (body.getClientRects().length > 0) {
                                             const requested = window.Alpine ? Alpine.$data(body).requestedSection : null;
                                             const section = requested ? body.querySelector('#' + CSS.escape(requested)) : null;
+                                            // phaze-uwliw: History (and Metadata & identity) render inside a closed
+                                            // <details> -- section IS that details for #history, since the id sits
+                                            // on the <details> itself, so closest('details') covers it without a
+                                            // per-section special case. Sections that are plain <section>s (analysis,
+                                            // tracklist) have no details ancestor, so this is a no-op for them.
+                                            const fold = section ? section.closest('details') : null;
+                                            if (fold) fold.open = true;
                                             h.focus({ preventScroll: !!section });
                                             if (section) section.scrollIntoView({ block: 'start' });
                                             return;

@@ -108,5 +108,33 @@
         </section>
     {% endif %}
     </main>
+    {% if file %}
+    {# phaze-uwliw: phaze-x1qr3.8 folded History (and Metadata & identity) into closed <details>,
+       but the header nav above still ships a plain `<a href="#history">` and the browser only
+       scrolls a hash target into view -- it never flips a closed <details>'s `open` property. So
+       the deep link, and a click on the nav link itself (same-page, hash-only navigation), both
+       landed on a collapsed fold with nothing inside it visible. Opening whichever fold the
+       fragment targets -- if any; `#analysis` / `#tracklist` are plain `<section>`s and
+       `closest('details')` is simply null for them -- on both initial load AND every subsequent
+       `hashchange` covers a direct `/files/{id}#history` navigation and a same-page nav-link click
+       alike, with one small hook instead of an onclick on every anchor. #}
+    <script>
+        (function() {
+            function openFoldFor(hash) {
+                if (!hash || hash.length < 2) return;
+                let target;
+                try {
+                    target = document.querySelector(hash);
+                } catch {
+                    return;
+                }
+                const fold = target && target.closest ? target.closest("details") : null;
+                if (fold) fold.open = true;
+            }
+            openFoldFor(window.location.hash);
+            window.addEventListener("hashchange", () => openFoldFor(window.location.hash));
+        })();
+    </script>
+    {% endif %}
 </body>
 </html>
