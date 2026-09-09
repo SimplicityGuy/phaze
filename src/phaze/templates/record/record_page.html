@@ -68,13 +68,29 @@
                 <div class="mt-2">{% include "record/partials/_record_facts.html" %}</div>
             </section>
             {% include "record/partials/_harmonic_wheel.html" %}
-            {# The "more like this set" slot. It renders as an explicitly EMPTY slot rather than
-               being omitted: the layout reserves the space the neighbour-search bead fills, and
-               an empty slot that says why is honest, where a silently absent one would read as a
-               feature that failed to load. #}
+            {# phaze-x1qr3.11: the "more like this set" slot. `similar_sets` is
+               `services/set_similarity.find_similar_sets`' deterministic top-3, already scored
+               and carrying each neighbour's own `set_profile` for the shared glyph macro. An
+               empty list (no profile for THIS file, or no other file has one yet) renders the
+               honest "nothing to compare" sentence rather than an empty list with no
+               explanation -- the same reasoning the slot's placeholder always used. #}
             <section data-more-like-this class="rounded-xl border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-bg" aria-labelledby="more-like-this-heading">
                 <p id="more-like-this-heading" class="font-jura text-[11px] font-medium uppercase tracking-wider text-muted ">More like this set</p>
-                <p class="mt-2 text-xs text-muted ">Nearest-neighbour sets are not available yet.</p>
+                {% if similar_sets %}
+                <ul data-similar-sets class="mt-2 space-y-3">
+                    {% for neighbour in similar_sets %}
+                    <li data-similar-set>
+                        <a href="/files/{{ neighbour.file_id }}" class="group block min-w-0 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                            <span class="block h-2.5 w-full overflow-hidden rounded-sm">{{ ui.set_glyph(neighbour.set_profile, height_class='h-2.5') }}</span>
+                            <span data-similar-set-title class="mt-1 block truncate text-xs text-link group-hover:underline">{{ neighbour.title }}</span>
+                            <span data-similar-set-line class="block text-[11px] text-muted ">{{ neighbour.scoring_line }}</span>
+                        </a>
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <p class="mt-2 text-xs text-muted ">No similar sets yet.</p>
+                {% endif %}
             </section>
         </aside>
         </div>
