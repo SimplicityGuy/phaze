@@ -286,7 +286,7 @@ def _caption(nodes: Sequence[JourneyNode], edges: Sequence[JourneyEdge], adjacen
     return f"{runs}, {share}. Jump{'' if len(jumps) == 1 else 's'}: {named}."
 
 
-def build_harmonic_journey(fine_windows: Sequence[AnalysisWindow]) -> HarmonicJourney:
+def build_harmonic_journey(fine_windows: Sequence[AnalysisWindow], *, stored_discipline: float | None = None) -> HarmonicJourney:
     """The set's flicker-filtered key path, placed on the twelve-sector Camelot wheel.
 
     A file with no usable ``camelot`` data at all -- never analyzed, analyzed before the
@@ -294,12 +294,19 @@ def build_harmonic_journey(fine_windows: Sequence[AnalysisWindow]) -> HarmonicJo
     caption. That is a real answer and the template renders it as one; it is never an
     exception and never a wheel claiming a path nothing measured.
 
-    ``adjacent_share`` is recomputed here from THIS wheel's own edges rather than read from
-    ``SetProfile.harmonic_discipline``: the stored value is a snapshot of the projection
-    version that wrote it, while the picture is built from the windows in front of the reader,
-    and a caption that disagrees with the edges above it is worse than one that is a version
-    behind. Both are derived from the same filter and predicate, so they agree whenever the
-    stored profile is current.
+    ``stored_discipline`` -- the caller's ``SetProfile.harmonic_discipline`` -- is THE caption
+    figure when given (phaze-0zx26): every other fact on this page (``camelot_modal``, the set
+    glyph, the arc, the peak) already reads the stored profile snapshot rather than a fresh
+    recompute, and the operator's phaze-x1qr3.12 blind check judges that same stored snapshot,
+    so the wheel disagreeing with it in isolation is the actual inconsistency, not the fix for
+    one. The nodes and edges are always built live from ``fine_windows`` regardless -- the
+    wheel has to draw the keys actually in front of the reader -- so a caller with a current
+    profile gets a picture and a caption both describing that profile; a caller with none (never
+    analyzed, or predating the backfill) falls back to computing the share from THIS wheel's own
+    edges, exactly as before. Both are derived from the same filter and predicate
+    (:func:`phaze.services.set_projection.flicker_filtered_key_runs` /
+    :func:`phaze.services.set_projection.wheel_adjacent`), so they agree whenever the stored
+    profile is current.
     """
     placed = placeable_key_runs(flicker_filtered_key_runs(fine_windows))
     sectors = _sectors()
@@ -307,7 +314,8 @@ def build_harmonic_journey(fine_windows: Sequence[AnalysisWindow]) -> HarmonicJo
         return HarmonicJourney(sectors=sectors)
     nodes = _nodes(placed)
     edges = _edges(placed, nodes)
-    adjacent_share = (sum(1 for edge in edges if edge.adjacent) / len(edges)) if edges else 1.0
+    computed_share = (sum(1 for edge in edges if edge.adjacent) / len(edges)) if edges else 1.0
+    adjacent_share = stored_discipline if stored_discipline is not None else computed_share
     return HarmonicJourney(
         sectors=sectors,
         nodes=nodes,

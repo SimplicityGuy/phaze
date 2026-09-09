@@ -238,7 +238,7 @@ async def build_file_record_context(
     # facts list's Duration is the timeline's own analyzed extent and its Windows row is the
     # coverage chip's own sentence, so the sidebar cannot claim a length or a coverage the
     # picture beside it does not show.
-    timeline_context = build_analysis_timeline_context(windows, analysis=analysis, track_segments=track_segments)
+    timeline_context = build_analysis_timeline_context(windows, analysis=analysis, track_segments=track_segments, set_profile=set_profile)
     coverage_chip = timeline_context["coverage_chip"]
     record_facts = build_record_facts(
         file_type=file.file_type,
@@ -255,7 +255,10 @@ async def build_file_record_context(
     # column through the same flicker filter `harmonic_discipline` counts with. A file with no
     # key data yields a wheel with no nodes, which the partial renders as an empty wheel plus a
     # text alternative -- never an absent component.
-    harmonic_journey = build_harmonic_journey([window for window in windows if window.tier == "fine"])
+    harmonic_journey = build_harmonic_journey(
+        [window for window in windows if window.tier == "fine"],
+        stored_discipline=set_profile.harmonic_discipline if set_profile is not None else None,
+    )
 
     # phaze-x1qr3.11: the sidebar's "more like this set" slot -- deterministic similarity over
     # every other file's set_profile row, scored against THIS file's already-loaded profile,

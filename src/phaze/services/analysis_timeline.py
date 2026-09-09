@@ -7,10 +7,14 @@ stride, or otherwise reinterpret coverage.
 
 from collections.abc import Callable, Sequence
 import math
-from typing import Final, NamedTuple, Protocol, cast
+from typing import TYPE_CHECKING, Final, NamedTuple, Protocol, cast
 
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.services.set_projection import MOOD_ORDER, flicker_filtered_key_runs, placeable_key_runs
+
+
+if TYPE_CHECKING:
+    from phaze.models.set_profile import SetProfile
 
 
 TIMELINE_W = 640.0
@@ -667,6 +671,7 @@ def build_analysis_timeline_context(
     *,
     analysis: AnalysisResult | None = None,
     track_segments: Sequence[TrackSpan] = (),
+    set_profile: "SetProfile | None" = None,
 ) -> dict[str, object]:
     """Build the shared exhaustive timeline context for record and proposal presentations.
 
@@ -674,6 +679,9 @@ def build_analysis_timeline_context(
     boundary ticks; both are OPTIONAL and their absence renders nothing rather than a claim.
     A caller that has neither (a proposal row with no tracklist) gets exactly the lanes the
     stored windows justify, which is the same honesty rule the rest of this module follows.
+
+    ``set_profile`` is likewise OPTIONAL and governs only ``timeline_inspection["peak_sec"]``
+    (see the comment at that assignment, phaze-0zx26) -- every other field here is unaffected.
     """
     ordered = sorted(windows, key=lambda window: (window.tier, window.window_index))
     finite_ends = [window.end_sec for window in ordered if math.isfinite(window.end_sec) and window.end_sec >= 0]
@@ -683,6 +691,7 @@ def build_analysis_timeline_context(
     timeline_w = max(TIMELINE_W, max(len(fine), len(coarse), 1) * WINDOW_WIDTH_PX)
     spark = bpm_spark(fine, total_sec, timeline_w, TIMELINE_H)
     peak = energy_peak(coarse, total_sec, timeline_w, LANE_H)
+    stored_peak_sec = set_profile.peak_sec if set_profile is not None else None
     return {
         "has_windows": bool(ordered),
         "has_coarse_windows": bool(coarse),
@@ -702,9 +711,20 @@ def build_analysis_timeline_context(
         # zero. `segments` and `key_runs` are the two spans the readout, the shaded track and
         # the wheel ring are looked up in; both are empty for a file that has neither, and every
         # target that reads an empty list simply does not light.
+        #
+        # phaze-0zx26: THE STORED `set_profile.peak_sec` IS THE DEFINITION, not this function's
+        # own `energy_peak(...)["sec"]`. The two used to disagree -- `energy_peak` argmaxes the
+        # raw coarse windows while the stored value argmaxes the 64-point resampled arc
+        # (`set_projection._peak_sec`), which averages neighbours and can land on a different
+        # window for a short spike -- and the operator's phaze-x1qr3.12 blind check judges the
+        # peak the STORED arc shows, so the rest position has to agree with it. `set_profile` is
+        # `None` only for a file never analyzed to completion or predating the projection
+        # backfill (record.py's own comment on the `session.get`); the live `energy_peak` argmax
+        # is the fallback for exactly that case, never a silent second definition of the same
+        # thing.
         "timeline_inspection": {
             "duration": total_sec,
-            "peak_sec": peak["sec"] if peak else None,
+            "peak_sec": stored_peak_sec if stored_peak_sec is not None else (peak["sec"] if peak else None),
             "windows": inspection_windows(ordered),
             "segments": inspection_segments(track_segments, total_sec),
             "key_runs": inspection_key_runs(fine),

@@ -6,6 +6,7 @@ import math
 import uuid
 
 from phaze.models.analysis import AnalysisWindow
+from phaze.models.set_profile import SetProfile
 from phaze.services.analysis_timeline import (
     bpm_segments,
     bpm_spark,
@@ -28,6 +29,7 @@ def _window(
     key: str | None = None,
     mood: str | None = None,
     style: str | None = None,
+    energy: float | None = None,
 ) -> AnalysisWindow:
     return AnalysisWindow(
         file_id=uuid.uuid4(),
@@ -39,6 +41,7 @@ def _window(
         musical_key=key,
         mood=mood,
         style=style,
+        energy=energy,
     )
 
 
@@ -156,3 +159,53 @@ def test_canvas_width_grows_without_capping_or_dropping_windows() -> None:
 
     assert context["timeline_w"] == 1_344.0
     assert len(context["timeline_inspection"]["windows"]) == 24  # type: ignore[index]
+
+
+# phaze-0zx26: `set_profile.peak_sec` and the live `energy_peak(...)["sec"]` used to be TWO
+# DIFFERENT DEFINITIONS of the same word -- the stored value argmaxes the 64-point resampled
+# `arc` while the live one argmaxes the raw coarse windows, which can land on a different window
+# for a short spike. These pin the rest position (`timeline_inspection["peak_sec"]`) to the
+# stored figure whenever one exists, and to the live computation only as the documented fallback
+# for a file with no profile row yet.
+def test_the_rest_position_reads_the_stored_peak_even_when_it_disagrees_with_the_live_argmax() -> None:
+    # The live raw-window argmax sits at window 0's midpoint (30.0 s) -- the highest single
+    # measured energy. A stored peak elsewhere (90.0 s) stands in for the resampled arc landing
+    # on a different window than the raw argmax did.
+    windows = [
+        _window(0, 0.0, 60.0, tier="coarse", energy=0.9),
+        _window(1, 60.0, 120.0, tier="coarse", energy=0.4),
+    ]
+    set_profile = SetProfile(file_id=uuid.uuid4(), peak_sec=90.0)
+
+    context = build_analysis_timeline_context(windows, set_profile=set_profile)
+
+    assert context["timeline_inspection"]["peak_sec"] == 90.0  # type: ignore[index]
+    # The visual "Peak X at Y" mark is a different, complementary feature (an actual measured
+    # window's own energy reading) and is deliberately UNCHANGED by this bead -- it still
+    # anchors to the live raw-window argmax.
+    assert context["energy_peak"]["sec"] == 30.0  # type: ignore[index]
+
+
+def test_the_rest_position_falls_back_to_the_live_argmax_with_no_set_profile_row() -> None:
+    windows = [
+        _window(0, 0.0, 60.0, tier="coarse", energy=0.9),
+        _window(1, 60.0, 120.0, tier="coarse", energy=0.4),
+    ]
+
+    context = build_analysis_timeline_context(windows, set_profile=None)
+
+    assert context["timeline_inspection"]["peak_sec"] == 30.0  # type: ignore[index]
+
+
+def test_the_rest_position_falls_back_to_the_live_argmax_when_the_stored_peak_is_null() -> None:
+    # A profile row can exist with `peak_sec is None` -- no usable coarse energy at projection
+    # time -- distinct from no row at all; both fall back identically.
+    windows = [
+        _window(0, 0.0, 60.0, tier="coarse", energy=0.9),
+        _window(1, 60.0, 120.0, tier="coarse", energy=0.4),
+    ]
+    set_profile = SetProfile(file_id=uuid.uuid4(), peak_sec=None)
+
+    context = build_analysis_timeline_context(windows, set_profile=set_profile)
+
+    assert context["timeline_inspection"]["peak_sec"] == 30.0  # type: ignore[index]

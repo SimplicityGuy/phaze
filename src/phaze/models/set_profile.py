@@ -77,10 +77,17 @@ class SetProfile(TimestampMixin, Base):
     camelot_modal: Mapped[str | None] = mapped_column(String(3), nullable=True)
     # Share in [0, 1] of key transitions that are wheel-adjacent, after a flicker filter that
     # ignores runs shorter than two fine windows. Range is a writer contract, not a CHECK --
-    # consistent with `analysis_window.energy`.
+    # consistent with `analysis_window.energy`. Read by `services/harmonic_journey.py`'s
+    # `build_harmonic_journey(..., stored_discipline=...)` (phaze-0zx26): the wheel's caption
+    # prefers THIS value over a fresh recompute when the row exists, so the page's harmonic
+    # picture agrees with the same snapshot every other set fact on the page already reads.
     harmonic_discipline: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Elapsed seconds of the set's energy peak. The page rests here with nothing hovered, so it is
-    # stored rather than recomputed per request.
+    # stored rather than recomputed per request -- literally true as of phaze-0zx26:
+    # `services/analysis_timeline.py`'s `build_analysis_timeline_context(..., set_profile=...)`
+    # reads THIS column for `timeline_inspection["peak_sec"]` rather than re-deriving a peak from
+    # the raw windows, which is a DIFFERENT definition (argmax over raw coarse windows vs. this
+    # column's argmax over the 64-point resampled `arc`) that could land on a different window.
     peak_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Which version of the projection produced this row, so a weight change (phaze-x1qr3.12's
     # operator blind check settles the energy weights) re-backfills only STALE rows instead of the
