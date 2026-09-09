@@ -82,7 +82,24 @@ async def test_timeline_inspects_with_pointer_touch_and_keyboard_and_cues_overfl
     await page.keyboard.press("ArrowRight")
     assert await inspector.get_attribute("aria-valuenow") == "15"
 
-    await viewport.evaluate("el => { el.scrollLeft = el.scrollWidth; el.dispatchEvent(new Event('scroll')); }")
+    # A keyboard step schedules a SMOOTH scroll, which is still animating when the next statement
+    # runs -- so a one-shot `scrollLeft = scrollWidth` can be overridden mid-flight, parking the
+    # scroller in the middle with both affordances correctly lit. That reads as a bug in the
+    # affordance and is a race in the driving, so drive it until it STAYS at the maximum. Measured
+    # once as a real intermittent failure asserting "←" against "Scroll timeline ↔".
+    await page.wait_for_function(
+        """() => {
+            const el = document.querySelector('[data-timeline-viewport]');
+            const gutter = Math.max(0, el.offsetWidth - el.clientWidth);
+            const max = el.scrollWidth - el.clientWidth - gutter;
+            if (el.scrollLeft < max - 2) {
+                el.scrollLeft = el.scrollWidth;
+                el.dispatchEvent(new Event('scroll'));
+                return false;
+            }
+            return true;
+        }"""
+    )
     await page.wait_for_function("() => document.querySelector('[data-timeline-frame]').classList.contains('timeline-can-scroll-left')")
     assert "←" in await hint.inner_text()
     assert not await frame.evaluate("el => el.classList.contains('timeline-can-scroll-right')")
@@ -236,6 +253,17 @@ async def _open_inspectable_record(page: Any, seed: Seeder) -> tuple[Any, Any]:
     return file, timeline
 
 
+def _percent(value: str) -> float:
+    """A CSS percentage back to a number.
+
+    Compared as numbers, never as strings: the browser round-trips ``style.left`` through its own
+    serializer, which prints 41.6667% for the 41.66666666666667% that was assigned. A string
+    comparison there asserts the serializer's precision, not the position.
+    """
+    assert value.endswith("%"), value
+    return float(value[:-1])
+
+
 async def _marks(page: Any) -> dict[str, Any]:
     """Everything the six non-textual marks are currently saying, read from the live DOM.
 
@@ -297,14 +325,14 @@ async def test_one_elapsed_time_drives_every_inspection_target_from_pointer_glyp
     # The peak sits inside track 2, in the fine window starting at 540 s, in the second key run,
     # and over the fifth of six glyph cells. Every mark agrees, because one time decided them.
     assert resting["spanHidden"] is False
-    assert resting["spanLeft"] == f"{(_TRACK_TWO_START_SEC / _INSPECTION_DURATION_SEC) * 100}%"
+    assert _percent(resting["spanLeft"]) == pytest.approx((_TRACK_TWO_START_SEC / _INSPECTION_DURATION_SEC) * 100, abs=0.01)
     assert resting["ribbonCount"] == 1
     assert float(resting["ribbonStart"]) == 540.0
     assert resting["rowPositions"] == ["2"]
     assert resting["ringHidden"] is False
     assert resting["ringNodeIndex"] == "1"
     assert resting["glyphHidden"] is False
-    assert resting["glyphLeft"] == f"{((4 + 0.5) / 6) * 100}%"
+    assert _percent(resting["glyphLeft"]) == pytest.approx((4 + 0.5) / 6 * 100, abs=0.01)
 
     # --- 2. The pointer over the lanes moves every one of them together ----------------------
     bounds = await inspector.bounding_box()
@@ -313,10 +341,10 @@ async def test_one_elapsed_time_drives_every_inspection_target_from_pointer_glyp
     hovered = await _marks(page)
     assert float(hovered["valueNow"]) == pytest.approx(_INSPECTION_DURATION_SEC * 0.1, abs=2.0)
     assert "track 1 Opening Track" in hovered["valueText"]
-    assert hovered["spanLeft"] == "0%"
+    assert _percent(hovered["spanLeft"]) == 0.0
     assert hovered["rowPositions"] == ["1"]
     assert hovered["ringNodeIndex"] == "0"
-    assert hovered["glyphLeft"] == f"{((0 + 0.5) / 6) * 100}%"
+    assert _percent(hovered["glyphLeft"]) == pytest.approx(0.5 / 6 * 100, abs=0.01)
     assert float(hovered["ribbonStart"]) == 60.0
     assert "peak" not in hovered["tooltip"].lower()
 
@@ -329,7 +357,7 @@ async def test_one_elapsed_time_drives_every_inspection_target_from_pointer_glyp
     # The sixth cell is coarse window [600, 720); the cursor lands on its midpoint, not on 95%
     # of the duration -- reading the glyph as a time axis is the bug this pins.
     assert from_glyph["valueNow"] == "660"
-    assert from_glyph["glyphLeft"] == f"{((5 + 0.5) / 6) * 100}%"
+    assert _percent(from_glyph["glyphLeft"]) == pytest.approx((5 + 0.5) / 6 * 100, abs=0.01)
 
     # --- 4. Hovering a tracklist row scrubs to that track's midpoint --------------------------
     await page.locator('[data-track-row][data-track-position="1"]').hover()
