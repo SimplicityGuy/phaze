@@ -256,6 +256,12 @@ def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, 
         # the next render of this same partial carries the row's NEW value, so a stale button never
         # lingers on screen past its own re-render.
         "updated_at": proposal.updated_at,
+        # phaze-5x8za: the same cached glyph phaze-x1qr3.9 wired into the PAGE render of this same
+        # partial (_changes_list.html passes `profile=p.set_profile`) -- undefined/None renders the
+        # filename cell byte-identical to before this key existed (see the contract in _diff_row.html).
+        # `file_record.set_profile` is eager-loaded by the callers of _diff_row_context below
+        # (proposal_queries.py's re-fetch statements), never a per-row query.
+        "profile": file_record.set_profile,
         **extra_context,
     }
 

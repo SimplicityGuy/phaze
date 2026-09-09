@@ -53,6 +53,21 @@ def _row_html(body: str, row_id: str) -> str:
     return body[start:end]
 
 
+def _card_html(body: str, marker: str) -> str:
+    """phaze-5x8za: the exact ``<article ...>...</article>`` mobile-card block containing ``marker``.
+
+    The mobile card carries no id (``_record_row.attrs`` emits none), unlike the desktop ``<tr>``,
+    so it is located by the unique filename ``marker`` every ``_make_file`` call embeds rather than
+    by index. The desktop ``<tr>`` (rendered first) also carries the SAME marker text, so this uses
+    the LAST occurrence -- the one inside the mobile ``<article>`` block, which the template renders
+    after the desktop table.
+    """
+    marker_pos = body.rindex(marker)
+    start = body.rindex("<article", 0, marker_pos)
+    end = body.index("</article>", marker_pos) + len("</article>")
+    return body[start:end]
+
+
 @pytest.mark.asyncio
 async def test_file_without_a_profile_renders_no_glyph_and_the_same_column_count(client: AsyncClient, session: AsyncSession) -> None:
     plain = _make_file("noglyphfiles")
@@ -89,6 +104,42 @@ async def test_file_with_a_profile_renders_the_glyph_at_the_same_column_count(cl
 
 
 @pytest.mark.asyncio
+async def test_mobile_card_without_a_profile_renders_no_glyph(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-5x8za implementer decision: the mobile card view carries the glyph too, for parity
+    with the desktop table, Changes Review and the palette Files group -- every other Files
+    surface shows it. A file with no ``SetProfile`` row renders the card byte-identical to before."""
+    marker = "nocardglyphfiles"
+    plain = _make_file(marker)
+    session.add(plain)
+    await session.commit()
+
+    resp = await client.get("/pipeline/files", headers={"HX-Request": "true"})
+    assert resp.status_code == 200
+    card = _card_html(resp.text, f"{marker}-")
+
+    assert "data-set-glyph" not in card
+
+
+@pytest.mark.asyncio
+async def test_mobile_card_with_a_profile_renders_the_glyph(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-5x8za: the mobile card renders the SAME glyph the desktop row does, reusing the
+    identical ``ui.set_glyph`` macro call -- no second rendering path."""
+    marker = "cardglyphfiles"
+    with_profile = _make_file(marker)
+    session.add(with_profile)
+    await session.commit()
+    session.add(SetProfile(file_id=with_profile.id, glyph=_glyph_cells()))
+    await session.commit()
+
+    resp = await client.get("/pipeline/files", headers={"HX-Request": "true"})
+    assert resp.status_code == 200
+    card = _card_html(resp.text, f"{marker}-")
+
+    assert "data-set-glyph" in card and "data-set-glyph-empty" not in card
+    assert card.count("<rect") == len(_glyph_cells())
+
+
+@pytest.mark.asyncio
 async def test_files_page_loads_profiles_in_one_query_not_per_row(
     client: AsyncClient, session: AsyncSession, _db_connection: AsyncConnection
 ) -> None:
@@ -113,7 +164,10 @@ async def test_files_page_loads_profiles_in_one_query_not_per_row(
         event.remove(sync_conn, "before_cursor_execute", _capture)
 
     assert resp.status_code == 200
-    assert resp.text.count("data-set-glyph role=") == len(files)
+    # phaze-5x8za: the mobile card view now renders the SAME glyph too, so each file's row shows up
+    # TWICE -- once in the desktop <tr>, once in the mobile <article> -- off the ONE eager load
+    # below; the query-count assertion is the one that actually proves no per-row fetch happened.
+    assert resp.text.count("data-set-glyph role=") == len(files) * 2
 
     set_profile_selects = [s for s in captured if "set_profile" in s.lower() and "select" in s.lower()]
     assert len(set_profile_selects) == 1, f"expected exactly one set_profile SELECT for the whole page, saw: {set_profile_selects}"

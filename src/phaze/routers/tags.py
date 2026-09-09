@@ -40,6 +40,7 @@ import structlog
 from phaze.database import get_session
 from phaze.models.file import FileRecord
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
+from phaze.services.set_glyph_colors import CAMELOT_LEGEND, ENERGY_LIGHTNESS_STEP_COUNT, camelot_hue, energy_lightness
 from phaze.services.stage_status import applied_clause, is_applied
 from phaze.services.tag_comparison import (
     _build_comparison,
@@ -60,6 +61,16 @@ logger = structlog.get_logger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+# phaze-5x8za: write_file_tags/undo_tag_write re-render `_diff_row.html` (via
+# tags/partials/tagwrite_diff_row.html) through THIS env, which draws the set glyph via the same
+# `ui/primitives.html` macro `routers/record.py` registers these four globals for -- mirrored here
+# for the same reason `routers/proposals.py` needed its own copy (each `Jinja2Templates(...)` call
+# owns a distinct `Environment`, so a global registered on one router's `templates` is invisible
+# to another's).
+templates.env.globals["camelot_hue"] = camelot_hue
+templates.env.globals["energy_lightness"] = energy_lightness
+templates.env.globals["camelot_legend"] = CAMELOT_LEGEND
+templates.env.globals["energy_lightness_step_count"] = ENERGY_LIGHTNESS_STEP_COUNT
 router = APIRouter(prefix="/tags", tags=["tags"])
 
 # D-03: bound the operator-triggered no-discrepancy bulk loop. Reviving the applied() gate can make a
@@ -208,8 +219,15 @@ async def _get_tag_stats(session: AsyncSession) -> dict[str, int]:
 
 
 async def _get_file_with_metadata(session: AsyncSession, file_id: uuid.UUID) -> FileRecord | None:
-    """Load a FileRecord with its metadata eagerly loaded."""
-    stmt = select(FileRecord).options(selectinload(FileRecord.file_metadata)).where(FileRecord.id == file_id)
+    """Load a FileRecord with its metadata eagerly loaded.
+
+    phaze-5x8za: ``set_profile`` selectinload rides alongside -- ONE extra statement for this
+    single row (never a per-row query) -- so every write_file_tags/undo_tag_write swap response
+    built from this record renders the SAME cached glyph the page render shows.
+    ``FileRecord.set_profile`` is ``lazy="noload"`` (models/file.py), so without this
+    ``_tagwrite_row_context`` reading ``file_record.set_profile`` would raise, not silently N+1.
+    """
+    stmt = select(FileRecord).options(selectinload(FileRecord.file_metadata), selectinload(FileRecord.set_profile)).where(FileRecord.id == file_id)
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
@@ -361,6 +379,12 @@ async def _tagwrite_row_context(session: AsyncSession, file_record: FileRecord, 
         "show_skip": False,
         "show_undo": True,
         "row_state": row_state,
+        # phaze-5x8za: the same cached glyph phaze-x1qr3.9 wired into the PAGE render of this same
+        # partial (_changes_list.html passes `profile=f.set_profile` for the tagwrite-row block) --
+        # undefined/None renders the filename cell byte-identical to before this key existed (see
+        # the contract in _diff_row.html). `file_record.set_profile` is eager-loaded by
+        # `_get_file_with_metadata` above, never a per-row query.
+        "profile": file_record.set_profile,
     }
 
 
