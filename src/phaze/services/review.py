@@ -254,6 +254,12 @@ def _build_changes_review_row(proposal: RenameProposal, collision_ids: set[str])
         "bulk_eligible": (raw_status == ProposalStatus.PENDING and proposal.confidence is not None and proposal.confidence >= 0.9 and not conflicts),
         "updated_at": proposal.updated_at,
         "review_token": f"{proposal.id}|{proposal.updated_at.isoformat()}|{proposal_review_digest(proposal)}",
+        # phaze-x1qr3.9: the file's cached set glyph, or None on a file never analyzed to a
+        # SetProfile row -- `_diff_row.html` renders it next to the filename when present and
+        # nothing (no placeholder) when absent. `proposal.file.set_profile` is eager-loaded by
+        # `get_changes_review_page`'s query below (a SECOND selectinload nested under the first,
+        # ONE extra statement for the whole page -- never one query per row).
+        "set_profile": proposal.file.set_profile,
     }
 
 
@@ -275,7 +281,12 @@ async def get_changes_review_page(
         async with session.begin_nested():
             stats = await _changes_review_stats(session)
 
-            query = select(RenameProposal).options(selectinload(RenameProposal.file))
+            # phaze-x1qr3.9: nested selectinload -- ONE extra `SELECT ... WHERE set_profile.file_id
+            # IN (...)` for the whole page's files, chained onto the existing file selectinload
+            # rather than a per-row `session.get(SetProfile, ...)`. `FileRecord.set_profile` is
+            # `lazy="noload"` (models/file.py), so without this `_build_changes_review_row` reading
+            # `proposal.file.set_profile` would raise on an AsyncSession, not silently N+1.
+            query = select(RenameProposal).options(selectinload(RenameProposal.file).selectinload(FileRecord.set_profile))
             if active_status != "all":
                 query = query.where(RenameProposal.status.in_(tuple(one.value for one in _CHANGES_STATUS_MAP[active_status])))
             filtered_total = getattr(stats, active_status) if active_status != "all" else stats.all
@@ -469,7 +480,11 @@ async def _fetch_tagwrite_batch(
     """
     stmt = (
         select(FileRecord)
-        .options(selectinload(FileRecord.file_metadata))
+        # phaze-x1qr3.9: `set_profile` selectinload rides alongside the existing `file_metadata`
+        # one -- ONE extra statement per scan batch (`WHERE set_profile.file_id IN (...)`), never
+        # per row. `FileRecord.set_profile` is `lazy="noload"`, so `_build_tagwrite_row` reading
+        # `fr.set_profile` would otherwise raise on this AsyncSession.
+        .options(selectinload(FileRecord.file_metadata), selectinload(FileRecord.set_profile))
         .where(applied_clause(), FileRecord.id.not_in(terminal_subq))
         .order_by(FileRecord.original_filename, FileRecord.id)
         .limit(_REVIEW_SCAN_BATCH)
@@ -535,6 +550,9 @@ def _build_tagwrite_row(
         "status": ("blocked" if latest is not None and latest.status in {"failed", "discrepancy", "verify_failed"} else "needs_review"),
         "discrepancies": latest.discrepancies if latest is not None else None,
         "error_message": latest.error_message if latest is not None else None,
+        # phaze-x1qr3.9: see `_build_changes_review_row`'s comment -- same cached glyph, same
+        # empty-cell-on-None contract, eager-loaded by `_fetch_tagwrite_batch` above.
+        "set_profile": fr.set_profile,
     }
 
 

@@ -19,7 +19,16 @@
   Security: every DB-sourced cell (filename / title / artist) is Jinja2-autoescaped (T-61-01);
   artist names entering an hx-get URL are urlencoded. No value is emitted into an Alpine/JS
   attribute context, so no |tojson is required here.
+
+  phaze-x1qr3.9: each Files-group row carries its file's cached set glyph in `r.glyph` (a
+  SearchResult field the tracklist/artist/Discogs rows never populate -- NULL union-parity slot,
+  services/search_queries.py). `SearchResult` exposes `.glyph` directly, so it doubles as the
+  macro's `profile` arg (the macro only reads `profile.glyph`) with no wrapper object. Rendered
+  through the SAME `ui/primitives.html` set_glyph macro every other glyph surface uses, at the
+  row-scale 10px (`h-2.5`) height; absent on a file never analyzed to a SetProfile row -- no
+  placeholder strip, matching the Files table and Changes Review rows.
 #}
+{% import "ui/primitives.html" as ui %}
 {% set row_class = "cmdk-row rounded-lg px-3 py-2 flex items-center gap-3 cursor-pointer hover:bg-gray-100 dark:hover:bg-phaze-border" %}
 {% set row_static_class = "cmdk-row-static rounded-lg px-3 py-2 flex items-center gap-3" %}
 {% set head_class = "px-3 pt-3 pb-1 font-jura text-[11px] uppercase tracking-wider text-muted " %}
@@ -53,6 +62,7 @@
       <span aria-hidden="true">🎵</span>
       <span class="flex-1 truncate text-gray-900 dark:text-gray-100">{{ r.title }}</span>
       {% if r.artist %}<span class="shrink-0 text-xs text-muted truncate max-w-[10rem]">{{ r.artist }}</span>{% endif %}
+      {% if r.glyph %}<span class="inline-block h-2.5 w-10 shrink-0 align-middle">{{ ui.set_glyph(r, height_class='h-2.5') }}</span>{% endif %}
       <span class="{{ badge_base }} bg-blue-100 dark:bg-blue-950 text-info ">File</span>
     </div>
   {% endfor %}

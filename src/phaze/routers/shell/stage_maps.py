@@ -17,6 +17,7 @@ from pathlib import Path
 
 from fastapi.templating import Jinja2Templates
 
+from phaze.services.set_glyph_colors import CAMELOT_LEGEND, ENERGY_LIGHTNESS_STEP_COUNT, camelot_hue, energy_lightness
 from phaze.utils.humanize import relative_time
 from phaze.web.static import static_asset_url
 
@@ -36,6 +37,14 @@ templates.env.globals["static_url"] = static_asset_url
 # environments, so the global must be registered on both; templates rendered through THIS env
 # (shell.html, every STAGE_PARTIALS/UTILITY_PANES partial) resolve it from here.
 templates.env.globals["humanize_relative_time"] = relative_time
+# phaze-x1qr3.9: this env renders both `files_table_view.html` and `_changes_list.html`
+# (-> `_diff_row.html`), each drawing the set glyph through the SAME `ui/primitives.html` macro
+# `routers/record.py` registers these four globals for. Mirrors that registration exactly --
+# see this module's docstring for why a second `Jinja2Templates` instance needs its own copy.
+templates.env.globals["camelot_hue"] = camelot_hue
+templates.env.globals["energy_lightness"] = energy_lightness
+templates.env.globals["camelot_legend"] = CAMELOT_LEGEND
+templates.env.globals["energy_lightness_step_count"] = ENERGY_LIGHTNESS_STEP_COUNT
 
 # Rail-node id -> bridged content partial (D-01). The keys + their order are VERBATIM
 # from the prototype RAIL config (57-UI-SPEC "DAG Rail" table); every node now resolves

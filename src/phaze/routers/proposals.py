@@ -35,6 +35,7 @@ from phaze.services.proposal_queries import (
     update_proposal_fields,
     update_proposal_status,
 )
+from phaze.services.set_glyph_colors import CAMELOT_LEGEND, ENERGY_LIGHTNESS_STEP_COUNT, camelot_hue, energy_lightness
 
 
 # The review-UI state machine (phaze-uu17) now lives on the model, beside the enum it constrains --
@@ -268,6 +269,14 @@ def _diff_row_response(request: Request, proposal: RenameProposal, row_id_prefix
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+# phaze-x1qr3.9: bulk_action() re-renders `_changes_list.html` (-> `_diff_row.html`) through THIS
+# env, which draws the set glyph via the same `ui/primitives.html` macro `routers/record.py`
+# registers these four globals for -- mirrored here for the same reason
+# `routers/shell/stage_maps.py` (the GET path's env) needed its own copy.
+templates.env.globals["camelot_hue"] = camelot_hue
+templates.env.globals["energy_lightness"] = energy_lightness
+templates.env.globals["camelot_legend"] = CAMELOT_LEGEND
+templates.env.globals["energy_lightness_step_count"] = ENERGY_LIGHTNESS_STEP_COUNT
 router = APIRouter(prefix="/proposals", tags=["proposals"])
 
 SPARK_W = 80.0

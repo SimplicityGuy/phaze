@@ -192,6 +192,19 @@ def test_legend_reports_the_glyph_cell_count() -> None:
     assert "37 segments" in many
 
 
+def test_glyph_height_class_defaults_to_h7_and_is_overridable() -> None:
+    """phaze-x1qr3.9: row-scale callers (Files table, Changes Review, ⌘K palette) pass
+    ``height_class='h-2.5'`` (10px) instead of the record page's full ``h-7`` -- ONE rendering
+    path, only the Tailwind height class varies. The record page's existing two-arg call
+    (``ui.set_glyph(profile, id)``) is unaffected by the new keyword-only-in-practice default."""
+    profile = SimpleNamespace(glyph=_cells((8, 0.5)))
+    default_html = _render("""{{ ui.set_glyph(profile) }}""", profile=profile)
+    small_html = _render("""{{ ui.set_glyph(profile, height_class='h-2.5') }}""", profile=profile)
+
+    assert 'class="block h-7 w-full' in default_html
+    assert 'class="block h-2.5 w-full' in small_html
+
+
 def test_glyph_and_legend_content_is_autoescaped() -> None:
     """The macros interpolate no operator-controlled string content (unlike, say, ``page_header``'s
     ``title``), but a caller passing a hostile ``id`` must not break out of the attribute."""
