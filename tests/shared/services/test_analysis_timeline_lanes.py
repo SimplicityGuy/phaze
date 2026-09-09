@@ -352,6 +352,33 @@ def test_no_analysis_row_and_no_counters_render_no_chip_rather_than_a_zero_claim
     assert build_analysis_timeline_context([_fine(0, 0.0, 30.0, bpm=128.0)])["coverage_chip"] is None
 
 
+def test_a_null_coarse_pair_renders_unknown_not_zero_and_sets_the_gap_state() -> None:
+    """phaze-ox2m0: a fine-only progress upsert leaves the coarse pair NULL, not 0.
+
+    ``fine=1440/1440, coarse=NULL`` is the row a pod dying right after the fine tier leaves
+    behind (``routers/agent_analysis.py``'s ``put_analysis_progress`` only ever writes the
+    coarse pair together, never a lone half). The fine tier alone is complete, but the chip
+    cannot say "no gaps" -- it never saw the coarse tier at all -- so it renders the coarse
+    count as unknown and sets the amber gap state rather than printing a false "0 coarse".
+    """
+    chip = coverage_chip(AnalysisResult(file_id=uuid.uuid4(), fine_windows_analyzed=1440, fine_windows_total=1440))
+
+    assert chip is not None
+    assert chip["text"] == "? coarse · 1440 fine · gaps"
+    assert chip["has_gaps"] is True
+    assert chip["coarse"] is None
+
+
+def test_a_null_fine_pair_renders_unknown_not_zero_and_sets_the_gap_state() -> None:
+    """The mirror case: a coarse-only row (fine pair still NULL) is equally UNKNOWN, not 0 fine."""
+    chip = coverage_chip(AnalysisResult(file_id=uuid.uuid4(), coarse_windows_analyzed=240, coarse_windows_total=240))
+
+    assert chip is not None
+    assert chip["text"] == "240 coarse · ? fine · gaps"
+    assert chip["has_gaps"] is True
+    assert chip["fine"] is None
+
+
 # --- The fine-only file, and the lanes' text alternatives ---------------------------------
 
 
