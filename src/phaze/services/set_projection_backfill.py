@@ -114,8 +114,8 @@ async def run_backfill(session: AsyncSession, *, progress_every: int = PROGRESS_
         report.files_scanned += 1
         try:
             if await backfill_one_file(session, file_id):
-                report.files_projected += 1
                 await session.commit()
+                report.files_projected += 1
             else:
                 report.files_skipped_no_windows += 1
         except Exception:
