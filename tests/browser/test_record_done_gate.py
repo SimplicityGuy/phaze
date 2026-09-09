@@ -21,7 +21,7 @@ both sides, instead of as four separately-green tests.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta
 import re
 from typing import TYPE_CHECKING, Any
 import uuid
@@ -61,6 +61,11 @@ _EXPECTED_BPM_HI = "130"
 _EXPECTED_BPM_LO = "120"
 
 _DESKTOP_TABLE = "#files-table-view .md\\:block"
+
+# Distinguishing ``TagWriteLog.source`` values for ``_seed_two_history_rows`` -- each renders as
+# the row's trailing ``· <detail>`` text in the (closed-by-default) History list.
+_EARLIER_HISTORY_SOURCE = "phaze-uwliw-earlier-write"
+_LATER_HISTORY_SOURCE = "phaze-uwliw-later-write"
 
 
 def _files_row(file_id: Any) -> str:
@@ -102,10 +107,28 @@ async def _record_fingerprint(page: Any, scope: str) -> str:
     That stability is what lets this be a whole-subtree comparison instead of a handful of
     cherry-picked facts: a section that silently stops rendering from one entry point fails here,
     where a targeted assertion list would have to have anticipated it.
+
+    phaze-uwliw: History and Metadata & identity render inside closed ``<details>`` (phaze-x1qr3.8's
+    fold design), and ``Locator.inner_text()`` -- the accessible-text primitive, deliberately used
+    everywhere else in this helper for the CSS-rendered wording it returns -- omits closed-details
+    content entirely, same as any other ``display:none`` subtree. Read as originally written, this
+    fingerprint was blind to both folds: a per-opener regression inside either one produced five
+    IDENTICAL fingerprints and a green done-gate, silently, because the diff that would have caught
+    it was never in the compared text to begin with. Forcing every ``<details>`` in scope open before
+    reading is what puts that content back in the comparison, without giving up ``inner_text()``'s
+    handling of the rest of the subtree (an ``inner_text``/``text_content`` split would also read
+    ``<script type="application/json" data-timeline-inspection>`` and the inline readout script
+    verbatim into the fingerprint -- noise this whole-subtree comparison does not need). The state
+    change is scoped to THIS ``scope`` and never persisted: each open replaces ``#record-body``'s
+    subtree (drawer) or is a fresh navigation (full page), so it never leaks into a later open.
     """
     await page.wait_for_function(
         "(scope) => { const root = document.querySelector(scope + ' [data-analysis-timeline]');"
         " return !root || root.dataset.timelineReady === 'true'; }",
+        arg=scope,
+    )
+    await page.evaluate(
+        "(scope) => { document.querySelectorAll(scope + ' details').forEach((d) => { d.open = true; }); }",
         arg=scope,
     )
     text = await page.locator(f"{scope} [data-record-content]").inner_text()
@@ -143,6 +166,38 @@ async def _seed_matched_file(seed: Seeder) -> Any:
     tracklist.latest_version_id = version.id
     await seed.session.commit()
     return file
+
+
+async def _seed_two_history_rows(seed: Seeder, file: Any) -> None:
+    """Two ``TagWriteLog`` rows for ``file``, distinguishable by their ``source`` (rendered as
+    the row's trailing ``· <detail>`` in ``_record_content.html``'s History list), and each with
+    an explicit ``written_at`` so the merge sort in ``_load_history`` orders them deterministically
+    -- the more recent one (``_LATER_HISTORY_SOURCE``) sorts first.
+    """
+    from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
+
+    base = datetime(2026, 8, 1, 12, 0, 0)
+    seed.session.add_all(
+        [
+            TagWriteLog(
+                file_id=file.id,
+                before_tags={},
+                after_tags={"title": "Earlier"},
+                source=_EARLIER_HISTORY_SOURCE,
+                status=TagWriteStatus.COMPLETED.value,
+                written_at=base,
+            ),
+            TagWriteLog(
+                file_id=file.id,
+                before_tags={},
+                after_tags={"title": "Later"},
+                source=_LATER_HISTORY_SOURCE,
+                status=TagWriteStatus.COMPLETED.value,
+                written_at=base + timedelta(seconds=30),
+            ),
+        ]
+    )
+    await seed.session.commit()
 
 
 async def test_one_file_is_the_same_record_from_files_analyze_tracklists_and_search(page: Any, seed: Seeder) -> None:
@@ -378,4 +433,113 @@ async def test_the_timeline_reads_the_same_in_the_drawer_and_on_the_page_and_ret
     assert await _bpm_bounds("main") == drawer_bounds, "the canonical page draws the timeline against different BPM bounds than the drawer"
     assert page_reading == drawer_reading, (
         f"the timeline reports {page_reading} on the page and {drawer_reading} in the drawer at the same time — the two presentations have drifted"
+    )
+
+
+async def test_every_opener_of_the_history_section_opens_its_closed_fold(page: Any, seed: Seeder) -> None:
+    """phaze-uwliw: History renders inside ``<details id="history">``, closed by default
+    (phaze-x1qr3.8's fold design -- reference the operator consults, not reads). Before this fix
+    none of the three ways to arrive at it actually opened the fold: the header nav link and a
+    direct ``#history`` navigation only ever changed ``location.hash`` (the browser scrolls the
+    closed, still-empty-looking box into view and stops there), and the drawer's own
+    ``data-record-section`` opener scrolled the same closed box into view without touching
+    ``.open`` either. All three are exercised here against the SAME seeded rows, each asserting
+    ``#history li`` is actually visible afterwards -- not merely that the fold scrolled into the
+    viewport, which the pre-fix code already did.
+    """
+    target = await _seed_matched_file(seed)
+    await _seed_two_history_rows(seed, target)
+
+    async def _assert_history_open_and_populated(scope: str) -> None:
+        details = page.locator(f"{scope} #history")
+        assert await details.evaluate("(el) => el.open") is True, f"{scope} #history did not open"
+        rows = details.locator("li")
+        assert await rows.count() == 2, f"{scope} #history does not list both seeded rows"
+        for row in await rows.all():
+            assert await row.is_visible(), f"{scope} #history li is not visible even though the fold reports open"
+
+    # --- Direct navigation to the deep link: /files/{id}#history. ----------------------------
+    await page.goto(f"/files/{target.id}#history", wait_until="domcontentloaded")
+    await _assert_history_open_and_populated("main")
+
+    # --- The header nav link, clicked from a page that did NOT start on #history. ------------
+    await page.goto(f"/files/{target.id}", wait_until="domcontentloaded")
+    assert await page.locator("main #history").evaluate("(el) => el.open") is False, (
+        "the fold started open — this run cannot prove the click is what opened it"
+    )
+    await page.click('main nav a[href="#history"]')
+    await page.wait_for_function("() => document.querySelector('main #history').open === true")
+    await _assert_history_open_and_populated("main")
+
+    # --- The drawer, opened with data-record-section="history" (the third documented opener). -
+    await open_shell(page, "/s/files")
+    await settled(page)
+    # Test-only stand-in for a caller that would pass `section='history'` to
+    # `pipeline/partials/_record_row.html`'s `attrs()` macro (today only Tracklists rows do, with
+    # `section='tracklist'`) -- record_row.attrs reads this exact attribute off `$el` at click time.
+    # Setting the attribute and clicking happen in ONE synchronous evaluate() rather than as two
+    # separate Playwright calls: Files rides the shell's background poll/OOB refresh (`open_shell`'s
+    # own docstring -- "the shell holds a 5s stats poll"), which can re-render this row between two
+    # separate round trips and silently click an unmutated replacement -- a real caller has no such
+    # gap, since its `section` attribute ships in the same server-rendered markup as the row itself.
+    row_selector = f"{_files_row(target.id)} td:last-child"
+    async with swap_settles(page):
+        await page.evaluate(
+            "(selector) => { const cell = document.querySelector(selector);"
+            " cell.closest('[data-record-row]').dataset.recordSection = 'history'; cell.click(); }",
+            arg=row_selector,
+        )
+    await _wait_for_record(page, target.id)
+    await page.wait_for_function("() => document.getElementById('history').open === true")
+    await _assert_history_open_and_populated("#record-body")
+
+
+async def test_the_fingerprint_sees_inside_the_closed_history_fold(page: Any, seed: Seeder) -> None:
+    """Guards the ``_record_fingerprint`` fix directly: History (and Metadata & identity) render
+    inside closed ``<details>``, and ``inner_text()`` -- the primitive the fingerprint reads --
+    omits closed-details content the same as any other hidden subtree. Before this fix, a per-opener
+    regression INSIDE the History fold was invisible to the whole-subtree comparison the done-gate
+    test above relies on: it would have produced five identical fingerprints and a green gate.
+
+    Proven directly rather than by inference: fingerprint one open of a seeded file, then intercept
+    a SECOND open's own ``/record/{id}`` response and strip one of its two history rows -- still
+    inside the closed fold, never opened by this test -- and assert the fingerprint actually
+    changes. A regex match assertion on the interception itself is the guard against a false
+    negative from this test silently failing to find anything to remove.
+    """
+    target = await _seed_matched_file(seed)
+    await _seed_two_history_rows(seed, target)
+
+    await open_shell(page, "/s/files")
+    await settled(page)
+    async with swap_settles(page):
+        await page.click(f"{_files_row(target.id)} td:last-child")
+    await _wait_for_record(page, target.id)
+    baseline = await _record_fingerprint(page, "#record-body")
+    assert _EARLIER_HISTORY_SOURCE in baseline and _LATER_HISTORY_SOURCE in baseline, (
+        "the seeded history rows never reached the fingerprint — this test cannot prove anything about the fold"
+    )
+    await _close_record(page)
+
+    async def _drop_the_later_history_row(route: Any) -> None:
+        response = await route.fetch()
+        body = await response.text()
+        mutated, count = re.subn(
+            r'<li class="flex items-center gap-2">.*?' + re.escape(_LATER_HISTORY_SOURCE) + r".*?</li>", "", body, count=1, flags=re.DOTALL
+        )
+        assert count == 1, "the interception did not find a history <li> to strip — this test proves nothing"
+        await route.fulfill(response=response, body=mutated)
+
+    record_url = f"**/record/{target.id}"
+    await page.route(record_url, _drop_the_later_history_row)
+    async with swap_settles(page):
+        await page.click(f"{_files_row(target.id)} td:last-child")
+    await _wait_for_record(page, target.id)
+    mutated_fingerprint = await _record_fingerprint(page, "#record-body")
+    await page.unroute(record_url, _drop_the_later_history_row)
+
+    assert _LATER_HISTORY_SOURCE not in mutated_fingerprint, "the intercepted response still carries the row this test tried to strip"
+    assert _EARLIER_HISTORY_SOURCE in mutated_fingerprint, "the interception removed more than the one targeted row"
+    assert mutated_fingerprint != baseline, (
+        "the fingerprint did not change when a history row was dropped from inside the closed fold — it is still blind to closed <details> content"
     )
