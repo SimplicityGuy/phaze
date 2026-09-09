@@ -1,43 +1,70 @@
 {# Shared canonical file-record content. Both routes render this exact partial from the same
    file-scoped context builder. DB-sourced values remain autoescaped, and Changes Review remains
-   the only approval surface. Keep this content free of presentation-specific outer chrome. #}
+   the only approval surface. Keep this content free of presentation-specific outer chrome.
+
+   phaze-x1qr3.8 ordering: what needs a DECISION first, then what the set IS, then the machinery.
+   The review banner leads and never folds -- it is the one section that can be asking for an
+   action, and a fold is a place an action goes unseen. The set panel and the tracklist index
+   follow, because they are what the operator came to look at. Stage eligibility stays OPEN
+   (troubleshooting is the second reason anyone opens a record); metadata/identity and history
+   fold, because they are reference rather than reading.
+
+   The eight-fact list is deliberately NOT here: the full page renders it in the sidebar and the
+   drawer in its own header block, so this subtree renders byte-identically in both
+   presentations -- which is what `test_record_full_page.py`'s text-equality assertion pins. #}
 {% set _eyebrow = 'font-jura text-[11px] font-medium uppercase tracking-wider text-muted ' %}
-{% set _tile = 'rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-phaze-border dark:bg-phaze-panel' %}
+{% set _panel = 'rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel' %}
+{% set _summary = 'flex cursor-pointer items-center gap-2 font-jura text-[11px] font-medium uppercase tracking-wider text-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500' %}
 <div data-record-content class="space-y-6 px-6 py-5">
-        {# 2 — Facts grid: Format · Duration · sha256 · Lane badge. #}
-        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <div class="{{ _tile }}">
-                <p class="{{ _eyebrow }}">Format</p>
-                <p class="mt-1 truncate text-sm text-gray-900 dark:text-gray-200">{{ file.file_type }}</p>
-            </div>
-            <div class="{{ _tile }}">
-                <p class="{{ _eyebrow }}">Duration</p>
-                <p class="mt-1 truncate text-sm text-gray-900 dark:text-gray-200">{% if total_sec %}{{ '%d:%02d' % ((total_sec | int) // 60, (total_sec | int) % 60) }}{% else %}—{% endif %}</p>
-            </div>
-            <div class="{{ _tile }}">
-                <p class="{{ _eyebrow }}">sha256</p>
-                <p class="mt-1 truncate font-mono text-xs text-gray-900 dark:text-gray-200" title="{{ file.sha256_hash }}">{{ file.sha256_hash[:12] }}…</p>
-            </div>
-            <div class="{{ _tile }}">
-                <p class="{{ _eyebrow }}">Lane</p>
-                {# phaze-lljfx: real per-file lane, not a hardcoded "local". Mirrors the glyph
-                   mapping _analyze_files.html derives from f.lane_kind (COMPUTE-03): local=🖥️,
-                   compute=☁️, kueue=⎈, anything else (an unrecognized/deregistered kind) gets the
-                   neutral gray fallback rather than silently asserting local. #}
-                {% if lane_kind == 'local' %}
-                    {% set _lane_glyph, _lane_color = '🖥️', 'text-ok ' %}
-                {% elif lane_kind == 'compute' %}
-                    {% set _lane_glyph, _lane_color = '☁️', 'text-info ' %}
-                {% elif lane_kind == 'kueue' %}
-                    {% set _lane_glyph, _lane_color = '⎈', 'text-warn ' %}
-                {% else %}
-                    {% set _lane_glyph, _lane_color = '▪', 'text-gray-600 dark:text-gray-300' %}
-                {% endif %}
-                <p class="mt-1 truncate text-sm {{ _lane_color }}">{{ _lane_glyph }} {{ lane }}</p>
-            </div>
+        {# 1 — Changes needing review for THIS file: a COUNT plus a link into Changes Review.
+           Approval is intentionally centralized (ADR-0008: Changes Review is the ONLY UI workspace
+           that authorizes filename, destination, and tag changes) so a record drawer cannot bypass
+           the reviewed queue context. This box must never regrow an inline _diff_row approve/edit
+           cluster; tests/shared/core/test_record_palette_agents.py holds that boundary.
+           hx-target is the shell's #stage-workspace — the SAME container the rail swaps into.
+           phaze-x1qr3.8 moved it to the top and it carries NO fold: a pending decision that the
+           operator has to expand to discover is a pending decision that gets missed. #}
+        <div data-review-banner class="rounded-xl border border-amber-500/25 bg-amber-500/[0.06] p-4">
+            {# phaze-tzy6s.17 / ADR-0008: operator vocabulary -- the drawer says "Needs Review", not
+               "Pending". The link below already carries `status=needs_review`; only the words the
+               operator reads were still on the pre-ADR term. #}
+            <p class="font-jura text-[11px] font-medium uppercase tracking-wider text-warn ">Changes needing review for this file</p>
+            {% if pending_rows %}
+            <p class="mt-2 text-sm text-gray-700 dark:text-gray-300">{{ pending_rows | length }} decision{{ "s" if pending_rows | length != 1 else "" }} needing review. Review filename and destination together in the canonical queue.</p>
+            <a href="/s/rename?status=needs_review"
+               {% if record_presentation == 'drawer' %}hx-get="/s/rename?status=needs_review" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"{% endif %}
+               class="mt-3 inline-flex rounded-md bg-amber-700 px-3 py-2 font-jura text-xs uppercase tracking-wider text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Open Changes Review</a>
+            {% else %}
+            <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">This file is up to date — nothing needs review.</p>
+            {% endif %}
         </div>
 
-        {# 2.5 — Expanded stage matrix (trace triggers) + enrich-only force-skip (UI-03 / UI-04,
+        {# 2 — The SET PANEL: the windowed multi-lane timeline (phaze-x1qr3.5's energy area, mood
+           river, Camelot key ribbons and tracklist boundary ticks). It reuses
+           proposals/partials/analysis_timeline.html, which renders a <td>, so it is wrapped in a
+           table row whose id its own reveal script keys on. #}
+        <section id="analysis" data-set-panel class="scroll-mt-4 {{ _panel }}" aria-labelledby="analysis-heading">
+            <p id="analysis-heading" class="{{ _eyebrow }} mb-3">Set panel · windowed analysis</p>
+            <div class="relative min-w-0 overflow-x-auto"><table class="w-full table-fixed"><tbody><tr id="timeline-{{ file.id }}">
+                {% include "proposals/partials/analysis_timeline.html" %}
+            </tr></tbody></table></div>
+        </section>
+
+        {# 3 — The TRACKLIST INDEX (phaze-x1qr3.6): the scraped 1001Tracklists rows as an index
+           into the window projection, each carrying the median BPM, modal key, argmax mood and
+           mean energy of the windows inside its own time segment. Renders the SAME partial the
+           Prioritize/Un-prioritize and Refresh POST responses swap back in, so first render and
+           post-action render can never drift into two different presentations. #}
+        <section id="tracklist" data-tracklist-index class="scroll-mt-4 {{ _panel }}" aria-labelledby="tracklist-heading">
+            <p id="tracklist-heading" class="{{ _eyebrow }} mb-2">Tracklist index · 1001Tracklists</p>
+            <div id="tracklist-review-{{ file.id }}">
+                {% with review=tracklist_review, just_queued=False, just_refreshed=False %}
+                    {% include "record/partials/_tracklist_review_body.html" %}
+                {% endwith %}
+            </div>
+        </section>
+
+        {# 4 — Expanded stage matrix (trace triggers) + enrich-only force-skip (UI-03 / UI-04,
            D-02/D-06..D-10): the right-pane half of the D-02 dual home. Each stage is a keyboard-
            accessible trace TRIGGER — a real <button> (native Enter/Space → click) that hx-gets the
            single-row eligibility trace and reveals _eligibility_trace.html BENEATH the clicked pill.
@@ -45,10 +72,13 @@
            downstream propose/review/apply pills carry NO skip affordance (approval-bypass hazard,
            D-10). Phase 93 (CONSOLE-01): each stage row ALSO renders the shared five-bucket
            _stage_pill.html token, fed by stage_buckets — the SAME stage_status_case derivation the
-           Files matrix renders for this file's row, so the pane and the matrix can never disagree. #}
-        <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel">
-            <p class="{{ _eyebrow }} mb-3">Stage eligibility · click a stage to trace</p>
-            <div class="space-y-2">
+           Files matrix renders for this file's row, so the pane and the matrix can never disagree.
+           phaze-x1qr3.8: it is a fold, but one that ships OPEN — troubleshooting is the second
+           reason a record gets opened at all, and the trace buttons must be reachable without a
+           click that a keyboard user has to discover first. #}
+        <details data-stage-eligibility open class="{{ _panel }}">
+            <summary class="{{ _summary }}">Stage eligibility · click a stage to trace</summary>
+            <div class="mt-3 space-y-2">
             {% for stage_value, stage_label, is_enrich in [
                     ('metadata', 'Metadata', true), ('analyze', 'Analyze', true),
                     ('propose', 'Propose', false), ('review', 'Review', false), ('apply', 'Execute', false)] %}
@@ -104,77 +134,38 @@
                 </div>
             {% endfor %}
             </div>
-        </div>
+        </details>
 
-        {# 3 — Windowed multi-lane timeline (reuse analysis_timeline.html; it renders a <td>, so it
-           is wrapped in a table row whose id its own reveal script keys on). #}
-        <section id="analysis" class="scroll-mt-4 rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel" aria-labelledby="analysis-heading">
-            <p id="analysis-heading" class="{{ _eyebrow }} mb-3">Windowed analysis · multi-lane timeline</p>
-            <div class="relative min-w-0 overflow-x-auto"><table class="w-full table-fixed"><tbody><tr id="timeline-{{ file.id }}">
-                {% include "proposals/partials/analysis_timeline.html" %}
-            </tr></tbody></table></div>
-        </section>
-
-        {# 4/5 — Metadata diff (left) + Identity (right). #}
-        <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel">
-                <p class="{{ _eyebrow }} mb-2">Metadata</p>
-                {% if pending_rows %}
-                <p class="text-xs text-muted ">Proposed changes are pending — review them in Changes Review (linked below).</p>
-                {% else %}
-                <p class="text-sm text-muted ">No pending metadata changes — this file is up to date.</p>
-                {% endif %}
+        {# 5 — Metadata diff + Identity, folded: reference the operator consults, not reads. #}
+        <details data-metadata-identity class="{{ _panel }}">
+            <summary class="{{ _summary }}">Metadata &amp; identity</summary>
+            <div class="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
+                <div>
+                    <p class="{{ _eyebrow }} mb-2">Metadata</p>
+                    {% if pending_rows %}
+                    <p class="text-xs text-muted ">Proposed changes are pending — review them in Changes Review (linked above).</p>
+                    {% else %}
+                    <p class="text-sm text-muted ">No pending metadata changes — this file is up to date.</p>
+                    {% endif %}
+                </div>
+                <div>
+                    <p class="{{ _eyebrow }} mb-2">Identity</p>
+                    {% if identity %}
+                    <div class="relative overflow-x-auto"><table class="w-full"><tbody><tr id="detail-{{ file.id }}">
+                        {% with proposal=identity %}{% include "proposals/partials/row_detail.html" %}{% endwith %}
+                    </tr></tbody></table></div>
+                    {% else %}
+                    <p class="text-sm text-muted ">No identity proposal yet.</p>
+                    {% endif %}
+                </div>
             </div>
-            <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel">
-                <p class="{{ _eyebrow }} mb-2">Identity</p>
-                {% if identity %}
-                <div class="relative overflow-x-auto"><table class="w-full"><tbody><tr id="detail-{{ file.id }}">
-                    {% with proposal=identity %}{% include "proposals/partials/row_detail.html" %}{% endwith %}
-                </tr></tbody></table></div>
-                {% else %}
-                <p class="text-sm text-muted ">No identity proposal yet.</p>
-                {% endif %}
-            </div>
-        </div>
+        </details>
 
-        {# 5.5 — 1001Tracklists review + trigger/prioritize (phaze-fq9h.8). Renders the SAME
-           partial the Prioritize/Un-prioritize POST responses swap back in, so first render and
-           post-action render can never drift into two different presentations. #}
-        <section id="tracklist" class="scroll-mt-4 rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel" aria-labelledby="tracklist-heading">
-            <p id="tracklist-heading" class="{{ _eyebrow }} mb-2">1001Tracklists</p>
-            <div id="tracklist-review-{{ file.id }}">
-                {% with review=tracklist_review, just_queued=False, just_refreshed=False %}
-                    {% include "record/partials/_tracklist_review_body.html" %}
-                {% endwith %}
-            </div>
-        </section>
-
-        {# 6 — Changes needing review for THIS file: a COUNT plus a link into Changes Review.
-           Approval is intentionally centralized (ADR-0008: Changes Review is the ONLY UI workspace
-           that authorizes filename, destination, and tag changes) so a record drawer cannot bypass
-           the reviewed queue context. This box must never regrow an inline _diff_row approve/edit
-           cluster; tests/shared/core/test_record_palette_agents.py holds that boundary.
-           hx-target is the shell's #stage-workspace — the SAME container the rail swaps into. #}
-        <div class="rounded-xl border border-amber-500/25 bg-amber-500/[0.06] p-4">
-            {# phaze-tzy6s.17 / ADR-0008: operator vocabulary -- the drawer says "Needs Review", not
-               "Pending". The link below already carries `status=needs_review`; only the words the
-               operator reads were still on the pre-ADR term. #}
-            <p class="font-jura text-[11px] font-medium uppercase tracking-wider text-warn ">Changes needing review for this file</p>
-            {% if pending_rows %}
-            <p class="mt-2 text-sm text-gray-700 dark:text-gray-300">{{ pending_rows | length }} decision{{ "s" if pending_rows | length != 1 else "" }} needing review. Review filename and destination together in the canonical queue.</p>
-            <a href="/s/rename?status=needs_review"
-               {% if record_presentation == 'drawer' %}hx-get="/s/rename?status=needs_review" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"{% endif %}
-               class="mt-3 inline-flex rounded-md bg-amber-700 px-3 py-2 font-jura text-xs uppercase tracking-wider text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Open Changes Review</a>
-            {% else %}
-            <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">This file is up to date — nothing needs review.</p>
-            {% endif %}
-        </div>
-
-        {# 7 — History: read-only per-file event list (ExecutionLog + TagWriteLog). #}
-        <section id="history" class="scroll-mt-4" aria-labelledby="history-heading">
-            <p id="history-heading" class="{{ _eyebrow }} mb-2">History</p>
+        {# 6 — History: read-only per-file event list (ExecutionLog + TagWriteLog), folded. #}
+        <details id="history" data-history class="scroll-mt-4 {{ _panel }}">
+            <summary class="{{ _summary }}">History</summary>
             {% if history %}
-            <ul class="space-y-1 font-mono text-xs text-muted ">
+            <ul class="mt-3 space-y-1 font-mono text-xs text-muted ">
                 {% for h in history %}
                 <li class="flex items-center gap-2">
                     <span class="shrink-0 text-muted ">{{ h.when.strftime('%Y-%m-%d %H:%M') if h.when else '' }}</span>
@@ -185,7 +176,7 @@
                 {% endfor %}
             </ul>
             {% else %}
-            <p class="text-sm text-muted ">No recorded events yet.</p>
+            <p class="mt-3 text-sm text-muted ">No recorded events yet.</p>
             {% endif %}
-        </section>
+        </details>
 </div>

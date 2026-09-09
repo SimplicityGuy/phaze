@@ -30,7 +30,7 @@ def camelot_hue(camelot_number: int | float | None) -> int | None:
 
     THE single formula every Camelot-colored surface shares. ``None`` in, ``None`` out --
     never raises -- matching the "gap stays a gap" convention the rest of the projection uses
-    (:func:`phaze.services.set_projection.camelot_code`, ``_camelot_number``).
+    (:func:`phaze.services.set_projection.camelot_code`, ``camelot_number``).
     """
     if camelot_number is None:
         return None

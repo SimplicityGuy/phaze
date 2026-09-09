@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 from phaze.services.analysis_timeline import MOOD_HUES, MOOD_LABELS, MOOD_NAMES, hue_for
 from phaze.services.cue_generator import parse_timestamp_string
-from phaze.services.set_projection import CAMELOT_TABLE, modal_camelot
+from phaze.services.set_projection import key_name_for_camelot, modal_camelot
 
 
 if TYPE_CHECKING:
@@ -43,12 +43,12 @@ if TYPE_CHECKING:
     from phaze.models.tracklist import TracklistTrack
 
 
-# ``CAMELOT_TABLE`` is a bijection (24 distinct keys onto 24 distinct wheel positions), so it
-# inverts without loss. Inverting it rather than reading the window's own ``musical_key`` is
-# deliberate: the modal is computed over the stored ``camelot`` column, and essentia's flat
-# spellings normalise onto one canonical key string on the way in, so the name shown beside a
-# code is always that code's own canonical name and never one of its enharmonic twins.
-_CAMELOT_TO_KEY: dict[str, str] = {code: key for key, code in CAMELOT_TABLE.items()}
+# Naming a code rather than reading the window's own ``musical_key`` is deliberate: the modal is
+# computed over the stored ``camelot`` column, and essentia's flat spellings normalise onto one
+# canonical key string on the way in, so the name shown beside a code is always that code's own
+# canonical name and never one of its enharmonic twins. ``phaze-x1qr3.8`` moved the inversion
+# itself into ``set_projection.key_name_for_camelot`` -- the record page's facts list names a
+# code the same way, and one inversion means the two surfaces cannot drift.
 
 
 @dataclass(frozen=True)
@@ -186,8 +186,8 @@ def build_track_segments(
                 end_sec=end,
                 bpm=_median_bpm(in_fine),
                 camelot=camelot,
-                key=_CAMELOT_TO_KEY.get(camelot) if camelot else None,
-                key_hue=hue_for(_CAMELOT_TO_KEY.get(camelot, camelot)) if camelot else None,
+                key=key_name_for_camelot(camelot) if camelot else None,
+                key_hue=hue_for(key_name_for_camelot(camelot) or camelot) if camelot else None,
                 mood=mood,
                 mood_label=MOOD_LABELS.get(mood) if mood else None,
                 mood_hue=MOOD_HUES.get(mood) if mood else None,
