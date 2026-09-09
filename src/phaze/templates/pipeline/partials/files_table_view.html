@@ -245,7 +245,13 @@
                        "narrower than the path" into an ellipsis rather than a wrapped/overflowing
                        cell, and (per the colgroup comment) is also WHY auto table-layout honours the
                        dragged width here instead of growing the column to fit the full path. #}
-                    <td class="truncate px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-200" title="{{ row.file.current_path }}">{{ row.file.current_path }}</td>
+                    {# phaze-x1qr3.9: the set glyph rides in THIS cell, not a new column -- a file
+                       WITHOUT a `set_profile` row renders this `<td>` byte-identical to before (the
+                       `{% if %}` below emits nothing), so row height and column count are unchanged
+                       for that case, matching the acceptance criterion. A file WITH one gets a 10px
+                       (`h-2.5`) strip inline after the path, in a fixed-width wrapper so the
+                       macro's `w-full` sizes to the wrapper, not the cell. #}
+                    <td class="truncate px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-200" title="{{ row.file.current_path }}">{{ row.file.current_path }}{% if row.file.set_profile %} <span class="inline-block h-2.5 w-10 align-middle">{{ ui.set_glyph(row.file.set_profile, height_class='h-2.5') }}</span>{% endif %}</td>
                     <td class="px-3 py-2 text-muted ">{{ row.file.file_type }}</td>
                     {% for stage_label, key in _stage_cols %}
                     <td class="hidden whitespace-nowrap px-3 py-2 xl:table-cell">
