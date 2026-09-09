@@ -58,6 +58,12 @@
                     <a href="#analysis" class="text-link hover:underline">Analysis</a>
                     <a href="#tracklist" class="text-link hover:underline">Tracklist</a>
                     <a href="#history" class="text-link hover:underline">History</a>
+                    {# phaze-x1qr3.13: the poster composes the set projection (energy arc + wheel),
+                       so it is offered only once one exists -- a file with no `SetProfile` would
+                       otherwise link to a poster whose arc and wheel both render as "no data". #}
+                    {% if set_profile %}
+                    <a data-poster-download href="/files/{{ file.id }}/poster.svg" download class="text-link hover:underline">Download poster</a>
+                    {% endif %}
                 </nav>
             </header>
             {% include "record/_record_content.html" %}

@@ -1,0 +1,100 @@
+{# phaze-x1qr3.13: the poster -- one printable, self-contained SVG document for this set.
+
+   `{% autoescape true %}` wraps the WHOLE file explicitly rather than relying on this template's
+   filename/extension to pick jinja2's default `select_autoescape` rules ("svg" is not one of its
+   enabled extensions): every interpolated string below -- the title, the filename, a track's
+   title -- is escaped as XML text/attribute content no matter what the file is named, which is
+   what keeps a title containing "<" rendering as "&lt;" rather than breaking the document.
+
+   Self-contained by construction: no <script>, no <a>/href, no CSS url(), no external font
+   @import and no other network reference. Fonts are named by family with a generic fallback
+   ("Jura, sans-serif" / "Inter, sans-serif") so the poster still reads correctly wherever those
+   families are not installed.
+
+   Composed, not re-implemented: the energy arc and the Camelot wheel are the SAME geometry
+   `services/analysis_timeline.py` and `services/harmonic_journey.py` already computed for the
+   record page, embedded verbatim inside a nested <svg> that scales each builder's own native
+   coordinate space (`timeline_w` x `lane_h`, and the wheel's own `harmonic_journey.canvas`
+   square) into this poster's layout -- no coordinate is recomputed here. #}
+{% autoescape true %}
+<svg xmlns="http://www.w3.org/2000/svg" width="{{ poster.width }}" height="{{ poster.height }}"
+     viewBox="0 0 {{ poster.width }} {{ poster.height }}" role="img" aria-label="Poster for {{ poster_title }}">
+    <rect x="0" y="0" width="{{ poster.width }}" height="{{ poster.height }}" fill="#0b0f14" />
+
+    <text x="{{ poster.margin }}" y="{{ poster.title_y }}" font-family="Jura, sans-serif" font-size="30" font-weight="600" fill="#f5f5f5">{{ poster_title }}</text>
+    <text x="{{ poster.margin }}" y="{{ poster.filename_y }}" font-family="Inter, sans-serif" font-size="13" fill="#9aa4af">{{ file.original_filename_repaired or file.original_filename }}</text>
+
+    {# --- Energy arc, with the tracklist's own boundary ticks overlaid ------------------- #}
+    <text x="{{ poster.margin }}" y="{{ poster.arc_label_y }}" font-family="Jura, sans-serif" font-size="12" letter-spacing="1.5" fill="#8fb3c9">ENERGY</text>
+    {% if energy_area %}
+    <svg x="{{ poster.margin }}" y="{{ poster.arc_y }}" width="{{ poster.arc_w }}" height="{{ poster.arc_h - 16 }}"
+         viewBox="0 0 {{ timeline_w }} {{ lane_h }}" preserveAspectRatio="none">
+        <rect x="0" y="0" width="{{ timeline_w }}" height="{{ lane_h }}" fill="#141b22" />
+        {% for segment in energy_area %}
+        <polygon points="{{ segment.area_points }}" fill="#57c7a6" fill-opacity="0.30" />
+        {% if segment.single_x is not none %}
+        <circle cx="{{ segment.single_x }}" cy="{{ segment.single_y }}" r="2.5" fill="#57c7a6" />
+        {% else %}
+        <polyline points="{{ segment.points }}" fill="none" stroke="#57c7a6" stroke-width="1.5" vector-effect="non-scaling-stroke" />
+        {% endif %}
+        {% endfor %}
+        {% for tick in tracklist_ticks %}
+        <line x1="{{ (tick.left_pct / 100 * timeline_w) | round(2) }}" y1="0" x2="{{ (tick.left_pct / 100 * timeline_w) | round(2) }}" y2="{{ lane_h }}"
+              stroke="#f2b544" stroke-width="1" stroke-dasharray="3 2" vector-effect="non-scaling-stroke" />
+        {% endfor %}
+        {% if energy_peak %}
+        <circle cx="{{ energy_peak.x }}" cy="{{ energy_peak.y }}" r="3" fill="#f5f5f5" />
+        {% endif %}
+    </svg>
+    {% if energy_peak %}
+    <text x="{{ poster.margin }}" y="{{ poster.arc_note_y }}" font-family="Inter, sans-serif" font-size="11" fill="#9aa4af">Peak {{ energy_peak.energy }} at {{ energy_peak.label }}</text>
+    {% endif %}
+    {% else %}
+    <text x="{{ poster.margin }}" y="{{ poster.arc_y + 40 }}" font-family="Inter, sans-serif" font-size="13" fill="#9aa4af">{% if has_coarse_windows %}No energy projection for this file.{% else %}No coarse windows analyzed for this file.{% endif %}</text>
+    {% endif %}
+
+    {# --- Camelot wheel, the wheel's own sectors/nodes/edges verbatim -------------------- #}
+    <text x="{{ poster.margin }}" y="{{ poster.wheel_label_y }}" font-family="Jura, sans-serif" font-size="12" letter-spacing="1.5" fill="#8fb3c9">HARMONIC JOURNEY</text>
+    <svg x="{{ poster.wheel_x }}" y="{{ poster.wheel_y }}" width="{{ poster.wheel_size }}" height="{{ poster.wheel_size }}"
+         viewBox="0 0 {{ harmonic_journey.canvas }} {{ harmonic_journey.canvas }}">
+        <g>
+            {% for sector in harmonic_journey.sectors %}
+            <path d="{{ sector.path }}" fill="hsl({{ sector.hue }}, 65%, 45%)" fill-opacity="0.22" stroke="hsl({{ sector.hue }}, 65%, 45%)" stroke-opacity="0.4" stroke-width="0.5" />
+            <text x="{{ sector.label_x }}" y="{{ sector.label_y }}" text-anchor="middle" dominant-baseline="middle" font-size="9" font-family="Inter, sans-serif" fill="#c7ccd1">{{ sector.number }}</text>
+            {% endfor %}
+        </g>
+        {% if harmonic_journey.has_journey %}
+        <g fill="none" stroke-width="2" stroke-linecap="round">
+            {% for edge in harmonic_journey.edges %}
+            {% if not edge.adjacent %}
+            <line x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}" stroke="#f2b544" stroke-dasharray="5 4" />
+            {% else %}
+            <line x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}" stroke="#3aa6c2" />
+            {% endif %}
+            {% endfor %}
+        </g>
+        <g>
+            {% for node in harmonic_journey.nodes %}
+            <circle cx="{{ node.cx }}" cy="{{ node.cy }}" r="{{ node.r }}" fill="hsl({{ node.hue }}, 65%, 45%)" stroke="#f5f5f5" stroke-width="1" />
+            {% endfor %}
+        </g>
+        {% endif %}
+    </svg>
+    {% if harmonic_journey.has_journey %}
+    <text x="{{ poster.margin }}" y="{{ poster.wheel_caption_y }}" font-family="Inter, sans-serif" font-size="11" fill="#9aa4af">{{ harmonic_journey.caption }}</text>
+    {% else %}
+    <text x="{{ poster.margin }}" y="{{ poster.wheel_caption_y }}" font-family="Inter, sans-serif" font-size="11" fill="#9aa4af">No analyzed key data for this file, so there is no harmonic journey to draw.</text>
+    {% endif %}
+
+    {# --- Tracklist ----------------------------------------------------------------------- #}
+    <text x="{{ poster.margin }}" y="{{ poster.tracklist_label_y }}" font-family="Jura, sans-serif" font-size="12" letter-spacing="1.5" fill="#8fb3c9">TRACKLIST</text>
+    {% if poster_track_rows %}
+    <g font-family="Inter, sans-serif" font-size="12" fill="#e2e6ea">
+        {% for row in poster_track_rows %}
+        <text x="{{ poster.margin }}" y="{{ poster.tracklist_y + loop.index0 * poster.track_row_h }}">{{ row.position }}. {{ row.title }} — {{ row.start }} — {{ row.key }} — {{ row.bpm }} BPM — {{ row.mood }}</text>
+        {% endfor %}
+    </g>
+    {% else %}
+    <text x="{{ poster.margin }}" y="{{ poster.tracklist_y }}" font-family="Inter, sans-serif" font-size="13" fill="#9aa4af">No tracklist available for this file.</text>
+    {% endif %}
+</svg>{% endautoescape %}

@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast as type_cast
 import uuid
 
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,6 +40,7 @@ from phaze.services.agent_liveness import non_local_backend_kinds
 from phaze.services.analysis_timeline import build_analysis_timeline_context
 from phaze.services.harmonic_journey import build_harmonic_journey
 from phaze.services.pipeline import derive_file_lane, get_file_orphan_details, get_file_stage_buckets
+from phaze.services.poster import build_poster_layout, build_poster_title, poster_track_rows
 from phaze.services.record_facts import build_record_facts
 from phaze.services.set_glyph_colors import CAMELOT_LEGEND, ENERGY_LIGHTNESS_STEP_COUNT, camelot_hue, energy_lightness
 from phaze.services.set_similarity import find_similar_sets
@@ -334,3 +335,36 @@ async def file_record_page(
         name="record/record_page.html",
         context={**context, "request": request, "record_presentation": "page"},
     )
+
+
+@router.get("/files/{file_id}/poster.svg")
+async def file_poster_svg(
+    file_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Render the one-page printable poster: the energy arc, the Camelot wheel, the tracklist.
+
+    Read-only (``phaze-x1qr3.13``): nothing is moved, tagged or written. Composes the SAME
+    ``build_file_record_context`` every other record presentation renders from -- so a poster can
+    never show an energy arc, a wheel or a tracklist that disagrees with the page beside it -- and
+    hands it to a dedicated SVG template rather than to a drawer/full-page HTML partial, neither of
+    which is a single self-contained document (both mix HTML layout around their SVG lanes).
+    """
+    context = await build_file_record_context(file_id, session)
+    if context is None:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    file = type_cast("FileRecord", context["file"])
+    tracklist_review = context["tracklist_review"]
+    tracklist = tracklist_review.tracklist if tracklist_review is not None else None
+    track_rows = poster_track_rows(context["track_segments"])
+    display_filename = file.original_filename_repaired or file.original_filename
+    svg = templates.get_template("record/poster.svg").render(
+        {
+            **context,
+            "poster": build_poster_layout(len(track_rows)),
+            "poster_title": build_poster_title(display_filename, tracklist),
+            "poster_track_rows": track_rows,
+        }
+    )
+    return Response(content=svg, media_type="image/svg+xml")
