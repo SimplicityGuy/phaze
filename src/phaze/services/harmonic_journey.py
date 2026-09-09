@@ -285,9 +285,11 @@ def _caption(nodes: Sequence[JourneyNode], edges: Sequence[JourneyEdge], adjacen
     The jumps are named individually and with their elapsed time because that is the only part
     of the picture an operator has to ACT on -- "82% adjacent" says the set is disciplined, but
     "10B → 5A at 1:02:30" says where to listen.
+
+    Only ever called with at least one node: :func:`build_harmonic_journey` returns the empty
+    journey -- whose caption is the empty string -- before it reaches here. A guard for the
+    empty case would be a branch no test could close through the public API.
     """
-    if not nodes:
-        return ""
     runs = f"{len(nodes)} key run{'' if len(nodes) == 1 else 's'}"
     if not edges:
         return f"{runs}, no key changes."
