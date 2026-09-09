@@ -58,6 +58,7 @@ from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.set_profile import SetProfile
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.routers.request_guards import execute_guarding_vanished_file
 from phaze.schemas.agent_analysis import (
@@ -234,11 +235,36 @@ async def _replace_analysis_windows(session: AsyncSession, file_id: uuid.UUID, w
     ``ON DELETE CASCADE`` FK to ``files.id`` and can lose the same vanished-file race (phaze-wn1l).
     A bare try/except around the execute would catch the ``IntegrityError`` but leave the whole
     request transaction poisoned (request_guards.py rule 5), which is a worse failure than the one
-    it was meant to absorb: the window insert just above would then fail to commit too. Either way
-    the profile is left NULL/stale for a future successful (re)analysis or the backfill
-    (``services/set_projection_backfill.py``) to fill in.
+    it was meant to absorb: the window insert just above would then fail to commit too.
+
+    phaze-qj926: THE PROFILE IS REPLACED WHOLESALE WITH ITS WINDOWS -- the ``set_profile`` DELETE
+    below runs unconditionally, in the same transaction and immediately after the window DELETE,
+    so the only way a row survives this call is that the projection *just* rebuilt it from the
+    windows this call *just* wrote. The previous version deleted nothing and relied on the upsert
+    to overwrite, which made the surviving row correct only on the paths that reach the upsert.
+    Two paths do not, and on both the stale row is UNREACHABLE by the repair the docstring used to
+    promise ("left NULL/stale for ... the backfill to fill in"):
+
+    - ``windows == []`` -- a deliberate clear. Every window row is deleted and the ``if windows:``
+      block is skipped entirely, so the old profile survives describing windows that no longer
+      exist. ``select_files_needing_projection`` scans FROM ``analysis_window``, so a file with no
+      window rows is not a row the backfill can ever visit at all -- deleting the profile here is
+      the only possible repair, not merely the tidiest one.
+    - a projection failure (either try/except below, or a vanished-file hold on the upsert). The
+      old profile survives at ``CURRENT_PROJECTION_VERSION`` over freshly-written windows whose
+      projection columns are NULL, and that predicate matches only a MISSING or VERSION-BEHIND
+      row -- so ``phaze backfill set-projection`` reports 0 projected and exits 0. Deleting first
+      leaves exactly the "missing" state the predicate does select, and the next backfill run
+      repairs the file from the stored windows with no re-analysis.
+
+    Unconditional rather than per-branch on purpose: the invariant is then structural ("windows and
+    the profile derived from them are replaced together"), so a failure branch added here later
+    inherits it instead of having to remember it. Cost is a DELETE + INSERT where the happy path
+    previously did an ``ON CONFLICT DO UPDATE``; nothing reads ``set_profile.created_at``, and the
+    backfill still takes the update branch.
     """
     await session.execute(delete(AnalysisWindow).where(AnalysisWindow.file_id == file_id))
+    await session.execute(delete(SetProfile).where(SetProfile.file_id == file_id))
     if windows:
         # pg_insert bypasses the Python-only `default=uuid.uuid4` PK, so stamp `id`
         # explicitly per row (mirrors the aggregate path above).
@@ -270,8 +296,11 @@ async def _replace_analysis_windows(session: AsyncSession, file_id: uuid.UUID, w
 
         # `build_profile` + the `set_profile` upsert only run when the per-window fields above
         # were actually computed -- a profile built over an all-NULL window set would itself read
-        # as "no coarse windows, no key" for a file that DOES have them, which is worse than
-        # simply leaving the profile NULL/stale until the next successful (re)analysis.
+        # as "no coarse windows, no key" for a file that DOES have them, which is worse than the
+        # ABSENT profile the unconditional DELETE above already left behind. phaze-qj926: absent
+        # is the state `select_files_needing_projection` selects, so the next backfill run repairs
+        # this file from its stored windows; the STALE row this branch used to leave is the one
+        # state that predicate cannot see.
         if projected:
             try:
                 orm_windows = [AnalysisWindow(**row) for row in rows]

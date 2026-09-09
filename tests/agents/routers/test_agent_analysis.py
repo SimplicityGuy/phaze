@@ -26,6 +26,7 @@ from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
+from phaze.models.set_profile import SetProfile
 from phaze.routers import agent_analysis as agent_analysis_module
 from phaze.routers.agent_analysis import router as agent_analysis_router
 from phaze.services import s3_staging
@@ -472,6 +473,39 @@ async def test_analysis_window_idempotent_delete_scoped_to_path_file_id(
     rows_b = await _window_rows(session, file_b)
     assert len(rows_b) == 1, "cross-file deletion: file_b windows must survive a PUT to file_a"
     assert rows_b[0].bpm == 99.0
+
+
+@pytest.mark.asyncio
+async def test_analysis_window_profile_delete_is_scoped_to_the_path_file_id(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-qj926: the ``set_profile`` DELETE that rides the window replace is scoped strictly to
+    the PATH file_id (AUTH-01), exactly like the window DELETE above.
+
+    The new statement is the one way this handler could destroy another file's projection, so the
+    scoping is asserted directly rather than inferred from the window-side test beside it.
+    """
+    agent, raw_token = seed_test_agent
+    file_a = await _seed_file(session, agent.id)
+    file_b = await _seed_file(session, agent.id)
+    session.add_all(
+        [
+            SetProfile(file_id=file_a, glyph=[{"camelot_number": 8, "energy": 0.2}], projection_version=1),
+            SetProfile(file_id=file_b, glyph=[{"camelot_number": 9, "energy": 0.8}], projection_version=1),
+        ]
+    )
+    await session.commit()
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.put(f"/api/internal/agent/analysis/{file_a}", json={"windows": []})
+
+    assert response.status_code == 200, response.text
+    session.expunge_all()
+    assert (await session.execute(select(SetProfile).where(SetProfile.file_id == file_a))).scalar_one_or_none() is None
+    assert (await session.execute(select(SetProfile).where(SetProfile.file_id == file_b))).scalar_one_or_none() is not None, (
+        "cross-file deletion: file_b's set_profile must survive a windows clear on file_a"
+    )
 
 
 # phaze-syxv: 2,731 rows x 12 bind parameters = 32,772 > the 32,767 the PostgreSQL Bind message can

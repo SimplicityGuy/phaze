@@ -60,6 +60,16 @@ async def select_files_needing_projection(session: AsyncSession) -> Sequence[uui
     The ``LEFT OUTER JOIN`` (rather than a ``NOT EXISTS`` plus a second stale-version query) makes
     "missing" and "stale" the same predicate over the same joined row, so a single scan of
     ``analysis_window`` answers both halves of the resumability contract at once.
+
+    WHAT THIS PREDICATE CANNOT SEE, and why the write side must not produce it (phaze-qj926). A row
+    at :data:`CURRENT_PROJECTION_VERSION` is, to this query, a finished file -- however wrong its
+    contents are. So a profile that outlives the windows it was derived from is unreachable by
+    every future run of this backfill, and a file with no window rows at all is not even a row this
+    scan visits. ``routers/agent_analysis._replace_analysis_windows`` therefore DELETES the profile
+    alongside the windows it replaces and rewrites it only on a successful projection, which leaves
+    a failed re-projection in the "missing" state this predicate does select. Repairability lives
+    in that invariant, not here: widening this predicate cannot recover a file whose windows are
+    gone, because the scan starts from them.
     """
     stmt = (
         select(distinct(AnalysisWindow.file_id))

@@ -26,9 +26,14 @@ from phaze.models.file import FileRecord
 from phaze.models.set_profile import SetProfile
 from phaze.routers import agent_analysis
 from phaze.routers.agent_analysis import router as agent_analysis_router
+from phaze.schemas.agent_analysis import AnalysisWritePayload
 from phaze.services.agent_client import PhazeAgentClient
+from phaze.services.pipeline.files import get_files_page
+from phaze.services.search_queries import search
 from phaze.services.set_projection import CAMELOT_TABLE
+from phaze.services.set_projection_backfill import run_backfill, select_files_needing_projection
 from phaze.services.set_projection_writer import CURRENT_PROJECTION_VERSION
+from phaze.services.set_similarity import find_similar_sets
 from phaze.tasks.functions import _build_analysis_write_payload
 from tests.analyze._real_result import real_analysis_result
 
@@ -59,17 +64,23 @@ def _smoke_app(session: AsyncSession) -> FastAPI:
     return app
 
 
-async def _seed_file(session: AsyncSession, agent_id: str) -> uuid.UUID:
-    """Seed the FileRecord that ``AnalysisResult.file_id`` and every window row FK to."""
+async def _seed_file(session: AsyncSession, agent_id: str, *, stem: str | None = None) -> uuid.UUID:
+    """Seed the FileRecord that ``AnalysisResult.file_id`` and every window row FK to.
+
+    ``stem`` prefixes the (invented) filename with a distinctive word so the file is reachable
+    through ``services.search_queries.search`` -- that branch's tsvector is built over the display
+    filename, and a bare uuid stem is not a word ``plainto_tsquery`` can be relied on to match.
+    """
     file_id = uuid.uuid4()
+    filename = f"{stem} {file_id}.mp3" if stem else f"{file_id}.mp3"
     session.add(
         FileRecord(
             id=file_id,
             agent_id=agent_id,
             sha256_hash="1" * 64,
-            original_path=f"/test/music/{file_id}.mp3",
-            original_filename=f"{file_id}.mp3",
-            current_path=f"/test/music/{file_id}.mp3",
+            original_path=f"/test/music/{filename}",
+            original_filename=filename,
+            current_path=f"/test/music/{filename}",
             file_type="mp3",
             file_size=2048,
         )
@@ -319,3 +330,161 @@ async def test_a_featureless_coarse_window_gets_a_fully_none_projection_not_a_ma
     # review finding traced through to set_projection.py).
     profile = (await session.execute(select(SetProfile).where(SetProfile.file_id == file_id))).scalar_one()
     assert profile.mean_vector is None
+
+
+_CLEAR_PROBE_STEM = "setclearprobe"
+"""An invented, distinctive filename word the ⌘K palette branch's tsvector can match on."""
+
+
+async def _profile_row(session: AsyncSession, file_id: uuid.UUID) -> SetProfile | None:
+    """``file_id``'s ``set_profile`` row, read with a fresh SELECT.
+
+    Deliberately NOT ``session.get`` (the shape ``routers/record.py`` uses): under this suite's
+    single-connection session an ORM instance loaded earlier in the same test is still in the
+    identity map after the router's Core DELETE, and ``get`` would try to refresh it and raise
+    ``ObjectDeletedError`` -- a test artifact of the shared session, not product behaviour. The
+    record-page consumer is exercised through ``session.get`` on an expunged session below, where
+    that hazard does not exist and the call is the real one.
+    """
+    return (await session.execute(select(SetProfile).where(SetProfile.file_id == file_id))).scalar_one_or_none()
+
+
+async def test_a_windows_clear_removes_the_profile_from_every_surface_that_reads_it(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-qj926 case 1: ``PUT {"windows": []}`` must take the file's ``set_profile`` row with it.
+
+    Asserted through the FOUR real consumers of that row rather than the row alone (ADR-0012 rule
+    3), each with its OWN query shape: ``routers/record.py``'s ``session.get`` (the record page),
+    ``services/pipeline/files.get_files_page``'s ``selectinload`` (the Files table),
+    ``services/search_queries.search``'s outer join (the ⌘K palette) and
+    ``services/set_similarity.find_similar_sets``'s candidate scan (Similar sets). The last is the
+    discriminating one: it selects FROM ``set_profile``, so a stale row does not merely linger, it
+    is actively RETURNED as a recommendation describing windows that no longer exist.
+
+    Every assertion is made twice -- once before the clear, to prove the surface really did show
+    the file, and once after. Without the baseline half an empty result proves nothing, because
+    every one of these consumers renders a profile-less file silently.
+    """
+    agent, raw_token = seed_test_agent
+    cleared = await _seed_file(session, agent.id, stem=_CLEAR_PROBE_STEM)
+    peer = await _seed_file(session, agent.id, stem=_CLEAR_PROBE_STEM)
+    payload = _build_analysis_write_payload(real_analysis_result())
+
+    async with _real_client(session, raw_token) as client:
+        assert (await client.put_analysis(cleared, payload)).file_id == cleared
+        assert (await client.put_analysis(peer, payload)).file_id == peer
+
+    session.expire_all()
+    peer_profile = await _profile_row(session, peer)
+    assert peer_profile is not None, "the peer file needs a profile of its own to rank candidates against"
+
+    # --- baseline: all four surfaces DO show the file while its windows exist -------------------
+    assert await _profile_row(session, cleared) is not None
+    before_page = await get_files_page(session)
+    assert {row.file.id for row in before_page.rows} >= {cleared, peer}, "both seeded files must be on the first Files page"
+    assert next(row for row in before_page.rows if row.file.id == cleared).file.set_profile is not None
+    before_results, _ = await search(session, _CLEAR_PROBE_STEM)
+    assert next(r for r in before_results if r.id == str(cleared)).glyph is not None
+    before_similar = await find_similar_sets(session, peer, peer_profile, None, None, None)
+    assert cleared in {similar.file_id for similar in before_similar}
+
+    # --- the clear -------------------------------------------------------------------------------
+    async with _real_client(session, raw_token) as client:
+        assert (await client.put_analysis(cleared, AnalysisWritePayload(windows=[]))).file_id == cleared
+
+    # A fresh identity map, matching the per-request session every consumer below really runs on.
+    session.expunge_all()
+
+    window_count = (await session.execute(select(func.count()).select_from(AnalysisWindow).where(AnalysisWindow.file_id == cleared))).scalar_one()
+    assert window_count == 0, "windows=[] must still delete every window row"
+
+    # 1. The record page: the exact `session.get` shape `routers/record.py` uses.
+    assert await session.get(SetProfile, cleared) is None
+
+    # 2. The Files table: `get_files_page`'s selectinload of `FileRecord.set_profile`.
+    after_page = await get_files_page(session)
+    cleared_row = next(row for row in after_page.rows if row.file.id == cleared)
+    assert cleared_row.file.set_profile is None
+
+    # 3. The ⌘K palette: the file still MATCHES the query (the join is outer, by design) but
+    #    carries no glyph -- the palette's own "absent renders nothing" contract.
+    after_results, _ = await search(session, _CLEAR_PROBE_STEM)
+    cleared_result = next(r for r in after_results if r.id == str(cleared))
+    assert cleared_result.glyph is None
+
+    # 4. Similar sets: the cleared file is no longer a candidate at all.
+    peer_profile_after = await _profile_row(session, peer)
+    assert peer_profile_after is not None, "the clear must not touch the peer's profile"
+    after_similar = await find_similar_sets(session, peer, peer_profile_after, None, None, None)
+    assert cleared not in {similar.file_id for similar in after_similar}
+
+
+async def test_a_projection_failure_leaves_a_row_the_backfill_actually_repairs(
+    monkeypatch: pytest.MonkeyPatch,
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-qj926 case 2: after a failed RE-projection over an already-projected file, the next
+    ``phaze backfill set-projection`` run must repair the file.
+
+    The failure path itself is already covered above; what this test adds is the PRIOR profile.
+    Before this bead the old row survived at ``CURRENT_PROJECTION_VERSION`` over freshly-written
+    windows whose projection columns were NULL, and
+    ``select_files_needing_projection`` matches only a MISSING or VERSION-BEHIND row -- so the
+    backfill named 0 files and exited 0, and the stale row was unreachable forever.
+
+    Verified against the REAL selection predicate and the REAL ``run_backfill``, not against the
+    row's absence: absence is this fix's mechanism, and repairability is the property the bead is
+    actually about (ADR-0012 rule 3).
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    payload = _build_analysis_write_payload(real_analysis_result())
+
+    async with _real_client(session, raw_token) as client:
+        assert (await client.put_analysis(file_id, payload)).file_id == file_id
+
+    session.expire_all()
+    first = await _profile_row(session, file_id)
+    assert first is not None, "the first analysis must leave a profile for the re-analysis to make stale"
+    assert first.projection_version == CURRENT_PROJECTION_VERSION
+    assert first.camelot_modal is not None
+
+    def _boom(_rows: list[dict[str, object]]) -> None:
+        msg = "synthetic projection failure on re-analysis"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(agent_analysis, "annotate_window_rows", _boom)
+
+    async with _real_client(session, raw_token) as client:
+        assert (await client.put_analysis(file_id, payload)).file_id == file_id
+
+    session.expunge_all()
+
+    # The windows were rewritten and carry no projection -- the state that made the old row a lie.
+    windows = (await session.execute(select(AnalysisWindow).where(AnalysisWindow.file_id == file_id))).scalars().all()
+    assert windows, "the re-analysis must still have persisted its windows"
+    assert all(w.energy is None and w.camelot is None and w.mood_scores is None for w in windows)
+
+    # THE BEAD: the file is selectable by the real predicate, and the real backfill repairs it.
+    assert await _profile_row(session, file_id) is None
+    assert file_id in set(await select_files_needing_projection(session))
+
+    monkeypatch.undo()
+    report = await run_backfill(session)
+    assert report.files_projected >= 1
+    assert report.files_failed == 0
+
+    session.expunge_all()
+    repaired = await _profile_row(session, file_id)
+    assert repaired is not None, "the backfill must rewrite the profile it was made able to see"
+    assert repaired.projection_version == CURRENT_PROJECTION_VERSION
+    assert repaired.camelot_modal == first.camelot_modal
+    coarse = (await session.execute(select(AnalysisWindow).where(AnalysisWindow.file_id == file_id, AnalysisWindow.tier == "coarse"))).scalars().all()
+    assert coarse
+    assert all(w.energy is not None for w in coarse)
+
+    # Second run is a no-op for this file -- the repair restored the resumability contract too.
+    assert file_id not in set(await select_files_needing_projection(session))
