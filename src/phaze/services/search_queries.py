@@ -13,6 +13,7 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
+from phaze.models.set_profile import SetProfile
 from phaze.models.tracklist import Tracklist
 from phaze.services.like_escape import LIKE_ESCAPE_CHAR, like_wildcard
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, paged_stmt, split_sentinel
@@ -34,6 +35,14 @@ class SearchResult:
     state: str
     date: str | None  # ISO format YYYY-MM-DD
     rank: float
+    # phaze-x1qr3.9: the file's cached set glyph (SetProfile.glyph), or None -- for a file result
+    # never analyzed to a SetProfile row, AND (the union-parity NULL literal, see _tracklist_branch
+    # / _discogs_branch below) for every tracklist/discogs result, which has no file to key one by.
+    # `search/partials/palette_results.html` renders it next to the file title when present and
+    # nothing (no placeholder) when absent -- the same empty-cell contract as the Files table and
+    # Changes Review rows. Optional with a default so the existing keyword-only construction in
+    # `tests/identify/services/test_search_queries.py::TestSearchResult` is unaffected.
+    glyph: list | dict | None = None
 
 
 @dataclass
@@ -137,9 +146,16 @@ def _file_branch(ts_query: ColumnElement[Any], facets: SearchFacets) -> Select[A
             literal_column("NULL").label("state"),
             cast(FileRecord.created_at, String).label("date"),
             func.ts_rank(file_tsvector, ts_query).label("rank"),
+            # phaze-x1qr3.9: the file's cached set glyph -- outer-joined (never inner) so a file
+            # with no SetProfile row still matches on filename/tag text, same posture as the
+            # FileMetadata/AnalysisResult outer joins above. NULL on no row, mirroring the
+            # ``genre``/``state`` NULL-literal union-parity slots the OTHER two branches carry for
+            # THIS column below.
+            SetProfile.glyph.label("glyph"),
         )
         .outerjoin(FileMetadata, FileMetadata.file_id == FileRecord.id)
         .outerjoin(AnalysisResult, AnalysisResult.file_id == FileRecord.id)
+        .outerjoin(SetProfile, SetProfile.file_id == FileRecord.id)
         .where(file_tsvector.op("@@")(ts_query))
     )
 
@@ -197,6 +213,8 @@ def _tracklist_branch(ts_query: ColumnElement[Any], facets: SearchFacets) -> Sel
         Tracklist.status.label("state"),
         cast(Tracklist.date, String).label("date"),
         func.ts_rank(tracklist_tsvector, ts_query).label("rank"),
+        # phaze-x1qr3.9: union-parity NULL -- a tracklist has no file to key a set glyph by.
+        literal_column("NULL").label("glyph"),
     ).where(tracklist_tsvector.op("@@")(ts_query))
 
     if facets.artist:
@@ -230,6 +248,8 @@ def _discogs_branch(ts_query: ColumnElement[Any], facets: SearchFacets) -> Selec
             DiscogsLink.status.label("state"),
             cast(DiscogsLink.discogs_year, String).label("date"),
             func.ts_rank(discogs_tsvector, ts_query).label("rank"),
+            # phaze-x1qr3.9: union-parity NULL -- a Discogs link has no file to key a set glyph by.
+            literal_column("NULL").label("glyph"),
         )
         .where(discogs_tsvector.op("@@")(ts_query))
         .where(DiscogsLink.status == "accepted")
@@ -307,6 +327,7 @@ async def search(
             state=row.state or "",
             date=row.date[:10] if row.date and len(str(row.date)) >= 10 else row.date,
             rank=float(row.rank),
+            glyph=row.glyph,
         )
         for row in rows
     ]
