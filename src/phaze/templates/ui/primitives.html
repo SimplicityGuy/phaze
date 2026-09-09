@@ -143,11 +143,17 @@
    (no overlapping fine-tier key) renders desaturated at the same lightness -- energy still reads,
    hue does not claim a key nothing observed. `data-set-glyph-cursor` is an inert hook: bead .10's
    pointer/keyboard inspection owns positioning and updating it, this macro only guarantees the
-   element exists. #}
-{% macro set_glyph(profile, id='') %}
+   element exists.
+
+   phaze-x1qr3.9: `height_class` lets a row-scale caller (Files table, Changes Review, the ⌘K
+   palette) shrink the strip to a 10px height (`h-2.5`) instead of the record page's full `h-7` --
+   the ONE rendering path stays here, only the Tailwind height class varies by caller. Width stays
+   `w-full`; a row caller wraps the macro call in its own fixed-width element rather than this
+   macro growing a second sizing knob. #}
+{% macro set_glyph(profile, id='', height_class='h-7') %}
 {% set cells = profile.glyph if profile else none %}
 {% if cells %}
-<svg{% if id %} id="{{ id }}"{% endif %} data-set-glyph role="img" viewBox="0 0 {{ cells|length }} 1" preserveAspectRatio="none" class="block h-7 w-full overflow-hidden rounded-sm" aria-label="Set glyph, {{ cells|length }} segments: color is the Camelot key, brightness is energy from quiet to peak">
+<svg{% if id %} id="{{ id }}"{% endif %} data-set-glyph role="img" viewBox="0 0 {{ cells|length }} 1" preserveAspectRatio="none" class="block {{ height_class }} w-full overflow-hidden rounded-sm" aria-label="Set glyph, {{ cells|length }} segments: color is the Camelot key, brightness is energy from quiet to peak">
     {% for cell in cells %}
     {% set hue = camelot_hue(cell.camelot_number) %}
     {% set lightness = energy_lightness(cell.energy) %}
