@@ -34,9 +34,12 @@ from tests.analyze._real_result import real_analysis_result
 
 
 _VALID_CAMELOT_CODES = frozenset(CAMELOT_TABLE.values())
-"""The only 24 strings `_wheel_adjacent` (set_projection.py) can parse without raising -- a stored
-`camelot` value outside this set (or NULL) would blow up `harmonic_discipline`/glyph rendering on
-read, so the writer must never persist anything else there (reviewer finding on phaze-x1qr3.2)."""
+"""The only 24 strings `wheel_adjacent` (set_projection.py) recognises as parseable -- a stored
+`camelot` value outside this set (or NULL) makes `camelot_number` return `None`, so
+`wheel_adjacent` silently answers "not adjacent" for every comparison involving it rather than
+raising. The writer must never persist anything else there (reviewer finding on phaze-x1qr3.2),
+since a bad value would degrade `harmonic_discipline`/glyph rendering into a wrong-but-quiet
+answer rather than an error."""
 
 
 if TYPE_CHECKING:
@@ -120,9 +123,11 @@ async def test_persisted_analysis_writes_the_full_projection(
     for window in fine:
         if window.musical_key is not None:
             assert window.camelot is not None, f"fine window with musical_key {window.musical_key!r} has no camelot"
-        # Reviewer finding (phaze-x1qr3.2): `_wheel_adjacent` bare-parses `camelot` with
-        # `int(a[:-1])` and raises on anything not shaped like a table value. The writer must
-        # never persist a raw `musical_key` string or any value outside the 24-entry table.
+        # Reviewer finding (phaze-x1qr3.2): `wheel_adjacent` parses `camelot` via
+        # `camelot_number`, which degrades anything not shaped like a table value to `None`
+        # rather than raising, so a bad value would silently read as "not adjacent" to
+        # everything instead of erroring. The writer must never persist a raw `musical_key`
+        # string or any value outside the 24-entry table.
         if window.camelot is not None:
             assert window.camelot in _VALID_CAMELOT_CODES, f"camelot {window.camelot!r} is not a table value"
 
