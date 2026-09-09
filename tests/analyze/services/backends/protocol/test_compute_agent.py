@@ -247,7 +247,7 @@ async def test_compute_redispatch_bumps_updated_at_not_created_at(session: Async
     which was already fixed). Backdate both columns after a first dispatch, re-dispatch, and
     assert updated_at moves forward while created_at is untouched.
     """
-    from sqlalchemy import select, update
+    from sqlalchemy import func as sa_func, select, update
 
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
@@ -269,7 +269,10 @@ async def test_compute_redispatch_bumps_updated_at_not_created_at(session: Async
     await session.execute(update(CloudJob).where(CloudJob.file_id == file_id).values(created_at=outage_time, updated_at=outage_time))
     await session.commit()
 
-    before_redispatch = datetime.now(UTC)
+    # phaze-30ssq: read the reference from the SAME TRANSACTION as the write -- func.now() is
+    # transaction-start time, not the Python wall clock -- rather than a wall-clock read plus a
+    # slack fudge that fails whenever the suite is slow enough to blow it.
+    before_redispatch = (await session.execute(select(sa_func.now()))).scalar_one()
 
     await backend.dispatch(file, session, router)
     await session.commit()
@@ -278,9 +281,7 @@ async def test_compute_redispatch_bumps_updated_at_not_created_at(session: Async
     row = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one()
     assert row.created_at == outage_time, "created_at must stay pinned to the first-write value"
     assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
-    assert row.updated_at >= before_redispatch - timedelta(seconds=5), (
-        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
-    )
+    assert row.updated_at >= before_redispatch, "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
 
 
 @pytest.mark.asyncio

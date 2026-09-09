@@ -34,10 +34,12 @@ from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.models.set_profile import SetProfile
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.services.agent_liveness import non_local_backend_kinds
 from phaze.services.analysis_timeline import build_analysis_timeline_context
 from phaze.services.pipeline import derive_file_lane, get_file_orphan_details, get_file_stage_buckets
+from phaze.services.set_glyph_colors import CAMELOT_LEGEND, ENERGY_LIGHTNESS_STEP_COUNT, camelot_hue, energy_lightness
 from phaze.services.track_segments import build_track_segments
 from phaze.services.tracklist_priority import get_file_tracklist_review
 from phaze.web.static import static_asset_url
@@ -50,6 +52,12 @@ if TYPE_CHECKING:
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.globals["static_url"] = static_asset_url
+# phaze-x1qr3.7: the set glyph macros' shared Camelot-hue / energy-lightness formulas (see
+# services/set_glyph_colors.py) and the legend's fixed 12-entry key table / 4-step scale length.
+templates.env.globals["camelot_hue"] = camelot_hue
+templates.env.globals["energy_lightness"] = energy_lightness
+templates.env.globals["camelot_legend"] = CAMELOT_LEGEND
+templates.env.globals["energy_lightness_step_count"] = ENERGY_LIGHTNESS_STEP_COUNT
 router = APIRouter(tags=["record"])
 
 
@@ -216,11 +224,18 @@ async def build_file_record_context(
 
     lane, lane_kind = await _load_lane(session, file_id)
 
+    # phaze-x1qr3.7: the cached set glyph + the set's key, rendered under the title on the full
+    # page. `file_id` is `SetProfile`'s primary key (1:1 with files), so a direct get -- no join,
+    # no ordering. `None` on a file never analyzed to completion, or one predating the projection
+    # backfill; the glyph macro renders "No coarse windows" for that the same as a fine-only file.
+    set_profile = await session.get(SetProfile, file_id)
+
     return {
         "file": file,
         "stage_buckets": stage_buckets,
         "analysis": analysis,
         "file_id": file_id,
+        "set_profile": set_profile,
         **build_analysis_timeline_context(windows, analysis=analysis, track_segments=track_segments),
         "pending_rows": pending_rows,
         "identity": identity,

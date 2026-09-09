@@ -1,3 +1,4 @@
+{% import "ui/primitives.html" as ui %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -33,6 +34,10 @@
             <header class="border-b border-gray-200 px-6 py-5 dark:border-phaze-border">
                 <h1 id="record-title" class="break-words font-jura text-xl uppercase tracking-[0.15em] text-gray-900 dark:text-gray-100">{{ file.original_filename }}</h1>
                 <p class="mt-1 break-all font-mono text-xs text-muted">{{ file.current_path }}</p>
+                <div class="mt-3">
+                    {{ ui.set_glyph(set_profile, "record-set-glyph") }}
+                    {{ ui.set_glyph_legend(set_profile.glyph|length if set_profile and set_profile.glyph else 0, "record-set-glyph-legend") }}
+                </div>
                 <nav aria-label="File detail sections" class="mt-4 flex flex-wrap gap-4 font-jura text-xs font-medium uppercase tracking-wider">
                     <a href="#analysis" class="text-link hover:underline">Analysis</a>
                     <a href="#tracklist" class="text-link hover:underline">Tracklist</a>

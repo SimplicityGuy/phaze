@@ -14,7 +14,7 @@ import uuid
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import func as sa_func, select, update
 
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult
@@ -161,7 +161,10 @@ async def test_metadata_replay_bumps_updated_at_not_created_at(seed_test_agent: 
     await session.execute(update(FileMetadata).where(FileMetadata.file_id == file_id).values(created_at=outage_time, updated_at=outage_time))
     await session.commit()
 
-    before_reupsert = datetime.now(UTC)
+    # phaze-30ssq: read the reference from the SAME TRANSACTION as the write -- func.now() is
+    # transaction-start time, not the Python wall clock -- rather than a wall-clock read plus a
+    # slack fudge that fails whenever the suite is slow enough to blow it.
+    before_reupsert = (await session.execute(select(sa_func.now()))).scalar_one()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
         r2 = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={"artist": "B", "title": "T2"})
@@ -172,9 +175,7 @@ async def test_metadata_replay_bumps_updated_at_not_created_at(seed_test_agent: 
     assert row.artist == "B"
     assert row.created_at == outage_time, "created_at must stay pinned to the first-write value"
     assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
-    assert row.updated_at >= before_reupsert - timedelta(seconds=5), (
-        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
-    )
+    assert row.updated_at >= before_reupsert, "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
 
 
 @pytest.mark.asyncio
@@ -197,7 +198,10 @@ async def test_metadata_empty_put_bumps_updated_at_not_created_at(seed_test_agen
     await session.execute(update(FileMetadata).where(FileMetadata.file_id == file_id).values(created_at=outage_time, updated_at=outage_time))
     await session.commit()
 
-    before_reupsert = datetime.now(UTC)
+    # phaze-30ssq: read the reference from the SAME TRANSACTION as the write -- func.now() is
+    # transaction-start time, not the Python wall clock -- rather than a wall-clock read plus a
+    # slack fudge that fails whenever the suite is slow enough to blow it.
+    before_reupsert = (await session.execute(select(sa_func.now()))).scalar_one()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
         r2 = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={})
@@ -208,9 +212,7 @@ async def test_metadata_empty_put_bumps_updated_at_not_created_at(seed_test_agen
     assert row.artist == "Aphex Twin", "empty-body PUT must not touch other fields"
     assert row.created_at == outage_time, "created_at must stay pinned to the first-write value"
     assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
-    assert row.updated_at >= before_reupsert - timedelta(seconds=5), (
-        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
-    )
+    assert row.updated_at >= before_reupsert, "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
 
 
 @pytest.mark.asyncio
@@ -746,7 +748,10 @@ async def test_metadata_failed_repeat_bumps_updated_at_not_created_at(
     await session.execute(update(FileMetadata).where(FileMetadata.file_id == file_id).values(created_at=outage_time, updated_at=outage_time))
     await session.commit()
 
-    before_repeat = datetime.now(UTC)
+    # phaze-30ssq: read the reference from the SAME TRANSACTION as the write -- func.now() is
+    # transaction-start time, not the Python wall clock -- rather than a wall-clock read plus a
+    # slack fudge that fails whenever the suite is slow enough to blow it.
+    before_repeat = (await session.execute(select(sa_func.now()))).scalar_one()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
         second = await ac.post(f"/api/internal/agent/metadata/{file_id}/failed", json={"reason": "crashed", "error": "second crash"})
@@ -757,9 +762,7 @@ async def test_metadata_failed_repeat_bumps_updated_at_not_created_at(
     assert row.error_message == "crashed: second crash"
     assert row.created_at == outage_time, "created_at must stay pinned to the first-write value"
     assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
-    assert row.updated_at >= before_repeat - timedelta(seconds=5), (
-        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
-    )
+    assert row.updated_at >= before_repeat, "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
 
 
 @pytest.mark.asyncio

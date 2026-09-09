@@ -21,7 +21,7 @@ from typing import Any
 import uuid
 
 import pytest
-from sqlalchemy import select, text, update
+from sqlalchemy import func as sa_func, select, text, update
 from sqlalchemy.exc import ProgrammingError
 
 from phaze.models.scheduling_ledger import SchedulingLedger
@@ -113,7 +113,10 @@ async def test_upsert_bumps_updated_at_not_created_at(session) -> None:  # type:
     await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == key).values(created_at=outage_time, updated_at=outage_time))
     await session.commit()
 
-    before_reupsert = datetime.now(UTC)
+    # phaze-30ssq: read the reference from the SAME TRANSACTION as the write -- func.now() is
+    # transaction-start time, not the Python wall clock -- rather than a wall-clock read plus a
+    # slack fudge that fails whenever the suite is slow enough to blow it.
+    before_reupsert = (await session.execute(select(sa_func.now()))).scalar_one()
 
     await upsert_ledger_entry(session, key=key, function="process_file", kwargs={"file_id": str(fid), "v": 2})
     await session.commit()
@@ -122,9 +125,7 @@ async def test_upsert_bumps_updated_at_not_created_at(session) -> None:  # type:
     row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == key))).scalar_one()
     assert row.created_at == outage_time, "created_at must stay pinned to the first-write value"
     assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
-    assert row.updated_at >= before_reupsert - timedelta(seconds=5), (
-        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
-    )
+    assert row.updated_at >= before_reupsert, "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
 
 
 @pytest.mark.asyncio
