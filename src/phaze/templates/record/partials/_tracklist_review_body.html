@@ -131,7 +131,19 @@
                 <tbody>
                     {% for track in review.tracks %}
                     {% set segment = (track_segments | default([], true) | selectattr('position', 'equalto', track.position) | list | first) %}
-                    <tr class="border-t border-gray-100 dark:border-white/5">
+                    {# phaze-x1qr3.10: a row with a SEGMENT is an index into the timeline -- hovering
+                       or focusing it moves the timeline cursor to that track's midpoint, and the
+                       timeline moving back highlights it. Only such a row becomes focusable: a track
+                       with no parseable timestamp has no time range to scrub to, and a tab stop that
+                       does nothing is worse than no tab stop. That also bounds the tab ring to the
+                       timed tracks rather than adding one stop per scraped row.
+                       `data-track-start`/`-end` are the SAME clamped seconds the inspection payload
+                       carries, so a row and the payload cannot disagree about where a track is;
+                       `-end` is absent on an open-ended final segment, which reads as "runs to the
+                       end of what we know" rather than as a length nobody measured. #}
+                    <tr data-track-row data-track-position="{{ track.position }}"
+                        {% if segment %}data-track-start="{{ segment.start_sec }}"{% if segment.end_sec is not none %} data-track-end="{{ segment.end_sec }}"{% endif %} tabindex="0"{% endif %}
+                        class="border-t border-gray-100 dark:border-white/5">
                         <td class="py-1 pr-3 font-mono text-muted ">{{ track.position }}</td>
                         <td class="py-1 pr-3 font-mono text-muted ">{{ track.timestamp or '—' }}</td>
                         <td class="py-1 pr-3 text-gray-900 dark:text-gray-200">{{ track.artist or '—' }}</td>

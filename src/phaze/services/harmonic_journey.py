@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Final
 
 from phaze.services.analysis_timeline import format_elapsed_time
 from phaze.services.set_glyph_colors import camelot_hue
-from phaze.services.set_projection import camelot_number, flicker_filtered_key_runs, wheel_adjacent
+from phaze.services.set_projection import flicker_filtered_key_runs, placeable_key_runs, wheel_adjacent
 
 
 if TYPE_CHECKING:
@@ -209,21 +209,6 @@ def _sectors() -> list[WheelSector]:
     return sectors
 
 
-def _placeable(runs: Sequence[KeyRun]) -> list[tuple[KeyRun, int]]:
-    """Pair each run with its wheel position, dropping any code the wheel cannot place.
-
-    ``analysis_window.camelot`` is constrained to the 24 canonical codes, so in practice every
-    run places; a value that somehow escaped that is dropped from the PICTURE rather than
-    rendered at a made-up position, and the caption's counts are of what was drawn.
-    """
-    placed: list[tuple[KeyRun, int]] = []
-    for run in runs:
-        number = camelot_number(run.code)
-        if number is not None and 1 <= number <= 12:
-            placed.append((run, number))
-    return placed
-
-
 def _nodes(placed: Sequence[tuple[KeyRun, int]]) -> list[JourneyNode]:
     """Place every run on its ring, sized so node AREA tracks dwell."""
     longest = max((run.dwell_sec for run, _ in placed), default=0.0)
@@ -316,7 +301,7 @@ def build_harmonic_journey(fine_windows: Sequence[AnalysisWindow]) -> HarmonicJo
     behind. Both are derived from the same filter and predicate, so they agree whenever the
     stored profile is current.
     """
-    placed = _placeable(flicker_filtered_key_runs(fine_windows))
+    placed = placeable_key_runs(flicker_filtered_key_runs(fine_windows))
     sectors = _sectors()
     if not placed:
         return HarmonicJourney(sectors=sectors)

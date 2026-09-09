@@ -53,6 +53,14 @@
             </circle>
             {% endfor %}
         </g>
+        {# phaze-x1qr3.10: the inspection ring. Inert on the server -- radius 0, hidden, no
+           position -- because the wheel has no "current" key until something is inspected, and a
+           ring drawn at a default node would assert a reading nobody asked for. The inspector
+           positions it over the node whose key run contains the cursor time, reading that node's
+           own cx/cy/r so the ring can never sit off the dot it is ringing. Decorative: the node
+           titles and the caption remain the accessible reading, and the readout says the key. #}
+        <circle data-journey-cursor-ring cx="0" cy="0" r="0" hidden aria-hidden="true"
+                fill="none" stroke="currentColor" stroke-width="2" class="text-gray-900 dark:text-gray-100"></circle>
         {% endif %}
     </svg>
     {% if harmonic_journey.has_journey %}

@@ -96,7 +96,9 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
+from phaze.models.set_profile import SetProfile
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.services.set_projection import MOOD_ORDER, build_profile
 
 
 if TYPE_CHECKING:
@@ -128,6 +130,34 @@ def _sha256() -> str:
     identifier is exactly the shape that gets committed by accident.
     """
     return uuid.uuid4().hex + uuid.uuid4().hex
+
+
+# phaze-x1qr3.10: the two synthetic projection curves ``analysis_windows(projected=True)`` writes.
+# Both are shaped so the thing under test is UNAMBIGUOUS: the energy curve has one interior
+# maximum, so the resting peak is a real argmax and not a boundary an off-by-one would also land
+# on; the mood scores put a different mood on top in the first half than in the second, so an
+# inspection that never updated the mood would still be wrong somewhere in the file.
+
+
+def _synthetic_energy(index: int, count: int) -> float:
+    """A single-humped 0..1 energy curve whose maximum is unique and strictly interior.
+
+    Deliberately ASYMMETRIC: a tent centred on the middle ties on an even window count, and
+    ``energy_peak`` resolves ties to the earliest window -- so a test written against a tie
+    would pass whether or not the argmax was computed at all.
+    """
+    if count <= 1:
+        return 0.5
+    peak_index = min(count - 2, round(count * 0.6)) if count >= 3 else 0
+    spread = max(peak_index, count - 1 - peak_index) or 1
+    return round(0.2 + 0.7 * (1.0 - abs(index - peak_index) / spread), 4)
+
+
+def _synthetic_mood_scores(index: int) -> dict[str, float]:
+    """A full 11-name score dict whose ARGMAX flips halfway through the file."""
+    scores = dict.fromkeys(MOOD_ORDER, 0.1)
+    scores["mood_happy" if index % 2 == 0 else "mood_relaxed"] = 0.8
+    return scores
 
 
 _RESET_DEADLOCK_RETRIES = 4
@@ -302,8 +332,21 @@ class Seeder:
         fine_count: int = 24,
         coarse_count: int = 6,
         fine_window_sec: float = 30.0,
+        projected: bool = False,
     ) -> list[AnalysisWindow]:
-        """Attach exhaustive synthetic fine/coarse windows for timeline browser journeys."""
+        """Attach exhaustive synthetic fine/coarse windows for timeline browser journeys.
+
+        ``projected`` (``phaze-x1qr3.10``) additionally fills the three PROJECTION columns
+        ``phaze-x1qr3.1`` added -- ``camelot`` on the fine windows, ``energy`` and
+        ``mood_scores`` on the coarse ones. It is opt-in and defaults OFF on purpose: the
+        existing journeys assert against a file with no energy anywhere, which is the state in
+        which the timeline has no peak to rest on, and turning that on for everyone would
+        quietly move where those tests start.
+
+        The energy curve rises to a single interior maximum and falls, so the peak is a real
+        argmax rather than the first or last window -- an off-by-one in the resting state would
+        otherwise land on a boundary and still look right.
+        """
         total_sec = fine_count * fine_window_sec
         result = AnalysisResult(
             id=uuid.uuid4(),
@@ -328,6 +371,10 @@ class Seeder:
                 end_sec=(index + 1) * fine_window_sec,
                 bpm=126.0 + (index % 5),
                 musical_key="Am" if index % 2 == 0 else "C",
+                # Two Camelot runs, so the harmonic wheel draws two nodes and one edge and the
+                # inspection ring has somewhere to move BETWEEN. 8A is A minor, 8B its major
+                # partner -- an adjacent move on the wheel, which is the common case.
+                camelot=("8A" if index < fine_count / 2 else "8B") if projected else None,
             )
             for index in range(fine_count)
         ]
@@ -342,12 +389,38 @@ class Seeder:
                 end_sec=(index + 1) * coarse_window_sec,
                 mood="focused" if index % 2 == 0 else "energetic",
                 style="electronic",
+                energy=_synthetic_energy(index, coarse_count) if projected else None,
+                mood_scores=_synthetic_mood_scores(index) if projected else None,
             )
             for index in range(coarse_count)
         )
         self.session.add_all([result, *windows])
         await self.session.commit()
         return windows
+
+    async def set_profile(self, file: FileRecord, windows: Sequence[AnalysisWindow]) -> SetProfile:
+        """Persist the cached set projection for ``file``, built from its OWN stored windows.
+
+        Built through :func:`set_projection.build_profile` rather than hand-written, so the
+        glyph the record page renders has exactly one cell per coarse window of ``windows``, in
+        their order. ``phaze-x1qr3.10``'s cursor marks the glyph BY CELL ORDINAL, so a glyph
+        assembled by hand -- with a different cell count, or cells in a different order from
+        the payload's coarse windows -- would let the marker pass a test while landing on the
+        wrong cell in production.
+        """
+        projection = build_profile(list(windows))
+        record = SetProfile(
+            file_id=file.id,
+            mean_vector=projection.mean_vector,
+            arc=projection.arc,
+            glyph=projection.glyph,
+            camelot_modal=projection.camelot_modal,
+            harmonic_discipline=projection.harmonic_discipline,
+            peak_sec=projection.peak_sec,
+        )
+        self.session.add(record)
+        await self.session.commit()
+        return record
 
     async def analysis(self, file: FileRecord, *, completed: bool = True) -> AnalysisResult:
         """Attach one reachable Analyze-row marker to ``file``."""

@@ -67,6 +67,14 @@
                          aria-valuemax="{{ total_sec }}"
                          aria-valuenow="0"
                          aria-valuetext="0:00. No measured window selected.">
+                        {# --- phaze-x1qr3.10 CURRENT-TRACK SPAN -----------------------------
+                           The shaded extent of the track the cursor is inside, drawn across the
+                           whole lane stack so the energy, key and mood under the cursor are read
+                           against the track that produced them. Inert and empty on the server:
+                           it has no position until something is inspected, and a span rendered at
+                           a default position would assert a track the operator never pointed at.
+                           Decorative (the readout is the accessible reading), hence aria-hidden. #}
+                        <div data-timeline-track-span class="analysis-timeline-track-span" hidden aria-hidden="true"></div>
                         <div class="analysis-timeline-bpm-plot">
                             {% if bpm_segments %}
                             <svg viewBox="0 0 {{ timeline_w }} {{ timeline_h }}" preserveAspectRatio="none"
@@ -158,7 +166,12 @@
                         <div class="analysis-timeline-lane" data-timeline-lane="{{ lane[0] }}">
                             {% if lane[1] %}
                             {% for ribbon in lane[1] %}
+                            {# phaze-x1qr3.10: the ribbon's own seconds, so the inspector can outline
+                               the ribbon the cursor is inside by reading these bounds rather than by
+                               re-deriving a percentage -- a rounding difference of one part in a
+                               million picks the wrong ribbon at exactly the boundary being read. #}
                             <div class="analysis-timeline-ribbon"
+                                 data-ribbon-start="{{ ribbon.start_sec }}" data-ribbon-end="{{ ribbon.end_sec }}"
                                  style="left: {{ ribbon.left_pct }}%; width: {{ ribbon.width_pct }}%; background-color: hsl({{ ribbon.hue }}, 60%, 40%);"
                                  title="{{ ribbon.display }}">{{ ribbon.display }}</div>
                             {% endfor %}

@@ -1,6 +1,8 @@
 {# Bare drawer presentation for the canonical file-record content. This remains a one-shot
    snapshot: no polling, timers, or OOB refreshes may be added here. #}
-<div data-file-id="{{ file.id }}" class="flex flex-col">
+{# phaze-x1qr3.10: the drawer is its own inspection scope. It has no sidebar, so it carries no
+   wheel and no glyph; the tracklist rows it does carry are driven exactly as on the full page. #}
+<div data-file-id="{{ file.id }}" data-inspection-scope class="flex flex-col">
     <div class="sticky top-0 z-10 border-b border-gray-200 bg-white px-6 py-4 dark:border-phaze-border dark:bg-phaze-bg">
         <div class="flex items-start justify-between gap-4">
             <div class="min-w-0">

@@ -226,6 +226,10 @@ def test_the_segment_shape_is_what_the_inspection_and_poster_beads_will_read() -
         "mood_label",
         "mood_hue",
         "energy",
+        # phaze-x1qr3.10 appended `title`, defaulted, so the timeline readout can say "track 7
+        # <title>" without re-joining the tracklist table client-side. Appended and defaulted on
+        # purpose: every existing construction of this frozen dataclass keeps working.
+        "title",
     ]
 
     segment = build_track_segments([_track(1, "0:00")], [_fine(0, 0.0, 30.0, bpm=128.0, camelot="8A")], 600.0)[0]
@@ -233,6 +237,7 @@ def test_the_segment_shape_is_what_the_inspection_and_poster_beads_will_read() -
     assert segment.position == 1
     assert segment.start_sec == 0.0
     assert segment.end_sec == 600.0
+    assert segment.title == _track(1, "0:00").title
     with pytest.raises(AttributeError):
         segment.position = 2  # type: ignore[misc]
 

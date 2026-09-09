@@ -89,14 +89,25 @@ async def _record_fingerprint(page: Any, scope: str) -> str:
 
     Every value in this subtree is rendered from stored rows -- the history timestamps included, which
     are the row's own ``when`` formatted ``%Y-%m-%d %H:%M`` rather than anything derived from now() --
-    so two opens of the same file produce byte-identical text. The one genuinely volatile element is
-    the timeline's ``[data-timeline-readout]``, which is pointer state; it is empty until something
-    moves over the inspector, and no caller here fingerprints after interacting with it.
+    so two opens of the same file produce byte-identical text. That includes the timeline's
+    ``[data-timeline-readout]``: since ``phaze-x1qr3.10`` it is not empty but RESTING, on a sentence
+    derived from the same stored inspection payload both presentations render, and no caller here
+    fingerprints after interacting with the inspector.
+
+    Resting is reached by script, though, not by markup, so the wait below is load-bearing: read the
+    subtree mid-initialisation and one presentation is fingerprinted with the server's placeholder
+    sentence and the other with the resting one, which is a diff that has nothing to do with the
+    drift this test exists to catch.
 
     That stability is what lets this be a whole-subtree comparison instead of a handful of
     cherry-picked facts: a section that silently stops rendering from one entry point fails here,
     where a targeted assertion list would have to have anticipated it.
     """
+    await page.wait_for_function(
+        "(scope) => { const root = document.querySelector(scope + ' [data-analysis-timeline]');"
+        " return !root || root.dataset.timelineReady === 'true'; }",
+        arg=scope,
+    )
     text = await page.locator(f"{scope} [data-record-content]").inner_text()
     return re.sub(r"\s+", " ", text).strip()
 

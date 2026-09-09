@@ -39,7 +39,13 @@
            would let the timeline's own wide scroller push the track wider than the viewport and
            scroll the whole page sideways. The sidebar is page-only -- the drawer has no room for
            it and renders none. #}
-        <div class="grid grid-cols-1 gap-6 px-4 sm:px-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        {# phaze-x1qr3.10: `data-inspection-scope` bounds where the timeline's inspector may look
+           for the satellite targets it drives -- the tracklist rows, the Camelot wheel and the
+           set glyph all live OUTSIDE the timeline's own subtree. Scoped rather than page-wide on
+           purpose: the Files matrix and Changes Review render many glyphs and many timelines on
+           one page, and a document-wide lookup would let one file's cursor mark another file's
+           glyph. A timeline with no scope ancestor (a proposal row) drives only its own lanes. #}
+        <div data-inspection-scope class="grid grid-cols-1 gap-6 px-4 sm:px-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <article data-file-id="{{ file.id }}" aria-labelledby="record-title" class="min-w-0 overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-bg">
             <header class="border-b border-gray-200 px-6 py-5 dark:border-phaze-border">
                 <h1 id="record-title" class="break-words font-jura text-xl uppercase tracking-[0.15em] text-gray-900 dark:text-gray-100">{{ file.original_filename }}</h1>
