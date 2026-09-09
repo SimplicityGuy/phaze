@@ -16,7 +16,8 @@ import uuid
 
 import pytest
 
-from phaze.models.analysis import AnalysisWindow
+from phaze.models.analysis import AnalysisResult, AnalysisWindow
+from phaze.services.analysis_timeline import coverage_chip
 from phaze.services.record_facts import ABSENT, build_record_facts, dominant_label, median_bpm
 
 
@@ -161,6 +162,20 @@ def test_the_windows_row_reuses_the_coverage_chips_own_sentence_verbatim() -> No
     """One sentence, two places: the sidebar cannot claim a coverage the chip does not show."""
     assert _facts(coverage_text="20 coarse · 120 fine · gaps")["Windows"] == "20 coarse · 120 fine · gaps"
     assert _facts(coverage_text=None)["Windows"] == ABSENT
+
+
+def test_the_windows_row_follows_the_coverage_chip_to_unknown_not_zero_on_a_null_tier() -> None:
+    """phaze-ox2m0: the sidebar fact is the chip's own text, so its NULL-tier fix reaches here too.
+
+    ``fine=1440/1440, coarse=NULL`` (a pod that died right after the fine tier) must not read
+    as "0 coarse windows" in the sidebar any more than in the chip itself -- both surfaces are
+    driven by the same sentence.
+    """
+    chip = coverage_chip(AnalysisResult(file_id=uuid.uuid4(), fine_windows_analyzed=1440, fine_windows_total=1440))
+
+    assert chip is not None
+    assert chip["text"] == "? coarse · 1440 fine · gaps"
+    assert _facts(coverage_text=chip["text"])["Windows"] == "? coarse · 1440 fine · gaps"
 
 
 def test_the_modal_key_row_names_the_code_and_the_key_it_stands_for() -> None:

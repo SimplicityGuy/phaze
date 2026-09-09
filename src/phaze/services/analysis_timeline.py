@@ -628,7 +628,13 @@ def coverage_chip(analysis: AnalysisResult | None) -> dict[str, object] | None:
     ever report what exists, which is precisely the number that cannot reveal a gap.
 
     ``None`` when there is no analysis row or it carries no counters at all -- an absent chip,
-    never a chip claiming zero.
+    never a chip claiming zero. A tier whose OWN counter is ``NULL`` (a fine-only progress
+    upsert, ``routers/agent_analysis.py``'s ``put_analysis_progress``, leaves the coarse pair
+    untouched -- both columns together, never a lone one) is a third state, distinct from both
+    "complete" and "short": UNKNOWN, not zero. It renders as ``"?"`` rather than folding into the
+    ``0`` a bare ``coarse_done or 0`` would print, and -- because "no gaps" is a claim this
+    function can only make when it has actually seen every tier's count -- it sets the gap state
+    just as a genuine short tier would, rather than leaving it False by omission.
     """
     if analysis is None:
         return None
@@ -636,18 +642,23 @@ def coverage_chip(analysis: AnalysisResult | None) -> dict[str, object] | None:
     coarse_done, coarse_total = analysis.coarse_windows_analyzed, analysis.coarse_windows_total
     if fine_done is None and coarse_done is None:
         return None
-    has_gaps = (fine_total is not None and fine_done is not None and fine_done < fine_total) or (
-        coarse_total is not None and coarse_done is not None and coarse_done < coarse_total
+    tier_unknown = fine_done is None or coarse_done is None
+    has_gaps = (
+        tier_unknown
+        or (fine_total is not None and fine_done is not None and fine_done < fine_total)
+        or (coarse_total is not None and coarse_done is not None and coarse_done < coarse_total)
     )
+    coarse_display = coarse_done if coarse_done is not None else "?"
+    fine_display = fine_done if fine_done is not None else "?"
     return {
         "fine": fine_done,
         "fine_total": fine_total,
         "coarse": coarse_done,
         "coarse_total": coarse_total,
         "has_gaps": has_gaps,
-        "text": f"{coarse_done or 0} coarse \u00b7 {fine_done or 0} fine \u00b7 {'gaps' if has_gaps else 'no gaps'}",
-        "detail": f"{coarse_done or 0} of {coarse_total if coarse_total is not None else '?'} coarse windows and "
-        f"{fine_done or 0} of {fine_total if fine_total is not None else '?'} fine windows were analyzed.",
+        "text": f"{coarse_display} coarse \u00b7 {fine_display} fine \u00b7 {'gaps' if has_gaps else 'no gaps'}",
+        "detail": f"{coarse_display} of {coarse_total if coarse_total is not None else '?'} coarse windows and "
+        f"{fine_display} of {fine_total if fine_total is not None else '?'} fine windows were analyzed.",
     }
 
 
