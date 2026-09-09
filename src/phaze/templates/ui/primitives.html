@@ -152,6 +152,11 @@
    macro growing a second sizing knob. #}
 {% macro set_glyph(profile, id='', height_class='h-7') %}
 {% set cells = profile.glyph if profile else none %}
+{# phaze-x1qr3.10: the frame exists so the cursor marker below has something to be positioned
+   INSIDE. It is `relative block` and nothing else -- every row-scale caller already wraps this
+   macro in its own fixed-size `inline-block` box, so a block child changes no layout there, and
+   the record page's own container is a block already. #}
+<span data-set-glyph-frame class="relative block">
 {% if cells %}
 <svg{% if id %} id="{{ id }}"{% endif %} data-set-glyph role="img" viewBox="0 0 {{ cells|length }} 1" preserveAspectRatio="none" class="block {{ height_class }} w-full overflow-hidden rounded-sm" aria-label="Set glyph, {{ cells|length }} segments: color is the Camelot key, brightness is energy from quiet to peak">
     {% for cell in cells %}
@@ -163,7 +168,13 @@
 {% else %}
 <p{% if id %} id="{{ id }}"{% endif %} data-set-glyph-empty class="text-sm text-muted ">No coarse windows</p>
 {% endif %}
-<span data-set-glyph-cursor hidden aria-hidden="true"></span>
+{# The inspection marker: one vertical rule over the coarse-window CELL the timeline cursor is
+   inside. Positioned by cell ORDINAL rather than by elapsed fraction, because the glyph's
+   horizontal axis IS the coarse window ordinal -- a set whose coarse coverage has a hole would
+   otherwise mark a cell the cursor is not in. A time inside such a hole marks nothing at all.
+   `analysis_timeline.js` owns it; this macro guarantees it exists in BOTH branches. #}
+<span data-set-glyph-cursor class="set-glyph-cursor" hidden aria-hidden="true"></span>
+</span>
 {% endmacro %}
 
 {# phaze-x1qr3.7: the glyph's key. Twelve hue swatches (Camelot number + minor-key name, sharing

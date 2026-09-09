@@ -497,6 +497,32 @@ class KeyRun:
         return max(0.0, self.end_sec - self.start_sec)
 
 
+def placeable_key_runs(runs: Sequence[KeyRun]) -> list[tuple[KeyRun, int]]:
+    """Pair each run with its wheel position, dropping any code the wheel cannot place.
+
+    ``analysis_window.camelot`` is constrained to the 24 canonical codes, so in practice every
+    run places; a value that somehow escaped that is dropped from the PICTURE rather than
+    rendered at a made-up position, and the caption's counts are of what was drawn.
+
+    It lives HERE, beside the filter that produces the runs, rather than in
+    ``harmonic_journey`` where it was written (``phaze-x1qr3.8``), because two surfaces now
+    number key runs and they must number them identically: ``harmonic_journey._nodes``
+    enumerates this list to stamp ``data-node-index`` on each drawn node, and
+    ``analysis_timeline.inspection_key_runs`` enumerates it to tell the client which node to
+    ring. A re-implementation on either side would agree until the first unplaceable code and
+    then silently shift every later index by one -- pointing the cursor ring at the wrong key
+    for the rest of the set, with every index still resolving to a real node.
+    ``analysis_timeline`` cannot import ``harmonic_journey`` (that module imports
+    ``format_elapsed_time`` back out of it), so a shared home was required as well as tidier.
+    """
+    placed: list[tuple[KeyRun, int]] = []
+    for run in runs:
+        number = camelot_number(run.code)
+        if number is not None and 1 <= number <= 12:
+            placed.append((run, number))
+    return placed
+
+
 def flicker_filtered_key_runs(fine_windows: Sequence[AnalysisWindow]) -> list[KeyRun]:
     """Run-length encode ``camelot`` over ordered fine windows, drop 1-window runs, re-merge.
 
@@ -602,6 +628,7 @@ __all__ = [
     "harmonic_discipline",
     "key_name_for_camelot",
     "modal_camelot",
+    "placeable_key_runs",
     "positive_class_vector",
     "wheel_adjacent",
 ]

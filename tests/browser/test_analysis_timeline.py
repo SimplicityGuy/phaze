@@ -173,3 +173,228 @@ async def test_drawer_swap_initializes_once_and_escape_still_closes_from_timelin
     await page.keyboard.press("Escape")
     await page.wait_for_function("() => !document.getElementById('record-body').checkVisibility()")
     assert await settled_focus(page, "aria-label") == f"Open details for {file.original_filename}"
+
+
+# --- phaze-x1qr3.10: one elapsed time, seven targets ----------------------------------------
+
+_INSPECTION_DURATION_SEC = 720.0
+# `analysis_windows(projected=True)` puts the unique energy maximum on coarse window 4 of 6,
+# i.e. [480, 600) -- so the set's peak, and the resting cursor, is its midpoint.
+_PEAK_SEC = 540.0
+# Two scraped tracks. The second deliberately does NOT start at the peak's own coarse boundary,
+# so "focused the row" and "resting on the peak" are distinguishable states rather than the
+# same number reached two ways.
+_TRACK_TWO_START_SEC = 300.0
+_TRACK_TWO_MIDPOINT_SEC = (_TRACK_TWO_START_SEC + _INSPECTION_DURATION_SEC) / 2
+_TRACK_ONE_MIDPOINT_SEC = _TRACK_TWO_START_SEC / 2
+
+
+async def _open_inspectable_record(page: Any, seed: Seeder) -> tuple[Any, Any]:
+    """A record page carrying every inspection target: lanes, wheel, glyph and a tracklist.
+
+    Every target is fed from the file's OWN stored rows -- the glyph through
+    ``set_projection.build_profile``, the wheel through the same flicker filter the payload's
+    key runs come from -- so a mark that lands on the wrong cell or the wrong node fails here
+    rather than agreeing with a fixture that was built to match it.
+    """
+    from datetime import date
+
+    from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+
+    file = await seed.file(filename="<set-01>.mp3")
+    await seed.metadata(file, duration=_INSPECTION_DURATION_SEC)
+    windows = await seed.analysis_windows(file, fine_count=24, coarse_count=6, projected=True)
+    await seed.set_profile(file, windows)
+
+    tracklist = Tracklist(
+        external_id="inspection-set",
+        source_url="https://example.test/tracklist",
+        file_id=file.id,
+        match_confidence=94,
+        artist="Example Artist",
+        event="Norwood Festival",
+        date=date(2026, 8, 1),
+    )
+    seed.session.add(tracklist)
+    await seed.session.flush()
+    version = TracklistVersion(tracklist_id=tracklist.id, version_number=1)
+    seed.session.add(version)
+    await seed.session.flush()
+    seed.session.add_all(
+        [
+            TracklistTrack(version_id=version.id, position=1, timestamp="0:00", artist="First Artist", title="Opening Track"),
+            TracklistTrack(version_id=version.id, position=2, timestamp="5:00", artist="Second Artist", title="Closing Track"),
+        ]
+    )
+    tracklist.latest_version_id = version.id
+    await seed.session.commit()
+
+    await page.goto(f"/files/{file.id}", wait_until="domcontentloaded")
+    timeline = page.locator("[data-analysis-timeline]")
+    await timeline.wait_for(state="visible")
+    await page.wait_for_function("() => document.querySelector('[data-analysis-timeline]').dataset.timelineReady === 'true'")
+    return file, timeline
+
+
+async def _marks(page: Any) -> dict[str, Any]:
+    """Everything the six non-textual marks are currently saying, read from the live DOM.
+
+    Read as one snapshot rather than as six locator queries so the assertions below compare a
+    single consistent state -- a partially applied update is exactly the defect worth catching,
+    and six separate reads would paper over it.
+    """
+    return await page.evaluate(
+        """() => {
+            const span = document.querySelector('[data-timeline-track-span]');
+            const ring = document.querySelector('[data-journey-cursor-ring]');
+            const glyphCursor = document.querySelector('[data-set-glyph-cursor]');
+            const currentRibbons = [...document.querySelectorAll('[data-timeline-lane="key"] .analysis-timeline-ribbon.is-current')];
+            const currentRows = [...document.querySelectorAll('[data-track-row].is-current')];
+            const ringedNode = ring && !ring.hidden
+                ? [...document.querySelectorAll('[data-journey-node]')].find(
+                      (node) => node.getAttribute('cx') === ring.getAttribute('cx') && node.getAttribute('cy') === ring.getAttribute('cy'))
+                : null;
+            return {
+                spanHidden: span.hidden,
+                spanLeft: span.style.left,
+                spanWidth: span.style.width,
+                ribbonCount: currentRibbons.length,
+                ribbonStart: currentRibbons.length ? currentRibbons[0].dataset.ribbonStart : null,
+                rowPositions: currentRows.map((row) => row.dataset.trackPosition),
+                ringHidden: ring.hidden,
+                ringNodeIndex: ringedNode ? ringedNode.dataset.nodeIndex : null,
+                glyphHidden: glyphCursor.hidden,
+                glyphLeft: glyphCursor.style.left,
+                readout: document.querySelector('[data-timeline-readout]').textContent.trim(),
+                tooltip: document.querySelector('[data-timeline-tooltip]').textContent.trim(),
+                valueNow: document.querySelector('[data-timeline-inspector]').getAttribute('aria-valuenow'),
+                valueText: document.querySelector('[data-timeline-inspector]').getAttribute('aria-valuetext'),
+            };
+        }"""
+    )
+
+
+async def test_one_elapsed_time_drives_every_inspection_target_from_pointer_glyph_and_keyboard(page: Any, seed: Seeder) -> None:
+    """The bead's whole claim: one time, seven marks, three input routes, and a rest at the peak.
+
+    Asserted as WHOLE STATES rather than one mark at a time. The failure this is built for is a
+    partial update -- the readout moves and the wheel does not, or the row highlights and the
+    glyph keeps the previous cell -- which every per-mark assertion in the world passes as long
+    as it is looking at the mark that did update.
+    """
+    _file, timeline = await _open_inspectable_record(page, seed)
+    inspector = timeline.locator("[data-timeline-inspector]")
+
+    # --- 1. Nothing hovered: the page rests on the set's peak and says so ---------------------
+    resting = await _marks(page)
+    assert resting["valueNow"] == "540"
+    assert "peak" in resting["tooltip"].lower()
+    # aria-valuetext names all four facts the tooltip shows, so a screen reader is not told less.
+    assert "At 9:00" in resting["valueText"]
+    assert "track 2 Closing Track" in resting["valueText"]
+    assert "key " in resting["valueText"] and "8B" in resting["valueText"]
+    assert "mood " in resting["valueText"]
+    # The peak sits inside track 2, in the fine window starting at 540 s, in the second key run,
+    # and over the fifth of six glyph cells. Every mark agrees, because one time decided them.
+    assert resting["spanHidden"] is False
+    assert resting["spanLeft"] == f"{(_TRACK_TWO_START_SEC / _INSPECTION_DURATION_SEC) * 100}%"
+    assert resting["ribbonCount"] == 1
+    assert float(resting["ribbonStart"]) == 540.0
+    assert resting["rowPositions"] == ["2"]
+    assert resting["ringHidden"] is False
+    assert resting["ringNodeIndex"] == "1"
+    assert resting["glyphHidden"] is False
+    assert resting["glyphLeft"] == f"{((4 + 0.5) / 6) * 100}%"
+
+    # --- 2. The pointer over the lanes moves every one of them together ----------------------
+    bounds = await inspector.bounding_box()
+    assert bounds is not None
+    await page.mouse.move(bounds["x"] + bounds["width"] * 0.1, bounds["y"] + 20)
+    hovered = await _marks(page)
+    assert float(hovered["valueNow"]) == pytest.approx(_INSPECTION_DURATION_SEC * 0.1, abs=2.0)
+    assert "track 1 Opening Track" in hovered["valueText"]
+    assert hovered["spanLeft"] == "0%"
+    assert hovered["rowPositions"] == ["1"]
+    assert hovered["ringNodeIndex"] == "0"
+    assert hovered["glyphLeft"] == f"{((0 + 0.5) / 6) * 100}%"
+    assert float(hovered["ribbonStart"]) == 60.0
+    assert "peak" not in hovered["tooltip"].lower()
+
+    # --- 3. The glyph is a pointer surface too, indexed by CELL, not by elapsed fraction ------
+    glyph = page.locator("[data-set-glyph]").first
+    glyph_bounds = await glyph.bounding_box()
+    assert glyph_bounds is not None
+    await page.mouse.move(glyph_bounds["x"] + glyph_bounds["width"] * 0.95, glyph_bounds["y"] + glyph_bounds["height"] / 2)
+    from_glyph = await _marks(page)
+    # The sixth cell is coarse window [600, 720); the cursor lands on its midpoint, not on 95%
+    # of the duration -- reading the glyph as a time axis is the bug this pins.
+    assert from_glyph["valueNow"] == "660"
+    assert from_glyph["glyphLeft"] == f"{((5 + 0.5) / 6) * 100}%"
+
+    # --- 4. Hovering a tracklist row scrubs to that track's midpoint --------------------------
+    await page.locator('[data-track-row][data-track-position="1"]').hover()
+    from_row = await _marks(page)
+    assert float(from_row["valueNow"]) == _TRACK_ONE_MIDPOINT_SEC
+    assert from_row["rowPositions"] == ["1"]
+    assert from_row["ringNodeIndex"] == "0"
+
+    # --- 5. Keyboard reaches the same states, and focusing a row is one of the routes ---------
+    await inspector.focus()
+    await page.keyboard.press("Home")
+    await page.keyboard.press("ArrowRight")
+    from_keys = await _marks(page)
+    assert from_keys["valueNow"] == "15"
+    assert from_keys["rowPositions"] == ["1"]
+    assert from_keys["ribbonCount"] == 1
+
+    await page.locator('[data-track-row][data-track-position="2"]').focus()
+    from_focus = await _marks(page)
+    assert float(from_focus["valueNow"]) == _TRACK_TWO_MIDPOINT_SEC
+    assert from_focus["rowPositions"] == ["2"]
+    assert from_focus["ringNodeIndex"] == "1"
+    assert "track 2 Closing Track" in from_focus["valueText"]
+
+    # --- 6. Leaving returns the whole page to the peak ---------------------------------------
+    await page.mouse.move(bounds["x"] + bounds["width"] * 0.4, bounds["y"] + 20)
+    assert (await _marks(page))["valueNow"] != "540"
+    await page.mouse.move(4, 4)
+    await page.wait_for_function("() => document.querySelector('[data-timeline-inspector]').getAttribute('aria-valuenow') === '540'")
+    left = await _marks(page)
+    assert "peak" in left["tooltip"].lower()
+    assert left == resting
+
+
+async def test_a_time_in_a_coarse_gap_marks_no_glyph_cell_rather_than_the_nearest_one(page: Any, seed: Seeder) -> None:
+    """A file whose coarse coverage stops early leaves the glyph unmarked past its last cell.
+
+    The glyph's horizontal axis is the coarse window ORDINAL, so a time with no coarse window
+    has no cell. Marking the nearest one would put the cursor on a window the reader is not
+    pointing at, and it would look entirely correct while doing it.
+    """
+    file = await seed.file(filename="<set-01>.mp3")
+    await seed.metadata(file, duration=720.0)
+    # 24 fine windows spanning 720 s, but coarse coverage that stops at 240 s: everything after
+    # that is a real hole in the coarse tier, which is where the glyph's cells come from.
+    windows = await seed.analysis_windows(file, fine_count=24, coarse_count=6, projected=True)
+    async with seed.session.begin_nested():
+        for window in windows:
+            if window.tier == "coarse" and window.start_sec >= 240.0:
+                await seed.session.delete(window)
+    await seed.session.commit()
+    remaining = [w for w in windows if w.tier == "fine" or w.start_sec < 240.0]
+    await seed.set_profile(file, remaining)
+
+    await page.goto(f"/files/{file.id}", wait_until="domcontentloaded")
+    await page.wait_for_function("() => document.querySelector('[data-analysis-timeline]').dataset.timelineReady === 'true'")
+    inspector = page.locator("[data-timeline-inspector]")
+
+    await inspector.focus()
+    await page.keyboard.press("End")
+    marks = await _marks(page)
+
+    assert marks["valueNow"] == "720"
+    assert marks["glyphHidden"] is True
+    # The fine tier still covers the file's end, so the key ribbon and the wheel ring do light:
+    # the glyph going dark is about the COARSE hole, not about the cursor being off the file.
+    assert marks["ribbonCount"] == 1
+    assert marks["ringHidden"] is False

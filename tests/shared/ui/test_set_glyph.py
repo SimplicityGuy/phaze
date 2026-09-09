@@ -142,12 +142,22 @@ def test_glyph_carries_an_aria_label_naming_both_encodings() -> None:
 
 def test_glyph_carries_a_cursor_marker_hook_for_the_inspection_bead() -> None:
     """An inert, hidden hook -- bead .10's pointer/keyboard inspection positions and updates it;
-    this macro's only job is to guarantee the element exists, in BOTH branches (data and empty)."""
+    this macro's only job is to guarantee the element exists, in BOTH branches (data and empty).
+
+    ``phaze-x1qr3.10`` gave it a class and put it inside a ``relative`` frame, because an
+    absolutely-positioned marker needs a positioned ancestor to be positioned INSIDE -- without
+    one it would be placed against whatever positioned box happened to be up the tree, which on
+    the record page is the article and on a Files row is the table. The frame wraps BOTH
+    branches, so the marker's containing block does not depend on whether the file had coarse
+    windows.
+    """
     with_data = _render("""{{ ui.set_glyph(profile) }}""", profile=SimpleNamespace(glyph=_cells((8, 0.5))))
     without_data = _render("""{{ ui.set_glyph(profile) }}""", profile=SimpleNamespace(glyph=None))
 
     for html in (with_data, without_data):
-        assert '<span data-set-glyph-cursor hidden aria-hidden="true"></span>' in html
+        assert '<span data-set-glyph-cursor class="set-glyph-cursor" hidden aria-hidden="true"></span>' in html
+        assert '<span data-set-glyph-frame class="relative block">' in html
+        assert html.rstrip().endswith("</span>")
 
 
 def test_legend_has_exactly_twelve_swatches_labelled_with_camelot_number_and_minor_key() -> None:

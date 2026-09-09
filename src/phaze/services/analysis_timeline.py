@@ -10,7 +10,7 @@ import math
 from typing import Final, NamedTuple, Protocol, cast
 
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
-from phaze.services.set_projection import MOOD_ORDER
+from phaze.services.set_projection import MOOD_ORDER, flicker_filtered_key_runs, placeable_key_runs
 
 
 TIMELINE_W = 640.0
@@ -78,6 +78,24 @@ class TrackBoundary(Protocol):
 
     @property
     def start_sec(self) -> float: ...
+
+
+class TrackSpan(TrackBoundary, Protocol):
+    """A boundary plus the two fields the INSPECTION payload needs: where the track ends, and
+    what it is called.
+
+    Separate from :class:`TrackBoundary` because a tick genuinely needs only a position and a
+    start -- a track's end is the next track's start, which the tick lane never has to know.
+    The readout does: "you are inside track 7" is a claim about a RANGE, and a payload built
+    from starts alone would either have to guess the last track's end or leave the cursor
+    inside track 7 forever after the set finished.
+    """
+
+    @property
+    def end_sec(self) -> float | None: ...
+
+    @property
+    def title(self) -> str | None: ...
 
 
 class BpmSpark(NamedTuple):
@@ -219,8 +237,36 @@ def _finite_or_none(value: float | None) -> float | None:
     return value if value is not None and math.isfinite(value) else None
 
 
+def top_mood(window: AnalysisWindow) -> dict[str, object] | None:
+    """The strongest of the seven mood classifiers in one coarse window, with its share.
+
+    Reads :func:`mood_stack`, so the number the readout says is the same normalised fraction
+    the river draws as that band's thickness -- a share computed a second way here would let
+    the sentence and the picture disagree about the same window. ``None`` wherever the stack
+    is ``None``: a window with no projected mood scores has no top mood, and reporting the
+    first of seven zeroes would manufacture one.
+
+    Ties resolve to ``MOOD_NAMES`` order, which is stable across renders of identical data.
+    """
+    fractions = mood_stack(window)
+    if fractions is None:
+        return None
+    # ``max`` returns the FIRST maximal element, so a tie resolves to MOOD_NAMES order without
+    # a tie-break clause -- the same rule the river's stacking order already follows.
+    share, name = max(zip(fractions, MOOD_NAMES, strict=True), key=lambda pair: pair[0])
+    return {"name": name, "label": MOOD_LABELS.get(name, name), "share": round(share, 4)}
+
+
 def inspection_windows(windows: Sequence[AnalysisWindow]) -> list[dict[str, object]]:
-    """Serialize every natural window for safe client-side lookup at an arbitrary time."""
+    """Serialize every natural window for safe client-side lookup at an arbitrary time.
+
+    ``phaze-x1qr3.10`` added ``camelot``, ``energy`` and ``mood_top``: the inspection readout
+    names the key by its Camelot code, the energy the area lane draws, and the strongest mood
+    with its share -- and every one of those has to come from the SAME window row the lanes
+    were drawn from, or the sentence under the cursor describes a different window than the
+    picture at it. Absences stay explicit ``None`` rather than becoming a zero or an empty
+    string; the client renders an em dash for them.
+    """
     return [
         {
             "tier": window.tier,
@@ -229,7 +275,10 @@ def inspection_windows(windows: Sequence[AnalysisWindow]) -> list[dict[str, obje
             "end": _finite_or_none(window.end_sec),
             "bpm": _valid_bpm(window.bpm),
             "key": window.musical_key,
+            "camelot": window.camelot,
+            "energy": _measured_energy(window),
             "mood": window.mood,
+            "mood_top": top_mood(window),
             "style": window.style,
         }
         for window in windows
@@ -254,6 +303,50 @@ def resolve_inspection(windows: Sequence[AnalysisWindow], time_sec: float, total
         return candidate if time_sec < candidate_end or includes_final_end else None
 
     return {"time": time_sec, "fine": containing("fine"), "coarse": containing("coarse")}
+
+
+def inspection_segments(segments: Sequence[TrackSpan], total_sec: float) -> list[dict[str, object]]:
+    """Serialize each timestamped track as a half-open span the client can look a time up in.
+
+    ``end`` is clamped into ``[start, total_sec]`` and is ``None`` only where the segment
+    itself is open-ended -- the last track of a file whose duration is unknown. The client
+    treats a ``None`` end as "runs to the end of what we know", which is the same reading
+    ``TrackSegment`` documents; it does not invent a length.
+
+    A non-monotonic scraped pair already arrives clamped to a zero-length segment, and one
+    stays zero-length here: it then contains no time at all, so the cursor never reports being
+    inside a track whose boundaries we do not trust.
+    """
+    if not math.isfinite(total_sec) or total_sec <= 0:
+        return []
+    result: list[dict[str, object]] = []
+    for segment in segments:
+        start = segment.start_sec
+        if not math.isfinite(start) or start < 0 or start > total_sec:
+            continue
+        end = segment.end_sec
+        bounded = min(max(end, start), total_sec) if end is not None and math.isfinite(end) else None
+        result.append({"position": segment.position, "title": segment.title, "start": start, "end": bounded})
+    return result
+
+
+def inspection_key_runs(fine_windows: Sequence[AnalysisWindow]) -> list[dict[str, object]]:
+    """The flicker-filtered key runs, numbered exactly as the harmonic wheel numbers its nodes.
+
+    ``index`` is the position in :func:`~phaze.services.set_projection.placeable_key_runs`' output, which is
+    what ``harmonic_journey._nodes`` enumerates to stamp ``data-node-index`` on each drawn
+    node. That shared call is the whole point: the cursor ring is placed by looking a node up
+    BY INDEX, so a payload that filtered runs even slightly differently would ring the wrong
+    key from the first unplaceable code onward -- and would do it silently, because every
+    index still resolves to a real node.
+
+    Empty for a file with no usable ``camelot`` data, which is the same file the wheel draws
+    with no nodes at all.
+    """
+    return [
+        {"index": index, "code": run.code, "number": number, "start": run.start_sec, "end": run.end_sec}
+        for index, (run, number) in enumerate(placeable_key_runs(flicker_filtered_key_runs(fine_windows)))
+    ]
 
 
 def hue_for(label: str) -> int:
@@ -288,6 +381,13 @@ def ribbons(windows: Sequence[AnalysisWindow], attr: str, total_sec: float, *, c
                 "display": f"{label} \u00b7 {code}" if code else str(label),
                 "left_pct": round(start / total_sec * 100.0, 6),
                 "width_pct": round((end - start) / total_sec * 100.0, 6),
+                # phaze-x1qr3.10: the ribbon's own clamped seconds, rendered as data attributes so
+                # the inspector can outline the ribbon UNDER the cursor by reading the DOM rather
+                # than by re-deriving a percentage and hoping it lands inside the same box. A
+                # rounding difference of one part in 1e6 is invisible on screen and decides the
+                # wrong ribbon at a boundary, which is exactly where the outline is being read.
+                "start_sec": start,
+                "end_sec": end,
                 "hue": hue_for(str(label)),
             }
         )
@@ -555,7 +655,7 @@ def build_analysis_timeline_context(
     windows: Sequence[AnalysisWindow],
     *,
     analysis: AnalysisResult | None = None,
-    track_segments: Sequence[TrackBoundary] = (),
+    track_segments: Sequence[TrackSpan] = (),
 ) -> dict[str, object]:
     """Build the shared exhaustive timeline context for record and proposal presentations.
 
@@ -571,6 +671,7 @@ def build_analysis_timeline_context(
     coarse = [window for window in ordered if window.tier == "coarse"]
     timeline_w = max(TIMELINE_W, max(len(fine), len(coarse), 1) * WINDOW_WIDTH_PX)
     spark = bpm_spark(fine, total_sec, timeline_w, TIMELINE_H)
+    peak = energy_peak(coarse, total_sec, timeline_w, LANE_H)
     return {
         "has_windows": bool(ordered),
         "has_coarse_windows": bool(coarse),
@@ -583,12 +684,25 @@ def build_analysis_timeline_context(
         "bpm_hi": spark.hi,
         "bpm_segments": bpm_segments(fine, total_sec, timeline_w, TIMELINE_H, spark.lo, spark.hi),
         "time_ticks": elapsed_time_ticks(total_sec),
-        "timeline_inspection": {"duration": total_sec, "windows": inspection_windows(ordered)},
+        # phaze-x1qr3.10: ONE payload drives every inspection target. `peak_sec` is where the
+        # page rests with nothing hovered -- the energy peak, because "where does this set peak"
+        # is the question the lane exists to answer, and `None` (no measured energy anywhere) is
+        # an honest absence the client renders as a rest at zero rather than as a peak claim at
+        # zero. `segments` and `key_runs` are the two spans the readout, the shaded track and
+        # the wheel ring are looked up in; both are empty for a file that has neither, and every
+        # target that reads an empty list simply does not light.
+        "timeline_inspection": {
+            "duration": total_sec,
+            "peak_sec": peak["sec"] if peak else None,
+            "windows": inspection_windows(ordered),
+            "segments": inspection_segments(track_segments, total_sec),
+            "key_runs": inspection_key_runs(fine),
+        },
         "key_ribbons": ribbons(fine, "musical_key", total_sec, code_attr="camelot"),
         "mood_ribbons": ribbons(coarse, "mood", total_sec),
         "style_ribbons": ribbons(coarse, "style", total_sec),
         "energy_area": energy_area(coarse, total_sec, timeline_w, LANE_H),
-        "energy_peak": energy_peak(coarse, total_sec, timeline_w, LANE_H),
+        "energy_peak": peak,
         "mood_river": mood_river(coarse, total_sec, timeline_w, LANE_H),
         "mood_legend": mood_legend(),
         "tracklist_ticks": tracklist_ticks(track_segments, total_sec),

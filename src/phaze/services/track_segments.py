@@ -88,6 +88,11 @@ class TrackSegment:
     render the tracklist fragment cannot each acquire a different palette."""
     energy: float | None
     """Mean of the intersecting COARSE windows' stored energy scalars."""
+    title: str | None = None
+    """The scraped track title, carried so the timeline's readout can name the track the cursor
+    is inside without the client re-joining the tracklist table (``phaze-x1qr3.10``). Defaulted,
+    so every existing construction of this dataclass keeps working unchanged; ``None`` is the
+    honest answer for a scraped row that carried no title at all."""
 
 
 def _timestamped(tracks: Sequence[TracklistTrack]) -> list[tuple[int, float]]:
@@ -168,6 +173,10 @@ def build_track_segments(
     bounds = _timestamped(tracks)
     if not bounds:
         return []
+    # Keyed by position rather than zipped with ``bounds``: ``_timestamped`` drops untimed
+    # tracks, so the two lists are not positionally parallel and a zip would attach one
+    # track's title to the next track's segment.
+    titles = {track.position: track.title for track in tracks}
     fine = [window for window in windows if window.tier == "fine"]
     coarse = [window for window in windows if window.tier == "coarse"]
     closing = duration_sec if duration_sec is not None and math.isfinite(duration_sec) and duration_sec > bounds[-1][1] else None
@@ -192,6 +201,7 @@ def build_track_segments(
                 mood_label=MOOD_LABELS.get(mood) if mood else None,
                 mood_hue=MOOD_HUES.get(mood) if mood else None,
                 energy=_mean_energy(in_coarse),
+                title=titles.get(position),
             )
         )
     return segments

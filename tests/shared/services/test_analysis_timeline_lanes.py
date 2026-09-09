@@ -80,11 +80,19 @@ def _even_moods(**overrides: float) -> dict[str, float]:
 
 
 class _Boundary:
-    """The two fields ``tracklist_ticks`` reads -- structurally phaze-x1qr3.6's ``TrackSegment``."""
+    """Structurally phaze-x1qr3.6's ``TrackSegment``, as the timeline context reads it.
 
-    def __init__(self, position: int, start_sec: float) -> None:
+    ``tracklist_ticks`` reads only ``position`` and ``start_sec`` (the ``TrackBoundary``
+    protocol). ``phaze-x1qr3.10``'s inspection payload also reads ``end_sec`` and ``title``
+    (the wider ``TrackSpan``), because "the cursor is inside track 7" is a claim about a range
+    and a name, so this helper carries all four.
+    """
+
+    def __init__(self, position: int, start_sec: float, end_sec: float | None = None, title: str | None = None) -> None:
         self.position = position
         self.start_sec = start_sec
+        self.end_sec = end_sec
+        self.title = title
 
 
 # --- The palette: one source, and validated as categorical -------------------------------
