@@ -16,6 +16,7 @@
     "GET /execution/agents-table",
     "GET /execution/progress/{batch_id}",
     "GET /files/{file_id}",
+    "GET /files/{file_id}/poster.svg",
     "GET /health",
     "GET /pipeline/",
     "GET /pipeline/analyze-files",
