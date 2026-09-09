@@ -5,19 +5,38 @@ question can be reopened: no ANN index, no CLAP, no learned similarity space -- 
 stored classifier outputs, projected shape and modal key, scored against every other file's
 the same way, in Python, over one query's worth of rows.
 
-**What is compared, and why it is exactly these four terms.** `SetProfile.mean_vector` is
-positional in `MOOD_ORDER` (`phaze.services.set_projection`) and already carries BOTH the
-7 mood probabilities and the 4 style-adjacent ones (danceability, gender, tonality,
-voice_instrumental) in one 11-d vector -- so cosine similarity over that vector alone IS
-"style and dominant-mood agreement": there is no separate discrete term for it, because the
-continuous cosine term already subsumes an argmax comparison at finer resolution than a
-match/no-match bucket would. The other three terms are read from data no single vector
-carries: `arc` (Euclidean, the set's energy shape over time), `AnalysisResult.bpm` (the
-file's own aggregate tempo, already computed once by `aggregate_bpm` at analysis time --
-this module reads it rather than re-deriving a median over stored fine windows, which would
-turn one candidate row into an N+1 window read), and `SetProfile.camelot_modal` (wheel
-adjacency via `services.set_projection.wheel_adjacent`, the same predicate the harmonic
-journey wheel colours edges with).
+**What is compared, and why it is exactly these six terms.** `SetProfile.mean_vector` is
+positional in `MOOD_ORDER` (`phaze.services.set_projection`) and carries 11 CONTINUOUS
+positive-class probabilities -- the 7 mood ones and 4 style-ADJACENT ones (danceability,
+gender, tonality, voice_instrumental) -- so cosine similarity over it is a real, finer-grained
+signal, but it is **not** the same claim as the brief's "style and dominant-mood agreement":
+`MOOD_ORDER` carries no Discogs-style genre at all, so a `mean_vector`-only score would narrow
+that criterion rather than discharge it (review finding, phaze-x1qr3.11 changes-requested
+round 1). The fix is two DISCRETE agreement terms read off `AnalysisResult.style` and
+`AnalysisResult.mood` -- the same duration-weighted dominant labels
+`services.record_facts.dominant_label` derives for the sidebar's own "Mood · style" fact row,
+here read pre-computed off the file's `AnalysisResult` row (`aggregate_dominant` already wrote
+them once, at analysis completion) rather than re-derived from windows. `AnalysisResult` is
+already joined for `bpm` below, so `style`/`mood` cost no extra query. The remaining three
+terms are read from data no single vector or label carries: `arc` (Euclidean, the set's energy
+shape over time), `AnalysisResult.bpm` (the file's own aggregate tempo, already computed once
+by `aggregate_bpm` at analysis time -- this module reads it rather than re-deriving a median
+over stored fine windows, which would turn one candidate row into an N+1 window read), and
+`SetProfile.camelot_modal` (wheel adjacency via `services.set_projection.wheel_adjacent`, the
+same predicate the harmonic journey wheel colours edges with).
+
+The six terms, in `SIMILARITY_WEIGHTS`: `vector` (cosine over `mean_vector`), `arc_shape`
+(Euclidean over `arc`), `style` and `mood` (binary agreement over `AnalysisResult.style` /
+`.mood` -- no "adjacent" bucket, since neither label carries an ordering relation the way
+Camelot positions do), `bpm`, and `key`.
+
+The scoring line stays the brief's literal three-part shape (`"arc 0.09 · 1.2 % BPM · 8A"`)
+rather than growing a fourth/fifth segment for style/mood -- appending a style mark broke the
+line's own worked example and every test asserting it byte-for-byte, for a term two candidates
+either share completely or not at all (nothing gradual to report the way "1.2 % BPM" reports a
+measured gap). The style/mood contribution is real in the score and documented here, in
+`SIMILARITY_WEIGHTS`'s own comment, and in `_categorical_agreement`'s docstring, rather than
+rendered.
 
 **Determinism.** Every term is a closed-form function of stored columns -- no randomness, no
 model call, no external I/O. Ties are broken by `file_id` so two candidates scoring
@@ -25,17 +44,17 @@ identically always order the same way across runs.
 
 **Complexity.** One `SELECT ... JOIN ... LEFT JOIN ...` loads every candidate row with a
 usable profile (`O(1)` round trips); scoring one candidate is `O(len(MOOD_ORDER) +
-ARC_POINTS)`, a fixed constant (11 + 64 = 75), so the whole call is `O(n)` in the number of
-candidate rows, never `O(n * m)` and never a query per candidate. See
-`tests/shared/services/test_set_similarity.py`'s corpus-scale test for a synthetic
-measurement of `n`.
+ARC_POINTS)`, a fixed constant (11 + 64 = 75, plus two O(1) string comparisons for style and
+mood), so the whole call is `O(n)` in the number of candidate rows, never `O(n * m)` and never
+a query per candidate. See `tests/shared/services/test_set_similarity.py`'s corpus-scale test
+for a synthetic measurement of `n`.
 
 **Gaps stay gaps, never a manufactured zero.** A `mean_vector` or `arc` position with no
 overlapping evidence between the query and a candidate (either side's value is `NaN`) is
 dropped from that pairwise comparison rather than treated as agreement or disagreement; a
-missing BPM or Camelot code on either side contributes no credit for that term rather than
-raising or silently defaulting to "similar". A file with no usable profile of its own (no
-`SetProfile` row, or one with no `mean_vector`/`arc` at all -- nothing to compare) has
+missing BPM, Camelot code, style, or mood on either side contributes no credit for that term
+rather than raising or silently defaulting to "similar". A file with no usable profile of its
+own (no `SetProfile` row, or one with no `mean_vector`/`arc` at all -- nothing to compare) has
 nothing to rank candidates by, so it gets an empty list, the same honest gap the rest of the
 projection renders elsewhere.
 """
@@ -65,18 +84,22 @@ if TYPE_CHECKING:
 # it instead of a bare literal "3" drifting between them.
 TOP_N: Final[int] = 3
 
-# The four scored terms and their weights, in ONE table for the same reason
+# The six scored terms and their weights, in ONE table for the same reason
 # `set_projection.ENERGY_WEIGHTS` is one table: a test greps this module for literal weight
 # floats outside it, so a weight can never quietly reappear as an inline constant elsewhere.
 # These magnitudes are the implementer's own pick -- plausible relative weight, not yet
 # reviewed by the operator; nothing here should be read as though that review has happened.
-# `mood_style` and `arc_shape` are weighted equal and heaviest (the two continuous, richest
-# signals); `bpm` and `key` are equal and lighter (each a single scalar / categorical fact).
+# `vector` (cosine over `mean_vector`) and `arc_shape` are weighted equal and heaviest (the two
+# continuous, richest signals); `style`, `mood`, `bpm` and `key` are equal and lighter (each a
+# single scalar or categorical fact) -- `style` and `mood` are discrete AnalysisResult labels,
+# not folded into `vector`, per the review finding recorded in the module docstring.
 SIMILARITY_WEIGHTS: Final[dict[str, float]] = {
-    "mood_style": 0.35,
-    "arc_shape": 0.35,
-    "bpm": 0.15,
-    "key": 0.15,
+    "vector": 0.30,
+    "arc_shape": 0.30,
+    "style": 0.10,
+    "mood": 0.10,
+    "bpm": 0.10,
+    "key": 0.10,
 }
 
 # The BPM term's decay scale: at a 2 % difference the term is already down to half credit,
@@ -90,6 +113,13 @@ BPM_DECAY_SCALE: Final[float] = 0.02
 KEY_EXACT: Final[float] = 1.0
 KEY_ADJACENT: Final[float] = 0.6
 KEY_OTHER: Final[float] = 0.0
+
+# Style/mood term values: exact label agreement or none. Unlike Camelot codes, an
+# `AnalysisResult.style` / `.mood` label ("techno", "energetic") carries no ordering relation
+# to another label, so there is no "adjacent" middle bucket -- only match or no match (which
+# includes either side missing).
+CATEGORICAL_MATCH: Final[float] = 1.0
+CATEGORICAL_NO_MATCH: Final[float] = 0.0
 
 
 @dataclass(frozen=True)
@@ -179,12 +209,31 @@ def _key_term(a: str | None, b: str | None) -> float:
     return KEY_OTHER
 
 
+def _categorical_agreement(a: str | None, b: str | None) -> float:
+    """``CATEGORICAL_MATCH`` when both sides carry the same non-empty label, else
+    ``CATEGORICAL_NO_MATCH`` -- including when either side is missing (no credit for "I don't
+    know" agreeing with anything). Shared by the ``style`` and ``mood`` terms, which read
+    ``AnalysisResult.style`` / ``.mood`` -- the same duration-weighted dominant labels
+    ``services.record_facts.dominant_label`` derives for the sidebar's "Mood · style" fact row,
+    here read pre-computed rather than re-derived from windows.
+    """
+    if not a or not b:
+        return CATEGORICAL_NO_MATCH
+    return CATEGORICAL_MATCH if a == b else CATEGORICAL_NO_MATCH
+
+
 def _scoring_line(distance: float, bpm_pct: float | None, camelot_modal: str | None) -> str:
     """The explainable per-neighbour line, e.g. ``"arc 0.09 · 1.2 % BPM · 8A"``.
 
     Each segment is present only when there was evidence for it: an infinite arc distance (no
     overlapping arc data) or a missing BPM/Camelot code drops that segment rather than
     printing a placeholder, so the line never claims a measurement that was not made.
+
+    Deliberately carries no style/mood segment: the brief's own worked example is exactly this
+    three-part shape, and style/mood is a binary match-or-not with nothing gradual to report the
+    way "1.2 % BPM" reports a measured gap. The term still contributes to ``score`` (see
+    ``SIMILARITY_WEIGHTS``, ``_categorical_agreement``) -- it is scored and documented, just not
+    rendered.
     """
     parts: list[str] = []
     if math.isfinite(distance):
@@ -202,8 +251,12 @@ def _score_candidate(
     query_arc: list[float],
     query_camelot_modal: str | None,
     query_bpm: float | None,
+    query_style: str | None,
+    query_mood: str | None,
     candidate: SetProfile,
     candidate_bpm: float | None,
+    candidate_style: str | None,
+    candidate_mood: str | None,
     title: str,
 ) -> SimilarSet:
     cosine = cosine_similarity(query_mean_vector, candidate.mean_vector or [])
@@ -212,10 +265,14 @@ def _score_candidate(
     bpm_pct = _bpm_pct_diff(query_bpm, candidate_bpm)
     bpm_sim = 1.0 / (1.0 + bpm_pct / BPM_DECAY_SCALE) if bpm_pct is not None else 0.0
     key_sim = _key_term(query_camelot_modal, candidate.camelot_modal)
+    style_sim = _categorical_agreement(query_style, candidate_style)
+    mood_sim = _categorical_agreement(query_mood, candidate_mood)
 
     score = (
-        SIMILARITY_WEIGHTS["mood_style"] * cosine
+        SIMILARITY_WEIGHTS["vector"] * cosine
         + SIMILARITY_WEIGHTS["arc_shape"] * arc_sim
+        + SIMILARITY_WEIGHTS["style"] * style_sim
+        + SIMILARITY_WEIGHTS["mood"] * mood_sim
         + SIMILARITY_WEIGHTS["bpm"] * bpm_sim
         + SIMILARITY_WEIGHTS["key"] * key_sim
     )
@@ -233,24 +290,27 @@ async def find_similar_sets(
     file_id: uuid.UUID,
     query_profile: SetProfile | None,
     query_bpm: float | None,
+    query_style: str | None,
+    query_mood: str | None,
     *,
     limit: int = TOP_N,
 ) -> list[SimilarSet]:
     """The top ``limit`` sets most like ``file_id``'s, scored deterministically, or ``[]``.
 
-    ``query_profile`` and ``query_bpm`` are the CALLER's already-loaded reads (the record
-    router already fetches both to build the facts panel) -- this function takes no further
-    read of ``file_id``'s own data, so the only query it issues is the ONE candidate scan
-    below. Returns ``[]`` immediately, with no query at all, when the query file has no usable
-    profile of its own (no row, or one with no ``mean_vector``/``arc``) -- there is nothing to
-    rank candidates against.
+    ``query_profile``, ``query_bpm``, ``query_style`` and ``query_mood`` are the CALLER's
+    already-loaded reads (the record router already fetches its ``SetProfile`` and
+    ``AnalysisResult`` rows to build the facts panel) -- this function takes no further read of
+    ``file_id``'s own data, so the only query it issues is the ONE candidate scan below.
+    Returns ``[]`` immediately, with no query at all, when the query file has no usable profile
+    of its own (no row, or one with no ``mean_vector``/``arc``) -- there is nothing to rank
+    candidates against.
     """
     if query_profile is None or query_profile.mean_vector is None or query_profile.arc is None:
         return []
 
     title_column = func.coalesce(FileRecord.original_filename_repaired, FileRecord.original_filename)
     statement = (
-        select(SetProfile, title_column.label("title"), AnalysisResult.bpm)
+        select(SetProfile, title_column.label("title"), AnalysisResult.bpm, AnalysisResult.style, AnalysisResult.mood)
         .join(FileRecord, FileRecord.id == SetProfile.file_id)
         .outerjoin(AnalysisResult, AnalysisResult.file_id == SetProfile.file_id)
         .where(SetProfile.file_id != file_id)
@@ -265,11 +325,15 @@ async def find_similar_sets(
             query_arc=query_profile.arc,
             query_camelot_modal=query_profile.camelot_modal,
             query_bpm=query_bpm,
+            query_style=query_style,
+            query_mood=query_mood,
             candidate=candidate,
             candidate_bpm=candidate_bpm,
+            candidate_style=candidate_style,
+            candidate_mood=candidate_mood,
             title=title,
         )
-        for candidate, title, candidate_bpm in rows
+        for candidate, title, candidate_bpm, candidate_style, candidate_mood in rows
     ]
     scored.sort(key=lambda similar: (-similar.score, str(similar.file_id)))
     return scored[:limit]
@@ -277,6 +341,8 @@ async def find_similar_sets(
 
 __all__ = [
     "BPM_DECAY_SCALE",
+    "CATEGORICAL_MATCH",
+    "CATEGORICAL_NO_MATCH",
     "KEY_ADJACENT",
     "KEY_EXACT",
     "KEY_OTHER",

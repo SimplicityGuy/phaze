@@ -1,12 +1,18 @@
 """``services/set_similarity`` -- deterministic "more like this set" similarity (phaze-x1qr3.11).
 
 Every acceptance criterion on the bead, discharged one test at a time: a duplicate rip (same
-arc, same keys) ranks first; a wheel-adjacent key outranks a tritone-away one at equal arc
-distance; the arc term is symmetric; and a file with no usable profile of its own returns an
-empty list. A synthetic corpus-scale measurement (rows scored, wall clock) closes out the
-"query over the operator's corpus" acceptance line -- this machine has no route to the real
-archive, so the measurement here is explicitly synthetic; the bead comment records it as such
-and names the real-corpus measurement as an operator item.
+arc, same keys, same style, same mood) ranks first; a wheel-adjacent key outranks a
+tritone-away one at equal arc distance; the arc term is symmetric; a style-agreeing candidate
+outranks a style-disagreeing one at equal everything else, and likewise for mood; and a file
+with no usable profile of its own returns an empty list. A synthetic corpus-scale measurement
+(rows scored, wall clock) closes out the "query over the operator's corpus" acceptance line --
+this machine has no route to the real archive, so the measurement here is explicitly synthetic;
+the bead comment records it as such and names the real-corpus measurement as an operator item.
+
+Round-1 review (changes-requested): the first version of this module folded "style and
+dominant-mood agreement" entirely into the cosine term over ``mean_vector``, which carries no
+Discogs-style genre at all -- a narrowing of the criterion, not a discharge of it. This file's
+style/mood tests exist because of that finding; see the module docstring for the fix.
 """
 
 from __future__ import annotations
@@ -22,10 +28,14 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.set_profile import SetProfile
 from phaze.services.set_projection import ARC_POINTS, MOOD_ORDER
 from phaze.services.set_similarity import (
+    CATEGORICAL_MATCH,
+    CATEGORICAL_NO_MATCH,
     KEY_ADJACENT,
     KEY_OTHER,
     SIMILARITY_WEIGHTS,
     TOP_N,
+    SimilarSet,
+    _categorical_agreement,
     arc_distance,
     cosine_similarity,
     find_similar_sets,
@@ -61,15 +71,31 @@ async def _seed_profile(
     arc: list[float] | None,
     camelot_modal: str | None,
     bpm: float | None,
+    style: str | None = None,
+    mood: str | None = None,
     original_filename: str = "set.mp3",
 ) -> FileRecord:
     file = await make_file(original_filename=original_filename)
     session.add(SetProfile(file_id=file.id, mean_vector=mean_vector, arc=arc, camelot_modal=camelot_modal))
-    if bpm is not None:
-        session.add(AnalysisResult(id=uuid.uuid4(), file_id=file.id, bpm=bpm))
+    if bpm is not None or style is not None or mood is not None:
+        session.add(AnalysisResult(id=uuid.uuid4(), file_id=file.id, bpm=bpm, style=style, mood=mood))
     await session.commit()
     await session.refresh(file)
     return file
+
+
+async def _find(
+    session: AsyncSession,
+    file_id: uuid.UUID,
+    query_profile: SetProfile | None,
+    *,
+    bpm: float | None = None,
+    style: str | None = None,
+    mood: str | None = None,
+) -> list[SimilarSet]:
+    """Thin wrapper over ``find_similar_sets`` so most call sites need only name the query
+    signal(s) the test actually cares about."""
+    return await find_similar_sets(session, file_id, query_profile, bpm, style, mood)
 
 
 # ---------------------------------------------------------------------------
@@ -120,14 +146,30 @@ def test_cosine_similarity_is_the_honest_zero_floor_with_no_overlap() -> None:
 
 @pytest.mark.asyncio
 async def test_a_duplicate_rip_ranks_first(session: AsyncSession, make_file) -> None:
-    """Same arc, same mean_vector, same key, same BPM: the closest thing to "the same set twice"
-    scores the maximum (every term's weight, at full credit) and sorts ahead of two genuinely
-    different candidates."""
+    """Same arc, same mean_vector, same key, same BPM, same style, same mood: the closest thing
+    to "the same set twice" scores the maximum (every term's weight, at full credit) and sorts
+    ahead of two genuinely different candidates."""
     query = await _seed_profile(
-        session, make_file, mean_vector=_BASE_VECTOR, arc=_BASE_ARC, camelot_modal="8A", bpm=128.0, original_filename="query.mp3"
+        session,
+        make_file,
+        mean_vector=_BASE_VECTOR,
+        arc=_BASE_ARC,
+        camelot_modal="8A",
+        bpm=128.0,
+        style="techno",
+        mood="energetic",
+        original_filename="query.mp3",
     )
     duplicate = await _seed_profile(
-        session, make_file, mean_vector=list(_BASE_VECTOR), arc=list(_BASE_ARC), camelot_modal="8A", bpm=128.0, original_filename="dup.mp3"
+        session,
+        make_file,
+        mean_vector=list(_BASE_VECTOR),
+        arc=list(_BASE_ARC),
+        camelot_modal="8A",
+        bpm=128.0,
+        style="techno",
+        mood="energetic",
+        original_filename="dup.mp3",
     )
     await _seed_profile(
         session,
@@ -136,12 +178,14 @@ async def test_a_duplicate_rip_ranks_first(session: AsyncSession, make_file) -> 
         arc=_shifted_arc(1.5),
         camelot_modal="2B",
         bpm=95.0,
+        style="house",
+        mood="dark",
         original_filename="different.mp3",
     )
     await _seed_profile(session, make_file, mean_vector=None, arc=None, camelot_modal=None, bpm=None, original_filename="no-profile.mp3")
 
     query_profile = await session.get(SetProfile, query.id)
-    neighbours = await find_similar_sets(session, query.id, query_profile, 128.0)
+    neighbours = await _find(session, query.id, query_profile, bpm=128.0, style="techno", mood="energetic")
 
     assert neighbours, "the duplicate and the different candidate must both be scoreable"
     assert neighbours[0].file_id == duplicate.id
@@ -183,12 +227,124 @@ async def test_wheel_adjacent_key_outranks_a_tritone_at_equal_arc_distance(sessi
     )
 
     query_profile = await session.get(SetProfile, query.id)
-    neighbours = await find_similar_sets(session, query.id, query_profile, 128.0)
+    neighbours = await _find(session, query.id, query_profile, bpm=128.0)
 
     by_id = {neighbour.file_id: neighbour for neighbour in neighbours}
     assert by_id[adjacent.id].score > by_id[tritone.id].score
     # Confirms the ONLY thing that moved is the key term -- arc/cosine/BPM contributions equal.
     assert by_id[adjacent.id].score - by_id[tritone.id].score == pytest.approx(SIMILARITY_WEIGHTS["key"] * (KEY_ADJACENT - KEY_OTHER))
+
+
+# ---------------------------------------------------------------------------
+# Acceptance: style agreement, and mood agreement, each in isolation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_style_agreement_outranks_disagreement_with_everything_else_equal(session: AsyncSession, make_file) -> None:
+    """Two candidates tie on arc, mean_vector, BPM, key and mood -- only ``style`` differs
+    ("techno" agrees with the query's "techno"; "house" does not). The style-agreeing candidate
+    must rank first, and by exactly the style term's weight."""
+    query = await _seed_profile(
+        session,
+        make_file,
+        mean_vector=_BASE_VECTOR,
+        arc=_BASE_ARC,
+        camelot_modal="8A",
+        bpm=128.0,
+        style="techno",
+        mood="energetic",
+        original_filename="query.mp3",
+    )
+    agrees = await _seed_profile(
+        session,
+        make_file,
+        mean_vector=list(_BASE_VECTOR),
+        arc=list(_BASE_ARC),
+        camelot_modal="8A",
+        bpm=128.0,
+        style="techno",
+        mood="energetic",
+        original_filename="style-agrees.mp3",
+    )
+    disagrees = await _seed_profile(
+        session,
+        make_file,
+        mean_vector=list(_BASE_VECTOR),
+        arc=list(_BASE_ARC),
+        camelot_modal="8A",
+        bpm=128.0,
+        style="house",
+        mood="energetic",
+        original_filename="style-disagrees.mp3",
+    )
+
+    query_profile = await session.get(SetProfile, query.id)
+    neighbours = await _find(session, query.id, query_profile, bpm=128.0, style="techno", mood="energetic")
+
+    by_id = {neighbour.file_id: neighbour for neighbour in neighbours}
+    assert by_id[agrees.id].score > by_id[disagrees.id].score
+    assert by_id[agrees.id].score - by_id[disagrees.id].score == pytest.approx(
+        SIMILARITY_WEIGHTS["style"] * (CATEGORICAL_MATCH - CATEGORICAL_NO_MATCH)
+    )
+
+
+@pytest.mark.asyncio
+async def test_mood_agreement_outranks_disagreement_with_everything_else_equal(session: AsyncSession, make_file) -> None:
+    """The mood mirror of the style test above: only ``mood`` differs between the two
+    candidates ("energetic" agrees with the query; "dark" does not)."""
+    query = await _seed_profile(
+        session,
+        make_file,
+        mean_vector=_BASE_VECTOR,
+        arc=_BASE_ARC,
+        camelot_modal="8A",
+        bpm=128.0,
+        style="techno",
+        mood="energetic",
+        original_filename="query.mp3",
+    )
+    agrees = await _seed_profile(
+        session,
+        make_file,
+        mean_vector=list(_BASE_VECTOR),
+        arc=list(_BASE_ARC),
+        camelot_modal="8A",
+        bpm=128.0,
+        style="techno",
+        mood="energetic",
+        original_filename="mood-agrees.mp3",
+    )
+    disagrees = await _seed_profile(
+        session,
+        make_file,
+        mean_vector=list(_BASE_VECTOR),
+        arc=list(_BASE_ARC),
+        camelot_modal="8A",
+        bpm=128.0,
+        style="techno",
+        mood="dark",
+        original_filename="mood-disagrees.mp3",
+    )
+
+    query_profile = await session.get(SetProfile, query.id)
+    neighbours = await _find(session, query.id, query_profile, bpm=128.0, style="techno", mood="energetic")
+
+    by_id = {neighbour.file_id: neighbour for neighbour in neighbours}
+    assert by_id[agrees.id].score > by_id[disagrees.id].score
+    assert by_id[agrees.id].score - by_id[disagrees.id].score == pytest.approx(
+        SIMILARITY_WEIGHTS["mood"] * (CATEGORICAL_MATCH - CATEGORICAL_NO_MATCH)
+    )
+
+
+def test_style_and_mood_terms_give_no_credit_when_either_side_is_missing() -> None:
+    """A candidate (or the query) with no stored ``AnalysisResult.style``/``.mood`` gets no
+    credit for "agreeing" with anything -- missing is not a wildcard match."""
+    assert _categorical_agreement(None, "techno") == CATEGORICAL_NO_MATCH
+    assert _categorical_agreement("techno", None) == CATEGORICAL_NO_MATCH
+    assert _categorical_agreement(None, None) == CATEGORICAL_NO_MATCH
+    assert _categorical_agreement("techno", "techno") == CATEGORICAL_MATCH
+    assert _categorical_agreement("techno", "house") == CATEGORICAL_NO_MATCH
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +360,7 @@ async def test_a_file_with_no_profile_returns_an_empty_list(session: AsyncSessio
     )
     file_with_no_row = await make_file(original_filename="query.mp3")
 
-    neighbours = await find_similar_sets(session, file_with_no_row.id, None, None)
+    neighbours = await _find(session, file_with_no_row.id, None)
 
     assert neighbours == []
     # Sanity: the candidate row above really is scoreable against a DIFFERENT query, so the
@@ -221,7 +377,7 @@ async def test_a_file_with_a_profile_row_but_no_mean_vector_or_arc_also_returns_
     await _seed_profile(session, make_file, mean_vector=_BASE_VECTOR, arc=_BASE_ARC, camelot_modal="8A", bpm=128.0, original_filename="other.mp3")
 
     query_profile = await session.get(SetProfile, fine_only.id)
-    neighbours = await find_similar_sets(session, fine_only.id, query_profile, None)
+    neighbours = await _find(session, fine_only.id, query_profile)
 
     assert neighbours == []
 
@@ -233,7 +389,7 @@ async def test_no_other_file_has_a_profile_also_returns_empty(session: AsyncSess
     )
     query_profile = await session.get(SetProfile, query.id)
 
-    neighbours = await find_similar_sets(session, query.id, query_profile, 128.0)
+    neighbours = await _find(session, query.id, query_profile, bpm=128.0)
 
     assert neighbours == []
 
@@ -260,7 +416,7 @@ async def test_returns_at_most_top_n_neighbours(session: AsyncSession, make_file
         )
 
     query_profile = await session.get(SetProfile, query.id)
-    neighbours = await find_similar_sets(session, query.id, query_profile, 128.0)
+    neighbours = await _find(session, query.id, query_profile, bpm=128.0)
 
     assert len(neighbours) == TOP_N
     # Closest arc first.
@@ -277,11 +433,47 @@ async def test_a_candidate_missing_bpm_still_scores_and_omits_the_bpm_segment(se
     )
 
     query_profile = await session.get(SetProfile, query.id)
-    neighbours = await find_similar_sets(session, query.id, query_profile, 128.0)
+    neighbours = await _find(session, query.id, query_profile, bpm=128.0)
 
     assert neighbours[0].file_id == no_bpm.id
     assert "BPM" not in neighbours[0].scoring_line
     assert neighbours[0].scoring_line.endswith("8A")
+
+
+@pytest.mark.asyncio
+async def test_scoring_line_never_grows_a_style_or_mood_segment(session: AsyncSession, make_file) -> None:
+    """The scoring line keeps the brief's literal three-part shape even when style and mood both
+    agree -- the term is scored, not rendered (see the module docstring)."""
+    query = await _seed_profile(
+        session,
+        make_file,
+        mean_vector=_BASE_VECTOR,
+        arc=_BASE_ARC,
+        camelot_modal="8A",
+        bpm=128.0,
+        style="techno",
+        mood="energetic",
+        original_filename="query.mp3",
+    )
+    duplicate = await _seed_profile(
+        session,
+        make_file,
+        mean_vector=list(_BASE_VECTOR),
+        arc=list(_BASE_ARC),
+        camelot_modal="8A",
+        bpm=128.0,
+        style="techno",
+        mood="energetic",
+        original_filename="dup.mp3",
+    )
+
+    query_profile = await session.get(SetProfile, query.id)
+    neighbours = await _find(session, query.id, query_profile, bpm=128.0, style="techno", mood="energetic")
+
+    assert neighbours[0].file_id == duplicate.id
+    assert neighbours[0].scoring_line == "arc 0.00 · 0.0 % BPM · 8A"
+    assert "techno" not in neighbours[0].scoring_line
+    assert "energetic" not in neighbours[0].scoring_line
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +502,8 @@ async def test_synthetic_corpus_scale_measurement(session: AsyncSession, make_fi
     rng_vectors = [[(i * 37 + j) % 100 / 100.0 for j in range(len(MOOD_ORDER))] for i in range(corpus_size)]
     rng_arcs = [_shifted_arc((i % 50) / 50.0) for i in range(corpus_size)]
     rng_keys = ["8A", "9A", "2A", "5B", "11A"]
+    rng_styles = ["techno", "house", "trance", None]
+    rng_moods = ["energetic", "dark", None]
 
     files = []
     for i in range(corpus_size):
@@ -321,12 +515,23 @@ async def test_synthetic_corpus_scale_measurement(session: AsyncSession, make_fi
             for i in range(corpus_size)
         ]
     )
-    session.add_all([AnalysisResult(id=uuid.uuid4(), file_id=files[i].id, bpm=100.0 + (i % 60)) for i in range(corpus_size)])
+    session.add_all(
+        [
+            AnalysisResult(
+                id=uuid.uuid4(),
+                file_id=files[i].id,
+                bpm=100.0 + (i % 60),
+                style=rng_styles[i % len(rng_styles)],
+                mood=rng_moods[i % len(rng_moods)],
+            )
+            for i in range(corpus_size)
+        ]
+    )
     await session.commit()
 
     query_profile = await session.get(SetProfile, query.id)
     started = time.perf_counter()
-    neighbours = await find_similar_sets(session, query.id, query_profile, 128.0)
+    neighbours = await _find(session, query.id, query_profile, bpm=128.0, style="techno", mood="energetic")
     elapsed_sec = time.perf_counter() - started
 
     assert len(neighbours) == TOP_N

@@ -257,9 +257,17 @@ async def build_file_record_context(
     harmonic_journey = build_harmonic_journey([window for window in windows if window.tier == "fine"])
 
     # phaze-x1qr3.11: the sidebar's "more like this set" slot -- deterministic similarity over
-    # every other file's set_profile row, scored against THIS file's already-loaded profile and
-    # bpm (no second read of file_id's own data; see set_similarity.find_similar_sets).
-    similar_sets = await find_similar_sets(session, file_id, set_profile, analysis.bpm if analysis is not None else None)
+    # every other file's set_profile row, scored against THIS file's already-loaded profile,
+    # bpm, style and mood (no second read of file_id's own data; see
+    # set_similarity.find_similar_sets).
+    similar_sets = await find_similar_sets(
+        session,
+        file_id,
+        set_profile,
+        analysis.bpm if analysis is not None else None,
+        analysis.style if analysis is not None else None,
+        analysis.mood if analysis is not None else None,
+    )
 
     return {
         "file": file,
