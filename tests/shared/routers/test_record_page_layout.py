@@ -26,6 +26,7 @@ import pytest
 
 from phaze.models.analysis import AnalysisWindow
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.models.set_profile import SetProfile
 from phaze.services.record_facts import ABSENT
 from phaze.services.set_glyph_colors import camelot_hue
 from phaze.services.set_projection import flicker_filtered_key_runs
@@ -329,3 +330,64 @@ async def test_the_sidebar_stacks_under_the_main_column_below_the_large_breakpoi
     children = grid.find_all(recursive=False)
     assert children[0].name == "article"
     assert children[1] is sidebar
+
+
+# ---------------------------------------------------------------------------
+# phaze-x1qr3.11: the "more like this set" slot's real content (its `[data-more-like-this]`
+# presence is already covered above; these two tests cover what fills it).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_more_like_this_says_no_similar_sets_yet_with_nothing_to_compare(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    seed_file_with_windows,
+) -> None:
+    """`seed_file_with_windows` seeds no `SetProfile` row, so there is nothing to rank against --
+    the honest empty state, never a silently empty list."""
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    slot = page.select_one("[data-more-like-this]")
+    assert slot is not None
+    assert slot.select_one("[data-similar-sets]") is None
+    assert slot.get_text(" ", strip=True).endswith("No similar sets yet.")
+
+
+@pytest.mark.asyncio
+async def test_more_like_this_renders_real_neighbours_with_glyphs_links_and_scoring_lines(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_file_with_windows,
+) -> None:
+    """A file with a usable profile and at least one comparable candidate gets a real list: each
+    row carries the candidate's own glyph (the shared `ui.set_glyph` macro), a link to its own
+    record, and the deterministic scoring line."""
+    file, _result, _windows = await seed_file_with_windows(original_filename="<set-01>.mp3")
+    neighbour, _neighbour_result, _neighbour_windows = await seed_file_with_windows(original_filename="<set-02>.mp3")
+
+    mean_vector = [0.5] * 11
+    arc = [0.4] * 64
+    glyph_cells = [{"camelot_number": 8, "energy": 0.5}, {"camelot_number": 9, "energy": 0.6}]
+    # `seed_file_with_windows` already gives both files an `AnalysisResult` with `bpm=128.0` --
+    # equal BPM (and everything else below) is deliberate, the same duplicate-rip shape
+    # `test_set_similarity.py` scores at the service level.
+    session.add(SetProfile(file_id=file.id, mean_vector=mean_vector, arc=arc, camelot_modal="8A", glyph=glyph_cells))
+    session.add(SetProfile(file_id=neighbour.id, mean_vector=list(mean_vector), arc=list(arc), camelot_modal="8A", glyph=glyph_cells))
+    await session.commit()
+
+    page = _soup((await client.get(f"/files/{file.id}")).text)
+    slot = page.select_one("[data-more-like-this]")
+    assert slot is not None
+    rows = slot.select("[data-similar-set]")
+    assert len(rows) == 1, "the only OTHER file with a usable profile"
+
+    row = rows[0]
+    link = row.select_one("a")
+    assert link is not None
+    assert link["href"] == f"/files/{neighbour.id}"
+    assert row.select_one("[data-set-glyph]") is not None, "the candidate's own glyph, via the shared macro"
+    assert row.select_one("[data-similar-set-title]").get_text(strip=True) == "<set-02>.mp3"  # type: ignore[union-attr]
+    scoring_line = row.select_one("[data-similar-set-line]").get_text(strip=True)  # type: ignore[union-attr]
+    assert scoring_line.startswith("arc 0.00"), "identical arcs and mean_vector: the duplicate-rip shape"
+    assert scoring_line.endswith("8A")

@@ -42,6 +42,7 @@ from phaze.services.harmonic_journey import build_harmonic_journey
 from phaze.services.pipeline import derive_file_lane, get_file_orphan_details, get_file_stage_buckets
 from phaze.services.record_facts import build_record_facts
 from phaze.services.set_glyph_colors import CAMELOT_LEGEND, ENERGY_LIGHTNESS_STEP_COUNT, camelot_hue, energy_lightness
+from phaze.services.set_similarity import find_similar_sets
 from phaze.services.track_segments import build_track_segments
 from phaze.services.tracklist_priority import get_file_tracklist_review
 from phaze.web.static import static_asset_url
@@ -255,12 +256,18 @@ async def build_file_record_context(
     # text alternative -- never an absent component.
     harmonic_journey = build_harmonic_journey([window for window in windows if window.tier == "fine"])
 
+    # phaze-x1qr3.11: the sidebar's "more like this set" slot -- deterministic similarity over
+    # every other file's set_profile row, scored against THIS file's already-loaded profile and
+    # bpm (no second read of file_id's own data; see set_similarity.find_similar_sets).
+    similar_sets = await find_similar_sets(session, file_id, set_profile, analysis.bpm if analysis is not None else None)
+
     return {
         "file": file,
         "stage_buckets": stage_buckets,
         "analysis": analysis,
         "file_id": file_id,
         "set_profile": set_profile,
+        "similar_sets": similar_sets,
         **timeline_context,
         "record_facts": record_facts,
         "harmonic_journey": harmonic_journey,
