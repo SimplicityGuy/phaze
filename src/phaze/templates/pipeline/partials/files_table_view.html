@@ -279,7 +279,14 @@
                      role="listitem" {{ record_row.attrs(row.file.id, row.file.original_filename) }}>
                 <div class="flex items-start justify-between gap-3">
                     <div class="min-w-0">
-                        <h2 class="truncate font-mono text-xs font-semibold text-gray-900 dark:text-gray-100" title="{{ row.file.current_path }}">{{ row.file.current_path }}</h2>
+                        {# phaze-5x8za: same glyph, same reuse, as the desktop cell above (line ~254)
+                           -- a file WITHOUT a `set_profile` row renders this `<h2>` byte-identical to
+                           before (implementer decision, recorded on the bead: the mobile card view
+                           should carry the glyph for parity with the desktop table, Changes Review
+                           and the palette Files group -- every other Files surface shows it, and the
+                           card already has `row.file.set_profile` eager-loaded by `get_files_page`,
+                           so this is free). #}
+                        <h2 class="truncate font-mono text-xs font-semibold text-gray-900 dark:text-gray-100" title="{{ row.file.current_path }}">{{ row.file.current_path }}{% if row.file.set_profile %} <span class="inline-block h-2.5 w-10 align-middle">{{ ui.set_glyph(row.file.set_profile, height_class='h-2.5') }}</span>{% endif %}</h2>
                         <p class="mt-1 text-xs uppercase tracking-wide text-muted ">{{ row.file.file_type }}</p>
                     </div>
                 </div>

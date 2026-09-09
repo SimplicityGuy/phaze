@@ -584,7 +584,11 @@ async def _diagnose_zero_rowcount_status_update(
     # The conditional UPDATE matched nothing: either the proposal does not exist, its current
     # status is outside the allowed set (when allowed_from is set), or its updated_at no longer
     # matches the caller's token (when expected_updated_at is set). Re-read to distinguish which.
-    current = await session.execute(select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id))
+    # phaze-5x8za: nested selectinload alongside the file -- ONE extra statement for this single
+    # row, never a per-row query -- so the row this diagnostic path returns can render its glyph.
+    current = await session.execute(
+        select(RenameProposal).options(selectinload(RenameProposal.file).selectinload(FileRecord.set_profile)).where(RenameProposal.id == proposal_id)
+    )
     proposal = current.scalar_one_or_none()
     if proposal is None:
         return None
@@ -657,7 +661,12 @@ async def update_proposal_status(
 
     # Re-fetch with selectinload to ensure file relationship is available
     # (session.refresh does not honor selectinload on lazy='raise' relationships)
-    stmt2 = select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id)
+    # phaze-5x8za: nested selectinload(FileRecord.set_profile) rides alongside -- ONE extra
+    # statement for this single row (never a per-row query) -- so the row this endpoint's swap
+    # response renders back carries the same cached glyph the page render shows.
+    stmt2 = (
+        select(RenameProposal).options(selectinload(RenameProposal.file).selectinload(FileRecord.set_profile)).where(RenameProposal.id == proposal_id)
+    )
     result2 = await session.execute(stmt2)
     return result2.scalar_one_or_none()
 
@@ -727,7 +736,13 @@ async def update_proposal_fields(
 
     if int(cursor_result.rowcount) == 0:
         # No row matched: 404 (proposal gone) vs 409 (status outside allowed_from).
-        current = await session.execute(select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id))
+        # phaze-5x8za: nested selectinload alongside the file -- ONE extra statement for this
+        # single row, never a per-row query -- so a 409 refusal can still render its glyph.
+        current = await session.execute(
+            select(RenameProposal)
+            .options(selectinload(RenameProposal.file).selectinload(FileRecord.set_profile))
+            .where(RenameProposal.id == proposal_id)
+        )
         proposal = current.scalar_one_or_none()
         if proposal is None:
             return None
@@ -737,7 +752,12 @@ async def update_proposal_fields(
 
     # Re-fetch with selectinload to ensure the file relationship is available for the row render
     # (session.refresh does not honor selectinload on lazy='raise' relationships).
-    stmt2 = select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id)
+    # phaze-5x8za: nested selectinload(FileRecord.set_profile) rides alongside -- ONE extra
+    # statement for this single row (never a per-row query) -- so the edited row's swap response
+    # carries the same cached glyph the page render shows.
+    stmt2 = (
+        select(RenameProposal).options(selectinload(RenameProposal.file).selectinload(FileRecord.set_profile)).where(RenameProposal.id == proposal_id)
+    )
     result2 = await session.execute(stmt2)
     return result2.scalar_one_or_none()
 
