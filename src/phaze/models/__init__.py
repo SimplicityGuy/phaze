@@ -17,6 +17,7 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.route_control import RouteControl
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.scheduling_ledger import SchedulingLedger
+from phaze.models.set_profile import SetProfile
 from phaze.models.stage_skip import StageSkip
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
@@ -48,6 +49,7 @@ __all__ = [
     "ScanBatch",
     "ScanStatus",
     "SchedulingLedger",
+    "SetProfile",
     "StageSkip",
     "TagWriteLog",
     "TagWriteStatus",

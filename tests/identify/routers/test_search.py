@@ -12,6 +12,7 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
+from phaze.models.set_profile import SetProfile
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS
 
@@ -519,3 +520,37 @@ async def test_search_restore_header_alone_does_not_return_a_fragment(client: As
     response = await client.get("/search/?q=test", headers={"HX-History-Restore-Request": "true"})
     assert response.status_code == 302
     assert response.headers["location"] == "/?palette=1"
+
+
+# ---------------------------------------------------------------------------
+# The ⌘K palette's set glyph on a Files-group row (phaze-x1qr3.9)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_palette_file_result_renders_the_glyph_when_a_profile_exists(client: AsyncClient, session: AsyncSession) -> None:
+    file_record = await create_searchable_file(session, original_filename="glyphpalette - Track.mp3", artist="glyphpalette")
+    session.add(SetProfile(file_id=file_record.id, glyph=[{"camelot_number": 8, "energy": 0.2}, {"camelot_number": 9, "energy": 0.8}]))
+    await session.commit()
+
+    response = await client.get("/search/", params={"q": "glyphpalette"}, headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    body = response.text
+
+    assert 'id="cmdk-file-1"' in body
+    assert "data-set-glyph" in body and "data-set-glyph-empty" not in body
+    assert body.count("<rect") == 2
+
+
+@pytest.mark.asyncio
+async def test_palette_file_result_renders_no_glyph_without_a_profile(client: AsyncClient, session: AsyncSession) -> None:
+    """A file result for a file never analyzed to a ``SetProfile`` row renders no placeholder --
+    matching the Files table and Changes Review rows, not the record page's "No coarse windows"."""
+    await create_searchable_file(session, original_filename="noglyphpalette - Track.mp3", artist="noglyphpalette")
+
+    response = await client.get("/search/", params={"q": "noglyphpalette"}, headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    body = response.text
+
+    assert 'id="cmdk-file-1"' in body
+    assert "data-set-glyph" not in body

@@ -12,6 +12,7 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
+from phaze.models.set_profile import SetProfile
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.pagination import MIN_PAGE_SIZE
 from phaze.services.search_queries import SearchFacets, SearchResult, distinct_artists, get_summary_counts, search
@@ -713,3 +714,52 @@ async def test_distinct_artists_orders_alphabetically_across_tables(session: Asy
 
     artists = await distinct_artists(session, "Artist")
     assert artists == ["Alpha Artist", "Bravo Artist", "Charlie Artist"]
+
+
+# ---------------------------------------------------------------------------
+# glyph -- the ⌘K palette's set glyph field (phaze-x1qr3.9)
+# ---------------------------------------------------------------------------
+
+
+def _glyph_cells() -> list[dict[str, int | float | None]]:
+    return [{"camelot_number": 8, "energy": 0.2}, {"camelot_number": 9, "energy": 0.8}]
+
+
+@pytest.mark.asyncio
+async def test_search_file_result_carries_the_glyph_when_a_profile_exists(session: AsyncSession) -> None:
+    file_record = await create_test_file(session, original_filename="glyph-search.mp3", title="Glyph Search")
+    session.add(SetProfile(file_id=file_record.id, glyph=_glyph_cells()))
+    await session.commit()
+
+    results, _pagination = await search(session, "glyph search")
+    file_results = [r for r in results if r.result_type == "file"]
+
+    assert len(file_results) == 1
+    assert file_results[0].glyph == _glyph_cells()
+
+
+@pytest.mark.asyncio
+async def test_search_file_result_carries_no_glyph_without_a_profile(session: AsyncSession) -> None:
+    """A file result for a file never analyzed to a ``SetProfile`` row carries ``glyph=None`` --
+    the honest gap, not an empty list (`services/set_profile.py`'s own no-zero-vector convention)."""
+    await create_test_file(session, original_filename="no-glyph-search.mp3", title="No Glyph Search")
+
+    results, _pagination = await search(session, "no glyph search")
+    file_results = [r for r in results if r.result_type == "file"]
+
+    assert len(file_results) == 1
+    assert file_results[0].glyph is None
+
+
+@pytest.mark.asyncio
+async def test_search_tracklist_and_discogs_results_carry_no_glyph(session: AsyncSession) -> None:
+    """Neither a tracklist nor a Discogs release has a file to key a set glyph by -- the union's
+    NULL-literal parity slot for those two branches (services/search_queries.py)."""
+    await create_test_tracklist(session, artist="Glyph Union Artist", event="Glyph Union Fest")
+    await create_test_discogs_link(session, discogs_artist="Glyph Union Artist", discogs_title="Glyph Union Release")
+
+    results, _pagination = await search(session, "glyph union")
+    non_file_results = [r for r in results if r.result_type != "file"]
+
+    assert non_file_results, "expected at least one tracklist/discogs result to assert glyph=None on"
+    assert all(r.glyph is None for r in non_file_results)

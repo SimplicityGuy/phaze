@@ -5,6 +5,7 @@ Command groups:
     phaze agents add --id <id> --name <name> --scan-roots /a,/b
     phaze queue status --queue <name>
     phaze backfill reenqueue-incomplete-analyses
+    phaze backfill set-projection
 
 `agents add` mints a per-agent bearer token, inserts an `agents` row, and prints
 the cleartext token exactly once (it is NOT recoverable afterwards -- only the
@@ -62,6 +63,7 @@ from phaze.services.reanalysis_backfill import (
     count_null_windows_columns_rows,
     enqueue_incomplete_reanalysis,
 )
+from phaze.services.set_projection_backfill import run_backfill
 
 
 if TYPE_CHECKING:
@@ -231,6 +233,23 @@ def _build_parser() -> argparse.ArgumentParser:
             "per-outcome remediation guide."
         ),
     )
+    # phaze-x1qr3.3: the set-projection backfill. Reads only already-stored analysis_window rows
+    # (musical_key/bpm/features JSONB) -- NEVER re-analyzes -- and writes the per-window
+    # energy/camelot/mood_scores plus the per-file set_profile row for every file whose profile is
+    # missing or behind services.set_projection_writer.CURRENT_PROJECTION_VERSION. Idempotent and
+    # resumable by that same version check: see services/set_projection_backfill.py's module
+    # docstring for the full selection contract.
+    backfill_sub.add_parser(
+        "set-projection",
+        help="Backfill energy/camelot/mood_scores + set_profile from stored JSONB, no re-analysis (phaze-x1qr3.3).",
+        description=(
+            "Walks every file with analysis_window rows whose set_profile is missing or behind the "
+            "current projection_version, computes the per-window energy/camelot/mood_scores and the "
+            "per-file set_profile row from the ALREADY-STORED musical_key/bpm/features JSONB -- no "
+            "re-analysis, no agent involvement -- and reports counts. Idempotent: a second run is a "
+            "no-op; a future projection_version bump re-fills only the rows that change."
+        ),
+    )
     return parser
 
 
@@ -279,8 +298,28 @@ def _main_backfill(args: argparse.Namespace) -> int:
     """Handle ``phaze backfill <command>``. Returns a process exit code."""
     if args.backfill_command == "reenqueue-incomplete-analyses":
         return asyncio.run(_run_reenqueue_incomplete_analyses())
+    if args.backfill_command == "set-projection":
+        return asyncio.run(_run_backfill_set_projection())
     msg = f"unhandled backfill command: {args.backfill_command!r}"  # pragma: no cover - exhaustive dispatch above
     raise AssertionError(msg)  # pragma: no cover
+
+
+async def _run_backfill_set_projection() -> int:
+    """Run ``phaze backfill set-projection`` (phaze-x1qr3.3). Returns a process exit code.
+
+    Opens ONE session for the whole run (mirrors ``_run_reenqueue_incomplete_analyses``'s
+    ``async_session()`` wiring) and delegates the walk itself to
+    ``services.set_projection_backfill.run_backfill``, which commits per file so a later file's
+    failure can never roll back an earlier file's already-written projection.
+    """
+    async with async_session() as session:
+        report = await run_backfill(session)
+    print(f"{report.files_scanned} file(s) scanned")
+    print(f"{report.files_projected} file(s) projected")
+    print(f"{report.files_skipped_no_windows} file(s) skipped (no windows)")
+    print(f"{report.files_failed} file(s) failed")
+    print(f"wall clock: {report.wall_clock_sec:.2f}s")
+    return 1 if report.files_failed else 0
 
 
 async def _run_reenqueue_incomplete_analyses() -> int:

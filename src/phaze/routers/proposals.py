@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
-from phaze.models.analysis import AnalysisWindow
+from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.file import FileRecord
 from phaze.models.proposal import APPROVE_REJECT_FROM, UNDO_FROM, ProposalStatus, RenameProposal
 
@@ -35,6 +35,7 @@ from phaze.services.proposal_queries import (
     update_proposal_fields,
     update_proposal_status,
 )
+from phaze.services.set_glyph_colors import CAMELOT_LEGEND, ENERGY_LIGHTNESS_STEP_COUNT, camelot_hue, energy_lightness
 
 
 # The review-UI state machine (phaze-uu17) now lives on the model, beside the enum it constrains --
@@ -268,6 +269,14 @@ def _diff_row_response(request: Request, proposal: RenameProposal, row_id_prefix
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+# phaze-x1qr3.9: bulk_action() re-renders `_changes_list.html` (-> `_diff_row.html`) through THIS
+# env, which draws the set glyph via the same `ui/primitives.html` macro `routers/record.py`
+# registers these four globals for -- mirrored here for the same reason
+# `routers/shell/stage_maps.py` (the GET path's env) needed its own copy.
+templates.env.globals["camelot_hue"] = camelot_hue
+templates.env.globals["energy_lightness"] = energy_lightness
+templates.env.globals["camelot_legend"] = CAMELOT_LEGEND
+templates.env.globals["energy_lightness_step_count"] = ENERGY_LIGHTNESS_STEP_COUNT
 router = APIRouter(prefix="/proposals", tags=["proposals"])
 
 SPARK_W = 80.0
@@ -395,6 +404,16 @@ async def proposal_timeline(
     # phaze-w55w1: the Phase 44 AnalysisResult fetch that fed the "Sampled" badge and the
     # "Deepen analysis" button is gone with them (ADR-0007 §7) -- the timeline renders from
     # AnalysisWindow rows alone, which is the full coverage now that nothing is sampled.
+    #
+    # phaze-x1qr3.5 reads the row again, for one strictly different purpose: the coverage chip's
+    # PLANNED-vs-ANALYZED counters. This is not the "Sampled" badge returning. That badge claimed
+    # the analysis had deliberately skipped windows and offered a button to go deeper; the chip
+    # states how many of the windows the analysis child itself planned were actually analyzed,
+    # which is a fact only this row holds -- counting the stored AnalysisWindow rows can report
+    # what exists and can therefore never reveal a window that is missing. There is no deepen
+    # path, no cap and no stride to go with it: an incomplete count is a failed or partial run to
+    # be shown honestly, not an invitation to re-analyze.
+    analysis = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
 
     return templates.TemplateResponse(
         request=request,
@@ -403,7 +422,7 @@ async def proposal_timeline(
             "request": request,
             "proposal": proposal,
             "file_id": file_id,
-            **build_analysis_timeline_context(windows),
+            **build_analysis_timeline_context(windows, analysis=analysis),
         },
     )
 

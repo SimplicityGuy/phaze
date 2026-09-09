@@ -73,6 +73,8 @@ from phaze.services.agent_upsert import build_field_lww_set_clause
 from phaze.services.bulk_insert import chunk_rows
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.scheduling_ledger import clear_ledger_entry
+from phaze.services.set_projection import build_profile
+from phaze.services.set_projection_writer import CURRENT_PROJECTION_VERSION, annotate_window_rows, build_set_profile_upsert_statement, logged_sources
 
 
 if TYPE_CHECKING:
@@ -209,7 +211,7 @@ async def _finalize_analysis_outcome(session: AsyncSession, file_id: uuid.UUID) 
     await _delete_staged_object_if_cloud(session, file_id)
 
 
-async def _replace_analysis_windows(session: AsyncSession, file_id: uuid.UUID, windows: list[Any]) -> None:
+async def _replace_analysis_windows(session: AsyncSession, file_id: uuid.UUID, windows: list[Any], *, agent_id: str) -> None:
     """Replace this file's AnalysisWindow rows wholesale, in the caller's transaction.
 
     Called only when the wire body carried a ``windows`` key at all; an explicit empty list is a
@@ -219,12 +221,41 @@ async def _replace_analysis_windows(session: AsyncSession, file_id: uuid.UUID, w
     ATOMICITY: the DELETE and every insert chunk execute on the CALLER's session inside its
     transaction, alongside the aggregate upsert, so the replace stays all-or-nothing -- a
     half-written window set is never committed (it would read as a complete analysis).
+
+    phaze-x1qr3.3: also computes and writes the per-window projection (``energy`` / ``camelot`` /
+    ``mood_scores``) and upserts the file's ``set_profile`` row, in the SAME transaction as the
+    window replace above -- "one projection, then everything rides it" (epic docstring). A
+    projection failure must NEVER fail the analysis this callback is completing, split by failure
+    DOMAIN (review finding 1): the pure computation (``annotate_window_rows`` / ``build_profile`` /
+    building the upsert statement) is guarded by a plain try/except, since none of it touches the
+    database; the ``set_profile`` upsert's EXECUTION is guarded by
+    ``execute_guarding_vanished_file`` -- the SAME SAVEPOINT-based guard ``put_analysis``'s own
+    aggregate upsert uses just below -- because ``set_profile.file_id`` carries the same
+    ``ON DELETE CASCADE`` FK to ``files.id`` and can lose the same vanished-file race (phaze-wn1l).
+    A bare try/except around the execute would catch the ``IntegrityError`` but leave the whole
+    request transaction poisoned (request_guards.py rule 5), which is a worse failure than the one
+    it was meant to absorb: the window insert just above would then fail to commit too. Either way
+    the profile is left NULL/stale for a future successful (re)analysis or the backfill
+    (``services/set_projection_backfill.py``) to fill in.
     """
     await session.execute(delete(AnalysisWindow).where(AnalysisWindow.file_id == file_id))
     if windows:
         # pg_insert bypasses the Python-only `default=uuid.uuid4` PK, so stamp `id`
         # explicitly per row (mirrors the aggregate path above).
         rows = [{"id": uuid.uuid4(), "file_id": file_id, **w.model_dump()} for w in windows]
+
+        # Compute BEFORE inserting: `annotate_window_rows` raises atomically (rows untouched on
+        # failure -- see its docstring), so a failure here means every row inserted below simply
+        # omits the three projection columns and they read their column default (NULL) -- exactly
+        # the same "not yet projected" gap a file that has not reached this bead's code at all
+        # would show, never a partially-annotated window set.
+        projected = True
+        try:
+            annotate_window_rows(rows)
+        except Exception:
+            projected = False
+            logger.warning("set_projection_window_annotate_failed", file_id=str(file_id), exc_info=True)
+
         # phaze-syxv: CHUNKED, because an explicit multi-row VALUES binds
         # `len(rows) * params_per_row` parameters in ONE statement and PostgreSQL's Bind
         # message caps that at int16 (32767) -- 2,730 rows at this model's 12 parameters,
@@ -236,6 +267,34 @@ async def _replace_analysis_windows(session: AsyncSession, file_id: uuid.UUID, w
         # a half-written window set is never committed (it would read as a complete analysis).
         for chunk in chunk_rows(rows):
             await session.execute(pg_insert(AnalysisWindow).values(chunk))
+
+        # `build_profile` + the `set_profile` upsert only run when the per-window fields above
+        # were actually computed -- a profile built over an all-NULL window set would itself read
+        # as "no coarse windows, no key" for a file that DOES have them, which is worse than
+        # simply leaving the profile NULL/stale until the next successful (re)analysis.
+        if projected:
+            try:
+                orm_windows = [AnalysisWindow(**row) for row in rows]
+                projection = build_profile(orm_windows)
+                stmt = build_set_profile_upsert_statement(file_id, projection)
+            except Exception:
+                logger.warning("set_profile_upsert_failed", file_id=str(file_id), exc_info=True)
+            else:
+                # phaze-wn1l: same vanished-file race `put_analysis`'s own aggregate upsert guards
+                # just below -- run through the SAME shared SAVEPOINT helper rather than a bare
+                # try/except, so a caught IntegrityError unwinds only its own SAVEPOINT and leaves
+                # this transaction (the window insert above, the aggregate upsert still to come)
+                # usable for the rest of the request.
+                result = await execute_guarding_vanished_file(
+                    session, stmt, logger=logger, handler_name="_replace_analysis_windows", file_id=file_id, agent_id=agent_id
+                )
+                if result is not None:
+                    logger.info(
+                        "set_profile_projected",
+                        file_id=str(file_id),
+                        sources=logged_sources(orm_windows),
+                        projection_version=CURRENT_PROJECTION_VERSION,
+                    )
 
 
 def _fold_wire_fields(dumped: dict[str, Any]) -> None:
@@ -346,7 +405,7 @@ async def put_analysis(
     # inserted row's file_id use the PATH `file_id` ONLY -- the body never carries a
     # file/window-owner id (cross-file-deletion mitigation, AUTH-01).
     if body.windows is not None:
-        await _replace_analysis_windows(session, file_id, body.windows)
+        await _replace_analysis_windows(session, file_id, body.windows, agent_id=agent.id)
 
     # Phase 43 state-advance: a non-empty write (any aggregate/coverage field the
     # client actually set) means analysis produced a real result, so advance the

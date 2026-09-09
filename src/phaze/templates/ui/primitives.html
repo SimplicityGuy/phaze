@@ -134,6 +134,76 @@
 </dialog>
 {% endmacro %}
 
+{# phaze-x1qr3.7: the set glyph -- one cell per COARSE window of `set_profile.glyph` (a list of
+   {camelot_number, energy} dicts, or None when the file has no coarse windows at all). Hue comes
+   from `camelot_hue(cell.camelot_number)` and lightness from `energy_lightness(cell.energy)` --
+   both Jinja globals backed by the SAME functions in `services/set_glyph_colors.py` that
+   `set_glyph_legend` below (and, later, the harmonic-journey wheel) call, so a rendered color can
+   never mean two different things on two surfaces. A cell whose camelot_number is unresolved
+   (no overlapping fine-tier key) renders desaturated at the same lightness -- energy still reads,
+   hue does not claim a key nothing observed. `data-set-glyph-cursor` is an inert hook: bead .10's
+   pointer/keyboard inspection owns positioning and updating it, this macro only guarantees the
+   element exists.
+
+   phaze-x1qr3.9: `height_class` lets a row-scale caller (Files table, Changes Review, the ⌘K
+   palette) shrink the strip to a 10px height (`h-2.5`) instead of the record page's full `h-7` --
+   the ONE rendering path stays here, only the Tailwind height class varies by caller. Width stays
+   `w-full`; a row caller wraps the macro call in its own fixed-width element rather than this
+   macro growing a second sizing knob. #}
+{% macro set_glyph(profile, id='', height_class='h-7') %}
+{% set cells = profile.glyph if profile else none %}
+{# phaze-x1qr3.10: the frame exists so the cursor marker below has something to be positioned
+   INSIDE. It is `relative block` and nothing else -- every row-scale caller already wraps this
+   macro in its own fixed-size `inline-block` box, so a block child changes no layout there, and
+   the record page's own container is a block already. #}
+<span data-set-glyph-frame class="relative block">
+{% if cells %}
+<svg{% if id %} id="{{ id }}"{% endif %} data-set-glyph role="img" viewBox="0 0 {{ cells|length }} 1" preserveAspectRatio="none" class="block {{ height_class }} w-full overflow-hidden rounded-sm" aria-label="Set glyph, {{ cells|length }} segments: color is the Camelot key, brightness is energy from quiet to peak">
+    {% for cell in cells %}
+    {% set hue = camelot_hue(cell.camelot_number) %}
+    {% set lightness = energy_lightness(cell.energy) %}
+    <rect data-glyph-cell data-cell-index="{{ loop.index0 }}"{% if cell.camelot_number is not none %} data-camelot-number="{{ cell.camelot_number }}"{% endif %} x="{{ loop.index0 }}" y="0" width="1" height="1" fill="hsl({{ hue if hue is not none else 0 }}, {{ '65' if hue is not none else '0' }}%, {{ lightness }}%)"></rect>
+    {% endfor %}
+</svg>
+{% else %}
+<p{% if id %} id="{{ id }}"{% endif %} data-set-glyph-empty class="text-sm text-muted ">No coarse windows</p>
+{% endif %}
+{# The inspection marker: one vertical rule over the coarse-window CELL the timeline cursor is
+   inside. Positioned by cell ORDINAL rather than by elapsed fraction, because the glyph's
+   horizontal axis IS the coarse window ordinal -- a set whose coarse coverage has a hole would
+   otherwise mark a cell the cursor is not in. A time inside such a hole marks nothing at all.
+   `analysis_timeline.js` owns it; this macro guarantees it exists in BOTH branches. #}
+<span data-set-glyph-cursor class="set-glyph-cursor" hidden aria-hidden="true"></span>
+</span>
+{% endmacro %}
+
+{# phaze-x1qr3.7: the glyph's key. Twelve hue swatches (Camelot number + minor-key name, sharing
+   `camelot_hue` with `set_glyph` above), a four-step "Quiet -> Peak" lightness scale sharing
+   `energy_lightness`, and the segment count `set_glyph` rendered (0 on a fine-only file, where
+   the count itself is the honest signal that there is no strip to key). #}
+{% macro set_glyph_legend(cell_count, id='') %}
+<div{% if id %} id="{{ id }}"{% endif %} data-set-glyph-legend class="mt-2 flex flex-col gap-2 text-xs text-muted sm:flex-row sm:flex-wrap sm:items-center sm:gap-4">
+    <ul aria-label="Camelot key colors" class="flex flex-wrap gap-x-3 gap-y-1">
+        {% for number, key_name in camelot_legend %}
+        <li data-legend-swatch data-camelot-number="{{ number }}" class="flex items-center gap-1">
+            <span aria-hidden="true" class="inline-block h-3 w-3 rounded-sm" style="background-color: hsl({{ camelot_hue(number) }}, 65%, 45%)"></span>
+            <span>{{ number }}A · {{ key_name }}</span>
+        </li>
+        {% endfor %}
+    </ul>
+    <ul aria-label="Energy lightness scale, quiet to peak" class="flex items-center gap-1.5">
+        {% for step in range(energy_lightness_step_count) %}
+        {% set step_energy = step / (energy_lightness_step_count - 1) %}
+        <li data-legend-lightness-step data-step-index="{{ step }}" class="flex items-center gap-1">
+            <span aria-hidden="true" class="inline-block h-3 w-3 rounded-sm" style="background-color: hsl(0, 0%, {{ energy_lightness(step_energy) }}%)"></span>
+            {% if loop.first %}<span>Quiet</span>{% elif loop.last %}<span>Peak</span>{% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    <span data-legend-cell-count>{{ cell_count }} segment{{ '' if cell_count == 1 else 's' }}</span>
+</div>
+{% endmacro %}
+
 {% macro detail_drawer(id, title) %}
 <dialog id="{{ id }}" aria-labelledby="{{ id }}-title" onpointerdown="if (event.target === this) this.close()" class="m-0 ml-auto h-full max-h-none w-full max-w-md border-0 border-l border-gray-200 bg-white p-0 text-gray-900 shadow-xl backdrop:bg-black/40 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-100">
     <div class="flex h-full flex-col">

@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import false, select
+from sqlalchemy.orm import selectinload
 import structlog
 
 from phaze.enums.stage import Stage, Status
@@ -100,7 +101,11 @@ def _files_page_stmt(*, page: int, page_size: int, stage: Stage | None, bucket: 
     SAVEPOINT degrade path -- a propose/review/apply orphan is not a defined concept.
     """
     cols = [stage_status_case(s) for s in _FILES_PAGE_STAGES]
-    stmt = select(FileRecord, *cols)
+    # phaze-x1qr3.9: ONE extra `SELECT ... WHERE set_profile.file_id IN (...)` for the whole
+    # bounded page (selectinload, not a join on the correlated derivation above) -- never one
+    # query per row. `FileRecord.set_profile` is `lazy="noload"` (models/file.py), so without this
+    # every `row.file.set_profile` the template reads would raise, not silently N+1.
+    stmt = select(FileRecord, *cols).options(selectinload(FileRecord.set_profile))
     if stage is not None and bucket is not None:
         if bucket == ORPHANED_BUCKET:
             if stage in (Stage.METADATA, Stage.ANALYZE):

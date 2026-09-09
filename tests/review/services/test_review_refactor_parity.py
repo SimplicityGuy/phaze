@@ -138,10 +138,26 @@ def old_review() -> Iterator[ModuleType]:
 # Add to this dict ONLY for a rename that is deliberate, value-preserving, and recorded on a bead.
 _RENAMED_SINCE_PRE_REFACTOR = {"original_path": "current_path"}
 
+# phaze-x1qr3.9: a KEY the pre-refactor snapshot structurally cannot carry -- it predates the
+# ``SetProfile`` model and the row builders' ``set_profile`` field entirely, so no rename mapping
+# could ever make the two sides agree on it. Handled the same way as ``_RENAMED_SINCE_PRE_REFACTOR``
+# above and for the same reason: a named, auditable exception that keeps the raw ``==`` teeth on
+# every OTHER key, rather than weakening the assertion generally. Both call sites below assert the
+# NEW side actually carries this key (with the value the seeded fixtures make correct -- ``None``,
+# since neither seeds a ``SetProfile`` row) before stripping it for the equality comparison, so an
+# accidental drop of the field still fails loudly. Add to this set ONLY for a field that is new,
+# additive, and recorded on a bead -- never to paper over a real divergence.
+_ADDED_SINCE_PRE_REFACTOR = {"set_profile"}
+
 
 def _rekey(rows: list[dict[str, object]]) -> list[dict[str, object]]:
     """The pre-refactor rows, with deliberately-renamed keys spelled the way the new module spells them."""
     return [{_RENAMED_SINCE_PRE_REFACTOR.get(key, key): value for key, value in row.items()} for row in rows]
+
+
+def _strip_added(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    """The new module's rows, with post-refactor-added keys removed for the parity comparison."""
+    return [{key: value for key, value in row.items() if key not in _ADDED_SINCE_PRE_REFACTOR} for row in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +182,10 @@ async def test_changes_review_page_parity(
 
     assert old_page.stats == new_page.stats
     assert old_page.pagination == new_page.pagination
-    assert _rekey(old_page.rows) == new_page.rows
+    # phaze-x1qr3.9: the new side carries `set_profile` -- none of these seeded proposals' files
+    # have one, so it must be None on every row, never silently dropped.
+    assert all(row["set_profile"] is None for row in new_page.rows)
+    assert _rekey(old_page.rows) == _strip_added(new_page.rows)
 
 
 @pytest.mark.asyncio
@@ -232,7 +251,10 @@ async def test_tagwrite_review_page_parity(session: AsyncSession, old_review: Mo
     old_by_id = {row["file_id"]: row for row in old_page.rows}
     new_by_id = {row["file_id"]: row for row in new_page.rows}
     assert old_by_id.keys() == new_by_id.keys() == {fresh_id, discrepancy_id}
-    assert old_by_id == new_by_id
+    # phaze-x1qr3.9: the new side carries `set_profile` -- neither seeded file has one, so it must
+    # be None on every row, never silently dropped.
+    assert all(row["set_profile"] is None for row in new_page.rows)
+    assert old_by_id == {file_id: {k: v for k, v in row.items() if k not in _ADDED_SINCE_PRE_REFACTOR} for file_id, row in new_by_id.items()}
 
 
 # ---------------------------------------------------------------------------

@@ -16,10 +16,13 @@ import uuid  # noqa: TC003
 
 from fastapi import Depends, Request
 from fastapi.responses import HTMLResponse
+from sqlalchemy import select
 
 from phaze.config import settings
 from phaze.database import get_session
+from phaze.models.analysis import AnalysisWindow
 from phaze.models.file import FileRecord
+from phaze.models.metadata import FileMetadata
 
 # Kept a runtime import (phaze-oau1o): before the split this name had plain runtime uses elsewhere
 # in the module, and only `_enqueue_match_jobs`'s annotation survives here. Left as-is rather than
@@ -30,6 +33,7 @@ from phaze.routers.pipeline._common import _background_tasks, logger, router, te
 from phaze.routers.response_shape import RENDERABLE_ALERT_STATUS
 from phaze.services import enqueue_router
 from phaze.services.pipeline import get_match_pending_tracklists
+from phaze.services.track_segments import build_track_segments
 from phaze.services.tracklist_candidate_queue import DAILY_LOOKUP_CEILING
 from phaze.services.tracklist_drain_arm import arm_drain, disarm_drain, get_arm_state
 from phaze.services.tracklist_priority import flag_file_for_lookup, get_file_tracklist_review, unflag_file
@@ -41,6 +45,9 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from phaze.services.track_segments import TrackSegment
+    from phaze.services.tracklist_priority import FileTracklistReview
 
 
 # --- Bulk match tracklist endpoint (Phase 41, REQ-41-2) ---
@@ -123,6 +130,25 @@ async def trigger_match_tracklists_ui(
 # --- Per-file 1001Tracklists priority + review (phaze-fq9h.8) ---
 
 
+async def _track_segments_for(session: AsyncSession, file_id: uuid.UUID, review: FileTracklistReview | None) -> list[TrackSegment]:
+    """The per-track BPM / key / mood / energy columns for one file's tracklist fragment.
+
+    phaze-x1qr3.6. These three endpoints re-render the SAME fragment the record page renders, so
+    they owe it the same context: without this, clicking Refresh or Prioritize would swap a
+    tracklist whose four measurement columns had silently emptied -- the operator's own action
+    appearing to destroy data. Two extra reads on a single-file button click, which is the right
+    trade against that.
+
+    Returns an empty list for a vanished file or one with no tracklist; the template renders em
+    dashes, which is what those columns mean when there is nothing to join to.
+    """
+    if review is None or not review.tracks:
+        return []
+    windows = list((await session.execute(select(AnalysisWindow).where(AnalysisWindow.file_id == file_id))).scalars().all())
+    duration = (await session.execute(select(FileMetadata.duration).where(FileMetadata.file_id == file_id))).scalar_one_or_none()
+    return build_track_segments(review.tracks, windows, duration)
+
+
 def _vanished_file_review_response(request: Request, file_id: uuid.UUID) -> HTMLResponse:
     """The shared ``file_id`` vanished (concurrent ``delete_scan`` cascade or duplicate resolve) response.
 
@@ -136,7 +162,7 @@ def _vanished_file_review_response(request: Request, file_id: uuid.UUID) -> HTML
     return templates.TemplateResponse(
         request=request,
         name="record/partials/_tracklist_review_body.html",
-        context={"request": request, "file_id": file_id, "review": None, "just_queued": False, "just_refreshed": False},
+        context={"request": request, "file_id": file_id, "review": None, "just_queued": False, "just_refreshed": False, "track_segments": []},
         status_code=RENDERABLE_ALERT_STATUS,
     )
 
@@ -204,7 +230,14 @@ async def prioritize_tracklist_lookup_ui(
     return templates.TemplateResponse(
         request=request,
         name="record/partials/_tracklist_review_body.html",
-        context={"request": request, "file_id": file_id, "review": review, "just_queued": queued, "just_refreshed": False},
+        context={
+            "request": request,
+            "file_id": file_id,
+            "review": review,
+            "just_queued": queued,
+            "just_refreshed": False,
+            "track_segments": await _track_segments_for(session, file_id, review),
+        },
     )
 
 
@@ -256,7 +289,14 @@ async def refresh_tracklist_lookup_ui(
     return templates.TemplateResponse(
         request=request,
         name="record/partials/_tracklist_review_body.html",
-        context={"request": request, "file_id": file_id, "review": review, "just_queued": False, "just_refreshed": refreshed},
+        context={
+            "request": request,
+            "file_id": file_id,
+            "review": review,
+            "just_queued": False,
+            "just_refreshed": refreshed,
+            "track_segments": await _track_segments_for(session, file_id, review),
+        },
     )
 
 
@@ -284,7 +324,14 @@ async def unprioritize_tracklist_lookup_ui(
     return templates.TemplateResponse(
         request=request,
         name="record/partials/_tracklist_review_body.html",
-        context={"request": request, "file_id": file_id, "review": review, "just_queued": False, "just_refreshed": False},
+        context={
+            "request": request,
+            "file_id": file_id,
+            "review": review,
+            "just_queued": False,
+            "just_refreshed": False,
+            "track_segments": await _track_segments_for(session, file_id, review),
+        },
     )
 
 

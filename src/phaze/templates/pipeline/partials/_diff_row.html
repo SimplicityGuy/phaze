@@ -57,6 +57,15 @@
                          store_proposals upsert rewrote after this partial rendered. Undefined/None
                          (the Tag facet, whose approve_url is unrelated) renders an empty token, which
                          the route treats as "no guard" -- byte-identical to every pre-phaze-exivg caller.
+     * profile        -- (phaze-x1qr3.9, optional) the row's file's ``SetProfile`` (or ``None``/
+                         undefined). Undefined/falsy renders the filename cell BYTE-IDENTICAL to a
+                         caller that never mentions this key (no placeholder strip) -- both
+                         ``_changes_list.html`` bindings pass it (``p.set_profile`` / ``f.set_profile``,
+                         both eager-loaded, never a per-row query); the single-row swap responses in
+                         ``routers/proposals.py`` and ``routers/tags.py`` do not pass it, so an
+                         approve/undo/edit swap degrades to no glyph rather than an N+1 fetch.
+                         Renders through the SAME ``ui/primitives.html`` ``set_glyph`` macro every
+                         other glyph surface uses, at the row-scale 10px (``h-2.5``) height.
 
    Trust boundary: every before/after/file cell is autoescaped by Jinja and is NEVER rendered raw or
    unescaped -- DB-sourced filenames/paths cross into rendered HTML (T-60-XSS). Colour is a static
@@ -65,13 +74,14 @@
    second poll and is never an out-of-band swap target (R-2 counts-only -- the chrome poll must never
    re-render this subtree, so an in-progress inline edit is never clobbered).
 #}
+{% import "ui/primitives.html" as ui %}
 {% set _primary = 'inline-flex items-center justify-center h-7 px-2.5 rounded-md bg-action-ok/90 hover:bg-action-ok-hover text-white font-jura text-[11px] font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-emerald-500' %}
 {% set _sec = 'inline-flex items-center justify-center h-7 px-2.5 rounded-md border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-[11px] font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500' %}
 <div id="{{ row_id_prefix }}-{{ pid }}"
      class="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5{% if row_state and row_state != 'pending' %} opacity-70{% endif %}"
      x-data='{ editing:false, val:{{ after|tojson }} }'>
     <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div class="min-w-0 truncate text-sm text-gray-900 dark:text-gray-200" title="{{ file_tooltip }}">{{ file }}</div>
+        <div class="min-w-0 truncate text-sm text-gray-900 dark:text-gray-200" title="{{ file_tooltip }}">{{ file }}{% if profile is defined and profile %} <span class="inline-block h-2.5 w-10 align-middle">{{ ui.set_glyph(profile, height_class='h-2.5') }}</span>{% endif %}</div>
         {% if row_state and row_state != 'pending' %}
         {# Applied/approved/skipped lifecycle (Pattern 6): status word + neutral UNDO (never destructive-red).
            'skipped' (a rejected row) is a neutral-gray word; approved/applied stay emerald. #}
