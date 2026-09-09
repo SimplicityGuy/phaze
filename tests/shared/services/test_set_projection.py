@@ -29,8 +29,11 @@ from phaze.services.set_projection import (
     build_profile,
     camelot_code,
     energy,
+    flicker_filtered_key_runs,
     harmonic_discipline,
+    key_name_for_camelot,
     positive_class_vector,
+    wheel_adjacent,
 )
 from tests.analyze._real_result import real_analysis_result
 
@@ -507,3 +510,69 @@ def test_harmonic_discipline_counts_a_real_wheel_adjacent_change_as_fully_discip
 def test_harmonic_discipline_is_none_without_any_usable_camelot_data() -> None:
     windows = _fine_camelot_windows([])
     assert harmonic_discipline(windows) is None
+
+
+# ---------------------------------------------------------------------------
+# phaze-x1qr3.8: the flicker filter as RUNS, the public adjacency predicate, and the
+# key-name inversion the record sidebar names a modal code with.
+# ---------------------------------------------------------------------------
+
+
+def test_flicker_filtered_key_runs_carries_the_time_each_surviving_run_occupied() -> None:
+    """The wheel needs when a run happened and how long it lasted, not only its code."""
+    runs = flicker_filtered_key_runs(_fine_camelot_windows(["8A", "8A", "9A", "9A", "9A"]))
+
+    assert [(run.code, run.start_sec, run.end_sec, run.window_count) for run in runs] == [
+        ("8A", 0.0, 60.0, 2),
+        ("9A", 60.0, 150.0, 3),
+    ]
+    assert [run.dwell_sec for run in runs] == [60.0, 90.0]
+
+
+def test_a_dropped_blip_is_absorbed_into_the_run_that_closes_over_it() -> None:
+    """Merging two survivors across a dropped one-window blip spans the blip's own time.
+
+    The blip is noise INSIDE a continuous run, so the merged run's extent covers it -- reporting
+    a gap there would claim the set left the key for 30 seconds, which is exactly the reading
+    the flicker filter exists to refuse.
+    """
+    runs = flicker_filtered_key_runs(_fine_camelot_windows(["8A", "8A", "3A", "8A", "8A"]))
+
+    assert len(runs) == 1
+    assert (runs[0].code, runs[0].start_sec, runs[0].end_sec, runs[0].window_count) == ("8A", 0.0, 150.0, 4)
+
+
+def test_a_window_with_no_camelot_neither_breaks_a_run_nor_extends_it() -> None:
+    """An unresolved key is a gap in MEASUREMENT, never a measured key change."""
+    windows = _fine_camelot_windows(["8A", "8A", "8A", "8A"])
+    windows[2].camelot = None
+
+    runs = flicker_filtered_key_runs(windows)
+
+    assert [(run.code, run.window_count) for run in runs] == [("8A", 3)]
+
+
+def test_flicker_filtered_key_runs_is_empty_without_any_usable_camelot_data() -> None:
+    assert flicker_filtered_key_runs([]) == []
+    assert flicker_filtered_key_runs(_fine_camelot_windows(["8A"])) == [], "a lone window is a blip, not a run"
+
+
+def test_wheel_adjacent_is_false_for_a_code_it_cannot_place_rather_than_raising() -> None:
+    """It runs on a render path, so an off-wheel value is an answer, never a ValueError."""
+    assert wheel_adjacent("8A", "9A") is True
+    assert wheel_adjacent("12A", "1A") is True, "the wheel wraps"
+    assert wheel_adjacent("8A", "8B") is True, "the relative major/minor pair"
+    assert wheel_adjacent("XX", "8A") is False
+    assert wheel_adjacent("8A", "") is False
+
+
+def test_key_name_for_camelot_inverts_the_table_and_gaps_stay_gaps() -> None:
+    """One inversion, shared by the tracklist rows and the record sidebar's Modal key fact."""
+    assert key_name_for_camelot("8A") == "A minor"
+    assert key_name_for_camelot("12B") == "E major"
+    assert key_name_for_camelot(None) is None
+    assert key_name_for_camelot("") is None
+    assert key_name_for_camelot("99Z") is None
+    # Every one of the 24 codes names exactly one key, and no two codes share a name.
+    names = [key_name_for_camelot(code) for code in CAMELOT_TABLE.values()]
+    assert len(set(names)) == len(CAMELOT_TABLE)

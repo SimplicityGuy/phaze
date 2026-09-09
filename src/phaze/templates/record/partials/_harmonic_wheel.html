@@ -1,0 +1,63 @@
+{# phaze-x1qr3.8: the harmonic journey -- the set's key path drawn on the Camelot wheel.
+
+   Server-rendered and static: every coordinate is a rounded float computed by
+   `services/harmonic_journey.build_harmonic_journey`, so this template interpolates numbers
+   into numeric SVG attributes and never label text into path or style syntax. There is no
+   script here and no polling; the record is a SNAPSHOT (D-02).
+
+   The sector tints call `camelot_hue` -- the same Jinja global `ui/primitives.html`'s
+   `set_glyph` and `set_glyph_legend` render from -- so Camelot position 8 is one colour on the
+   glyph, in its legend, and on this wheel. The hue arrives already resolved on the sector, from
+   that same function; the call is not repeated here.
+
+   The wheel's twelve sectors are drawn in BOTH branches. They are the frame of reference, not
+   data: a file with no key runs gets the wheel with nothing plotted on it plus a text
+   alternative saying so, which reads as "no key path here" rather than as a broken component. #}
+<section data-harmonic-journey class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel" aria-labelledby="harmonic-journey-heading">
+    <p id="harmonic-journey-heading" class="font-jura text-[11px] font-medium uppercase tracking-wider text-muted ">Harmonic journey</p>
+    <svg data-harmonic-wheel
+         viewBox="0 0 {{ harmonic_journey.canvas }} {{ harmonic_journey.canvas }}"
+         class="mx-auto mt-3 block h-auto w-full max-w-64"
+         role="img"
+         aria-label="{% if harmonic_journey.has_journey %}Camelot wheel. {{ harmonic_journey.caption }}{% else %}Camelot wheel with no key path: this file has no analyzed key data.{% endif %}">
+        <g data-wheel-sectors>
+            {% for sector in harmonic_journey.sectors %}
+            <path data-wheel-sector data-camelot-number="{{ sector.number }}" d="{{ sector.path }}"
+                  fill="hsl({{ sector.hue }}, 65%, 45%)" fill-opacity="0.22" stroke="hsl({{ sector.hue }}, 65%, 45%)" stroke-opacity="0.4" stroke-width="0.5"></path>
+            <text data-wheel-sector-label x="{{ sector.label_x }}" y="{{ sector.label_y }}" text-anchor="middle" dominant-baseline="middle"
+                  font-size="9" class="fill-gray-600 dark:fill-gray-300">{{ sector.number }}</text>
+            {% endfor %}
+        </g>
+        {% if harmonic_journey.has_journey %}
+        {# Edges first, so a node always paints over the lines that meet it. An ADJACENT move is
+           the accent the rest of the record uses for its own controls; a JUMP is the review
+           amber and is dashed, so the two are distinguishable without colour as well as with
+           it -- the same "never colour alone" rule the timeline's lanes follow. #}
+        <g data-journey-edges fill="none" stroke-width="2" stroke-linecap="round">
+            {% for edge in harmonic_journey.edges %}
+            <line data-journey-edge data-edge-kind="{{ edge.kind }}" data-edge-at="{{ edge.at_sec }}"
+                  x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}"
+                  {% if not edge.adjacent %}stroke-dasharray="5 4" class="stroke-amber-500"{% else %}class="stroke-cyan-700"{% endif %}>
+                <title>{{ edge.label }} at {{ edge.at_label }}{{ ' (jump)' if not edge.adjacent else '' }}</title>
+            </line>
+            {% endfor %}
+        </g>
+        {# One node per surviving key run. Radius encodes dwell by AREA (see the service), so a
+           set that sat in one key for an hour cannot read the same as one that passed through. #}
+        <g data-journey-nodes>
+            {% for node in harmonic_journey.nodes %}
+            <circle data-journey-node data-camelot-code="{{ node.code }}" data-camelot-number="{{ node.number }}" data-node-index="{{ node.index }}"
+                    cx="{{ node.cx }}" cy="{{ node.cy }}" r="{{ node.r }}"
+                    fill="hsl({{ node.hue }}, 65%, 45%)" stroke="currentColor" stroke-width="1" class="text-gray-900 dark:text-gray-100">
+                <title>{{ node.code }} from {{ node.start_label }}, held {{ node.dwell_label }}</title>
+            </circle>
+            {% endfor %}
+        </g>
+        {% endif %}
+    </svg>
+    {% if harmonic_journey.has_journey %}
+    <p data-harmonic-caption class="mt-3 text-xs text-muted ">{{ harmonic_journey.caption }}</p>
+    {% else %}
+    <p data-harmonic-journey-empty class="mt-3 text-xs text-muted ">No analyzed key data for this file, so there is no harmonic journey to draw.</p>
+    {% endif %}
+</section>

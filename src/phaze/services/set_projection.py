@@ -154,7 +154,25 @@ def camelot_code(musical_key: str | None) -> str | None:
     return CAMELOT_TABLE.get(canonical)
 
 
-def _camelot_number(code: str | None) -> int | None:
+# ``CAMELOT_TABLE`` is a bijection (24 distinct key names onto 24 distinct wheel positions), so
+# it inverts without loss. Inverted ONCE here, at import time, rather than re-derived per call or
+# per surface -- ``services/track_segments.py`` and the record page's facts list both read this.
+_CAMELOT_TO_KEY: Final[dict[str, str]] = {code: key for key, code in CAMELOT_TABLE.items()}
+
+
+def key_name_for_camelot(code: str | None) -> str | None:
+    """The canonical key name for a Camelot code ("8A" -> "A minor"), or ``None``.
+
+    The name a code maps back to is always that code's own SHARP-spelled canonical name, never
+    one of its enharmonic twins: essentia's flat spellings normalise onto a canonical string on
+    the way in (:func:`camelot_code`), so the inverse has exactly one answer per code.
+    """
+    if not code:
+        return None
+    return _CAMELOT_TO_KEY.get(code)
+
+
+def camelot_number(code: str | None) -> int | None:
     """The numeric 1-12 half of a Camelot code (its wheel position, ignoring A/B mode)."""
     if not code or len(code) < 2:
         return None
@@ -164,15 +182,25 @@ def _camelot_number(code: str | None) -> int | None:
         return None
 
 
-def _wheel_adjacent(a: str, b: str) -> bool:
+def wheel_adjacent(a: str, b: str) -> bool:
     """Two Camelot codes are wheel-adjacent for harmonic mixing purposes when either:
 
     - they share a letter (mode) and their numbers are a semitone step apart on the 12-hour
       wheel (``(na - nb) % 12`` is 1 or 11, i.e. +/-1 with wraparound); or
     - they share a number and differ in letter (the relative major/minor pair).
+
+    Public since ``phaze-x1qr3.8``: the harmonic-journey wheel colours each EDGE by this same
+    predicate that :func:`harmonic_discipline` counts with, so an edge drawn as a jump and the
+    percentage in the caption beside it can never disagree about what "adjacent" means.
+
+    A code either side cannot be parsed as ``<1-12><A|B>`` is not adjacent to anything -- the
+    honest answer for a value outside the wheel, and never a raised ``ValueError`` on a render
+    path.
     """
-    na, la = int(a[:-1]), a[-1]
-    nb, lb = int(b[:-1]), b[-1]
+    na, nb = camelot_number(a), camelot_number(b)
+    if na is None or nb is None:
+        return False
+    la, lb = a[-1], b[-1]
     if la == lb:
         return (na - nb) % 12 in (1, 11)
     return na == nb
@@ -437,34 +465,68 @@ def _glyph_cells(coarse_windows: Sequence[AnalysisWindow], fine_windows: Sequenc
     cells: list[dict[str, int | float | None]] = []
     for window in sorted(coarse_windows, key=lambda w: (w.window_index, w.start_sec)):
         overlapping = [f for f in fine_windows if f.camelot and f.start_sec < window.end_sec and f.end_sec > window.start_sec]
-        cells.append({"camelot_number": _camelot_number(modal_camelot(overlapping)), "energy": window.energy})
+        cells.append({"camelot_number": camelot_number(modal_camelot(overlapping)), "energy": window.energy})
     return cells
 
 
-def _flicker_filtered_runs(values: Sequence[str]) -> list[str]:
-    """Run-length encode ``values``, drop runs shorter than 2, then collapse re-adjacent duplicates.
+@dataclass(frozen=True)
+class KeyRun:
+    """One surviving key run of the flicker-filtered sequence, with the time it occupied.
+
+    ``phaze-x1qr3.8``. :func:`harmonic_discipline` only ever needed the CODES; the harmonic
+    journey wheel needs the same runs plus when each one happened and how long it lasted, so
+    the filter now returns runs and the discipline figure is derived from them. One filter,
+    two readers -- the wheel's node count and the discipline percentage it captions can never
+    be computed from two different filtered sequences.
+
+    ``window_count`` is the number of fine windows the run absorbed (including any blip
+    windows dropped INSIDE it by the merge below, which are noise within a continuous run
+    rather than coverage of their own). ``dwell_sec`` is the run's wall extent, which is what
+    sizes its node -- a run of two 30 s windows and a run of forty read very differently and
+    must not draw the same dot.
+    """
+
+    code: str
+    start_sec: float
+    end_sec: float
+    window_count: int
+
+    @property
+    def dwell_sec(self) -> float:
+        """Non-negative wall extent of the run. Zero (never negative) on degenerate bounds."""
+        return max(0.0, self.end_sec - self.start_sec)
+
+
+def flicker_filtered_key_runs(fine_windows: Sequence[AnalysisWindow]) -> list[KeyRun]:
+    """Run-length encode ``camelot`` over ordered fine windows, drop 1-window runs, re-merge.
 
     "A key run shorter than two fine windows is not a transition": a single-window blip
     (``[..., "8A", "3A", "8A", ...]``) is dropped as noise rather than counted as two
     transitions, so the surrounding run reads as continuous. Dropping it can bring two equal
     survivors back together (``8A`` on both sides of the dropped ``3A``), which the final
-    collapse pass merges into one run -- or it can bring two DIFFERENT survivors together
-    (``8A`` .. dropped .. ``9A``), which correctly becomes one direct transition.
+    merge pass joins into ONE run spanning the blip -- or it can bring two DIFFERENT survivors
+    together (``8A`` .. dropped .. ``9A``), which correctly becomes one direct transition.
+
+    Windows with no ``camelot`` are absent from the sequence entirely; they neither break a
+    run nor extend one, because "no key was resolved here" is a gap in measurement rather than
+    a measured key change.
     """
-    if not values:
-        return []
-    runs: list[list[str | int]] = []
-    for value in values:
-        if runs and runs[-1][0] == value:
-            runs[-1][1] = int(runs[-1][1]) + 1
+    ordered = sorted((w for w in fine_windows if w.camelot), key=lambda w: (w.window_index, w.start_sec))
+    encoded: list[list[Any]] = []
+    for window in ordered:
+        if encoded and encoded[-1][0] == window.camelot:
+            encoded[-1][2] = max(float(encoded[-1][2]), window.end_sec)
+            encoded[-1][3] = int(encoded[-1][3]) + 1
         else:
-            runs.append([value, 1])
-    survivors = [str(value) for value, length in runs if int(length) >= 2]
-    collapsed: list[str] = []
-    for value in survivors:
-        if not collapsed or collapsed[-1] != value:
-            collapsed.append(value)
-    return collapsed
+            encoded.append([window.camelot, window.start_sec, window.end_sec, 1])
+    merged: list[list[Any]] = []
+    for code, start, end, count in (run for run in encoded if int(run[3]) >= 2):
+        if merged and merged[-1][0] == code:
+            merged[-1][2] = max(float(merged[-1][2]), float(end))
+            merged[-1][3] = int(merged[-1][3]) + int(count)
+        else:
+            merged.append([code, start, end, count])
+    return [KeyRun(code=str(code), start_sec=float(start), end_sec=float(end), window_count=int(count)) for code, start, end, count in merged]
 
 
 def harmonic_discipline(fine_windows: Sequence[AnalysisWindow]) -> float | None:
@@ -473,16 +535,19 @@ def harmonic_discipline(fine_windows: Sequence[AnalysisWindow]) -> float | None:
     ``None`` when there is no usable ``camelot`` sequence at all. ``1.0`` when the filtered
     sequence never actually changes key (zero transitions is the trivial "fully disciplined"
     case -- there is nothing non-adjacent happening). Otherwise the fraction of the filtered
-    transitions that are wheel-adjacent (see :func:`_wheel_adjacent`).
+    transitions that are wheel-adjacent (see :func:`wheel_adjacent`).
+
+    Derived from :func:`flicker_filtered_key_runs` rather than from a filter of its own, so
+    this number and the harmonic-journey wheel that captions it always describe the same
+    sequence of runs.
     """
-    ordered = sorted((w for w in fine_windows if w.camelot), key=lambda w: (w.window_index, w.start_sec))
-    survivors = _flicker_filtered_runs([w.camelot for w in ordered if w.camelot is not None])
+    survivors = [run.code for run in flicker_filtered_key_runs(fine_windows)]
     if not survivors:
         return None
     transitions = list(itertools.pairwise(survivors))
     if not transitions:
         return 1.0
-    adjacent = sum(1 for a, b in transitions if _wheel_adjacent(a, b))
+    adjacent = sum(1 for a, b in transitions if wheel_adjacent(a, b))
     return adjacent / len(transitions)
 
 
@@ -527,11 +592,16 @@ __all__ = [
     "ENERGY_WEIGHTS",
     "GAP_TOLERANCE_SEC",
     "MOOD_ORDER",
+    "KeyRun",
     "SetProfileProjection",
     "build_profile",
     "camelot_code",
+    "camelot_number",
     "energy",
+    "flicker_filtered_key_runs",
     "harmonic_discipline",
+    "key_name_for_camelot",
     "modal_camelot",
     "positive_class_vector",
+    "wheel_adjacent",
 ]

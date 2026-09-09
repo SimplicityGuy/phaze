@@ -30,7 +30,17 @@
     </header>
     <main id="record-main" class="mx-auto max-w-7xl py-6">
     {% if file %}
-        <article data-file-id="{{ file.id }}" aria-labelledby="record-title" class="overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-bg">
+        {# phaze-x1qr3.8: the full page's two-column layout. `lg:` is Tailwind's 1024px breakpoint,
+           so at and above 1024px the sidebar sits beside the main column and BELOW it the grid
+           collapses to one column and the sidebar stacks underneath -- the responsive baseline in
+           docs/design/0009-responsive-accessibility-baseline.md, and the source order (main
+           column first) is already the reading order, so nothing has to be re-ordered visually.
+           `minmax(0,1fr)` on the main track, not `1fr`: a grid item's default `min-width:auto`
+           would let the timeline's own wide scroller push the track wider than the viewport and
+           scroll the whole page sideways. The sidebar is page-only -- the drawer has no room for
+           it and renders none. #}
+        <div class="grid grid-cols-1 gap-6 px-4 sm:px-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <article data-file-id="{{ file.id }}" aria-labelledby="record-title" class="min-w-0 overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-phaze-border dark:bg-phaze-bg">
             <header class="border-b border-gray-200 px-6 py-5 dark:border-phaze-border">
                 <h1 id="record-title" class="break-words font-jura text-xl uppercase tracking-[0.15em] text-gray-900 dark:text-gray-100">{{ file.original_filename }}</h1>
                 <p class="mt-1 break-all font-mono text-xs text-muted">{{ file.current_path }}</p>
@@ -46,6 +56,22 @@
             </header>
             {% include "record/_record_content.html" %}
         </article>
+        <aside data-record-sidebar aria-label="File facts and harmonic journey" class="min-w-0 space-y-6 lg:sticky lg:top-6 lg:self-start">
+            <section data-record-facts-panel class="rounded-xl border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-bg" aria-labelledby="record-facts-heading">
+                <p id="record-facts-heading" class="font-jura text-[11px] font-medium uppercase tracking-wider text-muted ">Facts</p>
+                <div class="mt-2">{% include "record/partials/_record_facts.html" %}</div>
+            </section>
+            {% include "record/partials/_harmonic_wheel.html" %}
+            {# The "more like this set" slot. It renders as an explicitly EMPTY slot rather than
+               being omitted: the layout reserves the space the neighbour-search bead fills, and
+               an empty slot that says why is honest, where a silently absent one would read as a
+               feature that failed to load. #}
+            <section data-more-like-this class="rounded-xl border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-bg" aria-labelledby="more-like-this-heading">
+                <p id="more-like-this-heading" class="font-jura text-[11px] font-medium uppercase tracking-wider text-muted ">More like this set</p>
+                <p class="mt-2 text-xs text-muted ">Nearest-neighbour sets are not available yet.</p>
+            </section>
+        </aside>
+        </div>
     {% else %}
         <section data-record-not-found class="mx-4 rounded-xl border border-gray-200 bg-gray-50 px-6 py-20 text-center dark:border-phaze-border dark:bg-phaze-panel sm:mx-6">
             <h1 class="font-jura text-lg uppercase tracking-[0.15em] text-gray-800 dark:text-gray-100">That file no longer exists.</h1>
