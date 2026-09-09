@@ -1,0 +1,30 @@
+{# phaze-x1qr3.8: the record's eight facts as a definition list. Built by
+   `services/record_facts.build_record_facts` -- the template's whole job is the loop, because
+   four of the eight (windows coverage, median BPM, modal key, dominant mood/style) are
+   derivations, and a derivation written in Jinja is one nothing can test.
+
+   Rendered in TWO places and deliberately not inside `_record_content.html`: the full page puts
+   it in the right sidebar, the drawer -- which has no sidebar -- puts it in its own header
+   block. Keeping it out of the shared content partial is what lets both presentations render
+   the identical `[data-record-content]` subtree (test_record_full_page.py asserts that text
+   equality) while the facts still appear in each.
+
+   `tone` arrives as an intent name and is mapped to a semantic utility here, so every class
+   string stays a literal in the markup -- Tailwind's `@source` scan and the a11y guard's
+   semantic-token rule both read this file, not the service. #}
+{% set _fact_tones = {
+    'ok': 'text-ok ',
+    'info': 'text-info ',
+    'warn': 'text-warn ',
+    'unknown': 'text-gray-600 dark:text-gray-300',
+    'neutral': 'text-gray-900 dark:text-gray-200'
+} %}
+<dl data-record-facts class="divide-y divide-gray-200 dark:divide-phaze-border">
+    {% for fact in record_facts %}
+    <div data-record-fact class="flex items-baseline justify-between gap-3 py-2">
+        <dt class="shrink-0 font-jura text-[11px] font-medium uppercase tracking-wider text-muted ">{{ fact.label }}</dt>
+        <dd class="min-w-0 truncate text-right text-sm {{ 'font-mono text-xs' if fact.mono else '' }} {{ _fact_tones.get(fact.tone, _fact_tones.neutral) }}"
+            {% if fact.title %}title="{{ fact.title }}"{% endif %}>{% if fact.glyph %}{{ fact.glyph }} {% endif %}{{ fact.value }}</dd>
+    </div>
+    {% endfor %}
+</dl>

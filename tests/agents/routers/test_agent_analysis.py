@@ -17,7 +17,7 @@ import uuid
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import func as sa_func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
 
 from phaze.config import ControlSettings
@@ -242,7 +242,10 @@ async def test_analysis_put_replay_bumps_updated_at_not_created_at(seed_test_age
     await session.execute(update(AnalysisResult).where(AnalysisResult.file_id == file_id).values(created_at=outage_time, updated_at=outage_time))
     await session.commit()
 
-    before_reupsert = datetime.now(UTC)
+    # phaze-30ssq: read the reference from the SAME TRANSACTION as the write -- func.now() is
+    # transaction-start time, not the Python wall clock -- rather than a wall-clock read plus a
+    # slack fudge that fails whenever the suite is slow enough to blow it.
+    before_reupsert = (await session.execute(select(sa_func.now()))).scalar_one()
 
     async with _make_client(session, raw_token) as ac:
         r2 = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"bpm": 125.0})
@@ -253,9 +256,7 @@ async def test_analysis_put_replay_bumps_updated_at_not_created_at(seed_test_age
     assert row.bpm == 125.0
     assert row.created_at == outage_time, "created_at must stay pinned to the first-write value"
     assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
-    assert row.updated_at >= before_reupsert - timedelta(seconds=5), (
-        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
-    )
+    assert row.updated_at >= before_reupsert, "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
 
 
 @pytest.mark.asyncio
@@ -983,7 +984,10 @@ async def test_progress_post_bump_bumps_updated_at_not_created_at(
     await session.execute(update(AnalysisResult).where(AnalysisResult.file_id == file_id).values(created_at=outage_time, updated_at=outage_time))
     await session.commit()
 
-    before_bump = datetime.now(UTC)
+    # phaze-30ssq: read the reference from the SAME TRANSACTION as the write -- func.now() is
+    # transaction-start time, not the Python wall clock -- rather than a wall-clock read plus a
+    # slack fudge that fails whenever the suite is slow enough to blow it.
+    before_bump = (await session.execute(select(sa_func.now()))).scalar_one()
 
     async with _make_client(session, raw_token) as ac:
         r_bump = await ac.post(
@@ -997,9 +1001,7 @@ async def test_progress_post_bump_bumps_updated_at_not_created_at(
     assert row.fine_windows_analyzed == 17
     assert row.created_at == outage_time, "created_at must stay pinned to the first-write value"
     assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
-    assert row.updated_at >= before_bump - timedelta(seconds=5), (
-        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
-    )
+    assert row.updated_at >= before_bump, "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
 
 
 @pytest.mark.asyncio

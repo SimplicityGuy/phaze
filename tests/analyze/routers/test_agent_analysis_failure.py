@@ -263,7 +263,10 @@ async def test_report_failed_repeat_bumps_updated_at_not_created_at(seed_test_ag
     await session.execute(update(AnalysisResult).where(AnalysisResult.file_id == file_id).values(created_at=outage_time, updated_at=outage_time))
     await session.commit()
 
-    before_repeat = datetime.now(UTC)
+    # phaze-30ssq: read the reference from the SAME TRANSACTION as the write -- func.now() is
+    # transaction-start time, not the Python wall clock -- rather than a wall-clock read plus a
+    # slack fudge that fails whenever the suite is slow enough to blow it.
+    before_repeat = (await session.execute(select(sa_func.now()))).scalar_one()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
         second = await ac.post(f"/api/internal/agent/analysis/{file_id}/failed", json={"reason": "crashed", "error": "second crash"})
@@ -274,9 +277,7 @@ async def test_report_failed_repeat_bumps_updated_at_not_created_at(seed_test_ag
     assert row.error_message == "crashed: second crash"
     assert row.created_at == outage_time, "created_at must stay pinned to the first-write value"
     assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
-    assert row.updated_at >= before_repeat - timedelta(seconds=5), (
-        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
-    )
+    assert row.updated_at >= before_repeat, "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
 
 
 # ---------------------------------------------------------------------------

@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast as type_cast
 import uuid
 
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,10 +34,17 @@ from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.models.set_profile import SetProfile
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.services.agent_liveness import non_local_backend_kinds
 from phaze.services.analysis_timeline import build_analysis_timeline_context
+from phaze.services.harmonic_journey import build_harmonic_journey
 from phaze.services.pipeline import derive_file_lane, get_file_orphan_details, get_file_stage_buckets
+from phaze.services.poster import build_poster_layout, build_poster_title, poster_track_rows
+from phaze.services.record_facts import build_record_facts
+from phaze.services.set_glyph_colors import CAMELOT_LEGEND, ENERGY_LIGHTNESS_STEP_COUNT, camelot_hue, energy_lightness
+from phaze.services.set_similarity import find_similar_sets
+from phaze.services.track_segments import build_track_segments
 from phaze.services.tracklist_priority import get_file_tracklist_review
 from phaze.web.static import static_asset_url
 
@@ -49,6 +56,12 @@ if TYPE_CHECKING:
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.globals["static_url"] = static_asset_url
+# phaze-x1qr3.7: the set glyph macros' shared Camelot-hue / energy-lightness formulas (see
+# services/set_glyph_colors.py) and the legend's fixed 12-entry key table / 4-step scale length.
+templates.env.globals["camelot_hue"] = camelot_hue
+templates.env.globals["energy_lightness"] = energy_lightness
+templates.env.globals["camelot_legend"] = CAMELOT_LEGEND
+templates.env.globals["energy_lightness_step_count"] = ENERGY_LIGHTNESS_STEP_COUNT
 router = APIRouter(tags=["record"])
 
 
@@ -201,18 +214,77 @@ async def build_file_record_context(
     # above, so this can never legitimately come back None here.
     tracklist_review = await get_file_tracklist_review(session, file_id)
 
+    # phaze-x1qr3.6: the tracklist as an INDEX into the window projection -- consecutive scraped
+    # timestamps become time segments, each carrying the median BPM, modal key, argmax mood and
+    # mean energy of the windows inside it. Built here rather than in the template because the
+    # timeline's boundary ticks (phaze-x1qr3.5) read the same segments: one join, two surfaces,
+    # so a tick and a table row can never disagree about where a track starts. An empty list is
+    # the whole answer for a file with no tracklist or no timestamps.
+    track_segments = build_track_segments(
+        tracklist_review.tracks if tracklist_review is not None else (),
+        windows,
+        metadata_row.duration if metadata_row is not None else None,
+    )
+
     lane, lane_kind = await _load_lane(session, file_id)
+
+    # phaze-x1qr3.7: the cached set glyph + the set's key, rendered under the title on the full
+    # page. `file_id` is `SetProfile`'s primary key (1:1 with files), so a direct get -- no join,
+    # no ordering. `None` on a file never analyzed to completion, or one predating the projection
+    # backfill; the glyph macro renders "No coarse windows" for that the same as a fine-only file.
+    set_profile = await session.get(SetProfile, file_id)
+
+    # phaze-x1qr3.8: the timeline context is built ONCE and the sidebar reads from it -- the
+    # facts list's Duration is the timeline's own analyzed extent and its Windows row is the
+    # coverage chip's own sentence, so the sidebar cannot claim a length or a coverage the
+    # picture beside it does not show.
+    timeline_context = build_analysis_timeline_context(windows, analysis=analysis, track_segments=track_segments)
+    coverage_chip = timeline_context["coverage_chip"]
+    record_facts = build_record_facts(
+        file_type=file.file_type,
+        sha256_hash=file.sha256_hash,
+        total_sec=type_cast("float", timeline_context["total_sec"]),
+        lane=lane,
+        lane_kind=lane_kind,
+        coverage_text=type_cast("str | None", coverage_chip["text"] if isinstance(coverage_chip, dict) else None),
+        windows=windows,
+        camelot_modal=set_profile.camelot_modal if set_profile is not None else None,
+    )
+
+    # phaze-x1qr3.8: the harmonic journey wheel, built from the FINE windows' stored `camelot`
+    # column through the same flicker filter `harmonic_discipline` counts with. A file with no
+    # key data yields a wheel with no nodes, which the partial renders as an empty wheel plus a
+    # text alternative -- never an absent component.
+    harmonic_journey = build_harmonic_journey([window for window in windows if window.tier == "fine"])
+
+    # phaze-x1qr3.11: the sidebar's "more like this set" slot -- deterministic similarity over
+    # every other file's set_profile row, scored against THIS file's already-loaded profile,
+    # bpm, style and mood (no second read of file_id's own data; see
+    # set_similarity.find_similar_sets).
+    similar_sets = await find_similar_sets(
+        session,
+        file_id,
+        set_profile,
+        analysis.bpm if analysis is not None else None,
+        analysis.style if analysis is not None else None,
+        analysis.mood if analysis is not None else None,
+    )
 
     return {
         "file": file,
         "stage_buckets": stage_buckets,
         "analysis": analysis,
         "file_id": file_id,
-        **build_analysis_timeline_context(windows),
+        "set_profile": set_profile,
+        "similar_sets": similar_sets,
+        **timeline_context,
+        "record_facts": record_facts,
+        "harmonic_journey": harmonic_journey,
         "pending_rows": pending_rows,
         "identity": identity,
         "history": history,
         "tracklist_review": tracklist_review,
+        "track_segments": track_segments,
         "lane": lane,
         "lane_kind": lane_kind,
         "stage_failure_reasons": stage_failure_reasons,
@@ -263,3 +335,36 @@ async def file_record_page(
         name="record/record_page.html",
         context={**context, "request": request, "record_presentation": "page"},
     )
+
+
+@router.get("/files/{file_id}/poster.svg")
+async def file_poster_svg(
+    file_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Render the one-page printable poster: the energy arc, the Camelot wheel, the tracklist.
+
+    Read-only (``phaze-x1qr3.13``): nothing is moved, tagged or written. Composes the SAME
+    ``build_file_record_context`` every other record presentation renders from -- so a poster can
+    never show an energy arc, a wheel or a tracklist that disagrees with the page beside it -- and
+    hands it to a dedicated SVG template rather than to a drawer/full-page HTML partial, neither of
+    which is a single self-contained document (both mix HTML layout around their SVG lanes).
+    """
+    context = await build_file_record_context(file_id, session)
+    if context is None:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    file = type_cast("FileRecord", context["file"])
+    tracklist_review = context["tracklist_review"]
+    tracklist = tracklist_review.tracklist if tracklist_review is not None else None
+    track_rows = poster_track_rows(context["track_segments"])
+    display_filename = file.original_filename_repaired or file.original_filename
+    svg = templates.get_template("record/poster.svg").render(
+        {
+            **context,
+            "poster": build_poster_layout(len(track_rows)),
+            "poster_title": build_poster_title(display_filename, tracklist),
+            "poster_track_rows": track_rows,
+        }
+    )
+    return Response(content=svg, media_type="image/svg+xml")

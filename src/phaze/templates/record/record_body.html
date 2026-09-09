@@ -1,6 +1,8 @@
 {# Bare drawer presentation for the canonical file-record content. This remains a one-shot
    snapshot: no polling, timers, or OOB refreshes may be added here. #}
-<div data-file-id="{{ file.id }}" class="flex flex-col">
+{# phaze-x1qr3.10: the drawer is its own inspection scope. It has no sidebar, so it carries no
+   wheel and no glyph; the tracklist rows it does carry are driven exactly as on the full page. #}
+<div data-file-id="{{ file.id }}" data-inspection-scope class="flex flex-col">
     <div class="sticky top-0 z-10 border-b border-gray-200 bg-white px-6 py-4 dark:border-phaze-border dark:bg-phaze-bg">
         <div class="flex items-start justify-between gap-4">
             <div class="min-w-0">
@@ -14,6 +16,13 @@
             <button type="button" @click="hide()" aria-label="Close record"
                     class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:hover:bg-white/5">✕</button>
         </div>
+    </div>
+    {# phaze-x1qr3.8: the drawer has NO sidebar -- there is no width for one -- so the eight facts
+       the full page shows in its sidebar render here instead, in the drawer's own header block.
+       They live outside `_record_content.html` on purpose: that partial must render identically
+       in both presentations, and the facts are the one piece whose PLACEMENT differs. #}
+    <div class="border-b border-gray-200 px-6 py-3 dark:border-phaze-border">
+        {% include "record/partials/_record_facts.html" %}
     </div>
     {% include "record/_record_content.html" %}
 </div>

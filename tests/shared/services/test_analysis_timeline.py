@@ -86,7 +86,13 @@ def test_inspection_payload_preserves_every_window_and_explicit_absences() -> No
         "end": 30.0,
         "bpm": 128.0,
         "key": "Am",
+        # phaze-x1qr3.10 added these three. An unprojected window carries them as explicit
+        # absences, never as a zero energy or an empty-string key -- the client renders an em
+        # dash for `None` and would render "0.0" for a manufactured zero.
+        "camelot": None,
+        "energy": None,
         "mood": None,
+        "mood_top": None,
         "style": None,
     }
     assert payload[1]["bpm"] is None

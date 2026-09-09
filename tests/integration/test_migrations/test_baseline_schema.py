@@ -98,6 +98,11 @@ _EXPECTED_TABLES = frozenset(
         "route_control",
         "scan_batches",
         "scheduling_ledger",
+        # phaze-x1qr3.1 (migration 063): the per-file half of the set projection -- one summary row
+        # per file, deliberately NOT columns on `analysis`, whose `features` is the longest window's
+        # dict (a SAMPLE) rather than a summary. Its per-WINDOW half is three nullable columns on
+        # `analysis_window`, which adds no table and so cannot appear in this inventory.
+        "set_profile",
         "stage_skip",
         "tag_write_log",
         "tracklist_drain_arm_state",
@@ -264,7 +269,11 @@ def test_baseline_is_the_only_migration() -> None:
     062 (phaze-tzy6s.11 / ADR-0008) adds tag_write_log.reviewed_before_tags and
     review_source_versions, the persisted record of WHAT the operator actually reviewed when they
     authorized a tag write -- the tag half of the Changes Review approval boundary, which needs the
-    reviewed payload durable to revalidate a submitted decision against current state.
+    reviewed payload durable to revalidate a submitted decision against current state;
+    063 (phaze-x1qr3.1) adds the set projection -- three nullable columns on analysis_window
+    (energy / camelot / mood_scores) plus the 1:1 set_profile table -- the narrow projection
+    section E's file-viewer surfaces query instead of re-reading the ~5 KB features JSONB
+    across millions of window rows.
     Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
@@ -293,6 +302,7 @@ def test_baseline_is_the_only_migration() -> None:
         "060_drop_analysis_sampled.py",
         "061_dedup_review_plans.py",
         "062_tag_write_review_payload.py",
+        "063_set_projection.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -324,10 +334,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (062: reviewed tag payload)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (063: the set projection)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "062"
+    assert version == "063"
 
 
 @pytest.mark.asyncio
@@ -656,7 +666,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "062"
+        assert version == "063"
     finally:
         if engine is not None:
             await engine.dispose()

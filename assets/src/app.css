@@ -277,6 +277,114 @@ body { font-family: 'Inter', sans-serif; }
     font-size: 0.6875rem;
     color: var(--phaze-text-muted);
 }
+/* phaze-x1qr3.5 set-panel lanes: the energy area, the mood river, its legend, and the
+   tracklist boundary rules drawn across the whole lane stack. Heights here are the CSS half
+   of services.analysis_timeline.LANE_H (56px = 3.5rem) -- the SVG viewBox uses that constant,
+   so the two must move together or the geometry renders at the wrong scale. */
+.analysis-timeline-lane-plot {
+    position: relative;
+    height: 3.5rem;
+    border-bottom: 1px solid var(--color-gray-200);
+}
+.dark .analysis-timeline-lane-plot { border-color: var(--color-phaze-border); }
+.analysis-timeline-lane-plot > svg { height: 3.5rem; }
+.analysis-timeline-lane-scale {
+    display: flex;
+    height: 3.5rem;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 0.125rem 0.5rem 0.125rem 0;
+    text-align: right;
+    font-size: 0.6875rem;
+}
+.analysis-timeline-scale-name {
+    font-size: 0.625rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--phaze-text-muted);
+}
+.analysis-timeline-lane-label.is-tall { height: 3.5rem; }
+.analysis-timeline-lane-note {
+    margin-top: 0.25rem;
+    font-size: 0.6875rem;
+    color: var(--phaze-text-muted);
+}
+.analysis-timeline-lane-plot .analysis-timeline-lane-note {
+    position: absolute;
+    right: 0.5rem;
+    bottom: 0.125rem;
+    margin-top: 0;
+}
+.analysis-timeline-boundaries {
+    position: absolute;
+    z-index: 3;
+    inset-block: 0;
+    inset-inline: 0;
+    pointer-events: none;
+}
+.analysis-timeline-boundary {
+    position: absolute;
+    inset-block: 0;
+    width: 0;
+    border-left: 1px dashed var(--phaze-text-muted);
+    opacity: 0.55;
+}
+.analysis-timeline-boundary-label {
+    position: absolute;
+    top: 0;
+    left: 0.125rem;
+    font-size: 0.5625rem;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    color: var(--phaze-text-muted);
+}
+.analysis-timeline-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 0.75rem;
+    margin-top: 0.5rem;
+    font-size: 0.6875rem;
+    color: var(--phaze-text-muted);
+}
+.analysis-timeline-legend li {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+.analysis-timeline-legend-swatch {
+    display: inline-block;
+    height: 0.625rem;
+    width: 0.625rem;
+    flex: none;
+    border-radius: 0.125rem;
+}
+/* phaze-x1qr3.6: the per-track mood dot in the tracklist table -- the SAME MOOD_HUES value the
+   river and its legend use, arriving as an inline hue from the track segment. */
+.tracklist-mood-dot {
+    display: inline-block;
+    height: 0.5rem;
+    width: 0.5rem;
+    flex: none;
+    border-radius: 9999px;
+    vertical-align: baseline;
+}
+.tracklist-energy-bar {
+    display: inline-block;
+    height: 0.375rem;
+    width: 3rem;
+    overflow: hidden;
+    border-radius: 9999px;
+    background: var(--color-gray-200);
+    vertical-align: middle;
+}
+.dark .tracklist-energy-bar { background: rgb(255 255 255 / 0.12); }
+.tracklist-energy-bar > span {
+    display: block;
+    height: 100%;
+    border-radius: 9999px;
+    background: var(--phaze-text-muted);
+}
 .analysis-timeline-cursor {
     position: absolute;
     z-index: 4;
@@ -309,3 +417,50 @@ body { font-family: 'Inter', sans-serif; }
 }
 .analysis-timeline-tooltip[data-side="start"] { transform: none; }
 .analysis-timeline-tooltip[data-side="end"] { transform: translateX(-100%); }
+
+/* phaze-x1qr3.10: the six marks one elapsed time drives outside the cursor and the readout.
+   Every one of them is a HIGHLIGHT over something already drawn -- none of them adds a value,
+   a colour or a shape that is not already on the page -- so each is an outline, a tint or a
+   rule, and never a fill that could be mistaken for measured data. All are pointer-transparent:
+   the inspector under them owns the pointer, and a mark that swallowed a pointermove would
+   freeze the cursor exactly where the operator is trying to read. */
+.analysis-timeline-track-span {
+    position: absolute;
+    z-index: 2;
+    top: 0;
+    bottom: 0;
+    border-inline: 1px solid var(--phaze-text-link);
+    background: color-mix(in srgb, var(--phaze-text-link) 10%, transparent);
+    pointer-events: none;
+}
+.analysis-timeline-ribbon.is-current {
+    outline: 2px solid var(--phaze-text-link);
+    outline-offset: 1px;
+}
+/* The tracklist row under (or driving) the cursor. A tint plus an inline start rule, because a
+   tint alone is a colour-only channel and this row is also reachable by keyboard, where the
+   focus ring and this state have to remain tellable apart. */
+tr[data-track-row].is-current {
+    background: color-mix(in srgb, var(--phaze-text-link) 8%, transparent);
+    box-shadow: inset 2px 0 0 var(--phaze-text-link);
+}
+tr[data-track-row][tabindex]:focus-visible {
+    outline: 2px solid var(--phaze-text-link);
+    outline-offset: -2px;
+}
+.set-glyph-cursor {
+    position: absolute;
+    z-index: 1;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    transform: translateX(-50%);
+    border-radius: 1px;
+    background: var(--color-gray-900);
+    box-shadow: 0 0 0 1px rgb(255 255 255 / 0.7);
+    pointer-events: none;
+}
+.dark .set-glyph-cursor {
+    background: white;
+    box-shadow: 0 0 0 1px rgb(0 0 0 / 0.7);
+}

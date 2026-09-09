@@ -13,10 +13,18 @@ from phaze.routers.response_shape import DUAL_SHAPE_RESPONSE_HEADERS, wants_frag
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.search_queries import SearchFacets, SearchResult, distinct_artists, search
+from phaze.services.set_glyph_colors import CAMELOT_LEGEND, ENERGY_LIGHTNESS_STEP_COUNT, camelot_hue, energy_lightness
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+# phaze-x1qr3.9: palette_results.html draws each Files-group row's set glyph through the SAME
+# `ui/primitives.html` macro `routers/record.py` registers these four globals for -- mirrored
+# here since this router builds its own `Jinja2Templates` instance.
+templates.env.globals["camelot_hue"] = camelot_hue
+templates.env.globals["energy_lightness"] = energy_lightness
+templates.env.globals["camelot_legend"] = CAMELOT_LEGEND
+templates.env.globals["energy_lightness_step_count"] = ENERGY_LIGHTNESS_STEP_COUNT
 router = APIRouter(prefix="/search", tags=["search"])
 
 
