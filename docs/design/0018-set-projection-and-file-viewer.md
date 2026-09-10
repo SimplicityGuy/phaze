@@ -317,3 +317,41 @@ scalars this amendment changes. It must be run against a corpus re-derived at ve
 judging version-1 rows would tune the weights against the distortion rather than against the
 projection. If that blind check then changes a weight, its own bump takes `projection_version`
 to 3.
+
+### 10.2 `set_profile.harmonic_discipline` and `.peak_sec` become the values the page reads (`phaze-0zx26`, 2026-09-09)
+
+Implementer decision, not an operator one (no operator input was sought for this ad-hoc P2 bead
+— `CLAUDE.md`'s "Operator decision is a citation" rule). A code-review finding on PR #556
+(`phaze-0zx26`) observed that §3's `harmonic_discipline` and `peak_sec` columns were written by
+the backfill and the live-analysis writer and read by nothing: `services/analysis_timeline.py`'s
+inspection payload computed its own `peak_sec` as the raw-window argmax (`energy_peak`), a
+DIFFERENT definition than the stored column's argmax over the resampled `arc`, which can land on
+a different window for a short spike; `services/harmonic_journey.py`'s wheel caption
+deliberately recomputed `adjacent_share` rather than reading `harmonic_discipline`, reasoning in
+that module's own docstring that a caption reading a stale snapshot is worse than one a version
+behind — reasoning this amendment now supersedes.
+
+Decided: **keep both columns, and make them THE values.** `build_analysis_timeline_context`
+(`services/analysis_timeline.py`) now takes an optional `set_profile` and reads
+`set_profile.peak_sec` for the timeline's rest position when the row exists, falling back to the
+live raw-window argmax only for a file with no profile row yet (never analyzed to completion, or
+predating the projection backfill). `build_harmonic_journey`
+(`services/harmonic_journey.py`) now takes an optional `stored_discipline` and reads
+`set_profile.harmonic_discipline` for the wheel's caption the same way, with the same fallback;
+the wheel's nodes and edges are still always built live from the file's own windows, since the
+picture has to show the keys actually in front of the reader. The visual "Peak X at Y" energy
+mark (`energy_peak`, the dot and poster caption) is a different, complementary fact — an actual
+measured window's own energy reading — and is deliberately unchanged.
+
+Why override the wheel's original staleness reasoning: `tests/shared/services/
+test_harmonic_journey.py::test_the_wheels_adjacent_share_equals_the_stored_projections_discipline_figure`
+already proves the stored and live figures agree whenever both are computed from the same
+current windows, and `phaze-x1qr3.12`'s operator blind check judges the STORED arc and peak the
+set panel shows — one definition of peak is the point of that check. Leaving the wheel as the
+one fact on the page not drawn from the profile snapshot, when `camelot_modal`, the glyph, the
+arc and now the peak all are, was the larger inconsistency. `phaze-aswsz`'s §10.1 bump of
+`CURRENT_PROJECTION_VERSION` reopens exactly the staleness window the wheel's original reasoning
+warned about; the documented fallback (no profile row → live recompute) is what covers a file
+mid-backfill, not a live/stored disagreement on a current row. No migration: both columns stay,
+now read by their writers' own consumers. `models/set_profile.py`'s field comments point at the
+readers directly.
