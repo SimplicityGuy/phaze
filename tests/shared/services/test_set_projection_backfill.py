@@ -125,6 +125,40 @@ async def test_run_backfill_isolates_one_files_failure_from_the_rest_of_the_corp
     assert failures[0]["log_level"] == "warning"
 
 
+async def test_run_backfill_does_not_count_a_file_as_projected_when_its_commit_fails(monkeypatch: pytest.MonkeyPatch, session: AsyncSession) -> None:
+    """``phaze-quxkh``: a file whose `backfill_one_file` succeeds but whose ``session.commit()``
+    itself raises must NOT be counted in `files_projected` -- previously the counter was
+    incremented before `commit()`, so a rolled-back file still inflated `files_projected` and
+    ``files_projected + files_failed`` no longer summed to ``files_scanned``."""
+    agent_id = await _seed_agent(session)
+    file_id = await _seed_file(session, agent_id=agent_id, sha256_hash="9" * 64)
+    await _seed_one_fine_window(session, file_id)
+    await session.commit()
+
+    async def _flaky_commit() -> None:
+        msg = "synthetic commit failure"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(session, "commit", _flaky_commit)
+
+    with structlog.testing.capture_logs() as logs:
+        report = await run_backfill(session)
+
+    assert report.files_scanned == 1
+    assert report.files_projected == 0
+    assert report.files_failed == 1
+    assert report.files_projected + report.files_failed == report.files_scanned
+
+    monkeypatch.undo()
+    session.expire_all()
+    profile = (await session.execute(select(SetProfile).where(SetProfile.file_id == file_id))).scalar_one_or_none()
+    assert profile is None
+
+    failures = [entry for entry in logs if entry["event"] == "set_projection_backfill_file_failed"]
+    assert len(failures) == 1
+    assert failures[0]["file_id"] == str(file_id)
+
+
 async def test_run_backfill_logs_progress_at_the_configured_cadence(session: AsyncSession) -> None:
     """``progress_every=1`` forces the periodic progress line on every scanned file -- otherwise
     unreachable in a small test corpus against the real default (500)."""
