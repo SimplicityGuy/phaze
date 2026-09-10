@@ -9,15 +9,16 @@ surfaces, present and future, imports the SAME object; a test that asserts the l
 glyph "use the same formula" is really asserting they call the same function.
 
 No I/O, no templates, no models imported at call time -- pure functions over plain values, in
-the same spirit as ``services/set_projection.py`` (whose ``CAMELOT_TABLE`` this module inverts
-once, at import time, rather than re-deriving per render).
+the same spirit as ``services/set_projection.py``, whose ``key_name_for_camelot`` this module
+CALLS once at import time to build its legend rather than inverting ``CAMELOT_TABLE`` a second
+time of its own.
 """
 
 from __future__ import annotations
 
 from typing import Final
 
-from phaze.services.set_projection import CAMELOT_TABLE
+from phaze.services.set_projection import key_name_for_camelot
 
 
 # Twelve Camelot wheel positions spaced evenly around the hue wheel: 360 / 12 = 30 degrees per
@@ -67,15 +68,25 @@ def energy_lightness(energy: float | None) -> int:
 
 
 def _minor_key_names() -> tuple[tuple[int, str], ...]:
-    """Invert ``CAMELOT_TABLE`` once: Camelot number 1-12, in wheel order, to its minor-key name.
+    """Camelot number 1-12, in wheel order, paired with its minor-key name.
 
-    Derived from the same table :func:`phaze.services.set_projection.camelot_code` reads,
-    rather than hand-copied, so the legend's twelve names and the projection's own Camelot
-    table cannot drift apart. Every one of the 12 minor positions ("1A".."12A") has exactly one
-    entry in ``CAMELOT_TABLE`` -- the wheel is a bijection -- so this never raises ``KeyError``.
+    Reads :func:`phaze.services.set_projection.key_name_for_camelot` -- the projection's OWN
+    inverse of ``CAMELOT_TABLE`` -- rather than inverting that table a second time here. The
+    duplicate inversion was equivalent when written and had no way of staying so: a change to
+    how a code maps back to a name (an enharmonic spelling, say) would have reached the record
+    page's facts list and the tracklist's key column while leaving this legend on the old
+    answer, with the legend and the swatches it labels still agreeing with each other.
+
+    Every one of the 12 minor positions ("1A".."12A") is in the table -- the wheel is a
+    bijection -- so the lookup never comes back ``None``; the assert states that rather than
+    inventing a fallback name for a position that cannot occur.
     """
-    code_to_key = {code: key for key, code in CAMELOT_TABLE.items()}
-    return tuple((number, code_to_key[f"{number}A"]) for number in range(1, 13))
+    names: list[tuple[int, str]] = []
+    for number in range(1, 13):
+        key = key_name_for_camelot(f"{number}A")
+        assert key is not None, f"CAMELOT_TABLE has no minor key at wheel position {number}"
+        names.append((number, key))
+    return tuple(names)
 
 
 # The legend's twelve labelled hue swatches: (camelot_number, minor_key_name) in wheel order.
