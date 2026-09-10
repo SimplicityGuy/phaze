@@ -1,3 +1,8 @@
+{# The energy area's segment loop lives in `ui/set_marks.html` and is shared with
+   `record/poster.svg`, which used to re-write it with only its colour literals differing
+   (PR #556 review, finding 4). This template renders it with the `SCREEN` palette --
+   `currentColor`, so the lane inherits the surrounding text colour in both themes. #}
+{% import "ui/set_marks.html" as marks %}
 <td colspan="7" class="min-w-0 bg-gray-50 px-4 py-4 dark:bg-phaze-panel sm:px-6">
     {# phaze-w55w1 / ADR-0007 §7: this is exhaustive stored coverage. There is no sampled
        state, cap, stride, deepen path, or client-side thinning step. #}
@@ -107,15 +112,7 @@
                             <svg viewBox="0 0 {{ timeline_w }} {{ lane_h }}" preserveAspectRatio="none"
                                  width="{{ timeline_w | round | int }}" height="{{ lane_h | round | int }}" class="block w-full text-ok"
                                  role="img" aria-label="Energy from 0.0 to 1.0 over elapsed time{% if energy_peak %}, peaking at {{ energy_peak.energy }} at {{ energy_peak.label }}{% endif %}.">
-                                {% for segment in energy_area %}
-                                <polygon points="{{ segment.area_points }}" fill="currentColor" fill-opacity="0.22" />
-                                {% if segment.single_x is not none %}
-                                <circle cx="{{ segment.single_x }}" cy="{{ segment.single_y }}" r="2.5" fill="currentColor" vector-effect="non-scaling-stroke" />
-                                {% else %}
-                                <polyline points="{{ segment.points }}" fill="none" stroke="currentColor" stroke-width="1.5"
-                                          stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />
-                                {% endif %}
-                                {% endfor %}
+                                {{ marks.energy_area_marks(energy_area, marks.SCREEN) }}
                                 {% if energy_peak %}
                                 <line x1="{{ energy_peak.x }}" y1="0" x2="{{ energy_peak.x }}" y2="{{ lane_h }}"
                                       stroke="currentColor" stroke-width="1" stroke-dasharray="3 2" vector-effect="non-scaling-stroke" />
