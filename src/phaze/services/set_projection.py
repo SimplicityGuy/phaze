@@ -275,7 +275,8 @@ def energy(scores: Mapping[str, float | None], bpm_z: float) -> float:
     back onto ``MOOD_ORDER``) -- a missing or ``None`` entry contributes 0.0 rather than
     raising, so a partial vector still yields a defined (if less informed) energy. ``bpm_z``
     is the file-local BPM z-score for this window's time range; a file with no fine BPM data
-    passes 0.0 (see :func:`build_profile`'s ``sources`` field for how that is recorded).
+    passes 0.0 (``set_projection_writer.logged_sources`` is what records that fact, alongside
+    the write).
     """
     total = 0.0
     for name, weight in ENERGY_WEIGHTS.items():
@@ -305,10 +306,15 @@ class SetProfileProjection:
     """The pure-function result :func:`build_profile` returns -- no ``file_id``, no session.
 
     Positional field-for-field with ``SetProfile`` (``mean_vector``, ``arc``, ``glyph``,
-    ``camelot_modal``, ``harmonic_discipline``, ``peak_sec``) EXCEPT ``sources``, which has
-    no column on that model: it is provenance for the writer/backfill to log or fold into
-    its own bookkeeping, not persisted data. ``phaze-x1qr3.3`` maps every other field
+    ``camelot_modal``, ``harmonic_discipline``, ``peak_sec``); ``phaze-x1qr3.3`` maps each one
     directly onto a ``SetProfile(file_id=..., projection_version=..., **the rest)``.
+
+    It carried a seventh field, ``sources``, with no column on that model and no production
+    reader: ``upsert_set_profile`` logs ``set_projection_writer.logged_sources(windows)``
+    instead, because this module's presence-only check ("did any fine window carry a bpm at
+    all") disagrees with what actually fed a window's z-score. Two same-named ``_bpm_source``
+    functions with opposite meanings, one of them dead, is a shape that invites a caller to
+    reach for the wrong one; the dead half is gone and the honest one is the only one left.
 
     ``glyph`` is a ``list``, not a ``dict`` -- one cell per COARSE window, in order (see
     :func:`_glyph_cells`) -- which JSONB stores as a JSON array with no Python-side "object vs
@@ -324,7 +330,6 @@ class SetProfileProjection:
     camelot_modal: str | None
     harmonic_discipline: float | None
     peak_sec: float | None
-    sources: dict[str, str]
 
 
 def _mean_vector(coarse_windows: Sequence[AnalysisWindow]) -> list[float] | None:
@@ -577,11 +582,6 @@ def harmonic_discipline(fine_windows: Sequence[AnalysisWindow]) -> float | None:
     return adjacent / len(transitions)
 
 
-def _bpm_source(fine_windows: Sequence[AnalysisWindow]) -> str:
-    """Return "fine" when any fine window carries a real BPM, else "none" (z-scores default to 0)."""
-    return "fine" if any(w.bpm is not None for w in fine_windows) else "none"
-
-
 def build_profile(windows: Sequence[AnalysisWindow]) -> SetProfileProjection:
     """A whole file's ``AnalysisWindow`` rows to the per-file :class:`SetProfileProjection`.
 
@@ -592,9 +592,10 @@ def build_profile(windows: Sequence[AnalysisWindow]) -> SetProfileProjection:
     the backfill) before this runs. This function does no per-window computation of its own
     and touches no database.
 
-    ``sources`` records file-level provenance the fields above cannot otherwise recover:
-    today just ``{"bpm": "fine" | "none"}`` (see :func:`_bpm_source`), since a file with no
-    fine BPM data at all fed ``bpm_z = 0`` into every window's already-computed ``energy``.
+    BPM provenance is NOT reported here. ``set_projection_writer.logged_sources`` is the only
+    thing that makes that claim, because only that module knows whether its own z-score had a
+    usable reference distribution -- a file where every fine window carried a bpm can still have
+    fed ``bpm_z = 0`` into every window's energy.
     """
     fine = [w for w in windows if w.tier == "fine"]
     coarse = [w for w in windows if w.tier == "coarse"]
@@ -608,7 +609,6 @@ def build_profile(windows: Sequence[AnalysisWindow]) -> SetProfileProjection:
         camelot_modal=modal_camelot(fine),
         harmonic_discipline=harmonic_discipline(fine),
         peak_sec=_peak_sec(arc, total_sec),
-        sources={"bpm": _bpm_source(fine)},
     )
 
 

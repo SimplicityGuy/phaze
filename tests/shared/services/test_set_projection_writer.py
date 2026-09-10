@@ -149,7 +149,6 @@ def test_build_set_profile_upsert_statement_stamps_updated_at_explicitly() -> No
         camelot_modal=None,
         harmonic_discipline=None,
         peak_sec=None,
-        sources={"bpm": "none"},
     )
 
     stmt = build_set_profile_upsert_statement(uuid.uuid4(), projection)

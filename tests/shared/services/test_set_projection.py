@@ -10,6 +10,7 @@ inherited from phaze-x1qr3.1.
 from __future__ import annotations
 
 import ast
+from dataclasses import fields
 import inspect
 import math
 from pathlib import Path
@@ -26,6 +27,7 @@ from phaze.services.set_projection import (
     CAMELOT_TABLE,
     ENERGY_WEIGHTS,
     MOOD_ORDER,
+    SetProfileProjection,
     build_profile,
     camelot_code,
     energy,
@@ -35,6 +37,7 @@ from phaze.services.set_projection import (
     positive_class_vector,
     wheel_adjacent,
 )
+from phaze.services.set_projection_writer import logged_sources
 from tests.analyze._real_result import real_analysis_result
 
 
@@ -397,13 +400,30 @@ def test_build_profile_reports_no_arc_or_mean_vector_for_a_fine_only_file() -> N
     assert profile.glyph is None
     assert profile.peak_sec is None
     assert profile.camelot_modal == "8A"
-    assert profile.sources == {"bpm": "fine"}
 
 
-def test_build_profile_reports_no_bpm_source_when_no_fine_bpm_exists() -> None:
-    windows = _contiguous_coarse_windows(2)
-    profile = build_profile(windows)
-    assert profile.sources == {"bpm": "none"}
+def test_the_projection_makes_no_bpm_provenance_claim_of_its_own() -> None:
+    """``SetProfileProjection`` has SIX fields and no ``sources``.
+
+    It carried a seventh, computed by a ``_bpm_source`` that only asked "did any fine window
+    carry a bpm at all". Nothing in production read it -- ``upsert_set_profile`` logs
+    ``set_projection_writer.logged_sources`` -- and the two same-named functions gave opposite
+    answers to a question that looks identical at a call site: this module's said ``"fine"``
+    for a file whose z-scores had all fallen back to 0.0.
+
+    Pinned as an absence rather than deleted quietly, because re-adding a plausible-looking
+    ``sources`` here is exactly how the second, wrong answer comes back.
+    """
+    assert [field.name for field in fields(SetProfileProjection)] == [
+        "mean_vector",
+        "arc",
+        "glyph",
+        "camelot_modal",
+        "harmonic_discipline",
+        "peak_sec",
+    ]
+    assert not hasattr(build_profile(_contiguous_coarse_windows(2)), "sources")
+    assert logged_sources(_contiguous_coarse_windows(2)) == {"bpm": "none"}
 
 
 def test_build_profile_mean_vector_averages_stored_mood_scores_positionally() -> None:

@@ -25,15 +25,16 @@ confidence before persistence, so digital silence arrives here as a real-looking
 see that constant for the measurement, why the gate is a band rather than a confidence threshold,
 and why it is applied to the coarse-window OVERLAP set as well as to the reference distribution.
 
-``sources`` (the field :func:`upsert_set_profile` logs) is NOT simply
-:func:`phaze.services.set_projection.build_profile`'s own ``sources`` output: that function's
-``_bpm_source`` is a PRESENCE check ("did any fine window carry a real bpm at all"), which reads
-``"fine"`` even when this module's z-score fell back to ``0.0`` for the zero-variance or
-no-overlap reasons above -- a real disagreement between what the field claims and what actually
-fed a given window's energy (phaze-x1qr3.3 review finding 5). :func:`upsert_set_profile` instead
-derives the LOGGED ``sources`` from whether :func:`_bpm_stats` found a USABLE reference
-distribution at all (``"fine"`` only then, ``"none"`` otherwise), which is the honest claim this
-module can actually make about its own BPM z-score.
+``sources`` (the field :func:`upsert_set_profile` logs) is derived HERE, from whether
+:func:`_bpm_stats` found a USABLE reference distribution at all (``"fine"`` only then,
+``"none"`` otherwise) -- the only honest claim anything can make about this module's own BPM
+z-score. ``set_projection.build_profile`` used to carry a rival ``sources`` field of its own,
+computed by a same-named ``_bpm_source`` that was a PRESENCE check ("did any fine window carry
+a real bpm at all"): it read ``"fine"`` even when the z-score here fell back to ``0.0`` for the
+zero-variance or no-overlap reasons above (phaze-x1qr3.3 review finding 5). Nothing in
+production ever read it, and two same-named functions with opposite meanings -- one of them
+dead -- is how a later caller reaches for the wrong one, so the PR #556 cleanup deleted it.
+:func:`logged_sources` is now the single answer.
 
 FAILURE ISOLATION IS THE CALLER'S JOB, split by failure DOMAIN. The computation in this module
 (``annotate_window_rows`` / ``annotate_window_orm_objects`` / :func:`build_set_profile_upsert_statement`)
@@ -273,7 +274,11 @@ def annotate_window_orm_objects(windows: Sequence[AnalysisWindow]) -> None:
 
 def _bpm_source(fine_bpms: Sequence[float]) -> str:
     """ "fine" only when :func:`_bpm_stats` found a USABLE reference distribution for THIS module's
-    own z-score, never merely "some fine window had a bpm at all" (module docstring, finding 5)."""
+    own z-score, never merely "some fine window had a bpm at all" (module docstring, finding 5).
+
+    The one function of this name in the codebase since the PR #556 cleanup deleted
+    ``set_projection._bpm_source``, whose answer to the same-looking question was the opposite
+    one."""
     return "fine" if _bpm_stats(fine_bpms) is not None else "none"
 
 
@@ -319,11 +324,12 @@ def build_set_profile_upsert_statement(file_id: uuid.UUID, projection: SetProfil
 
 
 def logged_sources(windows: Sequence[Any]) -> dict[str, str]:
-    """The honest ``sources`` to LOG alongside a ``set_profile`` write -- derived from whether
-    this module's own :func:`_bpm_stats` found a usable reference distribution, never from
-    ``SetProfileProjection.sources`` (``set_projection.build_profile``'s own field, a presence-only
-    check that can disagree with what actually fed a given window's z-score; module docstring,
-    review finding 5)."""
+    """The ``sources`` to LOG alongside a ``set_profile`` write -- THE only answer, derived from
+    whether this module's own :func:`_bpm_stats` found a usable reference distribution.
+
+    Not a presence check: a file whose every fine window carried a bpm still gets ``"none"``
+    when those values had no variance or no overlap with the coarse windows, because that is
+    what actually fed the stored energies (module docstring, review finding 5)."""
     facts = [_extract(w) for w in windows]
     return {"bpm": _bpm_source([bpm for _start, _end, bpm in _fine_bpm_ranges(facts)])}
 
