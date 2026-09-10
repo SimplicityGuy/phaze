@@ -13,6 +13,7 @@ without them is exactly the "not yet projected" row the lanes must render as a h
 
 from __future__ import annotations
 
+import ast
 import itertools
 import math
 from pathlib import Path
@@ -22,7 +23,9 @@ import uuid
 import pytest
 
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
+from phaze.services import analysis_timeline as analysis_timeline_module
 from phaze.services.analysis_timeline import (
+    LANE_GAP_TOLERANCE_SEC,
     LANE_H,
     MIN_MOOD_HUE_SEPARATION_DEG,
     MOOD_HUES,
@@ -38,7 +41,7 @@ from phaze.services.analysis_timeline import (
     mood_stack,
     tracklist_ticks,
 )
-from phaze.services.set_projection import MOOD_ORDER
+from phaze.services.set_projection import GAP_TOLERANCE_SEC, MOOD_ORDER
 
 
 _SERVICES = Path(__file__).resolve().parents[3] / "src" / "phaze" / "services"
@@ -437,3 +440,24 @@ def test_the_context_exposes_every_lane_the_template_reads() -> None:
         assert key in context, f"the template reads {key} and the context no longer provides it"
     assert context["lane_h"] == LANE_H
     assert math.isclose(float(str(context["total_sec"])), 180.0)
+
+
+def test_the_lane_gap_tolerance_is_the_projection_constant_itself_not_a_second_literal() -> None:
+    """``LANE_GAP_TOLERANCE_SEC`` is BOUND to ``set_projection.GAP_TOLERANCE_SEC``.
+
+    Equality alone cannot discharge this: two literals that happen to read 1.0 are equal on the
+    day they are written and are exactly how the lane geometry and the stored profile come to
+    disagree afterwards. So this reads the module's own source and asserts the assignment's
+    right-hand side is the imported NAME -- the only form under which a change to the
+    projection constant reaches the lanes at all.
+    """
+    module_source = Path(analysis_timeline_module.__file__).read_text(encoding="utf-8")
+    assignment = next(
+        node
+        for node in ast.parse(module_source).body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == "LANE_GAP_TOLERANCE_SEC"
+    )
+
+    assert isinstance(assignment.value, ast.Name), "the lane tolerance must be bound to the projection constant, never restated as a literal"
+    assert assignment.value.id == "GAP_TOLERANCE_SEC"
+    assert LANE_GAP_TOLERANCE_SEC == GAP_TOLERANCE_SEC

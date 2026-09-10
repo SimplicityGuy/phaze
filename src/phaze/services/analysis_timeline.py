@@ -10,7 +10,7 @@ import math
 from typing import TYPE_CHECKING, Final, NamedTuple, Protocol, cast
 
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
-from phaze.services.set_projection import MOOD_ORDER, flicker_filtered_key_runs, placeable_key_runs
+from phaze.services.set_projection import GAP_TOLERANCE_SEC, MOOD_ORDER, flicker_filtered_key_runs, placeable_key_runs
 
 
 if TYPE_CHECKING:
@@ -403,10 +403,12 @@ def ribbons(windows: Sequence[AnalysisWindow], attr: str, total_sec: float, *, c
 # ---------------------------------------------------------------------------
 
 # A coarse step is ~180 s, so a second of slop between one window's end and the next's start
-# is float noise, not missing coverage. Deliberately the same reading as
-# ``set_projection.GAP_TOLERANCE_SEC`` -- restated here rather than imported so the lane
-# geometry and the stored profile cannot be made to disagree by a change to either.
-LANE_GAP_TOLERANCE_SEC: Final[float] = 1.0
+# is float noise, not missing coverage. IMPORTED from ``set_projection.GAP_TOLERANCE_SEC``, not
+# restated: the lane geometry drawn here and the coverage the stored profile records are answers
+# to the same question about the same windows, so they have to move together. The comment that
+# stood here claimed a restatement kept the two from disagreeing, which is backwards -- two
+# literals are exactly how they come to disagree, and nothing would have caught it.
+LANE_GAP_TOLERANCE_SEC: Final[float] = GAP_TOLERANCE_SEC
 
 # Half-width, in canvas units, of the column drawn for a run of exactly ONE measured window.
 # A run of one has no second point to draw a polygon between, and dropping it would render a
