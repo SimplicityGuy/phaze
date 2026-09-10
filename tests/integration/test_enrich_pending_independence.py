@@ -44,11 +44,10 @@ import uuid
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
-from phaze.models.base import Base
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.file import FileRecord
@@ -63,12 +62,14 @@ from tests.db_guard import integration_dsns, require_test_database
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
 
 pytestmark = pytest.mark.integration
 
 # DSN derivation + destructive-DB guard, identical to test_dedup_divergence.py.
 # DSN pair + destructive-DB guard, shared with every other integration module via `tests.db_guard`.
-BROKER_DSN, SA_DSN = integration_dsns()
+_, SA_DSN = integration_dsns()
 _TARGET_DB = require_test_database(SA_DSN, context="enrich-pending integration tests")
 
 _LEGACY_AGENT_ID = "test-fileserver"
@@ -88,22 +89,9 @@ _ACTIVE_CLOUD_STATUSES = [
 
 
 @pytest_asyncio.fixture
-async def db_session() -> AsyncGenerator[AsyncSession]:
-    """Yield a real-PG ``AsyncSession`` with all ORM tables + the FK agent (copied from test_dedup_divergence)."""
-    import psycopg
-
-    try:
-        probe = await psycopg.AsyncConnection.connect(BROKER_DSN)
-    except psycopg.OperationalError as exc:
-        pytest.skip(f"Postgres broker unavailable: {exc}")
-    else:
-        await probe.close()
-
-    engine = create_async_engine(SA_DSN)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+async def db_session(async_engine: AsyncEngine) -> AsyncGenerator[AsyncSession]:
+    """Yield a rolled-back session on the session-scoped real-Postgres schema."""
+    session_factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as session:
         # Idempotent FK-agent seed: the shared ``*_test`` DB may already carry a committed
         # ``test-fileserver`` agent (a sibling bucket's committing test) -- re-adding it would
@@ -115,7 +103,6 @@ async def db_session() -> AsyncGenerator[AsyncSession]:
             yield session
         finally:
             await session.rollback()
-    await engine.dispose()
 
 
 async def _file(session: AsyncSession, *, file_type: str = "mp3") -> FileRecord:

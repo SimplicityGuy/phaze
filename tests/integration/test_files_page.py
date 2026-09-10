@@ -13,8 +13,7 @@ DoS-relevant anti-features:
 * **SAVEPOINT degrade-safe** (T-87-12 / INFLIGHT-02): a forced build error degrades to a safe empty page,
   never a raise.
 
-Real-PG harness idiom mirrors ``tests/integration/test_stage_status_equivalence.py`` (DSN derivation +
-connectivity-probe ``pytest.skip`` so a bare ``uv run pytest`` skips rather than errors when PG is down).
+The root session fixture owns the real-Postgres schema lifecycle and guards the test-only DSN.
 """
 
 from __future__ import annotations
@@ -26,16 +25,14 @@ import uuid
 import pytest
 import pytest_asyncio
 from sqlalchemy import event, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
-from phaze.models.base import Base
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.services.pipeline import _files_page_stmt, get_files_page
-from tests.db_guard import integration_dsns
 
 
 if TYPE_CHECKING:
@@ -47,34 +44,19 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.integration
 
 
-BROKER_DSN, SA_DSN = integration_dsns()
-
 _LEGACY_AGENT_ID = "test-fileserver"
 
 
 @pytest_asyncio.fixture
-async def db_env() -> AsyncGenerator[tuple[AsyncSession, AsyncEngine]]:
+async def db_env(async_engine: AsyncEngine) -> AsyncGenerator[tuple[AsyncSession, AsyncEngine]]:
     """Yield ``(session, engine)`` on a real PG with all ORM tables + partial indexes present.
 
-    ``Base.metadata.create_all`` builds the schema (including the ``__table_args__`` partial indexes the
-    EXPLAIN test probes), so the harness is independent of Alembic. One transaction, rolled back at
-    teardown. The engine is yielded too so the SQL-capture test can attach a ``before_cursor_execute``
-    listener and the EXPLAIN test can run its probe.
+    The session-scoped ``async_engine`` fixture builds the schema, including the ``__table_args__``
+    partial indexes the EXPLAIN test probes. One transaction is rolled back at teardown. The engine is
+    yielded too so the SQL-capture test can attach a ``before_cursor_execute`` listener and the EXPLAIN
+    test can run its probe.
     """
-    import psycopg
-
-    try:
-        probe = await psycopg.AsyncConnection.connect(BROKER_DSN)
-    except psycopg.OperationalError as exc:
-        pytest.skip(f"Postgres broker unavailable: {exc}")
-    else:
-        await probe.close()
-
-    engine = create_async_engine(SA_DSN)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    session_factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as session:
         # Seed the FK-parent IDEMPOTENTLY: a committed ``test-fileserver`` may already exist (the
         # ``committed_db`` fixture re-seeds one, and the session-scoped ``async_engine`` seeds one), so a
@@ -84,10 +66,9 @@ async def db_env() -> AsyncGenerator[tuple[AsyncSession, AsyncEngine]]:
             session.add(Agent(id=_LEGACY_AGENT_ID, name="legacy"))
             await session.flush()
         try:
-            yield session, engine
+            yield session, async_engine
         finally:
             await session.rollback()
-    await engine.dispose()
 
 
 async def _new_file(session: AsyncSession) -> uuid.UUID:
