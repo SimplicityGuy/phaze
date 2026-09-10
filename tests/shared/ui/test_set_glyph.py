@@ -25,17 +25,16 @@ from types import SimpleNamespace
 from fastapi.templating import Jinja2Templates
 
 from phaze.services.set_glyph_colors import CAMELOT_LEGEND, ENERGY_LIGHTNESS_STEP_COUNT, camelot_hue, energy_lightness
+from phaze.web.template_globals import register_set_glyph_globals
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[3] / "src" / "phaze" / "templates"
 _templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-# Mirrors routers/record.py's registration exactly -- the same functions, the same names --
-# so a divergence between the live page's globals and this test's would show up as a name the
-# macro cannot resolve, not as a silently different formula.
-_templates.env.globals["camelot_hue"] = camelot_hue
-_templates.env.globals["energy_lightness"] = energy_lightness
-_templates.env.globals["camelot_legend"] = CAMELOT_LEGEND
-_templates.env.globals["energy_lightness_step_count"] = ENERGY_LIGHTNESS_STEP_COUNT
+# The SAME registration call every router environment makes, rather than a hand-copied mirror of
+# it: this test now renders through the identical wiring the live pages do, so a global renamed
+# or dropped in `web/template_globals.py` fails here as an unresolvable name rather than leaving
+# the test passing against a private copy of the old block.
+register_set_glyph_globals(_templates.env)
 
 _GLYPH_IMPORT = '{% import "ui/primitives.html" as ui %}'
 _RECT = re.compile(r'<rect\b[^>]*\bfill="hsl\((?P<hue>[0-9]+), (?P<sat>[0-9]+)%, (?P<light>[0-9]+)%\)"[^>]*>')

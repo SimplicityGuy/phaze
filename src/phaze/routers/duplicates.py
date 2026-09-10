@@ -36,10 +36,12 @@ from phaze.services.dedup import (
 from phaze.services.dedup_review import InvalidDedupReviewPlanError, commit_review_plans, create_review_plan
 from phaze.services.pg_text import contains_pg_invalid_chars
 from phaze.services.review import build_dupe_group_card, dedupe_subcount_text, get_dedupe_groups
+from phaze.web.template_globals import register_set_glyph_globals
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+register_set_glyph_globals(templates.env)
 
 
 def _filesizeformat(value: int | float) -> str:

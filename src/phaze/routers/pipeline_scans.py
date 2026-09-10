@@ -34,12 +34,14 @@ from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract, 
 from phaze.routers.response_shape import RENDERABLE_ALERT_STATUS
 from phaze.services.pipeline import get_agent_reconciliations
 from phaze.services.scan_deletion import delete_scan_cascade
+from phaze.web.template_globals import register_set_glyph_globals
 
 
 logger = structlog.get_logger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+register_set_glyph_globals(templates.env)
 
 router = APIRouter(prefix="/pipeline/scans", tags=["pipeline"])
 
