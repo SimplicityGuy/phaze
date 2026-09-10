@@ -95,11 +95,7 @@ def _segment(position: int, start: float, end: float | None, *, title: str | Non
         end_sec=end,
         bpm=None,
         camelot=None,
-        key=None,
-        key_hue=None,
         mood=None,
-        mood_label=None,
-        mood_hue=None,
         energy=None,
         title=title,
     )

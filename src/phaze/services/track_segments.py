@@ -72,20 +72,8 @@ class TrackSegment:
     half- or double-time window would drag a mean well off the track's real tempo."""
     camelot: str | None
     """Duration-weighted modal Camelot code of the intersecting FINE windows."""
-    key: str | None
-    """That code's canonical key name ("8A" -> "A minor"), for the operator who does not read
-    the wheel."""
-    key_hue: int | None
-    """``analysis_timeline.hue_for`` of the key NAME -- the identical call the key ribbon on the
-    timeline makes, so one key is one colour on both surfaces. An open vocabulary of key strings
-    is exactly what that hash is for, and is why the moods use a table instead."""
     mood: str | None
     """The argmax of the seven per-mood MEANS across the intersecting COARSE windows."""
-    mood_label: str | None
-    mood_hue: int | None
-    """From ``analysis_timeline.MOOD_HUES`` -- the same table the river and its legend read, so
-    a mood is one colour wherever it appears. Carried on the segment so the four surfaces that
-    render the tracklist fragment cannot each acquire a different palette."""
     energy: float | None
     """Mean of the intersecting COARSE windows' stored energy scalars."""
     title: str | None = None
@@ -93,6 +81,39 @@ class TrackSegment:
     is inside without the client re-joining the tracklist table (``phaze-x1qr3.10``). Defaulted,
     so every existing construction of this dataclass keeps working unchanged; ``None`` is the
     honest answer for a scraped row that carried no title at all."""
+
+    # The four PRESENTATION readings below were stored fields, computed by the one constructor
+    # call in ``build_track_segments`` and then carried. Each is a pure function of ``camelot``
+    # or ``mood`` alone, so as fields they made an inconsistent segment REPRESENTABLE: a
+    # ``TrackSegment(camelot="8A", key="F# minor", ...)`` type-checks, constructs, and renders a
+    # key name that contradicts the code beside it. As properties there is nothing to keep in
+    # step -- the render path reads the same attribute names it always did, and the only writable
+    # state left is what was actually measured.
+
+    @property
+    def key(self) -> str | None:
+        """``camelot``'s canonical key name ("8A" -> "A minor"), for the operator who does not
+        read the wheel."""
+        return key_name_for_camelot(self.camelot) if self.camelot else None
+
+    @property
+    def key_hue(self) -> int | None:
+        """``analysis_timeline.hue_for`` of the key NAME -- the identical call the key ribbon on
+        the timeline makes, so one key is one colour on both surfaces. An open vocabulary of key
+        strings is exactly what that hash is for, and is why the moods use a table instead."""
+        return hue_for(key_name_for_camelot(self.camelot) or self.camelot) if self.camelot else None
+
+    @property
+    def mood_label(self) -> str | None:
+        """``mood``'s display name from ``analysis_timeline.MOOD_LABELS``."""
+        return MOOD_LABELS.get(self.mood) if self.mood else None
+
+    @property
+    def mood_hue(self) -> int | None:
+        """From ``analysis_timeline.MOOD_HUES`` -- the same table the river and its legend read,
+        so a mood is one colour wherever it appears. Read off the segment so the four surfaces
+        that render the tracklist fragment cannot each acquire a different palette."""
+        return MOOD_HUES.get(self.mood) if self.mood else None
 
 
 def _timestamped(tracks: Sequence[TracklistTrack]) -> list[tuple[int, float]]:
@@ -208,11 +229,7 @@ def build_track_segments(
                 end_sec=end,
                 bpm=_median_bpm(in_fine),
                 camelot=camelot,
-                key=key_name_for_camelot(camelot) if camelot else None,
-                key_hue=hue_for(key_name_for_camelot(camelot) or camelot) if camelot else None,
                 mood=mood,
-                mood_label=MOOD_LABELS.get(mood) if mood else None,
-                mood_hue=MOOD_HUES.get(mood) if mood else None,
                 energy=_mean_energy(in_coarse),
                 title=titles.get(position),
             )
