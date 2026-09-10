@@ -20,6 +20,7 @@ import uuid
 import pytest
 
 from phaze.models.analysis import AnalysisResult
+from phaze.services.analysis_timeline import coverage_chip
 from phaze.services.record_facts import ABSENT, build_record_facts
 
 
@@ -104,6 +105,25 @@ def test_the_windows_row_reuses_the_coverage_chips_own_sentence_verbatim() -> No
     """One sentence, two places: the sidebar cannot claim a coverage the chip does not show."""
     assert _facts(coverage_text="20 coarse · 120 fine · gaps")["Windows"] == "20 coarse · 120 fine · gaps"
     assert _facts(coverage_text=None)["Windows"] == ABSENT
+
+
+def test_the_windows_row_follows_the_coverage_chip_to_unknown_not_zero_on_a_null_tier() -> None:
+    """phaze-ox2m0: the sidebar fact is the chip's own text, so its NULL-tier fix reaches here too.
+
+    ``fine=1440/1440, coarse=NULL`` (a pod that died right after the fine tier) must not read
+    as "0 coarse windows" in the sidebar any more than in the chip itself -- both surfaces are
+    driven by the same sentence.
+
+    Restored by the PR #556 cleanup: `phaze-duyyw`'s rewrite of this module dropped it, and the
+    test above cannot stand in for it -- that one hands the builder a literal, so it asserts the
+    sidebar copies whatever string it is given and is structurally unable to see the chip
+    producing the wrong string.
+    """
+    chip = coverage_chip(AnalysisResult(file_id=uuid.uuid4(), fine_windows_analyzed=1440, fine_windows_total=1440))
+
+    assert chip is not None
+    assert chip["text"] == "? coarse · 1440 fine · gaps"
+    assert _facts(coverage_text=chip["text"])["Windows"] == "? coarse · 1440 fine · gaps"
 
 
 def test_the_modal_key_row_names_the_code_and_the_key_it_stands_for() -> None:
