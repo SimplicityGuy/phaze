@@ -1,0 +1,96 @@
+{# The SVG marks the record page and the printable poster both draw, in one place.
+
+   `templates/record/poster.svg` re-implemented the Camelot wheel's three loops (sectors, edges,
+   nodes) and the energy area's segment loop from `record/partials/_harmonic_wheel.html` and
+   `proposals/partials/analysis_timeline.html`. Every coordinate was identical -- both surfaces
+   render the SAME `services/harmonic_journey.build_harmonic_journey` and
+   `services/analysis_timeline.energy_area` output -- and only the colours differed, because the
+   page paints with Tailwind classes and `currentColor` while the poster must be a self-contained
+   document with no stylesheet to inherit from. Two copies of a geometry loop is a shape where the
+   poster silently stops matching the page it claims to be a print of (PR #556 review, finding 4).
+
+   PARAMETERISED ON PALETTE, not on geometry. A caller supplies a mapping of colour/class strings
+   and, for the page, `interactive=true` to emit the `data-*` hooks and `<title>` children the
+   inspector and the screen reader need; the poster passes neither, because it has no script and
+   no hover. Nothing about WHERE a mark goes is a parameter -- that is the whole point.
+
+   The two palettes below are module-level, so an importing template reads them as
+   `marks.SCREEN` / `marks.POSTER` and neither surface carries a colour literal of its own. #}
+
+{% set SCREEN = {
+    "sector_label_class": "fill-gray-600 dark:fill-gray-300",
+    "jump_class": "stroke-amber-500",
+    "adjacent_class": "stroke-cyan-700",
+    "node_stroke": "currentColor",
+    "node_class": "text-gray-900 dark:text-gray-100",
+    "energy_fill": "currentColor",
+    "energy_area_opacity": "0.22",
+} %}
+{% set POSTER = {
+    "sector_label_fill": "#c7ccd1",
+    "sector_label_font_family": "Inter, sans-serif",
+    "jump_stroke": "#f2b544",
+    "adjacent_stroke": "#3aa6c2",
+    "node_stroke": "#f5f5f5",
+    "energy_fill": "#57c7a6",
+    "energy_area_opacity": "0.30",
+} %}
+
+{% macro harmonic_wheel_marks(journey, palette, interactive=false) %}
+{# The twelve sectors, then the journey's edges, then its nodes -- edges before nodes so a node
+   always paints over the lines that meet it.
+
+   The sectors are drawn whether or not there is a journey: they are the frame of reference, not
+   data, so a file with no key runs gets the wheel with nothing plotted on it rather than a
+   missing component. Both callers relied on that already; stating it once here is what keeps
+   them from diverging on it. #}
+        <g {% if interactive %}data-wheel-sectors {% endif %}>
+            {% for sector in journey.sectors %}
+            <path {% if interactive %}data-wheel-sector data-camelot-number="{{ sector.number }}" {% endif %}d="{{ sector.path }}"
+                  fill="hsl({{ sector.hue }}, 65%, 45%)" fill-opacity="0.22" stroke="hsl({{ sector.hue }}, 65%, 45%)" stroke-opacity="0.4" stroke-width="0.5"></path>
+            <text {% if interactive %}data-wheel-sector-label {% endif %}x="{{ sector.label_x }}" y="{{ sector.label_y }}" text-anchor="middle" dominant-baseline="middle"
+                  font-size="9"{% if palette.sector_label_font_family %} font-family="{{ palette.sector_label_font_family }}"{% endif %}{% if palette.sector_label_fill %} fill="{{ palette.sector_label_fill }}"{% endif %}{% if palette.sector_label_class %} class="{{ palette.sector_label_class }}"{% endif %}>{{ sector.number }}</text>
+            {% endfor %}
+        </g>
+        {% if journey.has_journey %}
+        {# An ADJACENT move is the accent the rest of the record uses for its own controls; a JUMP
+           is the review amber and is dashed, so the two are distinguishable without colour as
+           well as with it -- the same "never colour alone" rule the timeline's lanes follow, and
+           the reason the dash is NOT a palette entry. #}
+        <g {% if interactive %}data-journey-edges {% endif %}fill="none" stroke-width="2" stroke-linecap="round">
+            {% for edge in journey.edges %}
+            <line {% if interactive %}data-journey-edge data-edge-kind="{{ edge.kind }}" data-edge-at="{{ edge.at_sec }}" {% endif %}x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}"
+                  {% if not edge.adjacent %}stroke-dasharray="5 4"{% if palette.jump_stroke %} stroke="{{ palette.jump_stroke }}"{% endif %}{% if palette.jump_class %} class="{{ palette.jump_class }}"{% endif %}{% else %}{% if palette.adjacent_stroke %}stroke="{{ palette.adjacent_stroke }}"{% endif %}{% if palette.adjacent_class %} class="{{ palette.adjacent_class }}"{% endif %}{% endif %}>
+                  {%- if interactive %}<title>{{ edge.label }} at {{ edge.at_label }}{{ ' (jump)' if not edge.adjacent else '' }}</title>{% endif %}</line>
+            {% endfor %}
+        </g>
+        {# One node per surviving key run. Radius encodes dwell by AREA (see the service), so a
+           set that sat in one key for an hour cannot read the same as one that passed through. #}
+        <g {% if interactive %}data-journey-nodes {% endif %}>
+            {% for node in journey.nodes %}
+            <circle {% if interactive %}data-journey-node data-camelot-code="{{ node.code }}" data-camelot-number="{{ node.number }}" data-node-index="{{ node.index }}" {% endif %}cx="{{ node.cx }}" cy="{{ node.cy }}" r="{{ node.r }}"
+                    fill="hsl({{ node.hue }}, 65%, 45%)" stroke="{{ palette.node_stroke }}" stroke-width="1"{% if palette.node_class %} class="{{ palette.node_class }}"{% endif %}>
+                    {%- if interactive %}<title>{{ node.code }} from {{ node.start_label }}, held {{ node.dwell_label }}</title>{% endif %}</circle>
+            {% endfor %}
+        </g>
+        {% endif %}
+{% endmacro %}
+
+{% macro energy_area_marks(segments, palette) %}
+{# One filled area per CONTIGUOUS run of measured coarse windows, so a coverage hole is drawn as
+   a hole. A run of exactly one window has no second point to draw a polygon between and is a dot
+   -- dropping it would render a measured window as a gap, the one thing this lane must never do.
+
+   `vector-effect="non-scaling-stroke"` on every stroked mark: both callers embed this in a
+   viewBox stretched by `preserveAspectRatio="none"`, which would otherwise scale the stroke
+   width by the (very different) x and y factors and give a 1.5px line a smeared thickness. #}
+        {% for segment in segments %}
+        <polygon points="{{ segment.area_points }}" fill="{{ palette.energy_fill }}" fill-opacity="{{ palette.energy_area_opacity }}" />
+        {% if segment.single_x is not none %}
+        <circle cx="{{ segment.single_x }}" cy="{{ segment.single_y }}" r="2.5" fill="{{ palette.energy_fill }}" vector-effect="non-scaling-stroke" />
+        {% else %}
+        <polyline points="{{ segment.points }}" fill="none" stroke="{{ palette.energy_fill }}" stroke-width="1.5"
+                  stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />
+        {% endif %}
+        {% endfor %}
+{% endmacro %}

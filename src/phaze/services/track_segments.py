@@ -26,6 +26,7 @@ implementation.
 
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass
 import math
 import statistics
@@ -72,20 +73,8 @@ class TrackSegment:
     half- or double-time window would drag a mean well off the track's real tempo."""
     camelot: str | None
     """Duration-weighted modal Camelot code of the intersecting FINE windows."""
-    key: str | None
-    """That code's canonical key name ("8A" -> "A minor"), for the operator who does not read
-    the wheel."""
-    key_hue: int | None
-    """``analysis_timeline.hue_for`` of the key NAME -- the identical call the key ribbon on the
-    timeline makes, so one key is one colour on both surfaces. An open vocabulary of key strings
-    is exactly what that hash is for, and is why the moods use a table instead."""
     mood: str | None
     """The argmax of the seven per-mood MEANS across the intersecting COARSE windows."""
-    mood_label: str | None
-    mood_hue: int | None
-    """From ``analysis_timeline.MOOD_HUES`` -- the same table the river and its legend read, so
-    a mood is one colour wherever it appears. Carried on the segment so the four surfaces that
-    render the tracklist fragment cannot each acquire a different palette."""
     energy: float | None
     """Mean of the intersecting COARSE windows' stored energy scalars."""
     title: str | None = None
@@ -93,6 +82,39 @@ class TrackSegment:
     is inside without the client re-joining the tracklist table (``phaze-x1qr3.10``). Defaulted,
     so every existing construction of this dataclass keeps working unchanged; ``None`` is the
     honest answer for a scraped row that carried no title at all."""
+
+    # The four PRESENTATION readings below were stored fields, computed by the one constructor
+    # call in ``build_track_segments`` and then carried. Each is a pure function of ``camelot``
+    # or ``mood`` alone, so as fields they made an inconsistent segment REPRESENTABLE: a
+    # ``TrackSegment(camelot="8A", key="F# minor", ...)`` type-checks, constructs, and renders a
+    # key name that contradicts the code beside it. As properties there is nothing to keep in
+    # step -- the render path reads the same attribute names it always did, and the only writable
+    # state left is what was actually measured.
+
+    @property
+    def key(self) -> str | None:
+        """``camelot``'s canonical key name ("8A" -> "A minor"), for the operator who does not
+        read the wheel."""
+        return key_name_for_camelot(self.camelot) if self.camelot else None
+
+    @property
+    def key_hue(self) -> int | None:
+        """``analysis_timeline.hue_for`` of the key NAME -- the identical call the key ribbon on
+        the timeline makes, so one key is one colour on both surfaces. An open vocabulary of key
+        strings is exactly what that hash is for, and is why the moods use a table instead."""
+        return hue_for(key_name_for_camelot(self.camelot) or self.camelot) if self.camelot else None
+
+    @property
+    def mood_label(self) -> str | None:
+        """``mood``'s display name from ``analysis_timeline.MOOD_LABELS``."""
+        return MOOD_LABELS.get(self.mood) if self.mood else None
+
+    @property
+    def mood_hue(self) -> int | None:
+        """From ``analysis_timeline.MOOD_HUES`` -- the same table the river and its legend read,
+        so a mood is one colour wherever it appears. Read off the segment so the four surfaces
+        that render the tracklist fragment cannot each acquire a different palette."""
+        return MOOD_HUES.get(self.mood) if self.mood else None
 
 
 def _timestamped(tracks: Sequence[TracklistTrack]) -> list[tuple[int, float]]:
@@ -111,11 +133,53 @@ def _timestamped(tracks: Sequence[TracklistTrack]) -> list[tuple[int, float]]:
     return result
 
 
-def _midpoint_within(window: AnalysisWindow, start: float, end: float | None) -> bool:
-    if end is None or not math.isfinite(window.start_sec) or not math.isfinite(window.end_sec):
-        return False
-    midpoint = (window.start_sec + window.end_sec) / 2.0
-    return start <= midpoint < end
+def _midpoint(window: AnalysisWindow) -> float | None:
+    """A window's centre, or ``None`` when either bound is non-finite (rule 2 cannot place it)."""
+    if not math.isfinite(window.start_sec) or not math.isfinite(window.end_sec):
+        return None
+    return (window.start_sec + window.end_sec) / 2.0
+
+
+class _MidpointIndex:
+    """Windows sorted by MIDPOINT, so a segment's members are one slice rather than one scan.
+
+    Rule 2 (module docstring) places a window in exactly one segment, by its centre, so
+    "the windows of segment i" is the half-open midpoint interval ``[start, end)`` and two
+    bisects name it. The scan it replaces was O(tracks x windows) per TIER -- a 40-track set of
+    1,440 fine and 240 coarse windows is 67,200 predicate evaluations for 40 answers, and both
+    tiers were scanned separately (PR #556 review, finding 6).
+
+    Deliberately does NOT assume the segments themselves are ordered. A non-monotonic pair of
+    scraped timestamps is a real 1001Tracklists defect this module already handles, so a moving
+    cursor over the segments would be a new assumption bought for nothing; two bisects per
+    segment cost the same and assume only what is actually true.
+
+    Members come back in the caller's original order. ``_mean_energy`` and ``_argmax_mood`` both
+    aggregate with float addition, which is not associative, so returning them in midpoint order
+    would shift the last bits of a rendered value for no reason a reader could reconstruct.
+    """
+
+    __slots__ = ("_midpoints", "_rows")
+
+    def __init__(self, windows: Sequence[AnalysisWindow]) -> None:
+        placeable = [(midpoint, arrival, window) for arrival, window in enumerate(windows) if (midpoint := _midpoint(window)) is not None]
+        self._rows = sorted(placeable, key=lambda row: row[0])
+        self._midpoints = [row[0] for row in self._rows]
+
+    def within(self, start: float, end: float | None) -> list[AnalysisWindow]:
+        """The windows whose midpoint falls in ``[start, end)``, in the caller's order.
+
+        ``end`` of ``None`` is the last track of a file whose duration is unknown: it collects
+        nothing rather than claiming the rest of the file, which is what ``TrackSegment.end_sec``
+        documents and what the scan it replaces did.
+        """
+        if end is None:
+            return []
+        low = bisect.bisect_left(self._midpoints, start)
+        high = bisect.bisect_left(self._midpoints, end)
+        if low >= high:
+            return []
+        return [window for _midpoint, _arrival, window in sorted(self._rows[low:high], key=lambda row: row[1])]
 
 
 def _median_bpm(windows: Sequence[AnalysisWindow]) -> float | None:
@@ -190,15 +254,15 @@ def build_track_segments(
     # tracks, so the two lists are not positionally parallel and a zip would attach one
     # track's title to the next track's segment.
     titles = {track.position: track.title for track in tracks}
-    fine = [window for window in windows if window.tier == "fine"]
-    coarse = [window for window in windows if window.tier == "coarse"]
+    fine = _MidpointIndex([window for window in windows if window.tier == "fine"])
+    coarse = _MidpointIndex([window for window in windows if window.tier == "coarse"])
     closing = duration_sec if duration_sec is not None and math.isfinite(duration_sec) and duration_sec > bounds[-1][1] else None
 
     segments: list[TrackSegment] = []
     for index, (position, start) in enumerate(bounds):
         end = max(start, bounds[index + 1][1]) if index + 1 < len(bounds) else closing
-        in_fine = [window for window in fine if _midpoint_within(window, start, end)]
-        in_coarse = [window for window in coarse if _midpoint_within(window, start, end)]
+        in_fine = fine.within(start, end)
+        in_coarse = coarse.within(start, end)
         camelot = modal_camelot(in_fine)
         mood = _argmax_mood(in_coarse)
         segments.append(
@@ -208,11 +272,7 @@ def build_track_segments(
                 end_sec=end,
                 bpm=_median_bpm(in_fine),
                 camelot=camelot,
-                key=key_name_for_camelot(camelot) if camelot else None,
-                key_hue=hue_for(key_name_for_camelot(camelot) or camelot) if camelot else None,
                 mood=mood,
-                mood_label=MOOD_LABELS.get(mood) if mood else None,
-                mood_hue=MOOD_HUES.get(mood) if mood else None,
                 energy=_mean_energy(in_coarse),
                 title=titles.get(position),
             )

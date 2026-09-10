@@ -20,6 +20,7 @@ import pytest
 from phaze.models.analysis import AnalysisWindow
 from phaze.models.tracklist import TracklistTrack
 from phaze.services.analysis_timeline import MOOD_HUES, MOOD_LABELS, hue_for
+from phaze.services.set_projection import key_name_for_camelot
 from phaze.services.track_segments import TrackSegment, build_track_segments
 
 
@@ -207,6 +208,41 @@ def test_a_coarse_window_with_no_mood_scores_contributes_nothing_rather_than_zer
 
 # --- The exposed shape --------------------------------------------------------------------
 
+# Read off the segment by the render path (`_tracklist_review_body.html`, `services/poster.py`)
+# and by `phaze-x1qr3.10`'s readout, so they are part of the exposed shape whether they are
+# stored or derived.
+_DERIVED_READINGS = ("key", "key_hue", "mood_label", "mood_hue")
+
+
+def test_the_derived_readings_cannot_contradict_the_measurements_they_come_from() -> None:
+    """A segment's key name, key hue, mood label and mood hue are FUNCTIONS of `camelot`/`mood`.
+
+    As stored fields they were set by the one constructor call in `build_track_segments` and
+    then carried, which made `TrackSegment(camelot="8A", key="F# minor", ...)` a value the type
+    checker, the constructor and every renderer accept -- a key name contradicting the code
+    printed beside it. This asserts the two halves agree by CONSTRUCTION: setting them is not
+    possible, and reading them re-derives from the measurement.
+    """
+    segment = build_track_segments([_track(1, "0:00")], [_fine(0, 0.0, 30.0, bpm=128.0, camelot="8A")], 600.0)[0]
+
+    assert segment.camelot == "8A"
+    assert segment.key == key_name_for_camelot("8A")
+    assert segment.key_hue == hue_for(key_name_for_camelot("8A") or "8A")
+    with pytest.raises((AttributeError, TypeError)):
+        TrackSegment(position=1, start_sec=0.0, end_sec=1.0, bpm=None, camelot="8A", mood=None, energy=None, key="F# minor")  # type: ignore[call-arg]
+
+    moody = build_track_segments(
+        [_track(1, "0:00")],
+        [_coarse(0, 0.0, 180.0, moods={"mood_happy": 0.9})],
+        600.0,
+    )[0]
+    assert moody.mood == "mood_happy"
+    assert moody.mood_label == MOOD_LABELS["mood_happy"]
+    assert moody.mood_hue == MOOD_HUES["mood_happy"]
+
+
+# --- The field list -------------------------------------------------------------------------
+
 
 def test_the_segment_shape_is_what_the_inspection_and_poster_beads_will_read() -> None:
     """The record context's ``track_segments`` entries carry exactly these fields, in this order.
@@ -220,17 +256,19 @@ def test_the_segment_shape_is_what_the_inspection_and_poster_beads_will_read() -
         "end_sec",
         "bpm",
         "camelot",
-        "key",
-        "key_hue",
         "mood",
-        "mood_label",
-        "mood_hue",
         "energy",
         # phaze-x1qr3.10 appended `title`, defaulted, so the timeline readout can say "track 7
         # <title>" without re-joining the tracklist table client-side. Appended and defaulted on
         # purpose: every existing construction of this frozen dataclass keeps working.
         "title",
     ]
+    # `key`, `key_hue`, `mood_label` and `mood_hue` LEFT this list without leaving the segment:
+    # each is a pure function of `camelot` or `mood`, so they are properties now (PR #556 review,
+    # finding 8) and an inconsistent segment is no longer representable. The consumers read the
+    # same attribute names, which is what the pin above is really protecting, so both halves are
+    # asserted together.
+    assert [name for name in _DERIVED_READINGS if not isinstance(getattr(TrackSegment, name, None), property)] == []
 
     segment = build_track_segments([_track(1, "0:00")], [_fine(0, 0.0, 30.0, bpm=128.0, camelot="8A")], 600.0)[0]
     assert isinstance(segment, TrackSegment)

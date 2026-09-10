@@ -40,7 +40,6 @@ import structlog
 from phaze.database import get_session
 from phaze.models.file import FileRecord
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
-from phaze.services.set_glyph_colors import CAMELOT_LEGEND, ENERGY_LIGHTNESS_STEP_COUNT, camelot_hue, energy_lightness
 from phaze.services.stage_status import applied_clause, is_applied
 from phaze.services.tag_comparison import (
     _build_comparison,
@@ -55,22 +54,14 @@ from phaze.services.tag_comparison import (
 )
 from phaze.services.tag_proposal import CORE_FIELDS, compute_proposed_tags
 from phaze.services.tag_writer import TagWriteAlreadyQueuedError, enqueue_tag_write
+from phaze.web.template_globals import register_set_glyph_globals
 
 
 logger = structlog.get_logger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-# phaze-5x8za: write_file_tags/undo_tag_write re-render `_diff_row.html` (via
-# tags/partials/tagwrite_diff_row.html) through THIS env, which draws the set glyph via the same
-# `ui/primitives.html` macro `routers/record.py` registers these four globals for -- mirrored here
-# for the same reason `routers/proposals.py` needed its own copy (each `Jinja2Templates(...)` call
-# owns a distinct `Environment`, so a global registered on one router's `templates` is invisible
-# to another's).
-templates.env.globals["camelot_hue"] = camelot_hue
-templates.env.globals["energy_lightness"] = energy_lightness
-templates.env.globals["camelot_legend"] = CAMELOT_LEGEND
-templates.env.globals["energy_lightness_step_count"] = ENERGY_LIGHTNESS_STEP_COUNT
+register_set_glyph_globals(templates.env)
 router = APIRouter(prefix="/tags", tags=["tags"])
 
 # D-03: bound the operator-triggered no-discrepancy bulk loop. Reviving the applied() gate can make a

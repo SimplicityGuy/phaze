@@ -22,8 +22,8 @@ from fastapi import APIRouter
 from fastapi.templating import Jinja2Templates
 import structlog
 
-from phaze.services.set_glyph_colors import CAMELOT_LEGEND, ENERGY_LIGHTNESS_STEP_COUNT, camelot_hue, energy_lightness
 from phaze.web.static import static_asset_url
+from phaze.web.template_globals import register_set_glyph_globals
 
 
 # phaze-oau1o: the logger name is PINNED to the old module path rather than taken from ``__name__``.
@@ -47,15 +47,7 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # phaze-315t: fingerprinted, cache-forever static asset URLs (app.css link + favicon set), used by
 # any template rendered through this env that pulls in `base.html`/`shell.html` chrome.
 templates.env.globals["static_url"] = static_asset_url
-# phaze-x1qr3.9: this package renders `files_table_view.html`'s per-row set glyph (the SAME
-# `ui/primitives.html` macro `routers/record.py` registers these for), so its OWN Jinja
-# Environment needs the same four globals -- `{% import %}` shares the calling template's
-# Environment, but Environment.globals is per-instance, not process-wide, and this router builds
-# its own `Jinja2Templates` (see the module docstring above).
-templates.env.globals["camelot_hue"] = camelot_hue
-templates.env.globals["energy_lightness"] = energy_lightness
-templates.env.globals["camelot_legend"] = CAMELOT_LEGEND
-templates.env.globals["energy_lightness_step_count"] = ENERGY_LIGHTNESS_STEP_COUNT
+register_set_glyph_globals(templates.env)
 router = APIRouter(tags=["pipeline"])
 
 # Hold references to background enqueue tasks to prevent GC (same pattern as scan.py). Typed

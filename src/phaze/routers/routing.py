@@ -29,6 +29,7 @@ from fastapi.templating import Jinja2Templates
 
 from phaze.database import get_session
 from phaze.models.route_control import RouteControl
+from phaze.web.template_globals import register_set_glyph_globals
 
 
 if TYPE_CHECKING:
@@ -37,6 +38,7 @@ if TYPE_CHECKING:
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+register_set_glyph_globals(templates.env)
 router = APIRouter(tags=["pipeline"])
 
 # UI-SPEC BEUI-02 confirmation copy carried by the OOB polite-aria-live toast (engage vs revert).

@@ -23,7 +23,7 @@ import pytest
 from sqlalchemy.dialects import postgresql
 
 from phaze.models.analysis import AnalysisWindow
-from phaze.services.set_projection import MOOD_ORDER, SetProfileProjection, energy as energy_scalar, positive_class_vector
+from phaze.services.set_projection import MOOD_ORDER, OverlapIndex, SetProfileProjection, energy as energy_scalar, positive_class_vector
 from phaze.services.set_projection_writer import (
     MAX_PLAUSIBLE_BPM,
     MIN_PLAUSIBLE_BPM,
@@ -58,20 +58,20 @@ def test_bpm_stats_reports_mean_and_stdev_for_a_real_spread() -> None:
 
 
 def test_bpm_z_for_range_is_zero_with_no_stats() -> None:
-    assert _bpm_z_for_range([(0.0, 30.0, 120.0)], 0.0, 180.0, None) == 0.0
+    assert _bpm_z_for_range(OverlapIndex([(0.0, 30.0, 120.0)]), 0.0, 180.0, None) == 0.0
 
 
 def test_bpm_z_for_range_is_zero_when_no_fine_window_overlaps() -> None:
     """Stats exist (the file has usable fine BPM elsewhere), but none of the fine windows fall
     inside THIS coarse window's time range -- z reads 0.0 rather than reaching outside the range."""
     stats = (120.0, 10.0)
-    fine_ranges = [(0.0, 30.0, 100.0), (30.0, 60.0, 140.0)]
+    fine_ranges = OverlapIndex([(0.0, 30.0, 100.0), (30.0, 60.0, 140.0)])
     assert _bpm_z_for_range(fine_ranges, 500.0, 680.0, stats) == 0.0
 
 
 def test_bpm_z_for_range_scores_the_overlapping_windows_average() -> None:
     stats = (120.0, 10.0)
-    fine_ranges = [(0.0, 30.0, 130.0), (30.0, 60.0, 130.0)]
+    fine_ranges = OverlapIndex([(0.0, 30.0, 130.0), (30.0, 60.0, 130.0)])
     assert _bpm_z_for_range(fine_ranges, 0.0, 60.0, stats) == 1.0
 
 
@@ -149,7 +149,6 @@ def test_build_set_profile_upsert_statement_stamps_updated_at_explicitly() -> No
         camelot_modal=None,
         harmonic_discipline=None,
         peak_sec=None,
-        sources={"bpm": "none"},
     )
 
     stmt = build_set_profile_upsert_statement(uuid.uuid4(), projection)

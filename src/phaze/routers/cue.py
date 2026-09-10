@@ -27,12 +27,14 @@ from phaze.schemas.agent_tasks import WriteCueSheetPayload
 from phaze.services import cue_review
 from phaze.services.cue_generator import CueTrackData, generate_cue_content
 from phaze.services.stage_status import is_applied
+from phaze.web.template_globals import register_set_glyph_globals
 
 
 logger = structlog.get_logger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+register_set_glyph_globals(templates.env)
 router = APIRouter(prefix="/cue", tags=["cue"])
 
 

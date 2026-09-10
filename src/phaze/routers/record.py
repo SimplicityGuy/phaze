@@ -42,11 +42,11 @@ from phaze.services.harmonic_journey import build_harmonic_journey
 from phaze.services.pipeline import derive_file_lane, get_file_orphan_details, get_file_stage_buckets
 from phaze.services.poster import build_poster_layout, build_poster_title, poster_track_rows
 from phaze.services.record_facts import build_record_facts
-from phaze.services.set_glyph_colors import CAMELOT_LEGEND, ENERGY_LIGHTNESS_STEP_COUNT, camelot_hue, energy_lightness
 from phaze.services.set_similarity import SimilarSet, find_similar_sets
 from phaze.services.track_segments import build_track_segments
 from phaze.services.tracklist_priority import get_file_tracklist_review
 from phaze.web.static import static_asset_url
+from phaze.web.template_globals import register_set_glyph_globals
 
 
 if TYPE_CHECKING:
@@ -56,12 +56,7 @@ if TYPE_CHECKING:
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.globals["static_url"] = static_asset_url
-# phaze-x1qr3.7: the set glyph macros' shared Camelot-hue / energy-lightness formulas (see
-# services/set_glyph_colors.py) and the legend's fixed 12-entry key table / 4-step scale length.
-templates.env.globals["camelot_hue"] = camelot_hue
-templates.env.globals["energy_lightness"] = energy_lightness
-templates.env.globals["camelot_legend"] = CAMELOT_LEGEND
-templates.env.globals["energy_lightness_step_count"] = ENERGY_LIGHTNESS_STEP_COUNT
+register_set_glyph_globals(templates.env)
 router = APIRouter(tags=["record"])
 
 

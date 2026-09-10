@@ -10,8 +10,12 @@ future callers (bead phaze-x1qr3.8's harmonic-journey wheel) may not enjoy that 
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 import pytest
 
+from phaze.services import set_glyph_colors as set_glyph_colors_module
 from phaze.services.set_glyph_colors import (
     CAMELOT_HUE_STEP,
     CAMELOT_LEGEND,
@@ -21,7 +25,7 @@ from phaze.services.set_glyph_colors import (
     camelot_hue,
     energy_lightness,
 )
-from phaze.services.set_projection import CAMELOT_TABLE
+from phaze.services.set_projection import CAMELOT_TABLE, key_name_for_camelot
 
 
 @pytest.mark.parametrize("number", range(1, 13))
@@ -76,3 +80,24 @@ def test_camelot_legend_has_twelve_entries_in_wheel_order_matching_camelot_table
 
 def test_energy_lightness_step_count_is_four() -> None:
     assert ENERGY_LIGHTNESS_STEP_COUNT == 4
+
+
+def test_the_legend_reads_the_projections_own_inverse_rather_than_inverting_the_table_again() -> None:
+    """``CAMELOT_LEGEND`` is built by CALLING ``set_projection.key_name_for_camelot``.
+
+    The values it produces are checked above against an independently-inverted table, which is
+    the right check for CONTENT and cannot see the thing this bead is about: a second inversion
+    living here is equivalent on the day it is written and silently keeps the old answer the day
+    the shared inverse changes (an enharmonic spelling, a table entry), while the legend and the
+    swatches it labels still agree with each other. So this asserts the DEPENDENCY -- the
+    function is the one called, and no local inversion of ``CAMELOT_TABLE`` remains to drift.
+    """
+    module_source = Path(set_glyph_colors_module.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(module_source)
+    builder = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_minor_key_names")
+    called = {node.func.id for node in ast.walk(builder) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+    imported = {alias.name for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) for alias in node.names}
+
+    assert "key_name_for_camelot" in called, "the legend must read the projection's own inverse"
+    assert "CAMELOT_TABLE" not in imported, "importing the table back here is how a second inversion returns"
+    assert [(number, key_name_for_camelot(f"{number}A")) for number in range(1, 13)] == list(CAMELOT_LEGEND)

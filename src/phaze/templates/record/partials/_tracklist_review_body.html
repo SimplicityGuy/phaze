@@ -111,6 +111,14 @@
         </dl>
 
         {% if review.tracks %}
+        {# ONE pass over the segments, keyed by position, instead of a `selectattr` per ROW.
+           `selectattr(...) | list | first` walks the whole segment list for every track, which is
+           O(tracks squared) on a surface that re-renders on every Prioritize and Refresh -- a
+           60-track set walked 3,600 segments to answer 60 lookups (PR #556 review, finding 6).
+           `update` is the Jinja idiom for building a mapping in a loop; `{% set _ = ... %}` is
+           there because the expression statement has to land somewhere. #}
+        {% set segment_by_position = {} %}
+        {% for segment in track_segments | default([], true) %}{% set _ = segment_by_position.update({segment.position: segment}) %}{% endfor %}
         <div class="relative mt-3 overflow-x-auto">
             <table class="w-full text-left text-xs">
                 <thead>
@@ -130,7 +138,7 @@
                 </thead>
                 <tbody>
                     {% for track in review.tracks %}
-                    {% set segment = (track_segments | default([], true) | selectattr('position', 'equalto', track.position) | list | first) %}
+                    {% set segment = segment_by_position.get(track.position) %}
                     {# phaze-x1qr3.10: a row with a SEGMENT is an index into the timeline -- hovering
                        or focusing it moves the timeline cursor to that track's midpoint, and the
                        timeline moving back highlights it. Only such a row becomes focusable: a track
