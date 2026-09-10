@@ -78,13 +78,16 @@ def _minor_key_names() -> tuple[tuple[int, str], ...]:
     answer, with the legend and the swatches it labels still agreeing with each other.
 
     Every one of the 12 minor positions ("1A".."12A") is in the table -- the wheel is a
-    bijection -- so the lookup never comes back ``None``; the assert states that rather than
-    inventing a fallback name for a position that cannot occur.
+    bijection -- so the lookup never comes back ``None``; the explicit raise states that
+    invariant rather than inventing a fallback name for a position that cannot occur, and does
+    so without a bare ``assert`` (stripped under ``python -O``, and flagged by bandit's B101 on
+    a non-test module) standing in for the check.
     """
     names: list[tuple[int, str]] = []
     for number in range(1, 13):
         key = key_name_for_camelot(f"{number}A")
-        assert key is not None, f"CAMELOT_TABLE has no minor key at wheel position {number}"
+        if key is None:
+            raise ValueError(f"CAMELOT_TABLE has no minor key at wheel position {number}")
         names.append((number, key))
     return tuple(names)
 
