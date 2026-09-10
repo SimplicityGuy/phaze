@@ -43,7 +43,7 @@ from phaze.services.pipeline import derive_file_lane, get_file_orphan_details, g
 from phaze.services.poster import build_poster_layout, build_poster_title, poster_track_rows
 from phaze.services.record_facts import build_record_facts
 from phaze.services.set_glyph_colors import CAMELOT_LEGEND, ENERGY_LIGHTNESS_STEP_COUNT, camelot_hue, energy_lightness
-from phaze.services.set_similarity import find_similar_sets
+from phaze.services.set_similarity import SimilarSet, find_similar_sets
 from phaze.services.track_segments import build_track_segments
 from phaze.services.tracklist_priority import get_file_tracklist_review
 from phaze.web.static import static_asset_url
@@ -171,6 +171,8 @@ async def _load_pending_rows(session: AsyncSession, file_id: uuid.UUID) -> tuple
 async def build_file_record_context(
     file_id: uuid.UUID,
     session: AsyncSession,
+    *,
+    include_similar_sets: bool = False,
 ) -> dict[str, Any] | None:
     """Build the one strictly file-scoped context shared by both record presentations.
 
@@ -178,6 +180,14 @@ async def build_file_record_context(
     response in the caller. Otherwise every read below is scoped strictly by ``file_id``
     (T-31-06-02). Keeping this assembly request- and presentation-agnostic prevents the drawer and
     canonical page from diverging on facts, eligibility, tracklists, proposals, or history.
+
+    ``include_similar_sets`` is the one deliberate exception to that presentation-agnosticism
+    (phaze-zb5y9), and it is a read the OTHER two presentations cannot render: ``similar_sets``
+    appears only in ``record_page.html``'s sidebar, while the drawer (``record_body.html``) and
+    the poster (``poster.svg``) have no slot for it. The similarity scan is a corpus-wide scan of
+    ``set_profile``; the drawer is issued on EVERY Files-table row click, so paying that scan
+    there bought nothing and cost one full-corpus scan per click. It defaults to ``False`` so a
+    new presentation cannot silently inherit the scan -- only the full page opts in.
     """
     file = await session.get(FileRecord, file_id)
     if file is None:
@@ -261,14 +271,20 @@ async def build_file_record_context(
     # every other file's set_profile row, scored against THIS file's already-loaded profile,
     # bpm, style and mood (no second read of file_id's own data; see
     # set_similarity.find_similar_sets).
-    similar_sets = await find_similar_sets(
-        session,
-        file_id,
-        set_profile,
-        analysis.bpm if analysis is not None else None,
-        analysis.style if analysis is not None else None,
-        analysis.mood if analysis is not None else None,
-    )
+    #
+    # phaze-zb5y9: run ONLY for the presentation that renders it (the full page). The empty list
+    # keeps the context key present for every presentation, so a template reading `similar_sets`
+    # sees the same shape either way rather than an undefined name.
+    similar_sets: list[SimilarSet] = []
+    if include_similar_sets:
+        similar_sets = await find_similar_sets(
+            session,
+            file_id,
+            set_profile,
+            analysis.bpm if analysis is not None else None,
+            analysis.style if analysis is not None else None,
+            analysis.mood if analysis is not None else None,
+        )
 
     return {
         "file": file,
@@ -322,7 +338,9 @@ async def file_record_page(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Return an addressable full document backed by the canonical record context."""
-    context = await build_file_record_context(file_id, session)
+    # phaze-zb5y9: the ONLY presentation with a "more like this set" slot, so the only one that
+    # pays the corpus-wide similarity scan.
+    context = await build_file_record_context(file_id, session, include_similar_sets=True)
     if context is None:
         return templates.TemplateResponse(
             request=request,

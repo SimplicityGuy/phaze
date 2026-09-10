@@ -42,12 +42,26 @@ rendered.
 model call, no external I/O. Ties are broken by `file_id` so two candidates scoring
 identically always order the same way across runs.
 
-**Complexity.** One `SELECT ... JOIN ... LEFT JOIN ...` loads every candidate row with a
-usable profile (`O(1)` round trips); scoring one candidate is `O(len(MOOD_ORDER) +
-ARC_POINTS)`, a fixed constant (11 + 64 = 75, plus two O(1) string comparisons for style and
-mood), so the whole call is `O(n)` in the number of candidate rows, never `O(n * m)` and never
-a query per candidate. See `tests/shared/services/test_set_similarity.py`'s corpus-scale test
-for a synthetic measurement of `n`.
+**Complexity, and what the candidate scan is allowed to carry (phaze-zb5y9).** Two queries,
+both `O(1)` round trips. The first loads every candidate row with a usable profile, selecting
+**only the four scored `SetProfile` columns** (`file_id`, `mean_vector`, `arc`,
+`camelot_modal`) plus the joined title/BPM/style/mood -- explicitly NOT `glyph`, the per-window
+JSONB the sidebar renders, which is ~240 cells for a 12 h set and which nothing in the scoring
+path reads. Hydrating it for every profiled file was the whole cost of this call: the scan is
+`O(n)` either way, but `n` glyphs is `O(n)` JSONB decodes for a result that keeps three. The
+second query loads the `SetProfile` entities for the `limit` WINNERS only, in one
+`WHERE file_id IN (...)`, so the sidebar still gets a real row to hand the glyph macro.
+
+Scoring one candidate is `O(len(MOOD_ORDER) + ARC_POINTS)`, a fixed constant (11 + 64 = 75,
+plus two O(1) string comparisons for style and mood). The top `limit` are kept with
+`heapq.nlargest` -- `O(n log limit)` rather than the `O(n log n)` of a full sort that then
+discards all but three rows. Its key is `(score, -file_id.int)`, which reproduces the previous
+`sort(key=(-score, str(file_id)))` ordering EXACTLY: `uuid.UUID.int` orders identically to the
+hyphenated lowercase-hex `str`, so negating it turns "smallest id first" into "largest key
+first" without changing which candidate wins a tie. See
+`tests/shared/services/test_set_similarity.py`'s corpus-scale test for a synthetic measurement
+of `n`, and `tests/integration/test_record_similarity_queries.py` for the SQL-level proof that
+the scan carries no `glyph` and runs on the full page only.
 
 **Gaps stay gaps, never a manufactured zero.** A `mean_vector` or `arc` position with no
 overlapping evidence between the query and a candidate (either side's value is `NaN`) is
@@ -62,6 +76,7 @@ projection renders elsewhere.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import heapq
 import math
 from typing import TYPE_CHECKING, Final
 
@@ -126,9 +141,10 @@ CATEGORICAL_NO_MATCH: Final[float] = 0.0
 class SimilarSet:
     """One "more like this set" row -- a scored candidate plus everything the sidebar renders.
 
-    ``set_profile`` is the candidate's own row, carried through unchanged so the sidebar can
-    hand it straight to the existing ``ui.set_glyph`` macro exactly as the record page and the
-    Files table already do, with no second read.
+    ``set_profile`` is the candidate's own row, carried through so the sidebar can hand it
+    straight to the existing ``ui.set_glyph`` macro exactly as the record page and the Files
+    table already do, with no second read *in the caller*. It is loaded by ``find_similar_sets``
+    for the WINNERS only (phaze-zb5y9) -- the candidate scan itself never carries ``glyph``.
     """
 
     file_id: uuid.UUID
@@ -136,6 +152,21 @@ class SimilarSet:
     score: float
     scoring_line: str
     set_profile: SetProfile
+
+
+@dataclass(frozen=True)
+class _ScoredCandidate:
+    """One scored candidate BEFORE its ``SetProfile`` entity is loaded (phaze-zb5y9).
+
+    Everything the ranking needs and nothing the ranking does not: the scan produces one of
+    these per candidate row, `heapq.nlargest` keeps ``limit`` of them, and only those get a
+    second query for the entity the sidebar renders.
+    """
+
+    file_id: uuid.UUID
+    title: str
+    score: float
+    scoring_line: str
 
 
 def _paired_finite(a: Sequence[float], b: Sequence[float]) -> list[tuple[float, float]]:
@@ -253,18 +284,21 @@ def _score_candidate(
     query_bpm: float | None,
     query_style: str | None,
     query_mood: str | None,
-    candidate: SetProfile,
+    candidate_file_id: uuid.UUID,
+    candidate_mean_vector: list[float] | None,
+    candidate_arc: list[float] | None,
+    candidate_camelot_modal: str | None,
     candidate_bpm: float | None,
     candidate_style: str | None,
     candidate_mood: str | None,
     title: str,
-) -> SimilarSet:
-    cosine = cosine_similarity(query_mean_vector, candidate.mean_vector or [])
-    distance = arc_distance(query_arc, candidate.arc or [])
+) -> _ScoredCandidate:
+    cosine = cosine_similarity(query_mean_vector, candidate_mean_vector or [])
+    distance = arc_distance(query_arc, candidate_arc or [])
     arc_sim = 1.0 / (1.0 + distance) if math.isfinite(distance) else 0.0
     bpm_pct = _bpm_pct_diff(query_bpm, candidate_bpm)
     bpm_sim = 1.0 / (1.0 + bpm_pct / BPM_DECAY_SCALE) if bpm_pct is not None else 0.0
-    key_sim = _key_term(query_camelot_modal, candidate.camelot_modal)
+    key_sim = _key_term(query_camelot_modal, candidate_camelot_modal)
     style_sim = _categorical_agreement(query_style, candidate_style)
     mood_sim = _categorical_agreement(query_mood, candidate_mood)
 
@@ -276,12 +310,11 @@ def _score_candidate(
         + SIMILARITY_WEIGHTS["bpm"] * bpm_sim
         + SIMILARITY_WEIGHTS["key"] * key_sim
     )
-    return SimilarSet(
-        file_id=candidate.file_id,
+    return _ScoredCandidate(
+        file_id=candidate_file_id,
         title=title,
         score=score,
-        scoring_line=_scoring_line(distance, bpm_pct, candidate.camelot_modal),
-        set_profile=candidate,
+        scoring_line=_scoring_line(distance, bpm_pct, candidate_camelot_modal),
     )
 
 
@@ -300,17 +333,28 @@ async def find_similar_sets(
     ``query_profile``, ``query_bpm``, ``query_style`` and ``query_mood`` are the CALLER's
     already-loaded reads (the record router already fetches its ``SetProfile`` and
     ``AnalysisResult`` rows to build the facts panel) -- this function takes no further read of
-    ``file_id``'s own data, so the only query it issues is the ONE candidate scan below.
-    Returns ``[]`` immediately, with no query at all, when the query file has no usable profile
-    of its own (no row, or one with no ``mean_vector``/``arc``) -- there is nothing to rank
-    candidates against.
+    ``file_id``'s own data. It issues exactly TWO queries (phaze-zb5y9): the candidate scan
+    below, which selects only the scored columns and never ``glyph``, and one
+    ``WHERE file_id IN (...)`` for the ``limit`` winners' ``SetProfile`` entities -- bounded by
+    ``limit``, not by the corpus. Returns ``[]`` immediately, with no query at all, when the
+    query file has no usable profile of its own (no row, or one with no ``mean_vector``/``arc``)
+    -- there is nothing to rank candidates against.
     """
     if query_profile is None or query_profile.mean_vector is None or query_profile.arc is None:
         return []
 
     title_column = func.coalesce(FileRecord.original_filename_repaired, FileRecord.original_filename)
     statement = (
-        select(SetProfile, title_column.label("title"), AnalysisResult.bpm, AnalysisResult.style, AnalysisResult.mood)
+        select(
+            SetProfile.file_id,
+            SetProfile.mean_vector,
+            SetProfile.arc,
+            SetProfile.camelot_modal,
+            title_column.label("title"),
+            AnalysisResult.bpm,
+            AnalysisResult.style,
+            AnalysisResult.mood,
+        )
         .join(FileRecord, FileRecord.id == SetProfile.file_id)
         .outerjoin(AnalysisResult, AnalysisResult.file_id == SetProfile.file_id)
         .where(SetProfile.file_id != file_id)
@@ -327,16 +371,47 @@ async def find_similar_sets(
             query_bpm=query_bpm,
             query_style=query_style,
             query_mood=query_mood,
-            candidate=candidate,
+            candidate_file_id=candidate_file_id,
+            candidate_mean_vector=candidate_mean_vector,
+            candidate_arc=candidate_arc,
+            candidate_camelot_modal=candidate_camelot_modal,
             candidate_bpm=candidate_bpm,
             candidate_style=candidate_style,
             candidate_mood=candidate_mood,
             title=title,
         )
-        for candidate, title, candidate_bpm, candidate_style, candidate_mood in rows
+        for (
+            candidate_file_id,
+            candidate_mean_vector,
+            candidate_arc,
+            candidate_camelot_modal,
+            title,
+            candidate_bpm,
+            candidate_style,
+            candidate_mood,
+        ) in rows
     ]
-    scored.sort(key=lambda similar: (-similar.score, str(similar.file_id)))
-    return scored[:limit]
+    # Same ordering as the full sort this replaced -- score DESC, then file_id ASC as the
+    # deterministic tiebreak -- at O(n log limit). See the module docstring on why negating
+    # `UUID.int` is the exact equivalent of the old `str(file_id)` ascending tiebreak.
+    winners = heapq.nlargest(limit, scored, key=lambda candidate: (candidate.score, -candidate.file_id.int))
+    if not winners:
+        return []
+
+    # The winners' full rows -- the ONLY place `glyph` is read, for `limit` files rather than
+    # for the whole corpus. One query, `IN (...)`, never a per-winner get.
+    profile_statement = select(SetProfile).where(SetProfile.file_id.in_([candidate.file_id for candidate in winners]))
+    profiles = {profile.file_id: profile for profile in (await session.execute(profile_statement)).scalars()}
+    return [
+        SimilarSet(
+            file_id=candidate.file_id,
+            title=candidate.title,
+            score=candidate.score,
+            scoring_line=candidate.scoring_line,
+            set_profile=profiles[candidate.file_id],
+        )
+        for candidate in winners
+    ]
 
 
 __all__ = [

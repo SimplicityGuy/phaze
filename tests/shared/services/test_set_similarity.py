@@ -477,6 +477,118 @@ async def test_scoring_line_never_grows_a_style_or_mood_segment(session: AsyncSe
 
 
 # ---------------------------------------------------------------------------
+# phaze-zb5y9: the top-`limit` selection moved from a full sort to `heapq.nlargest`, and the
+# candidate scan stopped hydrating `SetProfile` entities. Neither may change WHICH three
+# candidates come back, or in what order -- these two tests are the equivalence proof.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_top_three_are_the_prefix_of_the_full_ranking(session: AsyncSession, make_file) -> None:
+    """Asking for every candidate and asking for three must agree.
+
+    The full ranking is also asserted to be exactly ``sorted(key=(-score, str(file_id)))`` --
+    the literal key the pre-change implementation sorted by -- so this pins the new selection
+    to the old ordering rather than to itself.
+    """
+    query = await _seed_profile(
+        session, make_file, mean_vector=_BASE_VECTOR, arc=_BASE_ARC, camelot_modal="8A", bpm=128.0, original_filename="query.mp3"
+    )
+    # Deliberately mixed: some candidates differ in arc (distinct scores), others are exact
+    # duplicates of each other (tied scores, so the file_id tiebreak decides their order).
+    for i in range(8):
+        await _seed_profile(
+            session,
+            make_file,
+            mean_vector=list(_BASE_VECTOR),
+            arc=_shifted_arc(0.1 * (i % 4)),
+            camelot_modal="8A",
+            bpm=128.0,
+            original_filename=f"candidate-{i}.mp3",
+        )
+
+    query_profile = await session.get(SetProfile, query.id)
+    full = await find_similar_sets(session, query.id, query_profile, 128.0, None, None, limit=8)
+    top = await _find(session, query.id, query_profile, bpm=128.0)
+
+    assert len(full) == 8
+    assert [(n.file_id, n.score) for n in full] == [
+        (n.file_id, n.score) for n in sorted(full, key=lambda similar: (-similar.score, str(similar.file_id)))
+    ]
+    assert [n.file_id for n in top] == [n.file_id for n in full[:TOP_N]]
+    assert [n.scoring_line for n in top] == [n.scoring_line for n in full[:TOP_N]]
+
+
+@pytest.mark.asyncio
+async def test_candidates_tied_on_every_term_are_broken_by_ascending_file_id(session: AsyncSession, make_file) -> None:
+    """Six candidates identical on all six terms: only the tiebreak can order them.
+
+    ``heapq.nlargest`` is keyed on ``(score, -file_id.int)`` rather than the old
+    ``sort(key=(-score, str(file_id)))``; a tie is the only place those two could disagree, so
+    it is where the equivalence is asserted. ``UUID.int`` orders identically to the hyphenated
+    lowercase-hex ``str``, which is what makes the negation exact rather than approximate.
+    """
+    query = await _seed_profile(
+        session, make_file, mean_vector=_BASE_VECTOR, arc=_BASE_ARC, camelot_modal="8A", bpm=128.0, original_filename="query.mp3"
+    )
+    tied = [
+        await _seed_profile(
+            session,
+            make_file,
+            mean_vector=list(_BASE_VECTOR),
+            arc=list(_BASE_ARC),
+            camelot_modal="8A",
+            bpm=128.0,
+            original_filename=f"tied-{i}.mp3",
+        )
+        for i in range(6)
+    ]
+
+    query_profile = await session.get(SetProfile, query.id)
+    neighbours = await _find(session, query.id, query_profile, bpm=128.0)
+
+    assert len({round(n.score, 12) for n in neighbours}) == 1, "the fixture must really be a six-way tie"
+    assert [n.file_id for n in neighbours] == sorted((file.id for file in tied), key=str)[:TOP_N]
+
+
+@pytest.mark.asyncio
+async def test_the_returned_profiles_are_the_winners_own_rows_with_their_glyphs(session: AsyncSession, make_file) -> None:
+    """The candidate scan no longer carries ``glyph``, so the winners' rows are re-read.
+
+    ``SimilarSet.set_profile`` must still be the CANDIDATE's own row -- right ``file_id``, right
+    ``camelot_modal``, and a populated ``glyph`` -- because the sidebar hands it straight to the
+    shared ``ui.set_glyph`` macro. A hydration keyed on the wrong id would show one neighbour's
+    picture under another's title, which no ranking assertion would catch.
+    """
+    glyph_by_key = {"9A": [{"camelot_number": 9, "energy": 0.9}], "2A": [{"camelot_number": 2, "energy": 0.2}]}
+    query = await _seed_profile(
+        session, make_file, mean_vector=_BASE_VECTOR, arc=_BASE_ARC, camelot_modal="8A", bpm=128.0, original_filename="query.mp3"
+    )
+    for key, glyph in glyph_by_key.items():
+        candidate = await _seed_profile(
+            session,
+            make_file,
+            mean_vector=list(_BASE_VECTOR),
+            arc=list(_BASE_ARC),
+            camelot_modal=key,
+            bpm=128.0,
+            original_filename=f"{key}.mp3",
+        )
+        profile = await session.get(SetProfile, candidate.id)
+        assert profile is not None
+        profile.glyph = glyph
+    await session.commit()
+
+    query_profile = await session.get(SetProfile, query.id)
+    neighbours = await _find(session, query.id, query_profile, bpm=128.0)
+
+    assert len(neighbours) == len(glyph_by_key)
+    for neighbour in neighbours:
+        assert neighbour.set_profile.file_id == neighbour.file_id
+        assert neighbour.set_profile.glyph == glyph_by_key[neighbour.set_profile.camelot_modal]
+
+
+# ---------------------------------------------------------------------------
 # SYNTHETIC corpus-scale measurement.
 #
 # This machine has no route to the operator's production database (CLAUDE.md's seat-isolation
@@ -484,6 +596,11 @@ async def test_scoring_line_never_grows_a_style_or_mood_segment(session: AsyncSe
 # cannot be measured here. What CAN be measured, and is: rows scored and wall clock over a
 # synthetic corpus of a documented size, generated in-process. The bead comment records these
 # numbers labelled SYNTHETIC and names the real-corpus measurement as an operator item.
+#
+# phaze-zb5y9 re-measured the 20,000-row synthetic case (same shape as this test, every profile
+# carrying a 240-cell glyph -- a 12 h set's): 3.17-3.79 s before the change, 0.46-0.56 s after,
+# three consecutive calls each. Both numbers are on this seat's own test database and are
+# recorded on the bead; the 20,000-row seed stays OUT of the suite for the reason below.
 # ---------------------------------------------------------------------------
 
 
