@@ -267,7 +267,7 @@ async def build_file_record_context(
         lane=lane,
         lane_kind=lane_kind,
         coverage_text=type_cast("str | None", coverage_chip["text"] if isinstance(coverage_chip, dict) else None),
-        windows=windows,
+        analysis=analysis,
         camelot_modal=set_profile.camelot_modal if set_profile is not None else None,
     )
 

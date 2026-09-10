@@ -14,9 +14,10 @@ signal, but it is **not** the same claim as the brief's "style and dominant-mood
 that criterion rather than discharge it (review finding, phaze-x1qr3.11 changes-requested
 round 1). The fix is two DISCRETE agreement terms read off `AnalysisResult.style` and
 `AnalysisResult.mood` -- the same duration-weighted dominant labels
-`services.record_facts.dominant_label` derives for the sidebar's own "Mood · style" fact row,
-here read pre-computed off the file's `AnalysisResult` row (`aggregate_dominant` already wrote
-them once, at analysis completion) rather than re-derived from windows. `AnalysisResult` is
+`services.record_facts.build_record_facts` reads for the sidebar's own "Mood · style" fact row
+(`phaze-duyyw`: both surfaces read the identical `AnalysisResult` fields rather than each keeping
+its own window re-derivation), pre-computed off the file's `AnalysisResult` row (`aggregate_dominant`
+already wrote them once, at analysis completion) rather than re-derived from windows. `AnalysisResult` is
 already joined for `bpm` below, so `style`/`mood` cost no extra query. The remaining three
 terms are read from data no single vector or label carries: `arc` (Euclidean, the set's energy
 shape over time), `AnalysisResult.bpm` (the file's own aggregate tempo, already computed once
@@ -245,7 +246,7 @@ def _categorical_agreement(a: str | None, b: str | None) -> float:
     ``CATEGORICAL_NO_MATCH`` -- including when either side is missing (no credit for "I don't
     know" agreeing with anything). Shared by the ``style`` and ``mood`` terms, which read
     ``AnalysisResult.style`` / ``.mood`` -- the same duration-weighted dominant labels
-    ``services.record_facts.dominant_label`` derives for the sidebar's "Mood · style" fact row,
+    ``services.record_facts.build_record_facts`` reads for the sidebar's "Mood · style" fact row,
     here read pre-computed rather than re-derived from windows.
     """
     if not a or not b:

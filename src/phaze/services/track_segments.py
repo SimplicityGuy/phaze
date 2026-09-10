@@ -119,6 +119,19 @@ def _midpoint_within(window: AnalysisWindow, start: float, end: float | None) ->
 
 
 def _median_bpm(windows: Sequence[AnalysisWindow]) -> float | None:
+    """Median BPM of the fine windows inside ONE track segment -- a different quantity from the
+    sidebar's file-wide Median BPM (``phaze-duyyw``).
+
+    ``services/record_facts.py`` used to compute a file-wide window median with this same
+    ``> 0`` filter, and that duplication was the defect ``phaze-duyyw`` fixed: the sidebar now
+    reads ``AnalysisResult.bpm`` (the analyze stage's own confidence-gated aggregate) directly
+    instead. This function is not that duplication -- it has no per-file equivalent to read
+    instead, because ``AnalysisResult`` is 1:1 with the file, not with a track inside it. A
+    track's own median is a genuinely narrower quantity (the fine windows whose midpoint falls
+    inside THIS track's scraped time range, per ``build_track_segments``' rule 2), and no
+    per-track aggregate is written at analysis time for it to read. Kept intentionally separate
+    rather than sharing a helper with the module ``AnalysisResult.bpm`` is read from.
+    """
     values = [float(window.bpm) for window in windows if window.bpm is not None and math.isfinite(window.bpm) and window.bpm > 0]
     return round(statistics.median(values), 1) if values else None
 

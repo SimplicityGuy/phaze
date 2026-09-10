@@ -5,9 +5,26 @@ the top of the content it was describing. The full page's final layout moves tho
 the right sidebar and adds the four the set projection made available: how much of the file was
 actually analyzed, its median tempo, its modal key, and what it mostly sounds like.
 
-Built here rather than in the template for the ordinary reason: the four new values are
-DERIVATIONS (a median, two duration-weighted modes, a code named back to a key), and a
-derivation in Jinja is a derivation with no test. The template's remaining job is a loop.
+Built here rather than in the template for the ordinary reason: "Modal key" is a DERIVATION (a
+code named back to a key), and a derivation in Jinja is a derivation with no test. The template's
+remaining job is a loop.
+
+**Median BPM, dominant mood and dominant style are read off the file's ``AnalysisResult`` row,
+never re-derived from windows (phaze-duyyw).** This module used to recompute a median over the
+fine windows' ``bpm`` and a duration-weighted mode over the coarse windows' ``mood``/``style`` --
+a second implementation of exactly what ``analysis_windows.aggregate_bpm`` /
+``aggregate_dominant`` already computed once, at analysis completion, into
+``AnalysisResult.bpm`` / ``.mood`` / ``.style``. The two implementations could disagree, and did:
+``aggregate_bpm`` excludes windows with ``confidence == 0.0`` (unreliable BPM on short/silent
+audio), but ``AnalysisWindow`` carries no ``confidence`` column and ``FineWindow.as_payload_dict``
+never persists it, so the window-re-derivation here could not reproduce that gate and fell back to
+a weaker ``bpm > 0`` filter -- on a file whose only fine window was short enough to be gated at
+write time, ``AnalysisResult.bpm`` was ``None`` (the similarity line, which reads
+``AnalysisResult.bpm`` directly -- see ``services/set_similarity.py`` -- printed no BPM segment)
+while this module's re-derivation still produced a number, and on a multi-window file the two
+medians could simply differ. Reading the stored aggregate directly means the sidebar and the
+similarity term can never show two different numbers for the same file again -- there is only one
+place that computes them.
 
 Every fact is present in every render. A fact with nothing behind it renders an em dash rather
 than vanishing, so the list's shape does not change with the data -- an absent row reads as a
@@ -17,8 +34,6 @@ layout difference, while a dashed row reads as "not measured", which is what is 
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
-import statistics
 from typing import TYPE_CHECKING, Final
 
 from phaze.services.analysis_timeline import format_elapsed_time
@@ -26,9 +41,7 @@ from phaze.services.set_projection import key_name_for_camelot
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
-    from phaze.models.analysis import AnalysisWindow
+    from phaze.models.analysis import AnalysisResult
 
 
 # What an unmeasured fact renders as. One constant so the sidebar, and any test asserting the
@@ -72,39 +85,6 @@ class RecordFact:
     """True for a value read character by character (the digest), which wants a mono face."""
 
 
-def median_bpm(fine_windows: Sequence[AnalysisWindow]) -> float | None:
-    """Median of the fine windows' measured BPM, or ``None`` when none carries one.
-
-    Median, not mean, for the same reason ``services/track_segments.py`` takes one per track: a
-    single half- or double-time detection would drag a mean well off the set's real tempo, and
-    a multi-hour set has plenty of windows for one to hide in.
-    """
-    values = [window.bpm for window in fine_windows if window.bpm is not None and math.isfinite(window.bpm) and window.bpm > 0]
-    if not values:
-        return None
-    return statistics.median(values)
-
-
-def dominant_label(windows: Sequence[AnalysisWindow], attribute: str) -> str | None:
-    """Duration-weighted modal value of ``attribute`` across ``windows``, or ``None``.
-
-    Duration-weighted rather than counted, and for the same reason
-    :func:`phaze.services.set_projection.modal_camelot` is: windows are not all the same
-    length once a file's last window is short, and "what this set mostly is" is a question
-    about TIME, not about row counts. Ties resolve to whichever value ``max`` sees first,
-    which is stable for a given input ordering.
-    """
-    weights: dict[str, float] = {}
-    for window in windows:
-        value = getattr(window, attribute, None)
-        if not value or not math.isfinite(window.start_sec) or not math.isfinite(window.end_sec):
-            continue
-        weights[value] = weights.get(value, 0.0) + max(0.0, window.end_sec - window.start_sec)
-    if not weights:
-        return None
-    return max(weights, key=lambda label: weights[label])
-
-
 def _joined(*parts: str | None) -> str:
     """Join the present parts with a middle dot, or :data:`ABSENT` when none is present."""
     present = [part for part in parts if part]
@@ -119,7 +99,7 @@ def build_record_facts(
     lane: str,
     lane_kind: str | None,
     coverage_text: str | None,
-    windows: Sequence[AnalysisWindow],
+    analysis: AnalysisResult | None,
     camelot_modal: str | None,
 ) -> list[RecordFact]:
     """The eight facts, in the sidebar's own order, every one always present.
@@ -129,12 +109,17 @@ def build_record_facts(
     picture beside it does not cover. ``coverage_text`` is
     :func:`phaze.services.analysis_timeline.coverage_chip`'s own sentence, reused verbatim
     rather than recomposed, so "N coarse - M fine - no gaps" reads identically in both places.
+
+    ``analysis`` is the file's (at most one) ``AnalysisResult`` row -- ``None`` for a file never
+    analyzed to completion. Median BPM and Mood · style read ``analysis.bpm`` / ``.mood`` /
+    ``.style`` verbatim (rounding BPM for display only); see the module docstring for why this
+    module must not re-derive them from windows.
     """
-    fine = [window for window in windows if window.tier == "fine"]
-    coarse = [window for window in windows if window.tier == "coarse"]
     glyph, tone = _LANE_PRESENTATION.get(lane_kind or "", _LANE_FALLBACK)
     digest = sha256_hash or ""
-    tempo = median_bpm(fine)
+    tempo = analysis.bpm if analysis is not None else None
+    mood = analysis.mood if analysis is not None else None
+    style = analysis.style if analysis is not None else None
     return [
         RecordFact(label="Format", value=file_type or ABSENT),
         RecordFact(label="Duration", value=format_elapsed_time(total_sec) if total_sec > 0 else ABSENT),
@@ -148,7 +133,7 @@ def build_record_facts(
         RecordFact(label="Windows", value=coverage_text or ABSENT),
         RecordFact(label="Median BPM", value=str(round(tempo)) if tempo is not None else ABSENT),
         RecordFact(label="Modal key", value=_joined(camelot_modal, key_name_for_camelot(camelot_modal))),
-        RecordFact(label="Mood · style", value=_joined(dominant_label(coarse, "mood"), dominant_label(coarse, "style"))),
+        RecordFact(label="Mood · style", value=_joined(mood, style)),
     ]
 
 
@@ -156,6 +141,4 @@ __all__ = [
     "ABSENT",
     "RecordFact",
     "build_record_facts",
-    "dominant_label",
-    "median_bpm",
 ]
