@@ -196,8 +196,14 @@ async def test_drawer_swap_initializes_once_and_escape_still_closes_from_timelin
 
 _INSPECTION_DURATION_SEC = 720.0
 # `analysis_windows(projected=True)` puts the unique energy maximum on coarse window 4 of 6,
-# i.e. [480, 600) -- so the set's peak, and the resting cursor, is its midpoint.
-_PEAK_SEC = 540.0
+# i.e. [480, 600), whose midpoint is 540 s. That is the RAW-window argmax -- what `energy_peak`
+# returns, and what the resting cursor used to sit on. It is NOT what the page advertises since
+# phaze-0zx26: the rest position now reads the STORED `set_profile.peak_sec`, the argmax over
+# the 64-point resampled arc, which averages neighbours and lands elsewhere. So this constant is
+# kept for exactly one job -- the value the rest position must NOT be. `_open_inspectable_record`
+# asserts the seeded profile differs from it, which is what keeps this test able to tell the two
+# definitions apart; the resting expectation itself is read from the profile, never written here.
+_RAW_COARSE_PEAK_MIDPOINT_SEC = 540.0
 # Two scraped tracks. The second deliberately does NOT start at the peak's own coarse boundary,
 # so "focused the row" and "resting on the peak" are distinguishable states rather than the
 # same number reached two ways.
@@ -206,13 +212,16 @@ _TRACK_TWO_MIDPOINT_SEC = (_TRACK_TWO_START_SEC + _INSPECTION_DURATION_SEC) / 2
 _TRACK_ONE_MIDPOINT_SEC = _TRACK_TWO_START_SEC / 2
 
 
-async def _open_inspectable_record(page: Any, seed: Seeder) -> tuple[Any, Any]:
+async def _open_inspectable_record(page: Any, seed: Seeder) -> tuple[Any, Any, float]:
     """A record page carrying every inspection target: lanes, wheel, glyph and a tracklist.
 
     Every target is fed from the file's OWN stored rows -- the glyph through
     ``set_projection.build_profile``, the wheel through the same flicker filter the payload's
     key runs come from -- so a mark that lands on the wrong cell or the wrong node fails here
     rather than agreeing with a fixture that was built to match it.
+
+    Returns the seeded profile's ``peak_sec`` alongside the page, because that stored value is
+    the ONE quantity the rest position advertises (phaze-0zx26).
     """
     from datetime import date
 
@@ -221,7 +230,15 @@ async def _open_inspectable_record(page: Any, seed: Seeder) -> tuple[Any, Any]:
     file = await seed.file(filename="<set-01>.mp3")
     await seed.metadata(file, duration=_INSPECTION_DURATION_SEC)
     windows = await seed.analysis_windows(file, fine_count=24, coarse_count=6, projected=True)
-    await seed.set_profile(file, windows)
+    profile = await seed.set_profile(file, windows)
+    # Read the rest position from the row the page reads, rather than restating it as a literal:
+    # the assertion below is then about the page's rest position agreeing with the stored peak,
+    # which is the claim, instead of about a number that happens to match today. The guard keeps
+    # the fixture honest -- if the stored peak ever coincided with the raw-window argmax, every
+    # resting assertion in this test would pass for a page that had gone back to the raw one.
+    rest_sec = profile.peak_sec
+    assert rest_sec is not None, "the seeded profile must carry a peak for the page to rest on"
+    assert rest_sec != _RAW_COARSE_PEAK_MIDPOINT_SEC, "stored peak equals the raw-window argmax: this fixture no longer tells them apart"
 
     tracklist = Tracklist(
         external_id="inspection-set",
@@ -250,7 +267,7 @@ async def _open_inspectable_record(page: Any, seed: Seeder) -> tuple[Any, Any]:
     timeline = page.locator("[data-analysis-timeline]")
     await timeline.wait_for(state="visible")
     await page.wait_for_function("() => document.querySelector('[data-analysis-timeline]').dataset.timelineReady === 'true'")
-    return file, timeline
+    return file, timeline, rest_sec
 
 
 def _percent(value: str) -> float:
@@ -310,24 +327,32 @@ async def test_one_elapsed_time_drives_every_inspection_target_from_pointer_glyp
     glyph keeps the previous cell -- which every per-mark assertion in the world passes as long
     as it is looking at the mark that did update.
     """
-    _file, timeline = await _open_inspectable_record(page, seed)
+    _file, timeline, rest_sec = await _open_inspectable_record(page, seed)
     inspector = timeline.locator("[data-timeline-inspector]")
 
     # --- 1. Nothing hovered: the page rests on the set's peak and says so ---------------------
     resting = await _marks(page)
-    assert resting["valueNow"] == "540"
+    # The rest position IS the stored `set_profile.peak_sec` (phaze-0zx26), so it is compared
+    # against that value rather than against a literal. `aria-valuenow` is written as
+    # `toFixed(3)`, so the comparison rounds to the DOM's own precision -- NOT a tolerance on the
+    # position, which would be the one loosening that lets this stop discriminating: a rest on
+    # the raw-window argmax sits 2.86 s away and has to fail here.
+    assert float(resting["valueNow"]) == round(rest_sec, 3)
     assert "peak" in resting["tooltip"].lower()
     # aria-valuetext names all four facts the tooltip shows, so a screen reader is not told less.
-    assert "At 9:00" in resting["valueText"]
+    # The remaining marks are stated INDEPENDENTLY, not re-derived from `rest_sec` -- a mark
+    # computed the way the page computes it would agree with the page by construction.
+    # 537.142857 s (arc sample 47 of 64) rounds to 537 s for the readout, i.e. 8:57.
+    assert "At 8:57" in resting["valueText"]
     assert "track 2 Closing Track" in resting["valueText"]
     assert "key " in resting["valueText"] and "8B" in resting["valueText"]
     assert "mood " in resting["valueText"]
-    # The peak sits inside track 2, in the fine window starting at 540 s, in the second key run,
+    # The peak sits inside track 2, in the fine window starting at 510 s, in the second key run,
     # and over the fifth of six glyph cells. Every mark agrees, because one time decided them.
     assert resting["spanHidden"] is False
     assert _percent(resting["spanLeft"]) == pytest.approx((_TRACK_TWO_START_SEC / _INSPECTION_DURATION_SEC) * 100, abs=0.01)
     assert resting["ribbonCount"] == 1
-    assert float(resting["ribbonStart"]) == 540.0
+    assert float(resting["ribbonStart"]) == 510.0
     assert resting["rowPositions"] == ["2"]
     assert resting["ringHidden"] is False
     assert resting["ringNodeIndex"] == "1"
@@ -384,9 +409,12 @@ async def test_one_elapsed_time_drives_every_inspection_target_from_pointer_glyp
 
     # --- 6. Leaving returns the whole page to the peak ---------------------------------------
     await page.mouse.move(bounds["x"] + bounds["width"] * 0.4, bounds["y"] + 20)
-    assert (await _marks(page))["valueNow"] != "540"
+    assert (await _marks(page))["valueNow"] != resting["valueNow"]
     await page.mouse.move(4, 4)
-    await page.wait_for_function("() => document.querySelector('[data-timeline-inspector]').getAttribute('aria-valuenow') === '540'")
+    await page.wait_for_function(
+        "(expected) => document.querySelector('[data-timeline-inspector]').getAttribute('aria-valuenow') === expected",
+        arg=resting["valueNow"],
+    )
     left = await _marks(page)
     assert "peak" in left["tooltip"].lower()
     assert left == resting
@@ -441,7 +469,7 @@ async def test_a_burst_of_pointer_samples_in_one_frame_updates_the_page_once_and
     LAST sample's, not the first's. A leading-edge-only throttle passes the count and fails the
     position; the shipped one runs the first sample synchronously and the last on the next frame.
     """
-    _file, _timeline = await _open_inspectable_record(page, seed)
+    _file, _timeline, _rest_sec = await _open_inspectable_record(page, seed)
 
     result = await page.evaluate(
         """async () => {
@@ -495,7 +523,7 @@ async def test_the_tracklist_rows_are_re_resolved_after_an_htmx_swap_replaces_th
     or Refresh and would silently stop following the cursor. Asserted by REPLACING the rows and
     then inspecting -- the cache is invisible, its failure mode is not.
     """
-    _file, timeline = await _open_inspectable_record(page, seed)
+    _file, timeline, _rest_sec = await _open_inspectable_record(page, seed)
     inspector = timeline.locator("[data-timeline-inspector]")
 
     # Warm the cache: hover once so the row list is resolved and held.
