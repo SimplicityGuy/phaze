@@ -14,10 +14,16 @@ BPM Z-SCORE (an implementer decision, not an operator one -- mirrors how the dis
 ``ENERGY_WEIGHTS`` on phaze-x1qr3.2 as the implementer's pick). "File-local" means the reference
 distribution is THIS FILE's own fine-window BPMs, never the archive's. Per coarse window, ``z`` is
 the z-score -- against the file's own fine-window BPM mean/stdev -- of the mean BPM of the fine
-windows whose time range overlaps that coarse window. ``z = 0.0`` when the file has no fine BPM at
-all, when the file's fine BPMs carry zero variance (a z-score against a zero-width distribution is
-undefined), or when no fine window happens to overlap this particular coarse window -- in every one
-of those cases ``energy`` reads from the coarse positive-class scores alone.
+windows whose time range overlaps that coarse window. ``z = 0.0`` when the file has no usable fine
+BPM at all, when the file's usable fine BPMs carry zero variance (a z-score against a zero-width
+distribution is undefined), or when no usable fine window happens to overlap this particular coarse
+window -- in every one of those cases ``energy`` reads from the coarse positive-class scores alone.
+
+"USABLE" is :data:`MIN_PLAUSIBLE_BPM`..:data:`MAX_PLAUSIBLE_BPM`, not merely "not ``None``"
+(phaze-aswsz). The fine tier stores whatever ``RhythmExtractor2013`` returned and drops its
+confidence before persistence, so digital silence arrives here as a real-looking ``bpm`` of 738.3;
+see that constant for the measurement, why the gate is a band rather than a confidence threshold,
+and why it is applied to the coarse-window OVERLAP set as well as to the reference distribution.
 
 ``sources`` (the field :func:`upsert_set_profile` logs) is NOT simply
 :func:`phaze.services.set_projection.build_profile`'s own ``sources`` output: that function's
@@ -77,7 +83,56 @@ logger = structlog.get_logger(__name__)
 # what settles the weights and is what bumps this in practice). `services/set_projection_backfill.py`
 # re-derives exactly the rows whose `SetProfile.projection_version` falls behind this value -- never
 # the whole corpus -- so a bump here is what schedules a targeted re-backfill, not a schema change.
-CURRENT_PROJECTION_VERSION: Final[int] = 1
+#
+# 1 -> 2 (phaze-aswsz): the BPM z-score's reference distribution gained the plausible-tempo band
+# below, which changes `energy` for any file carrying at least one out-of-band fine window. The
+# corpus backfill has not run, but that is NOT the same as "no rows exist": the LIVE path
+# (`routers/agent_analysis.py::_replace_analysis_windows`) has written a `set_profile` row at
+# version 1 on every analysis completed since phaze-x1qr3.3 landed, and those rows carry the
+# distortion. The bump is what puts exactly them -- and nothing else -- in the backfill's
+# `projection_version <` predicate. Bumping when the affected population turns out to be empty
+# costs nothing; not bumping would leave a distorted row indistinguishable from a correct one.
+CURRENT_PROJECTION_VERSION: Final[int] = 2
+
+# The plausible-tempo band the BPM z-score's reference distribution is drawn from (phaze-aswsz).
+#
+# WHAT WENT WRONG WITHOUT IT. `services/analysis.py` stores every fine window's `bpm` unconditionally
+# (`round(float(bpm), 1)`), and the extractor's own `confidence` never reaches the database --
+# `FineWindow.as_payload_dict` omits it and `analysis_window` has no confidence column -- so the
+# number itself is the only signal this module can read. Measured IN THIS ENVIRONMENT (essentia
+# 2.1-beta6-dev, macOS arm64, the deployed `RhythmExtractor2013(method="multifeature")`, 44.1 kHz
+# digital silence): bpm 738.3, at confidence 0.0 over a 5 s buffer and 4.69 over a 30 s one.
+# `tests/analyze/services/pipeline/test_rhythm_silence_bpm.py` runs the real extractor and holds
+# that measurement. ONE such window is enough to distort a whole file's `energy`, `arc` and
+# `peak_sec` -- and the distortion is persisted. Measured over the 61-window fixture in
+# `tests/shared/services/test_set_projection_writer.py` (sixty ~128 BPM fine windows plus one
+# silent one, eleven coarse windows carrying real `features`): the file's population stdev goes
+# from 0.7957 to 77.5069, which flattens every coarse window's z-score from a real -0.201..+0.553
+# spread onto a near-uniform -0.13, and pushes the one coarse window the silent one overlaps from
+# +0.553 to +1.188. In `energy` that is up to 0.0635 on this file. Every other BPM reader already
+# gates (`analysis_windows.aggregate_bpm` on confidence, `analysis_timeline._valid_bpm` and
+# `record_facts.median_bpm` on `> 0`); this reader gated on `is not None` alone, and `> 0` would
+# not have caught 738.3 anyway.
+#
+# WHY A BAND RATHER THAN CONFIDENCE. Confidence is the sharper instrument -- 4.69 over 30 s of
+# silence is a real reading no band can see -- but it is not available here at any price this bead
+# can pay: it needs a nullable column on `analysis_window`, a migration, a wire-payload field, and
+# a backfill that could not recover the confidence of any already-analysed window, because the
+# value was never persisted. The band needs none of that and rejects the measured failure by a
+# factor of 3.4. This is the IMPLEMENTER's decision, not the operator's. Persisting confidence
+# stays the better fix and stays open, and is what a junk value landing INSIDE the band would call
+# for.
+#
+# WHY THESE BOUNDS. The deployed extractor declares its own search range through its `minTempo` /
+# `maxTempo` parameters -- read off the constructed algorithm in this environment as 40 and 208 --
+# so a value outside that range is not an estimate the extractor claims to have made. The ceiling
+# here is deliberately 220 rather than 208: wrongly EXCLUDING a real window distorts the very
+# reference distribution this constant exists to protect, so the gate carries twelve BPM of
+# headroom and fails open on the musical side while still rejecting the measured junk value by a
+# wide margin. The invariant that matters -- the band contains the extractor's own search range --
+# is asserted against the live algorithm in `test_rhythm_silence_bpm.py`, not restated here.
+MIN_PLAUSIBLE_BPM: Final[float] = 40.0
+MAX_PLAUSIBLE_BPM: Final[float] = 220.0
 
 
 def _extract(window: Any) -> dict[str, Any]:
@@ -94,9 +149,46 @@ def _extract(window: Any) -> dict[str, Any]:
     }
 
 
+def _plausible_bpm(value: float | None) -> float | None:
+    """A fine window's stored ``bpm`` when it falls inside the plausible-tempo band, else ``None``.
+
+    ``None`` covers the non-finite cases for free: ``NaN`` compares false against both bounds and
+    ``inf`` fails the ceiling, and either one reaching :func:`statistics.fmean` would poison the
+    whole FILE's reference distribution rather than one window's. This is
+    ``services/analysis_timeline._valid_bpm``'s "finite and physically meaningful, or an explicit
+    absence" contract with :data:`MIN_PLAUSIBLE_BPM` / :data:`MAX_PLAUSIBLE_BPM` in place of that
+    reader's ``> 0`` -- which admits 738.3 and is why a shared helper was not reused here.
+
+    Both bounds are INCLUSIVE: they are the edges of the range the extractor searches, not values
+    it cannot return.
+    """
+    if value is None or not MIN_PLAUSIBLE_BPM <= value <= MAX_PLAUSIBLE_BPM:
+        return None
+    return float(value)
+
+
+def _fine_bpm_ranges(facts: Sequence[Mapping[str, Any]]) -> list[tuple[float, float, float]]:
+    """``(start_sec, end_sec, bpm)`` for every fine window whose BPM is inside the band.
+
+    THE population, derived ONCE. :func:`compute_window_projection` takes both the z-score's
+    reference distribution and each coarse window's overlap set from this single list, and
+    :func:`logged_sources` reports on the same list. Two separate comprehensions over the same
+    facts is exactly how the band could come to be applied to the reference but not to the
+    overlap -- which would keep the junk window out of the file's mean and stdev while still
+    letting it drag the average of whichever coarse window it happens to sit in.
+    """
+    return [
+        (fact["start_sec"], fact["end_sec"], bpm) for fact in facts if fact["tier"] == "fine" and (bpm := _plausible_bpm(fact["bpm"])) is not None
+    ]
+
+
 def _bpm_stats(fine_bpms: Sequence[float]) -> tuple[float, float] | None:
     """Mean and (population) stdev of a file's fine-window BPMs, or ``None`` when there are fewer
-    than 2 values or the values carry zero variance (a z-score is undefined either way)."""
+    than 2 values or the values carry zero variance (a z-score is undefined either way).
+
+    ``fine_bpms`` must already have passed :func:`_plausible_bpm` -- this function has no view of
+    which values are tempi and which are the extractor's junk, and a single out-of-band value moves
+    the stdev it returns by two orders of magnitude (:data:`MIN_PLAUSIBLE_BPM`)."""
     if len(fine_bpms) < 2:
         return None
     mean = statistics.fmean(fine_bpms)
@@ -125,9 +217,9 @@ def compute_window_projection(windows: Sequence[Any]) -> list[dict[str, Any]]:
     other nullable projection field renders, never a manufactured value.
     """
     facts = [_extract(w) for w in windows]
-    fine_bpms = [f["bpm"] for f in facts if f["tier"] == "fine" and f["bpm"] is not None]
+    fine_ranges = _fine_bpm_ranges(facts)
+    fine_bpms = [bpm for _start, _end, bpm in fine_ranges]
     stats = _bpm_stats(fine_bpms)
-    fine_ranges = [(f["start_sec"], f["end_sec"], f["bpm"]) for f in facts if f["tier"] == "fine" and f["bpm"] is not None]
 
     results: list[dict[str, Any]] = []
     for fact in facts:
@@ -231,8 +323,7 @@ def logged_sources(windows: Sequence[Any]) -> dict[str, str]:
     check that can disagree with what actually fed a given window's z-score; module docstring,
     review finding 5)."""
     facts = [_extract(w) for w in windows]
-    fine_bpms = [f["bpm"] for f in facts if f["tier"] == "fine" and f["bpm"] is not None]
-    return {"bpm": _bpm_source(fine_bpms)}
+    return {"bpm": _bpm_source([bpm for _start, _end, bpm in _fine_bpm_ranges(facts)])}
 
 
 async def upsert_set_profile(session: AsyncSession, file_id: uuid.UUID, windows: Sequence[AnalysisWindow]) -> SetProfileProjection:
@@ -263,6 +354,8 @@ async def upsert_set_profile(session: AsyncSession, file_id: uuid.UUID, windows:
 
 __all__ = [
     "CURRENT_PROJECTION_VERSION",
+    "MAX_PLAUSIBLE_BPM",
+    "MIN_PLAUSIBLE_BPM",
     "annotate_window_orm_objects",
     "annotate_window_rows",
     "build_set_profile_upsert_statement",
