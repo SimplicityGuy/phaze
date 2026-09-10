@@ -835,30 +835,34 @@ def test_analyze_file_no_longer_emits_sampled(_mock_es: MagicMock, mock_get_labe
     assert "sampled" not in result
 
 
-@patch("phaze.services.analysis._probe_duration_sec", return_value=54000.0)
+@patch("phaze.services.analysis._probe_duration_sec", return_value=5580.0)
 @patch("phaze.services.analysis._get_labels")
 @patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
 def test_analyze_file_long_file_analyzes_every_window_across_many_chunks(
     _mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock
 ) -> None:
-    """A 15-hour set -- far past every removed cap -- is analyzed window for window.
+    """A 93-minute set -- past both removed caps and both chunk sizes -- is exhaustive.
 
-    This is the acceptance criterion of the whole change: 54 000 s is 1 800 fine windows (30
-    chunks of 60) and 300 coarse windows (10 chunks of 30). Before phaze-w55w1 the same file
-    produced 60 fine / 30 coarse and a `sampled` flag; the indices below prove nothing is
-    dropped AT a chunk boundary either, which is the one way chunking could regress coverage.
+    5 580 s is the smallest 30-second-aligned geometry above the former 60-fine / 30-coarse
+    caps that also crosses the current 60-fine / 30-coarse chunk boundaries multiple times:
+    186 fine windows span four chunks and 31 coarse windows span two. Exact contiguous indices
+    prove nothing is dropped at any boundary. The separate 12-hour process-isolated RSS test
+    retains the long-duration memory proof.
     """
     mock_get_labels.side_effect = _mock_labels_file
 
     result = analyze_file("/fake/<set-01>", "/fake/models")
 
-    assert result["fine_windows_total"] == 1800
-    assert result["fine_windows_analyzed"] == 1800
-    assert result["coarse_windows_total"] == 300
-    assert result["coarse_windows_analyzed"] == 300
-    # Contiguous 0..N-1 indices: no gap at any of the 30 fine / 10 coarse chunk seams.
-    assert [w["window_index"] for w in _fine_dicts(result)] == list(range(1800))
-    assert [w["window_index"] for w in _coarse_dicts(result)] == list(range(300))
+    assert result["fine_windows_total"] == 186
+    assert result["fine_windows_analyzed"] == 186
+    assert result["coarse_windows_total"] == 31
+    assert result["coarse_windows_analyzed"] == 31
+    assert result["fine_windows_total"] > 60, "the fixture must remain beyond the removed fine-window cap"
+    assert result["coarse_windows_total"] > 30, "the fixture must remain beyond the removed coarse-window cap"
+    assert result["fine_windows_total"] > 60 * 3, "fine windows must cross three chunk seams"
+    assert result["coarse_windows_total"] > 30, "coarse windows must cross one chunk seam"
+    assert [w["window_index"] for w in _fine_dicts(result)] == list(range(186))
+    assert [w["window_index"] for w in _coarse_dicts(result)] == list(range(31))
 
 
 @patch("phaze.services.analysis._probe_duration_sec", return_value=5400.0)
