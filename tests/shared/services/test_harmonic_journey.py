@@ -103,6 +103,34 @@ def test_the_wheels_adjacent_share_equals_the_stored_projections_discipline_figu
     assert journey.adjacent_share == pytest.approx(0.25)
 
 
+# phaze-0zx26: `SetProfile.harmonic_discipline` was written by the backfill/live-analysis path
+# and read by nothing -- the wheel always recomputed its own share. This pins the caption to the
+# STORED figure when the caller has one, matching every other fact this page already reads from
+# the profile snapshot (camelot_modal, the glyph, the arc, the peak); a caller with no profile
+# still gets the live recompute, unchanged.
+def test_a_stored_discipline_figure_takes_precedence_over_the_live_recompute() -> None:
+    windows = _fine(["8A", "8A", "9A", "9A", "3A", "9A", "9A", "5A", "5A", "10B", "10B", "5A", "5A"])
+    live_share = harmonic_discipline(windows)
+
+    journey = build_harmonic_journey(windows, stored_discipline=0.9)
+
+    assert live_share == pytest.approx(0.25)  # the live figure this scenario would give
+    assert journey.adjacent_share == 0.9  # the stored figure wins instead
+    assert "90%" in journey.caption
+    # The nodes and edges are always the live picture -- only the reported SHARE changes -- so
+    # the wheel still draws the keys actually in front of the reader.
+    assert [node.code for node in journey.nodes] == [run.code for run in flicker_filtered_key_runs(windows)]
+
+
+def test_no_stored_discipline_falls_back_to_the_live_recompute() -> None:
+    windows = _fine(["8A", "8A", "9A", "9A", "3A", "9A", "9A", "5A", "5A", "10B", "10B", "5A", "5A"])
+
+    journey = build_harmonic_journey(windows, stored_discipline=None)
+
+    assert journey.adjacent_share == harmonic_discipline(windows)
+    assert journey.adjacent_share == pytest.approx(0.25)
+
+
 def test_a_relative_major_minor_move_is_adjacent_and_a_tritone_is_a_jump() -> None:
     """Both adjacency shapes are honoured: a step around the wheel, and the radial pair."""
     step = build_harmonic_journey(_fine(["8A", "8A", "9A", "9A"]))

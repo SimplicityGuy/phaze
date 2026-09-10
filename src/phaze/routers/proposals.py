@@ -16,6 +16,7 @@ from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.file import FileRecord
 from phaze.models.proposal import APPROVE_REJECT_FROM, UNDO_FROM, ProposalStatus, RenameProposal
+from phaze.models.set_profile import SetProfile
 
 # Changes Review's container id + list context, so a bulk action re-renders that surface through
 # the SAME builder its GET uses. The edge is one-way -- routers/shell.py does not import this
@@ -421,6 +422,11 @@ async def proposal_timeline(
     # be shown honestly, not an invitation to re-analyze.
     analysis = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
 
+    # phaze-0zx26: the rest-position `peak_sec` this payload carries has to be the SAME figure
+    # the record page shows for this file -- `session.get` mirrors routers/record.py's own read,
+    # `None` for a file never analyzed to completion or predating the projection backfill.
+    set_profile = await session.get(SetProfile, file_id)
+
     return templates.TemplateResponse(
         request=request,
         name="proposals/partials/analysis_timeline.html",
@@ -428,7 +434,7 @@ async def proposal_timeline(
             "request": request,
             "proposal": proposal,
             "file_id": file_id,
-            **build_analysis_timeline_context(windows, analysis=analysis),
+            **build_analysis_timeline_context(windows, analysis=analysis, set_profile=set_profile),
         },
     )
 
