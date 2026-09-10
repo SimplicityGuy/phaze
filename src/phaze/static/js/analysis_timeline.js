@@ -191,6 +191,33 @@
 
         let currentTime = peakSec === null ? 0 : peakSec;
 
+        // The satellite node lists, resolved once and cached. `markTracklistRow` and `markGlyph`
+        // run on EVERY pointer sample, and each re-ran a `querySelectorAll` over the whole
+        // tracklist / the whole glyph to do it -- a full DOM walk per sample on a surface whose
+        // tracklist is routinely 40-60 rows (PR #556 review, finding 7).
+        //
+        // Lazily rather than at init, because htmx swaps the tracklist's INNER
+        // `#tracklist-review-<id>` while these listeners stay delegated on the section that
+        // survives: rows resolved at init would be detached nodes after the first Prioritize or
+        // Refresh, and would silently stop highlighting. `htmx:afterSwap` bubbles out of the
+        // swapped element, so a listener on the section sees every swap that can replace them
+        // and the next sample re-resolves.
+        let trackRows = null;
+        let glyphCellCount = null;
+
+        function trackRowNodes() {
+            if (trackRows === null) trackRows = [...tracklist.querySelectorAll("[data-track-row]")];
+            return trackRows;
+        }
+
+        function glyphCells() {
+            if (glyphCellCount === null) glyphCellCount = glyph ? glyph.querySelectorAll("[data-glyph-cell]").length : 0;
+            return glyphCellCount;
+        }
+
+        if (tracklist) tracklist.addEventListener("htmx:afterSwap", () => (trackRows = null));
+        if (scope) scope.addEventListener("htmx:afterSwap", () => (glyphCellCount = null));
+
         function updateOverflow() {
             const tolerance = 2;
             // `scrollWidth - clientWidth` is NOT the maximum scroll offset when the scroller reserves a
@@ -239,7 +266,7 @@
 
         function markTracklistRow(segment) {
             if (!tracklist) return;
-            for (const row of tracklist.querySelectorAll("[data-track-row]")) {
+            for (const row of trackRowNodes()) {
                 row.classList.toggle("is-current", Boolean(segment) && row.dataset.trackPosition === String(segment.position));
             }
         }
@@ -262,7 +289,7 @@
 
         function markGlyph(coarse) {
             if (!glyphCursor) return;
-            const cells = glyph ? glyph.querySelectorAll("[data-glyph-cell]").length : 0;
+            const cells = glyphCells();
             const ordinal = coarse ? byTier.coarse.indexOf(coarse) : -1;
             // The glyph's horizontal axis is the coarse window ORDINAL, not elapsed time, so the
             // marker is placed by ordinal. A time inside a coarse coverage hole marks nothing --
@@ -277,6 +304,10 @@
         }
 
         function inspect(time, ensureVisible, resting) {
+            // Any direct inspect supersedes a deferred pointer sample: without this, a hover
+            // queued in the frame the pointer LEFT would land after `rest()` and leave the page
+            // reading a position the cursor is no longer at.
+            cancelQueuedSample();
             currentTime = clamp(time, 0, duration);
             const fine = measuredWindow(byTier.fine, currentTime, duration);
             const coarse = measuredWindow(byTier.coarse, currentTime, duration);
@@ -323,6 +354,56 @@
             inspect(peakSec === null ? 0 : peakSec, false, true);
         }
 
+        // ONE inspect per animation frame for pointer MOTION. A drag delivers a sample per input
+        // event and each one re-marks the ribbons, the tracklist rows and the glyph cursor;
+        // every sample past the first in a frame is overwritten before anything is painted
+        // (PR #556 review, finding 7).
+        //
+        // LEADING EDGE SYNCHRONOUS, trailing edge on the next frame. The first sample after a
+        // pause applies immediately -- no added latency, and nothing reading the DOM straight
+        // after a single pointer move can observe a stale value -- while samples arriving inside
+        // the same frame are collapsed to the last one, which is the only one that would have
+        // been visible anyway. Wrapping every sample in `requestAnimationFrame` instead defers
+        // that first one too, for a frame of lag and no gain.
+        //
+        // The elapsed-time marker is `performance.now()` and NOT
+        // `document.timeline.currentTime`, which reads like the natural frame identity and is
+        // the wrong one: it only advances when a frame is actually produced, so on an idle page
+        // two samples SECONDS apart carry the identical timestamp and the second is deferred as
+        // though it were a duplicate. Measured in this repo's headless harness -- two evaluates
+        // with a real pointer move between them both read 392.032 -- which is what turned three
+        // existing browser tests red.
+        const FRAME_MS = 16;
+        let lastSampleAt = Number.NEGATIVE_INFINITY;
+        let queuedTime = null;
+        let queuedFrame = 0;
+
+        function cancelQueuedSample() {
+            if (queuedFrame) cancelAnimationFrame(queuedFrame);
+            queuedFrame = 0;
+            queuedTime = null;
+        }
+
+        function flushQueuedSample() {
+            queuedFrame = 0;
+            if (queuedTime === null) return;
+            const time = queuedTime;
+            queuedTime = null;
+            lastSampleAt = performance.now();
+            inspect(time, false, false);
+        }
+
+        function inspectFromPointer(time) {
+            const now = performance.now();
+            if (now - lastSampleAt < FRAME_MS) {
+                queuedTime = time;
+                if (!queuedFrame) queuedFrame = requestAnimationFrame(flushQueuedSample);
+                return;
+            }
+            lastSampleAt = now;
+            inspect(time, false, false);
+        }
+
         function pointerTime(event) {
             const bounds = inspector.getBoundingClientRect();
             return clamp((event.clientX - bounds.left) / bounds.width, 0, 1) * duration;
@@ -335,7 +416,7 @@
          * file whose coarse coverage has a hole.
          */
         function glyphTime(event) {
-            const cells = glyph.querySelectorAll("[data-glyph-cell]").length;
+            const cells = glyphCells();
             if (!cells) return null;
             const bounds = glyph.getBoundingClientRect();
             const ordinal = Math.min(cells - 1, Math.floor(clamp((event.clientX - bounds.left) / bounds.width, 0, 0.999999) * cells));
@@ -350,7 +431,7 @@
             return (start + (Number.isFinite(end) ? clamp(end, start, duration) : duration)) / 2;
         }
 
-        inspector.addEventListener("pointermove", (event) => inspect(pointerTime(event), false, false));
+        inspector.addEventListener("pointermove", (event) => inspectFromPointer(pointerTime(event)));
         inspector.addEventListener("pointerdown", (event) => inspect(pointerTime(event), false, false));
         inspector.addEventListener("pointerleave", rest);
         inspector.addEventListener("focus", () => inspect(currentTime, true, false));
@@ -372,7 +453,7 @@
         if (glyph) {
             glyph.addEventListener("pointermove", (event) => {
                 const time = glyphTime(event);
-                if (time !== null) inspect(time, false, false);
+                if (time !== null) inspectFromPointer(time);
             });
             glyph.addEventListener("pointerleave", rest);
         }

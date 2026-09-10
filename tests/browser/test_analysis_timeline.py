@@ -426,3 +426,95 @@ async def test_a_time_in_a_coarse_gap_marks_no_glyph_cell_rather_than_the_neares
     # the glyph going dark is about the COARSE hole, not about the cursor being off the file.
     assert marks["ribbonCount"] == 1
     assert marks["ringHidden"] is False
+
+
+async def test_a_burst_of_pointer_samples_in_one_frame_updates_the_page_once_and_lands_on_the_last(page: Any, seed: Seeder) -> None:
+    """PR #556 review, finding 7: pointer motion was unthrottled, and each sample walked the DOM.
+
+    Every `pointermove` re-marked the ribbons, every tracklist row and the glyph cursor, and
+    every sample past the first in an animation frame is overwritten before anything is painted.
+    The samples here are dispatched from ONE synchronous loop, so they are guaranteed to fall in
+    a single frame -- that is what makes this deterministic rather than timing-dependent.
+
+    Two claims, and the second is what keeps the first from being satisfied by simply dropping
+    work: the readout is written a small number of times, AND the position it ends on is the
+    LAST sample's, not the first's. A leading-edge-only throttle passes the count and fails the
+    position; the shipped one runs the first sample synchronously and the last on the next frame.
+    """
+    _file, _timeline = await _open_inspectable_record(page, seed)
+
+    result = await page.evaluate(
+        """async () => {
+            const inspector = document.querySelector('[data-timeline-inspector]');
+            const readout = document.querySelector('[data-timeline-readout]');
+            const box = inspector.getBoundingClientRect();
+            const samples = 40;
+            let writes = 0;
+            const observer = new MutationObserver((records) => { writes += records.length; });
+            // Start on a fresh frame, so the burst below cannot be split across two of them.
+            await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+            observer.observe(readout, {childList: true, characterData: true, subtree: true});
+            for (let i = 1; i <= samples; i += 1) {
+                inspector.dispatchEvent(new PointerEvent('pointermove', {
+                    clientX: box.left + (box.width * i) / (samples + 1),
+                    clientY: box.top + 20,
+                    bubbles: true,
+                }));
+            }
+            // A MutationObserver delivers its records at a MICROTASK checkpoint, and the loop
+            // above is one synchronous block -- reading `writes` without yielding first reports
+            // 0 no matter what the page did.
+            await Promise.resolve();
+            const duringBurst = writes;
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+            observer.disconnect();
+            return {
+                samples,
+                duringBurst,
+                writes,
+                valueNow: Number(inspector.getAttribute('aria-valuenow')),
+                lastSampleFraction: samples / (samples + 1),
+            };
+        }"""
+    )
+
+    assert result["samples"] == 40
+    # One synchronous leading sample plus one deferred trailing flush. Bounded generously so a
+    # browser that splits the microtask differently does not flake, and far below 40 either way.
+    assert result["writes"] <= 5, f"{result['writes']} readout writes for {result['samples']} samples in one frame"
+    assert result["duringBurst"] >= 1, "the first sample of a frame must apply synchronously, not a frame later"
+    assert result["valueNow"] == pytest.approx(_INSPECTION_DURATION_SEC * result["lastSampleFraction"], abs=2.0)
+
+
+async def test_the_tracklist_rows_are_re_resolved_after_an_htmx_swap_replaces_them(page: Any, seed: Seeder) -> None:
+    """The cached row list is invalidated by `htmx:afterSwap`, so a swapped row still highlights.
+
+    Caching the rows is the other half of finding 7, and it is the half that can break the page:
+    htmx replaces the tracklist's inner container while the listeners stay delegated on the
+    section outside it, so rows captured once would be detached nodes after the first Prioritize
+    or Refresh and would silently stop following the cursor. Asserted by REPLACING the rows and
+    then inspecting -- the cache is invisible, its failure mode is not.
+    """
+    _file, timeline = await _open_inspectable_record(page, seed)
+    inspector = timeline.locator("[data-timeline-inspector]")
+
+    # Warm the cache: hover once so the row list is resolved and held.
+    bounds = await inspector.bounding_box()
+    assert bounds is not None
+    await page.mouse.move(bounds["x"] + bounds["width"] * 0.1, bounds["y"] + 20)
+    assert (await _marks(page))["rowPositions"] == ["1"]
+
+    # Replace every row node with a fresh clone and announce it exactly as htmx would.
+    await page.evaluate(
+        """() => {
+            const tracklist = document.querySelector('[data-tracklist-index]');
+            const container = tracklist.querySelector('[data-track-row]').closest('tbody');
+            container.replaceChildren(...[...container.children].map((row) => row.cloneNode(true)));
+            container.dispatchEvent(new CustomEvent('htmx:afterSwap', {bubbles: true, detail: {target: container}}));
+        }"""
+    )
+
+    await page.mouse.move(bounds["x"] + bounds["width"] * 0.9, bounds["y"] + 20)
+    after_swap = await _marks(page)
+
+    assert after_swap["rowPositions"] == ["2"], "a row that arrived from a swap must still follow the cursor"
