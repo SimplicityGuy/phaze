@@ -110,9 +110,11 @@ CURRENT_PROJECTION_VERSION: Final[int] = 2
 # from 0.7957 to 77.5069, which flattens every coarse window's z-score from a real -0.201..+0.553
 # spread onto a near-uniform -0.13, and pushes the one coarse window the silent one overlaps from
 # +0.553 to +1.188. In `energy` that is up to 0.0635 on this file. Every other BPM reader already
-# gates (`analysis_windows.aggregate_bpm` on confidence, `analysis_timeline._valid_bpm` and
-# `record_facts.median_bpm` on `> 0`); this reader gated on `is not None` alone, and `> 0` would
-# not have caught 738.3 anyway.
+# gates (`analysis_windows.aggregate_bpm` on confidence, `analysis_timeline._valid_bpm` on
+# `> 0`); this reader gated on `is not None` alone, and `> 0` would not have caught 738.3 anyway.
+# `record_facts.build_record_facts` used to re-derive its own window median gated on `> 0` too,
+# which is exactly the drift `phaze-duyyw` found and fixed: it now reads `AnalysisResult.bpm` --
+# `aggregate_bpm`'s own confidence-gated output -- directly, rather than re-deriving one.
 #
 # WHY A BAND RATHER THAN CONFIDENCE. Confidence is the sharper instrument -- 4.69 over 30 s of
 # silence is a real reading no band can see -- but it is not available here at any price this bead
