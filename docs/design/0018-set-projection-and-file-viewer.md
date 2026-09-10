@@ -96,8 +96,10 @@ energy = clamp01(w_d·danceability + w_p·party + w_a·aggressive
 ```
 
 where `z(bpm)` is the fine-window BPM z-score over the file's own fine windows, and a file with
-no fine BPM data at all passes `z(bpm) = 0` (recorded in the profile's `sources` field — see
-§7.1). The weights live in exactly one place, `services/set_projection.ENERGY_WEIGHTS`, and
+no usable fine BPM data at all passes `z(bpm) = 0` (recorded in the profile's `sources` field —
+see §7.1). "Usable" is a plausible-tempo band rather than merely "not null" — see §10's
+`phaze-aswsz` amendment. The weights live in exactly one place,
+`services/set_projection.ENERGY_WEIGHTS`, and
 `tests/shared/services/test_set_projection.py` greps the module for literal weight floats
 outside that table so a weight can never quietly reappear as an inline constant elsewhere.
 
@@ -265,8 +267,53 @@ is tested against the real stored feature-dict shape, not a mocked one.
 | `harmonic_discipline` drops a one-window flicker and counts a real two-window change | the same file |
 | this ADR's weights table and `ENERGY_WEIGHTS` cannot drift apart | `tests/shared/test_adr_0018_weights.py` (this bead) |
 | every ADR citation in this document resolves and carries no duplicate leading number | `tests/shared/test_adr_numbering.py`, `tests/shared/test_adr_citation_resolution.py` |
+| one out-of-band fine window does not move any coarse energy | `tests/shared/services/test_set_projection_writer.py`, over real `AnalysisWindow` rows carrying real coarse `features` (`phaze-aswsz`) |
+| the band gates each coarse window's overlap set as well as the file-wide reference | the same file — gating only the reference is measurably WORSE than not gating at all |
+| the real extractor returns an out-of-band BPM for digital silence, and the band contains the extractor's own search range | `tests/analyze/services/pipeline/test_rhythm_silence_bpm.py`, against real essentia |
 
 ## 10. Amendments
 
-None yet. `phaze-x1qr3.12`'s operator blind check, when it runs, appends its question-as-put,
+`phaze-x1qr3.12`'s operator blind check, when it runs, appends its question-as-put,
 answer-as-given, date and durable record here rather than editing §4's table in place.
+
+### 10.1 `phaze-aswsz` (dev/aswsz, 2026-09-09) — a plausible-tempo band on the z-score reference, and `projection_version` 1 → 2
+
+**The defect.** `services/analysis.py` stores every fine window's `bpm` unconditionally, and the
+extractor's own `confidence` never reaches the database — `FineWindow.as_payload_dict` omits it and
+`analysis_window` has no confidence column. `services/set_projection_writer.py` built the z-score's
+reference distribution with a null check alone, so a junk value entered it as a tempo. Measured in
+this environment (essentia 2.1-beta6-dev, macOS arm64, the deployed
+`RhythmExtractor2013(method="multifeature")`, 44.1 kHz digital silence): bpm 738.3, at confidence
+0.0 over a 5 s buffer and 4.69 over a 30 s one.
+
+Over a 61-window fixture — sixty ~128 BPM fine windows plus one silent one, eleven coarse windows
+carrying real `features` — the single junk window lifts the file's population stdev from 0.7957 to
+77.5069. Every coarse window's z-score collapses from a real −0.201..+0.553 spread onto a
+near-uniform −0.13, and the one coarse window the silent window overlaps is pushed the other way,
++0.553 to +1.188. The energies move by up to 0.0635, and `arc` and `peak_sec` move with them.
+
+**The gate, and why it is a band.** `MIN_PLAUSIBLE_BPM` / `MAX_PLAUSIBLE_BPM` (40.0 / 220.0) in
+`services/set_projection_writer.py`, applied to the file-wide reference distribution **and** to
+each coarse window's own overlap set — gating only the reference measured *worse* than not gating
+at all (0.546 versus 0.064 maximum energy shift), because the junk value then stays out of the mean
+and stdev while still dragging one window's overlap average. Confidence is the sharper gate and is
+not available: it would need a column, a migration, a wire field, and a backfill that could not
+recover the confidence of any already-analysed window. The bounds contain the deployed extractor's
+own declared search range (`minTempo` 40, `maxTempo` 208, read off the constructed algorithm in
+this environment), with headroom on the ceiling so the gate fails open on the musical side.
+
+**This is the implementer's decision, not the operator's** — the same footing as §4's weights.
+Persisting fine-tier confidence stays the better fix, and is what a junk value landing *inside* the
+band would call for.
+
+**`projection_version` 1 → 2.** The corpus backfill has not run, but that is not the same as "no
+rows exist": the live path (`routers/agent_analysis.py::_replace_analysis_windows`) has written a
+`set_profile` row at version 1 on every analysis completed since `phaze-x1qr3.3` landed, and those
+rows carry the distortion. The bump puts exactly them in
+`services/set_projection_backfill.py`'s `projection_version <` predicate.
+
+**Dependency on `phaze-x1qr3.12`.** The blind check judges `energy`, `arc` and `peak_sec` — the
+scalars this amendment changes. It must be run against a corpus re-derived at version 2 or later;
+judging version-1 rows would tune the weights against the distortion rather than against the
+projection. If that blind check then changes a weight, its own bump takes `projection_version`
+to 3.
