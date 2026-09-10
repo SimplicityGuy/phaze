@@ -17,6 +17,7 @@ import uuid  # noqa: TC003
 from fastapi import Depends, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
+from sqlalchemy.orm import defer
 
 from phaze.config import settings
 from phaze.database import get_session
@@ -144,7 +145,17 @@ async def _track_segments_for(session: AsyncSession, file_id: uuid.UUID, review:
     """
     if review is None or not review.tracks:
         return []
-    windows = list((await session.execute(select(AnalysisWindow).where(AnalysisWindow.file_id == file_id))).scalars().all())
+    # phaze-5ergb: this fragment reads only tier/start/end/bpm/camelot/energy/mood_scores
+    # (`build_track_segments` below) -- never the ~5 KB `features` JSONB each coarse window
+    # carries. Deferring it keeps a single-file button click from transferring and decoding
+    # 1-2 MB for a 12 h set's ~240 coarse windows to compute a handful of medians.
+    windows_stmt = (
+        select(AnalysisWindow)
+        .options(defer(AnalysisWindow.features))
+        .where(AnalysisWindow.file_id == file_id)
+        .order_by(AnalysisWindow.tier, AnalysisWindow.window_index)
+    )
+    windows = list((await session.execute(windows_stmt)).scalars().all())
     duration = (await session.execute(select(FileMetadata.duration).where(FileMetadata.file_id == file_id))).scalar_one_or_none()
     return build_track_segments(review.tracks, windows, duration)
 

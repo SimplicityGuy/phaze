@@ -24,7 +24,7 @@ from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import defer, selectinload
 
 from phaze.config import get_settings
 from phaze.database import get_session
@@ -194,7 +194,17 @@ async def build_file_record_context(
         return None
 
     # Windowed timeline -- mirror proposals.proposal_timeline (T-31-06-02 file_id scoping).
-    windows_stmt = select(AnalysisWindow).where(AnalysisWindow.file_id == file_id).order_by(AnalysisWindow.tier, AnalysisWindow.window_index)
+    # phaze-5ergb: neither this context builder nor its three consumers (the timeline, the
+    # track-segment join, the harmonic journey wheel) reads a window's `features` JSONB --
+    # only the narrow projection columns tier/start/end/bpm/camelot/energy/mood_scores exist
+    # for that. Deferring it keeps a record-page/drawer/poster load from transferring and
+    # decoding ~5 KB per coarse window (1-2 MB on a 12 h set) to compute a few medians.
+    windows_stmt = (
+        select(AnalysisWindow)
+        .options(defer(AnalysisWindow.features))
+        .where(AnalysisWindow.file_id == file_id)
+        .order_by(AnalysisWindow.tier, AnalysisWindow.window_index)
+    )
     windows = list((await session.execute(windows_stmt)).scalars().all())
     analysis = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
 
