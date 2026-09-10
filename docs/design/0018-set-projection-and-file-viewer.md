@@ -320,10 +320,11 @@ to 3.
 
 ### 10.2 `set_profile.harmonic_discipline` and `.peak_sec` become the values the page reads (`phaze-0zx26`, 2026-09-09)
 
-Implementer decision, not an operator one (no operator input was sought for this ad-hoc P2 bead
-— `CLAUDE.md`'s "Operator decision is a citation" rule). A code-review finding on PR #556
-(`phaze-0zx26`) observed that §3's `harmonic_discipline` and `peak_sec` columns were written by
-the backfill and the live-analysis writer and read by nothing: `services/analysis_timeline.py`'s
+Implementer's decision (dev/0zx26, 2026-09-09, bead phaze-0zx26); no operator input was sought
+for this ad-hoc P2 bead, so this is not an operator decision under `CLAUDE.md`'s citation rule.
+A code-review finding on PR #556 (`phaze-0zx26`) observed that §3's `harmonic_discipline` and
+`peak_sec` columns were written by the backfill and the live-analysis writer and read by
+nothing: `services/analysis_timeline.py`'s
 inspection payload computed its own `peak_sec` as the raw-window argmax (`energy_peak`), a
 DIFFERENT definition than the stored column's argmax over the resampled `arc`, which can land on
 a different window for a short spike; `services/harmonic_journey.py`'s wheel caption
