@@ -63,7 +63,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
 from phaze.models.set_profile import SetProfile
-from phaze.services.set_projection import MOOD_ORDER, build_profile, camelot_code, energy as energy_scalar, positive_class_vector
+from phaze.services.set_projection import MOOD_ORDER, OverlapIndex, build_profile, camelot_code, energy as energy_scalar, positive_class_vector
 
 
 if TYPE_CHECKING:
@@ -201,12 +201,20 @@ def _bpm_stats(fine_bpms: Sequence[float]) -> tuple[float, float] | None:
     return mean, stdev
 
 
-def _bpm_z_for_range(fine_ranges: Sequence[tuple[float, float, float]], start_sec: float, end_sec: float, stats: tuple[float, float] | None) -> float:
-    """The BPM z-score attributed to one coarse window's time range (module docstring)."""
+def _bpm_z_for_range(index: OverlapIndex, start_sec: float, end_sec: float, stats: tuple[float, float] | None) -> float:
+    """The BPM z-score attributed to one coarse window's time range (module docstring).
+
+    ``index`` is :func:`compute_window_projection`'s ONE
+    :class:`~phaze.services.set_projection.OverlapIndex` over the banded fine population, built
+    for the whole file rather than re-scanned per coarse window: this was O(coarse x fine), which
+    on a 12-hour set is 240 x 1,440 evaluations to answer 240 questions (PR #556 review, finding
+    6). The values are the same values in the same order, and ``fmean`` sums with ``math.fsum``,
+    which is exactly rounded -- so the z-score is bit-identical, not merely close.
+    """
     if stats is None:
         return 0.0
     mean, stdev = stats
-    overlapping = [bpm for f_start, f_end, bpm in fine_ranges if f_start < end_sec and f_end > start_sec]
+    overlapping = index.overlapping(start_sec, end_sec)
     if not overlapping:
         return 0.0
     return (statistics.fmean(overlapping) - mean) / stdev
@@ -223,6 +231,10 @@ def compute_window_projection(windows: Sequence[Any]) -> list[dict[str, Any]]:
     fine_ranges = _fine_bpm_ranges(facts)
     fine_bpms = [bpm for _start, _end, bpm in fine_ranges]
     stats = _bpm_stats(fine_bpms)
+    # `fine_bpms` above stays in the facts' own order and is what feeds `_bpm_stats`; only the
+    # per-coarse-window OVERLAP lookup is indexed. Keeping the reference distribution on the
+    # original list is what makes the mean and stdev bit-identical to the pre-index behaviour.
+    overlap_index = OverlapIndex(fine_ranges)
 
     results: list[dict[str, Any]] = []
     for fact in facts:
@@ -231,7 +243,7 @@ def compute_window_projection(windows: Sequence[Any]) -> list[dict[str, Any]]:
         elif fact["tier"] == "coarse" and fact["features"]:
             vector = positive_class_vector(fact["features"])
             scores = dict(zip(MOOD_ORDER, vector, strict=True))
-            bpm_z = _bpm_z_for_range(fine_ranges, fact["start_sec"], fact["end_sec"], stats)
+            bpm_z = _bpm_z_for_range(overlap_index, fact["start_sec"], fact["end_sec"], stats)
             results.append({"camelot": None, "energy": energy_scalar(scores, bpm_z), "mood_scores": scores})
         else:
             # Either an unrecognised tier, or a coarse window with no `features` at all (None or

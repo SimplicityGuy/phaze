@@ -29,6 +29,7 @@ per-surface ordering would render a different picture per page from identical da
 
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass
 import itertools
 import math
@@ -457,6 +458,49 @@ def modal_camelot(windows: Sequence[AnalysisWindow]) -> str | None:
     return max(weights, key=lambda code: weights[code])
 
 
+class OverlapIndex:
+    """Half-open time ranges indexed for "which of these overlap ``[start, end)``", in log time.
+
+    THE ALTERNATIVE IT REPLACES is a full scan of every fine window per coarse window -- O(coarse
+    x fine), which on a 12-hour set is 240 x 1,440 = 345,600 predicate evaluations to answer 240
+    questions whose answers each involve about six windows (PR #556 review, finding 6). The same
+    shape sat in ``set_projection_writer._bpm_z_for_range``, and both are now this one index.
+
+    HOW THE BISECTS ARE EXACT. Overlap with ``[start, end)`` is two independent conditions:
+    ``range.start < end`` and ``range.end > start``. Sorted by start, the first holds for a
+    PREFIX; if the ends are then also non-decreasing, the second holds for a SUFFIX; and the
+    overlap set is exactly the slice where the two meet. Non-decreasing ends is the normal
+    shape here (fixed-width, non-overlapping windows in time order) but is not guaranteed by
+    anything, so it is CHECKED at build time and a tree that does not have it falls back to the
+    scan rather than silently returning a wrong slice.
+
+    ORDER IS PRESERVED. Members come back in the caller's original order, not in start order.
+    Every consumer aggregates them with float addition -- ``modal_camelot``'s duration weights,
+    a mean energy, a mood sum -- which is not associative, so handing them back re-ordered would
+    change the last bits of a stored value for no reason anybody could later explain.
+    """
+
+    __slots__ = ("_ends", "_ranges", "_sorted_by_end", "_starts")
+
+    def __init__(self, items: Sequence[tuple[float, float, Any]]) -> None:
+        # `(start, end, arrival, payload)` sorted by start. `arrival` is the caller's own index
+        # and is what `overlapping` restores the result to.
+        self._ranges = sorted(((start, end, arrival, payload) for arrival, (start, end, payload) in enumerate(items)), key=lambda row: row[0])
+        self._starts = [row[0] for row in self._ranges]
+        self._ends = [row[1] for row in self._ranges]
+        self._sorted_by_end = all(a <= b for a, b in itertools.pairwise(self._ends))
+
+    def overlapping(self, start: float, end: float) -> list[Any]:
+        """Every member whose own range intersects ``[start, end)``, in the caller's order."""
+        if not self._sorted_by_end:
+            return [payload for r_start, r_end, _arrival, payload in sorted(self._ranges, key=lambda row: row[2]) if r_start < end and r_end > start]
+        high = bisect.bisect_left(self._starts, end)
+        low = bisect.bisect_right(self._ends, start)
+        if low >= high:
+            return []
+        return [payload for _start, _end, _arrival, payload in sorted(self._ranges[low:high], key=lambda row: row[2])]
+
+
 def _glyph_cells(coarse_windows: Sequence[AnalysisWindow], fine_windows: Sequence[AnalysisWindow]) -> list[dict[str, int | float | None]] | None:
     """One ``{camelot_number, energy}`` cell per coarse window, ordered by ``window_index``.
 
@@ -464,12 +508,16 @@ def _glyph_cells(coarse_windows: Sequence[AnalysisWindow], fine_windows: Sequenc
     field), so a coarse window's cell borrows the duration-weighted modal camelot of the fine
     windows whose time range overlaps it -- the same cross-tier join the epic's glyph macro
     needs to pair a colour (Camelot number) with a lightness (energy) per cell.
+
+    The join is done through :class:`OverlapIndex`, built ONCE for the whole file rather than
+    re-scanning every fine window per coarse window.
     """
     if not coarse_windows:
         return None
+    index = OverlapIndex([(f.start_sec, f.end_sec, f) for f in fine_windows if f.camelot])
     cells: list[dict[str, int | float | None]] = []
     for window in sorted(coarse_windows, key=lambda w: (w.window_index, w.start_sec)):
-        overlapping = [f for f in fine_windows if f.camelot and f.start_sec < window.end_sec and f.end_sec > window.start_sec]
+        overlapping = index.overlapping(window.start_sec, window.end_sec)
         cells.append({"camelot_number": camelot_number(modal_camelot(overlapping)), "energy": window.energy})
     return cells
 
@@ -619,6 +667,7 @@ __all__ = [
     "GAP_TOLERANCE_SEC",
     "MOOD_ORDER",
     "KeyRun",
+    "OverlapIndex",
     "SetProfileProjection",
     "build_profile",
     "camelot_code",
