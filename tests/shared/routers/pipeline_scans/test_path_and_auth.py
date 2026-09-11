@@ -378,7 +378,6 @@ async def test_post_scans_rejects_partial_scan_root_prefix(
     mock_router.enqueue_for_agent.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
 # phaze-u1gf: EVERY trigger_scan failure branch must be a SWAPPABLE alert.
 #
 # The Trigger Scan form (trigger_scan_card.html) posts with
@@ -398,7 +397,6 @@ async def test_post_scans_rejects_partial_scan_root_prefix(
 #
 # Asserting the status alone would not have caught the bug's real cost, so each case below
 # also asserts the ALERT MARKUP the operator would actually see.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

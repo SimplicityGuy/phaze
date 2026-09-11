@@ -159,9 +159,6 @@ def test_empty_files_dict_fails_closed(tmp_path: Path, monkeypatch: pytest.Monke
     assert "no tracked files" in capsys.readouterr().out
 
 
-# --- phaze-bk9el.21: the floors are on LINES, and stayed there when branch coverage was enabled ---
-
-
 def test_the_gate_reads_lines_not_the_combined_branch_figure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The regression this script was rewritten to prevent.
 

@@ -26,9 +26,7 @@ if TYPE_CHECKING:
 _ENDPOINT = "https://minio.homelab:9000"
 
 
-# --------------------------------------------------------------------------- #
 # _read_secret_file helper (shared strip-vs-verbatim rule, D-06)
-# --------------------------------------------------------------------------- #
 def test_read_secret_file_strips_by_default(tmp_path: Path) -> None:
     """A token file read with preserve_whitespace=False is .strip()ed (heredoc newline dropped)."""
     secret = tmp_path / "token"
@@ -50,9 +48,7 @@ def test_read_secret_file_missing_path_raises(tmp_path: Path) -> None:
         _read_secret_file(str(missing), preserve_whitespace=False)
 
 
-# --------------------------------------------------------------------------- #
 # KubeConfig inline *_file before-validator
-# --------------------------------------------------------------------------- #
 def test_kubeconfig_file_preserves_trailing_newline(tmp_path: Path) -> None:
     """kubeconfig_file resolves kube.kubeconfig verbatim -- the trailing newline IS preserved (key material)."""
     kc = tmp_path / "kubeconfig"
@@ -78,9 +74,7 @@ def test_kubeconfig_file_missing_fails_fast(tmp_path: Path) -> None:
         KubeConfig(kubeconfig_file=str(missing))
 
 
-# --------------------------------------------------------------------------- #
 # BucketConfig inline *_file before-validator
-# --------------------------------------------------------------------------- #
 def test_bucket_access_key_files_are_stripped(tmp_path: Path) -> None:
     """access_key_id_file / secret_access_key_file resolve to stripped SecretStr values."""
     ak = tmp_path / "access_key"

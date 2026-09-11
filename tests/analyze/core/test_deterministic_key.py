@@ -27,9 +27,7 @@ from phaze.tasks._shared.deterministic_key import (
 from tests._queue_fakes import FakeRedis
 
 
-# ---------------------------------------------------------------------------
 # Drift-guard allow-list
-# ---------------------------------------------------------------------------
 
 # Routable tasks intentionally left UNKEYED (random-uuid default). Each entry documents
 # WHY a deterministic key is wrong for it. A routable task in NEITHER this set nor
@@ -74,9 +72,7 @@ _UNKEYED_TASKS: frozenset[str] = frozenset(
 )
 
 
-# ---------------------------------------------------------------------------
 # Per-function key behaviors
-# ---------------------------------------------------------------------------
 
 
 async def test_process_file_key_matches_legacy_template() -> None:
@@ -183,9 +179,7 @@ async def test_enqueued_counter_failure_does_not_block_enqueue() -> None:
     assert job.key == f"process_file:{fid}"
 
 
-# ---------------------------------------------------------------------------
 # increment_completed (after_process)
-# ---------------------------------------------------------------------------
 
 
 async def test_increment_completed_bumps_on_complete_status() -> None:
@@ -235,9 +229,7 @@ async def test_increment_completed_failure_is_swallowed() -> None:
     await increment_completed({"job": job})  # must not raise
 
 
-# ---------------------------------------------------------------------------
 # Drift guard
-# ---------------------------------------------------------------------------
 
 
 def test_every_routable_task_is_keyed_or_exempt() -> None:
@@ -271,9 +263,7 @@ def test_key_builders_and_unkeyed_are_disjoint() -> None:
     assert not (set(_KEY_BUILDERS) & _UNKEYED_TASKS)
 
 
-# ---------------------------------------------------------------------------
 # Phase 45: ledger WRITE hook + controller-stage CLEAR hook
-# ---------------------------------------------------------------------------
 
 
 class _FakeSession:

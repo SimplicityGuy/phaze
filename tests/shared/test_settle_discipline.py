@@ -175,9 +175,7 @@ async def test_the_drain_returns_once_the_tasks_have_actually_completed() -> Non
     assert pending_router_background_tasks() == []
 
 
-# --------------------------------------------------------------------------------------------------
 # The same two properties for `tests/_async_settle.wait_until`, the predicate-shaped sibling.
-# --------------------------------------------------------------------------------------------------
 def test_no_test_module_defines_its_own_settle_helper() -> None:
     """``_wait_until`` was THREE byte-identical copies, all carrying the silent give-up.
 

@@ -54,9 +54,6 @@ _STAGING_BUCKET_ID = "staging-a"
 _DRAIN_ADVISORY_LOCK_KEY = 5_000_504
 
 
-# --- Seam spies (copied from the donor) ------------------------------------------------------------
-
-
 class GetJobSpy:
     """Monkeypatch stand-in for ``kube_staging.get_job`` returning a per-call canned Job."""
 
@@ -106,9 +103,6 @@ class S3DeleteSpy:
         self.calls.append(file_id)
         self.buckets.append(getattr(bucket, "id", None))
         self.events.append("s3_delete")
-
-
-# --- Fixtures / builders (copied from the donor) ---------------------------------------------------
 
 
 def _patch_cap(monkeypatch: pytest.MonkeyPatch, cap: int = 3) -> None:
@@ -204,9 +198,6 @@ async def _read_cloud_job(session: AsyncSession, file_id: uuid.UUID) -> CloudJob
     return (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one()
 
 
-# --- Delete-after-record ordering (D-04) -----------------------------------------------------------
-
-
 async def test_delete_after_record_ordering(
     committed_db: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
     monkeypatch: pytest.MonkeyPatch,
@@ -229,9 +220,6 @@ async def test_delete_after_record_ordering(
     # The outcome was already committed when the Job delete fired (the snapshot reads committed state):
     # cloud_job re-stamped 'awaiting' (D-12), attempts NOT incremented (still cap=3), FileRecord UNTOUCHED (PUSHED, D-04).
     assert dj.snapshots == [{"cloud_status": CloudJobStatus.AWAITING.value, "attempts": 3}]
-
-
-# --- Drain-lock concurrency (Pitfall 2/9) ----------------------------------------------------------
 
 
 async def test_drain_reconcile_concurrency_delete_runs_under_advisory_lock(

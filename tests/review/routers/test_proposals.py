@@ -128,7 +128,6 @@ async def test_approve_proposal(client: AsyncClient, session: AsyncSession) -> N
     assert "stats-bar" not in response.text
     assert f'id="rename-row-{proposal.id}"' in response.text
 
-    # Verify DB state
     updated = await session.get(RenameProposal, proposal.id)
     assert updated is not None
     assert updated.status == ProposalStatus.APPROVED
@@ -166,7 +165,6 @@ async def test_approve_not_found(client: AsyncClient) -> None:
     assert response.status_code == 404
 
 
-# ---------------------------------------------------------------------------
 # approve optimistic-concurrency token (phaze-exivg)
 #
 # update_proposal_status's allowed_from guard folds only the from-STATUS into its conditional
@@ -176,7 +174,6 @@ async def test_approve_not_found(client: AsyncClient) -> None:
 # a row swapped between the operator's page render and their Approve click still satisfies that
 # status-only WHERE. These exercise the fix end to end: the APPROVE route now takes the row's
 # render-time updated_at as expected_updated_at and refuses when it no longer matches.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -621,7 +618,6 @@ async def test_timeline_escapes_label_xss(client: AsyncClient, session: AsyncSes
     assert "<script>alert(1)</script>" not in response.text
 
 
-# ---------------------------------------------------------------------------
 # phaze-w55w1: the Phase 44 "Sampled" badge and "Deepen analysis" button are GONE
 #
 # The three tests here previously pinned the badge's render-if-sampled behaviour and its
@@ -629,7 +625,6 @@ async def test_timeline_escapes_label_xss(client: AsyncClient, session: AsyncSes
 # because there is no longer a sampled state to render: every file is analyzed exhaustively
 # (ADR-0007 §7), the `analysis.sampled` column is dropped (migration 060), and the timeline
 # route no longer fetches AnalysisResult at all.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -666,10 +661,8 @@ async def test_timeline_no_badge_when_no_analysis_row(client: AsyncClient, sessi
     assert "Deepen analysis" not in response.text
 
 
-# ---------------------------------------------------------------------------
 # _bpm_spark helper (quick 260707-c9o): surface min/max BPM alongside the points.
 # Pure sync function -- no DB needed. Windows are constructed in-memory.
-# ---------------------------------------------------------------------------
 
 
 def _fine_window(index: int, start: float, end: float, bpm: float | None) -> AnalysisWindow:
@@ -758,9 +751,7 @@ def test_diff_facet_fields_path_facet() -> None:
     assert after_empty == ""
 
 
-# ---------------------------------------------------------------------------
 # State-machine guard on the review-UI status routes (phaze-uu17)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -845,9 +836,7 @@ async def test_undo_pending_conflict_returns_409(client: AsyncClient, session: A
     assert response.status_code == 409
 
 
-# ---------------------------------------------------------------------------
 # v7 diff-row workspace negotiation on the mutation routes (phaze-3a2j)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -991,7 +980,6 @@ async def test_approve_without_hx_target_returns_the_shared_diff_row(client: Asy
     assert "<tr" not in response.text, "the legacy table-row shape is back"
 
 
-# ---------------------------------------------------------------------------
 # phaze-7tiqp: the retired bulk-approve-high-confidence chain and the dangling row stems
 #
 # PATCH /proposals/bulk-approve-high-confidence was a server-predicate bulk approve whose only two
@@ -1004,7 +992,6 @@ async def test_approve_without_hx_target_returns_the_shared_diff_row(client: Asy
 #
 # What is asserted below is the retirement itself, so a re-introduction is a test failure rather
 # than a silent regrowth.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1067,7 +1054,6 @@ async def test_no_response_marks_a_diff_row_as_an_out_of_band_swap(client: Async
     assert "hx-swap-oob" not in response.text
 
 
-# ---------------------------------------------------------------------------
 # GET /proposals/ history-restore response shape (phaze-64uy)
 #
 # proposals/partials/filter_tabs.html and proposals/partials/pagination.html BOTH set
@@ -1079,7 +1065,6 @@ async def test_no_response_marks_a_diff_row_as_an_out_of_band_swap(client: Async
 # measured /proposals/?status=pending at 3707 bytes, full_document=False).
 #
 # response_shape.py rule 1 bans that raw check; wants_fragment is the predicate.
-# ---------------------------------------------------------------------------
 
 
 _RESTORE_HEADERS = {"HX-Request": "true", "HX-History-Restore-Request": "true"}

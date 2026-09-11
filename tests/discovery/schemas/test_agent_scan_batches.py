@@ -23,9 +23,7 @@ import pytest
 from phaze.schemas.agent_scan_batches import ScanBatchPatch, ScanBatchPatchResponse
 
 
-# -----------------------
 # ScanBatchPatch
-# -----------------------
 
 
 def test_scan_batch_patch_accepts_running_status() -> None:

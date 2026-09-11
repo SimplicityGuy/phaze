@@ -76,10 +76,8 @@ async def test_get_analysis_failed_count_degrades_to_zero_on_db_error() -> None:
     assert await get_analysis_failed_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
 
 
-# ---------------------------------------------------------------------------
 # STALLED bucket (Phase 44, D-02 follow-up; phaze-g84sk) -- a heartbeat-derived SUBSET of
 # ANALYSIS_FAILED, replacing the removed running-age STRAGGLER bucket.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

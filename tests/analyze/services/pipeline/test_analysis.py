@@ -38,9 +38,6 @@ from phaze.services.analysis import (
 )
 
 
-# --- Model registry tests ---
-
-
 def test_model_sets_count() -> None:
     """MODEL_SETS has exactly 11 entries."""
     assert len(MODEL_SETS) == 11
@@ -94,9 +91,6 @@ def test_genre_model_exists() -> None:
     assert isinstance(GENRE_MODEL, ModelConfig)
     assert GENRE_MODEL.name == "discogs_genre"
     assert GENRE_MODEL.classifier_type == "effnet_discogs"
-
-
-# --- derive_mood tests ---
 
 
 def test_derive_mood() -> None:
@@ -175,9 +169,6 @@ def test_derive_mood_scores_each_mood_by_its_positive_class() -> None:
         assert derive_mood(features) == mood, f"{set_name}: positive class {positive_label!r} (0.95) must win"
 
 
-# --- derive_style tests ---
-
-
 def test_derive_style() -> None:
     """Given genre predictions where top label is 'Electronic---House', derive_style returns 'Electronic/House'."""
     genre_features: dict[str, Any] = {
@@ -200,9 +191,6 @@ def test_derive_style_replaces_triple_dash() -> None:
     }
     result = derive_style(genre_features)
     assert result == "Electronic/House"
-
-
-# --- analyze_file tests (mocked essentia) ---
 
 
 _MOCK_DURATION_SEC = 600.0  # 10 min -> 20 fine (30s) + 4 coarse (180s) windows
@@ -342,9 +330,7 @@ def test_analyze_file_raises_on_corrupt_file(_mock_es: MagicMock, _stub_duration
         analyze_file("/fake/corrupt.mp3", "/fake/models")
 
 
-# ---------------------------------------------------------------------------
 # VALIDATION.md named tests — ANL-01 and ANL-02 behavioral coverage
-# ---------------------------------------------------------------------------
 
 
 @patch("phaze.services.analysis._get_labels")
@@ -431,12 +417,10 @@ def test_analysis_result_stored(_mock_es: MagicMock, mock_get_labels: MagicMock)
         assert model_set.name in ar.features
 
 
-# ---------------------------------------------------------------------------
 # phaze-w55w1: window CHUNKING (pure-Python, NO essentia). The Phase 43
 # `_stride_to_cap` even-stride downsampler these tests replace is gone with the
 # caps -- analysis is exhaustive, so the property under test flipped from "bound
 # the window count" to "never drop a window while bounding what is held at once".
-# ---------------------------------------------------------------------------
 
 
 def _win(idx: int) -> tuple[int, float, float]:
@@ -521,9 +505,7 @@ def test_chunk_sizes_match_the_documented_memory_envelope() -> None:
     assert abs(coarse_bytes / 1_000_000 - 345) <= 1.0
 
 
-# ---------------------------------------------------------------------------
 # Phase 31: aggregate-reduction unit tests (pure-Python, NO essentia mock)
-# ---------------------------------------------------------------------------
 
 
 def _fine(idx: int, bpm: float | None, key: str | None, *, start: float = 0.0, end: float = 30.0, confidence: float = 3.8) -> FineWindow:
@@ -608,9 +590,7 @@ def test_aggregate_danceability_empty_returns_none() -> None:
     assert aggregate_danceability([]) is None
 
 
-# ---------------------------------------------------------------------------
 # Phase 31: per-window analyze_file behavior (mocked essentia)
-# ---------------------------------------------------------------------------
 
 
 def _fine_dicts(result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -790,9 +770,7 @@ def test_analyze_file_return_shape_has_windows(_mock_es: MagicMock, mock_get_lab
             assert {"mood", "style", "danceability", "features"} <= set(w)
 
 
-# ---------------------------------------------------------------------------
 # phaze-w55w1: EXHAUSTIVE coverage emit (mocked essentia)
-# ---------------------------------------------------------------------------
 
 _COVERAGE_KEYS = ("fine_windows_analyzed", "fine_windows_total", "coarse_windows_analyzed", "coarse_windows_total")
 
@@ -1007,9 +985,7 @@ def test_aggregates_are_order_and_gap_independent_reductions() -> None:
     assert aggregate_bpm(subset) == expected
 
 
-# ---------------------------------------------------------------------------
 # phaze-7qfd -- job-peak-RSS observability: platform unit handling + the log line
-# ---------------------------------------------------------------------------
 
 
 def test_peak_rss_gib_linux_reads_vmhwm_in_kb(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1093,9 +1069,6 @@ def test_analyze_file_skips_peak_rss_log_when_unreadable(
         analyze_file("/fake/audio.mp3", "/fake/models")
 
     assert not [r for r in caplog.records if "peak RSS" in r.getMessage()]
-
-
-# --- _get_classifier / _get_labels / _positive_class_prediction / _resolve_malloc_trim ---
 
 
 def test_get_classifier_rejects_an_unknown_classifier_type() -> None:

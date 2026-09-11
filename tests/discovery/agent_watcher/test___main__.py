@@ -36,11 +36,9 @@ if TYPE_CHECKING:
     import pytest
 
 
-# ---------------------------------------------------------------------------
 # _post_ready_paths: posts each ready path; a single post_one failure is
 # logged and does NOT stop the remaining paths from being attempted
 # (Pitfall 1 -- the entry has already been removed from the debouncer).
-# ---------------------------------------------------------------------------
 async def test_post_ready_paths_posts_every_path_in_order() -> None:
     fake_poster = MagicMock()
     fake_poster.post_one = AsyncMock()
@@ -73,10 +71,8 @@ async def test_post_ready_paths_survives_a_single_post_failure(caplog: pytest.Lo
     assert "post failed" in text and "/data/music/b.mp3" in text, f"expected post-failure log; got: {text!r}"
 
 
-# ---------------------------------------------------------------------------
 # _log_evicted_paths: logs a WARNING per evicted path, no side effects beyond
 # logging.
-# ---------------------------------------------------------------------------
 def test_log_evicted_paths_logs_each_path(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING, logger="phaze.agent_watcher.__main__"):
         wmain._log_evicted_paths(["/data/music/stuck.mp3", "/data/music/also-stuck.mp3"])
@@ -93,10 +89,8 @@ def test_log_evicted_paths_no_op_on_empty_list(caplog: pytest.LogCaptureFixture)
     assert caplog.records == []
 
 
-# ---------------------------------------------------------------------------
 # _run_sweep_iteration: one sweep tick -- happy path, and the outer `except`
 # that keeps a single bad tick from ever propagating out of the loop.
-# ---------------------------------------------------------------------------
 async def test_run_sweep_iteration_happy_path_posts_and_logs() -> None:
     fake_debouncer = MagicMock()
     fake_debouncer.sweep = MagicMock(return_value=(["/data/music/a.mp3"], ["/data/music/stuck.mp3"]))
@@ -136,9 +130,7 @@ async def test_run_sweep_iteration_outer_except_swallows_sweep_failure(caplog: p
     assert "sweep iteration failed" in text, f"expected outer-except log; got: {text!r}"
 
 
-# ---------------------------------------------------------------------------
 # _sweep_loop: the thin while/wait-for-shutdown shell around one iteration.
-# ---------------------------------------------------------------------------
 async def test_sweep_loop_delegates_to_run_sweep_iteration_each_tick(monkeypatch: pytest.MonkeyPatch) -> None:
     """_sweep_loop's own job is just the while-guard + inter-tick wait; verify
 

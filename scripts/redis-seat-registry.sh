@@ -241,11 +241,9 @@ done
 
 [ -n "$redis_container" ] || usage
 
-# ---------------------------------------------------------------------------------------------
 # Redis plumbing. Everything goes through `docker exec` -- the same path the justfile recipe used
 # before this script existed -- so no redis-cli on the host is required and the tests can drive a
 # THROWAWAY container by name without publishing a port anywhere near the shared harness on 6380.
-# ---------------------------------------------------------------------------------------------
 
 registry_cli() {
   docker exec "$redis_container" redis-cli -n 0 "$@"
@@ -354,9 +352,7 @@ seat_is_postgres_live() {
   printf '%s\n' "$live" | grep -qxF -e "phaze_${name}_test" -e "phaze_${name}_migrations_test"
 }
 
-# ---------------------------------------------------------------------------------------------
 # allocate
-# ---------------------------------------------------------------------------------------------
 
 # One atomic server-side transaction: return the seat's existing in-range index (refreshing its
 # lease), else claim the LOWEST FREE index in [1, capacity), else report exhaustion. Index 0 is
@@ -492,9 +488,7 @@ cmd_allocate() {
   printf '%s\n' "$index"
 }
 
-# ---------------------------------------------------------------------------------------------
 # release / reclaim
-# ---------------------------------------------------------------------------------------------
 
 # Hand an index back: wipe the seat's keys so the next holder starts clean, then drop the three
 # registry fields. Touches nothing outside logical DB `index` and the registry hashes -- the

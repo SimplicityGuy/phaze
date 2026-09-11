@@ -204,7 +204,6 @@ async def test_undo_resolve(session: AsyncSession, client: AsyncClient) -> None:
     session.add_all([f1, f2])
     await session.flush()
 
-    # First resolve
     resolve_response = await client.post(
         f"/duplicates/{HASH_A}/resolve",
         data={"canonical_id": str(f1.id)},
@@ -223,7 +222,6 @@ async def test_undo_resolve(session: AsyncSession, client: AsyncClient) -> None:
 
     assert undo_response.status_code == 200
 
-    # Verify file restored
     await session.refresh(f2)
 
 
@@ -514,7 +512,6 @@ async def test_bulk_undo(session: AsyncSession, client: AsyncClient) -> None:
 
     assert response.status_code == 200
 
-    # Verify file restored
     await session.refresh(f2)
 
 
@@ -565,7 +562,6 @@ async def test_duplicates_index_redirects_into_the_dedupe_workspace(session: Asy
     assert response.headers["location"] == "/s/dedupe"
 
 
-# ---------------------------------------------------------------------------
 # UAT regression (Phase 84): the resolve/undo endpoints must COMMIT.
 #
 # `get_session` (database.py:48-51) yields the session and never commits, and `services/dedup.py`
@@ -576,7 +572,6 @@ async def test_duplicates_index_redirects_into_the_dedupe_workspace(session: Asy
 # Every pre-existing test missed it because `conftest.client` overrides `get_session` with the
 # test's OWN session, so assertions read uncommitted rows from inside the same transaction. These
 # tests assert from an INDEPENDENT session, which by definition sees only committed data.
-# ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_resolve_endpoint_commits_marker(session: AsyncSession, client: AsyncClient, verify: AsyncSession) -> None:
     """After POST /resolve, a SEPARATE session sees the committed DedupResolution marker (the sole authority)."""
@@ -628,11 +623,9 @@ async def test_undo_endpoint_commits_marker_delete_and_restore(session: AsyncSes
     assert remaining == 0, "undo did not COMMIT the marker DELETE"
 
 
-# ---------------------------------------------------------------------------
 # Phase 90 (PR-A, BLOCKER FIX): dedup-undo is DECOUPLED from any scalar state. The marker DELETE + early-return
 # gate derive from the payload id-set ALONE, so PR-B stripping previous_state can NEVER no-op the undo.
 # These round-trips use the ACTUAL server-rendered file_states payload (never a hand-crafted dict).
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -852,7 +845,6 @@ async def test_undo_roundtrip_id_only_payload_no_longer_deletes_marker(session: 
     assert remaining == 1, "id-only undo deleted the marker -- the phaze-btix CAS gate regressed"
 
 
-# ---------------------------------------------------------------------------
 # phaze-m7ya: undo must find a group NO MATTER WHERE IT SORTS.
 #
 # This endpoint (and the since-deleted ``compare_group``, phaze-ur8o3) used to locate a single group
@@ -862,7 +854,6 @@ async def test_undo_roundtrip_id_only_payload_no_longer_deletes_marker(session: 
 # 1000 groups: a small fixture passes against the broken code and proves nothing. The hashes are
 # zero-padded hex of the row index, so they sort lexicographically by index and
 # ``_BEYOND_CAP_INDEX`` is genuinely past the old cap under the subquery's ``ORDER BY sha256_hash``.
-# ---------------------------------------------------------------------------
 
 _GROUP_COUNT = 1200
 _BEYOND_CAP_INDEX = 1150  # comfortably past the old hardcoded 1000-group scan window
@@ -913,14 +904,12 @@ async def test_undo_restores_card_for_group_beyond_the_old_1000_group_scan(sessi
     assert f'id="dupe-group-{target_hash}"' in undo.text, "undo dropped the restored card for a group past the old 1000-group cap"
 
 
-# ---------------------------------------------------------------------------
 # phaze-wkqk: the untrusted-input contract (src/phaze/routers/request_guards.py).
 #
 # Contract rule 6 makes a docstring that promises "no HTTP 500" a TEST obligation, so every payload
 # shape the guard names is exercised here. Before the fix, `not-json` raised JSONDecodeError and
 # `[1,2]` raised AttributeError on `int.get` -- both escaping as an unhandled HTTP 500 through
 # handlers that documented a graceful no-op. Nothing below may ever assert a 5xx.
-# ---------------------------------------------------------------------------
 
 _UNDO_PATHS = (f"/duplicates/{HASH_A}/undo", "/duplicates/undo-all")
 
@@ -1003,7 +992,6 @@ async def test_undo_mixed_payload_undoes_the_valid_entries(session: AsyncSession
     assert remaining == 0, "a junk entry suppressed the undo of a valid id"
 
 
-# ---------------------------------------------------------------------------
 # GET /duplicates/ history-restore response shape (phaze-64uy)
 #
 # duplicates/partials/pagination.html sets hx-push-url="true" on every /duplicates/?page=... control,
@@ -1014,7 +1002,6 @@ async def test_undo_mixed_payload_undoes_the_valid_entries(session: AsyncSession
 # document.
 #
 # routers/response_shape.py rule 1 bans the raw check; wants_fragment is the predicate.
-# ---------------------------------------------------------------------------
 
 
 _RESTORE_HEADERS = {"HX-Request": "true", "HX-History-Restore-Request": "true"}
@@ -1193,12 +1180,10 @@ async def test_bulk_undo_without_group_hashes_still_undoes(session: AsyncSession
     assert "1 file restored" in undo_all.text
 
 
-# ---------------------------------------------------------------------------
 # phaze-i0jqu: PostgreSQL cannot bind a NUL (U+0000) or a lone Unicode surrogate in a UTF8 text
 # parameter -- asyncpg raises CharacterNotInRepertoireError and aborts the transaction. Every
 # duplicates endpoint that takes a group_hash (path or form) must reject it BEFORE it reaches any
 # query or pg_advisory_xact_lock(hashtext(...)) call, never 500.
-# ---------------------------------------------------------------------------
 
 _NUL_HASH = "a" * 30 + "\x00" + "a" * 33  # 64 chars, matches every other test hash's shape
 _SURROGATE_HASH = "a" * 30 + "\ud800" + "a" * 33
@@ -1288,11 +1273,9 @@ async def test_bulk_undo_drops_invalid_hash_never_500(session: AsyncSession, cli
     assert f'id="dupe-group-{HASH_A}"' in response.text
 
 
-# ---------------------------------------------------------------------------
 # phaze-ptzse: resolve_group returning 0 on a NON-empty group (a stale resubmit of an
 # already-resolved card, or a concurrent resolve that already claimed the canonical) must render an
 # honest "nothing changed" toast, never "Group resolved" -- and must not remove the still-live card.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1340,11 +1323,9 @@ async def test_resolve_reachable_without_concurrency_single_member_group_is_hone
     assert "None of the shown groups are still available" in bulk.text
 
 
-# ---------------------------------------------------------------------------
 # phaze-cvjby: find_duplicate_groups_by_hashes has no count>1 filter -- bulk_undo's re-hydration
 # loop must not OOB-append a bogus single-file "group" card for a hash whose group is still (or is
 # once again) resolved down to one file.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1380,14 +1361,12 @@ async def test_bulk_undo_does_not_resurrect_a_single_member_group_card(session: 
     )
 
 
-# ---------------------------------------------------------------------------
 # phaze-4iq5t: the Dedupe workspace's group-cap MUST always be visible/escapable. Before this,
 # services/review.get_dedupe_groups called find_duplicate_groups_with_metadata with no offset
 # override, so a corpus with more than GROUP_PAGE_SIZE (100) duplicate-hash groups silently
 # rendered only the first 100 (by, previously, arbitrary hash order) with no "showing N of M" and
 # no way to reach the rest -- permanently and undetectably, since sha256 hash order gives no
 # observable signal that anything was cut.
-# ---------------------------------------------------------------------------
 
 
 async def _seed_n_duplicate_groups(session: AsyncSession, n: int) -> list[str]:

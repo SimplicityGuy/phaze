@@ -98,9 +98,6 @@ class _Boundary:
         self.title = title
 
 
-# --- The palette: one source, and validated as categorical -------------------------------
-
-
 def test_the_seven_mood_hues_are_one_module_level_source_no_surface_duplicates() -> None:
     """MOOD_HUES is the only place a mood's colour is decided, for all three surfaces.
 
@@ -150,9 +147,6 @@ def test_the_river_stacks_in_mood_orders_own_order_and_every_band_carries_a_labe
     assert [series["name"] for series in mood_river([], 0.0, 600.0, LANE_H)] == list(MOOD_NAMES)
     assert all(MOOD_LABELS[name] for name in MOOD_NAMES)
     assert [entry["label"] for entry in mood_legend()] == [MOOD_LABELS[name] for name in MOOD_NAMES]
-
-
-# --- Energy lane -------------------------------------------------------------------------
 
 
 def test_energy_path_points_are_the_projected_energies_at_window_midpoints() -> None:
@@ -214,9 +208,6 @@ def test_an_unprojected_window_breaks_the_energy_lane_rather_than_reading_as_zer
 
     assert len(areas) == 2
     assert all("56.00" not in str(area["points"]) for area in areas), "a NULL energy was drawn on the baseline"
-
-
-# --- Mood river --------------------------------------------------------------------------
 
 
 def test_the_rivers_seven_series_sum_to_the_lane_height_at_every_window() -> None:
@@ -292,9 +283,6 @@ def test_a_window_carrying_only_some_of_the_seven_normalises_over_what_it_has() 
     assert sum(stack) == pytest.approx(1.0)
     assert stack[MOOD_NAMES.index("mood_party")] == pytest.approx(0.75)
     assert stack[MOOD_NAMES.index("mood_acoustic")] == 0.0
-
-
-# --- Key ribbons, ticks and the coverage chip --------------------------------------------
 
 
 def test_key_ribbons_are_labelled_with_the_key_and_its_camelot_code() -> None:
@@ -380,9 +368,6 @@ def test_a_null_fine_pair_renders_unknown_not_zero_and_sets_the_gap_state() -> N
     assert chip["text"] == "240 coarse · ? fine · gaps"
     assert chip["has_gaps"] is True
     assert chip["fine"] is None
-
-
-# --- The fine-only file, and the lanes' text alternatives ---------------------------------
 
 
 def test_a_fine_only_file_keeps_the_bpm_lane_and_says_so_in_the_energy_and_mood_lanes() -> None:

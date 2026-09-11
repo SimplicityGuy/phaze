@@ -110,9 +110,6 @@ def _build_identity(roots: list[str], agent_id: str = "test-agent-1") -> AgentId
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 1: main() calls whoami then starts Observer + schedules one root.
-# ---------------------------------------------------------------------------
 async def test_main_calls_whoami_then_starts_observer(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _build_agent_settings(monkeypatch)
     identity = _build_identity(roots=["/data/music", "/data/concerts"])
@@ -227,9 +224,6 @@ async def test_main_uses_native_observer_by_default(monkeypatch: pytest.MonkeyPa
     fake_polling_cls.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# Test 2: main() schedules Observer per scan_root (3 roots -> 3 schedules).
-# ---------------------------------------------------------------------------
 async def test_main_constructs_observer_per_scan_root(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _build_agent_settings(monkeypatch)
     identity = _build_identity(roots=["/a", "/b", "/c"])
@@ -252,11 +246,8 @@ async def test_main_constructs_observer_per_scan_root(monkeypatch: pytest.Monkey
     assert scheduled_paths == ["/a", "/b", "/c"]
 
 
-# ---------------------------------------------------------------------------
-# Test 7 (phaze-jzid): per-root observer.start() failure is contained --
-# one bad root does not abort the others, and the watcher only fails hard
+# One bad root does not abort the others, and the watcher only fails hard
 # when EVERY root fails.
-# ---------------------------------------------------------------------------
 async def test_main_continues_when_one_root_fails_to_start(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """A missing/unmounted root's observer.start() OSError must not abort the healthy root.
 
@@ -335,9 +326,6 @@ async def test_main_raises_when_all_roots_fail_to_start(monkeypatch: pytest.Monk
     fake_client.close.assert_awaited_once()
 
 
-# ---------------------------------------------------------------------------
-# Test 3: Graceful shutdown on SIGTERM -- stop / join / close all called.
-# ---------------------------------------------------------------------------
 async def test_main_graceful_shutdown_on_sigterm(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _build_agent_settings(monkeypatch)
     identity = _build_identity(roots=["/x"])
@@ -399,9 +387,6 @@ async def test_main_logs_warning_when_observer_does_not_stop(monkeypatch: pytest
     fake_client.close.assert_awaited_once()
 
 
-# ---------------------------------------------------------------------------
-# Test 4: whoami exhaustion -> RuntimeError.
-# ---------------------------------------------------------------------------
 async def test_main_exits_nonzero_on_whoami_exhaustion(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _build_agent_settings(monkeypatch)
 
@@ -430,9 +415,6 @@ async def test_main_exits_nonzero_on_whoami_exhaustion(monkeypatch: pytest.Monke
     fake_client.close.assert_awaited_once()
 
 
-# ---------------------------------------------------------------------------
-# Test 5: Event -> POST end-to-end; batch_id absent in JSON body (D-18).
-# ---------------------------------------------------------------------------
 async def test_event_to_post_e2e(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # Stage a real file so stat + SHA-256 succeed.
     music_file = tmp_path / "song.mp3"
@@ -493,9 +475,6 @@ async def test_event_to_post_e2e(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     assert unicodedata.is_normalized("NFC", body["files"][0]["original_path"])
 
 
-# ---------------------------------------------------------------------------
-# Test 5b (Phase 27 UAT Gap 5): missing required env -> actionable log + exit 1.
-# ---------------------------------------------------------------------------
 async def test_main_logs_actionable_error_on_missing_env(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -537,10 +516,7 @@ async def test_main_logs_actionable_error_on_missing_env(
     assert ("missing" in text.lower()) or ("required" in text.lower()), f"missing-var log lacks 'missing'/'required' keyword: {text!r}"
 
 
-# ---------------------------------------------------------------------------
-# Test 6: OSError on vanished path -> no exception, sweep loop survives.
 # (Pitfall 1 behavior gate; binds to Task 1's poster.py OSError handling.)
-# ---------------------------------------------------------------------------
 async def test_oserror_on_vanished_path(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     # Build a real client + poster but monkeypatch Path.stat to raise OSError
     # so the post_one call exercises the Pitfall-1 drop branch.
@@ -565,9 +541,7 @@ async def test_oserror_on_vanished_path(monkeypatch: pytest.MonkeyPatch, caplog:
     assert "vanished" in text.lower() or "dropping" in text.lower(), f"expected debug log of dropped path; got: {text!r}"
 
 
-# ---------------------------------------------------------------------------
 # Coverage gap fills (Codecov PR #59): poster.py:94-99 (4xx / 5xx / catch-all)
-# ---------------------------------------------------------------------------
 # Each of these tests stages a real file (so stat + SHA-256 succeed and we
 # actually reach the upsert_files call), then monkeypatches the client's
 # upsert_files coroutine to raise one of the three AgentApi* exception
@@ -575,13 +549,11 @@ async def test_oserror_on_vanished_path(monkeypatch: pytest.MonkeyPatch, caplog:
 # the sweep-loop survival contract.
 
 
-# ---------------------------------------------------------------------------
 # _sweep_loop and its decomposed helpers (_run_sweep_iteration,
 # _post_ready_paths, _log_evicted_paths) moved to the dedicated
 # test___main__.py in this directory as part of phaze-bk9el.13 (nesting
 # reduction below 5 levels). That file's naming mirrors this module's own
 # `test_<stem>.py` convention applied to the `__main__` stem.
-# ---------------------------------------------------------------------------
 
 
 async def test_main_raises_when_settings_is_not_agent_settings(monkeypatch: pytest.MonkeyPatch) -> None:

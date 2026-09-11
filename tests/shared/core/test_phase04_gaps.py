@@ -17,9 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
-# ---------------------------------------------------------------------------
 # Gap 1: SAQ queue lifecycle in FastAPI lifespan
-# ---------------------------------------------------------------------------
 # Note: ASGITransport does not invoke the FastAPI lifespan, so we invoke the
 # lifespan context manager directly against a minimal mock app object.
 
@@ -121,17 +119,13 @@ async def test_lifespan_disconnects_queue_on_shutdown() -> None:
         mock_queue.disconnect.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
 # Gap 2: Docker Compose worker service uses the correct SAQ command
-# ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
 # Gap 3: Agent-worker startup checks for models directory (Phase 26 D-04 -- the
 # models-dir guard is now owned by phaze.tasks.agent_worker; the controller is
 # fileless and never reads models. Detailed startup-behaviour coverage lives in
 # tests/test_tasks/test_agent_startup_banner.py.)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -234,11 +228,9 @@ async def test_agent_startup_propagates_ensure_models_present_failure(tmp_path: 
         await aw.startup({})
 
 
-# ---------------------------------------------------------------------------
 # Gap 2: Docker Compose controller service uses the correct SAQ command
 # (Phase 26 D-04 -- worker.py deleted; the application-server worker now runs
 # phaze.tasks.controller.settings under PHAZE_ROLE=control.)
-# ---------------------------------------------------------------------------
 
 
 def test_docker_compose_worker_command_is_controller_settings() -> None:
@@ -278,13 +270,11 @@ def test_docker_compose_app_services_declare_restart_policy() -> None:
         )
 
 
-# ---------------------------------------------------------------------------
 # Phase 27 UAT gap-13: Docker Compose must include an agent-side SAQ worker
 # that consumes the per-agent queue. Without it, scan_directory and
 # extract_file_metadata jobs that the API enqueues sit in Redis forever
 # (the `worker` service above only consumes the `controller` queue), so
 # user-initiated scans never reach COMPLETED.
-# ---------------------------------------------------------------------------
 
 
 def test_docker_compose_has_agent_worker_consuming_agent_queue() -> None:

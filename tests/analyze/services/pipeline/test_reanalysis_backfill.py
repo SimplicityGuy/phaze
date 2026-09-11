@@ -125,9 +125,7 @@ async def _seed_active_cloud_job(session: AsyncSession, file: FileRecord, status
     await session.commit()
 
 
-# ---------------------------------------------------------------------------
 # select_incomplete_analyses / count_null_windows_columns_rows / count_applied_incomplete_analyses_rows
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -236,9 +234,7 @@ async def test_count_applied_incomplete_analyses_rows(session: AsyncSession, mak
     assert await count_applied_incomplete_analyses_rows(session) == 1
 
 
-# ---------------------------------------------------------------------------
 # enqueue_incomplete_reanalysis -- local routing (short/null duration)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -365,9 +361,7 @@ async def test_enqueue_incomplete_reanalysis_partial_skip_offline_owner_never_re
     assert len(router.queue_for("test-fileserver", "analyze").captured) == 1
 
 
-# ---------------------------------------------------------------------------
 # enqueue_incomplete_reanalysis -- containment (findings #3/#4, phaze-4ter / phaze-p2qvv)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -416,9 +410,7 @@ async def test_enqueue_incomplete_reanalysis_probe_failure_is_unknown(session: A
     assert outcomes == [ReanalysisOutcome(file.id, file.original_path, "unknown")]
 
 
-# ---------------------------------------------------------------------------
 # enqueue_incomplete_reanalysis -- cloud routing (finding #2, CLOUDROUTE-02 / T-49-03)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -560,9 +552,7 @@ async def test_enqueue_incomplete_reanalysis_force_local_overrides_cloud_enabled
     assert outcomes == [ReanalysisOutcome(file.id, file.original_path, "queued")]
 
 
-# ---------------------------------------------------------------------------
 # compute_exit_code (finding #7)
-# ---------------------------------------------------------------------------
 
 
 def test_compute_exit_code_no_candidates_is_success() -> None:

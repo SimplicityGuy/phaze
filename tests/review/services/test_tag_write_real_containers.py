@@ -481,11 +481,9 @@ def test_phaze_can_read_back_what_phaze_wrote(tmp_path: Path, ext: str) -> None:
     assert tags.track_number == 3, f".{ext}: ingest read-back lost track number (got {tags.track_number!r})"
 
 
-# ---------------------------------------------------------------------------
 # AC 4 -- the verifier must not be re-maskable. These are structural assertions
 # about the SHAPE of the read/write split, not about any one format's behaviour:
 # they are what stops the next unmapped container from reproducing the ASF bug.
-# ---------------------------------------------------------------------------
 
 
 def test_write_and_read_maps_are_mutual_inverses() -> None:

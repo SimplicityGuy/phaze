@@ -34,9 +34,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# ---------------------------------------------------------------------------
 # Coverage gap fills (Codecov PR #59): pipeline_scans.py:120, 207, 255-260
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -165,12 +163,10 @@ async def test_agent_roots_swap_unknown_agent_yields_empty_state(
     assert "Select an agent first" in response.text
 
 
-# ---------------------------------------------------------------------------
 # HARD-03 (AR-30-03 / Phase-30 REVIEW IN-01): agent_id HTTP-boundary validation
 # A malformed agent_id must 422 at the boundary instead of silently returning
 # an empty picker 200. Pattern + max_length mirror the Agent.id DB CHECK
 # (models/agent.py:36) and the CLI AGENT_ID_RE (cli/__init__.py:44).
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -196,9 +192,7 @@ async def test_agent_roots_swap_well_formed_agent_id_passes_validation(
     assert response.status_code == 200, response.text
 
 
-# ---------------------------------------------------------------------------
 # Task 2 (template / UI-SPEC) tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -374,9 +368,7 @@ async def test_router_registered_in_main_app() -> None:
     assert "/pipeline/scans/recent" in paths
 
 
-# ---------------------------------------------------------------------------
 # GET /pipeline/scans/recent -- self-arming Recent Scans poll partial
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -473,9 +465,7 @@ async def test_recent_path_not_shadowed_by_batch_id_route(
     assert 'id="recent-scans"' in response.text
 
 
-# ---------------------------------------------------------------------------
 # OOB stage-card "files ready" counts piggybacked on the /pipeline/stats poll
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -497,9 +487,7 @@ async def test_stats_partial_carries_oob_files_ready_counts(
     assert "files ready" in response.text
 
 
-# ---------------------------------------------------------------------------
 # Stage-card button :disabled tracks the live count via $store.pipeline
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -526,9 +514,7 @@ async def test_stats_poll_oob_counts_push_into_pipeline_store(
     assert "Generate Proposals" not in response.text
 
 
-# ---------------------------------------------------------------------------
 # PR5: DELETE /pipeline/scans/{batch_id} -- delete + cascade + 409 guards
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -723,9 +709,7 @@ async def test_delete_running_batch_renders_alert_not_dropped_409(
     assert (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalars().all() != []
 
 
-# ---------------------------------------------------------------------------
 # phaze-a6hm.6 -- sortable Recent Scans table (routers/column_sort.py contract)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -917,7 +901,6 @@ def test_recent_scans_contract_is_wired_at_import_time() -> None:
     assert "Elapsed" not in {column.label for column in RECENT_SCANS_SORT.columns}
 
 
-# ---------------------------------------------------------------------------
 # phaze-8f9j: the SERVED page, not just the endpoint body.
 #
 # Every test above asserts on what an endpoint RETURNS. That is exactly why the orphaning went
@@ -925,7 +908,6 @@ def test_recent_scans_contract_is_wired_at_import_time() -> None:
 # document mounted `id="recent-scans"`, so the delete control, the failed-row error_message, the
 # stall indicator and the whole sortable-header contract were unreachable in the product. These
 # tests assert on a page the operator can actually open.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

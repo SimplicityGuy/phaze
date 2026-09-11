@@ -61,10 +61,8 @@ if TYPE_CHECKING:
 _WORKSPACE_STAGES = ["tracklist"]
 
 
-# ---------------------------------------------------------------------------
 # Module-level async seed helpers (test fixtures -- ORM inserts only, no backend change).
 # Plans 59-02/03 build their workspace assertions on these.
-# ---------------------------------------------------------------------------
 
 
 async def _seed_file(
@@ -170,9 +168,7 @@ async def _seed_tracklist_track(
     return track
 
 
-# ---------------------------------------------------------------------------
 # Foundation tests (FILLED in Plan 59-01).
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -214,10 +210,8 @@ async def test_identify_single_poll_discipline(client: AsyncClient) -> None:
         assert "setInterval" not in frag.text, f"{stage} fragment must not use setInterval"
 
 
-# ---------------------------------------------------------------------------
 # Workspace tests -- xfail stubs converted to real assertions by their owning plan/task.
 # (names + reasons per 59-VALIDATION.md / 59-RESEARCH.md Test Map)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -351,11 +345,9 @@ async def test_tracklist_per_set_coverage(client: AsyncClient, session: AsyncSes
     assert 'data-record-section="tracklist"' in tbody
 
 
-# ---------------------------------------------------------------------------
 # Read-only row-assembly helper unit tests (Plan 59-01 Task 2).
 # These exercise the service helpers directly (no template wiring) so the data
 # contract Plans 02/03 render against is locked + degrade-safe NOW.
-# ---------------------------------------------------------------------------
 
 
 class _NullSavepoint:
@@ -480,11 +472,9 @@ async def test_get_tracklist_sets_page_degrades_to_empty() -> None:
     assert page.has_next is False
 
 
-# ---------------------------------------------------------------------------
 # phaze-1wvb -- the bound. These are the tests that would have caught the bug: both Identify reads
 # were whole-corpus (no LIMIT, `.all()`-materialised, server-rendered inline), so the render grew
 # without limit as the archive converged. Every assertion below fails against the pre-fix code.
-# ---------------------------------------------------------------------------
 
 
 # Seeding a full DEFAULT_PAGE_SIZE + a few is enough to prove the bound: an UNBOUNDED read returns
@@ -648,7 +638,6 @@ async def test_tracklist_bulk_actions_still_cover_the_full_set(session: AsyncSes
     assert isinstance(await get_match_pending_tracklists(session), list)
 
 
-# --- phaze-a6hm.1: the sortable-column contract, END TO END through a real handler ----------------
 #
 # tests/shared/routers/test_column_sort.py proves the contract object in isolation. These prove the
 # WIRING: that a header click actually reorders the SET (not the page), that the whitelist holds at
@@ -756,11 +745,9 @@ async def test_sorting_preserves_view_state_and_the_pager_preserves_the_sort(cli
     assert "order=desc" in pager
 
 
-# ---------------------------------------------------------------------------
 # phaze-6not3: TRACKLIST_SETS_SORT must order by what the cell actually RENDERS, not merely a
 # same-named Tracklist column (FILES_SORT's own "sort what you show" precedent, violated on both
 # of this contract's columns before the fix).
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

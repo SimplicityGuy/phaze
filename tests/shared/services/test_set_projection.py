@@ -45,9 +45,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
-# ---------------------------------------------------------------------------
 # phaze-x1qr3.1: MOOD_ORDER, the fixed archive-wide vocabulary
-# ---------------------------------------------------------------------------
 
 
 def test_mood_order_is_the_eleven_fixed_names_in_a_fixed_order() -> None:
@@ -103,9 +101,7 @@ def test_seven_of_the_eleven_are_the_binary_mood_classifiers() -> None:
     assert MOOD_ORDER[:7] == tuple(moods)
 
 
-# ---------------------------------------------------------------------------
 # phaze-x1qr3.2: the Camelot table
-# ---------------------------------------------------------------------------
 
 # The standard 24-position Camelot wheel, spelled out independently of ``CAMELOT_TABLE`` so this
 # test is a real cross-check rather than importing the same literal it is meant to verify.
@@ -170,9 +166,7 @@ def test_camelot_code_returns_none_never_raises_for_unknown_keys(musical_key: st
     assert camelot_code(musical_key) is None
 
 
-# ---------------------------------------------------------------------------
 # phaze-x1qr3.2: positive_class_vector, against REAL stored feature dicts
-# ---------------------------------------------------------------------------
 
 
 def _coarse_feature_dicts() -> list[dict[str, object]]:
@@ -230,9 +224,7 @@ def test_positive_class_vector_reports_a_gap_for_an_absent_model_set() -> None:
     assert vector[MOOD_ORDER.index("mood_acoustic")] is not None
 
 
-# ---------------------------------------------------------------------------
 # phaze-x1qr3.2: the energy scalar
-# ---------------------------------------------------------------------------
 
 
 def test_energy_is_monotone_increasing_in_danceability_and_party() -> None:
@@ -303,9 +295,7 @@ def test_energy_weights_live_in_exactly_one_place_in_the_module() -> None:
     assert set(ENERGY_WEIGHTS) == {"danceability", "mood_party", "mood_aggressive", "mood_relaxed", "mood_sad", "bpm_z"}
 
 
-# ---------------------------------------------------------------------------
 # phaze-x1qr3.2: build_profile -- the arc resample
-# ---------------------------------------------------------------------------
 
 
 def _window(
@@ -489,9 +479,7 @@ def test_build_profile_glyph_cells_pair_coarse_energy_with_the_overlapping_fine_
     assert profile.glyph == [{"camelot_number": 8, "energy": 0.4}]
 
 
-# ---------------------------------------------------------------------------
 # phaze-x1qr3.2: harmonic_discipline -- the flicker filter
-# ---------------------------------------------------------------------------
 
 
 def _fine_camelot_windows(codes: Sequence[str]) -> list[AnalysisWindow]:
@@ -532,10 +520,8 @@ def test_harmonic_discipline_is_none_without_any_usable_camelot_data() -> None:
     assert harmonic_discipline(windows) is None
 
 
-# ---------------------------------------------------------------------------
 # phaze-x1qr3.8: the flicker filter as RUNS, the public adjacency predicate, and the
 # key-name inversion the record sidebar names a modal code with.
-# ---------------------------------------------------------------------------
 
 
 def test_flicker_filtered_key_runs_carries_the_time_each_surviving_run_occupied() -> None:

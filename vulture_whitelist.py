@@ -68,7 +68,6 @@ confidence the recipe actually uses:
     non-blocking and hand-verified in the first place.
 """
 
-# --- unused import (90%): string-form `cast("CursorResult[Any]", ...)` only ---
 # Inventory verified against the sweep at ebae0f45 (2026-08-21); 12 modules, unchanged in count.
 # src/phaze/routers/agent_analysis.py:48          src/phaze/services/scan_deletion.py:32
 # src/phaze/routers/agent_push.py:66              src/phaze/services/stage_control.py:41
@@ -78,6 +77,5 @@ confidence the recipe actually uses:
 # src/phaze/services/filename_convention_learner.py:86   src/phaze/tasks/tracklist.py:66
 CursorResult
 
-# --- unused variable (100%): `RenderPage` Protocol parameters, bodies are `...` ---
 wait_until  # src/phaze/services/tracklist_render.py:161 (goto), :163 (reload)
 selector  # src/phaze/services/tracklist_render.py:165 (wait_for_selector)

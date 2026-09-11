@@ -270,7 +270,6 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(pytest.mark.integration)
 
 
-# ---------------------------------------------------------------------------
 # Phase 67 (Plan 02): backend-registry TOML fixture.
 #
 # Writes a tmp backends.toml + points PHAZE_BACKENDS_CONFIG_FILE at it so a
@@ -279,7 +278,6 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 # plane with a chosen registry. Yields a `write(toml_text) -> Path` callable so
 # each test supplies its own [[backends]]/[[buckets]] TOML; the get_settings
 # lru_cache is cleared before AND after so a cached singleton never leaks.
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -361,7 +359,6 @@ async def _db_connection(async_engine) -> AsyncGenerator[AsyncConnection]:  # ty
         yield conn
 
 
-# --------------------------------------------------------------------------------------------------
 # phaze-5lq8a: the savepoint-ordering probe.
 #
 # Sharing ONE connection between the test's `session`, the app's `get_session` override, the `verify`
@@ -379,7 +376,6 @@ async def _db_connection(async_engine) -> AsyncGenerator[AsyncConnection]:  # ty
 # This probe watches the stack directly, so the diagnosis is available whether or not the offending
 # task is still alive at teardown -- which the `pending_router_background_tasks()` check alone cannot
 # do, because the common case is a task that finished between corrupting the stack and teardown.
-# --------------------------------------------------------------------------------------------------
 _SAVEPOINT_ORDER_KEY = "phaze_savepoint_order"
 
 
@@ -645,7 +641,6 @@ async def authenticated_client(
         yield ac
 
 
-# ---------------------------------------------------------------------------
 # Phase 52 (Plan 02): one-shot job_runner fixtures.
 #
 # These are Postgres-free on purpose — the DB-less one-shot pod they exercise
@@ -657,7 +652,6 @@ async def authenticated_client(
 # which eagerly builds an SSLContext from the file — so the CA file must be a
 # PARSEABLE PEM cert (respx intercepts below TLS, so it is never used in a real
 # handshake; it only has to load). This is a static self-signed test CA.
-# ---------------------------------------------------------------------------
 
 _TEST_CA_PEM = """\
 -----BEGIN CERTIFICATE-----
@@ -725,7 +719,6 @@ def job_env(monkeypatch: pytest.MonkeyPatch, tmp_path):  # type: ignore[no-untyp
     get_settings.cache_clear()
 
 
-# ---------------------------------------------------------------------------
 # Phase 54 (Plan 03): fake-kube seam fixture.
 #
 # kr8s talks to the API server over httpx, so the seam (kube_staging.py) tests
@@ -739,7 +732,6 @@ def job_env(monkeypatch: pytest.MonkeyPatch, tmp_path):  # type: ignore[no-untyp
 # KUBECONFIG is pointed at a nonexistent path so kr8s's KubeAuth never loads the
 # host's real kubeconfig (e.g. a local colima cluster) -- the seam server URL comes
 # solely from the test-supplied kube_api_url.
-# ---------------------------------------------------------------------------
 
 KUBE_TEST_API_URL = "https://kube.test"
 
@@ -771,7 +763,6 @@ def kube_respx(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
         yield router
 
 
-# ---------------------------------------------------------------------------
 # Phase 60 (Plan 60-01): Review & Apply seed factories.
 #
 # Async ORM insert factories (test fixtures only -- no backend change) that the
@@ -781,7 +772,6 @@ def kube_respx(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
 # are visible to HX requests). Values are kept ASCII-safe and built through the real
 # model constructors; the legacy agent is already seeded by ``async_engine`` so a
 # bare ``FileRecord`` satisfies its NOT NULL + FK ``agent_id`` default.
-# ---------------------------------------------------------------------------
 
 
 @pytest_asyncio.fixture
@@ -961,13 +951,11 @@ def seed_cue_set(session: AsyncSession, make_file):  # type: ignore[no-untyped-d
     return _make
 
 
-# ---------------------------------------------------------------------------
 # Phase 61 (Plan 61-01): record / palette / agents / empty-state seed factories.
 #
 # Wave-0 read-model fixtures the four surface plans (61-02..05) verify against.
 # Same async-factory shape as make_file above (build on make_file; add -> commit
 # -> refresh); no backend/logic change. See 61-VALIDATION.md "Wave 0 Requirements".
-# ---------------------------------------------------------------------------
 
 
 @pytest_asyncio.fixture

@@ -61,9 +61,7 @@ def _stub_duration_probe() -> Any:
         yield
 
 
-# ---------------------------------------------------------------------------
 # A mock whose outputs are distinct per (model, window)
-# ---------------------------------------------------------------------------
 #
 # The default mocks in test_analysis.py return one constant array for every model, which
 # cannot distinguish "ran the right model on the right window" from "ran something". Here
@@ -137,9 +135,7 @@ def _clean_caches() -> Iterator[None]:
     analysis_mod._labels_cache.clear()
 
 
-# ---------------------------------------------------------------------------
 # Construction count + residency -- asserted by instrumentation, not by reading
-# ---------------------------------------------------------------------------
 
 
 def _instrumented_analyze(mock_es: MagicMock, duration_sec: float = _DURATION_SEC, **kwargs: Any) -> tuple[dict[str, Any], list[str], list[int]]:
@@ -222,9 +218,7 @@ def test_construction_count_scales_with_chunks_not_with_windows() -> None:
     assert max(resident_40) == 1
 
 
-# ---------------------------------------------------------------------------
 # Output identity against the window-major nesting
-# ---------------------------------------------------------------------------
 
 
 def _window_major_features(audio_16k: Any, models_dir: str) -> dict[str, Any]:
@@ -284,9 +278,7 @@ def test_distinct_windows_get_distinct_features() -> None:
     assert len(serialized) == len(coarse), "every window must carry ITS OWN activations, not a neighbour's"
 
 
-# ---------------------------------------------------------------------------
 # Failure isolation under model-major iteration
-# ---------------------------------------------------------------------------
 
 
 def test_inference_failure_kills_exactly_one_window() -> None:
@@ -420,9 +412,7 @@ def test_single_buffer_wrapper_matches_window_major() -> None:
     assert actual == expected
 
 
-# ---------------------------------------------------------------------------
 # phaze-ouz0y: single-frame ("squeezed") activations must not collapse to a scalar
-# ---------------------------------------------------------------------------
 #
 # Production crash (agent_analysis, 2026-08-10, two distinct files within 24h):
 # ``analysis child failed (exit 1): TypeError: 'numpy.float64' object is not iterable``.
@@ -541,9 +531,7 @@ def test_single_frame_activations_match_the_normal_multi_frame_mean() -> None:
     _assert_features_approximately_equal(squeezed, multi_frame)
 
 
-# ---------------------------------------------------------------------------
 # _release_classifier
-# ---------------------------------------------------------------------------
 
 
 def test_release_classifier_evicts_and_is_idempotent() -> None:

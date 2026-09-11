@@ -224,7 +224,6 @@ def crawling_analyze(
     return _result(file_path, models_dir, **windowing)
 
 
-# ---------------------------------------------------------------------------
 # REAL-result stubs (phaze-qiwdk, seam-inventory row A3)
 #
 # Everything above this line returns `_result` — a hand-built dict of plain Python floats
@@ -236,7 +235,6 @@ def crawling_analyze(
 # corrupted variants that exist to PROVE the real-artifact assertions have teeth — an
 # assertion that "the real result contains no numpy scalar" is worth nothing unless a
 # numpy scalar would have failed it.
-# ---------------------------------------------------------------------------
 
 
 def real_analyze(

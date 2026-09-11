@@ -111,9 +111,6 @@ async def smoke(session: AsyncSession) -> AsyncGenerator[AsyncClient]:
         yield ac
 
 
-# --- The regression: a deep link must fetch a body, not fake an open pane ------------
-
-
 @pytest.mark.asyncio
 async def test_lane_deep_link_loads_the_detail_body(client: AsyncClient, session: AsyncSession) -> None:
     """A reloaded /s/analyze?lane={known} self-fetches the lane body into #detail-pane on load.
@@ -192,9 +189,6 @@ async def test_unknown_lane_param_emits_no_load_fetch(client: AsyncClient, sessi
     assert "No lane selected" in response.text
 
 
-# --- phaze-2u8v.6: the agents-table expanded row has its OWN deep link, no shared shell -----
-
-
 @pytest.mark.asyncio
 async def test_agent_deep_link_loads_the_activity_body(smoke: AsyncClient) -> None:
     """/admin/agents?agent={known} renders the expanded row, self-fetching the activity body on load.
@@ -244,9 +238,6 @@ async def test_no_agent_param_emits_no_expanded_row(smoke: AsyncClient) -> None:
     assert response.status_code == 200, response.text
     assert '<tr id="agent-detail-row-' not in response.text
     assert "agent-activity-" not in response.text
-
-
-# --- phaze-am7c interaction: the deep link must still move focus exactly once ---------
 
 
 def test_deep_link_open_transition_still_triggers_heading_focus() -> None:

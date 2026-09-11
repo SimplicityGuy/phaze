@@ -156,9 +156,6 @@ async def _seed_ledger(
     return key
 
 
-# --- Phase-80 output-table seeds (the derived done/failed source, replacing scalar-state reads) ---
-
-
 async def _seed_analysis(session: AsyncSession, file_id: uuid.UUID, *, completed: bool = False, failed: bool = False) -> None:
     """Seed the ``analysis`` row Phase-80 derives analyze done/failed from (NAND: never both markers)."""
     session.add(
@@ -195,9 +192,6 @@ async def _seed_stage_skip(session: AsyncSession, file_id: uuid.UUID, *, stage: 
     await session.commit()
 
 
-# --- The incident regression -----------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_never_scheduled_files_are_left_alone(
     async_engine: AsyncEngine,
@@ -227,9 +221,6 @@ async def test_never_scheduled_files_are_left_alone(
     assert router.queues == {}
 
 
-# --- The no-op gate (unchanged) --------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_no_op_on_durable_restart(
     async_engine: AsyncEngine,
@@ -255,9 +246,6 @@ async def test_no_op_on_durable_restart(
     assert result == {"detected_loss": False, "forced": False, "unreplayable": 0, "stages": {}}
     assert controller_queue.captured == []
     assert router.queue_for_calls == []
-
-
-# --- Replay of a genuinely-orphaned row ------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -422,9 +410,6 @@ async def test_orphaned_controller_row_replays_on_controller_queue(
     assert router.queue_for_calls == []  # never asked for an agent queue
 
 
-# --- The live-key exclusion ------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_live_key_row_is_excluded(
     async_engine: AsyncEngine,
@@ -447,9 +432,6 @@ async def test_live_key_row_is_excluded(
 
     assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
     assert router.queues == {}
-
-
-# --- The per-stage domain-completed exclusions -----------------------------------------
 
 
 @pytest.mark.asyncio
@@ -536,9 +518,6 @@ async def test_metadata_pending_row_replays(
     assert result["stages"]["extract_file_metadata"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
 
 
-# --- CR-02 regression: the terminal-failure clear (not the predicate) closes the loop -------
-
-
 @pytest.mark.asyncio
 async def test_cleared_metadata_row_is_not_reenqueued(
     async_engine: AsyncEngine,
@@ -574,7 +553,6 @@ async def test_cleared_metadata_row_is_not_reenqueued(
     assert router.queues == {}
 
 
-# --- Phase 87 (D-08): a FORCE-SKIPPED file is domain-complete -> NOT re-enqueued (behavior 5) ------
 #
 # A file the operator force-skipped (a ``stage_skip`` marker) must never be re-driven by recovery even
 # when its ledger row survived a crash/restart and its saq_jobs key is not live -- otherwise the skip is
@@ -750,9 +728,6 @@ async def test_controller_row_is_live_keys_only(
     assert result["stages"]["submit_cloud_job"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
 
 
-# --- Phase 49 D-04: AWAITING_CLOUD stays pending in recovery ----------------------------
-
-
 @pytest.mark.asyncio
 async def test_awaiting_cloud_file_stays_pending_in_recovery(
     async_engine: AsyncEngine,
@@ -784,7 +759,6 @@ async def test_awaiting_cloud_file_stays_pending_in_recovery(
     assert is_domain_completed(rows[0], done_sets) is False
 
 
-# --- 83-06 (CONSCIOUSLY REVERSES D-09): the drain is the SINGLE owner of held AWAITING_CLOUD files ----
 #
 # 83-06 reversed D-09: the backfill no longer SEEDS a ``process_file:<id>`` ledger row for a held compute
 # file (it CLEARS ``analysis.failed_at`` and DELETES the orphaned row, keeping only the awaiting
@@ -916,7 +890,6 @@ async def test_non_held_process_file_row_still_routes_to_any_agent(
     assert result["stages"]["process_file"]["reenqueued"] == 1
 
 
-# --- phaze-mits: other_agent_rows are fileserver-local -> scope the agent pick to kind="fileserver" ----
 #
 # The non-push agent partition (process_file / extract_file_metadata / s3_upload) is ALL
 # fileserver-local. An UNSCOPED select_active_agent(session) orders by last_seen_at DESC
@@ -1001,7 +974,6 @@ async def test_orphaned_agent_rows_skip_when_only_a_compute_agent_is_online(
     assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
 
 
-# --- phaze-fjii: recovery routes EACH agent row to its OWNING fileserver (not one shared pick) --------
 #
 # phaze-c9w9 fixed the LIVE enqueue paths to route each file-keyed agent task to the FILE's owning agent
 # (``payload["agent_id"]``) iff that agent is a live fileserver -- never to "the single most-recently-seen
@@ -1118,9 +1090,6 @@ async def test_agent_row_with_offline_owner_is_skipped_not_rerouted(
     assert result["stages"]["process_file"]["reenqueued"] == 1
 
 
-# --- Predicate totality ----------------------------------------------------------------
-
-
 @pytest.mark.parametrize("function", sorted(_KEY_BUILDERS))
 def test_every_keyed_function_is_predicate_covered_xor_live_keys_only(function: str) -> None:
     """Each keyed function is EITHER domain-predicate-covered XOR live-keys-only.
@@ -1179,9 +1148,6 @@ def test_is_domain_completed_replays_a_predicate_row_with_no_file_id() -> None:
     assert is_domain_completed(row, empty) is False
 
 
-# --- Idempotency backstop --------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_dedup_skip_backstop_for_a_slipped_live_item(
     async_engine: AsyncEngine,
@@ -1215,9 +1181,6 @@ async def test_dedup_skip_backstop_for_a_slipped_live_item(
     assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 1, "errored": 0, "unreplayable": 0}
 
 
-# --- force bypasses ONLY the gate ------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_force_bypasses_gate_not_dedup(
     async_engine: AsyncEngine,
@@ -1241,9 +1204,6 @@ async def test_force_bypasses_gate_not_dedup(
     assert result["detected_loss"] is False
     assert result["forced"] is True
     assert result["stages"]["process_file"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
-
-
-# --- No active agent: agent rows skip, controller rows replay --------------------------
 
 
 @pytest.mark.asyncio
@@ -1276,9 +1236,6 @@ async def test_agent_rows_skip_when_no_active_agent_controller_rows_replay(
     assert router.queue_for_calls == []
     # phaze-fjii: the owning fileserver ("nox") is offline -> its rows skip with a WARNING, never rerouted.
     assert "offline -- rows skipped, not rerouted" in caplog.text.lower()
-
-
-# --- Integration: live saq_jobs --------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -1347,9 +1304,6 @@ async def test_count_inflight_jobs_reads_real_saq_jobs() -> None:
                 await queue.abort(job, "test cleanup")
         await router.close()
         await engine.dispose()
-
-
-# --- Phase 45 Plan 04: startup wiring -- backfill runs BEFORE recovery ------------------
 
 
 @pytest.mark.asyncio
@@ -1474,7 +1428,6 @@ async def test_startup_survives_raising_backfill(monkeypatch: pytest.MonkeyPatch
     recover_mock.assert_awaited_once_with(ctx)
 
 
-# --- Phase 69 SCHED-05: single recovery owner per backend kind (in-flight cloud_job exclusion) -----
 #
 # After Phase-68 BACK-03 a cloud-burst file carries BOTH an in-flight cloud_job row (any backend_id)
 # AND a process_file / push_file scheduling-ledger row. Both the backend reconcile/`/pushed` callback
@@ -1592,7 +1545,6 @@ async def test_single_owner_no_cloud_job_keeps_held_recovery_path(
     assert result["stages"]["process_file"]["reenqueued"] == 1
 
 
-# --- phaze-fc2l: the cloud exclusions are SCOPED to the analyze/push functions the cloud_job OWNS -----
 #
 # ``_natural_id`` is function-agnostic (payload['file_id'] for EVERY file-keyed row), so the SCHED-05
 # in-flight and 83-06 awaiting exclusions -- built as file-id sets -- were silently dropping an orphaned
@@ -1699,7 +1651,6 @@ async def test_awaiting_cloud_job_still_excludes_the_process_file_row(
     assert result["stages"]["extract_file_metadata"]["reenqueued"] == 1
 
 
-# --- Phase 80 (READ-03): SC-2 / SC-3 / D-10 both-cells / D-11 regression cases ----------------------
 #
 # Each is mutation-named: it names the source mutation that turns it RED, so a future edit that
 # re-opens the 44.5K over-enqueue class (SC-2), auto-re-drives a terminal analyze (SC-3), mis-resolves
@@ -1960,7 +1911,6 @@ async def test_d11_inflight_clause_is_not_in_domain_completed_clause(session: As
     assert is_domain_completed(row, done_sets) is True
 
 
-# --- Per-row error isolation (phaze-o1xx) -----------------------------------------------
 #
 # Pre-fix, a single row's replay failure propagated straight out of recover_orphaned_work and
 # killed the entire run after an arbitrary prefix had already been enqueued. These tests pin the
@@ -2068,7 +2018,6 @@ async def test_agent_row_lane_routing_failure_is_isolated(
     assert result["stages"]["submit_cloud_job"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
 
 
-# --- phaze-k95r7: completed work is never a recovery candidate ---------------------------
 #
 # Found 2026-08-08: a single operator ``POST /pipeline/recover`` put hundreds of jobs onto an
 # already-backed-up analyze queue, and 17 ``s3_upload`` rows had been reporting ``unreplayable`` on
@@ -2274,10 +2223,6 @@ async def test_stale_s3_upload_row_is_reported_as_stale_not_as_time_limited(
     assert "payload is time-limited and could not be regenerated" not in caplog.text
 
 
-# --- Coverage: _ledger_fids non-UUID skip, _regenerate_s3_upload edge branches, ------------------
-# --- _replay_agent_rows_by_owner's owner-less skip (phaze-kzz4b) --------------------------------
-
-
 def test_ledger_fids_skips_a_non_uuid_natural_id() -> None:
     """A row whose ``payload["file_id"]`` is not UUID-parseable is dropped from the scope, not raised.
 
@@ -2426,7 +2371,6 @@ async def test_replay_agent_rows_by_owner_skips_rows_with_no_owning_agent_id(
     assert "no owning agent_id" in caplog.text
 
 
-# --- phaze-1i0h6.2: ONE batched owner lookup, same per-owner verdicts ---------------------------
 #
 # Recovery resolved the owning agent with ONE ``select_agent_by_id`` round trip PER DISTINCT OWNER,
 # inside the replay loop -- an N+1 against ``agents`` on every recovery pass, over a ledger that

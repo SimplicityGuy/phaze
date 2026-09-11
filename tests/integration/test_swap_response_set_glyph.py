@@ -131,9 +131,7 @@ def _assert_no_glyph(body: str) -> None:
     assert "data-set-glyph" not in body
 
 
-# ---------------------------------------------------------------------------
 # routers/proposals.py -- approve / reject / undo / edit
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -192,9 +190,7 @@ async def test_edit_swap_carries_the_glyph(client: AsyncClient, session: AsyncSe
     _assert_no_glyph(resp.text)
 
 
-# ---------------------------------------------------------------------------
 # routers/tags.py -- write_file_tags / undo_tag_write
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

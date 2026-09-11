@@ -136,9 +136,6 @@ async def test_compute_backend_is_available_false_when_agent_absent_never_raises
     assert await backend.is_available(session) is False
 
 
-# === Task 2: explicit zero-compute (implicit all-local) regression =======================
-
-
 def test_implicit_all_local_registry_has_no_cloud_activity(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     """D-06: the implicit ``_default_local_registry`` baseline produces no cloud lane and no compute backend.
 
@@ -170,7 +167,6 @@ def test_implicit_all_local_registry_has_no_cloud_activity(monkeypatch: pytest.M
     assert not any(isinstance(b, backends.ComputeAgentBackend) for b in resolved)
 
 
-# === Task 3: ≤1-compute behavior-preservation golden (D-05, no schema change) =============
 #
 # These pin that once the payload carries the single destination (Plan 01/02) the observable
 # push STRINGS for a SINGLE-compute registry are byte-identical to the pre-Phase-73 behavior --

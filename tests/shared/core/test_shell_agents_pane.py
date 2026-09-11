@@ -99,12 +99,10 @@ async def test_redirect_round_trip_lands_on_a_working_full_shell(client: AsyncCl
     assert 'id="compute-lane-activity-no-such-lane"' not in body
 
 
-# ---------------------------------------------------------------------------
 # H3 -- no orphaned pollers: every 5s/own-tick poll element the agents pane can render lives
 # INSIDE #stage-workspace, so htmx's own "cancel a trigger when its element leaves the DOM" rule
 # (fired by the rail's innerHTML swap of that element) is what stops all three -- no bespoke
 # teardown code is needed, and none exists.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -157,9 +155,7 @@ async def test_compute_lane_detail_own_tick_lives_inside_stage_workspace(
     assert workspace_start < detail_start < workspace_end
 
 
-# ---------------------------------------------------------------------------
 # Deep links (acceptance rule 7), through the real production app.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

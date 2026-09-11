@@ -24,16 +24,10 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# === is_available (3 impls) ==============================================================
-
-
 @pytest.mark.asyncio
 async def test_local_is_available_always_true(session: AsyncSession) -> None:
     """LocalBackend.is_available is unconditionally True -- local dispatch needs no remote agent."""
     assert await _local().is_available(session) is True
-
-
-# === in_flight_count (3 impls, D-10 status set) ==========================================
 
 
 @pytest.mark.asyncio
@@ -116,9 +110,6 @@ async def test_local_dispatch_writes_no_cloud_job_row(session: AsyncSession) -> 
 
     count = int((await session.execute(select(func.count(CloudJob.id)).where(CloudJob.file_id == file.id))).scalar() or 0)
     assert count == 0
-
-
-# === CR-01 (SCHED-01/03): LocalBackend.dispatch removes the file from the AWAITING_CLOUD set =====
 
 
 @pytest.mark.asyncio
@@ -217,9 +208,6 @@ async def test_local_dispatch_returns_false_on_dedup_noop(session: AsyncSession)
     router.queue_for_calls.clear()
 
     assert await backend.dispatch(file, session, router) is False
-
-
-# === reconcile (3 impls) =================================================================
 
 
 @pytest.mark.asyncio

@@ -249,14 +249,12 @@ async def test_sort_preserves_the_active_stage_and_bucket_filter(client: AsyncCl
     assert "bucket=failed" in head
 
 
-# --------------------------------------------------------------------------------------------------
 # phaze-cvn6.1: the six DERIVED stage-matrix columns.
 #
 # These are the columns phaze-a6hm.3 left out. They do not sort on a stored value: each one sorts on
 # the display RANK of the bucket `stage_status_case` derives for that row
 # (`stage_status_sort_case` / STAGE_STATUS_DISPLAY_ORDER), so the assertions below are about an
 # ORDER OF BUCKETS, not an order of strings.
-# --------------------------------------------------------------------------------------------------
 
 
 async def _place_in_metadata_bucket(session: AsyncSession, file: FileRecord, bucket: Status) -> None:

@@ -197,11 +197,9 @@ GUESS_INFERENCE = frozenset({"call-graph", "import-graph", "filename-pattern"})
 # The coverage-context suffix on every mapped test id (see failure mode E).
 CONTEXT_SUFFIXES = ("|run", "|setup", "|teardown")
 
-# ---------------------------------------------------------------------------------------------
 # The docs allow-list (phaze-fqfds). Every rule here is POSITIVE: a path is documentation only if
 # it satisfies all of them. A negation ("not a .py file") would hand the skip to the justfile, to
 # pyproject.toml, to every YAML and every Jinja template.
-# ---------------------------------------------------------------------------------------------
 
 DOCS_SUFFIX = ".md"
 

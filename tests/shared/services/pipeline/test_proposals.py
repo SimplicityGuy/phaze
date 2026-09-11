@@ -207,7 +207,6 @@ async def test_count_proposal_pending_files_agrees_with_the_batched_set(session:
     assert count == len(flat), "the counter must return exactly the size of the batched set"
 
 
-# --------------------------------------------------------------------------------------------------
 # phaze-rhs6m: the propose convergence gate's METADATA conjunct.
 #
 # Operator decision 2026-08-24, answer as given verbatim and in full: "Close the gate asymmetry:
@@ -227,7 +226,6 @@ async def test_count_proposal_pending_files_agrees_with_the_batched_set(session:
 # gate it FAILS -- the pre-fix behaviour was measured directly, as an acceptance, by the phaze-rhs6m
 # step-1 reachability probe. The second cell is the ordinary case: metadata that genuinely SUCCEEDED
 # is untouched, which is what keeps this a closed asymmetry rather than a narrowed pipeline.
-# --------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

@@ -93,7 +93,7 @@ _ANALYZABLE_FILE_TYPES = frozenset(ext.lstrip(".") for ext, cat in EXTENSION_MAP
 # The mood/style wire-format converters (_features_to_mood_dict / _features_to_style_dict)
 # now live in phaze.services.analysis_wire (Phase 52, KJOB-02) so the one-shot job_runner
 # (Plan 02) and this SAQ path share one definition. They are imported above and re-exported
-# from this module so existing callers (and tests/test_tasks/test_functions.py) resolve
+# from this module so existing callers (and tests/shared/tasks/test_functions.py) resolve
 # unchanged.
 
 
@@ -453,7 +453,7 @@ def _build_analysis_write_payload(analysis: object) -> AnalysisWritePayload:
 
     ``mood``/``style`` are rebuilt from ``analysis["features"]`` (see module docstring);
     ``windows`` is built from the plain per-window dicts (Phase 31 ANL-01) -- NO ORM/database
-    import (D-25 import boundary; tests/test_task_split.py). ``exclude_unset`` on the
+    import (D-25 import boundary; tests/shared/core/test_task_split.py). ``exclude_unset`` on the
     resulting model preserves partial-PUT semantics for absent keys (phaze-w55w1 dropped the
     fifth window-count field, ``sampled``, with the window caps).
     """

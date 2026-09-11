@@ -95,9 +95,7 @@ def _kube(**overrides: object) -> KubeConfig:
     return KubeConfig(**fields)
 
 
-# --------------------------------------------------------------------------- #
 # The contract, against the objects the operator actually applies
-# --------------------------------------------------------------------------- #
 
 
 def test_the_documented_configmap_supplies_every_key_the_contract_requires() -> None:
@@ -155,9 +153,7 @@ def test_the_code_injected_env_is_exactly_the_contract_says_it_is() -> None:
     assert not kube_staging.JOB_ENV_CODE_INJECTED & (_documented_configmap_keys() | _documented_secret_keys())
 
 
-# --------------------------------------------------------------------------- #
 # The real consumer: what the pod's own startup does with that env
-# --------------------------------------------------------------------------- #
 
 
 def _apply_documented_pod_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -229,9 +225,7 @@ def test_dropping_any_operator_supplied_key_fails_a_test_rather_than_a_pod(dropp
     get_settings.cache_clear()
 
 
-# --------------------------------------------------------------------------- #
 # The /models invariant the code's own comment predicted
-# --------------------------------------------------------------------------- #
 
 
 def test_the_models_mountpath_matches_the_configmap_and_the_settings_fallback() -> None:

@@ -240,9 +240,7 @@ async def _ledger_row(session: AsyncSession, key: str) -> SchedulingLedger | Non
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-# ---------------------------------------------------------------------------
 # /uploaded
-# ---------------------------------------------------------------------------
 
 
 async def test_uploaded_completes_multipart_control_side_and_flips_state(
@@ -577,9 +575,6 @@ async def test_uploaded_unauthenticated_returns_401(session: AsyncSession) -> No
     assert r.status_code == 401
 
 
-# --- Phase 55 (D-01b): k8s post-staging -- PUSHING->PUSHED flip + routed submit_cloud_job ----
-
-
 async def test_uploaded_k8s_enqueues_submit_no_state_flip(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
@@ -757,9 +752,7 @@ async def test_uploaded_non_k8s_preserves_cloud_job_only_behavior(
     assert job.status == CloudJobStatus.UPLOADED.value
 
 
-# ---------------------------------------------------------------------------
 # /failed
-# ---------------------------------------------------------------------------
 
 
 async def test_failed_under_cap_redrives_and_increments_counter(
@@ -1132,9 +1125,6 @@ async def test_upload_failed_at_cap_post_commit_cleanup_failure_does_not_500(
     assert job.attempts >= settings.cloud_submit_max_attempts
 
 
-# --- Phase 83 (SC#2 / T-83-01): the over-cap CAS must NOT clobber an already-advanced cloud_job ------
-
-
 async def test_upload_failed_cas_noop_on_advanced_cloud_job(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
@@ -1227,9 +1217,7 @@ async def test_failed_unauthenticated_returns_401(session: AsyncSession) -> None
     assert r.status_code == 401
 
 
-# ---------------------------------------------------------------------------
 # router mount
-# ---------------------------------------------------------------------------
 
 
 def test_agent_s3_router_is_mounted_on_the_app() -> None:

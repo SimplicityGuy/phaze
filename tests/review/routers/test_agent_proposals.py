@@ -81,7 +81,6 @@ async def test_executed_joint_update(session: AsyncSession, seed_test_agent: tup
     assert body["proposal_state"] == "executed"
     assert body["file_state"] == "moved"
     assert body["current_path"] == "/new/proposed.mp3"
-    # Verify DB state
     await session.commit()
     session.expire_all()
     p = (await session.execute(select(RenameProposal).where(RenameProposal.id == proposal_id))).scalar_one()

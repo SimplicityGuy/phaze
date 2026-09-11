@@ -455,7 +455,6 @@ async def test_terminal_completed_to_failed_still_rejected(
         assert response.json()["detail"] == "execution-log status is terminal"
 
 
-# ---------------------------------------------------------------------------
 # phaze-6zxs: concurrent PATCH must not regress the D-15 monotonic invariant.
 #
 # The hermetic ``session`` fixture binds every session to ONE connection inside a
@@ -468,7 +467,6 @@ async def test_terminal_completed_to_failed_still_rejected(
 # committed status, so the final status can never regress below COMPLETED. With
 # the old plain ``session.get`` both transactions read the same stale PENDING and
 # the last write silently wins -- the regression this bead closes.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -589,13 +587,11 @@ async def test_concurrent_patch_does_not_regress_terminal_status(async_engine) -
         # owned (and disposed) by conftest.
 
 
-# ---------------------------------------------------------------------------
 # phaze-4f7vb: neither handler bound the write to the authenticated agent --
 # any agent with a valid bearer token could forge or mutate the audit trail
 # for a proposal dispatched to a DIFFERENT agent. Mirrors the cross-tenant
 # guard pattern verified in tests/review/routers/test_agent_proposals.py
 # (test_proposal_cross_agent_403).
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

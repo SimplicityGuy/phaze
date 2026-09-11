@@ -445,7 +445,6 @@ async def test_header_agent_count_sums_agent_online_and_compute_lanes_active(cli
     assert "$store.pipeline.agentOnline + $store.pipeline.computeLanesActive" in body
 
 
-# ---------------------------------------------------------------------------
 # History-restore response shape for the /s/* rail (phaze-64uy) -- the WORST instance of the
 # defect class routers/response_shape.py names.
 #
@@ -464,7 +463,6 @@ async def test_header_agent_count_sums_agent_online_and_compute_lanes_active(cli
 #
 # Each test below asserts the CHROME, never merely a 200 -- the buggy handler returned 200 too, so
 # a status-only assertion passes against the bug.
-# ---------------------------------------------------------------------------
 
 
 _RESTORE_HEADERS = {"HX-Request": "true", "HX-History-Restore-Request": "true"}

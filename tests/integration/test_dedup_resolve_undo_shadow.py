@@ -95,9 +95,7 @@ async def _marker_file_ids(session: AsyncSession) -> set[uuid.UUID]:
     return set(result.scalars().all())
 
 
-# --------------------------------------------------------------------------------------------------
 # Main cycle: resolve -> undo -> re-resolve, marker set correct throughout.
-# --------------------------------------------------------------------------------------------------
 async def test_resolve_undo_reresolve_marker_cycle(db_session: AsyncSession) -> None:
     keeper = await _file(db_session)
     dup = await _file(db_session)
@@ -116,10 +114,8 @@ async def test_resolve_undo_reresolve_marker_cycle(db_session: AsyncSession) -> 
     assert dup.id in await _marker_file_ids(db_session)
 
 
-# --------------------------------------------------------------------------------------------------
 # Stale-replay CAS (D-06): a browser payload replayed after a re-resolve with a DIFFERENT canonical
 # targets a file that is now the keeper (no marker) -> DELETE matches 0 rows -> no clobber.
-# --------------------------------------------------------------------------------------------------
 async def test_stale_undo_replay_is_a_noop(db_session: AsyncSession) -> None:
     f_b = await _file(db_session)
     f_c = await _file(db_session)
@@ -145,7 +141,6 @@ async def test_stale_undo_replay_is_a_noop(db_session: AsyncSession) -> None:
     assert await _marker_file_ids(db_session) == {f_c.id}
 
 
-# --------------------------------------------------------------------------------------------------
 # phaze-btix (ABA): a stale undo payload must not delete a NEWER marker written on the SAME file.
 #
 # ``test_stale_undo_replay_is_a_noop`` above targets a file that becomes a bare KEEPER (no marker at
@@ -153,7 +148,6 @@ async def test_stale_undo_replay_is_a_noop(db_session: AsyncSession) -> None:
 # is correct. It does not exercise the actual reported defect: the same non-canonical file can carry a
 # DIFFERENT marker across two resolutions (different canonical_id each time), and file_id alone cannot
 # tell those two markers apart. This test reproduces that exact sequence.
-# --------------------------------------------------------------------------------------------------
 async def test_stale_undo_replay_against_a_later_different_resolution_is_a_noop(db_session: AsyncSession) -> None:
     """A stale undo replay must not revert a LATER resolution's marker on the same file (phaze-btix)."""
     f_a = await _file(db_session)
@@ -187,11 +181,9 @@ async def test_stale_undo_replay_against_a_later_different_resolution_is_a_noop(
     assert await _marker_file_ids(db_session) == {f_a.id, f_c.id}
 
 
-# ---------------------------------------------------------------------------
 # Regression: a malformed undo payload must never delete the wrong marker (code-review WR-01/WR-02).
 # The DELETE + gate derive from the payload id-set alone (the PR-A blocker fix), so a corrupted
 # previous_state still deletes the marker for the valid id -- and never raises.
-# ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_undo_with_invalid_previous_state_deletes_marker(db_session: AsyncSession) -> None:
     """An unknown previous_state NO LONGER gates the marker DELETE (id-set is the sole authority)."""
@@ -241,14 +233,12 @@ async def test_undo_duplicate_entries_do_not_inflate_count(db_session: AsyncSess
     assert dup.id not in await _marker_file_ids(db_session)
 
 
-# ---------------------------------------------------------------------------
 # T-84-03-03 (threat model): a concurrent HTMX double-submit of resolve must be idempotent.
 #
 # `resolve_group` guards with `on_conflict_do_nothing(index_elements=["file_id"])`. The selection
 # filters `~dedup_resolved_clause()`, so a *sequential* second POST never reaches the INSERT, and the
 # conflict can only fire when a concurrent transaction's marker was invisible to our SELECT snapshot.
 # Both cases are covered below.
-# ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_second_resolve_of_same_group_is_a_noop(db_session: AsyncSession) -> None:
     """Sequential double-submit: the second resolve selects nothing, inserts nothing, raises nothing."""
@@ -381,7 +371,6 @@ async def test_resolve_group_member_deleted_between_select_and_insert_is_a_noop(
         await engine.dispose()
 
 
-# ---------------------------------------------------------------------------
 # phaze-v0iy: TRUE concurrency -- two independent connections/transactions resolving the SAME group
 # with DIFFERENT keepers. This is the shape ``test_concurrent_double_submit_insert_conflict_is_a_noop``
 # above does NOT cover: that test simulates one connection observing a stale snapshot of a marker
@@ -389,7 +378,6 @@ async def test_resolve_group_member_deleted_between_select_and_insert_is_a_noop(
 # worst-case 2-member group), so before the phaze-v0iy fix the two INSERTs never conflicted on
 # (file_id) at all and BOTH committed -- stranding both keepers with zero survivor. Real Postgres,
 # real second connection, real ``pg_advisory_xact_lock`` contention (not monkeypatched).
-# ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_concurrent_resolve_with_disjoint_canonicals_leaves_exactly_one_keeper() -> None:
     """Two overlapping resolves of a 2-member group picking DIFFERENT keepers must not both succeed.
@@ -540,10 +528,8 @@ async def test_concurrent_commit_of_one_review_plan_succeeds_once() -> None:
         await engine.dispose()
 
 
-# ---------------------------------------------------------------------------
 # T-84-03-02 branch coverage (Nyquist gap, validate-phase): the undo payload arrives from the browser,
 # so every validation branch in `undo_resolve` is attacker-reachable.
-# ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_undo_accepts_uuid_typed_id(db_session: AsyncSession) -> None:
     """A payload whose `id` is a real UUID object (not a str) undoes normally (dedup.py:315)."""

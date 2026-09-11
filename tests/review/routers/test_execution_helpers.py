@@ -29,9 +29,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 
-# ---------------------------------------------------------------------------
 # _coerce_int — pure-function unit tests (lines 218-227)
-# ---------------------------------------------------------------------------
 
 
 def test_coerce_int_none_returns_default() -> None:
@@ -68,9 +66,7 @@ def test_coerce_int_other_types_return_default() -> None:
     assert _coerce_int(object(), default=11) == 11
 
 
-# ---------------------------------------------------------------------------
 # _agents_view_from_hash — uses _coerce_int for every numeric field (sanity)
-# ---------------------------------------------------------------------------
 
 
 def test_agents_view_pulls_counts_from_hash() -> None:
@@ -102,9 +98,7 @@ def test_agents_view_falls_back_to_dispatch_summary_total() -> None:
     assert rows[0]["total"] == 7
 
 
-# ---------------------------------------------------------------------------
 # _render_partial — memoryview body branch (lines 264-265)
-# ---------------------------------------------------------------------------
 
 
 def _fake_request() -> Request:
@@ -141,10 +135,8 @@ def test_render_partial_handles_bytes_body() -> None:
     assert out == "<span>ok</span>"
 
 
-# ---------------------------------------------------------------------------
 # SSE generator: empty hash + malformed dispatch_summary JSON
 # Hits lines 289-292 (waiting event) and 300-301 (JSONDecodeError fallback).
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -315,13 +307,11 @@ async def test_sse_status_terminal_path_emits_close_after_complete_with_errors(
     assert body.index(b"event: close") > body.index(b"event: complete_with_errors")
 
 
-# ---------------------------------------------------------------------------
 # _build_agents_view — direct unit test (lines 70-80)
 #
 # Integration tests reach this through ``start_execution``, but those require
 # real Postgres + Redis. Direct unit test ensures coverage when the smoke
 # suite cannot run.
-# ---------------------------------------------------------------------------
 
 
 def _proposal(agent_id: str = "agent-a") -> ExecuteBatchProposalItem:
@@ -359,14 +349,12 @@ def test_build_agents_view_empty_groups_returns_empty_list() -> None:
     assert _build_agents_view({}, agent_names={"agent-a": "x"}) == []
 
 
-# ---------------------------------------------------------------------------
 # start_execution: enqueue-failure best-effort log-and-continue (lines 181-187)
 #
 # Integration tests in test_execution_dispatch.py only exercise the happy
 # path. This unit test patches the dispatch-service helpers + redis + task
 # router so a SAQ enqueue failure is forced, asserting the dispatch does NOT
 # abort and that the failure is logged via ``logger.exception``.
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -533,14 +521,12 @@ async def test_start_execution_partial_enqueue_failure_corrects_expected(
     assert not any(len(a) >= 3 and a[1] == "agent:agent-a:failed" for a in hincrbys)
 
 
-# ---------------------------------------------------------------------------
 # phaze-19u7g: an AMBIGUOUS enqueue (``AmbiguousEnqueueError`` -- the broker connection was
 # already live when ``enqueue_for_agent`` raised) must NOT be rolled into ``undispatched_by_agent``
 # the way a definite (pre-broker) failure is. Doing so would let ``_reconcile_undispatched`` lower
 # ``subjobs_expected`` past a chunk that may have actually landed, so ``sc >= se`` could promote the
 # batch terminal and release the ``execdispatch:active`` sentinel while that phantom sub-job is
 # still executing -- an operator retry then double-dispatches the same proposals.
-# ---------------------------------------------------------------------------
 
 
 async def test_start_execution_ambiguous_enqueue_failure_is_not_counted_as_failed(
@@ -772,10 +758,8 @@ async def test_start_execution_reconciled_stale_sentinel_is_logged_and_proceeds(
     assert any("stale exec:active sentinel" in r.getMessage() for r in caplog.records)
 
 
-# ---------------------------------------------------------------------------
 # phaze-0t2c: the claim must never outlive the things that can release it --
 # it is taken AFTER the seed, and any failure before a sub-job lands settles it.
-# ---------------------------------------------------------------------------
 
 
 async def test_start_execution_seeds_the_hash_before_claiming_the_sentinel(
@@ -806,10 +790,8 @@ async def test_start_execution_seeds_the_hash_before_claiming_the_sentinel(
     mock_router.enqueue_for_agent.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
 # phaze-tnp06: a lost claim response (the EVALSHA executed server-side but this coroutine never
 # observed the reply) must not wedge the exec:active sentinel for the full 24h TTL.
-# ---------------------------------------------------------------------------
 
 
 async def test_start_execution_claim_await_failure_deletes_the_seeded_hash(
@@ -966,10 +948,8 @@ async def test_start_execution_returns_collision_block_when_destinations_collide
     redis_client.pipeline.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
 # phaze-c3j0: batch_id is a UUID, and the sentinel no longer shares the
 # per-batch key namespace, so no batch-id spelling can alias a control key.
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture

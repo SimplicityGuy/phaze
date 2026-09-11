@@ -169,7 +169,6 @@ async def test_cascade_blocks_on_in_flight_worker_write_then_sweeps_it_instead_o
         assert remaining == []
 
 
-# ---------------------------------------------------------------------------
 # phaze-8567: the phaze-q1ow fix above locks only PRE-EXISTING file rows. A concurrent
 # agent upsert INSERTing a brand NEW FileRecord into the batch takes only an implicit
 # `FOR KEY SHARE` on the *scan_batches* row (the parent of `FileRecord.batch_id`'s FK) --
@@ -192,7 +191,6 @@ async def test_cascade_blocks_on_in_flight_worker_write_then_sweeps_it_instead_o
 #   subsequent step (including the files-scoping subqueries, which are re-evaluated
 #   fresh against the now-committed row) sweeps the new file up along with everything
 #   else -- the whole cascade commits cleanly, with zero ForeignKeyViolation.
-# ---------------------------------------------------------------------------
 
 
 async def test_cascade_blocks_on_in_flight_new_file_insert_then_sweeps_it_instead_of_fk_violating(

@@ -246,7 +246,6 @@ class TestExtractTagsID3:
         mock_audio = MagicMock()
         mock_tags = MagicMock(spec=ID3)
 
-        # Create mock ID3 frames
         mock_tpe1 = MagicMock()
         mock_tpe1.text = ["Test Artist"]
         mock_tit2 = MagicMock()

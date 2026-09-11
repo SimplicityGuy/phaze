@@ -389,7 +389,6 @@ def _blocking_client(container: str, index: int) -> None:
     pytest.skip("could not park a client on the throwaway Redis")
 
 
-# ---------------------------------------------------------------------------------------------
 # Reachability probe (phaze-yq7jk) — phaze-nu09o
 #
 # The top-level `docker exec "$redis_container" redis-cli PING` probe retries up to three times,
@@ -401,7 +400,6 @@ def _blocking_client(container: str, index: int) -> None:
 # the probe's own first `docker exec ... redis-cli PING` itself (no output, exit 1) and forwards
 # every later one — matched, not counted, so the loop's OWN retries are what recovers — to the real
 # `docker` binary.
-# ---------------------------------------------------------------------------------------------
 
 
 def _fail_first_ping_then_succeed(tmp_path: Path) -> dict[str, str]:
@@ -475,9 +473,7 @@ def test_a_genuinely_absent_redis_container_still_fails_fast_with_the_unreachabl
     assert "just test-db" in result.stderr
 
 
-# ---------------------------------------------------------------------------------------------
 # Allocation
-# ---------------------------------------------------------------------------------------------
 
 
 def test_allocation_is_idempotent_for_one_seat(registry: str, tmp_path: Path) -> None:
@@ -640,9 +636,7 @@ def test_a_recycled_index_is_cleared_before_handover(registry: str, tmp_path: Pa
     assert _redis(registry, "-n", str(index), "DBSIZE") == "0"
 
 
-# ---------------------------------------------------------------------------------------------
 # Release — the non-destructive path that did not exist
-# ---------------------------------------------------------------------------------------------
 
 
 def test_release_frees_the_index_and_clears_only_that_seats_keys(registry: str, tmp_path: Path) -> None:
@@ -840,9 +834,7 @@ def test_release_refused_by_a_connected_client_leaves_the_highwater_mark_untouch
     )
 
 
-# ---------------------------------------------------------------------------------------------
 # Reclaim — the sweep, and what it refuses to do
-# ---------------------------------------------------------------------------------------------
 
 
 def _reclaim(container: str, *extra: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -1129,13 +1121,11 @@ def test_a_seat_that_connects_mid_sweep_survives_the_sweep(registry: str, tmp_pa
     assert "connected to DB" in swept.stdout
 
 
-# ---------------------------------------------------------------------------------------------
 # L2 — the strongest signal, against a real Postgres (phaze-esmn3)
 #
 # Every reclaim test above passes --no-postgres-check, so until this section existed the branch
 # that protects a RUNNING SUITE was the one branch nothing exercised. That gap is also what let
 # phaze-gmkua hide: the justfile's real argument shape was never covered either.
-# ---------------------------------------------------------------------------------------------
 
 
 def _reclaim_with_postgres(container: str, pg: str, *extra: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -1263,13 +1253,11 @@ def test_list_reports_the_evidence_behind_every_verdict(registry: str, tmp_path:
     assert _allocated_seats(registry) == before, "list is read-only"
 
 
-# ---------------------------------------------------------------------------------------------
 # Reclaim's Postgres CONTRACT CHANGE (phaze-robzi.1) -- --apply now drops a freed seat's own two
 # databases, since its Redis registry entry was the only thing naming them. Leaving them behind on
 # every reclaim is exactly how 652 orphaned databases (6974 MB) accumulated with no non-destructive
 # tool able to reap them (see the epic phaze-robzi). `release` is UNCHANGED -- see the plain L2
 # tests above, none of which assert on database survival because release never drops one.
-# ---------------------------------------------------------------------------------------------
 
 
 def _database_names(container: str) -> set[str]:
@@ -1456,9 +1444,7 @@ def test_the_script_source_never_uses_a_docker_verb_other_than_exec() -> None:
         assert f"docker {verb}" not in source, f"scripts/redis-seat-registry.sh must never call `docker {verb}`"
 
 
-# ---------------------------------------------------------------------------------------------
 # Wiring — the recipes an operator actually reaches for
-# ---------------------------------------------------------------------------------------------
 
 
 def _recipe_body(name: str) -> str:

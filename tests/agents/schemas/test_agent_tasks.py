@@ -21,9 +21,7 @@ from phaze.schemas.agent_tasks import (
 )
 
 
-# -----------------------
 # ProcessFilePayload
-# -----------------------
 
 
 def test_process_file_payload_minimal_valid() -> None:
@@ -115,9 +113,7 @@ def test_process_file_payload_accepts_scratch_fields() -> None:
     assert rt == p
 
 
-# -----------------------
 # PushFilePayload (Phase 50)
-# -----------------------
 
 
 def test_push_file_payload_minimal_valid() -> None:
@@ -178,9 +174,7 @@ def test_push_file_payload_rejects_unknown_field() -> None:
     assert any(e.get("type") == "extra_forbidden" for e in exc_info.value.errors())
 
 
-# -----------------------
 # ExtractMetadataPayload
-# -----------------------
 
 
 def test_extract_metadata_payload_minimal_valid() -> None:
@@ -213,9 +207,7 @@ def test_extract_metadata_payload_rejects_unknown_field() -> None:
         )
 
 
-# -----------------------
 # ScanDirectoryPayload (Phase 27 D-14)
-# -----------------------
 
 
 def test_scan_directory_payload_minimal_valid() -> None:
@@ -265,9 +257,7 @@ def test_scan_directory_payload_has_no_models_path_or_current_path() -> None:
     assert "current_path" not in fields
 
 
-# -----------------------
 # ExecuteBatchProposalItem + ExecuteApprovedBatchPayload (B2 Option A)
-# -----------------------
 
 
 def _proposal_item() -> ExecuteBatchProposalItem:
@@ -470,13 +460,11 @@ def test_only_process_file_payload_has_models_path() -> None:
     assert "models_path" not in ExecuteBatchProposalItem.model_fields
 
 
-# ---------------------------------------------------------------------------
 # phaze-w55w1 upgrade-window compatibility: the removed cap keys must be TOLERATED,
 # not rejected. Every process_file payload serialized before the deploy carries them
 # (the old producer dumped without exclude_none), and reenqueue._replay_row replays a
 # scheduling_ledger payload VERBATIM -- so a 422 here dead-letters the whole pre-upgrade
 # analyze backlog on every recovery pass.
-# ---------------------------------------------------------------------------
 
 
 def _legacy_payload_dict() -> dict[str, object]:

@@ -47,9 +47,6 @@ async def _seed_route_control(session: AsyncSession, *, force_local: bool) -> No
     await session.commit()
 
 
-# --- Task 2: get_route_control degrade-safe reader --------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_route_control_degrades_on_absent_row(session: AsyncSession) -> None:
     """No ``'global'`` row (pre-migration / empty table) -> False (cloud-enabled), never raises."""
@@ -158,9 +155,6 @@ async def test_route_control_degrade_preserves_caller_loaded_rows(session: Async
     assert await session.get(FileRecord, file_id) is not None
 
 
-# --- Task 3: duration router routes-local when force-local engaged ----------------------
-
-
 @pytest.mark.asyncio
 async def test_route_forced_local_no_hold(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """Force-local engaged: a new long file routes LOCAL (enqueued), NOT held in AWAITING_CLOUD (D-08).
@@ -200,9 +194,6 @@ async def test_route_forced_local_no_hold(client: AsyncClient, session: AsyncSes
     assert data["awaiting_cloud"] == 0
 
     await session.refresh(long_file)
-
-
-# --- Plan 04: force-local write endpoint + header pill -----------------------------------
 
 
 @pytest.mark.asyncio

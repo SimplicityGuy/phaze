@@ -83,9 +83,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# ---------------------------------------------------------------------------
 # ANALYSIS_FAILED bucket (Phase 44, D-02; Phase 90 PR-A: derived from failed_clause) — count/list
-# ---------------------------------------------------------------------------
 
 
 def _failed_file(i: int) -> FileRecord:
@@ -127,9 +125,7 @@ def _completed_analysis_for(file_id: uuid.UUID, fine_done: int | None = None, fi
     )
 
 
-# ---------------------------------------------------------------------------
 # get_stage_busy_counts (t7k FIX2) — per-stage in-flight gate, degrade-safe
-# ---------------------------------------------------------------------------
 
 
 class _NullSavepoint:
@@ -147,10 +143,8 @@ class _NullSavepoint:
         return False
 
 
-# ---------------------------------------------------------------------------
 # get_match_busy_count (Phase 41, REQ-41-3) — the controller-task in-flight gate over the
 # saq_jobs table, degrade-safe.
-# ---------------------------------------------------------------------------
 
 
 class _BusyResult:
@@ -176,11 +170,9 @@ class _BusySession:
         return _BusyResult(self._rows)
 
 
-# ---------------------------------------------------------------------------
 # get_match_pending_tracklists (Phase 41, REQ-41-2) — the exact complement of
 # get_stage_progress match.done. (phaze-2akf removed its get_scrape_pending_tracklists sibling
 # along with the SCRAPE ALL trigger and the ``scrape`` stage node it complemented.)
-# ---------------------------------------------------------------------------
 
 
 def _make_tracklist(n: int) -> Tracklist:
@@ -189,11 +181,9 @@ def _make_tracklist(n: int) -> Tracklist:
     return Tracklist(id=uid, external_id=f"tl-{n}-{uid.hex}", source_url=f"http://x/{n}")
 
 
-# ---------------------------------------------------------------------------
 # Phase 42 (D-03 anti-drift): shared pending-set helpers + queue-loss detector.
 # These four helpers are the ONE source of truth the manual DAG triggers AND the
 # recovery producer read, so the two paths cannot drift apart.
-# ---------------------------------------------------------------------------
 
 
 def _make_pipeline_file(*, file_type: str = "mp3") -> FileRecord:
@@ -226,24 +216,20 @@ def _inflight_analysis_for(file_id: uuid.UUID, fine_done: int = 5, fine_total: i
     return AnalysisResult(id=uuid.uuid4(), file_id=file_id, fine_windows_analyzed=fine_done, fine_windows_total=fine_total)
 
 
-# ---------------------------------------------------------------------------
 # get_straggler_count / _job_started_ms (Phase 44, D-01) — REMOVED by phaze-g84sk. The
 # straggler bucket's running-age proxy for "stuck" was superseded by phaze-w55w1's
 # progress-heartbeat stall watchdog: a genuinely wedged job now dies on its own and lands in
 # ANALYSIS_FAILED (reason="timeout"), and a healthy multi-hour analysis is no longer
 # distinguishable from a stuck one by elapsed time. See services/pipeline.py and the
 # phaze-g84sk bead comment for the full writeup.
-# ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
 # Scanned / deduped / unique reconciliation (quick 260622-i0w) — turns the
 # Discovery-count vs agent-scan-total gap into a self-explaining reconciliation.
 #   scanned   = SUM over agents of (each agent's LATEST completed batch).total_files
 #   deduped   = max(0, scanned - discovery_done)  [global: discovery_done = COUNT(all files)]
 #   per-agent = max(0, agent_latest_total_files - agent file-row count)
 # A None scanned (no completed batches / DB error) hides the whole line.
-# ---------------------------------------------------------------------------
 
 
 def _completed_batch(agent_id: str, total_files: int, *, status: str = ScanStatus.COMPLETED.value, created_at: object = None) -> ScanBatch:
@@ -276,10 +262,8 @@ def _recon_file(agent_id: str, i: int) -> FileRecord:
     )
 
 
-# ---------------------------------------------------------------------------
 # Phase 49 duration-routing helpers (D-05, D-09/D-10): duration join,
 # awaiting-cloud count, and backfill candidates (ANALYSIS_FAILED + duration>=N)
-# ---------------------------------------------------------------------------
 
 
 def _file(i: int) -> FileRecord:
@@ -397,10 +381,8 @@ endpoint_url = "https://s3.example"
 """
 
 
-# ---------------------------------------------------------------------------
 # get_agent_recent_scans (phaze-c6j5): the LIMIT boundary must be deterministic
 # on a created_at tie, not arbitrary heap order.
-# ---------------------------------------------------------------------------
 
 
 def _scan_batch(agent_id: str, *, batch_id: uuid.UUID, created_at: object = None) -> ScanBatch:

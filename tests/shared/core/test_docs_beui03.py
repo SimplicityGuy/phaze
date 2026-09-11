@@ -40,9 +40,6 @@ def _contains_all(haystack: str, needles: list[str]) -> list[str]:
     return [n for n in needles if n.lower() not in lowered]
 
 
-# --- runbook presence + coverage --------------------------------------------------------
-
-
 def test_runbook_exists() -> None:
     """``docs/runbook.md`` must exist — it is the BEUI-03 operator runbook deliverable."""
     assert _RUNBOOK.is_file(), f"missing operator runbook — create {_RUNBOOK.relative_to(_REPO_ROOT)}"
@@ -124,9 +121,6 @@ def test_runbook_prints_no_literal_secret_values() -> None:
     if re.search(r"(?i)(password|secret_access_key|sa_token)\s*=\s*['\"]?[A-Za-z0-9/+]{8,}", text):
         offenders.append("an inline secret assignment (password/secret_access_key/sa_token = <value>)")
     assert not offenders, f"runbook.md appears to embed a literal secret value — reference secrets by name only: {offenders}"
-
-
-# --- configuration.md contradiction reconciled ------------------------------------------
 
 
 def test_configuration_states_cloud_target_removed() -> None:

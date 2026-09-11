@@ -47,7 +47,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# --- Phase 55 Plan 04 Task 1 (L4): ledger-scoped backfill candidate query --------------------
 # The candidate set is now ANALYSIS_FAILED ∧ duration >= threshold ∧ EXISTS a prior
 # process_file:<id> scheduling-ledger row. This excludes never-scheduled (or cleanly
 # report_analysis_failed-cleared) failures so backfill re-drives ONLY previously-scheduled,
@@ -291,9 +290,6 @@ async def test_backfill_zero_candidates_returns_empty_fragment(client: AsyncClie
 
     await drain_router_background_tasks()
     assert capture == []
-
-
-# --- Phase 67 (REG-04, D-14): the registry cloud_enabled gate on the backfill trigger ------
 
 
 @pytest.mark.asyncio

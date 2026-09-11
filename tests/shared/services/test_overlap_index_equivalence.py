@@ -89,9 +89,6 @@ FINE = _fine_windows()
 COARSE = _coarse_windows()
 
 
-# --- The oracles: the scans exactly as they stood before the index --------------------------
-
-
 def _scan_glyph_cells(coarse: Sequence[AnalysisWindow], fine: Sequence[AnalysisWindow]) -> list[dict[str, Any]]:
     cells: list[dict[str, Any]] = []
     for window in sorted(coarse, key=lambda w: (w.window_index, w.start_sec)):
@@ -108,9 +105,6 @@ def _scan_bpm_z(fine_ranges: Sequence[tuple[float, float, float]], start_sec: fl
     if not overlapping:
         return 0.0
     return (statistics.fmean(overlapping) - mean) / stdev
-
-
-# --- The equivalences ------------------------------------------------------------------------
 
 
 def test_the_glyph_cells_of_a_twelve_hour_set_are_identical_to_the_scan() -> None:

@@ -28,7 +28,7 @@ _NAMESPACE = "phaze:pipeline"
 
 # The pipeline functions that carry a deterministic key + maintained counters.
 # MUST stay in sync with ``deterministic_key._KEY_BUILDERS`` -- the drift-guard test
-# (tests/test_deterministic_key.py) enforces the routable-task universe; this tuple
+# (tests/analyze/core/test_deterministic_key.py) enforces the routable-task universe; this tuple
 # is the read-side enumeration ``read_counters`` reports over.
 PIPELINE_FUNCTIONS: tuple[str, ...] = (
     "process_file",

@@ -143,9 +143,6 @@ async def _ledger_count(session: AsyncSession, key: str) -> int:
     return int(row.scalar_one())
 
 
-# --- the reaper's three guards ------------------------------------------------------------------
-
-
 async def test_reaper_frees_stranded_active_row(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A row stranded 'active' past its OWN timeout + slack is deleted, releasing its key."""
     await session.execute(_CREATE_SAQ_JOBS)
@@ -337,9 +334,6 @@ async def test_reaper_degrades_when_saq_jobs_unreadable(session: AsyncSession, m
     assert await reap_stranded_active_jobs(_make_ctx()) == {"reaped": 0}
 
 
-# --- the phaze-o0n6 GUARD: stranded > concurrency ------------------------------------------------
-
-
 async def test_stranded_count_equals_what_the_reaper_deletes(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """The guard's ``stranded`` figure IS the reaper's delete set -- pinned behaviourally, not textually.
 
@@ -393,9 +387,6 @@ async def test_guard_is_silent_at_or_below_concurrency(session: AsyncSession, mo
 
     assert breakdown.stranded == 4
     assert not breakdown.exceeds_concurrency
-
-
-# --- the bead's OPEN QUESTION, resolved against a real database ----------------------------------
 
 
 def _analyze_payload(file_id: uuid.UUID, agent_id: str) -> dict[str, Any]:

@@ -13,9 +13,7 @@ from __future__ import annotations
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 
 
-# ---------------------------------------------------------------------------
 # ScanStatus enum
-# ---------------------------------------------------------------------------
 
 
 def test_scan_status_has_four_values() -> None:
@@ -28,9 +26,7 @@ def test_scan_status_has_four_values() -> None:
     assert ScanStatus.LIVE == "live"
 
 
-# ---------------------------------------------------------------------------
 # ScanBatch model fields
-# ---------------------------------------------------------------------------
 
 
 def test_scan_batch_tablename() -> None:

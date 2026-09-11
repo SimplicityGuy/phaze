@@ -34,9 +34,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# ---------------------------------------------------------------------------
 # RECORD-01 — the full record fragment (GET /record/{file_id})
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -219,9 +217,7 @@ async def test_record_renders_with_both_history_types(  # type: ignore[no-untype
     assert "tag write" in body, "the tag write history entry renders"
 
 
-# ---------------------------------------------------------------------------
 # RECORD-02 — the ⌘K command palette (grouped results over /search/ + distinct_artists)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -271,9 +267,7 @@ async def test_cmdk_current_navigation_and_mutation_commands(client: AsyncClient
     assert body.count('hx-disabled-elt="this"') == 2
 
 
-# ---------------------------------------------------------------------------
 # RECORD-03 — the Agents page (heartbeating agent rows + live compute-lane rows, never DEAD)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -323,9 +317,7 @@ async def test_agents_table_renders_lane_rows_never_dead(client: AsyncClient, ba
 # tests/agents/services/test_agent_liveness.py (``test_derive_*``).
 
 
-# ---------------------------------------------------------------------------
 # RECORD-04 — the first-run empty state (count==0 branch in the Analyze workspace)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -359,9 +351,7 @@ async def test_empty_state_suppressed_when_files_exist(client: AsyncClient, make
     assert "data-empty-state" not in r.text
 
 
-# ---------------------------------------------------------------------------
 # Cross-cutting (D-02) — new fragments are single-poll clean (skip-on-404 resilient)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

@@ -239,9 +239,6 @@ async def _cloud_job_status(session: AsyncSession, file_id: uuid.UUID) -> str | 
     return (await session.execute(select(CloudJob.status).where(CloudJob.file_id == file_id))).scalar_one_or_none()
 
 
-# --- Case (a): local dispatch on tick 1, NOT re-picked on tick 2 (exactly once, never cloud) -------
-
-
 @pytest.mark.asyncio
 async def test_sc3_case_a_local_dispatch_not_repicked_on_second_tick(
     committed_db: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
@@ -282,9 +279,6 @@ async def test_sc3_case_a_local_dispatch_not_repicked_on_second_tick(
     # The awaiting sidecar row is retained (the conjunct excludes by ~inflight, it does not delete).
     async with session_factory() as session:
         assert await _cloud_job_status(session, file.id) == CloudJobStatus.AWAITING.value
-
-
-# --- Case (b): rolled-back tick with a committed ledger row (the row-deletion FAILURE case) --------
 
 
 @pytest.mark.asyncio
@@ -334,9 +328,6 @@ async def test_sc3_case_b_rolled_back_tick_committed_ledger_not_repicked(
 
     assert local.dispatched_ids == [file.id]  # dispatched exactly once (tick 1), to local
     assert cloud.dispatched_ids == []  # NEVER cloud after the local dispatch
-
-
-# --- Case (c): terminally-failed local analyze is never (re-)picked -------------------------------
 
 
 @pytest.mark.asyncio

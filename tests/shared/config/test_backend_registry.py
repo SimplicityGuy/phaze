@@ -34,9 +34,7 @@ _SA_TOKEN = "tok"
 _SECRET_ACCESS_KEY = "secret"
 
 
-# --------------------------------------------------------------------------- #
 # Task 1: discriminated-union submodels + per-variant fail-fast + factory
-# --------------------------------------------------------------------------- #
 def test_local_backend_parses() -> None:
     """A local entry needs id/kind/rank/cap only -- no connection config (REG-01)."""
     be = LocalBackend(kind="local", id="local", rank=99, cap=1)
@@ -183,9 +181,7 @@ def test_default_local_registry_returns_single_rank99_local(monkeypatch: pytest.
     assert _default_local_registry()[0].cap == 8
 
 
-# --------------------------------------------------------------------------- #
 # Task 2: KubeConfig + BucketConfig submodels with per-bucket SSRF guard
-# --------------------------------------------------------------------------- #
 def test_bucket_config_parses() -> None:
     """A bucket entry carries id/scope/endpoint_url/bucket + optional region/addressing_style (REG-05, D-07)."""
     bucket = BucketConfig(
@@ -266,7 +262,6 @@ def test_bucket_secret_fields_are_secretstr() -> None:
     assert isinstance(bucket.secret_access_key, SecretStr)
 
 
-# --------------------------------------------------------------------------- #
 # Phase 72 (Plan 04): container-level duplicate-agent_ref boot guard (D-04/D-05)
 #
 # Plan 02 retired the ≤1-compute blanket fail-fast so N DISTINCT compute agents
@@ -276,7 +271,6 @@ def test_bucket_secret_fields_are_secretstr() -> None:
 # agent_refs — and an agent_ref naming a not-yet-checked-in agent — boot cleanly
 # (the guard is STATIC / no DB existence check, D-05). These construct
 # ``ControlSettings`` from a tmp backends.toml via the shared conftest fixture.
-# --------------------------------------------------------------------------- #
 def test_duplicate_compute_agent_ref_fails_fast_with_id(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
     """Two compute backends binding the SAME agent_ref fail fast, naming the value + colliding ids (D-04).
 
@@ -364,7 +358,6 @@ def test_agent_ref_to_unregistered_agent_is_not_a_boot_error(backends_toml_env) 
     assert settings.cloud_enabled is True
 
 
-# --------------------------------------------------------------------------- #
 # phaze-1sgee: container-level duplicate-BACKEND-id boot guard, kind-agnostic
 #
 # `_validate_registry` already fails fast on duplicate bucket ids (WR-03) and
@@ -376,7 +369,6 @@ def test_agent_ref_to_unregistered_agent_is_not_a_boot_error(backends_toml_env) 
 # WR-03 shape) and double-counts in-flight cap accounting across both entries.
 # Mirrors the WR-03/D-04 test idiom below: construct via the shared
 # ``backends_toml_env`` fixture, assert the raise names both offending ids.
-# --------------------------------------------------------------------------- #
 def test_duplicate_backend_id_same_kind_fails_fast_with_id(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
     """Two compute backends sharing an id (distinct agent_refs) fail fast, naming the id (phaze-1sgee)."""
     backends_toml_env(

@@ -74,9 +74,7 @@ if TYPE_CHECKING:
 _WORKSPACE_STAGES = ["propose", "rename", "tagwrite", "move", "dedupe", "cue", "apply"]
 
 
-# ---------------------------------------------------------------------------
 # Foundation tests (FILLED in Plan 60-01 Task 1 -- green against the placeholders today).
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -120,10 +118,8 @@ async def test_review_single_poll_discipline(client: AsyncClient) -> None:
         assert "setInterval" not in frag.text, f"{stage} fragment must not use setInterval"
 
 
-# ---------------------------------------------------------------------------
 # Behavior tests -- xfail stubs converted to real assertions by their owning plan/task.
 # (names + reasons per 60-RESEARCH.md Test Map)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -973,10 +969,8 @@ async def test_workspace_declares_no_second_toast_container(client: AsyncClient,
     assert 'id="toast-container"' not in frag.text, f"the /s/{stage} fragment must not declare its own toast container"
 
 
-# ---------------------------------------------------------------------------
 # phaze-vvmh: the Apply (Execute) workspace -- the terminal step of "nothing moves without review,
 # then execute", which had no in-product trigger at all between the Phase-62 cutover and this bead.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

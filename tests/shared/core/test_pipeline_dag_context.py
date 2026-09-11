@@ -109,9 +109,7 @@ def _store_literal() -> str:
     return match.group(1)
 
 
-# ---------------------------------------------------------------------------
 # Task 1: $store.pipeline extension (pure template text — no DB, runs everywhere)
-# ---------------------------------------------------------------------------
 
 
 def test_store_seeds_every_new_per_node_key_to_zero() -> None:
@@ -135,9 +133,7 @@ def test_store_literal_has_no_undefined_seed() -> None:
         assert f"{key}: 0" in literal
 
 
-# ---------------------------------------------------------------------------
 # Task 2: per-node router context (_build_dag_context) — DB-backed
-# ---------------------------------------------------------------------------
 
 
 class _FallbackRedis:
@@ -204,10 +200,8 @@ async def test_build_dag_context_carries_every_per_node_key(session: AsyncSessio
         assert isinstance(dag[key], int), f"dag['{key}'] must be an int for x-init interpolation"
 
 
-# ---------------------------------------------------------------------------
 # COMPUTE-02: computeLanesActive counts ACTIVE compute lanes only, additive to
 # agentOnline for the header total -- agentOnline/computeOnline values are UNCHANGED.
-# ---------------------------------------------------------------------------
 
 _ONE_COMPUTE_CLUSTER_REGISTRY = """
     [[backends]]
@@ -569,9 +563,7 @@ async def test_get_stage_controls_degrade_preserves_caller_loaded_rows(session: 
     assert await session.get(Agent, "cr01-stage-controls-agent") is not None
 
 
-# ---------------------------------------------------------------------------
 # Task 2: HTTP render — OOB seeds on the poll + dashboard full-page never-500
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -596,11 +588,9 @@ async def test_stats_poll_degrades_to_200_without_counter_source(client: AsyncCl
     assert response.status_code == 200
 
 
-# ---------------------------------------------------------------------------
 # Phase 50 (50-07, D-09): the bounded cloud-window count cards — PUSHING ("Staged
 # pushing") + PUSHED ("Analyzing cloud") — must ride BOTH the dashboard full-page
 # context and the 5s stats-poll context, degrade-safe (never 500 the poll).
-# ---------------------------------------------------------------------------
 
 
 def _window_file(i: int) -> FileRecord:
@@ -706,9 +696,7 @@ async def test_window_counts_present_in_both_contexts_when_empty(client: AsyncCl
         assert ctx["analyzing_cloud_count"] == 0
 
 
-# ---------------------------------------------------------------------------
 # Phase 93 (CONSOLE-02): analyzeActive is the DERIVED in-flight count, not local-agent SAQ depth
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

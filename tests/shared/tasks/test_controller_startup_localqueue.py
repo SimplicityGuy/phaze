@@ -201,9 +201,7 @@ async def test_switching_off_k8s_probes_nothing(monkeypatch: pytest.MonkeyPatch)
     fake_redis.delete.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
 # Phase 67 (REG-04): boot-time effective-registry log
-# ---------------------------------------------------------------------------
 
 
 # One kueue backend carrying an SA token; the startup projection (id/kind/rank/cap only) must never

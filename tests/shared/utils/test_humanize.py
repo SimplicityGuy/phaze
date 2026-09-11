@@ -24,9 +24,7 @@ from phaze.utils.humanize import relative_time
 NOW = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
 
 
-# ---------------------------------------------------------------------------
 # Special cases: None, negative delta (future)
-# ---------------------------------------------------------------------------
 
 
 def test_relative_time_none_returns_never() -> None:
@@ -45,9 +43,7 @@ def test_relative_time_zero_delta_returns_zero_seconds() -> None:
     assert relative_time(NOW, now=NOW) == "0s ago"
 
 
-# ---------------------------------------------------------------------------
 # Boundary table — locked output rules
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -85,9 +81,7 @@ def test_relative_time_boundaries(delta_seconds: int, expected: str) -> None:
     assert relative_time(dt, now=NOW) == expected
 
 
-# ---------------------------------------------------------------------------
 # Truncation rule: int() truncates toward zero, NOT round
-# ---------------------------------------------------------------------------
 
 
 def test_relative_time_truncates_not_rounds_within_seconds_bucket() -> None:
@@ -126,9 +120,7 @@ def test_relative_time_truncates_fractional_days() -> None:
     assert relative_time(dt, now=NOW) == "1d ago"
 
 
-# ---------------------------------------------------------------------------
 # Default now=None branch (uses datetime.now(UTC))
-# ---------------------------------------------------------------------------
 
 
 def test_relative_time_default_now_returns_just_now_for_recent_dt() -> None:
@@ -143,9 +135,7 @@ def test_relative_time_default_now_returns_just_now_for_recent_dt() -> None:
     assert out.endswith("s ago")
 
 
-# ---------------------------------------------------------------------------
 # Format invariants
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("delta", [1, 60, 3600, 86400])

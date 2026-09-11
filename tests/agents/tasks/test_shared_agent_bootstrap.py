@@ -182,7 +182,6 @@ async def test_whoami_with_retry_exhausts_on_server_error(monkeypatch: pytest.Mo
     assert sleep_calls == list(ab._WHOAMI_BACKOFF_S), f"sleep budget mismatch: {sleep_calls}"
 
 
-# ---------------------------------------------------------------------------
 # Coverage gap fill (Codecov PR #59): agent_bootstrap.py:105-107
 # Pitfall 7 — the existing short-circuit test covers AgentApiAuthError on the
 # FIRST attempt (inside the for-loop). Lines 105-107 are the FINAL no-delay
@@ -192,7 +191,6 @@ async def test_whoami_with_retry_exhausts_on_server_error(monkeypatch: pytest.Mo
 # mid-bootstrap (turning a transient 503 into a permanent 401 on the final
 # retry) still surfaces the Pitfall-7 hint rather than the generic
 # "exhausted retry budget" message.
-# ---------------------------------------------------------------------------
 
 
 async def test_whoami_with_retry_short_circuits_on_auth_error_in_final_attempt(

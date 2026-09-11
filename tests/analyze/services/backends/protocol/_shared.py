@@ -89,9 +89,6 @@ IN_FLIGHT_STATUSES = (
 TERMINAL_STATUSES = (CloudJobStatus.SUCCEEDED, CloudJobStatus.FAILED)
 
 
-# --- backend factories (Wave 2 finalizes the exact constructor signatures) ---------------
-
-
 def _local(**kw: Any) -> Any:
     """Construct a LocalBackend (id/rank/cap; is_available always True, in_flight_count 0)."""
     return backends.LocalBackend(id=kw.get("id", "local"), rank=kw.get("rank", 0), cap=kw.get("cap", 0))
@@ -333,7 +330,6 @@ _TWO_BUCKETS = """
 """
 
 
-# === phaze-ul2v: the stranded-staging reaper ({UPLOADING, UPLOADED} age bound) ============
 #
 # in_flight_count counts {UPLOADING, UPLOADED, SUBMITTED, RUNNING} (D-10), but reconcile only ever
 # SELECTED {SUBMITTED, RUNNING}. The staging half is terminalized solely by the agent HTTP callbacks
@@ -388,9 +384,6 @@ async def _cloud_job_for(session: AsyncSession, file_id: uuid.UUID) -> Any:
     return (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one()
 
 
-# === phaze-31q3: the reaper consults broker liveness before firing ===================================
-
-
 async def _seed_live_saq_job(session: AsyncSession, *, key: str, status: str = "active") -> None:
     """Insert a saq_jobs row so :func:`get_live_job_keys` sees ``key`` as queued/active.
 
@@ -423,7 +416,6 @@ async def _seed_live_saq_job(session: AsyncSession, *, key: str, status: str = "
     await session.commit()
 
 
-# === phaze-j7m18: the compute stranded-SUBMITTED reaper ==================================
 #
 # Compute's ONLY in-flight status is SUBMITTED (D-08/D-10), terminalized SOLELY by the agent HTTP
 # callbacks (/pushed, /mismatch, /failed). A dead fileserver agent host mid-rsync, or an enqueue

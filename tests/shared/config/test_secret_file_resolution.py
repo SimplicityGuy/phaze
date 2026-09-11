@@ -49,9 +49,7 @@ def _agent_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@app-server.example:5432/phaze")
 
 
-# --------------------------------------------------------------------------- #
 # (a) _FILE reads the value
-# --------------------------------------------------------------------------- #
 def test_anthropic_key_read_from_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """ANTHROPIC_API_KEY_FILE supplies the value when the direct var is unset."""
     from phaze.config import ControlSettings
@@ -82,9 +80,7 @@ def test_agent_token_read_from_file(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     assert settings.agent_token.get_secret_value() == _VALID_TOKEN
 
 
-# --------------------------------------------------------------------------- #
 # (b) trailing newline is stripped
-# --------------------------------------------------------------------------- #
 def test_anthropic_key_file_strips_trailing_newline(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A heredoc/echo-created secret file's trailing newline must be stripped."""
     from phaze.config import ControlSettings
@@ -115,9 +111,7 @@ def test_agent_token_file_strips_surrounding_whitespace(monkeypatch: pytest.Monk
     assert settings.agent_token.get_secret_value() == _VALID_TOKEN
 
 
-# --------------------------------------------------------------------------- #
 # (c) direct env var takes precedence over _FILE
-# --------------------------------------------------------------------------- #
 def test_direct_env_wins_over_file_anthropic(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """An explicitly-set ANTHROPIC_API_KEY beats ANTHROPIC_API_KEY_FILE."""
     from phaze.config import ControlSettings
@@ -148,9 +142,7 @@ def test_direct_env_wins_over_file_agent_token(monkeypatch: pytest.MonkeyPatch, 
     assert settings.agent_token.get_secret_value() == _VALID_TOKEN
 
 
-# --------------------------------------------------------------------------- #
 # (d) _FILE pointing at a nonexistent path raises a clear error
-# --------------------------------------------------------------------------- #
 def test_missing_file_path_raises_clear_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A _FILE var whose path is missing fails fast, naming the var and path."""
     from phaze.config import ControlSettings
@@ -184,9 +176,7 @@ def test_missing_agent_token_file_raises_clear_error(monkeypatch: pytest.MonkeyP
     assert str(missing) in message
 
 
-# --------------------------------------------------------------------------- #
 # (e) both PHAZE_-prefixed and bare alias _FILE forms work
-# --------------------------------------------------------------------------- #
 def test_bare_alias_file_form_agent_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """AGENT_TOKEN_FILE (bare alias) resolves just like PHAZE_AGENT_TOKEN_FILE."""
     from phaze.config import AgentSettings
@@ -222,10 +212,8 @@ def test_prefixed_and_bare_file_forms_database_url(monkeypatch: pytest.MonkeyPat
     assert ControlSettings().database_url == url
 
 
-# --------------------------------------------------------------------------- #
 # _FILE set in the .env file (not just the process env) must resolve too, since
 # that is how every other documented var in .env.example is consumed.
-# --------------------------------------------------------------------------- #
 def _point_env_file(monkeypatch: pytest.MonkeyPatch, cls: type, env_path: Path) -> None:
     """Override the autouse `env_file=None` isolation so this test loads its own .env."""
     cfg = dict(cls.model_config)
@@ -271,9 +259,7 @@ def test_process_env_file_var_wins_over_dotenv_file_var(monkeypatch: pytest.Monk
     assert settings.anthropic_api_key.get_secret_value() == "sk-ant-process-env"
 
 
-# --------------------------------------------------------------------------- #
 # (f) agent_token from _FILE satisfies the required-field guard + hash matches
-# --------------------------------------------------------------------------- #
 def test_agent_token_file_satisfies_required_guard_and_hash_matches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A _FILE-sourced token satisfies _enforce_required_agent_fields and hashes
     to exactly hash_token(value) — proving no trailing newline leaks into the
@@ -293,9 +279,7 @@ def test_agent_token_file_satisfies_required_guard_and_hash_matches(monkeypatch:
     assert hash_token(resolved) == hash_token(_VALID_TOKEN)
 
 
-# --------------------------------------------------------------------------- #
 # SecretStr preservation — resolved secrets must not leak in repr
-# --------------------------------------------------------------------------- #
 def test_file_resolved_secret_stays_secretstr(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A _FILE-resolved SecretStr field stays SecretStr and is masked in repr."""
     from phaze.config import ControlSettings

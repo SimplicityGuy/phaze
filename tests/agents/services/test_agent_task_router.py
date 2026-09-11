@@ -172,11 +172,9 @@ async def test_enqueue_for_file_derives_agent_id(router) -> None:  # type: ignor
     assert router._queues[("agent-c", "meta")].name == "phaze-agent-agent-c-meta"
 
 
-# ---------------------------------------------------------------------------
 # phaze-9f82r: enqueue_for_agent must distinguish a failure BEFORE the broker connection existed
 # (unambiguous -- nothing was created) from one AFTER (ambiguous -- durable side effects may
 # already exist). Mocked at the SAQ Queue boundary, no live broker needed.
-# ---------------------------------------------------------------------------
 
 
 async def test_enqueue_raising_after_connect_wraps_as_ambiguous() -> None:

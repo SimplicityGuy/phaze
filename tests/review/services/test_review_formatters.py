@@ -108,11 +108,9 @@ def test_build_dupe_group_card_degrades_a_missing_truncated_key_to_false() -> No
     assert card["files"][0]["quality"] == "unknown size"
 
 
-# ---------------------------------------------------------------------------
 # phaze-4iq5t: dedupe_subcount_text is the single source the Dedupe workspace's initial render
 # (routers/shell.py) and its "Load more" fragment (routers/duplicates.py) both use, so the two
 # can never independently drift on wording -- pinning the pure function here covers both call sites.
-# ---------------------------------------------------------------------------
 
 
 def test_dedupe_subcount_text_reports_a_plain_count_when_nothing_is_truncated() -> None:

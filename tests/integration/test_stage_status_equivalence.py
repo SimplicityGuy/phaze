@@ -94,10 +94,8 @@ async def db_session(async_engine: AsyncEngine) -> AsyncGenerator[AsyncSession]:
             await session.rollback()
 
 
-# --------------------------------------------------------------------------------------------------
 # Seed helpers -- each writes the output rows (+ optional SchedulingLedger row on the deterministic
 # "<function>:<file_id>" key) for one matrix cell and returns the file id as a string.
-# --------------------------------------------------------------------------------------------------
 async def _new_file(session: AsyncSession) -> uuid.UUID:
     fid = uuid.uuid4()
     session.add(
@@ -323,9 +321,7 @@ CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uuid.UUID]], str]] =
 ]
 
 
-# --------------------------------------------------------------------------------------------------
 # Python-side scalar readers -- read the SAME rows back into the plain-scalar dict resolve_status wants.
-# --------------------------------------------------------------------------------------------------
 async def _ledger_inflight(session: AsyncSession, stage: Stage, file_id: uuid.UUID) -> bool:
     func_name = STAGE_TO_FUNCTION.get(stage.value)
     if func_name is None:
@@ -416,7 +412,6 @@ async def test_sql_equals_python(
     assert sql_status == py_status == expected
 
 
-# --------------------------------------------------------------------------------------------------
 # D-17 domain_completed drift-lock: the DB-free ``domain_completed`` table twin == the SQL
 # ``domain_completed_clause`` twin, per seeded cell. Extends the DERIV-04 anti-drift guarantee to the
 # terminality axis so ``FAILURE_IS_TERMINAL`` can never drift between its Python and SQL readers (the
@@ -565,7 +560,6 @@ async def test_domain_completed_inflight_twins_are_defined_on_different_inputs(
     assert py_complete is py_complete_expected, f"domain_completed({stage}: IN_FLIGHT) must be {py_complete_expected}, got {py_complete}"
 
 
-# --------------------------------------------------------------------------------------------------
 # READ-01 eligibility drift-lock: the DB-free ``eligible`` table twin == the SQL ``eligible_clause``
 # twin, per seeded cell. Extends the DERIV-04 anti-drift guarantee to the ELIGIBILITY axis so
 # ``ELIGIBLE_AFTER_FAILURE`` can never drift between its Python and SQL readers -- the 44.5K
@@ -659,7 +653,6 @@ async def test_inflight_savepoint_degrade(db_session: AsyncSession) -> None:
     assert await _eval_inflight(db_session, Stage.ANALYZE, file_id) is True
 
 
-# --------------------------------------------------------------------------------------------------
 # phaze-613 invariant: Σ backend.in_flight_count() must equal the global get_pushing_count() +
 # get_pushed_count() dashboard reader IFF every in-flight cloud_job row carries a backend_id naming a
 # registered backend. Both sides count the SAME status set -- Backend.in_flight_count's D-10
@@ -668,7 +661,6 @@ async def test_inflight_savepoint_degrade(db_session: AsyncSession) -> None:
 # per-backend reader (backend_id-scoped, the drain's own cap-enforcement substrate) and the global
 # dashboard cards (unscoped) can only ever disagree on a row with no attributed backend_id. This is
 # the identity the new "Staged (pushing)" / "Analyzing (cloud)" lane-slot captions assert holds.
-# --------------------------------------------------------------------------------------------------
 
 
 async def test_in_flight_sum_equals_pushing_plus_pushed_for_registry_stamped_rows(db_session: AsyncSession) -> None:

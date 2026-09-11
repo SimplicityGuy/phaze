@@ -175,14 +175,12 @@ def test_raw_track_text_list_of_none_is_none_not_the_string_none() -> None:
     assert _raw_track_text([None]) is None
 
 
-# ---------------------------------------------------------------------------
 # phaze-prla2: branch-coverage backfill for pre-existing defensive arms that the read-dispatch
 # rewrite exposed (removing the read dispatch's if-chain shrank this file's total branch count,
 # which turned these four ALREADY-UNCOVERED-BUT-UNCHANGED arms into a per-bead branch-coverage
 # regression per ``just branch-check`` -- same absolute 4 missing branches before and after,
 # smaller denominator). None of these functions were touched by phaze-prla2; these tests just
 # give the pre-existing defensive arms the direct coverage they were always missing.
-# ---------------------------------------------------------------------------
 
 
 def test_parse_track_tuple_empty_tuple_degrades_to_none() -> None:

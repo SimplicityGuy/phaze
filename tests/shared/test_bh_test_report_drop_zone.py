@@ -58,9 +58,7 @@ def _fake_config(xmlpath: str | None = None) -> SimpleNamespace:
     return SimpleNamespace(option=SimpleNamespace(xmlpath=xmlpath))
 
 
-# ------------------------------------------------------------------------------------------
 # The condition itself.
-# ------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("value", ["", "   "])
@@ -109,9 +107,7 @@ def test_a_disabled_junitxml_plugin_is_not_an_error(monkeypatch: pytest.MonkeyPa
     assert not hasattr(config.option, "xmlpath")
 
 
-# ------------------------------------------------------------------------------------------
 # rc stays authoritative (bh's binding constraint 1).
-# ------------------------------------------------------------------------------------------
 
 
 def test_the_module_implements_no_hook_that_can_move_an_exit_code() -> None:
@@ -139,9 +135,7 @@ def test_conftest_registers_the_plugin() -> None:
     assert "is_registered(bh_test_report)" in source, "double registration raises -- the guard is load-bearing"
 
 
-# ------------------------------------------------------------------------------------------
 # A real pytest, a real filesystem.
-# ------------------------------------------------------------------------------------------
 
 
 def _run_nested_pytest(workdir: Path, drop: Path | None) -> subprocess.CompletedProcess[str]:
@@ -198,9 +192,7 @@ def test_an_unset_variable_writes_nothing_anywhere(tmp_path: Path) -> None:
     assert list(tmp_path.rglob("*.xml")) == []
 
 
-# ------------------------------------------------------------------------------------------
 # The real consumer, where it is available.
-# ------------------------------------------------------------------------------------------
 
 
 def _bh_interpreter() -> Path | None:

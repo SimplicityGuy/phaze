@@ -256,12 +256,10 @@ def test_same_filesystem_helper_true_within_one_tree(tmp_path: Path) -> None:
     assert _same_filesystem(a, tmp_path) is True
 
 
-# ---------------------------------------------------------------------------
 # phaze-timy: the blocking streamed copy and sha256 hashing must run OFF the
 # meta-lane worker's event loop (via asyncio.to_thread) so a multi-GB copy/hash
 # cannot freeze the loop, starving the co-scheduled lane slot, SAQ's timers, and
 # the Phase-46 heartbeat for minutes.
-# ---------------------------------------------------------------------------
 
 
 def _item_with_hash(orig: Path, proposed_path: str, filename: str, sha256_hash: str) -> ExecuteBatchProposalItem:
@@ -353,7 +351,6 @@ def test_streamed_copy_preserves_content_and_mtime(tmp_path: Path) -> None:
     assert dst.stat().st_mtime == src.stat().st_mtime
 
 
-# ---------------------------------------------------------------------------
 # phaze-s0wu — the no-clobber guard must be ATOMIC, not check-then-act.
 #
 # The exists-check in _execute_one runs once, up front; the destructive act can
@@ -361,7 +358,6 @@ def test_streamed_copy_preserves_content_and_mtime(tmp_path: Path) -> None:
 # destination inside that window was silently overwritten, and if the occupant
 # was a completed same-fs move its source was already gone -- so its bytes were
 # unrecoverable while BOTH proposals reported success.
-# ---------------------------------------------------------------------------
 
 
 async def test_cross_fs_copy_refuses_a_destination_occupied_during_the_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -478,14 +474,12 @@ async def test_same_fs_move_completes_a_crashed_link_claim_rather_than_no_op_ren
     assert not orig.exists(), "the crashed claim must be completed forward, not left dangling"
 
 
-# ---------------------------------------------------------------------------
 # phaze-kxnnd -- st_nlink>1 alone is NOT sufficient evidence that the extra link
 # sits AT `proposed`: a case-only rename on a case-insensitive filesystem also
 # makes `original != proposed` true while both name the SAME single directory
 # entry, and an unrelated pre-existing hard link elsewhere in the archive
 # inflates nlink with nothing to do with `proposed`. The fix rules out the
 # case-only-same-entry shape (a pure path comparison) before ever trusting nlink.
-# ---------------------------------------------------------------------------
 
 
 def test_is_case_only_same_entry_true_for_case_variants_in_the_same_directory(tmp_path: Path) -> None:
@@ -564,12 +558,10 @@ async def test_same_fs_case_only_rename_with_unrelated_hardlink_does_not_delete_
     assert state_patch.current_path == str(proposed)
 
 
-# ---------------------------------------------------------------------------
 # phaze-otoqj -- the cross-fs staging file must be unique per attempt AND
 # opened O_EXCL, and the destination is re-verified before the source is
 # unlinked. The old deterministic tmp name let two genuinely concurrent
 # attempts at the same destination share one truncatable inode.
-# ---------------------------------------------------------------------------
 
 
 def test_unique_tmp_path_differs_across_attempts_at_the_same_destination(tmp_path: Path) -> None:

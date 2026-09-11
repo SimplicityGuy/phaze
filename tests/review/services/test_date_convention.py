@@ -80,9 +80,7 @@ def _resolve(filename: str, convention: FilenameConvention | None, **overrides: 
     return resolve_date(filename, convention=convention, **kwargs)
 
 
-# --------------------------------------------------------------------------------------------
 # Precedence: a self-resolving date always wins
-# --------------------------------------------------------------------------------------------
 
 
 class TestSelfResolvingAlwaysWins:
@@ -105,9 +103,7 @@ class TestSelfResolvingAlwaysWins:
         assert (provenance.date, provenance.date_order) == ("2014-04-25", "DD-MM")
 
 
-# --------------------------------------------------------------------------------------------
 # The two thresholds
-# --------------------------------------------------------------------------------------------
 
 
 class TestGates:
@@ -213,9 +209,7 @@ class TestProvenanceShape:
         assert set(payload) == {"date", "raw", "date_order", "source", *convention_fields}
 
 
-# --------------------------------------------------------------------------------------------
 # Batched store lookup + context annotation (real Postgres)
-# --------------------------------------------------------------------------------------------
 
 
 async def _persist(session: AsyncSession, **kwargs: Any) -> FilenameConvention:

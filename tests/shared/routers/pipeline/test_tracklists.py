@@ -405,9 +405,7 @@ async def test_run_tracklist_drain_enqueues_one_job_on_the_controller_queue(clie
     assert capture[0][1] == "drain_tracklists"
 
 
-# ---------------------------------------------------------------------------
 # phaze-6nrrf: the continuous-drain ARM/DISARM operator control.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

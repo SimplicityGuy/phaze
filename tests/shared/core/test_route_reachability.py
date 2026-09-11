@@ -120,14 +120,12 @@ _JINJA_BLOCK = re.compile(r"\{\{.*?\}\}|\{%.*?%\}|\{#.*?#\}", re.S)
 _HTML_LITERAL = re.compile(r"""["']([^"']+\.html)["']""")
 
 
-# --------------------------------------------------------------------------------------
 # Allowlist -- routes that are intentionally template-less.
 #
 # Every entry needs a reason that says WHY no document calls it. An entry that merely
 # records that nothing calls it belongs in the findings ledger below instead: this list is
 # for routes whose caller is something other than a browser document, and if it grows to
 # absorb findings the check stops meaning anything.
-# --------------------------------------------------------------------------------------
 
 # Whole routers that are non-UI by construction. Prefix form is deliberate: these are entire
 # API surfaces, not individual exceptions, and enumerating their 27 endpoints (22 + 5 today)
@@ -162,7 +160,6 @@ _LEGACY_BOOKMARK_ROUTES: dict[str, str] = {
 ALLOWLIST: dict[str, str] = {**_NON_UI_ROUTES, **_LEGACY_BOOKMARK_ROUTES}
 
 
-# --------------------------------------------------------------------------------------
 # Findings ledger -- real orphans, recorded so they cannot be forgotten.
 #
 # These are NOT waivers. Each is an endpoint that renders HTML for an operator who has no
@@ -174,7 +171,6 @@ ALLOWLIST: dict[str, str] = {**_NON_UI_ROUTES, **_LEGACY_BOOKMARK_ROUTES}
 # `test_findings_ledger_has_no_stale_entries` makes the ledger self-cleaning: an entry whose
 # route no longer exists, or which has acquired a caller, FAILS with an instruction to delete
 # the line. So the ledger cannot rot into a permanent allowlist.
-# --------------------------------------------------------------------------------------
 KNOWN_ORPHANS: dict[str, str] = {
     # (phaze-7tiqp's `PATCH /proposals/bulk-approve-high-confidence` entry lived here as a
     # merge-window placeholder. That route is now deleted, so the ledger's own staleness test
@@ -426,9 +422,7 @@ def baseline() -> Reachability:
     return analyse(_TEMPLATES)
 
 
-# --------------------------------------------------------------------------------------
 # The two directions.
-# --------------------------------------------------------------------------------------
 
 
 def test_no_dangling_template_reference(baseline: Reachability) -> None:
@@ -452,11 +446,9 @@ def test_no_orphaned_ui_route(baseline: Reachability) -> None:
     assert not unexpected, "routed endpoints no served template can reach:\n  " + "\n  ".join(str(route) for route in unexpected)
 
 
-# --------------------------------------------------------------------------------------
 # Seeded-mutation proof: the check fails on the two defect shapes it claims to catch.
 # Both mutate a COPY of the template tree -- the real one is never touched -- and both
 # assert the unmutated copy is clean first, so neither can pass vacuously.
-# --------------------------------------------------------------------------------------
 
 
 def _copy_templates(tmp_path: Path) -> Path:
@@ -518,9 +510,7 @@ def test_seeded_typo_in_an_hx_get_url_is_caught(tmp_path: Path) -> None:
     assert orphaned in mutated.orphans(), "the typo also orphaned the real endpoint, which should be reported too"
 
 
-# --------------------------------------------------------------------------------------
 # The allowlist and the findings ledger must not rot.
-# --------------------------------------------------------------------------------------
 
 
 def test_allowlisted_prefixes_are_all_live() -> None:

@@ -34,9 +34,7 @@ from phaze.services.scheduling_ledger import (
 )
 
 
-# ---------------------------------------------------------------------------
 # routing_for_function (pure, no DB)
-# ---------------------------------------------------------------------------
 
 
 def test_routing_for_agent_function() -> None:
@@ -59,9 +57,7 @@ def test_routing_for_unknown_function_raises() -> None:
         routing_for_function("totally_unknown_task")
 
 
-# ---------------------------------------------------------------------------
 # upsert / insert-if-absent / clear / read (DB)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -199,9 +195,7 @@ async def test_clear_entry_deletes_and_is_noop_when_absent(session) -> None:  # 
     await session.commit()
 
 
-# ---------------------------------------------------------------------------
 # clear_ledger_entry ownership guard (phaze-3yln): a same-key re-enqueue race must win
-# ---------------------------------------------------------------------------
 
 
 async def _seed_saq_jobs_table(session) -> None:  # type: ignore[no-untyped-def]

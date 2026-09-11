@@ -142,9 +142,7 @@ def _make_payload_kwargs(file_id: uuid.UUID | None = None, file_type: str = "mp3
     }
 
 
-# ---------------------------------------------------------------------------
 # Helper functions
-# ---------------------------------------------------------------------------
 
 
 def test_features_to_mood_dict_returns_averaged_dict() -> None:
@@ -286,9 +284,7 @@ def test_features_to_style_dict_skips_non_numeric_confidence() -> None:
     assert out["Good"] == pytest.approx(0.42, rel=1e-3)
 
 
-# ---------------------------------------------------------------------------
 # process_file behavior
-# ---------------------------------------------------------------------------
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
@@ -306,7 +302,6 @@ async def test_process_file_calls_put_analysis(mock_pool: AsyncMock) -> None:
     assert result["file_id"] == str(file_id)
     mock_pool.assert_awaited_once()
     api.put_analysis.assert_awaited_once()
-    # Verify payload shape
     awaited_call = api.put_analysis.await_args
     assert awaited_call.args[0] == file_id
     body = awaited_call.args[1]
@@ -436,9 +431,7 @@ async def test_process_file_analyzes_video(mock_pool: AsyncMock, mock_extract: A
     api.put_analysis.assert_awaited_once()
 
 
-# ---------------------------------------------------------------------------
 # phaze-3ea41: video-container pre-analysis audio extraction
-# ---------------------------------------------------------------------------
 
 
 @patch("phaze.tasks.functions.extract_audio_track", new_callable=AsyncMock)
@@ -769,9 +762,7 @@ async def test_process_file_propagates_pool_failure(mock_pool: AsyncMock) -> Non
     api.report_analysis_failed.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
 # Phase 43: terminal timeout/crash classification + retry policy + coverage
-# ---------------------------------------------------------------------------
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
@@ -1034,10 +1025,8 @@ async def test_process_file_retryable_generic_error_raises_without_reporting(moc
     api.put_analysis.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
 # phaze-2cqx: SAQ cancellation (job-net timeout / worker shutdown) must not bypass
 # the retryable-preserve guard and delete the pushed scratch copy a retry needs.
-# ---------------------------------------------------------------------------
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
@@ -1361,10 +1350,8 @@ async def test_process_file_rejects_extra_kwargs(mock_pool: AsyncMock) -> None:
     api.put_analysis.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
 # Phase 57.1 (PROG-01) / Phase 101 (OBS-03): the local + A1 lane progress bridge —
 # the driver invokes progress_cb ON the loop; the parent throttles + final-flushes.
-# ---------------------------------------------------------------------------
 
 
 def _fake_pool_emitting(counts: list[tuple[int, ...]], result: dict[str, Any] | None = None, raise_exc: BaseException | None = None):  # type: ignore[no-untyped-def]

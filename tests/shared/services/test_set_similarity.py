@@ -98,9 +98,7 @@ async def _find(
     return await find_similar_sets(session, file_id, query_profile, bpm, style, mood)
 
 
-# ---------------------------------------------------------------------------
 # Pure-function terms
-# ---------------------------------------------------------------------------
 
 
 def test_arc_distance_is_symmetric() -> None:
@@ -139,9 +137,7 @@ def test_cosine_similarity_is_the_honest_zero_floor_with_no_overlap() -> None:
     assert cosine_similarity([0.0, 0.0], [0.0, 0.0]) == 0.0
 
 
-# ---------------------------------------------------------------------------
 # Acceptance: duplicate rip ranks first
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -193,9 +189,7 @@ async def test_a_duplicate_rip_ranks_first(session: AsyncSession, make_file) -> 
     assert neighbours[0].scoring_line == "arc 0.00 · 0.0 % BPM · 8A"
 
 
-# ---------------------------------------------------------------------------
 # Acceptance: wheel-adjacent outranks a tritone away at equal arc distance
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -235,9 +229,7 @@ async def test_wheel_adjacent_key_outranks_a_tritone_at_equal_arc_distance(sessi
     assert by_id[adjacent.id].score - by_id[tritone.id].score == pytest.approx(SIMILARITY_WEIGHTS["key"] * (KEY_ADJACENT - KEY_OTHER))
 
 
-# ---------------------------------------------------------------------------
 # Acceptance: style agreement, and mood agreement, each in isolation
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -347,9 +339,7 @@ def test_style_and_mood_terms_give_no_credit_when_either_side_is_missing() -> No
     assert _categorical_agreement("techno", "house") == CATEGORICAL_NO_MATCH
 
 
-# ---------------------------------------------------------------------------
 # Acceptance: no profile -> empty list
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -394,9 +384,7 @@ async def test_no_other_file_has_a_profile_also_returns_empty(session: AsyncSess
     assert neighbours == []
 
 
-# ---------------------------------------------------------------------------
 # Other behaviour: limit, determinism, gaps
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -476,11 +464,9 @@ async def test_scoring_line_never_grows_a_style_or_mood_segment(session: AsyncSe
     assert "energetic" not in neighbours[0].scoring_line
 
 
-# ---------------------------------------------------------------------------
 # phaze-zb5y9: the top-`limit` selection moved from a full sort to `heapq.nlargest`, and the
 # candidate scan stopped hydrating `SetProfile` entities. Neither may change WHICH three
 # candidates come back, or in what order -- these two tests are the equivalence proof.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -588,7 +574,6 @@ async def test_the_returned_profiles_are_the_winners_own_rows_with_their_glyphs(
         assert neighbour.set_profile.glyph == glyph_by_key[neighbour.set_profile.camelot_modal]
 
 
-# ---------------------------------------------------------------------------
 # SYNTHETIC corpus-scale measurement.
 #
 # This machine has no route to the operator's production database (CLAUDE.md's seat-isolation
@@ -601,7 +586,6 @@ async def test_the_returned_profiles_are_the_winners_own_rows_with_their_glyphs(
 # carrying a 240-cell glyph -- a 12 h set's): 3.17-3.79 s before the change, 0.46-0.56 s after,
 # three consecutive calls each. Both numbers are on this seat's own test database and are
 # recorded on the bead; the 20,000-row seed stays OUT of the suite for the reason below.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

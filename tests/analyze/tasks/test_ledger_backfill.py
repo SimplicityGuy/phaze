@@ -48,9 +48,6 @@ from tests.db_guard import integration_dsns
 _RAW_DSN, _SA_DSN = integration_dsns()
 
 
-# --- Pure blob-parse tolerance (no DB) -------------------------------------------------
-
-
 class _RaisingSession:
     """Minimal AsyncSession stand-in whose SAVEPOINT read raises (a missing saq_jobs table).
 
@@ -102,9 +99,6 @@ async def test_missing_saq_jobs_table_degrades_to_no_op() -> None:
 def test_parse_job_blob_tolerates_garbage(blob: object, expected: dict[str, Any] | None) -> None:
     """``_parse_job_blob`` mirrors ``pipeline._job_started_ms``: JSON dict in, dict or None out."""
     assert _parse_job_blob(blob) == expected
-
-
-# --- Loop classification (fake session, no DB) -----------------------------------------
 
 
 class _SeededSession:
@@ -253,9 +247,6 @@ async def test_backfill_loop_tolerates_non_dict_kwargs() -> None:
 
     assert tally == {"inserted": 1, "skipped": 0}, tally
     assert session.inserted_keys == [key]
-
-
-# --- Integration: real saq_jobs broker -------------------------------------------------
 
 
 @pytest.mark.integration

@@ -220,9 +220,6 @@ async def test_count_duplicate_groups_correct(session: AsyncSession) -> None:
     assert total == 3
 
 
-# --- Helpers for new tests ---
-
-
 def _make_metadata(file_id: uuid.UUID, **kwargs) -> FileMetadata:
     """Helper to create a FileMetadata with given fields."""
     return FileMetadata(
@@ -230,9 +227,6 @@ def _make_metadata(file_id: uuid.UUID, **kwargs) -> FileMetadata:
         file_id=file_id,
         **kwargs,
     )
-
-
-# --- Scoring tests ---
 
 
 def test_score_group_bitrate_wins() -> None:
@@ -461,9 +455,6 @@ def test_score_group_no_metadata() -> None:
     assert "shortest path" in group["rationale"]
 
 
-# --- Tag completeness tests ---
-
-
 def test_tag_completeness_full() -> None:
     """File with all 6 tag fields -> ('Full', 6, 6)."""
     file_dict = {
@@ -510,9 +501,6 @@ def test_tag_completeness_none() -> None:
     assert label == "None"
     assert filled == 0
     assert total == 6
-
-
-# --- Database-dependent tests ---
 
 
 @pytest.mark.asyncio
@@ -724,9 +712,7 @@ async def test_undo_resolve(session: AsyncSession) -> None:
     assert remaining == []
 
 
-# ---------------------------------------------------------------------------
 # phaze-m7ya: find_duplicate_group_by_hash is a keyed LOOKUP, not a paged read.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -794,7 +780,6 @@ async def test_find_duplicate_group_by_hash_reports_untruncated_below_the_cap(se
     assert group["count"] == 2
 
 
-# ---------------------------------------------------------------------------
 # phaze-z4p5q: find_duplicate_group_by_hash, find_duplicate_groups_with_metadata and
 # find_duplicate_groups_by_hashes all fetched EVERY unresolved member of a duplicate group with no
 # per-member LIMIT -- a pathological group (many byte-identical files sharing one hash) would
@@ -802,7 +787,6 @@ async def test_find_duplicate_group_by_hash_reports_untruncated_below_the_cap(se
 # reader is capped at ``_MAX_GROUP_MEMBERS`` members per group, flags ``truncated`` when it hit that
 # cap, and -- because a plain global LIMIT would have starved whichever hash sorts last -- the cap
 # applies PER GROUP even when several groups share one query.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

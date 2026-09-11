@@ -182,9 +182,7 @@ def test_logged_sources_reads_fine_with_a_real_usable_spread() -> None:
     assert logged_sources(real_spread) == {"bpm": "fine"}
 
 
-# ---------------------------------------------------------------------------
 # phaze-aswsz: the plausible-tempo band on the BPM z-score's reference population
-# ---------------------------------------------------------------------------
 
 _SILENT_WINDOW_BPM = 738.3
 """What ``RhythmExtractor2013(method="multifeature")`` returns for 44.1 kHz digital silence,

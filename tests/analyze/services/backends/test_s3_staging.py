@@ -110,9 +110,6 @@ def bucket(s3_env: str) -> BucketConfig:
     return _bucket_config(s3_env, _BUCKET)
 
 
-# === pick_bucket (pure) ==================================================================
-
-
 def test_pick_bucket_is_order_independent_via_sorted() -> None:
     """pick_bucket sorts the id list, so registry/TOML ordering never changes the choice (D-06)."""
     fid = uuid.uuid4()
@@ -149,9 +146,6 @@ def test_pick_bucket_always_returns_a_member_of_the_set() -> None:
         assert s3_staging.pick_bucket(uuid.uuid4(), bucket_ids) in members
 
 
-# === resolve_bucket_config (pure inverse of pick_bucket; MKUE-02, Pitfall 4) =============
-
-
 def test_resolve_bucket_config_none_id_returns_none() -> None:
     """A None recorded ``staging_bucket`` (compute / unstaged row) resolves to None -> caller skips S3."""
     cfg = SimpleNamespace(buckets=[])
@@ -172,9 +166,6 @@ def test_resolve_bucket_config_resolves_recorded_id() -> None:
     assert s3_staging.resolve_bucket_config(cfg, "staging-a") is b  # type: ignore[arg-type]
 
 
-# === staged_object_key (pure, bucket-agnostic) ==========================================
-
-
 def test_staged_object_key_is_deterministic_and_file_id_scoped() -> None:
     """The staged key is f'phaze-staging/{file_id}' -- deterministic + file_id-scoped (KSTAGE-04)."""
     fid = uuid.uuid4()
@@ -182,9 +173,6 @@ def test_staged_object_key_is_deterministic_and_file_id_scoped() -> None:
     assert key == f"phaze-staging/{fid}"
     assert s3_staging.staged_object_key(fid) == key  # deterministic
     assert s3_staging.staged_object_key(uuid.uuid4()) != key  # distinct per file_id
-
-
-# === bucket-parameterized verbs =========================================================
 
 
 async def test_create_multipart_upload_returns_upload_id(bucket: BucketConfig) -> None:
@@ -221,9 +209,6 @@ def _url_ttl_sec(url: str) -> int:
     if "X-Amz-Expires" in query:  # SigV4 -- direct TTL delta
         return int(query["X-Amz-Expires"][0])
     return int(query["Expires"][0]) - int(time.time())  # SigV2 (botocore default) -- absolute epoch
-
-
-# === presign_upload_parts TTL (phaze-pq1fe) =============================================
 
 
 async def test_presign_upload_parts_defaults_to_configured_put_ttl(bucket: BucketConfig) -> None:
@@ -512,9 +497,6 @@ async def test_ensure_bucket_lifecycle_ttl_wraps_client_error(bucket: BucketConf
     monkeypatch.setattr(s3_staging, "_client", lambda _bucket: _BoomClient())
     with pytest.raises(s3_staging.S3StagingError):
         await s3_staging.ensure_bucket_lifecycle_ttl(bucket)
-
-
-# === per-bucket determinism: the CALLED bucket is the one acted on (MKUE-02, 2-bucket set) =====
 
 
 @pytest.fixture

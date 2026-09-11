@@ -168,9 +168,6 @@ async def test_breakdown_degrades_when_saq_jobs_unreadable(session: AsyncSession
     assert not breakdown.exceeds_concurrency
 
 
-# --- phaze-o0n6: the stranded-rows guard ---------------------------------------------------------
-
-
 def test_lane_concurrency_setting_covers_every_lane() -> None:
     """The lane -> concurrency-knob map is TOTAL over LANES, so a new lane cannot silently go unguarded.
 

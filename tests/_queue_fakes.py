@@ -57,7 +57,6 @@ Capture = list[tuple[str, str, dict[str, Any]]]
 # without polluting the captured task payload that the worker would receive.
 _JOB_CONTROL_FIELDS = frozenset(Job.__dataclass_fields__)
 
-# --- phaze-9nz1g (seam E1): the REAL serializer, on a never-connected PostgresQueue ---------
 #
 # Before this, ``FakeQueue.enqueue`` recorded the kwargs dict IN-PROCESS and UNSERIALIZED, so the
 # type-fidelity property of every ``queue.enqueue`` -> broker -> worker ``**kwargs`` hop was

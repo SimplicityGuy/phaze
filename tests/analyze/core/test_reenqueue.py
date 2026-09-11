@@ -140,9 +140,6 @@ async def _seed_analysis(session: AsyncSession, file_id: uuid.UUID, *, completed
     await session.commit()
 
 
-# --- PUSHING -> re-drive to a fileserver ------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_pushing_orphan_redrives_to_fileserver(
     session: AsyncSession,
@@ -220,9 +217,6 @@ async def test_pushing_redrive_skips_when_no_fileserver(
     assert "fileserver" in caplog.text.lower()
 
 
-# --- PUSHED / ANALYZED -> domain-completed (not re-driven) ------------------------------
-
-
 @pytest.mark.asyncio
 async def test_pushing_pushed_state_is_domain_completed(
     session: AsyncSession,
@@ -284,9 +278,6 @@ async def test_pushing_analyzed_state_is_domain_completed(
     assert router.queues == {}
 
 
-# --- process_file done-set is UNCHANGED: PUSHED is not analyze-done ---------------------
-
-
 @pytest.mark.asyncio
 async def test_pushed_file_is_not_analyze_done_for_process_file(
     session: AsyncSession,
@@ -320,16 +311,10 @@ async def test_pushed_file_is_not_analyze_done_for_process_file(
     assert is_domain_completed(push_row, done_sets) is True
 
 
-# --- predicate totality includes push_file ---------------------------------------------
-
-
 def test_push_file_is_predicate_covered() -> None:
     """push_file joins the domain-predicate-covered set (it is keyed and stage-classifiable)."""
     assert "push_file" in _DOMAIN_COMPLETED_STAGES
     assert "push_file" in _KEY_BUILDERS
-
-
-# --- process_file owned by a COMPUTE agent -> re-drives onto ITS owner (phaze-5dkgp) ----
 
 
 def _process_payload(file_id: uuid.UUID, *, agent_id: str) -> dict[str, Any]:

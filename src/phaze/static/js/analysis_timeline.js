@@ -24,13 +24,11 @@
         return `${minutes}:${String(remainder).padStart(2, "0")}`;
     }
 
-    // -----------------------------------------------------------------------------------------
     // The pure lookups. Everything the inspection draws is decided by these three functions and
     // one elapsed time; nothing below them reads the DOM. They are exported on the public object
     // so `tests/browser/test_analysis_timeline_lookups.py` can unit-test them against the SHIPPED
     // file in a real browser -- this repo has no node or jsdom harness, and a Python port of the
     // arithmetic would be exactly the "proxy that cannot exhibit the failure" ADR-0012 is about.
-    // -----------------------------------------------------------------------------------------
 
     /** The last span starting at or before `time` whose half-open range still contains it.
      *
@@ -86,10 +84,8 @@
         return spanAt(runs, time, duration);
     }
 
-    // -----------------------------------------------------------------------------------------
     // Phrases. One vocabulary for the readout, the tooltip and `aria-valuetext`, so a screen
     // reader hears the same four facts -- time, track, key, mood -- the tooltip shows.
-    // -----------------------------------------------------------------------------------------
 
     function range(window) {
         return `${elapsed(window.start)}–${elapsed(window.end)}`;
