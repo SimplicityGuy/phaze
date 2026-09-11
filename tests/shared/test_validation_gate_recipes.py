@@ -200,14 +200,14 @@ def test_the_per_bead_branch_gate_is_runnable_from_a_worktree() -> None:
 # all of the 'coverage' just recipes". Durable record: bead phaze-bk9el.21.
 #
 # The IMPLEMENTATION of that is one line -- `branch = true` in [tool.coverage.run] -- which every
-# recipe inherits: `test-cov`, `test-ci`, `test-bucket` (each CI shard) and `coverage-combine`. One
+# recipe inherits: `test-cov`, `test-bucket` (each CI shard) and `coverage-combine`. One
 # place, not four. But the whole thing then rests on a single config line, and a `branch = false`, a
 # stray `--no-branch`, or a recipe pointed at a different rcfile would take branch data out of every
 # recipe at once with NO visible failure -- the same shape as the `-x`/`-q` regression phaze-jnj90
 # exists to prevent. Hence these guards, and hence the last one, which checks the ARTIFACTS rather
 # than the config that is supposed to produce them.
 
-_COVERAGE_RECIPES = ("test-cov", "test-ci", "test-bucket", "coverage-combine")
+_COVERAGE_RECIPES = ("test-cov", "test-bucket", "coverage-combine")
 
 
 def test_no_coverage_recipe_disables_branch_measurement() -> None:

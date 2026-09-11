@@ -123,10 +123,9 @@ cov_reports := "--cov-report=json --cov-report=term --cov-report=xml"
 default:
     @just --list
 
-[doc('Install all dependencies')]
+[doc('Install development dependencies and build the local UI stylesheet')]
 [group('dev')]
-install: tailwind
-    uv sync
+install: setup tailwind
 
 # phaze-gfdx: this is the bh worktree-provisioning entry point (global beadhive config's
 # `worktree.init` runs `just setup` whenever a justfile is present), so it MUST be cheap and
@@ -528,17 +527,6 @@ test-fast:
         exit "$rc"
         ;;
     esac
-
-# phaze-jktlb: NOTHING CALLS THIS. CI shards with `just test-bucket` and fans in with
-# `just coverage-combine`; no workflow, script or recipe references `test-ci`. It is kept
-# (removing a recipe is outside this bead) but it is now the same whole-suite invocation as
-# `test-cov` minus the line-floor script, rather than the third different opinion about
-# which reports to emit that it used to be. If you are reaching for it, you want `just
-# test-cov`; if it is still unreferenced next time someone reads this, delete it.
-[doc('Run tests with coverage reports, without the line-floor script (UNUSED -- prefer `just test-cov`)')]
-[group('test')]
-test-ci:
-    uv run pytest --cov {{cov_reports}}
 
 [doc('Run a specific test file')]
 [group('test')]
@@ -1264,8 +1252,10 @@ typecheck:
 pre-commit:
     uv run pre-commit run --all-files
 
-# THE per-bead gate. `~/.beadhive/config.yaml` points the phaze rig's `work.validate_cmd`
-# here, so this is what `bh work check` and `bh work submit` actually run (phaze-nqawu).
+# THE full local/postland gate. This used to be the per-bead gate (phaze-nqawu), but
+# `work.validate_cmd` now points at `check-fast`; keep this whole-suite recipe as the manual
+# escape hatch and as the postland/union validation command documented in
+# docs/gates-and-isolation.md.
 # Before that it ran the machine-wide default `sh -c "just lint && just typecheck"`, which
 # executes ZERO tests -- a bead could pass submit against a completely red suite while
 # submit's "validated from a pristine checkout" output read as though the suite had run.
@@ -1274,7 +1264,7 @@ pre-commit:
 #
 # The test step is `test-validate`, not `test`: coverage on, no fail-fast, header printed.
 # See its comment for why each of those three matters.
-[doc('THE per-bead gate (`bh work check` / `bh work submit` run this): lint + typecheck + the full suite with coverage; auto-provisions the ephemeral test-db when no TEST_DATABASE_URL override is already exported (e.g. a fresh worktree)')]
+[doc('Full manual/postland gate: lint + typecheck + the full suite with coverage; auto-provisions an isolated test seat when no caller-owned database is exported')]
 [group('lint')]
 check: lint typecheck test-validate
 
@@ -1355,14 +1345,14 @@ pip-audit:
     # shellcheck disable=SC2086
     uv run pip-audit --desc --skip-editable $IGNORE_ARGS
 
-[doc('Run bandit for Python SAST')]
+[doc('Run Bandit Python SAST')]
 [group('security')]
-security:
+bandit:
     uv run bandit -r src/ -x tests -s B608
 
-[doc('Run all security checks')]
+[doc('Run the local dependency-audit and Python-SAST checks')]
 [group('security')]
-security-all: pip-audit security
+security-all: pip-audit bandit
 
 [doc('View worker logs (follow mode)')]
 [group('worker')]
@@ -1679,8 +1669,3 @@ update-hooks:
 [group('maintenance')]
 lock-upgrade:
     uv lock --upgrade
-
-[doc('Sync after lock upgrade')]
-[group('maintenance')]
-sync:
-    uv sync
