@@ -30,7 +30,7 @@ METRICS_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"
 # Bounded-by-default export knobs. Every one of these has an SDK default that is
 # LONGER than what an analysis pod can afford to spend at exit (phaze-m1drf.2 §2),
 # so phaze lowers them and lets the operator raise them back.
-#
+
 # **THE UNITS ARE NOT UNIFORM, AND THIS WAS MEASURED RATHER THAN ASSUMED.** In
 # opentelemetry-python 1.44.0 `OTEL_EXPORTER_OTLP_TIMEOUT` is in **SECONDS** (the exporter
 # reads it straight into `requests`' `timeout=`, default 10), while every `OTEL_BSP_*` and
@@ -38,8 +38,8 @@ METRICS_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"
 # milliseconds for all of them, so a value carried over from the spec -- or from another
 # language's SDK -- is wrong by 1000x in the dangerous direction. Setting it to "5000"
 # meaning 5 s gave a 5,000-SECOND (83-minute) per-batch deadline, and a black-holed
-# collector then held process exit open for the length of it. ADR-0016
-# (docs/design/0016-transferred-model-verification.md) is the rule this instance belongs
+# collector then held process exit open for the length of it.
+# docs/design/0016-transferred-model-verification.md is the rule this instance belongs
 # to, and `tests/shared/telemetry/test_export_timeout_units.py` pins it against the
 # installed SDK so an upgrade that unifies the units fails loudly instead of silently
 # re-introducing the 1000x.

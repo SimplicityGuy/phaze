@@ -1,4 +1,4 @@
-"""StageSkip model -- per-(file, stage) force-skip marker for the enrich stages (Phase 87, D-13).
+"""StageSkip model -- per-(file, stage) force-skip marker for the enrich stages (D-13).
 
 A ``(file_id, stage)`` sidecar recording that an operator has *force-skipped* an enrich stage for a
 file. Marker-row existence = skipped; undo = DELETE the row (the derive-don't-store principle -- status

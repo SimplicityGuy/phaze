@@ -18,7 +18,7 @@ being spent twice:
   from the queue.
 
 Lives in ``phaze.enums`` (not ``phaze.models``) so the agent worker -- forbidden from importing
-``phaze.database`` / ``phaze.models`` (Phase 26 D-03) -- and the Pydantic schemas can share one
+``phaze.database`` / ``phaze.models`` (D-03) -- and the Pydantic schemas can share one
 spelling of these values with the SQLAlchemy column.
 """
 

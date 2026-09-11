@@ -1,4 +1,4 @@
-"""SchedulingLedger model -- durable record that a stage was scheduled for an item (Phase 45).
+"""SchedulingLedger model -- durable record that a stage was scheduled for an item.
 
 A standalone app table (NOT part of SAQ's auto-managed ``saq_jobs``) holding one row per
 keyed enqueue. The single ``before_enqueue`` chokepoint (``apply_deterministic_key``) upserts
@@ -8,7 +8,7 @@ terminal-failure path clears it. Recovery then re-queues exactly::
     orphaned = (ledger entries) - (live saq_jobs keys, status in queued/active)
 
 so never-scheduled work (e.g. a ``DISCOVERED`` file awaiting a manual DAG trigger) is left
-alone -- the missing fact behind the 2026-06-18 over-enqueue incident (~44.5k jobs).
+alone, preventing recovery from over-enqueuing approximately 44,500 never-scheduled jobs.
 
 The ledger lives OUTSIDE ``saq_jobs`` so it survives a broker truncate/restore (the only
 genuine post-Phase-36 Postgres-broker loss case). ``force=True`` recovery now means "reconcile
@@ -30,7 +30,7 @@ Columns:
                      replay or a recovered long concert set fell back to the 600s default and timed
                      out (the gap behind the recover-button timeout-loss bug). Since phaze-w55w1
                      ``process_file`` carries no wall clock at all (``timeout=0`` + a progress
-                     ``heartbeat``, ADR-0007 §7) and its policy is PINNED by
+                     ``heartbeat``, ``docs/design/0007-windowed-analysis.md``) and its policy is PINNED by
                      ``apply_project_job_defaults`` on every enqueue, so its correctness no longer
                      rests on this column. NOTE: ``heartbeat`` is deliberately NOT a column here --
                      the pin is what supplies it on replay.

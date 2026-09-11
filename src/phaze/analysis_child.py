@@ -1,10 +1,10 @@
-"""Essentia analysis child CLI (Phase 101, OBS-03 — phaze-bo3p.1).
+"""Essentia analysis child CLI (OBS-03 — phaze-bo3p.1).
 
 Executed as ``python -m phaze.analysis_child <file> --models-dir <dir> [...]`` by the
 shared parent driver (``phaze.services.analysis_exec``). Runs the CPU-bound
 ``analyze_file`` in THIS process — a real child of the pod/worker parent — so the
 parent's asyncio event loop is never GIL-starved by essentia's C++ extensions and
-can service progress POSTs mid-analysis (the Phase 101 fix for the 0→100% bar jump).
+can service progress POSTs throughout analysis instead of jumping from 0% to 100%.
 
 fd contract (the banner-capture half of OBS-03): BEFORE essentia is imported, the
 original stdout (fd 1) is ``os.dup``'d into a private protocol handle and fd 1 is

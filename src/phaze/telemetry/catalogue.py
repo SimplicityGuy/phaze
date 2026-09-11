@@ -49,7 +49,7 @@ InstrumentKind = Literal["counter", "histogram", "updowncounter", "gauge"]
 # Label names that MUST NEVER appear on a metric. Enforced by the catalogue guard test
 # rather than by convention, because the failure is invisible until it has already been
 # scraped into someone else's storage.
-#
+
 # Two families, and the second is the one that gets missed: identifiers of a THING
 # (file/path/digest/uuid) and identifiers of a POSITION within a run (window/chunk index).
 # The second family looks bounded per file -- a 12-hour set has 1,449 fine windows -- but
@@ -144,9 +144,7 @@ class MetricSpec:
         return self.bounded_combinations * per_combination
 
 
-# ---------------------------------------------------------------------------
 # Shared label specs
-# ---------------------------------------------------------------------------
 
 TIER = LabelSpec(
     name="tier",
@@ -208,16 +206,14 @@ MODEL_LABELS: tuple[LabelSpec, ...] = (MODEL_NAME, MODEL_VARIANT, CLASSIFIER_TYP
 MODEL_COMBINATIONS = 34
 
 
-# ---------------------------------------------------------------------------
 # Bucket boundaries
-# ---------------------------------------------------------------------------
-#
+
 # phaze-m1drf.3 acceptance 5: buckets come from MEASURED distributions, not from the
 # SDK default (5 ms .. 10 s), which is useless at both ends of this workload -- a graph
 # release is sub-millisecond and a coarse tier is hours. The measurements behind each
 # ladder are recorded in docs/telemetry/metric-catalogue.md section 4 and were taken from
 # the run in docs/telemetry/measurements/.
-#
+
 # Every ladder is deliberately SHORT. A histogram costs (len(buckets) + 3) series per
 # label combination, so the 34-model instruments pay 34x whatever is added here; a
 # 20-bucket ladder on those three instruments alone would mint 2,346 series.
@@ -284,9 +280,7 @@ BUCKETS_RSS: tuple[float, ...] = (
 )
 
 
-# ---------------------------------------------------------------------------
 # The catalogue
-# ---------------------------------------------------------------------------
 
 HTTP_ROUTE = LabelSpec(
     name="http_route",
@@ -378,7 +372,7 @@ BACKLOG_QUEUE = LabelSpec(
 
 
 CATALOGUE: tuple[MetricSpec, ...] = (
-    # --- analysis: the coarse-tier blind spot this epic exists to open up ---------
+    # Analysis
     # 94.69% of wall clock on the 4,761.835 s file phaze-zaf2l measured; the share is
     # DURATION-DEPENDENT (49.3% fine at 10 h 03 m -- phaze-bg115). The blindness is not.
     MetricSpec(
@@ -503,7 +497,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         ),
         labels=(OUTCOME,),
     ),
-    # --- HTTP ---------------------------------------------------------------------
+    # HTTP
     MetricSpec(
         name="phaze.http.server.request.duration",
         kind="histogram",
@@ -524,7 +518,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         unit="{requests}",
         description="Requests currently in flight. No route label: this is a whole-process saturation read.",
     ),
-    # --- SAQ ----------------------------------------------------------------------
+    # SAQ
     MetricSpec(
         name="phaze.saq.job.duration",
         kind="histogram",
@@ -559,7 +553,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         labels=(PIPELINE_STAGE, STAGE_INFLIGHT_STATUS),
         realized_combinations=12,
     ),
-    # --- database -----------------------------------------------------------------
+    # Database
     MetricSpec(
         name="phaze.db.statement.duration",
         kind="histogram",
@@ -578,7 +572,7 @@ CATALOGUE: tuple[MetricSpec, ...] = (
         ),
         labels=(DB_OPERATION,),
     ),
-    # --- pipeline -----------------------------------------------------------------
+    # Pipeline
     MetricSpec(
         name="phaze.pipeline.stage.transitions",
         kind="counter",

@@ -1,10 +1,10 @@
-"""Watchdog -> asyncio bridge for the always-on watcher (Phase 27 D-01, Pitfall 2/3).
+"""Watchdog -> asyncio bridge for the always-on watcher (D-01, Pitfall 2/3).
 
-``WatcherEventHandler`` is the sole sanctioned bridge between the watchdog
-Observer's OS thread and the asyncio-owned :class:`Debouncer`. It:
+``WatcherEventHandler`` is the sole bridge between watchdog's OS thread and the
+asyncio-owned :class:`Debouncer`. It:
 
 1. Subscribes to ``FileCreatedEvent`` + ``FileModifiedEvent`` + ``FileMovedEvent``
-   (phaze-0z29). Delete and ``*DirEvent`` types are still ignored.
+   Delete and ``*DirEvent`` types are ignored.
    ``FileMovedEvent`` handling exists because rsync's atomic delivery
    (write to a filtered-out temp name, then rename to the final name) --
    and any in-tree ``mv``/rename of an existing music/video file -- never
@@ -19,7 +19,7 @@ Observer's OS thread and the asyncio-owned :class:`Debouncer`. It:
    and is already handled by ``on_created``. That leaves ``on_moved`` to
    handle exactly the paired, fully-in-tree case; dispatching only
    ``event.dest_path`` (the settled final name) and ignoring ``src_path``
-   avoids double-ingesting the same file under two keys.
+   avoids ingesting the same file under two keys.
 2. Filters by ``EXTENSION_MAP`` -- only ``FileCategory.MUSIC`` and
    ``FileCategory.VIDEO`` paths enter the debouncer (SCAN-03).
 3. Dispatches the RAW OS path (whatever Unicode normalization form the
@@ -106,11 +106,11 @@ class WatcherEventHandler(FileSystemEventHandler):
         ext = "." + Path(path_str).suffix.lower().lstrip(".")
         if EXTENSION_MAP.get(ext, FileCategory.UNKNOWN) not in _EXTRACTABLE:
             return
-        # NOTE: `path_str` is dispatched RAW -- do not NFC-normalize it here.
+        # Dispatch ``path_str`` raw; do not NFC-normalize it here.
         # It becomes the filesystem handle Poster.post_one stats/hashes; see
         # the module docstring point 3 for why normalizing it broke NFD-named
         # ingestion on Linux.
-        # Pitfall 2: NEVER call ``self._debouncer_touch(path_str)`` directly --
+        # Never call ``self._debouncer_touch(path_str)`` directly --
         # this method runs on the watchdog OS thread; the debouncer's backing
         # dict is asyncio-owned. The asyncio thread-safe scheduler call below
         # is the canonical cross-thread primitive.
@@ -131,7 +131,7 @@ class WatcherEventHandler(FileSystemEventHandler):
 
         Only ``event.dest_path`` -- the settled final name -- is dispatched.
         ``event.src_path`` is intentionally never touched here: dispatching
-        both would double-ingest the same on-disk file under two debouncer
+        both would ingest the same on-disk file under two debouncer
         keys, and the old path no longer exists once the rename completes.
         As documented on the module docstring, a move that crosses the
         watched-tree boundary in either direction never reaches this method

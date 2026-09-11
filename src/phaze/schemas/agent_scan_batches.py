@@ -1,4 +1,4 @@
-"""Pydantic schemas for PATCH /api/internal/agent/scan-batches/{batch_id} (Phase 27 D-10).
+"""Pydantic schemas for PATCH /api/internal/agent/scan-batches/{batch_id} (D-10).
 
 The PATCH endpoint lets an agent's `scan_directory` SAQ task report progress and
 final state for its assigned ScanBatch. The watcher's per-agent sentinel batch is
@@ -7,8 +7,8 @@ schema's `status` field is restricted to `Literal["running", "completed",
 "failed"]` — `"live"` is intentionally absent from the Literal alternatives.
 
 Both classes mirror `phaze.schemas.agent_execution.ExecutionLogPatch{,Response}`
-byte-for-byte in shape (Phase 25 D-15 analog). The PATCH body class forbids
-extras per the Phase 25 D-16 / Phase 26 D-22 invariant; the response class
+byte-for-byte in shape (D-15 analog). The PATCH body class forbids
+extras per the D-16 / D-22 invariant; the response class
 stays loose so the server can extend the echo non-breakingly.
 
 `agent_id` is NEVER part of the PATCH body — AUTH-01 mandates that agent_id
@@ -27,7 +27,7 @@ from phaze.schemas.wire_mixins import SanitizedErrorMessageMixin
 class ScanBatchPatch(SanitizedErrorMessageMixin):
     """Partial-update body for PATCH /scan-batches/{id}.
 
-    Status transitions (enforced by the router, mirroring Phase 25 D-15):
+    Status transitions (enforced by the router, mirroring D-15):
     `RUNNING → COMPLETED` and `RUNNING → FAILED` are valid; same-state PATCH is
     a 200 no-op; the LIVE sentinel state is the watcher's terminal own-state and
     is intentionally NOT in this Literal — attempting `status="live"` on the

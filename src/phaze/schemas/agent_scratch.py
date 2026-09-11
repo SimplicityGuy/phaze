@@ -9,7 +9,7 @@ proxy was proven unsafe (phaze-5cvbz): a durable ``process_file`` job can sit ``
 timestamp by a stage pause -- ``phaze.tasks._shared.stage_control``) for far longer than any
 finite ceiling, with its scratch copy's mtime frozen at push-completion the whole time.
 
-``ScratchLivenessRequest`` is a REQUEST model (``extra="forbid"``, Phase 25 D-16 discipline).
+``ScratchLivenessRequest`` is a REQUEST model (``extra="forbid"``, D-16 discipline).
 ``ScratchLivenessResponse`` is control-TRUSTED and stays loose (``extra="ignore"``) so a
 control-plane-first rolling deploy adding an additive field never breaks an older agent image
 (mirrors ``PushedResponse`` / ``PushMismatchResponse`` in ``schemas/agent_push.py``).
@@ -57,7 +57,7 @@ class ScratchLivenessResponse(BaseModel):
     long-running transfer -- unrelated to any one ``file_id``.
 
     RESPONSE-only model the agent TRUSTS from the control plane -- stays loose
-    (Phase 25 convention, mirrors ``PushedResponse``).
+    ( convention, mirrors ``PushedResponse``).
     """
 
     model_config = ConfigDict(extra="ignore")

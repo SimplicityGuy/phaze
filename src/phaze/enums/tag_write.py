@@ -3,7 +3,7 @@
 Lives outside :mod:`phaze.models` so that the agent-side tag-write task
 (:mod:`phaze.tasks.tag_write`, loaded inside the agent worker process) and the
 ``phaze.schemas.agent_tag_writes`` wire contract can name the same statuses without
-transitively pulling in SQLAlchemy / :mod:`phaze.database` (Phase 26 D-03 / D-25).
+transitively pulling in SQLAlchemy / :mod:`phaze.database` (D-03 / D-25).
 
 :mod:`phaze.models.tag_write_log` re-imports and re-exports this symbol so legacy
 imports ``from phaze.models.tag_write_log import TagWriteStatus`` keep working.

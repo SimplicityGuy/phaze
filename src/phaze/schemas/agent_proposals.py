@@ -1,4 +1,4 @@
-"""Pydantic schemas for PATCH /api/internal/agent/proposals/{id}/state (Phase 26 D-28).
+"""Pydantic schemas for PATCH /api/internal/agent/proposals/{id}/state (D-28).
 
 Per D-28: joint Proposal + FileRecord state transition in one transaction
 with server-side state-machine validation. Allowed transitions:

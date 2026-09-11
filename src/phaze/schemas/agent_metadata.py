@@ -51,7 +51,7 @@ class MetadataWriteResponse(BaseModel):
 
 
 class MetadataFailurePayload(BaseModel):
-    """Optional triage body for POST /metadata/{file_id}/failed (Phase 81, FAIL-02 / D-10).
+    """Optional triage body for POST /metadata/{file_id}/failed (FAIL-02 / D-10).
 
     Mirrors ``AnalysisFailurePayload`` (schemas/agent_analysis.py) verbatim: a new agent
     image POSTs this so the persisted ``metadata`` failure row carries a triage
@@ -70,7 +70,7 @@ class MetadataFailurePayload(BaseModel):
 
 
 class MetadataFailureResponse(BaseModel):
-    """Success body of POST /metadata/{file_id}/failed (Phase 45 L-02 / CR-02).
+    """Success body of POST /metadata/{file_id}/failed (L-02 / CR-02).
 
     The terminal-ack endpoint the metadata task calls on a retries-exhausted
     failure so every ``extract_file_metadata`` run clears its

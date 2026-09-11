@@ -89,10 +89,7 @@ class TracklistLookupCache(TimestampMixin, Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     """When this row stops suppressing a re-query. NULL = never (a positive)."""
 
-    __table_args__ = (
-        # The drain's hot query is "which of these keys may I skip", already served by the UNIQUE
-        # on set_key. This second index serves the sweep in the other direction -- the maintenance
-        # and reporting passes that ask for expired negatives / ready-to-retry transients -- which
-        # would otherwise seq-scan a table with one row per unique set in the archive.
-        Index("ix_tracklist_lookup_cache_outcome_expires_at", "outcome", "expires_at"),
-    )
+    # The drain's hot query is "which of these keys may I skip", already served by the UNIQUE on
+    # set_key. This second index serves maintenance and reporting sweeps for expired negatives and
+    # ready-to-retry transients, avoiding a sequential scan over one row per unique set.
+    __table_args__ = (Index("ix_tracklist_lookup_cache_outcome_expires_at", "outcome", "expires_at"),)

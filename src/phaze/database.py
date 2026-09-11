@@ -85,7 +85,7 @@ def _run_upgrade_head_sync() -> None:
     # run, so we don't need to set it here -- but setting it makes the cfg
     # honest for any caller that reads it back. The env-side override remains
     # authoritative.
-    #
+
     # Config is ConfigParser-backed, which applies %-interpolation on every value it stores.
     # A percent-encoded credential (e.g. password '@' -> '%40') is a valid SQLAlchemy URL but
     # invalid ConfigParser input, so escape '%' as '%%' here too -- this call runs BEFORE
@@ -108,7 +108,7 @@ def _run_upgrade_head_sync() -> None:
 async def run_migrations() -> None:
     """Run ``alembic upgrade head`` against the configured database.
 
-    Phase 27 UAT Gap 2: the api lifespan must bring the schema to head on a
+    UAT Gap 2: the api lifespan must bring the schema to head on a
     fresh DB before any router or session-using code touches the engine.
     Idempotent -- safe to call when already at head (alembic is a no-op).
 

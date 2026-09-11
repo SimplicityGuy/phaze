@@ -1,4 +1,4 @@
-"""Pre-uvicorn cert bootstrap (Phase 29 D-02, extended by issue #247 / phaze-0gu).
+"""Pre-uvicorn cert bootstrap (D-02, extended by issue #247 / phaze-0gu).
 
 Generates a self-signed CA + leaf certificate pair into ``/certs/`` on first
 startup of the application server. The CA is precious and long-lived (10-year
@@ -13,10 +13,10 @@ SubjectAlternativeName set no longer matches the desired SANs computed from
 next restart with zero CA redistribution, and a deleted/corrupt leaf never
 silently mints a brand-new CA (issue #247's two foot-guns).
 
-IMPORT-BOUNDARY INVARIANT (extends Phase 26 D-25 + Phase 27 D-22):
+IMPORT-BOUNDARY INVARIANT (extends D-25 + D-22):
     This module MUST NOT import ``phaze.database``, ``phaze.tasks.session``,
     or ``sqlalchemy.ext.asyncio``. Verified in CI by
-    ``tests/test_task_split.py::test_cert_bootstrap_stays_postgres_free``.
+    ``tests/shared/core/test_task_split.py::test_cert_bootstrap_stays_postgres_free``.
 
     The bootstrap runs in the api container's pre-uvicorn entrypoint
     (RESEARCH Pattern 2), which boots BEFORE the FastAPI lifespan opens

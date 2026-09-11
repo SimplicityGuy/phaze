@@ -1,16 +1,8 @@
-"""Pydantic schemas for PUT /api/internal/agent/analysis/{file_id} (Phase 26 D-26).
+"""Pydantic schemas for ``PUT /api/internal/agent/analysis/{file_id}``.
 
-Per D-26: idempotent upsert on AnalysisResult.file_id (unique constraint).
-All fields optional so partial-PUT semantics (field-level last-write-wins,
-mirroring Phase 25 CR-01 fix in agent_metadata.py) preserve unset columns.
-
-NOTE on column types: the AnalysisResult model (src/phaze/models/analysis.py)
-currently stores `mood: String(50)` and `style: String(50)`. D-26 specifies
-the *wire* type as `dict[str, float]` -- the router will serialize to a
-JSON string for storage (or the executor may opt to migrate the column to
-JSONB during Plan 06; that's a discretion area documented in Plan 06).
-The wire type here matches CONTEXT.md D-26 exactly; storage representation
-is the router's concern.
+The endpoint idempotently upserts on ``AnalysisResult.file_id``. Optional fields preserve partial-PUT
+semantics. The wire carries mood and style as score dictionaries; the router owns their bounded string
+summaries for the current ``String(50)`` columns.
 """
 
 from typing import Any, Literal
@@ -43,7 +35,7 @@ def _reject_pg_unsafe_json(v: object, info: ValidationInfo) -> object:
 
 
 class AnalysisWindowPayload(BaseModel):
-    """One per-window time-series row (Phase 31, ANL-01).
+    """One per-window time-series row (ANL-01).
 
     Two tiers share this shape: fine-tier windows populate ``bpm``/``musical_key``;
     coarse-tier windows populate ``mood``/``style``/``danceability``/``features``.
@@ -137,14 +129,14 @@ class AnalysisWritePayload(BaseModel):
     coarse_windows_analyzed: int | None = Field(default=None, ge=0, le=50000)
     coarse_windows_total: int | None = Field(default=None, ge=0, le=50000)
 
-    # ---- LEGACY-KEY SHIM (phaze-w55w1) — REMOVABLE, see the removal condition below ----
+    # Compatibility shim; remove only after every pre-window-cap-removal analysis has drained.
     @model_validator(mode="before")
     @classmethod
     def _drop_removed_sampled_key(cls, data: Any) -> Any:
         """Accept-and-discard the retired ``sampled`` coverage flag.
 
-        ``sampled`` was True when a file's windows had been strided down to the Phase 43 caps.
-        phaze-w55w1 removed the caps (ADR-0007 §7) and migration 060 dropped the column, so
+        ``sampled`` was True when a file's windows had been strided down to the  caps.
+        The caps were removed under ``docs/design/0007-windowed-analysis.md`` and migration 060 dropped the column, so
         there is nothing left for the field to mean or to land in.
 
         **Why tolerate it instead of letting ``extra="forbid"`` reject it.** This is the
@@ -164,14 +156,14 @@ class AnalysisWritePayload(BaseModel):
             data = {k: v for k, v in data.items() if k != "sampled"}
         return data
 
-    # Per-window time-series (Phase 31). `| None` default preserves the partial-PUT
+    # Per-window time-series. `| None` default preserves the partial-PUT
     # contract (router only replaces windows when this is not None).
-    #
+
     # `max_length` here is a DoS bound on work-per-request, NOT a column width and NOT a
     # storage-path limit (wire_bounds rule 7 -- do not "correct" it to either). It bounds the
     # memory and time one PUT can demand; 50000 windows is ~17 days of audio at 30s fine
     # windows, so it cannot refuse a real recording (a 24h file is ~2,880 fine windows).
-    #
+
     # phaze-syxv: this cap USED to be a lie. The storage path persisted every window in one
     # multi-row VALUES, which PostgreSQL's int16 Bind parameter count caps at 2,730 rows for
     # this model -- so a payload well under 50000 (and under the 2,880 cited above) died with
@@ -190,7 +182,7 @@ class AnalysisWriteResponse(BaseModel):
 
 
 class AnalysisProgressPayload(BaseModel):
-    """Counter-only mid-flight progress body (Phase 57.1 D-01/D-02; widened phaze-bp9kz).
+    """Counter-only mid-flight progress body (D-01/D-02; widened phaze-bp9kz).
 
     Carries the window counts that advance during an in-flight analysis run. The two fine
     fields are REQUIRED (no ``| None``, no default) -- a progress POST always carries both
@@ -204,7 +196,7 @@ class AnalysisProgressPayload(BaseModel):
     raise Postgres ``NumericValueOutOfRange`` unhandled, and here the abort happens BEFORE
     the ledger clear, re-queuing the file.
 
-    **phaze-bp9kz supersedes the prior fine-only scope cut (WORK-04, Phase 57.1).** That cut
+    **phaze-bp9kz supersedes the prior fine-only scope cut (WORK-04).** That cut
     left the coarse tier -- 50.7 to 94.69% of wall clock, duration-dependent, phaze-zaf2l §3b
     / phaze-bg115 -- invisible on this channel, so the in-flight bar read a false 100% for
     the rest of every run. ``coarse_windows_analyzed``/``coarse_windows_total`` are ADDITIVE
@@ -226,7 +218,7 @@ class AnalysisProgressPayload(BaseModel):
 
 
 class AnalysisProgressResponse(BaseModel):
-    """Minimal echo confirming the counter-only progress upsert (Phase 57.1).
+    """Minimal echo confirming the counter-only progress upsert.
 
     Mirrors ``AnalysisWriteResponse`` verbatim: ``agent_id`` comes from the auth
     dep (NEVER the body) and ``file_id`` is the PATH value.
@@ -237,7 +229,7 @@ class AnalysisProgressResponse(BaseModel):
 
 
 class AnalysisFailurePayload(BaseModel):
-    """Terminal analysis-failure report body (Phase 43).
+    """Terminal analysis-failure report body.
 
     The Postgres-free worker POSTs this to ``/analysis/{file_id}/failed`` when
     windowed analysis terminally fails (timeout / crash / error). ``reason`` is a
@@ -253,14 +245,14 @@ class AnalysisFailurePayload(BaseModel):
 
 
 class AnalysisFailureResponse(BaseModel):
-    """Minimal echo confirming the terminal-failure report (Phase 43)."""
+    """Minimal echo confirming the terminal-failure report."""
 
     agent_id: str
     file_id: uuid.UUID
 
 
 class PresignDownloadMetadata(BaseModel):
-    """Optional display-metadata block threaded through ``PresignDownloadResponse`` (Phase 100, phaze-sfbx.1).
+    """Optional display-metadata block threaded through ``PresignDownloadResponse`` (phaze-sfbx.1).
 
     The Postgres-less one-shot pod (``job_runner.py``) knows only ``PHAZE_JOB_FILE_ID`` and the
     presign response -- it has no human-readable identity to print in its startup banner
@@ -273,9 +265,9 @@ class PresignDownloadMetadata(BaseModel):
 
     Every field is individually optional so a partially-populated control-plane row degrades
     field-by-field instead of omitting the whole block: a ``CloudJob`` with no ``backend_id``
-    stamped yet (Phase 68 D-06 shipped it with no backfill) yields ``backend_id=None``, and a
+    stamped yet (D-06 shipped it with no backfill) yields ``backend_id=None``, and a
     file with no ``FileMetadata`` row yet (extraction is operator-triggered, MANUAL-META --
-    Phase 35 D-06) yields ``duration_sec=None``. The pod tolerates unknown additive keys
+    D-06) yields ``duration_sec=None``. The pod tolerates unknown additive keys
     (``extra='ignore'``) for the same rolling-deploy forward-compat reason as the parent response.
     """
 
@@ -295,13 +287,13 @@ class PresignDownloadMetadata(BaseModel):
     # Registry bucket id the object was staged into (CloudJob.staging_bucket) -- the same value
     # the presign handler resolves via `s3_staging.resolve_bucket_config`.
     staging_bucket: str | None = None
-    # Config-derived backend/cluster registry id stamped at dispatch (CloudJob.backend_id, Phase 68
-    # D-06). NULLABLE with no backfill -- rows written before Phase 68 never got one.
+    # Config-derived backend/cluster registry id stamped at dispatch (CloudJob.backend_id,
+    # D-06). NULLABLE with no backfill -- rows written before  never got one.
     backend_id: str | None = None
 
 
 class PresignDownloadResponse(BaseModel):
-    """Presign-download response consumed by the DB-less one-shot pod (Phase 52, KJOB-02).
+    """Presign-download response consumed by the DB-less one-shot pod (KJOB-02).
 
     The control plane mints a short-TTL presigned GET URL for a file's bytes and
     returns it alongside ``expected_sha256`` -- the ONLY hash a Postgres-free pod
@@ -312,7 +304,7 @@ class PresignDownloadResponse(BaseModel):
     silently disabling the verify step.
 
     NOTE: the SERVER side (POST /api/internal/agent/files/{file_id}/presign-download)
-    ships in Phase 53 (KSTAGE-03). Phase 52 defines and unit-tests the CLIENT-consumed
+    ships in  (KSTAGE-03).  defines and unit-tests the CLIENT-consumed
     shape only.
 
     Forward-compat (cloud-analyze-empty-no-ext specialist review): this is a
@@ -327,7 +319,7 @@ class PresignDownloadResponse(BaseModel):
     pods forward-compatible. (The request-body models KEEP ``extra='forbid'`` -- there
     it guards against smuggled ``agent_id``/``file_id``.)
 
-    Phase 100 (phaze-sfbx.1): ``metadata`` is a further OPTIONAL, ADDITIVE block (see
+    phaze-sfbx.1: ``metadata`` is a further OPTIONAL, ADDITIVE block (see
     ``PresignDownloadMetadata``) carrying human-readable display identity for the pod's console
     banner (phaze-sfbx.3). It defaults to ``None`` so an older pod build that doesn't know the
     field simply never reads it, and a newer pod against an older control plane that never sends
@@ -353,7 +345,7 @@ class PresignDownloadResponse(BaseModel):
     # Optional (default None) so an older control plane that omits it degrades to
     # the URL-suffix fallback rather than failing response validation on rollout.
     audio_ext: str | None = Field(default=None, max_length=10)
-    # Phase 100 (phaze-sfbx.1): optional display-identity block for the pod's console banner.
+    # phaze-sfbx.1: optional display-identity block for the pod's console banner.
     # Absent (None) against an older control plane -- the pod (AgentClient.request_download_url)
     # must degrade to a UUID-only banner without error, never fail response validation.
     metadata: PresignDownloadMetadata | None = Field(default=None)
