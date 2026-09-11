@@ -22,6 +22,11 @@ not consumers; where a recipe exists to reproduce historical evidence, that is s
 |---|---|---|
 | `agent-down` | operator convenience | file-server agent topology teardown |
 | `bandit` | internal helper | `security-all`; focused local Python SAST |
+| `benchmark-analyze` | operator convenience | measure Analyze workspace and pipeline-stat scaling |
+| `benchmark-db-down` | operator convenience | dispose the dedicated synthetic benchmark database |
+| `benchmark-db-up` | operator convenience | start or verify the dedicated synthetic benchmark database |
+| `benchmark-explain` | operator convenience | measure query plans and pipeline-stat latency |
+| `benchmark-seed` | operator convenience | provision the reusable synthetic scale corpus |
 | `branch-check` | external contract | per-bead branch-coverage runbook |
 | `check` | external contract | Beadhive postland/union validation and manual full gate |
 | `check-all` | external contract | Beadhive molecule validation |
@@ -60,10 +65,6 @@ not consumers; where a recipe exists to reproduce historical evidence, that is s
 | `parity-check` | operator convenience | local arm64/x86 analysis parity mirror |
 | `parity-dump` | external contract | `.github/workflows/docker-publish.yml` parity jobs |
 | `parity-golden-regen` | operator convenience | regenerate a local x86 parity reference |
-| `perf-db-down` | historical one-off | dispose the retained performance-measurement database |
-| `perf-db-up` | historical one-off | reproduce retained large-corpus performance evidence |
-| `perf-explain` | historical one-off | reproduce the retained pipeline-stats query measurement |
-| `perf-seed` | historical one-off | reproduce the retained synthetic performance corpus |
 | `pip-audit` | internal helper | `security-all`; focused dependency audit |
 | `pre-commit` | external contract | `check-all` and CI code-quality workflow |
 | `rebuild` | operator convenience | rebuild/restart the application-server topology |

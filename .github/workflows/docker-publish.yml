@@ -333,7 +333,7 @@ jobs:
   # the committed reference clip, producing golden-x86.json — the x86 reference
   # the native-arm64 parity-guard compares against. The docker run is DELEGATED to
   # `just parity-dump` (workflows delegate to just — MEMORY) so CI and operators
-  # share one dump path; the x86 api image uses the default INTERP="uv run python"
+  # share one dump path; the x86 api image uses the default RUNTIME="x86"
   # (the uv-managed venv where phaze + essentia are installed). The golden is
   # produced + uploaded only on non-PR events, where the api image is pushed.
   parity-golden-x86:
@@ -418,7 +418,7 @@ jobs:
           X86_IMAGE=$(echo "${TAGS}" | head -n1)
           echo "📥 Pulling ${X86_IMAGE} ..."
           docker pull "${X86_IMAGE}"
-          # Shared dump path; default INTERP="uv run python" for the uv-based x86 image.
+          # Shared dump path; default RUNTIME="x86" for the uv-based x86 image.
           just parity-dump "${X86_IMAGE}" ./models scripts/parity/golden-x86.json
 
       - name: "📤 Upload golden-x86.json"
@@ -533,7 +533,7 @@ jobs:
           # Dump via the SHARED recipe — python3 (NOT uv run) so it runs on the
           # agent image's --system 3.13 interpreter (Warning 2). REAL audio through
           # analyze_file ⇒ a green run proves fix #4 holds (no dual-OpenMP segfault).
-          just parity-dump "${ARM64_IMAGE}" ./models scripts/parity/actual.json python3
+          just parity-dump "${ARM64_IMAGE}" ./models scripts/parity/actual.json arm64
           # Compare on the runner. A non-zero exit FAILS this step → the gated push
           # below is SKIPPED (a divergent image never reaches GHCR — CLOUDIMG-03).
           # --atol is the comparator default (1e-4); BPM/key are asserted EXACT by

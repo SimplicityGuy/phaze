@@ -173,7 +173,7 @@ def test_bucket_recipe_defers_the_coverage_gate() -> None:
     # (not vacuous). phaze-crq9k: PATHS is now a parameter (one or more `tests/...` paths
     # from tests/ci_shards.json) rather than always synthesizing `tests/<NAME>`, since a
     # single bucket directory can be split across several shards.
-    assert "pytest {{PATHS}}" in recipe_body, f"test-bucket recipe must run pytest against the PATHS param:\n{recipe_body}"
+    assert 'pytest "${path_args[@]}"' in recipe_body, f"test-bucket recipe must run pytest against validated PATHS argv:\n{recipe_body}"
 
 
 def test_bucket_recipe_records_per_test_coverage_contexts() -> None:

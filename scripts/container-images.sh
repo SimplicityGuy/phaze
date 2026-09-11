@@ -20,10 +20,16 @@ repository_name() {
   printf '%s/%s\n' "$owner" "$repo"
 }
 
+validate_tag() {
+  local tag="$1"
+  [[ "$tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || die "image tag must match [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}"
+}
+
 image_ref() {
   local tag="$1"
   local variant="${2:-api}"
   local suffix=""
+  validate_tag "$tag"
   case "$variant" in
     api) ;;
     arm64) suffix="-arm64" ;;
@@ -75,6 +81,8 @@ push_image() {
   local variant="$1"
   local tag="$2"
   local image
+  # Validate before registry_login: even authentication mutates Docker's credential state.
+  validate_tag "$tag"
   registry_login
   image="$(build_image "$variant" "$tag")"
   "$docker_bin" push "$image"

@@ -1,8 +1,9 @@
 # Phaze - Music alignment tool
 # Run `just` to see all available commands
+set positional-arguments
 
 # phaze-tcqq: single source of truth for the pinned Postgres image used by every
-# justfile-launched Postgres container (test-db, integration-test, perf-db-up). Before
+# justfile-launched Postgres container (test-db, integration-test, benchmark-db-up). Before
 # this variable existed the tag was hardcoded at 8 separate justfile sites (4 real
 # `docker run` arguments + 4 echo strings that only CLAIM the version), so a partial
 # bump could print the old tag while running the new one -- a divergence that survives
@@ -13,14 +14,14 @@
 # guard test fails and names the mismatch.
 postgres_image := "postgres:18-alpine"
 # phaze-knwk: match production's docker-compose.yml `shm_size: "256m"` on every
-# justfile-launched Postgres container (test-db, integration-test, perf-db-up), so a
+# justfile-launched Postgres container (test-db, integration-test, benchmark-db-up), so a
 # harness run cannot pass on a Postgres feature (a bigger parallel index build, a
 # manually-raised work_mem/maintenance_work_mem) that the 64 MB Docker default would
 # reject in production, or vice versa. See docker-compose.yml's `postgres.shm_size`
 # comment for the investigation and derivation.
 postgres_shm_size := "256m"
 # Host bind IP for every ephemeral/test-harness Postgres + Redis container this justfile
-# publishes (test-db, integration-test's pinned-port branches, perf-db-up). Defaults to
+# publishes (test-db, integration-test's pinned-port branches, benchmark-db-up). Defaults to
 # loopback-only (phaze-v7ki): without a bind IP, `docker run -p PORT:PORT` binds 0.0.0.0
 # (dual-stack, so also `::`), publishing the shared test Postgres (superuser phaze/phaze)
 # and a passwordless test Redis to every host on the LAN. Mirrors the loopback pattern the
@@ -44,7 +45,7 @@ test_redis_databases := env_var_or_default("PHAZE_TEST_REDIS_DATABASES", "64")
 # Dedicated, disposable Postgres + Redis for `just integration-test` ONLY (phaze-pik6). A SEPARATE
 # container pair (own names + ports) so integration-test's auto-teardown EXIT trap can never
 # `docker rm -f` the SHARED phaze-test-db/phaze-test-redis harness other concurrent worktrees rely
-# on -- the same isolation principle as perf_db_container below, applied to the one-shot test path.
+# on -- the same isolation principle as benchmark_db_container below, applied to the one-shot test path.
 # phaze-987z: these are NAME PREFIXES, not fixed names -- the recipe below appends a
 # per-invocation unique token (shell PID + $RANDOM) so two concurrent `integration-test` runs
 # never share a container name and can never `docker rm -f` each other's containers. Host ports
@@ -56,14 +57,13 @@ integration_db_container_prefix := "phaze-integration-test-db"
 integration_db_port := env_var_or_default("PHAZE_INTEGRATION_TEST_DB_PORT", "0")
 integration_redis_container_prefix := "phaze-integration-test-redis"
 integration_redis_port := env_var_or_default("PHAZE_INTEGRATION_TEST_REDIS_PORT", "0")
-# Dedicated ephemeral Postgres for the Phase-82 PERF-02 /pipeline/stats bench. A SEPARATE container
-# (own port 5545) so an explicit `just test-db-down`/`test-db` recreate on the shared phaze-test-db
-# (e.g. from a sibling session) can never wipe the ~200K seeded perf corpus mid-measurement.
-perf_db_container := "phaze-perf-db"
-perf_db_port := env_var_or_default("PHAZE_PERF_DB_PORT", "5545")
-perf_db_name := "phaze_perf82"
-perf_db_dsn := "postgresql://phaze:phaze@localhost:" + perf_db_port + "/" + perf_db_name
-perf_db_sa_dsn := "postgresql+asyncpg://phaze:phaze@localhost:" + perf_db_port + "/" + perf_db_name
+# Dedicated reusable Postgres for scale benchmarks. A SEPARATE container (own port 5545) so
+# shared test-harness maintenance can never wipe the seeded synthetic corpus mid-measurement.
+benchmark_db_container := "phaze-benchmark-db"
+benchmark_db_port := env_var_or_default("PHAZE_BENCHMARK_DB_PORT", "5545")
+benchmark_db_name := "phaze_benchmark"
+benchmark_db_dsn := "postgresql://phaze:phaze@localhost:" + benchmark_db_port + "/" + benchmark_db_name
+benchmark_db_sa_dsn := "postgresql+asyncpg://phaze:phaze@localhost:" + benchmark_db_port + "/" + benchmark_db_name
 # Standalone Tailwind CSS binary version. Keep in sync with the Dockerfile
 # css-build stage. NO Node — the standalone binary compiles assets/src/app.css.
 tailwind_version := "v4.3.2"
@@ -539,7 +539,7 @@ test-fast:
 [doc('Run a specific test file')]
 [group('test')]
 test-file FILE:
-    uv run pytest {{FILE}} -x -v
+    uv run pytest {{quote(FILE)}} -x -v
 
 # phaze-tzy6s.14: the real-browser suite. Boots the actual app (uvicorn + real lifespan + real
 # Alembic migrations) against its OWN database, derived from this worktree's TEST_DATABASE_URL seat
@@ -622,10 +622,26 @@ vulture:
 #
 # Pinned by `test_running_the_shard_flag_set_actually_writes_no_report`, which RUNS these flags
 # rather than reading them, because `--cov-report=` looks like a reset and is not one.
-[doc('Run a single CI shard (one or more test paths), writing coverage data to .coverage.<name>. XDIST="" keeps DB shards serial; DB-free shards pass XDIST="-n auto".')]
+[doc('Run a single CI shard (one or more test paths), writing coverage data to .coverage.<name>. MODE is serial or parallel.')]
 [group('test')]
-test-bucket NAME PATHS XDIST="":
-    COVERAGE_FILE=.coverage.{{NAME}} uv run pytest {{PATHS}} {{XDIST}} --cov --cov-context=test --cov-fail-under=0 --cov-report= --junitxml=junit.xml -o junit_family=legacy -q
+test-bucket NAME PATHS MODE="serial":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    name="$1"
+    paths="$2"
+    mode="$3"
+    [[ "$name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { echo "❌ bucket NAME must be a lowercase identifier" >&2; exit 2; }
+    read -r -a path_args <<<"$paths"
+    ((${#path_args[@]} > 0)) || { echo "❌ PATHS must name at least one tests/... path" >&2; exit 2; }
+    for path in "${path_args[@]}"; do
+        [[ "$path" =~ ^tests/[A-Za-z0-9_./-]+$ ]] || { echo "❌ invalid test path: $path" >&2; exit 2; }
+    done
+    case "$mode" in
+        serial) xdist_args=() ;;
+        parallel) xdist_args=(-n auto) ;;
+        *) echo "❌ MODE must be serial or parallel" >&2; exit 2 ;;
+    esac
+    COVERAGE_FILE=".coverage.${name}" uv run pytest "${path_args[@]}" "${xdist_args[@]}" --cov --cov-context=test --cov-fail-under=0 --cov-report= --junitxml=junit.xml -o junit_family=legacy -q
 
 # phaze-bk9el.21 -- READ THIS BEFORE CHANGING EITHER `--fail-under` HERE OR IN pyproject.
 #
@@ -672,7 +688,11 @@ test-bucket NAME PATHS XDIST="":
 [doc('Per-bead branch-coverage gate: fail if this bead LOWERED branch coverage on any src/phaze file it touched')]
 [group('test')]
 branch-check *flags:
-    uv run python scripts/branch_coverage_check.py {{flags}}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Trust boundary: these are operator-authored branch-check CLI arguments, forwarded as
+    # discrete argv entries. "$@" is never reparsed as shell syntax.
+    uv run python scripts/branch_coverage_check.py "$@"
 
 # ORDERING (phaze-jktlb). `combine` first because everything else reads what it writes; then the
 # ARTIFACTS, alphabetically; then the GATES. That artifacts-before-gates split is a deliberate
@@ -772,7 +792,7 @@ coverage-combine:
 [doc('Refresh repowise: reindex, run the suite with per-test coverage contexts, ingest BOTH coverage artifacts, fold into health. ~21 min. Pass a seat name to auto-provision an isolated test DB.')]
 [group('test')]
 repowise-coverage seat="":
-    @bash scripts/repowise-coverage.sh "{{seat}}"
+    @bash scripts/repowise-coverage.sh {{quote(seat)}}
 
 # Reuse CI's combined coverage without re-running the 21-minute suite. The workflow run is the
 # source-of-truth for BOTH inputs: its head SHA is temporarily checked out at this durable repo
@@ -786,7 +806,7 @@ repowise-coverage seat="":
 [doc('Refresh repowise from CI coverage: latest successful main run by default, or pass an exact Actions run ID')]
 [group('test')]
 repowise-coverage-ci run_id="":
-    @uv run python scripts/repowise_coverage_from_ci.py "{{run_id}}"
+    @uv run python scripts/repowise_coverage_from_ci.py {{quote(run_id)}}
 
 [doc('Classify changed files (newline-delimited on stdin) as code-changed=true|false for the CI doc-only skip gate (CI-04)')]
 [group('test')]
@@ -988,7 +1008,10 @@ test-db-for name:
     # Exists so nobody hand-rolls an isolated database name again. The natural instinct is to
     # SUFFIX the standard name (`phaze_test_<name>`); that shape is accepted by the guard in
     # `tests/db_guard.py`, but this recipe emits the canonical `phaze_<name>_test` pair and,
-    # more importantly, prints the exact exports to use. Requires `just test-db` first.
+    # more importantly, prints the exact exports to use. Validate before `just test-db`, because
+    # starting shared containers is a mutation and a bad seat name must fail before it.
+    raw_name="$1"
+    bash scripts/derive-seat-name.sh "$raw_name" >/dev/null
     just test-db
     # phaze-bk9el.23: the provisioning body used to live inline here. It moved to
     # `scripts/provision-test-seat.sh` when `test-validate` gained a second, gate-driven caller
@@ -998,7 +1021,7 @@ test-db-for name:
     # and both callers run it. The script prints the three exports on stdout and everything else
     # on stderr; this recipe is the human-facing caller, so it reprints them indented.
     exports="$(bash scripts/provision-test-seat.sh \
-        --seat "{{name}}" \
+        --seat "$raw_name" \
         --pg-container "{{test_db_container}}" \
         --pg-port "{{test_db_port}}" \
         --redis-container "{{test_redis_container}}" \
@@ -1009,7 +1032,7 @@ test-db-for name:
     echo "Export these before running pytest in this worktree:"
     printf '%s\n' "$exports" | sed 's/^/  /'
     echo ""
-    echo "When this worktree is finished: just test-db-release {{name}}  (frees its Redis index; no teardown)"
+    echo "When this worktree is finished: just test-db-release ${raw_name}  (frees its Redis index; no teardown)"
 
 [doc('Show who holds each Redis logical DB on the shared test harness, and which allocations look stale (read-only)')]
 [group('test')]
@@ -1035,8 +1058,13 @@ test-db-release name *flags:
     # `test-db-down` was being misused for. Refuses while a client is connected to the seat's Redis
     # DB or a backend is on its Postgres database (i.e. a suite is running in it) -- pass --force
     # after `just test-db-seats` shows you why, if you know better.
-    name="$(bash scripts/derive-seat-name.sh "{{name}}")"
-    echo "Seat '{{name}}' -> identifier '${name}'."
+    raw_name="$1"
+    shift
+    name="$(bash scripts/derive-seat-name.sh "$raw_name")"
+    for flag in "$@"; do
+        [[ "$flag" == "--force" ]] || { echo "❌ test-db-release accepts only --force" >&2; exit 2; }
+    done
+    echo "Seat '${raw_name}' -> identifier '${name}'."
     # phaze-robzi.5: the script exits 5 (not 0) when the derived identifier holds no Redis index --
     # e.g. a wrong-guessed name, hyphen vs. underscore. `set -euo pipefail` above means that non-zero
     # exit stops THIS recipe right here, so the trailing paragraph below never runs for a no-op --
@@ -1046,10 +1074,10 @@ test-db-release name *flags:
         --pg-container "{{test_db_container}}" \
         --seat "$name" \
         --capacity "{{test_redis_databases}}" \
-        {{flags}}
+        "$@"
     echo ""
     echo "The Postgres databases for this seat were left in place (they hold no index and block nobody);"
-    echo "re-running \`just test-db-for {{name}}\` reuses them and takes a fresh Redis index."
+    echo "re-running \`just test-db-for ${raw_name}\` reuses them and takes a fresh Redis index."
 
 [doc('Sweep every Redis logical DB whose seat is no longer in use back into the pool -- dry run by default, --apply to free them AND drop each freed seats own 2 Postgres databases; never touches the containers')]
 [group('test')]
@@ -1067,11 +1095,16 @@ test-db-reclaim *flags:
     # entry was the only thing naming them, so leaving them behind is exactly how 652 orphaned
     # databases (6974 MB) accumulated with no non-destructive way to reap them. Every OTHER
     # Postgres database, and both containers, are still never touched.
+    # Trust boundary: only the registry script's closed option set is accepted, and every option
+    # is forwarded as one argv entry rather than interpolated as a shell fragment.
+    for flag in "$@"; do
+        case "$flag" in --apply|--include-unstamped|--no-postgres-check) ;; *) echo "❌ invalid test-db-reclaim flag: $flag" >&2; exit 2 ;; esac
+    done
     bash scripts/redis-seat-registry.sh reclaim \
         --redis-container "{{test_redis_container}}" \
         --pg-container "{{test_db_container}}" \
         --capacity "{{test_redis_databases}}" \
-        {{flags}}
+        "$@"
 
 [doc('Reap the STOCK of phaze%test% databases with no registry seat, no Postgres backend, and past an age floor -- dry run by default, --apply to drop them; never touches the containers or the shared phaze_test/phaze_migrations_test pair')]
 [group('test')]
@@ -1083,10 +1116,12 @@ test-db-gc *flags:
     # Postgres databases) is gone, and nothing points at them again. See scripts/test-db-gc.sh for
     # the full three-signal rule set (unregistered + no backends + past an age floor) and the
     # measurement behind the age clock it uses.
+    # Trust boundary: these operator arguments are discrete argv entries. The target script owns
+    # the closed parser and validates --age-floor-hours before any drop.
     bash scripts/test-db-gc.sh \
         --pg-container "{{test_db_container}}" \
         --redis-container "{{test_redis_container}}" \
-        {{flags}}
+        "$@"
 
 [doc('Stop and remove the SHARED test-harness Postgres + Redis (phaze-test-db/phaze-test-redis) -- affects every concurrent worktree/session using them')]
 [group('test')]
@@ -1107,7 +1142,7 @@ test-db-down:
     # an advisory-lock connection to its own database for the whole run (tests/db_guard.py), so an
     # idle-looking suite is still a visible `client backend` on a `phaze%` database. The pattern is
     # deliberately NOT narrowed to `phaze%test`: a perf DB misplaced on this shared container (e.g.
-    # `phaze_perf82`, phaze-zpdyg) would otherwise be invisible to this guard even though it lives
+    # `phaze_benchmark`, phaze-zpdyg) would otherwise be invisible to this guard even though it lives
     # on the exact container this recipe is about to remove.
     if [ "${PHAZE_TEST_DB_FORCE_DOWN:-}" != "1" ] && \
        [ "$(docker inspect -f '{{{{.State.Running}}' "$container" 2>/dev/null || echo false)" = "true" ]; then
@@ -1306,12 +1341,12 @@ image-push:
 [doc('Build the arm64 essentia agent image locally (operator fallback to the CI build-arm64 job; BuildKit required -- the essentia compile runs through an sccache cache mount)')]
 [group('docker')]
 image-build-arm64 TAG="latest":
-    bash scripts/container-images.sh build arm64 "{{TAG}}"
+    bash scripts/container-images.sh build arm64 {{quote(TAG)}}
 
 [doc('Build + push the arm64 essentia agent image to GHCR (operator fallback; CI push is parity-gated in 47-04)')]
 [group('docker')]
 image-push-arm64 TAG="latest":
-    bash scripts/container-images.sh push arm64 "{{TAG}}"
+    bash scripts/container-images.sh push arm64 {{quote(TAG)}}
 
 [doc('Regenerate the x86 parity golden JSON from the reference clip (operator path; CI in plan 47-04 is authoritative)')]
 [group('docker')]
@@ -1320,7 +1355,7 @@ parity-golden-regen TAG="latest":
     set -e
     # CI publishes the api image at the bare-repo URL (image_suffix="" for api,
     # Phase 29 D-15) — ghcr.io/<owner>/<repo>:<tag>, NOT a /api sub-path. Match it.
-    IMAGE="$(bash scripts/container-images.sh ref "{{TAG}}" api)"
+    IMAGE="$(bash scripts/container-images.sh ref "$1" api)"
     # 1. Use the operator's provisioned model set when MODELS_PATH names one (phaze-ynv6w:
     #    never re-download a set that already exists); provision ./models only as a fallback.
     MODELS_DIR="$(bash scripts/container-images.sh models-dir)"
@@ -1343,45 +1378,54 @@ parity-golden-regen TAG="latest":
     rm -rf "${OUT_DIR}"
     echo "✅ wrote scripts/parity/golden-x86.json"
 
-[doc('Run the shared analyze_file dump inside an image; INTERP picks "uv run python" (x86 uv image) vs python3 (arm64 --system 3.13 agent image)')]
+[doc('Run the shared analyze_file dump inside an image; RUNTIME is the closed x86 or arm64 interpreter mode')]
 [group('docker')]
-parity-dump IMAGE MODELS="./models" OUT="scripts/parity/actual.json" INTERP="uv run python":
+parity-dump IMAGE MODELS="./models" OUT="scripts/parity/actual.json" RUNTIME="x86":
     #!/usr/bin/env bash
-    set -e
+    set -euo pipefail
     # The SHARED dump path BOTH CI parity jobs delegate to (workflows delegate to
-    # just — MEMORY). INTERP selects the in-image interpreter: the x86 api image
+    # just — MEMORY). RUNTIME selects the in-image interpreter: the x86 api image
     # runs the uv-managed venv (default "uv run python"); the arm64 agent image
     # installs --system on 3.13 and MUST run python3 directly (uv run would
     # re-validate requires-python >=3.14 and miss the --system packages).
-    OUT_BASE=$(basename "{{OUT}}")
+    image="$1"
+    models="$2"
+    out="$3"
+    runtime="$4"
+    case "$runtime" in
+        x86) interp=(uv run python) ;;
+        arm64) interp=(python3) ;;
+        *) echo "❌ RUNTIME must be x86 or arm64" >&2; exit 2 ;;
+    esac
+    OUT_BASE=$(basename "$out")
     # The image runs as a NON-ROOT user that cannot write into the host-owned
     # bind-mounted scripts/ dir (PermissionError on /scripts/parity/<out>.json).
     # Mount scripts read-only and give the container a dedicated world-writable
-    # output dir to write --out into, then copy the result to {{OUT}} host-side.
+    # output dir to write --out into, then copy the result host-side.
     OUT_DIR=$(mktemp -d)
+    trap 'rm -rf "$OUT_DIR"' EXIT
     chmod 777 "${OUT_DIR}"
-    echo "🐳 Dumping analyze_file from {{IMAGE}} (interp: {{INTERP}}) → {{OUT}} ..."
+    echo "🐳 Dumping analyze_file from ${image} (runtime: ${runtime}) → ${out} ..."
     docker run --rm \
         -v "$(pwd)/scripts:/scripts:ro" \
-        -v "$(pwd)/{{MODELS}}:/models:ro" \
+        -v "$(cd "$models" && pwd -P):/models:ro" \
         -v "${OUT_DIR}:/out" \
-        "{{IMAGE}}" \
-        {{INTERP}} /scripts/parity/dump_analysis.py /scripts/parity/reference.wav /models --out "/out/${OUT_BASE}"
-    cp "${OUT_DIR}/${OUT_BASE}" "{{OUT}}"
-    rm -rf "${OUT_DIR}"
-    echo "✅ wrote {{OUT}}"
+        "$image" \
+        "${interp[@]}" /scripts/parity/dump_analysis.py /scripts/parity/reference.wav /models --out "/out/${OUT_BASE}"
+    cp "${OUT_DIR}/${OUT_BASE}" "$out"
+    echo "✅ wrote ${out}"
 
 [doc('Run the arm64↔x86 numeric parity check locally (operator mirror of the CI parity-guard)')]
 [group('docker')]
 parity-check TAG="latest":
     #!/usr/bin/env bash
     set -e
-    IMAGE="$(bash scripts/container-images.sh ref "{{TAG}}" arm64)"
+    IMAGE="$(bash scripts/container-images.sh ref "$1" arm64)"
     # 1. Use the operator's provisioned model set when MODELS_PATH names one (phaze-ynv6w:
     #    never re-download a set that already exists); provision ./models only as a fallback.
     MODELS_DIR="$(bash scripts/container-images.sh models-dir)"
     # 2. Dump the arm64 actual via the shared recipe — direct python3 for the agent image.
-    just parity-dump "${IMAGE}" "${MODELS_DIR}" scripts/parity/actual.json python3
+    just parity-dump "${IMAGE}" "${MODELS_DIR}" scripts/parity/actual.json arm64
     # 3. Compare against the committed/CI golden (non-zero exit on any parity break).
     echo "🔬 Comparing scripts/parity/actual.json against scripts/parity/golden-x86.json ..."
     uv run python scripts/parity/compare_analysis.py scripts/parity/golden-x86.json scripts/parity/actual.json
@@ -1409,7 +1453,7 @@ db-upgrade:
 [doc('Create a new Alembic migration')]
 [group('db')]
 db-revision MESSAGE:
-    uv run alembic revision --autogenerate -m "{{MESSAGE}}"
+    uv run alembic revision --autogenerate -m {{quote(MESSAGE)}}
 
 [doc('Show current migration status')]
 [group('db')]
@@ -1431,89 +1475,61 @@ db-history:
 corpus-distribution duration='' size='' dsn='':
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ -z "{{duration}}" ] && [ -z "{{size}}" ]; then
+    duration="$1"
+    size="$2"
+    dsn="$3"
+    if [ -z "$duration" ] && [ -z "$size" ]; then
         echo "usage: just corpus-distribution DURATION_SEC [SIZE_BYTES] [DSN]  (e.g. just corpus-distribution 6600)" >&2
         exit 1
     fi
     cmd=(uv run python scripts/corpus_distribution.py)
-    [ -n "{{duration}}" ] && cmd+=(--duration-sec "{{duration}}")
-    [ -n "{{size}}" ] && cmd+=(--size-bytes "{{size}}")
-    [ -n "{{dsn}}" ] && cmd+=(--dsn "{{dsn}}")
+    [ -n "$duration" ] && cmd+=(--duration-sec "$duration")
+    [ -n "$size" ] && cmd+=(--size-bytes "$size")
+    [ -n "$dsn" ] && cmd+=(--dsn "$dsn")
     "${cmd[@]}"
 
-[doc('Start a DEDICATED ephemeral Postgres for the PERF-02 bench (own port, never wiped by test-db recreates)')]
+[doc('Start or reuse the dedicated synthetic-corpus benchmark Postgres after verifying its image and port')]
 [group('db')]
-perf-db-up:
+benchmark-db-up:
+    bash scripts/benchmark-db.sh up {{quote(benchmark_db_container)}} {{quote(benchmark_db_port)}} {{quote(benchmark_db_name)}} {{quote(postgres_image)}} {{quote(postgres_shm_size)}} {{quote(test_db_bind_ip)}}
+
+[doc('Stop and remove only the dedicated synthetic-corpus benchmark Postgres')]
+[group('db')]
+benchmark-db-down:
+    bash scripts/benchmark-db.sh down {{quote(benchmark_db_container)}}
+
+[doc('Migrate the benchmark DB to HEAD and seed a synthetic corpus of COUNT rows')]
+[group('db')]
+benchmark-seed COUNT='200000':
     #!/usr/bin/env bash
     set -euo pipefail
-    container="{{perf_db_container}}"
-    port="{{perf_db_port}}"
-    # phaze-uame5: mirror test-db's `docker start`-first pattern (phaze-20vd). This container
-    # is the durable home for the ~200K-row PERF-02 corpus (see the recipe doc comment above),
-    # seeded into its writable layer with no volume backing it. `docker run` has no --restart
-    # flag, so the normal state after a host reboot or daemon restart is "exists, stopped" --
-    # the previous `docker rm -f` on that path destroyed the corpus and silently reprovisioned
-    # an empty database, printing the same "Starting..." line either way. `docker start`
-    # succeeds on a stopped container and fails harmlessly when none exists, so no `rm -f` is
-    # needed here at all -- and skipping it also avoids reintroducing the speculative-rm race
-    # phaze-20vd eliminated from test-db (a concurrent `just perf-db-up` racing our own
-    # `docker run` could otherwise have its just-created container deleted out from under it).
-    run_or_yield() {
-        local run_err
-        run_err="$(mktemp)"
-        if docker run -d --name "$container" \
-            -e POSTGRES_USER=phaze -e POSTGRES_PASSWORD=phaze -e POSTGRES_DB={{perf_db_name}} \
-            --shm-size {{postgres_shm_size}} \
-            -p "{{test_db_bind_ip}}:${port}:5432" {{postgres_image}} >/dev/null 2>"$run_err"; then
-            rm -f "$run_err"
-            return 0
-        fi
-        if grep -q "is already in use" "$run_err"; then
-            echo "🔁 ${container} was created by a concurrent invocation; continuing"
-            rm -f "$run_err"
-            return 0
-        fi
-        cat "$run_err" >&2
-        rm -f "$run_err"
-        return 1
-    }
-    if [ "$(docker inspect -f '{{{{.State.Running}}' "$container" 2>/dev/null || echo false)" = "true" ]; then
-        echo "🐘 ${container} already running on port ${port}"
-    else
-        echo "🐘 Starting ${container} ({{postgres_image}}) on host port ${port}..."
-        if ! docker start "$container" >/dev/null 2>&1; then
-            run_or_yield
-        fi
-    fi
-    for _ in $(seq 1 30); do
-        if docker exec "$container" pg_isready -U phaze -d {{perf_db_name}} >/dev/null 2>&1; then
-            echo "✅ ${container} ready on localhost:${port} ({{perf_db_name}})"; exit 0
-        fi
-        sleep 1
-    done
-    echo "❌ ${container} did not become ready within 30s" >&2; exit 1
+    count="$1"
+    [[ "$count" =~ ^[1-9][0-9]*$ ]] || { echo "❌ COUNT must be a positive integer" >&2; exit 2; }
+    PHAZE_DATABASE_URL="{{benchmark_db_sa_dsn}}" uv run alembic upgrade head
+    uv run python scripts/seed_perf_corpus.py --n "$count" --dsn "{{benchmark_db_dsn}}" --reseed
 
-[doc('Stop and remove the dedicated PERF-02 bench Postgres')]
+[doc('EXPLAIN ANALYZE hot queries and time /pipeline/stats against the seeded benchmark DB')]
 [group('db')]
-perf-db-down:
-    docker rm -f "{{perf_db_container}}" >/dev/null 2>&1 || true
-    @echo "🧹 Removed {{perf_db_container}}"
+benchmark-explain ITERATIONS='20':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    iterations="$1"
+    [[ "$iterations" =~ ^[1-9][0-9]*$ ]] || { echo "❌ ITERATIONS must be a positive integer" >&2; exit 2; }
+    uv run python scripts/perf_explain.py --dsn "{{benchmark_db_dsn}}" --iterations "$iterations"
 
-[doc('Migrate the perf DB to HEAD (>=036) and seed the ~N synthetic corpus for the PERF-02 bench (Phase 82)')]
+[doc('Measure the Analyze workspace and pipeline stats against the seeded benchmark DB')]
 [group('db')]
-perf-seed N='200000':
-    PHAZE_DATABASE_URL="{{perf_db_sa_dsn}}" uv run alembic upgrade head
-    uv run python scripts/seed_perf_corpus.py --n {{N}} --dsn "{{perf_db_dsn}}" --reseed
-
-[doc('EXPLAIN ANALYZE the derived hot queries + time /pipeline/stats against the seeded perf DB (PERF-02, D-07)')]
-[group('db')]
-perf-explain ITER='20':
-    uv run python scripts/perf_explain.py --dsn "{{perf_db_dsn}}" --iterations {{ITER}}
+benchmark-analyze ITERATIONS='10':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    iterations="$1"
+    [[ "$iterations" =~ ^[1-9][0-9]*$ ]] || { echo "❌ ITERATIONS must be a positive integer" >&2; exit 2; }
+    uv run python scripts/perf_analyze_workspace.py --dsn "{{benchmark_db_dsn}}" --iterations "$iterations"
 
 [doc('Provision the essentia ML models into DIR (explicit; phaze never downloads them at runtime -- phaze-ynv6w)')]
 [group('models')]
 download-models DIR:
-    bash scripts/download-models.sh "{{DIR}}"
+    bash scripts/download-models.sh {{quote(DIR)}}
 
 [doc('Update pre-commit hooks (with frozen SHAs)')]
 [group('maintenance')]
