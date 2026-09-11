@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from typing import TYPE_CHECKING
 
@@ -123,6 +124,24 @@ def test_collects_only_node_ids_from_successful_pytest_output(tmp_path: Path) ->
         "tests/example.py::test_one",
         "tests/example.py::test_two[value]",
     )
+
+
+def test_collection_uses_read_only_uv_and_strips_caller_pytest_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    caller_options = "-n auto -m browser --deselect=tests/example.py::test_one"
+    monkeypatch.setenv("PYTEST_ADDOPTS", caller_options)
+    captured: dict[str, object] = {}
+
+    def succeed(command: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["command"] = command
+        captured["environment"] = kwargs["env"]
+        return subprocess.CompletedProcess(command, 0, stdout="tests/example.py::test_one\n", stderr="")
+
+    assert collect_canonical_node_ids(tmp_path, run_command=succeed) == ("tests/example.py::test_one",)
+    assert captured["command"] == ("uv", "run", "--no-sync", "pytest", "--collect-only", "-q")
+    environment = captured["environment"]
+    assert isinstance(environment, dict)
+    assert "PYTEST_ADDOPTS" not in environment
+    assert os.environ["PYTEST_ADDOPTS"] == caller_options
 
 
 def test_rejects_nodes_without_exactly_one_bucket_owner(tmp_path: Path) -> None:

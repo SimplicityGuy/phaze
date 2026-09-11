@@ -177,13 +177,6 @@ def test_success_isolates_every_surface_releases_before_combine_and_ignores_call
         "uv run coverage report --fail-under=95",
         "uv run python scripts/coverage_floor.py",
     ]
-    assert commands[0].startswith("uv run coverage combine ")
-    assert commands[1:] == [
-        "uv run coverage json --fail-under=0",
-        "uv run coverage xml --fail-under=0",
-        "uv run coverage report --fail-under=95",
-        "uv run python scripts/coverage_floor.py",
-    ]
 
 
 def test_lane_failure_skips_coverage_commands_and_propagates_status(tmp_path: Path) -> None:

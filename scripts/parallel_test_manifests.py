@@ -12,6 +12,7 @@ from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path, PurePosixPath
 import shlex
 import subprocess  # nosec B404 -- collection uses a fixed argv tuple with shell disabled.
@@ -21,7 +22,7 @@ from typing import Any
 
 DEFAULT_SHARDS_PATH = Path("tests/ci_shards.json")
 DEFAULT_OUTPUT_DIR = Path(".parallel-test-manifests")
-COLLECT_COMMAND = ("uv", "run", "pytest", "--collect-only", "-q")
+COLLECT_COMMAND = ("uv", "run", "--no-sync", "pytest", "--collect-only", "-q")
 
 LANE_BUCKETS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("lane-a", ("shared-registry", "ingest-pipeline", "review-agents", "shared-root")),
@@ -141,12 +142,15 @@ def load_shard_definitions(path: Path) -> dict[str, ShardDefinition]:
 def collect_canonical_node_ids(repo_root: Path, *, run_command: RunCommand = subprocess.run) -> tuple[str, ...]:
     """Collect the default non-browser suite in its canonical serial order."""
 
+    environment = dict(os.environ)
+    environment.pop("PYTEST_ADDOPTS", None)
     result = run_command(
         COLLECT_COMMAND,
         cwd=repo_root,
         capture_output=True,
         text=True,
         check=False,
+        env=environment,
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
