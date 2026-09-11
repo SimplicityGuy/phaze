@@ -124,9 +124,8 @@ async def patch_tag_write(
     log_entry.error_message = sanitize_pg_text(body.error_message)[:_ERROR_MESSAGE_MAX] if body.error_message else None
     # phaze-2zeu0: refresh the file's stored digest from what the agent OBSERVED on disk after the
     # write, in THIS SAME TRANSACTION as the terminal status. A tag write rewrites the file's bytes
-    # (mutagen's `audio.save()`), and `FileRecord.sha256_hash` is otherwise written exactly once, at
-    # ingest (`tasks/scan.py:218`), and never refreshed -- so without this every byte-verify against
-    # that column fails PERMANENTLY for the rest of the file's life: `tasks/execution.py`'s pre-copy
+    # (mutagen's `audio.save()`), and `FileRecord.sha256_hash` is otherwise written only by scan
+    # ingest, so without this every byte-verify against that column fails permanently: execution's pre-copy
     # verify raises "sha256 mismatch" on the file's very next execution, and the cloud lane's
     # `job_runner._verify_integrity_step` exits 11 with no retry. Every retry recomputes the same
     # real hash against the same stale column, so nothing in the system could ever clear it.

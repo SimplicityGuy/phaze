@@ -100,7 +100,8 @@ _SAQ_DEFAULT_TTL = 600
 # function listed here has ONE timeout policy, not a minimum.
 _FUNCTION_JOB_POLICY: dict[str, tuple[int, int]] = {
     # analyze: phaze.services.analysis_enqueue.enqueue_process_file pins timeout=0/retries=2
-    # (no wall-clock net -- exhaustive analysis runs for hours by design, ADR-0007 §7 -- plus the
+    # (no wall-clock net -- exhaustive analysis runs for hours by design,
+    # ``docs/design/0007-windowed-analysis.md`` §7 -- plus the
     # locked 1-2 retry band that kills long-file re-analysis churn).
     "process_file": (0, 2),
 }

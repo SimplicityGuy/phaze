@@ -365,45 +365,13 @@ async def _spill_over_cap_push(
     Returns the ``cleared`` flag the caller echoes back: True when the CAS hit and the ledger was
     cleared, False for the idempotent full no-op a duplicate/late /mismatch takes.
 
-    Phase 69, SCHED-03/D-04: exhausting ``push_max_attempts`` no longer HARD-fails. The spill lets
-    the next ``release_awaiting_cloud`` drain tick route the file to a lower-rank backend -- and,
-    because this backend's cloud budget is now spent, to LOCAL. ANALYSIS_FAILED comes ONLY from a
-    local analysis failure; every cloud-failure path spills to local.
+    SCHED-03/D-04: exhausting ``push_max_attempts`` spills to a lower-rank backend and ultimately
+    local analysis. Cloud failure never writes ANALYSIS_FAILED.
     """
-    # SCHED-03/D-04: a compute push that exhausts its push_max_attempts re-drives no longer HARD-fails.
-    # Spill the file back to AWAITING_CLOUD so the next release_awaiting_cloud drain tick can route it
-    # to a lower-rank backend -- and, because this backend's cloud budget is now exhausted, to LOCAL.
-    # ANALYSIS_FAILED comes ONLY from a local analysis failure; every cloud-failure path spills to local.
-    #
-    # SC#1/D-12 anchor swap: the CAS guard now keys on cloud_job.status == 'submitted' (compute's single
-    # in-flight status), NOT FileRecord.state == PUSHING -- collapsing the guard onto the sidecar as the
-    # single CAS domain and removing the last FileRecord.state ROUTING read before Phase 90 drops the
-    # column. D-03: this SAME CAS re-stamps the row submitted -> awaiting (was a separate FAILED write) so
-    # the hard shadow invariant AWAITING_CLOUD => status='awaiting' holds, keeping attempts SPENT
-    # (>= cloud_submit_max_attempts) so select_backend excludes cloud and routes the file to local (D-04).
-    # A duplicate/late /mismatch (SAQ retry) -- or a stale/removed-backend reporter that skipped the D-07
-    # gate -- on a file whose cloud_job already advanced past 'submitted'/'succeeded' (RUNNING/reaped/
-    # awaiting) matches 0 rows and CANNOT clobber it back to AWAITING_CLOUD (T-83-PUSH-CLOBBER).
-    #
-    # phaze-7lpe: expect_status widens to ('submitted', 'succeeded'). /mismatch is reached ONLY via
-    # process_file (tasks/functions.py), which by construction runs AFTER report_pushed has already
-    # flipped the row submitted -> succeeded (compute has no further transition between a landed push
-    # and analysis completing -- unlike kueue, a compute cloud_job never advances past 'succeeded').
-    # So the REAL state at /mismatch time is ALWAYS 'succeeded', never 'submitted' -- the original
-    # 'submitted'-only guard meant this branch could never fire in production, permanently disabling
-    # the T-50-loop spill-to-local safety for a persistently corrupt/skewed push.
-    #
-    # D-01/D-02: route the spill re-stamp through the SINGLE awaiting writer
-    # (services.backends.hold_awaiting_cloud) instead of an inline CAS. Its spill branch re-stamps
-    # submitted/succeeded -> awaiting with attempts SPENT (D-03), returning False (a full no-op) on
-    # the 0-row advanced-file case. NO clear_cloud_phase: the push spill must NOT touch cloud_phase
-    # (D-12 -- only the s3 spill clears it).
-    #
-    # NULL-GUARD: the helper's CAS dereferences file.id, so load the FileRecord (none is loaded in this
-    # branch today). An absent file (unreachable in practice -- cloud_job.file_id FKs files.id) takes the
-    # FULL no-op below (cleared=False), identical to a CAS miss; passing None would raise AttributeError
-    # where the old disconnected update(FileRecord) silently matched 0 rows. No 404 here: the over-cap
-    # spill is an agent callback and a 404 would change the response contract.
+    # D-01/D-03/D-12: the shared awaiting writer owns the status CAS, accepts both compute in-flight
+    # states (phaze-7lpe), marks the cloud budget spent, and deliberately preserves ``cloud_phase``.
+    # Duplicate, late, or advanced callbacks miss the CAS and cannot rewind the sidecar
+    # (T-83-PUSH-CLOBBER). A missing file is the same callback no-op, not a response-contract 404.
     file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
     cleared = file is not None and await hold_awaiting_cloud(
         session,

@@ -113,28 +113,10 @@ def _parse_updated_at_token(token: str | None) -> datetime | None:
         return None
 
 
-# phaze-3a2j: the v7 diff-row surfaces render rows from the shared pipeline/partials/_diff_row.html
-# partial and hx-target each row's own <div>. The mutation routes historically returned the LEGACY
-# <tr>-based proposal_row.html, so a swap dropped broken table-row markup into the div list and the
-# Alpine bindings threw ReferenceErrors. When a request originates from one of these surfaces
-# (identified by its HX-Target = "{prefix}-{proposal_id}"), the route must instead return
-# _diff_row.html with the matching prefix, facet, and lifecycle state.
-#
-# phaze-tzy6s.11 / ADR-0008: the surfaces collapsed into ONE. Changes Review is now the only UI
-# workspace that authorizes filename, destination, and tag changes, so the rename / move / tagwrite
-# workspaces and the record drawer's inline cluster were all deleted. Only "rename-row" survived
-# that consolidation with a renderer -- pipeline/partials/_changes_list.html:69, the Filename +
-# Destination section of Changes Review, which kept the id stem rather than churn every hx-target.
-# (Tag rows use "tagwrite-row" and are routed by tags.py, not this map.)
-#
-# phaze-7tiqp: the map used to carry three more stems -- "changes-row", "record-row" and
-# "move-row" -- kept past the consolidation that orphaned them. None had a renderer in any
-# template, so no browser could ever send an HX-Target matching them; they resolved only for a
-# hand-built request, and the "move-row" one resolved to the PATH facet, i.e. a response shape the
-# product had no way to ask for. They are retired here along with the rest of the
-# bulk-approve-high-confidence chain. A caller naming an unknown row still gets the default
-# (rename / filename) shape below, so the removal narrows what is reachable by hand without
-# changing what any live surface receives.
+# phaze-3a2j: a diff-row request must return the matching ``<div>`` partial, facet, and lifecycle
+# state, never the legacy table-row shape. Changes Review is the only authorization surface under
+# ``docs/design/0008-changes-review-approval-boundary.md``; ``rename-row`` is its sole proposal stem.
+# Tag rows remain owned by ``tags.py``.
 _V7_ROW_FACETS: dict[str, str] = {
     "rename-row": "filename",
 }
@@ -402,7 +384,7 @@ async def proposal_timeline(
     windows = list(result.scalars().all())
 
     # phaze-w55w1: the Phase 44 AnalysisResult fetch that fed the "Sampled" badge and the
-    # "Deepen analysis" button is gone with them (ADR-0007 §7) -- the timeline renders from
+    # "Deepen analysis" button is gone with them (``docs/design/0007-windowed-analysis.md``, §7) -- the timeline renders from
     # AnalysisWindow rows alone, which is the full coverage now that nothing is sampled.
     #
     # phaze-x1qr3.5 reads the row again, for one strictly different purpose: the coverage chip's
@@ -609,7 +591,7 @@ async def bulk_action(
       friends), which had no live caller after the v7 cutover.
     * phaze-7tiqp removed the fallthrough that rendered
       ``pipeline/partials/_propose_bulk_response.html``. Its caller was the Propose bulk bar,
-      deleted by phaze-tzy6s.7 (bf45fe06); ADR-0008 then made Changes Review the only surface that
+      deleted by phaze-tzy6s.7 (bf45fe06); ``docs/design/0008-changes-review-approval-boundary.md`` then made Changes Review the only surface that
       authorizes anything, so Propose is preparation-only and has no decision controls to reach
       this route with. The one live caller is ``pipeline/partials/_changes_list.html:46``, whose
       ``hx-target`` is ``#{{ changes_list_id }}`` -- always ``CHANGES_LIST_CONTAINER_ID`` -- so the

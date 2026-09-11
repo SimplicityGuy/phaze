@@ -90,7 +90,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 # ``ctx`` key the before/after-process hook pair uses to hand off "this attempt was bounced
-# by a stage pause" across the Worker's function-call boundary (worker.py:360-421). Private to
+# by a stage pause" across the worker's function-call boundary. Private to
 # this module -- no other code should read or set it.
 _REPARK_CTX_KEY = "_phaze_stage_pause_repark"
 

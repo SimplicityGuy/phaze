@@ -98,7 +98,7 @@ def _write_verify_and_rehash(
     PATCH it back" -- that is the whole of what they chose. WHICH STATUSES it covers was never put
     to them, so it is decided here, on the reasoning above, and labelled as the implementer's own.
     The durable record of both is the bead. Flagged explicitly so this invites review rather than
-    borrowing authority it does not have (ADR-0012 rule 2).
+    borrowing authority it does not have (``docs/design/0012-verification-fidelity-and-operator-attribution.md``, rule 2).
 
     A hashing failure yields ``None`` -- "not observed" -- rather than raising: the disk write has
     already happened by this point, and letting an unreadable-file ``OSError`` escape would fail the

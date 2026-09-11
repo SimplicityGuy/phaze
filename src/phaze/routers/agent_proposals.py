@@ -118,8 +118,7 @@ async def patch_proposal_state(
     # Apply joint mutation in one transaction (Pitfall 6: ONE commit only).
     proposal.status = new.value
     if body.error_message is not None:
-        # phaze-d55hu: unlike every sibling failure writer (agent_metadata.py:162,
-        # agent_analysis.py:456, agent_tag_writes.py:109), this assignment used to write
+        # phaze-d55hu: unlike the sibling metadata, analysis, and tag-write failure writers, this assignment used to write
         # `body.error_message` straight into `proposal.reason` (Text). A NUL passes Pydantic
         # string validation (only lone surrogates are rejected there) but PostgreSQL rejects it
         # with `CharacterNotInRepertoireError`, aborting this handler's ONE joint commit (Pitfall

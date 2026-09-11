@@ -38,13 +38,11 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# --------------------------------------------------------------------------------------------------
 # Force-skip writer (UI-04 / D-08/D-09/D-10): the right-pane escape hatch that lets the ``failed``
 # bucket converge for genuinely-unprocessable files. The correctness-sensitive mutating endpoint of
 # this phase: enrich-only (approval-bypass hazard, D-10), additive (never clears a failure marker, so
 # the Phase-79 shadow-compare gate stays green), reason required + sanitized (NUL-abort footgun), and
 # committed (get_session NEVER auto-commits).
-# --------------------------------------------------------------------------------------------------
 @router.post("/pipeline/files/{file_id}/skip/{stage}", response_class=HTMLResponse)
 async def force_skip_stage(
     file_id: uuid.UUID,
@@ -172,11 +170,9 @@ def _force_skip_no_op_toast(stage: str) -> HTMLResponse:
     )
 
 
-# --------------------------------------------------------------------------------------------------
 # Per-file eligibility trace (UI-03 / D-06/D-07): the diagnostic whose absence hid the deadlock. A
 # single-row resolve_status/eligible() evaluation (NOT a corpus scan, T-87-23) that names the ONE
 # unmet blocker keeping a stage out of the pending set.
-# --------------------------------------------------------------------------------------------------
 
 # Display label per stage for the five-pill matrix + trace verdict (the 6->5 remap: tracklist is
 # omitted; review renders as Appr, apply as Exec). Mirrors the _stage_matrix partial pill order.

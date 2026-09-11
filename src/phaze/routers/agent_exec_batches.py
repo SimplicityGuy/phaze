@@ -73,17 +73,9 @@ _REQ_PREFIX = "exec_progress_req:"
 # batch hash's own TTL so the marker cannot outlive, or under-live, the counters it guards.
 _TTL_SECONDS = 86400  # 24-hour idempotency window -- matches the exec:{batch_id} hash TTL (D-15)
 
-# phaze-fa2p: the single-dispatch sentinel. ``routers/execution.start_execution`` claims this key
-# with ``SET NX`` before seeding/enqueuing a batch so a concurrent or repeated POST cannot
-# double-dispatch the same still-APPROVED proposals. It is released atomically with the terminal
-# status promotion below (and by a 24h safety TTL if a batch's sub-jobs never report terminal).
-#
-# phaze-c3j0: this used to be ``exec:active``, i.e. a STRING control key living inside the same
-# ``exec:`` namespace as the per-batch HASHES. Because the progress routes interpolated a free-form
-# ``batch_id`` into ``exec:{batch_id}``, the literal value ``active`` rebuilt this key exactly, and
-# HGETALL against a string replies WRONGTYPE. Typing those parameters as ``uuid.UUID`` is the
-# primary fix; moving the control key into its own namespace is the structural one, so no future
-# batch-id spelling can alias it again regardless of what the routes accept.
+# phaze-fa2p/phaze-c3j0: the single-dispatch sentinel prevents concurrent dispatch of the same
+# approved proposals and has a distinct namespace from per-batch hashes. Terminal promotion
+# releases it atomically; its safety TTL releases a batch whose sub-jobs never report terminal.
 ACTIVE_DISPATCH_KEY = "execdispatch:active"
 
 # The per-batch progress hash key prefix (``exec:{batch_id}``), named once so the claim-reconcile
@@ -96,37 +88,11 @@ BATCH_KEY_PREFIX = "exec:"
 DISPATCH_CLAIM_TTL_SECONDS = 86400
 
 
-# Lua: atomically read the sub-batch counters and promote `status` in a SINGLE
-# round-trip (issue #61). The prior three-HGET-then-conditional-HSET sequence
-# had a window where a concurrent terminal POST could observe
-# ``subjobs_completed == subjobs_expected`` while another sub-job's ``failed``
-# HINCRBY had not yet landed, then HSET ``status="complete"`` over a batch that
-# actually had a failure -- the operator's SSE close-event would say "complete"
-# with ``failed >= 1``. Redis executes the script atomically, so the read of
-# (subjobs_completed, subjobs_expected, failed) and the conditional HSET cannot
-# interleave with any other connection. Mirrors the D-04 / D-07 read-then-write
-# semantics exactly (only the atomicity is added). Returns 1 if status was
-# promoted, 0 otherwise; the caller does not use the result.
-#
-# phaze-fa2p: when the batch reaches a terminal status this is also the single atomic point that
-# releases the ``exec:active`` single-dispatch sentinel -- but ONLY when it still names THIS batch
-# (``GET == ARGV[1]``), so a newer dispatch that already re-claimed the sentinel is never cleared.
-# ``KEYS[2]``/``ARGV[1]`` are optional: a caller that passes only ``keys=[key]`` (numkeys=1) leaves
-# ``KEYS[2]`` nil and the release block is skipped, keeping the script backward compatible.
-#
-# phaze-a6t8: the predicate is ``sc < se`` (a THRESHOLD), not the original ``sc ~= se`` (exact
-# equality). Exact equality made every overshoot PERMANENT: any route that drives
-# ``subjobs_completed`` past ``subjobs_expected`` -- a duplicate terminal event whose dedup marker
-# had lapsed, or a ``subjobs_expected`` lowered by the phaze-kxsb reconcile after a sub-job already
-# reported -- left ``sc > se`` forever, so no later POST could ever promote the batch and the
-# ``exec:active`` sentinel it releases was held until its 24h TTL. Counting PAST the target is
-# still "every sub-job reported"; the batch is terminal and must say so. Under-counting
-# (``sc < se``) remains the only state that legitimately blocks promotion.
-#
-# Shared as a Lua FUNCTION rather than duplicated text because two scripts promote (this one, for
-# the dispatch-side reconcile in ``routers/execution.py``, and ``_APPLY_INCREMENTS_LUA`` below,
-# which folds the promotion into the SAME round-trip as the counter apply). One definition means
-# the predicate cannot drift between them.
+# D-04/D-07: promotion reads completion and failure counters atomically so SSE cannot report
+# ``complete`` from a stale failure count (issue #61). phaze-a6t8 uses the terminal threshold
+# ``subjobs_completed >= subjobs_expected``; overshoot is still terminal. phaze-fa2p releases the
+# sentinel only when it still names this batch. Both Lua entry points share this function so their
+# promotion predicate cannot drift.
 _PROMOTE_LUA_FN = """
 local function phaze_promote(key, active_key, batch_id)
   if redis.call('EXISTS', key) == 0 then return 0 end
@@ -165,31 +131,10 @@ def _get_promote_status_script(redis_client: redis_async.Redis) -> "AsyncScript"
     return _promote_status_script
 
 
-# phaze-j7u8: the shared mitigation for the exec:active wedge. THREE disjoint defects converge on
-# the same failure -- a claim taken before it is releasable (phaze-0t2c), a double-counted
-# terminal event overshooting the target (phaze-a6t8), and a LOST terminal event undershooting it
-# (phaze-j7u8) -- and each one leaves the sentinel held for its full 24h TTL, refusing every
-# subsequent Execute Approved. Each has its own fix; this is the net under all three.
-#
-# The sentinel is claimed through this script instead of a bare SET NX, so a claim attempt also
-# RECONCILES a held-but-dead one. "Dead" is decided from the named batch's own hash -- the only
-# durable record of that dispatch -- in three conclusive shapes:
-#   1. The hash is GONE. Reaped by its TTL, or never seeded (the phaze-0t2c crash window between
-#      the claim and the seed). Nothing will ever POST against it, so nothing will ever release
-#      the claim.
-#   2. The hash is already TERMINAL. The promotion landed but its sentinel release did not -- e.g.
-#      the release raced a newer claim, or the promotion ran before phaze-a6t8 wired the release in.
-#   3. Every sub-batch has reported (``subjobs_completed >= subjobs_expected``) but the status was
-#      never promoted. Finish the promotion first (``phaze_promote`` also handles the release), then
-#      take over.
-# In every other case -- ``sc < se`` on a live hash -- the dispatch is presumed IN FLIGHT and the
-# claim is REFUSED. That asymmetry is deliberate: the sentinel exists to stop a second dispatch
-# re-selecting still-APPROVED proposals and double-moving files, so failing closed costs the
-# operator a refused click while failing open costs archive files. Notably this means a token lost
-# past SAQ's retry budget still falls back to the 24h TTL -- Redis alone cannot distinguish that
-# from a slow multi-GB copy, and guessing is not worth a double-move. The re-raise in
-# ``tasks/execution._report_progress_failure`` is what makes reaching that state require SAQ to
-# exhaust its retries rather than a single transient 502.
+# phaze-j7u8: claiming also reconciles a sentinel whose batch hash is gone, already terminal, or
+# complete by counters but not yet promoted. Any live under-count remains in flight and fails
+# closed: refusing an operator click is safer than dispatching the same archive move twice. Redis
+# cannot distinguish a lost terminal token from a slow copy, so ambiguous claims retain the 24h TTL.
 #
 # KEYS[1] = the sentinel key. ARGV[1] = this dispatch's batch_id, ARGV[2] = claim TTL seconds,
 # ARGV[3] = the per-batch hash key prefix. Returns 1 if claimed outright, 2 if claimed by
@@ -257,28 +202,9 @@ def _get_release_dispatch_script(redis_client: redis_async.Redis) -> "AsyncScrip
     return _release_dispatch_script
 
 
-# phaze-gtau: apply the D-07 HINCRBY counter set AND claim the request-idempotency marker
-# (KEYS[2]) ATOMICALLY, in one round-trip. The marker becomes authoritative ONLY together with the
-# HINCRBYs, closing the window the prior "SET NX marker, THEN pipeline HINCRBY" ordering left open:
-# a crash between the marker set and the increments burned the marker with the counters unapplied,
-# so the tenacity/SAQ retry (identical request_id) short-circuited on the marker into a clean 200
-# and the increments were LOST forever (a lost terminal event stranded the batch at 'running' until
-# its 24h TTL). Here either BOTH the increments and the marker land, or NEITHER; a duplicate
-# request (marker already present) applies nothing.
-#
-# phaze-pyv3 (PRESERVED): the EXISTS(KEYS[1]) guard keeps a batch reaped by its 24h TTL between the
-# stage 2/3 HEXISTS checks and here from being RESURRECTED by a bare HINCRBY (which would leak a
-# TTL-less, status-less phantom hash forever). The apply is a no-op when the hash is already gone,
-# and the marker is NOT claimed for a dead batch (nothing to protect against a replay of).
-#
-# phaze-a6t8: the terminal PROMOTION is folded into this same script, so the apply and the promote
-# are ONE atomic round-trip instead of two. Previously stage 6 promoted from a separate EVAL, and
-# the gap between them was itself a wedge: with two terminal POSTs in flight, both could apply
-# their ``subjobs_completed`` increment before either ran its promote, so BOTH promotes observed
-# the same post-increment total and -- under the old exact-equality predicate -- neither matched.
-# Relaxing the predicate to ``sc < se`` (above) makes that interleave promote instead of wedge;
-# folding it in here removes the interleave entirely, so the batch promotes on the FIRST terminal
-# POST that completes the count rather than depending on which read wins a race.
+# phaze-gtau/phaze-a6t8: increments, request-idempotency marker, promotion, and sentinel release
+# share one atomic script. A retry therefore observes either all effects or none. phaze-pyv3 keeps
+# the batch-exists guard in that span so a reaped hash cannot be resurrected without a TTL/status.
 #
 # KEYS[1] = exec:{batch_id}; KEYS[2] = exec_progress_req:{request_id}; KEYS[3] = the exec:active
 # sentinel (pass '' to skip the release). ARGV[1] = marker TTL seconds; ARGV[2] = '1' when the
@@ -395,7 +321,7 @@ async def post_exec_batch_progress(
           ATOMICALLY with the counters (phaze-gtau), makes the endpoint safe
           for SAQ-retry replays (D-15) without a mid-span crash losing them.
     """
-    # ---- Stage 1: cross-tenant guard. Runs BEFORE any Redis state read
+    # Cross-tenant authorization runs BEFORE any Redis state read
     # (D-17 step 2 / T-28-02-S1 / T-28-02-I1). A leaked batch_id paired
     # with a stolen-or-misconfigured bearer must still produce 403, never
     # a 404 that could be used to map the batch space.
@@ -407,7 +333,7 @@ async def post_exec_batch_progress(
 
     key = f"exec:{batch_id}"
 
-    # ---- Stage 2: 404 if the batch hash doesn't exist. Single opaque detail
+    # Unknown and expired batch hashes share one opaque 404
     # (D-17 step 3) -- unknown and expired batches look the same.
     if not await redis_client.hexists(key, "total"):
         raise HTTPException(
@@ -415,7 +341,7 @@ async def post_exec_batch_progress(
             detail="batch not found",
         )
 
-    # ---- Stage 3: D-17 step 4 -- the per-agent rollup field is pre-set at
+    # D-17: the per-agent rollup field is pre-set at
     # dispatch (D-09 step 5) so its absence is structural proof this agent
     # wasn't part of the dispatch. Reject 403 BEFORE any HINCRBY so we
     # never silently create an unauthorized rollup field.
@@ -425,17 +351,8 @@ async def post_exec_batch_progress(
             detail="agent was not part of this dispatch",
         )
 
-    # ---- Stage 4+5 (phaze-gtau): dedup + D-07 counters + the request-idempotency marker, applied
-    # as ONE atomic Lua (``_APPLY_INCREMENTS_LUA``). The marker becomes authoritative ONLY together
-    # with the HINCRBYs, so a crash mid-span can never leave the marker set with the increments
-    # unapplied. The OLD ordering set the marker (SET NX) FIRST and only THEN ran the HINCRBY
-    # pipeline: a crash / Redis timeout / pod eviction in that gap durably burned the marker, and the
-    # agent's tenacity/SAQ retry (identical request_id, persisted in the job meta) short-circuited on
-    # the marker into a clean 200 with the counters LOST forever -- a lost terminal event stranded the
-    # batch at 'running' until the 24h TTL dropped the hash. Now either both land or neither does; a
-    # duplicate request_id applies nothing (D-15 dedup), and a batch reaped by its 24h TTL between the
-    # stage 2/3 HEXISTS checks and here applies nothing and is never resurrected (phaze-pyv3). Note
-    # the D-17 stages 1-3 above are UNCHANGED -- only this token-vs-work ordering moved.
+    # phaze-gtau: dedup marker, D-07 counters, promotion, and sentinel release are one atomic span.
+    # Duplicate requests apply nothing, and phaze-pyv3 prevents a reaped hash from being resurrected.
     req_key = f"{_REQ_PREFIX}{body.request_id}"
     increments = _compute_increments(body)
     # phaze-a6t8: ARGV is [ttl, terminal_flag, batch_id, field, by, ...] -- the terminal flag and
@@ -446,23 +363,9 @@ async def post_exec_batch_progress(
     if body.sub_batch_terminal:
         apply_args.extend(("subjobs_completed", "1"))
     apply_increments = _get_apply_increments_script(redis_client)
-    # ---- Stage 6, now INSIDE the stage 4+5 script (phaze-a6t8): terminal-status detection +
-    # promotion (D-07 final clause). Fires whenever the agent marks this as its last proposal in
-    # the sub-batch -- INCLUDING on a duplicate replay whose increments were deduped above.
-    # phaze-gtau: promoting on the deduped path is REQUIRED, not wasteful -- it
-    # covers the crash window between the atomic apply+marker (stage 4+5) and this
-    # promotion. Were it skipped once the marker is present, a crash there would
-    # leave the terminal ``subjobs_completed`` applied but the status never
-    # promoted, stranding the batch at 'running' forever on retry (the terminal-loss
-    # half of the defect). The promotion is idempotent: HSET status is a set and the
-    # ``exec:active`` release is GET==batch_id-guarded (phaze-fa2p), so re-running it
-    # on a true duplicate is a harmless no-op. It stays server-side Lua so it executes
-    # atomically; under >=3 concurrent terminal sub-jobs that is what prevents a stale
-    # `failed` read from promoting a failed batch to "complete" (issue #61) -- and, since
-    # phaze-a6t8 merged it into the apply, a concurrent sub-job can no longer slip its own
-    # increment between THIS request's apply and THIS request's promote.
-    # phaze-fa2p: the sentinel key rides in KEYS[3] so a terminal promotion also releases the
-    # single-dispatch claim atomically (see ACTIVE_DISPATCH_KEY / _PROMOTE_LUA_FN).
+    # Promotion also runs on a deduped terminal replay so a prior apply cannot remain unpromoted.
+    # It is idempotent and server-side atomic, preventing stale failure reads under concurrency
+    # (issue #61); phaze-fa2p releases only this batch's sentinel in the same span.
     await apply_increments(keys=[key, req_key, ACTIVE_DISPATCH_KEY], args=apply_args, client=redis_client)
 
     return Response(status_code=status.HTTP_200_OK)
