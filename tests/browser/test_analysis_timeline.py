@@ -192,8 +192,6 @@ async def test_drawer_swap_initializes_once_and_escape_still_closes_from_timelin
     assert await settled_focus(page, "aria-label") == f"Open details for {file.original_filename}"
 
 
-# --- phaze-x1qr3.10: one elapsed time, seven targets ----------------------------------------
-
 _INSPECTION_DURATION_SEC = 720.0
 # `analysis_windows(projected=True)` puts the unique energy maximum on coarse window 4 of 6,
 # i.e. [480, 600), whose midpoint is 540 s. That is the RAW-window argmax -- what `energy_peak`

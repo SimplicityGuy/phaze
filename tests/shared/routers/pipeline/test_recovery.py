@@ -21,11 +21,9 @@ if TYPE_CHECKING:
     from httpx import AsyncClient
 
 
-# ---------------------------------------------------------------------------
 # Phase 42 (REQ-42-1/REQ-42-4/REQ-42-5): the manual /pipeline/recover endpoint calls the
 # SAME gated recover_orphaned_work producer (force=True) the controller startup runs, on a
 # worker-shaped ctx built from app state; the global DAG "Recover" button renders end-to-end.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

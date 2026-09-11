@@ -241,7 +241,6 @@ async def test_skip_race_deleted_between_precheck_and_insert_is_no_op_and_sessio
     assert other_file_id is not None
 
 
-# --------------------------------------------------------------------------------------------------
 # phaze-5p43: the success ack must ALSO refresh the record's stage pill.
 #
 # ``_force_skip_dialog.html``'s own header contract promises "the pill flips to ⊘ skipped on the NEXT
@@ -251,7 +250,6 @@ async def test_skip_race_deleted_between_precheck_and_insert_is_no_op_and_sessio
 # ``hx-swap-oob`` fragment addressed to that (file, stage). These lock the OOB shape, the honest
 # re-derived bucket, and — load-bearing, given this repo's duplicate-id OOB history (phaze-gzrd,
 # phaze-op6f, phaze-7j50) — that the OOB target id is UNIQUE in the composed record document.
-# --------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

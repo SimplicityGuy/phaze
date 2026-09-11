@@ -155,9 +155,7 @@ async def empty_smoke(session: AsyncSession) -> AsyncGenerator[AsyncClient]:
         yield ac
 
 
-# ---------------------------------------------------------------------------
 # 6 core tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -273,9 +271,7 @@ async def test_revoked_agent_absent(smoke: AsyncClient) -> None:
         assert "AliveBox" in body, f"non-revoked agent missing from {path}"
 
 
-# ---------------------------------------------------------------------------
 # COMPUTE-01 — Section 2 renders ONE tile per compute lane (per-cluster identity)
-# ---------------------------------------------------------------------------
 
 
 _TWO_CLUSTER_REGISTRY = """
@@ -404,9 +400,7 @@ async def test_empty_registry_renders_normally_with_no_lane_rows(smoke: AsyncCli
     assert "AliveBox" in body, "agent rows still render normally alongside an empty lane registry"
 
 
-# ---------------------------------------------------------------------------
 # COMPUTE-01 (dedupe): suppress the registry-shadowed never-heartbeating compute row
-# ---------------------------------------------------------------------------
 
 
 @pytest_asyncio.fixture
@@ -538,7 +532,6 @@ async def test_dedupe_heartbeating_compute_agent_row_kept(session: AsyncSession,
     assert "ALIVE" in body
 
 
-# ---------------------------------------------------------------------------
 # phaze-2u8v.4 — the deployed shape: k8s rows perpetually-dead as agent rows
 #
 # The two dedupe generations above both keyed on REGISTRY MEMBERSHIP: the row was dropped when its
@@ -555,7 +548,6 @@ async def test_dedupe_heartbeating_compute_agent_row_kept(session: AsyncSession,
 # row while the SAME cluster's lane row reported ACTIVE with 3 running (pre-merge: two DIFFERENT
 # panels disagreeing; post-merge: two DIFFERENT rows disagreeing, same underlying defect shape).
 # This fixture reproduces that registry verbatim (minus the disabled block) and pins the fix.
-# ---------------------------------------------------------------------------
 
 _DEPLOYED_KUEUE_REGISTRY = """
     [[backends]]
@@ -651,9 +643,7 @@ async def test_deployed_shape_fileserver_agent_keeps_its_liveness(deployed_shape
     assert "agent-trigger-k8s" not in body, "a k8s callback identity is still being rendered as a heartbeating agent"
 
 
-# ---------------------------------------------------------------------------
 # Phase 48 — Kind badge (CLOUDAGENT-03), UI-SPEC §Component Contract LOCKED
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -752,7 +742,6 @@ async def test_sort_order(smoke: AsyncClient) -> None:
     assert pos["alive"] < pos["stale"] < pos["dead"] < pos["never"], f"sort order violated: {pos}"
 
 
-# ---------------------------------------------------------------------------
 # BLOCKER-2 tests — UI-SPEC §Error / Failure-Tolerant Refresh LOCKED
 #
 # phaze-uvmcr.4 (H2): the htmx:responseError/htmx:sendError/htmx:afterSwap LISTENER moved out of
@@ -762,7 +751,6 @@ async def test_sort_order(smoke: AsyncClient) -> None:
 # tests below pin BOTH halves of that split, plus the structural proof that the listener-attach
 # code is physically absent from every response shape that could otherwise re-run it (a rail-swap
 # fragment, a poll tick) -- which is what makes "exactly one attach, ever" true without a browser.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -854,14 +842,10 @@ async def test_partial_failure_footer_uses_role_alert(smoke: AsyncClient) -> Non
     assert 'role="alert"' in body, "Failure banner must have role=alert (a11y + BLOCKER-2)"
 
 
-# ---------------------------------------------------------------------------
 # Production-wiring smoke test (router registered in main.create_app)
-# ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
 # Phase 66 — discreet flag-gated /saq footer link (CLEAN-01), D-09/D-10/D-11
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -924,7 +908,6 @@ async def test_router_registered_in_main_app() -> None:
     assert "/admin/agents/_table" in paths
 
 
-# ---------------------------------------------------------------------------
 # GET /admin/agents history-restore response shape (phaze-64uy, superseded by phaze-uvmcr.4)
 #
 # admin/partials/agents_table.html sets hx-push-url="/admin/agents?agent=<id>" on each drill-in row
@@ -938,7 +921,6 @@ async def test_router_registered_in_main_app() -> None:
 # issues a live htmx swap against this bare path). A restore request redirects exactly like a plain
 # one; the interesting assertion is that FOLLOWING that redirect lands on shell.shell_stage's real
 # full document, which is what response_shape.py rule 2 actually requires for a restore.
-# ---------------------------------------------------------------------------
 
 
 _RESTORE_HEADERS = {"HX-Request": "true", "HX-History-Restore-Request": "true"}
@@ -986,9 +968,7 @@ async def test_local_is_htmx_helper_is_gone(smoke: AsyncClient) -> None:
     assert not hasattr(admin_agents, "_is_htmx"), "re-deriving the shape decision locally is banned -- use response_shape.wants_fragment"
 
 
-# ---------------------------------------------------------------------------
 # phaze-a6hm.4 — sortable columns via the shared column_sort contract
-# ---------------------------------------------------------------------------
 
 
 def _row_order(body: str) -> list[str]:
@@ -1126,13 +1106,11 @@ async def test_queue_sort_survives_a_heartbeat_above_int32_max(smoke: AsyncClien
     assert "alive-agent" in _row_order(response.text)
 
 
-# ---------------------------------------------------------------------------
 # phaze-rdxfu (acceptance rule 8 / SCOPE rule 3): lane placement is deterministic and PINNED under
 # every sortable column and both directions -- including the -infinity/-1 no-value folding for
 # last_seen/scan_roots. Agent-relative order is never re-derived (that stays SQL's job, pinned above
 # by test_default_matches_locked_sort_key / test_sort_is_server_side_across_the_whole_set); each test
 # below crafts values chosen so the expected merged order is unambiguous, then asserts it exactly.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1480,11 +1458,9 @@ async def test_sort_click_preserves_the_open_detail_pane(smoke: AsyncClient) -> 
     assert 'aria-expanded="true"' in body
 
 
-# ---------------------------------------------------------------------------
 # phaze-rdxfu — every lane is a row, indistinguishable in interaction shape from an agent row; the
 # per-lane state colors are never the sole signal; a lane row is a drill-in trigger into an
 # EXPANDED ROW whose body fetches GET /admin/agents/compute-lanes/{id}.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1678,9 +1654,7 @@ async def test_unknown_clane_query_param_highlights_nothing(smoke: AsyncClient) 
     assert 'aria-current="true"' not in response.text
 
 
-# ---------------------------------------------------------------------------
 # phaze-w92dg: never auto-collapse — unresolved-selection hx-preserve carriers
-# ---------------------------------------------------------------------------
 #
 # The expanded detail row survives the section's 5s outerHTML self-poll only via hx-preserve,
 # which matches by id against the INCOMING response. A selection param that failed

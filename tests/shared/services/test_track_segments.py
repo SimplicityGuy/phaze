@@ -36,9 +36,6 @@ def _coarse(index: int, start: float, end: float, *, energy: float | None = None
     return AnalysisWindow(file_id=uuid.uuid4(), tier="coarse", window_index=index, start_sec=start, end_sec=end, energy=energy, mood_scores=moods)
 
 
-# --- Segmentation -------------------------------------------------------------------------
-
-
 def test_eighteen_timestamped_tracks_give_eighteen_segments_ending_at_the_duration() -> None:
     """Consecutive timestamps become consecutive half-open ranges; the last closes at duration."""
     tracks = [_track(position, f"{position * 5}:00") for position in range(1, 19)]
@@ -110,9 +107,6 @@ def test_non_monotonic_scraped_timestamps_clamp_to_a_zero_length_segment() -> No
     assert segments[0].start_sec == 600.0
     assert segments[0].end_sec == 600.0
     assert segments[0].bpm is None
-
-
-# --- Per-track measurements, hand-computed -------------------------------------------------
 
 
 def test_per_track_values_are_the_median_bpm_modal_key_argmax_mood_and_mean_energy() -> None:
@@ -206,8 +200,6 @@ def test_a_coarse_window_with_no_mood_scores_contributes_nothing_rather_than_zer
     assert segment.energy == 0.5
 
 
-# --- The exposed shape --------------------------------------------------------------------
-
 # Read off the segment by the render path (`_tracklist_review_body.html`, `services/poster.py`)
 # and by `phaze-x1qr3.10`'s readout, so they are part of the exposed shape whether they are
 # stored or derived.
@@ -239,9 +231,6 @@ def test_the_derived_readings_cannot_contradict_the_measurements_they_come_from(
     assert moody.mood == "mood_happy"
     assert moody.mood_label == MOOD_LABELS["mood_happy"]
     assert moody.mood_hue == MOOD_HUES["mood_happy"]
-
-
-# --- The field list -------------------------------------------------------------------------
 
 
 def test_the_segment_shape_is_what_the_inspection_and_poster_beads_will_read() -> None:

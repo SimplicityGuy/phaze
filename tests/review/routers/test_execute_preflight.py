@@ -178,7 +178,6 @@ async def test_preflight_confirmation_carries_the_manifest_not_a_bare_count(
     assert "are excluded and will not be touched." in body
 
 
-# ---------------------------------------------------------------------------
 # phaze-tzy6s.17 (CR-12-1 / CR-12-2): the preflight's three adjacent counts must not be
 # saturated page lengths.
 #
@@ -189,7 +188,6 @@ async def test_preflight_confirmation_carries_the_manifest_not_a_bare_count(
 # before the product's only irreversible operation. Two of the three counts are exactly
 # knowable in SQL and are now COUNT queries; the third cannot be (tag-write eligibility is a
 # Python predicate) and is therefore labelled a floor instead of being dressed up as a total.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

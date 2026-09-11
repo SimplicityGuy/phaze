@@ -260,7 +260,6 @@ async def test_unknown_body_field_is_rejected(session: AsyncSession, seed_test_a
     assert resp.status_code == 422
 
 
-# ---------------------------------------------------------------------------
 # phaze-sit4: concurrent duplicate PATCHes must not corrupt the ``before_tags`` undo anchor.
 #
 # The hermetic ``session`` fixture binds every session to ONE connection inside a single
@@ -274,7 +273,6 @@ async def test_unknown_body_field_is_rejected(session: AsyncSession, seed_test_a
 # takes the no-op ``applied=False`` branch, leaving ``before_tags`` exactly as the winner wrote it.
 # With the old plain ``select(...)`` both transactions read the same stale ``queued`` row and the
 # last commit silently overwrites the undo anchor -- the regression this bead closes.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -401,10 +399,8 @@ async def test_concurrent_duplicate_callbacks_do_not_clobber_before_tags(async_e
         # owned (and disposed) by conftest.
 
 
-# ---------------------------------------------------------------------------
 # phaze-anrw4: the pre-write snapshot endpoint + the first-write-wins guard it shares with the
 # result callback.
-# ---------------------------------------------------------------------------
 
 
 def _snapshot_body(**overrides: Any) -> dict[str, Any]:
@@ -531,11 +527,9 @@ async def test_before_snapshot_unauthenticated_is_refused(session: AsyncSession)
     assert resp.status_code in (401, 403)
 
 
-# ---------------------------------------------------------------------------
 # phaze-yy9bk: the result callback must clear the write_file_tags:<log_id> scheduling-ledger row
 # it left orphaned forever -- the deeper root cause behind the callback-discard bug (every tag
 # write, not just a retried one, leaked a row ``recover_orphaned_work`` would replay without limit).
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

@@ -97,7 +97,6 @@ def test_no_control_is_nested_inside_its_own_swap_target() -> None:
     assert not violations, "control(s) nested inside their own swap target -- the success response deletes the control:\n  " + "\n  ".join(violations)
 
 
-# ---------------------------------------------------------------------------
 # Guard 2 (phaze-vvmh): every swap target must resolve to an id the SHELL can actually render.
 #
 # This is the guard the bead asks for, and the one that would have caught the defect it fixes.
@@ -113,7 +112,6 @@ def test_no_control_is_nested_inside_its_own_swap_target() -> None:
 # distinction IS the guard: `#stats-bar` was declared, by the very OOB wrapper that targeted it and
 # by the partial inside it, so any check that accepted providers from anywhere on disk would have
 # called the dead chain healthy. Only "an id the mounted document contains" is a meaningful target.
-# ---------------------------------------------------------------------------
 
 _SHELL_ROOT = "shell/shell.html"
 

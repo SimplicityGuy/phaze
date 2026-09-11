@@ -89,9 +89,7 @@ async def _new_file(session: AsyncSession) -> uuid.UUID:
     return fid
 
 
-# --------------------------------------------------------------------------------------------------
 # Behavior 7: bounded, no whole-corpus COUNT per poll.
-# --------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -136,9 +134,7 @@ async def test_files_page_last_page_has_no_next(db_env: tuple[AsyncSession, Asyn
     assert page.has_next is False
 
 
-# --------------------------------------------------------------------------------------------------
 # Correlated per-page derivation matches the seeded markers.
-# --------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -162,9 +158,7 @@ async def test_per_row_buckets_match_seeded_markers(db_env: tuple[AsyncSession, 
     assert set(by_id[plain].values()) == {"not_started"}
 
 
-# --------------------------------------------------------------------------------------------------
 # PERF-01: EXPLAIN shows the Phase-77 partial indexes are usable by the bounded statement.
-# --------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -194,9 +188,7 @@ async def test_explain_uses_partial_indexes(db_env: tuple[AsyncSession, AsyncEng
         assert index_name in plan, f"{index_name} not used in EXPLAIN plan:\n{plan}"
 
 
-# --------------------------------------------------------------------------------------------------
 # T-87-12: SAVEPOINT degrade -> safe empty page, never a raise.
-# --------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

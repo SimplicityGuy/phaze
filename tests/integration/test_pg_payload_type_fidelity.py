@@ -310,7 +310,6 @@ def test_every_model_validate_consumer_is_covered() -> None:
     assert found - covered == set(), f"task payload(s) with no broker round-trip row: {sorted(found - covered)}"
 
 
-# --- phaze-ot3os: the OMITTED conversion, against live broker bytes ---------------------------------
 #
 # The tests above prove the CORRECT producer call (``model_dump(mode="json")``) survives the hop.
 # These prove the claim phaze-ot3os actually makes -- that with ``WirePayload`` carrying the

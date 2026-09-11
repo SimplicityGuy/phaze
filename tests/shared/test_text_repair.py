@@ -14,9 +14,7 @@ import pytest
 from phaze.services.text_repair import repair_mojibake
 
 
-# ---------------------------------------------------------------------------
 # The known production case (phaze-x4ux), verbatim.
-# ---------------------------------------------------------------------------
 
 
 def test_repairs_the_known_production_case_double_encoded() -> None:
@@ -35,9 +33,7 @@ def test_repairs_single_encoded_mojibake_in_one_effective_pass() -> None:
     assert repair_mojibake("Sven VÃ¤th") == "Sven Väth"
 
 
-# ---------------------------------------------------------------------------
 # Idempotency: repair_mojibake(repair_mojibake(x)) == repair_mojibake(x).
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -59,9 +55,7 @@ def test_idempotent(value: str) -> None:
     assert once == twice
 
 
-# ---------------------------------------------------------------------------
 # Negative: already-correct accented Unicode text must NOT be touched.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -100,9 +94,7 @@ def test_no_op_on_legitimate_a_with_tilde_in_context() -> None:
     assert repair_mojibake(legit) == legit
 
 
-# ---------------------------------------------------------------------------
 # Never raises, even on input that cannot be repaired.
-# ---------------------------------------------------------------------------
 
 
 def test_never_raises_on_arbitrary_unicode() -> None:
@@ -119,9 +111,7 @@ def test_never_raises_on_lone_surrogate() -> None:
     assert repair_mojibake("bad\ud800frame") == "bad\ud800frame"
 
 
-# ---------------------------------------------------------------------------
 # General double-encoding shape (not hardcoded to the one production string).
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

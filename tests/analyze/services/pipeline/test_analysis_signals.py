@@ -68,9 +68,7 @@ def _mock_labels_file(model_filename: str, _models_dir: str) -> list[str]:
     return ["positive_class", "negative_class"]
 
 
-# ---------------------------------------------------------------------------
 # AnalysisSignals -- the seam itself
-# ---------------------------------------------------------------------------
 
 
 def test_unset_signals_are_a_total_noop() -> None:
@@ -109,9 +107,7 @@ def test_signals_forward_every_argument_verbatim_on_both_channels() -> None:
     assert beat_calls == [("coarse_model", 5, 34)]
 
 
-# ---------------------------------------------------------------------------
 # analyze_file builds ONE signals object and shares it across both tiers
-# ---------------------------------------------------------------------------
 
 
 def test_analyze_file_builds_one_signals_object_shared_by_both_tiers() -> None:
@@ -165,9 +161,7 @@ def test_analyze_file_heartbeat_default_none_is_inert(_mock_es: MagicMock, mock_
         assert with_none[key] == with_cb[key]
 
 
-# ---------------------------------------------------------------------------
 # The watchdog contract (phaze-1b39 incident class): no test anywhere asserted this before
-# ---------------------------------------------------------------------------
 
 
 @patch("phaze.services.analysis._probe_duration_sec", return_value=_MOCK_DURATION_SEC)
@@ -237,9 +231,7 @@ def test_analyze_file_heartbeat_stage_sequence_is_the_watchdog_contract(
     assert [b[0] for b in coarse_beats] == expected_coarse_stages
 
 
-# ---------------------------------------------------------------------------
 # The fallback decode's per-window beat, through the exact production call shape
-# ---------------------------------------------------------------------------
 
 
 def test_decode_fallback_beats_once_per_window_including_skips() -> None:

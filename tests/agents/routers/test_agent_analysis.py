@@ -801,9 +801,7 @@ async def test_analysis_window_overwidth_field_422s_without_persisting(
     assert not rows, "a rejected (422) PUT must not persist any AnalysisWindow row"
 
 
-# ---------------------------------------------------------------------------
 # Phase 57.1 (Plan 03): AnalysisProgressPayload schema validation
-# ---------------------------------------------------------------------------
 
 
 def test_progress_schema_rejects_extra_key() -> None:
@@ -887,9 +885,7 @@ def test_progress_schema_response_exposes_agent_and_file_id() -> None:
     assert resp.file_id == fid
 
 
-# ---------------------------------------------------------------------------
 # Phase 57.1 (Plan 03): POST /{file_id}/progress -- counter-only sibling handler
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1229,9 +1225,7 @@ async def test_analysis_unknown_token_returns_403(seed_test_agent: tuple[Agent, 
     assert r.status_code == 403
 
 
-# ---------------------------------------------------------------------------
 # Phase 45 (L-02): agent-stage scheduling-ledger clear on the control-side callbacks
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1333,9 +1327,7 @@ async def test_analysis_put_clear_uses_path_file_id_not_redirected(seed_test_age
     assert await _ledger_present(session, key_b), "another file's ledger row must NOT be redirected/cleared"
 
 
-# ---------------------------------------------------------------------------
 # Phase 83 (D-14): awaiting-cloud_job reaper at both analyze-terminal seams
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1398,13 +1390,11 @@ async def test_analysis_failed_leaves_running_cloud_job(seed_test_agent: tuple[A
     assert await _cloud_job_present(session, file_id), "the status='awaiting' filter must leave a RUNNING cloud_job row in place"
 
 
-# ---------------------------------------------------------------------------
 # phaze-wn1l: a concurrently-deleted FileRecord (a scan deletion racing an in-flight
 # analysis) must hold with a clean 200, not FK-violate into an unhandled 500. Each
 # callback is exercised against a `file_id` that was NEVER seeded -- the exact shape a
 # vanished FileRecord leaves behind, since `services.scan_deletion.delete_scan_cascade`
 # removes the row entirely rather than leaving a tombstone.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

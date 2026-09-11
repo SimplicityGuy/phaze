@@ -13,9 +13,6 @@ from tests.analyze.services.backends.protocol._shared import (
 )
 
 
-# === resolved_non_local_kind: N-Kueue-safe (any-kueue) + compute-only fail-fast ===========
-
-
 def test_resolved_non_local_kind_returns_compute_for_multiple_compute_only(backends_toml_env: Any) -> None:
     """The compute-only ``>1`` fail-fast is RETIRED (D-03): two COMPUTE backends (no kueue) return "compute".
 
@@ -82,9 +79,6 @@ def test_resolved_non_local_kind_returns_kueue_for_n_kueue(backends_toml_env: An
     assert backends.resolved_non_local_kind(settings) == "kueue"
 
 
-# === SCHED-01: resolve_backends supports N non-local backends (Phase-69 guard removal) ====
-
-
 def test_resolve_backends_returns_all_non_local(backends_toml_env: Any) -> None:
     """SCHED-01: a registry of 2+ non-local backends resolves to a list of that length -- no ValueError.
 
@@ -132,9 +126,6 @@ def test_resolve_backends_returns_all_non_local(backends_toml_env: Any) -> None:
     assert {b.id for b in non_local} == {"compute-a", "compute-b"}
 
 
-# === D-06: resolve_compute_backend inverse-lookup (backend_id -> ComputeBackend) ==========
-
-
 def test_resolve_compute_backend(backends_toml_env: Any) -> None:
     """D-06: the authoritative inverse-lookup returns the compute entry by id; None for miss/non-compute.
 
@@ -167,9 +158,6 @@ def test_resolve_compute_backend(backends_toml_env: Any) -> None:
     # A kueue id and the local id are NOT compute entries -> None (kind-filtered).
     assert backends.resolve_compute_backend(settings, "kueue-a") is None
     assert backends.resolve_compute_backend(settings, "local") is None
-
-
-# === MCOMP-03: per-file compute scratch resolution under local + 2 Kueue + 1 compute ======
 
 
 def test_resolve_compute_backend_scratch_under_local_2kueue_1compute(backends_toml_env: Any) -> None:

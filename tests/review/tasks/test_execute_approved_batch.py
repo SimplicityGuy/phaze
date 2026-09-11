@@ -107,7 +107,6 @@ async def test_execute_approved_batch_partial_failure(tmp_path: Path, monkeypatc
     _patch_settings(monkeypatch, [str(tmp_path)])
     api = _make_api_client_mock()
     orig_paths, proposed_paths = _seed_files(tmp_path, 3)
-    # Delete the middle original to force a read failure
     orig_paths[1].unlink()
     proposals = [_item(o, p, tmp_path) for o, p in zip(orig_paths, proposed_paths, strict=True)]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=proposals)
@@ -157,7 +156,6 @@ async def test_execute_approved_batch_sha256_mismatch(tmp_path: Path, monkeypatc
     _patch_settings(monkeypatch, [str(tmp_path)])
     api = _make_api_client_mock()
     orig_paths, proposed_paths = _seed_files(tmp_path, 2)
-    # First proposal: correct hash
     correct_hash = hashlib.sha256(orig_paths[0].read_bytes()).hexdigest()
     # Second proposal: wrong hash
     wrong_hash = "0" * 64
@@ -170,7 +168,6 @@ async def test_execute_approved_batch_sha256_mismatch(tmp_path: Path, monkeypatc
 
     assert result["error_count"] == 1
     assert result["processed_count"] == 2
-    # First file moved; second untouched
     assert proposed_paths[0].exists()
     assert not orig_paths[0].exists()
     assert orig_paths[1].exists()
@@ -320,7 +317,6 @@ async def test_execute_approved_batch_tolerates_failure_report_failure(tmp_path:
     api.patch_proposal_state.assert_awaited_once()
 
 
-# ---------------------------------------------------------------------------
 # End-to-end regression: dispatcher -> executor with the REAL stored shape.
 #
 # The pre-fix bug survived because dispatcher tests and executor tests each used
@@ -328,7 +324,6 @@ async def test_execute_approved_batch_tolerates_failure_report_failure(tmp_path:
 # RELATIVE destination directory (+ a separate proposed_filename), but the
 # executor treated proposed_path as an ABSOLUTE destination FILE. These tests
 # wire the two halves together so the shapes must agree.
-# ---------------------------------------------------------------------------
 
 
 async def test_e2e_dispatcher_to_executor_relative_dir_moves_file(
@@ -435,7 +430,6 @@ async def test_null_proposed_path_renames_in_place(tmp_path: Path, monkeypatch: 
     assert api.patch_proposal_state.await_args.args[1].current_path == str(dest)
 
 
-# ---------------------------------------------------------------------------
 # phaze-shzdj: dispatch must ship the file's CURRENT location as the move source.
 #
 # `FileRecord.original_path` is written once at ingest and never again (operator,
@@ -468,7 +462,6 @@ async def test_null_proposed_path_renames_in_place(tmp_path: Path, monkeypatch: 
 # Agent/FileRecord/RenameProposal, the wire payload built by
 # `get_approved_proposals_grouped_by_agent`, and `execute_approved_batch` against a
 # real fixture on disk.
-# ---------------------------------------------------------------------------
 
 
 async def _seed_catalog_row(
@@ -695,7 +688,6 @@ async def test_e2e_first_execution_is_unchanged_when_current_path_equals_origina
     assert items[0].source_path == str(orig)
 
 
-# ---------------------------------------------------------------------------
 # phaze-xzjrr: the producer/consumer wire seam, pinned by NAME and by VALUE.
 #
 # phaze-shzdj and phaze-2zeu0 both came from the same gap: the dispatcher and the
@@ -712,7 +704,6 @@ async def test_e2e_first_execution_is_unchanged_when_current_path_equals_origina
 # Under an alias the producer, the executor, mypy and every test in this file agree,
 # and the JSON key still says something false. Asserting on `model_dump(mode="json")`
 # is what sees it.
-# ---------------------------------------------------------------------------
 
 #: The JSON key carrying the move SOURCE in an `execute_approved_batch` payload.
 #:

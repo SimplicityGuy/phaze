@@ -128,14 +128,12 @@ async def test_get_inadmissible_count_degrades_to_zero_on_db_error() -> None:
     assert await get_inadmissible_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
 
 
-# ---------------------------------------------------------------------------
 # Phase 55 (55-05, D-04 / KROUTE-06): get_cloud_phase_counts — the degrade-safe
 # per-cloud_phase reader driving the admission-state dashboard card. Mirrors
 # get_inadmissible_count: each of the four counts (queued_behind_quota / admitted
 # / running / finished) is a _safe_count-backed read that degrades to 0 on a DB
 # error so the hot 5s /pipeline/stats poll never 500s. NULL cloud_phase rows
 # (a1/local deploys) count toward none.
-# ---------------------------------------------------------------------------
 
 
 def _cloud_job_phase(file_id: uuid.UUID, *, cloud_phase: str | None) -> CloudJob:
@@ -212,7 +210,6 @@ async def test_get_cloud_phase_counts_degrades_to_zero_on_db_error() -> None:
     assert counts == {"queued_behind_quota": 0, "admitted": 0, "running": 0, "finished": 0}
 
 
-# ---------------------------------------------------------------------------
 # derive_cloud_hold_reason -- the Cloud Routing card's truthful hold-reason sub-caption
 # (services.backends.derive_cloud_hold_reason). Table-driven: one test per branch of the drain's
 # own gate ladder (cloud disabled -> force-local -> no lane reachable -> every lane full -> no
@@ -220,7 +217,6 @@ async def test_get_cloud_phase_counts_degrades_to_zero_on_db_error() -> None:
 # / ``_probe_availability`` are monkeypatched (mirrors tests/shared/services/test_lane_snapshot.py's
 # idiom) so each cell controls exactly one gate without a real registry TOML or a live probe;
 # ``get_settings`` is monkeypatched only for the ``cloud_enabled`` flag each cell needs.
-# ---------------------------------------------------------------------------
 
 
 def _cloud_hold_settings(*, cloud_enabled: bool) -> Any:

@@ -221,9 +221,6 @@ async def _seed_in_flight(
     await session.commit()
 
 
-# --- Window full -> stage 0 -------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_window_full_stages_zero(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """With the backend's cap already in flight, the cron stages 0 new files (Phase 69: per-backend count)."""
@@ -244,9 +241,6 @@ async def test_window_full_stages_zero(async_engine: AsyncEngine, session: Async
     assert router.queues == {}
     # Held files untouched.
     assert set((await _states_for(session, ids)).values()) == {_HELD}
-
-
-# --- One free slot -> stage exactly 1 ---------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -279,9 +273,6 @@ async def test_one_free_slot_stages_one(async_engine: AsyncEngine, session: Asyn
     assert sorted(states.values()) == sorted([_DISPATCHED, _HELD, _HELD])
 
 
-# --- No compute agent -> no-op ----------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_no_compute_agent_is_noop(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """With no compute agent online the cron is a clean no-op -- nothing staged, files stay AWAITING_CLOUD."""
@@ -299,9 +290,6 @@ async def test_no_compute_agent_is_noop(async_engine: AsyncEngine, session: Asyn
     assert result == {"staged": 0, "skipped": 0}
     assert router.queues == {}
     assert set((await _states_for(session, ids)).values()) == {_HELD}
-
-
-# --- No fileserver agent -> no-op (compute online, fileserver absent) --------------------
 
 
 @pytest.mark.asyncio
@@ -326,9 +314,6 @@ async def test_no_fileserver_agent_is_noop(async_engine: AsyncEngine, session: A
     assert result == {"staged": 0, "skipped": 2}
     assert router.queues == {}
     assert set((await _states_for(session, ids)).values()) == {_HELD}
-
-
-# --- WR-02: fileserver vanishes mid-tick (present at GATE-2, gone at dispatch) -> clean hold ----
 
 
 @pytest.mark.asyncio
@@ -379,9 +364,6 @@ async def test_fileserver_vanishes_mid_tick_holds_cleanly(
     assert router.queues == {}
     # The raising file (and its peers) are untouched -- dispatch gates the fileserver BEFORE mutating.
     assert set((await _states_for(session, ids)).values()) == {_HELD}
-
-
-# --- Phase 67 (REG-04, D-14): the registry cloud_enabled gate on the staging cron ---------
 
 
 @pytest.mark.asyncio
@@ -456,9 +438,6 @@ async def test_cloud_compute_stages_normally(async_engine: AsyncEngine, session:
     assert result == {"staged": 2, "skipped": 0}
     states = await _states_for(session, ids)
     assert sum(1 for st in states.values() if st == _DISPATCHED) == 2
-
-
-# --- Phase 55 (D-01a): the k8s S3-staging branch -----------------------------------------
 
 
 def _patch_s3(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -538,9 +517,6 @@ async def test_k8s_branch_holds_with_no_fileserver(
 # provide.
 
 
-# --- FIFO: oldest AWAITING_CLOUD first ---------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_fifo_oldest_awaiting_cloud_first(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """Staging order is FIFO -- the oldest AWAITING_CLOUD file (by created_at) goes first."""
@@ -567,9 +543,6 @@ async def test_fifo_oldest_awaiting_cloud_first(async_engine: AsyncEngine, sessi
     assert states[newest.id] == _HELD
 
 
-# --- 144-file backlog never exceeds N ---------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_backlog_of_144_stages_at_most_n(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A 144-file AWAITING_CLOUD backlog with N=2 and an empty window stages AT MOST 2 in one tick."""
@@ -592,12 +565,8 @@ async def test_backlog_of_144_stages_at_most_n(async_engine: AsyncEngine, sessio
     assert sum(1 for st in states.values() if st == _HELD) == 142
 
 
-# --- WR-04: overlapping ticks never overshoot the ≤N window ------------------------------
 # NOTE (92-04): the two-tick overshoot cell ``test_overlapping_ticks_never_exceed_window`` moved to
 # ``tests/integration/test_staging_cron_concurrency.py`` (real committed-visible independent connections).
-
-
-# --- Double-tick collapses via the deterministic push_file:<id> key ----------------------
 
 
 @pytest.mark.asyncio
@@ -634,9 +603,6 @@ async def test_double_tick_dedups_via_deterministic_key(async_engine: AsyncEngin
     assert (await _states_for(session, [fid]))[fid] == _DISPATCHED
 
 
-# --- Controller registration: function + single narrow */5 cron (replaces the drain) -----
-
-
 def test_stage_cloud_window_registered_in_controller_functions_and_cron() -> None:
     """stage_cloud_window is in controller settings['functions'] AND exactly one CronJob('*/5 ...').
 
@@ -655,9 +621,6 @@ def test_stage_cloud_window_registered_in_controller_functions_and_cron() -> Non
     # The deprecated drain cron is gone -- no controller function is named release_awaiting_cloud.
     fn_names = {getattr(fn, "__name__", "") for fn in controller.settings["functions"]}
     assert "release_awaiting_cloud" not in fn_names, "the deprecated release_awaiting_cloud drain cron must be removed"
-
-
-# --- Landmine L1: the extracted no-commit _stage_file_to_s3 core -------------------------
 
 
 @pytest.mark.asyncio
@@ -746,9 +709,6 @@ def test_staging_module_is_fastapi_free() -> None:
 
     assert not any(name == "fastapi" or name.startswith("fastapi.") for name in imported), "staging module must not import fastapi"
     assert not any(name.startswith("phaze.routers") for name in imported), "staging module must not import phaze.routers"
-
-
-# --- Phase 69: tiered multi-backend drain, per-backend overshoot, AWAITING_CLOUD-untouched guard ---
 
 
 def _patch_multi_backends(monkeypatch: pytest.MonkeyPatch, backends: list[Any], **cfg_kw: Any) -> None:
@@ -872,9 +832,6 @@ async def test_held_awaiting_untouched_keeps_updated_at(
     cj = (await session.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalar_one()
     assert cj.attempts == 3
     assert cj.status == CloudJobStatus.AWAITING.value
-
-
-# --- CR-01 (SCHED-01/03): a file spilled to local is NOT re-dispatched to cloud on a later tick ---
 
 
 @pytest.mark.asyncio

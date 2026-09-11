@@ -72,7 +72,6 @@ def _write_session(tmp_path: Path, project: str, session_id: str, records: list[
     return path
 
 
-# --- Schema-faithful fixture builders -----------------------------------------------------------
 # Field shapes below are copied from real records inspected on 2026-08-21 while building this tool.
 
 
@@ -208,9 +207,6 @@ def _human_turn_with_image(session_id: str, ts: str, text: str) -> dict:
     }
 
 
-# --- Classification / noise filtering -----------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "builder",
     [_task_notification, _peer_message, _teammate_message_legacy, _security_review_prompt, _meta_skill_load],
@@ -253,9 +249,6 @@ def test_image_only_turn_has_no_text_and_is_excluded() -> None:
         "message": {"role": "user", "content": [{"type": "image", "source": {"type": "base64", "data": "..."}}]},
     }
     assert module._is_human_turn(record) is False
-
-
-# --- AskUserQuestion pairing ---------------------------------------------------------------------
 
 
 def test_ask_user_question_pairs_via_structured_tool_use_result(tmp_path: Path) -> None:
@@ -338,9 +331,6 @@ def test_ask_user_question_asked_by_a_sidechain_is_excluded(tmp_path: Path) -> N
     assert result.ask_user_question_events == []
 
 
-# --- Date-range filtering -------------------------------------------------------------------------
-
-
 def test_date_range_is_inclusive_at_both_boundaries(tmp_path: Path) -> None:
     module = _load_module()
     turn = _human_turn("sess-4", "2026-01-01T00:00:00.000Z", "boundary turn")
@@ -359,9 +349,6 @@ def test_date_range_excludes_turns_outside_the_window(tmp_path: Path) -> None:
     result = module.recover(tmp_path, since="2026-01-01T00:00:00.000Z", until="2026-01-01T00:01:00.000Z")
 
     assert result.human_turns == []
-
-
-# --- Bead-id filtering: literal (default) vs. context (opt-in) -----------------------------------
 
 
 def test_bead_id_literal_match_is_precise(tmp_path: Path) -> None:
@@ -429,9 +416,6 @@ def test_bead_id_context_window_does_not_reach_beyond_the_window(tmp_path: Path)
     texts = {t.text for t in result.human_turns}
     assert "yes go ahead" not in texts
     assert "Filed as phaze-far999." in texts
-
-
-# --- Rendering: honesty and no local-path leakage -------------------------------------------------
 
 
 def test_null_result_message_never_claims_the_decision_was_never_made(tmp_path: Path) -> None:
@@ -564,9 +548,6 @@ def test_attribution_note_is_absent_when_no_ask_user_question_events(tmp_path: P
     assert payload["attribution_note"] is None
 
 
-# --- CLI argument validation -----------------------------------------------------------------------
-
-
 def test_cli_requires_bead_or_date_range() -> None:
     module = _load_module()
     with pytest.raises(SystemExit):
@@ -624,9 +605,6 @@ def test_main_end_to_end_prints_markdown(tmp_path: Path, capsys: pytest.CaptureF
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "a decision, end to end" in out
-
-
-# --- Real-transcript integration: the actual bead fixtures ----------------------------------------
 
 
 def _recover_or_skip_if_window_empty(module: ModuleType, *, since: str, until: str, bead: str) -> Any:

@@ -162,9 +162,6 @@ async def _seed_poisoned_lane(session: AsyncSession, *, routable: int = _ROUTABL
     return poisoned_ids, behind_ids
 
 
-# --- the query-level primitive: a keyset cursor that can page past the poisoned prefix ------
-
-
 @pytest.mark.asyncio
 async def test_keyset_cursor_pages_past_the_head_of_line_run(session: AsyncSession) -> None:
     """``after=(created_at, id)`` returns the rows AFTER the cursor -- the primitive the drain walks on.
@@ -205,9 +202,6 @@ async def test_keyset_cursor_is_exact_across_a_created_at_tie(session: AsyncSess
     assert set(seen) == {f.id for f in tied}
     # And the walk is genuinely exhausted -- no fourth page.
     assert await get_cloud_staging_candidates(session, 3, after=cursor) == []
-
-
-# --- the regression: routable work behind 14 poisoned heads drains ------------------------
 
 
 @pytest.mark.asyncio
@@ -313,9 +307,6 @@ async def test_scan_budget_bounds_a_pathologically_long_poisoned_prefix(
     assert result == {"staged": 0, "skipped": 6}
     assert cloud.dispatched == []
     assert set((await _statuses(session, behind_ids)).values()) == {CloudJobStatus.AWAITING.value}
-
-
-# --- observability: a sustained all-held run escalates to WARNING --------------------------
 
 
 @pytest.mark.asyncio

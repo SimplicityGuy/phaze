@@ -192,10 +192,8 @@ VALID_PROPOSALS: dict[str, Any] = {
 VALID_JSON = json.dumps(VALID_PROPOSALS)
 
 
-# ---------------------------------------------------------------------------
 # Provider wire payloads -- the Anthropic Messages API and OpenAI Chat Completions
 # response schemas, hand-constructed (see EVIDENTIARY CLASS in the module docstring).
-# ---------------------------------------------------------------------------
 
 
 def anthropic_response(content: list[dict[str, Any]], *, stop_reason: str = "tool_use") -> dict[str, Any]:
@@ -246,9 +244,7 @@ def openai_message(content: str | None, *, finish_reason: str = "stop") -> dict[
     return openai_response([{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": finish_reason}])
 
 
-# ---------------------------------------------------------------------------
 # Driving the REAL litellm over a mocked socket
-# ---------------------------------------------------------------------------
 
 
 def _mock_transport(payload: dict[str, Any], status_code: int = 200) -> httpx.MockTransport:
@@ -308,9 +304,7 @@ def _parse_modes(captured: list[dict[str, Any]]) -> list[str]:
     return [event["parse_mode"] for event in captured if "parse_mode" in event]
 
 
-# ---------------------------------------------------------------------------
 # Baseline: the happy provider shape, on both paths
-# ---------------------------------------------------------------------------
 
 
 class TestWellFormedProviderResponse:
@@ -370,9 +364,7 @@ class TestWellFormedProviderResponse:
         assert consumer_generated != VALID_JSON
 
 
-# ---------------------------------------------------------------------------
 # Mode 1 -- markdown fences (now defended)
-# ---------------------------------------------------------------------------
 
 
 class TestMarkdownFences:
@@ -417,9 +409,7 @@ class TestMarkdownFences:
             await call_generate_batch(OPENAI_MODEL, openai_message("```json\nnot json at all\n```"))
 
 
-# ---------------------------------------------------------------------------
 # Mode 2 -- prose preamble (now defended)
-# ---------------------------------------------------------------------------
 
 
 class TestProsePreamble:
@@ -485,9 +475,7 @@ class TestWhyFenceStrippingLooksDeadOnTheConfiguredModel:
         assert _parse_modes(captured) == []
 
 
-# ---------------------------------------------------------------------------
 # Mode 3 -- content is None (now a legible error)
-# ---------------------------------------------------------------------------
 
 
 class TestContentIsNone:
@@ -571,9 +559,7 @@ class TestContentIsNone:
         assert "content_none" in _parse_modes(captured)
 
 
-# ---------------------------------------------------------------------------
 # Mode 4 -- empty choices list (handled by litellm, unchanged)
-# ---------------------------------------------------------------------------
 
 
 class TestEmptyChoices:
@@ -610,9 +596,7 @@ class TestEmptyChoices:
         assert "len(response.choices)" not in source
 
 
-# ---------------------------------------------------------------------------
 # Mode 5a -- truncation costing FIELDS: salvaged
-# ---------------------------------------------------------------------------
 
 
 class TestModeFiveASalvage:
@@ -732,9 +716,7 @@ class TestSalvageDiscardsNeverInfers:
         assert _parse_modes(captured) == []
 
 
-# ---------------------------------------------------------------------------
 # Mode 5b -- truncation costing SYNTAX: deliberately NOT repaired (phaze-km2x6)
-# ---------------------------------------------------------------------------
 
 
 class TestModeFiveBIsNotRepaired:
@@ -877,9 +859,7 @@ class TestModeFiveBIsNotRepaired:
             assert forbidden not in source
 
 
-# ---------------------------------------------------------------------------
 # The pin the whole file rests on
-# ---------------------------------------------------------------------------
 
 
 # The litellm minor line every verdict in this module was measured against -- originally 1.97

@@ -332,10 +332,8 @@ async def test_the_sidebar_stacks_under_the_main_column_below_the_large_breakpoi
     assert children[1] is sidebar
 
 
-# ---------------------------------------------------------------------------
 # phaze-x1qr3.11: the "more like this set" slot's real content (its `[data-more-like-this]`
 # presence is already covered above; these two tests cover what fills it).
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

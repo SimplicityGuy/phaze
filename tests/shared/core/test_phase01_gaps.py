@@ -12,9 +12,6 @@ from phaze.main import create_app
 from tests._route_introspection import effective_route_paths
 
 
-# --- Gap 1: Core Settings defaults ---
-
-
 def test_settings_database_url_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """Settings.database_url defaults to the Docker Compose postgres address."""
     monkeypatch.delenv("DATABASE_URL", raising=False)
@@ -52,9 +49,6 @@ def test_settings_openai_api_key_default_is_none(monkeypatch: pytest.MonkeyPatch
     assert s.openai_api_key is None
 
 
-# --- Gap 2: App factory structure ---
-
-
 def test_create_app_returns_fastapi_instance() -> None:
     """create_app() returns a FastAPI application instance."""
     from fastapi import FastAPI
@@ -73,9 +67,6 @@ def test_create_app_has_health_route() -> None:
     """create_app() registers the /health route."""
     app = create_app()
     assert "/health" in effective_route_paths(app)
-
-
-# --- Gap 3: Database session factory ---
 
 
 def test_get_session_is_async_generator_function() -> None:

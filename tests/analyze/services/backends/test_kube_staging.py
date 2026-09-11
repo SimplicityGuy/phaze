@@ -122,9 +122,7 @@ def _workload_item(name: str, *, owner_uid: str | None = None) -> dict[str, obje
     return {"apiVersion": "kueue.x-k8s.io/v1beta1", "kind": "Workload", "metadata": metadata, "status": {"conditions": []}}
 
 
-# --------------------------------------------------------------------------- #
 # build_job_manifest -- KSUBMIT-01/05 spec (HTTP-free)
-# --------------------------------------------------------------------------- #
 
 
 def test_build_job_manifest_spec() -> None:
@@ -379,9 +377,7 @@ def test_build_job_manifest_raises_when_manifest_field_unset(missing: str) -> No
         kube_staging.build_job_manifest(uuid.uuid4(), _kube(**{missing: None}))
 
 
-# --------------------------------------------------------------------------- #
 # D-04 auth: synthesized kubeconfig dict, both forms, distinct clients, no hack
-# --------------------------------------------------------------------------- #
 
 
 def test_kubeconfig_dict_from_synthesizes_from_api_url_and_token() -> None:
@@ -527,9 +523,7 @@ def test_source_has_no_token_hack() -> None:
     assert "api.auth.token" not in source
 
 
-# --------------------------------------------------------------------------- #
 # submit_job -- create 201 + 409-idempotent (KSUBMIT-01)
-# --------------------------------------------------------------------------- #
 
 
 async def test_submit_job_creates_suspended_job(kube_respx: MockRouter) -> None:
@@ -593,9 +587,7 @@ async def test_sa_token_applied_as_bearer(kube_respx: MockRouter) -> None:
     assert route.calls.last.request.headers.get("Authorization") == "Bearer sa-secret-token"
 
 
-# --------------------------------------------------------------------------- #
 # get_job / list_inflight_jobs
-# --------------------------------------------------------------------------- #
 
 
 async def test_get_job_returns_status(kube_respx: MockRouter) -> None:
@@ -632,9 +624,7 @@ def test_list_inflight_jobs_marked_deferred() -> None:
     assert "intentionally NOT invoked" in doc
 
 
-# --------------------------------------------------------------------------- #
 # get_workload_for -- label-hit / owner-ref-fallback / both-miss (A2 de-risk)
-# --------------------------------------------------------------------------- #
 
 
 async def test_get_workload_for_label_hit(kube_respx: MockRouter) -> None:
@@ -711,9 +701,7 @@ async def test_get_workload_for_skips_a_workload_owned_by_a_different_job(kube_r
     assert workload.name == "wl-ours"
 
 
-# --------------------------------------------------------------------------- #
 # delete_job -- 200 + 404-idempotent (KSUBMIT-06)
-# --------------------------------------------------------------------------- #
 
 
 async def test_delete_job_success(kube_respx: MockRouter) -> None:
@@ -736,12 +724,10 @@ async def test_delete_idempotent_404(kube_respx: MockRouter) -> None:
     await kube_staging.delete_job(name, _kube())
 
 
-# --------------------------------------------------------------------------- #
 # phaze-202e -- pod-state wedge classifier (PURE, HTTP-free)
 #
 # The state-based replacement for the phaze-1b39 wall clock. The invariant these pin, in order of
 # importance: a Running pod is NEVER a wedge, at any age. Everything else is proof-of-death.
-# --------------------------------------------------------------------------- #
 
 
 _NOW = datetime(2026, 7, 28, 12, 0, 0, tzinfo=UTC)
@@ -873,9 +859,7 @@ def test_describe_job_pods_summarises_for_the_operator_log() -> None:
     )
 
 
-# --------------------------------------------------------------------------- #
 # phaze-1q4g -- NODE_LOST: the pod died WITH ITS NODE, not because of the file
-# --------------------------------------------------------------------------- #
 #
 # A node-loss re-drive deliberately does NOT charge ``cloud_job.attempts`` (an infrastructure fault
 # is not the file's fault). That made it invisible to the retry ceiling, which is how one file
@@ -942,9 +926,7 @@ def test_classify_job_pods_an_in_container_oomkill_is_not_node_loss() -> None:
     assert kube_staging.classify_job_pods([pod], now=_NOW) is kube_staging.PodLiveness.STARTING
 
 
-# --------------------------------------------------------------------------- #
 # phaze-202e -- list_pods_for_job (respx seam, modern + legacy job-name label)
-# --------------------------------------------------------------------------- #
 
 
 def _pod_list(*names: str) -> dict[str, object]:
@@ -991,9 +973,7 @@ async def test_list_pods_for_job_returns_empty_when_both_labels_miss(kube_respx:
     assert await kube_staging.list_pods_for_job("phaze-analyze-x", _kube()) == []
 
 
-# --------------------------------------------------------------------------- #
 # Import-boundary purity (mirror s3_staging)
-# --------------------------------------------------------------------------- #
 
 
 def test_kube_staging_has_no_orm_imports() -> None:
@@ -1004,7 +984,6 @@ def test_kube_staging_has_no_orm_imports() -> None:
     assert "phaze.models" not in source
 
 
-# --------------------------------------------------------------------------- #
 # get_local_queue -- success / NotFoundError / transient (Phase 56, KDEPLOY-04 probe)
 #
 # The startup reachability probe GETs the configured Kueue LocalQueue by name: refresh() raises
@@ -1012,7 +991,6 @@ def test_kube_staging_has_no_orm_imports() -> None:
 # generic ``kr8s.ServerError`` on a transient kube-API/mesh failure. The caller (controller.startup)
 # treats BOTH as "unreachable" and flags it non-fatally. Phase 70 (MKUE-03): the probe is per-cluster,
 # taking the backend's own ``KubeConfig``.
-# --------------------------------------------------------------------------- #
 
 
 def _local_queue_json() -> dict[str, object]:

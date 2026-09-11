@@ -361,9 +361,7 @@ async def test_search_filter_panel_collapsed(client: AsyncClient) -> None:
     assert response.headers["location"] == "/?palette=1"
 
 
-# ---------------------------------------------------------------------------
 # Discogs search integration (DISC-03)
-# ---------------------------------------------------------------------------
 
 
 async def create_searchable_discogs_link(
@@ -465,7 +463,6 @@ async def test_summary_counts_include_discogs(client: AsyncClient, session: Asyn
     assert response.headers["location"] == "/?palette=1"
 
 
-# ---------------------------------------------------------------------------
 # ``/search/`` history-restore response shape (phaze-64uy) -- HYGIENE, not a live defect.
 #
 # This handler branched on the raw ``HX-Request`` header, which routers/response_shape.py rule 1
@@ -476,7 +473,6 @@ async def test_summary_counts_include_discogs(client: AsyncClient, session: Asyn
 # It is converted, and pinned here, so that adding ``hx-push-url`` to these controls later cannot
 # silently re-introduce the defect: the shape would already be correct on the day the URL starts
 # entering history.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -522,9 +518,7 @@ async def test_search_restore_header_alone_does_not_return_a_fragment(client: As
     assert response.headers["location"] == "/?palette=1"
 
 
-# ---------------------------------------------------------------------------
 # The ⌘K palette's set glyph on a Files-group row (phaze-x1qr3.9)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

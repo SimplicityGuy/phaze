@@ -165,7 +165,6 @@ jobs:
           duration=$((end_time - START_TIME))
           echo "::notice title=Build Metrics::Service: ${SERVICE_NAME}, Duration: ${duration}s, Cache Used: ${CACHE_USED}"
 
-          # Check cache hit rate
           if [[ -n "${CACHE_HIT}" ]]; then
             echo "::notice title=Cache Performance::Docker cache hit for ${SERVICE_NAME}"
           fi

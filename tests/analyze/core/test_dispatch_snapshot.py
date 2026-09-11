@@ -55,9 +55,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# --- registry-derived settings stub (matches what the CURRENT drain reads) --------------
-
-
 class _StubCfg:
     """Stand-in for the registry-derived reads ``stage_cloud_window`` makes.
 

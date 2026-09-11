@@ -361,9 +361,7 @@ async def test_unknown_token_returns_403(session: AsyncSession, seed_test_agent:
     assert r.status_code == 403
 
 
-# ---------------------------------------------------------------------------
 # Incident 260608: completed_at terminal-timestamp stamping
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -429,9 +427,7 @@ async def test_same_state_patch_does_not_stamp_completed_at(session: AsyncSessio
     assert b.completed_at is None
 
 
-# ---------------------------------------------------------------------------
 # PR4: last_progress_at heartbeat stamping
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -489,9 +485,7 @@ async def test_same_state_no_op_does_not_stamp_last_progress_at(session: AsyncSe
     assert b.last_progress_at is None, "same-state no-op PATCH must NOT stamp the heartbeat"
 
 
-# ---------------------------------------------------------------------------
 # phaze-v392: terminal-state guard for status-less PATCHes
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -606,11 +600,9 @@ async def test_same_terminal_status_with_extra_mutating_field_still_409s(session
     assert b.processed_files == 0
 
 
-# ---------------------------------------------------------------------------
 # phaze-01a3h: at-least-once retry of the agent's REAL terminal PATCH body (which always
 # carries extra fields alongside status, e.g. tasks/scan.py:317-320/:296-299/:337-340) must be
 # a 200 echo, not a 409 -- the old guard only recognized a bare {"status"} body as a replay.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -691,7 +683,6 @@ def test_router_registered_in_main_app() -> None:
     assert any("PATCH" in getattr(r, "methods", set()) for r in matching), "No PATCH method bound on the scan-batches route"
 
 
-# ---------------------------------------------------------------------------
 # phaze-bnvx: concurrent PATCH must not bypass the terminal/state-machine guards.
 #
 # The hermetic ``session`` fixture binds every session to ONE connection inside a
@@ -705,7 +696,6 @@ def test_router_registered_in_main_app() -> None:
 # commits, then re-reads the committed terminal status and gets 409 instead of
 # silently overwriting it. Without the lock both reads observe the same stale
 # RUNNING snapshot and the last commit wins blindly -- the regression this bead closes.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration

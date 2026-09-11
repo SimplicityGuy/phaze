@@ -49,12 +49,10 @@ if TYPE_CHECKING:
 _WORKSPACE_STAGES = ["discover", "metadata", "analyze"]
 
 
-# ---------------------------------------------------------------------------
 # Module-level async seed helpers (test fixtures -- ORM inserts only, no backend change).
 # Plans 58-02..04 build their workspace assertions on these. They live here (not conftest)
 # because they are Phase-58-specific shapes; ``conftest.py`` already seeds the legacy agent
 # so a bare FileRecord satisfies its NOT NULL + FK ``agent_id`` default.
-# ---------------------------------------------------------------------------
 
 
 async def _seed_file(
@@ -142,9 +140,7 @@ async def _seed_cloud_job(
     return job
 
 
-# ---------------------------------------------------------------------------
 # Foundation tests (FILLED in task 58-01-00).
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -370,10 +366,8 @@ async def test_other_workspaces_still_sink_the_analysis_health_card_hidden(clien
         assert "Analysis Health" not in body, f"{stage} must not render the real (visible) card"
 
 
-# ---------------------------------------------------------------------------
 # Workspace tests -- xfail stubs converted to real assertions by their owning plan/task.
 # (names + reasons per 58-VALIDATION.md Per-Task Verification Map)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1032,9 +1026,7 @@ async def test_analyze_file_table_lane_and_windows(client: AsyncClient, session:
     assert "setInterval" not in body
 
 
-# ---------------------------------------------------------------------------
 # Phase 95 (phaze-zqvh.2, CONSOLE-04): the BOUNDED analyze file grid + its status-filter/pager fragment.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1137,9 +1129,7 @@ async def test_analyze_files_fragment_unknown_status_degrades(client: AsyncClien
     assert "Analyze files pagination" not in body
 
 
-# ---------------------------------------------------------------------------
 # Phase 95 (phaze-zqvh.3): bound the 5s poll's per-tick #analyze-lanes swap churn (idempotent OOB swap).
-# ---------------------------------------------------------------------------
 
 
 def _analyze_lanes_hash(body: str) -> str | None:

@@ -74,12 +74,10 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# ---------------------------------------------------------------------------
 # A REAL audio file. Real MPEG1 Layer3 frames, parsed and rewritten by real mutagen -- the same
 # ``_make_mp3`` shape tests/review/services/test_tag_writer.py and tests/review/tasks/test_tag_write.py
 # already use. A synthetic byte blob would not survive `mutagen.File()` and so could not exercise
 # `audio.save()`, which is the operation whose side effect this whole bead is about.
-# ---------------------------------------------------------------------------
 
 
 def _make_mp3(path: Path) -> Path:

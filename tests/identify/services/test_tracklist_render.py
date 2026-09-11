@@ -62,9 +62,6 @@ INTERSTITIAL_HTML = """
 EMPTY_HTML = "<html><head><title>Sven Vath @ Somewhere</title></head><body><div class='tlpTBIcon'></div></body></html>"
 
 
-# --- Fakes for the browser boundary ---
-
-
 class FakePage:
     """A `RenderPage` whose per-navigation HTML is scripted by the test."""
 
@@ -203,9 +200,6 @@ def no_host_pacing():
     """
     with patch("phaze.services.tracklist_render.reserve_host_request_slot", new_callable=AsyncMock) as paced:
         yield paced
-
-
-# --- Outcome classification ---
 
 
 class TestRenderOutcomes:
@@ -364,9 +358,6 @@ class TestLooksLikeInterstitial:
     def test_widget_markup_alone_is_not_a_challenge(self, html: str):
         """The embedded Turnstile WIDGET appears on pages we were let through -- not a marker."""
         assert not looks_like_interstitial(html)
-
-
-# --- Lifetime, cleanup and pacing ---
 
 
 class TestBrowserLifetime:
@@ -562,9 +553,6 @@ class TestContextOptions:
         assert browser.contexts[0].options == {}
 
 
-# --- Xvfb ---
-
-
 class FakeProcess:
     """A stand-in for an Xvfb `subprocess.Popen`."""
 
@@ -704,9 +692,6 @@ class TestXvfbDisplay:
         display.stop()
 
         assert display.display is None
-
-
-# --- PatchrightLauncher (no browser launched: the patchright objects are faked) ---
 
 
 class TestPatchrightLauncherUserAgent:
@@ -1007,9 +992,6 @@ class TestPatchrightLauncherLaunch:
         assert len(drivers) == 2
         assert drivers[0].stopped == 1
         assert drivers[1].stopped == 0, "the successful attempt's driver must still be live"
-
-
-# --- Recorded live captures ---
 
 
 class TestRecordedCaptures:

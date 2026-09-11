@@ -53,9 +53,7 @@ _SCANNED_DIRS = (
 )
 
 
-# ---------------------------------------------------------------------------
 # Static guard
-# ---------------------------------------------------------------------------
 
 
 class _ProducerVisitor(ast.NodeVisitor):
@@ -167,9 +165,7 @@ def test_static_guard_allows_named_queue_construction() -> None:
     assert visitor.default_refs == []
 
 
-# ---------------------------------------------------------------------------
 # Runtime guard
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -239,7 +235,6 @@ async def test_unknown_task_raises_value_error() -> None:
         await resolve_queue_for_task("definitely_not_a_task", app_state, None)
 
 
-# ---------------------------------------------------------------------------
 # Phase 55 (KROUTE-04): the k8s enqueue site is routed; the k8s backfill is bounded
 #
 # Two properties lock the no-over-enqueue invariant for the Phase-55 k8s seam:
@@ -250,7 +245,6 @@ async def test_unknown_task_raises_value_error() -> None:
 # 2. The "Backfill to K8s" candidate query is the bounded ledger-scoped filter
 #    (ANALYSIS_FAILED ∧ duration ∧ EXISTS scheduling_ledger), NOT a bare ``state ==
 #    ANALYSIS_FAILED`` whole-backlog sweep -- the v4.0.6 / v5.0 over-enqueue incident class.
-# ---------------------------------------------------------------------------
 
 
 # phaze-vsqpr: ``services/pipeline.py`` became the package ``services/pipeline/``. The guard below

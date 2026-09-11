@@ -187,7 +187,6 @@ def test_animation_respects_reduced_motion() -> None:
     assert "motion-safe:max-lg:transition-transform" in source, "the drawer transition ignores prefers-reduced-motion"
 
 
-# ---------------------------------------------------------------------------
 # phaze-tzy6s.17 (CR-13-1): the drawer's ARIA contract.
 #
 # .13 added a disclosure control and a focus-trapped overlay, and neither announced what it
@@ -195,7 +194,6 @@ def test_animation_respects_reduced_motion() -> None:
 # carried x-trap + a backdrop without role="dialog"/aria-modal -- so below `lg` a screen
 # reader described a trap the user could not be told they were in. The guard above only
 # checked the `lg:hidden` breakpoint, which is why both slipped through.
-# ---------------------------------------------------------------------------
 
 
 def test_the_drawer_trigger_announces_its_state_and_what_it_controls() -> None:

@@ -125,12 +125,10 @@ async def test_get_pushed_count_degrades_to_zero_on_db_error() -> None:
     assert await get_pushed_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
 
 
-# ---------------------------------------------------------------------------
 # phaze-zyoag acceptance 1/2/3: the per-backend-kind seam. SUBMITTED means opposite things on kueue
 # (post-upload, admitted-or-queued, D-10) vs compute (mid-rsync, D-10) -- the two window-count cards
 # must split it by the row's OWN ``backend_id``, resolved through the SAME registry projection
 # (``non_local_backend_kinds``) the per-file lane badges already use.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

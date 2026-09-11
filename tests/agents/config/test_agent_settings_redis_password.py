@@ -102,9 +102,7 @@ def test_default_agent_env_is_dev() -> None:
     assert cfg.agent_env == "dev", f"Default agent_env must be 'dev'; got {cfg.agent_env!r}"
 
 
-# ---------------------------------------------------------------------------
 # Phase 29 CR-01: production refuses http:// for agent_api_url
-# ---------------------------------------------------------------------------
 
 
 def test_production_refuses_http_agent_api_url() -> None:
@@ -157,9 +155,7 @@ def test_dev_accepts_http_agent_api_url() -> None:
     assert cfg.agent_api_url == "http://localhost:8000"
 
 
-# ---------------------------------------------------------------------------
 # Phase 29 CR-02: PHAZE_REDIS_URL env var must bind to BaseSettings.redis_url
-# ---------------------------------------------------------------------------
 
 
 def test_phaze_redis_url_env_var_binds(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:  # type: ignore[no-untyped-def]

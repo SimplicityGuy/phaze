@@ -56,9 +56,6 @@ def signals(
     )
 
 
-# --- Query normalization ----------------------------------------------------------------------
-
-
 class TestNormalizeQuery:
     """Two spellings of one set must produce one query, or the drain pays twice for it."""
 
@@ -136,9 +133,6 @@ class TestPartExtraction:
     def test_part_marker_is_stripped_from_the_query(self) -> None:
         """Parts of one recording must share a query so one lookup answers all of them."""
         assert normalize_query("Artist - Event 2024-04-12 part1.mp3") == normalize_query("Artist - Event 2024-04-12 part2.mp3")
-
-
-# --- Classification ---------------------------------------------------------------------------
 
 
 class TestClassify:
@@ -223,9 +217,6 @@ class TestDetectEmbeddedTracklist:
         assert detect_embedded_tracklist({"comment": [1, 2, 3]}) is False
 
 
-# --- Duration helpers -------------------------------------------------------------------------
-
-
 class TestDurationMatching:
     def test_tolerance_is_the_larger_of_absolute_and_relative(self) -> None:
         assert duration_tolerance(600.0) == 45.0  # 2% of 10min < 45s
@@ -255,9 +246,6 @@ class TestSetKey:
         key = set_key("artist event 2024-04-12", 3600.0)
         assert "artist" not in key
         assert len(key) == 64
-
-
-# --- Grouping ---------------------------------------------------------------------------------
 
 
 class TestGroupUniqueSets:

@@ -16,9 +16,7 @@ from phaze.services.tracklist_matcher import parse_live_set_filename
 from phaze.services.tracklist_query import DerivedQuery, derive_query, resolve_ambiguous_date_order
 
 
-# --------------------------------------------------------------------------------------------
 # Scene-group stripping
-# --------------------------------------------------------------------------------------------
 
 
 class TestSceneGroupStripping:
@@ -117,9 +115,7 @@ class TestSceneGroupPositionalCorroboration:
         assert "&" in result.query
 
 
-# --------------------------------------------------------------------------------------------
 # Source-tag stripping
-# --------------------------------------------------------------------------------------------
 
 
 class TestSourceTagStripping:
@@ -147,9 +143,7 @@ class TestSourceTagStripping:
         assert "320" not in result.query
 
 
-# --------------------------------------------------------------------------------------------
 # Date extraction
-# --------------------------------------------------------------------------------------------
 
 
 class TestDateExtraction:
@@ -210,9 +204,7 @@ class TestResolveAmbiguousDateOrderSeam:
         assert resolve_ambiguous_date_order(scene_group=None, year=2021, first=5, second=8) is None
 
 
-# --------------------------------------------------------------------------------------------
 # Parenthetical radio-show handling
-# --------------------------------------------------------------------------------------------
 
 
 class TestParentheticalRadioShow:
@@ -242,9 +234,7 @@ class TestParentheticalRadioShow:
         assert result.radio_show is False
 
 
-# --------------------------------------------------------------------------------------------
 # Mojibake repair (acceptance: "repaired before searching")
-# --------------------------------------------------------------------------------------------
 
 
 class TestMojibakeRepair:
@@ -266,9 +256,7 @@ class TestMojibakeRepair:
         assert result.source_tags == ("WEB",)
 
 
-# --------------------------------------------------------------------------------------------
 # Structured query shape + graceful fallback
-# --------------------------------------------------------------------------------------------
 
 
 class TestQueryShapeAndFallback:
@@ -302,9 +290,7 @@ class TestQueryShapeAndFallback:
         assert result.date == date(2019, 7, 20)
 
 
-# --------------------------------------------------------------------------------------------
 # Internal-heuristic edge cases (branch coverage for the conservative-by-design guards)
-# --------------------------------------------------------------------------------------------
 
 
 class TestInternalHeuristicEdgeCases:
@@ -341,9 +327,7 @@ class TestInternalHeuristicEdgeCases:
         assert result.query == "_LIVE_"
 
 
-# --------------------------------------------------------------------------------------------
 # Labeled-sample comparison against the naive spike heuristic (the bead's core acceptance bar)
-# --------------------------------------------------------------------------------------------
 
 # (filename, expected_artist, expected_event) -- realistic-but-invented scene-release shapes,
 # deliberately NOT the one rigid "{Artist} - Live @ {Event} {YYYY.MM.DD}.{ext}" shape the naive

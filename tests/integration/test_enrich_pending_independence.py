@@ -142,9 +142,7 @@ async def _pending_ids(session: AsyncSession) -> dict[str, set[uuid.UUID]]:
     }
 
 
-# --------------------------------------------------------------------------------------------------
 # SC#1: every ordering -- each stage's pending set is independent of the other AND of state.
-# --------------------------------------------------------------------------------------------------
 @pytest.mark.parametrize("order", list(permutations(_STAGES)))
 async def test_enrich_pending_sets_are_independent(db_session: AsyncSession, order: tuple[str, ...]) -> None:
     file = await _file(db_session)
@@ -167,10 +165,8 @@ async def test_enrich_pending_sets_are_independent(db_session: AsyncSession, ord
         assert file.id not in done[stage], f"after every stage the file must be absent from the {stage} set"
 
 
-# --------------------------------------------------------------------------------------------------
 # Deadlock-detection: metadata done + state advanced => STILL in the analyze set (RED pre-cutover: the
 # state-gated analyze query keyed on state == DISCOVERED never re-surfaces an advanced file).
-# --------------------------------------------------------------------------------------------------
 async def test_metadata_done_state_advanced_still_in_analyze_set(db_session: AsyncSession) -> None:
     file = await _file(db_session)
     db_session.add(FileMetadata(file_id=file.id, failed_at=None))
@@ -181,9 +177,7 @@ async def test_metadata_done_state_advanced_still_in_analyze_set(db_session: Asy
     assert file.id in sets["analyze"]  # RED pre-cutover: analyze read state == DISCOVERED
 
 
-# --------------------------------------------------------------------------------------------------
 # A1 (T-82-A1): a cloud-dispatched file (active cloud_job status) is ABSENT from the analyze set.
-# --------------------------------------------------------------------------------------------------
 @pytest.mark.parametrize("status", _ACTIVE_CLOUD_STATUSES)
 async def test_cloud_dispatched_file_absent_from_analyze_set(db_session: AsyncSession, status: str) -> None:
     file = await _file(db_session)  # membership is driven by the active cloud_job row seeded below
@@ -194,10 +188,8 @@ async def test_cloud_dispatched_file_absent_from_analyze_set(db_session: AsyncSe
     assert file.id not in sets["analyze"], f"a cloud_job(status={status!r}) file must never be a local analyze candidate"
 
 
-# --------------------------------------------------------------------------------------------------
 # A1 negative: a TERMINALLY-FAILED cloud burst (no AnalysisResult) IS a legitimate local-retry candidate.
 # Proves the exclusion is scoped to ACTIVE cloud statuses, not "any cloud_job row exists".
-# --------------------------------------------------------------------------------------------------
 async def test_cloud_failed_file_is_local_analyze_candidate(db_session: AsyncSession) -> None:
     file = await _file(db_session)
     db_session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, status=CloudJobStatus.FAILED.value))
@@ -207,10 +199,8 @@ async def test_cloud_failed_file_is_local_analyze_candidate(db_session: AsyncSes
     assert file.id in sets["analyze"], "a terminally-failed cloud burst with no AnalysisResult must be re-analyzable locally"
 
 
-# --------------------------------------------------------------------------------------------------
 # Pitfall 1: the derived analyze set is file-type-scoped -- a non-music DISCOVERED file is now absent
 # (RED pre-cutover: the state-gated query was file-type-agnostic).
-# --------------------------------------------------------------------------------------------------
 async def test_non_music_file_absent_from_analyze_set(db_session: AsyncSession) -> None:
     music = await _file(db_session, file_type="mp3")
     other = await _file(db_session, file_type="txt")
@@ -220,9 +210,7 @@ async def test_non_music_file_absent_from_analyze_set(db_session: AsyncSession) 
     assert other.id not in sets["analyze"]  # RED pre-cutover: DISCOVERED + no file_type filter -> included
 
 
-# --------------------------------------------------------------------------------------------------
 # dedup-exclusion: a dedup-resolved file is absent from ALL THREE enrich pending sets.
-# --------------------------------------------------------------------------------------------------
 async def test_dedup_resolved_file_absent_from_all_three_sets(db_session: AsyncSession) -> None:
     resolved = await _file(db_session)
     canonical = await _file(db_session)

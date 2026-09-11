@@ -303,9 +303,6 @@ async def test_reconcile_releases_the_advisory_lock_on_a_row_deleted_mid_sweep(s
     assert session.in_transaction() is False  # the skip released the lock rather than leaking it
 
 
-# === models_pvc_name: optional per-Kueue-backend PVC mount knob (round-trip through TOML) ====
-
-
 def test_kube_models_pvc_name_round_trips_from_backends_toml(backends_toml_env: Any) -> None:
     """An optional ``models_pvc_name`` in ``[backends.kube]`` parses and round-trips onto the resolved
     backend's KubeConfig (a plain PVC object name -- build_job_manifest mounts it read-only at /models)."""
@@ -682,9 +679,6 @@ async def test_reap_still_fires_on_an_uploaded_row_with_a_live_but_irrelevant_s3
     assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.AWAITING.value
 
 
-# === phaze-jwz0: the reaper commits the spill BEFORE the S3 cleanup (outside the txn/lock) ============
-
-
 @pytest.mark.asyncio
 async def test_reap_commits_the_spill_before_s3_io_so_a_failing_bucket_never_undoes_it(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any
@@ -720,9 +714,6 @@ async def test_reap_commits_the_spill_before_s3_io_so_a_failing_bucket_never_und
     # The load-bearing assertion: the failing bucket did NOT roll the durable spill back.
     assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.AWAITING.value
     assert await backend.in_flight_count(session) == 0  # the cap slot is genuinely released
-
-
-# === phaze-wa9x: the post-commit delete is generation-safe against a concurrent re-dispatch =============
 
 
 @pytest.mark.asyncio

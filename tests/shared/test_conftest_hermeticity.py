@@ -109,7 +109,6 @@ async def test_production_fanout_sees_in_test_seeded_row(session: AsyncSession, 
     assert progress["metadata"]["done"] == 0, "no metadata row was seeded, yet metadata.done is non-zero"
 
 
-# --------------------------------------------------------------------------------------------------
 # Property 4 (phaze-5lq8a): the teardown ORDERING that keeps property 2 true when the close FAILS.
 #
 # `session`'s finalizer used to be two sequential awaits -- `await s.close()` then
@@ -122,7 +121,6 @@ async def test_production_fanout_sees_in_test_seeded_row(session: AsyncSession, 
 # Driven against doubles rather than a live fixture because the failure needs `close()` to RAISE, and
 # there is no way to make the real session do that on demand without also destroying the connection
 # the assertion would have to read back through.
-# --------------------------------------------------------------------------------------------------
 class _ExplodingSession:
     """Stands in for the `AsyncSession` whose `close()` hits an already-discarded savepoint."""
 

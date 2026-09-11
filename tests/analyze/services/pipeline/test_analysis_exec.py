@@ -254,10 +254,8 @@ async def test_progress_cb_error_never_fails_the_analysis(monkeypatch: pytest.Mo
     assert result["fine_windows_total"] == 3
 
 
-# ---------------------------------------------------------------------------
 # Defensive-branch unit coverage: a scripted fake process stands in for the child,
 # exercising protocol paths a REAL well-behaved child can never produce.
-# ---------------------------------------------------------------------------
 
 
 def _stream(lines: list[bytes]) -> asyncio.StreamReader:

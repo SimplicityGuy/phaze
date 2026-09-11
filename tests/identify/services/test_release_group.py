@@ -31,9 +31,7 @@ from phaze.services.release_group import (
 KNOWN_GROUPS = ("talion", "1king", "1real", "cin_int", "ffm", "sob", "coin_int", "edc", "hsalive")
 
 
-# --------------------------------------------------------------------------------------------
 # Accepted shapes
-# --------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -109,9 +107,7 @@ def test_every_known_group_survives_every_tail_shape(template: str, group: str) 
     assert extract_release_group(template.format(group=group)) == group
 
 
-# --------------------------------------------------------------------------------------------
 # The defect this bead exists to prevent: years are not release groups
-# --------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -157,9 +153,7 @@ def test_year_rejection_is_reported_as_numeric() -> None:
     assert (detail.group, detail.raw, detail.reason) == (None, "2014", "numeric")
 
 
-# --------------------------------------------------------------------------------------------
 # The other defect: source and quality tags are not release groups
-# --------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("token", sorted(SOURCE_TOKENS | QUALITY_TOKENS | STATUS_TOKENS))
@@ -232,9 +226,7 @@ def test_the_internal_suffix_only_glues_onto_a_group_shaped_field(filename: str,
     assert (detail.group, detail.reason) == (None, reason)
 
 
-# --------------------------------------------------------------------------------------------
 # Positional evidence: shape alone is never enough
-# --------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -260,9 +252,7 @@ def test_a_glued_separator_alone_is_sufficient_evidence() -> None:
     assert extract_release_group("Artist-Event-talion.mp3") == "talion"
 
 
-# --------------------------------------------------------------------------------------------
 # Degenerate and malformed input -- pure, total, never raises
-# --------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -299,9 +289,7 @@ def test_extraction_is_deterministic_and_side_effect_free() -> None:
     assert extract_release_group(filename) == extract_release_group(filename) == "talion"
 
 
-# --------------------------------------------------------------------------------------------
 # Invariants over the accepted-shape corpus above
-# --------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("group", KNOWN_GROUPS)

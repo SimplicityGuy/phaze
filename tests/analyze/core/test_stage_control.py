@@ -204,10 +204,8 @@ async def test_clear_stage_control_cache_forces_a_fresh_read(monkeypatch: pytest
     assert j2.scheduled == SENTINEL
 
 
-# ----------------------------------------------------------------------------------------
 # phaze-geuq: enforce_stage_pause_on_process (before_process) / repark_if_stage_paused
 # (after_process) -- covers SAQ's `_retry` before_enqueue bypass.
-# ----------------------------------------------------------------------------------------
 
 
 class _FakeUpdatingQueue:

@@ -131,9 +131,7 @@ def test_renderable_alert_status_is_distinct_from_the_malformed_payload_status()
     assert MALFORMED_PAYLOAD_STATUS == 422
 
 
-# ---------------------------------------------------------------------------
 # Dual-shape browser-cache headers (contract rule 6, phaze-r6e5m)
-# ---------------------------------------------------------------------------
 
 
 def test_dual_shape_response_headers_disables_browser_caching() -> None:
@@ -168,7 +166,6 @@ def test_dual_shape_response_headers_is_a_plain_str_mapping_usable_as_response_h
     assert all(isinstance(k, str) and isinstance(v, str) for k, v in DUAL_SHAPE_RESPONSE_HEADERS.items())
 
 
-# ---------------------------------------------------------------------------
 # Corpus-level guard (phaze-64uy)
 #
 # Contract rule 1 is phrased as a BAN on the raw ``HX-Request`` header rather than as advice,
@@ -181,7 +178,6 @@ def test_dual_shape_response_headers_is_a_plain_str_mapping_usable_as_response_h
 # more still branching on the raw header, including the /s/* shell rail -- the app's primary
 # navigation. That is the shape of the failure this guard exists to prevent: the rule was written
 # down and the corpus quietly disagreed with it.
-# ---------------------------------------------------------------------------
 
 
 _ROUTERS_DIR = Path(__file__).parents[3] / "src" / "phaze" / "routers"
@@ -259,7 +255,6 @@ def test_no_template_branches_on_the_raw_hx_request_header() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
 # Corpus-level guard (phaze-r6e5m, contract rule 6)
 #
 # Every ``wants_fragment`` fork is, by construction, a handler that answers ONE URL with more than
@@ -268,7 +263,6 @@ def test_no_template_branches_on_the_raw_hx_request_header() -> None:
 # certainly left the fork's responses cacheable by URL alone -- exactly the gap this bead closes.
 # This does not prove every branch is covered (the per-route behavioral tests do that); it catches
 # the case a per-handler test cannot: a NEW fork nobody has written a header test for yet.
-# ---------------------------------------------------------------------------
 
 
 def test_every_router_reading_wants_fragment_also_imports_the_dual_shape_headers() -> None:

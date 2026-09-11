@@ -67,9 +67,7 @@ def _scratch_files(directory: Path) -> list[str]:
     return sorted(p.name for p in directory.glob("*.part*"))
 
 
-# --------------------------------------------------------------------------- #
 # _download_one (repair path; the size-based skip lives in _ensure_present_local)
-# --------------------------------------------------------------------------- #
 
 
 @respx.mock
@@ -230,9 +228,7 @@ def test_download_one_retries_truncated_read_then_succeeds(
     assert len(sleeps) == 1, "exactly one backoff between the truncated read and the full one"
 
 
-# --------------------------------------------------------------------------- #
 # Concurrent-writer safety: per-process unique scratch names (phaze-mb8d)      #
-# --------------------------------------------------------------------------- #
 
 
 @respx.mock
@@ -303,9 +299,7 @@ def test_download_one_concurrent_writer_cannot_tear_in_flight_stream(
     assert _scratch_files(tmp_path) == [], "neither writer may leave a scratch file behind"
 
 
-# --------------------------------------------------------------------------- #
 # MANIFEST (programmatically derived from the model tuples; 260608-u8g)        #
-# --------------------------------------------------------------------------- #
 
 
 def test_manifest_covers_exactly_68_files() -> None:
@@ -326,9 +320,7 @@ def test_manifest_covers_exactly_68_files() -> None:
     assert all(name.endswith((".pb", ".json")) for name in MANIFEST)
 
 
-# --------------------------------------------------------------------------- #
 # _ensure_present_local (local-validation decision; 260608-u8g)               #
-# --------------------------------------------------------------------------- #
 
 
 @respx.mock
@@ -466,9 +458,7 @@ def test_ensure_present_local_repair_chunked_wrong_size_raises(
     assert not dest.exists()
 
 
-# --------------------------------------------------------------------------- #
 # download_to (orchestration over both model families)                        #
-# --------------------------------------------------------------------------- #
 
 
 def _expected_filenames() -> set[str]:
@@ -561,9 +551,7 @@ def test_download_to_creates_pb_and_json_pairs(tmp_path: Path, monkeypatch: pyte
     assert len(json_files) == len(download_models.CLASSIFIER_MODELS) + len(download_models.GENRE_MODELS)
 
 
-# --------------------------------------------------------------------------- #
 # CLI: the output directory is required (phaze-ynv6w)
-# --------------------------------------------------------------------------- #
 
 
 def test_cli_without_output_dir_exits_2_with_usage_and_fetches_nothing(tmp_path: Path) -> None:

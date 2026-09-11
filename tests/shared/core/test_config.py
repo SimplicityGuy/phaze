@@ -59,12 +59,10 @@ from phaze.config import (
 from phaze.config_secrets import _direct_env_names, _resolution_env
 
 
-# --------------------------------------------------------------------------- #
 # `_direct_env_names`: the env-var-name resolver behind the `<VAR>_FILE` secret
 # convention. Duck-typed against anything carrying a `.validation_alias` --
 # real pydantic FieldInfo objects are exercised elsewhere via full model
 # construction; these tests isolate the three alias shapes directly.
-# --------------------------------------------------------------------------- #
 def test_direct_env_names_with_alias_choices_appends_bare_field_name() -> None:
     """An `AliasChoices` alias yields its choices, then the bare field name if absent."""
     field_info = SimpleNamespace(validation_alias=AliasChoices("FOO", "BAR"))
@@ -92,9 +90,7 @@ def test_direct_env_names_with_no_alias_returns_bare_field_name_only() -> None:
     assert _direct_env_names("some_field", field_info) == ["some_field"]
 
 
-# --------------------------------------------------------------------------- #
 # `_resolution_env`: case-insensitive .env + process-env merge, process wins.
-# --------------------------------------------------------------------------- #
 def test_resolution_env_process_env_wins_over_dotenv_file(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
     """A key present in both the configured .env file and the process env resolves to the
     process-env value; a dotenv-only key still resolves. Keys are upper-cased.
@@ -124,9 +120,7 @@ def test_resolution_env_with_nonexistent_env_file_path_does_not_raise(tmp_path, 
     assert result["STILL_PRESENT"] == "yes"
 
 
-# --------------------------------------------------------------------------- #
 # `_resolve_secret_files`: the shared `<VAR>_FILE` secret-file before-validator.
-# --------------------------------------------------------------------------- #
 def test_resolve_secret_files_passes_through_non_dict_data() -> None:
     """Defensive guard: pydantic-settings should always hand this a dict, but if it doesn't
     (e.g. an earlier source returns something else), the validator no-ops rather than crashing.
@@ -147,12 +141,10 @@ def test_resolve_secret_files_skips_a_declared_field_absent_from_the_model() -> 
     assert _BogusSecretFieldSettings._resolve_secret_files(dict(data)) == data
 
 
-# --------------------------------------------------------------------------- #
 # `_apply_redis_password`: percent-encodes redis_password into redis_url's userinfo.
 # The hostile-character round-trip (`/`, `#`, `?`, `%XX`) is covered exhaustively in
 # tests/shared/core/test_redis_password_encoding.py; this file adds only the one
 # branch that survey left: an unparseable redis_url the validator declines to touch.
-# --------------------------------------------------------------------------- #
 def test_apply_redis_password_leaves_an_unparseable_redis_url_untouched() -> None:
     """`urlparse` on a non-URL string yields `hostname is None`; the validator returns early
     rather than trying to repair a `redis_url` it cannot make sense of (it repairs the DSN
@@ -167,11 +159,9 @@ def test_apply_redis_password_leaves_an_unparseable_redis_url_untouched() -> Non
     assert cfg.redis_url == "not-a-url-at-all"
 
 
-# --------------------------------------------------------------------------- #
 # `_strip_sqlalchemy_driver`: normalizes SQLAlchemy-dialect DSNs to raw libpq for
 # psycopg3. Existing tests exercise the field end-to-end for the default (already
 # bare `postgresql://`) DSN; this file adds the two dialect-prefix arms directly.
-# --------------------------------------------------------------------------- #
 def test_strip_sqlalchemy_driver_normalizes_asyncpg_prefix() -> None:
     result = ControlSettings._strip_sqlalchemy_driver("postgresql+asyncpg://phaze:phaze@postgres:5432/phaze")
     assert result == "postgresql://phaze:phaze@postgres:5432/phaze"
@@ -196,15 +186,12 @@ def test_strip_sqlalchemy_driver_lets_pydantic_reject_a_non_string_value() -> No
         ControlSettings(queue_url=["not", "a", "string"])
 
 
-# --------------------------------------------------------------------------- #
 # `_load_backend_registry`: the Idiom-B TOML loader for `backends`/`buckets`.
-# --------------------------------------------------------------------------- #
 def test_load_backend_registry_passes_through_non_dict_data() -> None:
     """Mirrors `_resolve_secret_files`'s defensive non-dict guard."""
     assert ControlSettings._load_backend_registry("not-a-dict") == "not-a-dict"
 
 
-# --------------------------------------------------------------------------- #
 # `_validate_registry`: the whole-registry cross-entry invariants (REG-04/05,
 # D-04/D-08/D-09). The gap this file closes: a TOP-LEVEL duplicate `[[buckets]]`
 # id -- two independent bucket entries sharing an id, as opposed to one backend
@@ -212,7 +199,6 @@ def test_load_backend_registry_passes_through_non_dict_data() -> None:
 # covered in tests/shared/config/test_bucket_registry.py). WR-03's own docstring
 # names this exact "copy-paste id typo" scenario; nothing before this file
 # constructed it.
-# --------------------------------------------------------------------------- #
 def test_duplicate_top_level_bucket_id_fails_fast_with_id(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
     """Two distinct `[[buckets]]` entries sharing an id fail fast, naming the id (WR-03)."""
     backends_toml_env(
@@ -265,7 +251,6 @@ def test_malformed_registry_with_unknown_backend_kind_fails_fast(backends_toml_e
         ControlSettings()
 
 
-# --------------------------------------------------------------------------- #
 # `_build_default_settings`: constructs the module-level `settings` singleton.
 # Distinct from -- and NOT exercised by -- `get_settings()`'s own role dispatch
 # (covered in test_config_role_split.py): `_build_default_settings` is called
@@ -273,7 +258,6 @@ def test_malformed_registry_with_unknown_backend_kind_fails_fast(backends_toml_e
 # of role, and its `PHAZE_ROLE=agent` arm returns the identical `ControlSettings()`
 # as its `control` arm (both branches are intentionally the same value; the
 # comment above it explains why -- see config.py).
-# --------------------------------------------------------------------------- #
 def test_build_default_settings_returns_control_settings_when_role_is_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PHAZE_ROLE", "agent")
     result = _build_default_settings()
@@ -286,10 +270,8 @@ def test_build_default_settings_returns_control_settings_when_role_is_control(mo
     assert isinstance(result, ControlSettings)
 
 
-# --------------------------------------------------------------------------- #
 # Settings-object invariants: the module-level back-compat surface every one
 # of config.py's 126 dependents ultimately reads through.
-# --------------------------------------------------------------------------- #
 def test_settings_alias_resolves_to_control_settings() -> None:
     """The pre-Phase-26 `Settings` name is a back-compat alias for `ControlSettings`."""
     assert Settings is ControlSettings
@@ -321,7 +303,6 @@ def test_get_settings_is_memoized_across_calls_with_the_same_role(monkeypatch: p
         get_settings.cache_clear()
 
 
-# --------------------------------------------------------------------------- #
 # Hostile numeric input: the acceptance criteria calls out "empty/zero/negative
 # numerics" explicitly. Bounded fields (gt=0 etc.) already reject these -- see
 # tests/shared/config/test_cloud_route_threshold.py, test_push_config.py, and
@@ -332,7 +313,6 @@ def test_get_settings_is_memoized_across_calls_with_the_same_role(monkeypatch: p
 # SILENTLY ACCEPTED rather than failing loud. This is exactly the "config bugs
 # only bite at deploy time" pattern the bead describes -- documented here as
 # CURRENT BEHAVIOR (a candidate defect for a future bead), not fixed in this one.
-# --------------------------------------------------------------------------- #
 def test_analysis_stall_timeout_sec_rejects_zero() -> None:
     """gt=0: a zero stall threshold would kill the analysis child instantly (config.py's own
     comment on this field). Bounds added by phaze-w55w1; not directly tested until now.

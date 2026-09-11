@@ -133,13 +133,11 @@ def _driver_seam(sync_analyze):  # type: ignore[no-untyped-def]
     return _fake_driver
 
 
-# ---------------------------------------------------------------------------
 # cloud-analyze-empty-no-ext: the downloaded temp file MUST carry the file's REAL
 # audio extension (essentia detects format by extension). The staged S3 key has
 # none, so the pod must use the server-threaded ``audio_ext`` — never the old
 # ``.audio`` fallback, which yielded duration 0 -> 0 windows -> a silent empty
 # "success".
-# ---------------------------------------------------------------------------
 
 
 def _capturing_extract(paths: list[str]):  # type: ignore[no-untyped-def]
@@ -418,9 +416,7 @@ async def test_analysis_result_forwarded_to_put_unchanged(job_env, monkeypatch):
             assert sent[key] == value, key
 
 
-# ---------------------------------------------------------------------------
 # phaze-3ea41: video-container pre-analysis audio extraction (cloud/burst lane)
-# ---------------------------------------------------------------------------
 
 
 @respx.mock
@@ -869,11 +865,9 @@ async def test_exit_code_matrix(job_env, monkeypatch, scenario, expected_code): 
     assert exc.value.code != 0
 
 
-# ---------------------------------------------------------------------------
 # phaze-l832u.2: every other bare sys.exit(EXIT_ANALYSIS) in the analyze step must ALSO
 # store a terminal error_message before exiting -- the audit companion to the zero-window
 # fix above. All three share the analyze step's failed-report endpoint.
-# ---------------------------------------------------------------------------
 
 
 @respx.mock
@@ -1200,9 +1194,7 @@ def test_no_monoloader_source_guard():  # type: ignore[no-untyped-def]
     assert "verify=False" not in src, "callback CA verification must never be disabled (KJOB-05)"
 
 
-# ---------------------------------------------------------------------------
 # Phase 57.1 (PROG-01): the k8s one-shot lane progress bridge.
-# ---------------------------------------------------------------------------
 
 
 def _emitting_analyze(counts):  # type: ignore[no-untyped-def]
@@ -1351,10 +1343,8 @@ def test_progress_bridge_source_guard():  # type: ignore[no-untyped-def]
     assert "post_analysis_progress" in src, "the k8s lane must post counter-only progress"
 
 
-# ---------------------------------------------------------------------------
 # Phase 100 (phaze-sfbx.3, OBS-02): human-friendly banner, step lines, and windowed
 # progress lines. The console-readability layer over the machine JSON log.
-# ---------------------------------------------------------------------------
 
 
 _FULL_METADATA = {
@@ -1665,11 +1655,9 @@ async def test_progress_line_failure_never_escapes_callback(job_env, monkeypatch
     assert exc.value.code == 0
 
 
-# ---------------------------------------------------------------------------
 # Phase 100 (phaze-sfbx.4): bracket-marker framing around essentia's analyze output.
 # essentia's `[ INFO ] MusicExtractor...` banners are written by C++ to fd 1/2; the
 # frame events attribute that interleaved output without any fd redirection.
-# ---------------------------------------------------------------------------
 
 
 @respx.mock

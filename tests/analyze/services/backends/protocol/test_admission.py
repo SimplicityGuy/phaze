@@ -21,9 +21,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# === hold_awaiting_cloud(): the shared go-forward awaiting writer (D-01/D-02/D-03/D-13) =====
-
-
 @pytest.mark.asyncio
 async def test_hold_awaiting_cloud_fresh_hold_writes_one_awaiting_row(session: AsyncSession) -> None:
     """D-02: a fresh hold inserts exactly one ``awaiting`` cloud_job row.

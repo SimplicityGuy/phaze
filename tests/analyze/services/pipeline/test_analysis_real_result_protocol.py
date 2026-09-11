@@ -88,9 +88,7 @@ def _protocol_line_bytes(result: dict[str, Any]) -> int:
     return len(json.dumps({"type": "result", "result": result}).encode("utf-8")) + 1
 
 
-# ---------------------------------------------------------------------------
 # What the real artifact actually contains (bead AC 1 + AC 4)
-# ---------------------------------------------------------------------------
 
 
 def test_the_real_result_carries_no_numpy_scalar_and_no_non_finite_leaf() -> None:
@@ -145,9 +143,7 @@ async def test_the_real_analyze_file_result_crosses_the_child_protocol_unchanged
     assert got == real_analysis_result()
 
 
-# ---------------------------------------------------------------------------
 # The controls: what WOULD have broken, proving the claims above have teeth
-# ---------------------------------------------------------------------------
 
 
 async def test_a_numpy_scalar_leaf_is_fatal_at_emit_which_is_what_makes_the_absence_claim_mean_anything(
@@ -202,9 +198,7 @@ async def test_a_nan_leaf_crosses_emit_and_the_pump_silently_rather_than_failing
     assert delivered != delivered, "expected the NaN to survive the round trip unchanged"
 
 
-# ---------------------------------------------------------------------------
 # Framing: a multi-mebibyte line reassembled across 64 KiB pipe refills (bead AC 5)
-# ---------------------------------------------------------------------------
 
 
 async def test_a_multi_mebibyte_result_line_crosses_the_64_kib_pipe_intact(monkeypatch: pytest.MonkeyPatch) -> None:

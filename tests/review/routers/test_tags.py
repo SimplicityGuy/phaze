@@ -278,9 +278,6 @@ async def test_write_tags_response_has_row_id(client: AsyncClient, session: Asyn
     assert f'id="tagwrite-row-{file_record.id}"' in response.text
 
 
-# --- helper unit tests --------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_get_accepted_discogs_link_returns_highest_confidence_accepted() -> None:
     """With a resolved tracklist version, the accepted DiscogsLink is returned."""
@@ -417,7 +414,6 @@ async def test_get_tracklist_for_file_tolerates_multiple_links(session: AsyncSes
     assert link is None  # no accepted DiscogsLink seeded; the point is it returns cleanly
 
 
-# --- route not-found guards ----------------------------------------------------
 #
 # phaze-y4s6 removed compare_tags/edit_tag_field/save_tag_field entirely (the legacy tag list's
 # comparison + inline-edit surface had no live caller left post-v7-cutover), so the not-found /
@@ -440,9 +436,6 @@ async def test_undo_tag_write_missing_file_404(client: AsyncClient) -> None:
     response = await client.post(f"/tags/{uuid.uuid4()}/undo")
     assert response.status_code == 200
     assert "File not found" in response.text
-
-
-# --- write_file_tags status/toast branches ------------------------------------
 
 
 @pytest.mark.asyncio
@@ -509,9 +502,7 @@ async def test_write_tags_valueerror_branch(client: AsyncClient, session: AsyncS
     assert "boom" in response.text
 
 
-# ---------------------------------------------------------------------------
 # v7 diff-row workspace negotiation on the write/undo mutation routes (phaze-nvll)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -807,7 +798,6 @@ async def test_tag_stats_file_with_both_completed_and_discrepancy_counted_once(c
     assert stats["discrepancies"] == 1, "one distinct file has a DISCREPANCY write"
 
 
-# ---------------------------------------------------------------------------
 # ``/tags/`` history-restore response shape (phaze-64uy) -- HYGIENE, not a live defect.
 #
 # This handler branched on the raw ``HX-Request`` header, which routers/response_shape.py rule 1
@@ -818,7 +808,6 @@ async def test_tag_stats_file_with_both_completed_and_discrepancy_counted_once(c
 # It is converted, and pinned here, so that adding ``hx-push-url`` to these controls later cannot
 # silently re-introduce the defect: the shape would already be correct on the day the URL starts
 # entering history.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -868,9 +857,7 @@ async def test_tags_restore_header_alone_does_not_return_a_fragment(client: Asyn
     assert response.headers["location"] == "/s/tagwrite"
 
 
-# ---------------------------------------------------------------------------
 # UNDO snapshot selection + idempotency + honest outcome (phaze-soph / 04bz / 26t7)
-# ---------------------------------------------------------------------------
 
 
 async def _add_write_log(
@@ -1259,9 +1246,7 @@ async def test_undo_dispatch_records_a_queued_undo_audit_row(client: AsyncClient
     assert undo_rows[0].after_tags == {"artist": "Original Artist"}
 
 
-# ---------------------------------------------------------------------------
 # phaze-bk9el.10: coverage-floor findings on the review token / bulk-write paths.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1512,9 +1497,7 @@ async def test_load_bulk_candidates_snapshots_the_selected_files(session: AsyncS
     assert file_record.id in validated
 
 
-# ---------------------------------------------------------------------------
 # phaze-vwyco: a completed undo must not permanently evict its file from the tag-write queue.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

@@ -58,9 +58,7 @@ from phaze.schemas.wire_bounds import INT16_MAX, INT16_MIN, INT32_MAX, INT32_MIN
 from tests._route_introspection import iter_effective_routes
 
 
-# --------------------------------------------------------------------------------------------
 # TIER 1 registry: wire schema -> the model whose columns it writes.
-# --------------------------------------------------------------------------------------------
 SCHEMA_BINDINGS: dict[type[BaseModel], type] = {
     FileUpsertRecord: FileRecord,
     MetadataWriteRequest: FileMetadata,
@@ -101,10 +99,8 @@ UNMAPPED_BODY_FIELDS: dict[type[BaseModel], dict[str, str]] = {
 }
 
 
-# --------------------------------------------------------------------------------------------
 # KNOWN GAPS -- the sibling beads of this defect class. Strict xfail: each MUST still be violating.
 # When your bead lands, DELETE your entry; leaving it fails the suite.
-# --------------------------------------------------------------------------------------------
 KNOWN_GAPS: dict[tuple[str, str], str] = {}
 
 # Gaps this check FOUND that have no bead yet. Same defect class, same strict-xfail semantics; kept
@@ -115,9 +111,7 @@ UNFILED_GAPS: dict[tuple[str, str], str] = {}
 ALL_GAPS: dict[tuple[str, str], str] = {**KNOWN_GAPS, **UNFILED_GAPS}
 
 
-# --------------------------------------------------------------------------------------------
 # TIER 2 registry: every governed path/query/form param, classified.
-# --------------------------------------------------------------------------------------------
 _PAGING = "paging param -- bounded by the pagination contract (wire_bounds rule 8)"
 _WHITELIST = "validated against an in-route whitelist/enum before any column use"
 _TEXT = "lands in a Text column -- unbounded, no cap needed (rule 2)"
@@ -267,9 +261,7 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
 }
 
 
-# --------------------------------------------------------------------------------------------
 # helpers
-# --------------------------------------------------------------------------------------------
 def _unwrap(annotation: object) -> object:
     """Strip ``| None`` so ``str | None`` is governed exactly like ``str``."""
     args = [a for a in typing.get_args(annotation) if a is not type(None)]
@@ -371,9 +363,7 @@ def _param_cases() -> list[tuple[str, str, object, list[object]]]:
     return cases
 
 
-# --------------------------------------------------------------------------------------------
 # TIER 1
-# --------------------------------------------------------------------------------------------
 @pytest.mark.parametrize(
     ("schema", "name", "annotation", "metadata", "column"),
     _body_cases(),
@@ -410,9 +400,7 @@ def test_body_field_is_bounded_to_its_column(
     assert violation is None, f"{schema.__name__}.{name} violates the wire-bounds contract -- {violation}"
 
 
-# --------------------------------------------------------------------------------------------
 # TIER 2
-# --------------------------------------------------------------------------------------------
 @pytest.mark.parametrize(("path", "name", "annotation", "metadata"), _param_cases(), ids=lambda v: v if isinstance(v, str) else "")
 def test_path_query_form_param_is_classified(path: str, name: str, annotation: object, metadata: list[object]) -> None:
     """Every governed path/query/form param is bounded, paging-owned, or explicitly classified."""

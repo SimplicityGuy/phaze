@@ -145,9 +145,7 @@ async def test_api_lifespan_runs_migrations_on_startup(monkeypatch: pytest.Monke
     )
 
 
-# ---------------------------------------------------------------------------
 # Phase 33: SAQ monitoring dashboard mounted at /saq inside the lifespan.
-# ---------------------------------------------------------------------------
 
 
 def _patch_saq_lifespan(

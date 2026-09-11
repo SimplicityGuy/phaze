@@ -1322,7 +1322,7 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
 # The keyed function names, sourced from ``deterministic_key._KEY_BUILDERS`` (a Postgres-free
 # ``_shared`` module) so the recovery return shape can never drift from the real keyed-task universe.
 # ``deterministic_key`` is import-safe here -- this module is control-only and never loaded by the
-# agent worker (tests/test_task_split.py enforces the reverse direction).
+# agent worker (tests/shared/core/test_task_split.py enforces the reverse direction).
 _ALL_KEYED_FUNCTIONS: tuple[str, ...] = tuple(_KEY_BUILDERS)
 
 

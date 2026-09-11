@@ -25,9 +25,6 @@ from tests.db_guard import (
 )
 
 
-# --- the predicate: a `test` SEGMENT anywhere, not merely a suffix -------------------------
-
-
 @pytest.mark.parametrize(
     "name",
     [
@@ -57,9 +54,6 @@ def test_accepts_every_test_database_naming_shape(name: str) -> None:
 )
 def test_rejects_names_without_a_test_segment(name: str) -> None:
     assert not is_test_database_name(name)
-
-
-# --- the failure mode: ERROR, never skip ---------------------------------------------------
 
 
 def test_non_test_database_raises_rather_than_skipping() -> None:
@@ -98,9 +92,6 @@ def test_valid_test_database_returns_its_name() -> None:
     assert name == "phaze_test_m7ya"
 
 
-# --- the default target: 5433, never the dev port ------------------------------------------
-
-
 def test_default_dsn_targets_the_test_port_not_the_dev_port() -> None:
     """phaze-osgt: bare ``uv run pytest`` must never resolve to 5432.
 
@@ -131,9 +122,6 @@ def test_empty_env_var_falls_back_rather_than_yielding_an_empty_dsn(monkeypatch:
     """``TEST_DATABASE_URL=`` (exported but blank) must not resolve to a nameless DSN."""
     monkeypatch.setenv("TEST_DATABASE_URL", "")
     assert resolve_test_dsn() == DEFAULT_TEST_DATABASE_URL
-
-
-# --- the shared DSN pair -------------------------------------------------------------------
 
 
 def test_integration_dsns_describe_the_same_database(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -167,9 +155,6 @@ def test_broker_dsn_honours_an_explicit_queue_url(monkeypatch: pytest.MonkeyPatc
 
     assert database_name(broker) == "phaze_broker_test"
     assert database_name(sa) == "phaze_test"
-
-
-# --- DSN coercion --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

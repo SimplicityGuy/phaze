@@ -244,7 +244,6 @@ def test_analysis_is_reproducible_within_a_run(fixture_audio: dict[str, Path], e
     assert repeat == analysis_results[name]
 
 
-# ---------------------------------------------------------------------------
 # The pure reductions the coarse sweep feeds.
 #
 # NO ESSENTIA CLAIM IS ATTACHED TO ANYTHING BELOW. These are pure Python functions pinned over
@@ -253,7 +252,6 @@ def test_analysis_is_reproducible_within_a_run(fixture_audio: dict[str, Path], e
 # inside phaze-bk9el.15's blast radius, they are pure (so a table IS a complete characterization
 # of them), and the alternative -- leaving the whole coarse half unpinned because its top layer
 # cannot be reached in CI -- would be strictly worse.
-# ---------------------------------------------------------------------------
 
 
 # Two variants per mood set, with the classes ordered ALPHABETICALLY the way essentia emits them

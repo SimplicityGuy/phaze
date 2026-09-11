@@ -127,9 +127,7 @@ def _write_scratch(tmp_path: Path, content: bytes = b"pushed-audio-bytes") -> Pa
     return scratch
 
 
-# ---------------------------------------------------------------------------
 # CLOUDPIPE-03 -- off-event-loop sha256 verify before analysis
-# ---------------------------------------------------------------------------
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
@@ -201,9 +199,7 @@ async def test_sha256_verify_skipped_without_expected_hash(
     assert not scratch.exists()
 
 
-# ---------------------------------------------------------------------------
 # CLOUDPIPE-04 -- finally cleanup on EVERY exit path
-# ---------------------------------------------------------------------------
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
@@ -289,9 +285,7 @@ async def test_scratch_cleanup_on_mismatch_return(
     assert not scratch.exists()
 
 
-# ---------------------------------------------------------------------------
 # CR-01 -- a RETRYABLE failure must KEEP the scratch copy for the in-place SAQ retry
-# ---------------------------------------------------------------------------
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
@@ -392,9 +386,7 @@ async def test_missing_scratch_at_sha_gate_routes_to_mismatch(
     assert "PHAZE_CLOUD_SCRATCH_DIR" in caplog.text and str(missing) in caplog.text
 
 
-# ---------------------------------------------------------------------------
 # Local path is byte-identical when neither scratch field is set
-# ---------------------------------------------------------------------------
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
@@ -414,9 +406,7 @@ async def test_local_file_without_scratch_is_byte_identical(
     api.report_push_mismatch.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
 # Producer threading (Task 2): enqueue_process_file pins scratch_path + expected_sha256
-# ---------------------------------------------------------------------------
 
 
 def _fake_file(file_id: uuid.UUID) -> SimpleNamespace:

@@ -51,7 +51,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-# ---------------------------------------------------------------------------
 # Seams
 #
 # Every detection source in the cascade is platform-specific, so ONE test host can only ever
@@ -59,7 +58,6 @@ if TYPE_CHECKING:
 # `sysctl -n hw.physicalcpu_max` only on Darwin. The remaining branches are not dead -- each
 # one is the live path on some production host -- so they are reached here through file-tree
 # and `subprocess` seams that let a single machine drive all of them, on either platform.
-# ---------------------------------------------------------------------------
 
 
 def _fake_fs(monkeypatch: pytest.MonkeyPatch, files: Mapping[str, str | OSError]) -> None:
@@ -122,9 +120,7 @@ def _no_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-# ---------------------------------------------------------------------------
 # The policy itself
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -268,9 +264,7 @@ def test_zero_or_negative_core_count_floors_to_one() -> None:
     assert derive_sizing(-5).concurrency == 1
 
 
-# ---------------------------------------------------------------------------
 # Detection
-# ---------------------------------------------------------------------------
 
 
 def test_detection_tracks_the_affinity_mask(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -388,9 +382,7 @@ def test_malformed_physical_cores_env_falls_back_to_detection(monkeypatch: pytes
         assert not source.startswith("env:")
 
 
-# ---------------------------------------------------------------------------
 # Detection source 0: the schedulable set itself
-# ---------------------------------------------------------------------------
 
 
 def test_schedulable_cpus_prefers_the_affinity_mask(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -432,9 +424,7 @@ def test_schedulable_cpus_never_returns_the_empty_set(monkeypatch: pytest.Monkey
     assert sizing_mod._schedulable_cpus() == {0}
 
 
-# ---------------------------------------------------------------------------
 # Detection source 1: sysfs topology (Linux)
-# ---------------------------------------------------------------------------
 
 
 def test_sysfs_counts_distinct_sibling_groups(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -527,9 +517,7 @@ def test_cpu_list_parsing_tolerates_whitespace_and_empty_chunks() -> None:
     assert sizing_mod._parse_cpu_list("0,,4") == {0, 4}
 
 
-# ---------------------------------------------------------------------------
 # Detection source 2: /proc/cpuinfo (Linux fallback)
-# ---------------------------------------------------------------------------
 
 
 def _cpuinfo(*blocks: str) -> str:
@@ -599,9 +587,7 @@ def test_proc_cpuinfo_returns_none_for_an_empty_file(monkeypatch: pytest.MonkeyP
     assert sizing_mod._physical_cores_from_proc_cpuinfo({0}) is None
 
 
-# ---------------------------------------------------------------------------
 # Detection source 3: Darwin sysctl (the dev-machine path)
-# ---------------------------------------------------------------------------
 
 
 def test_darwin_reads_hw_physicalcpu_max(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -649,9 +635,7 @@ def test_darwin_swallows_every_subprocess_failure(monkeypatch: pytest.MonkeyPatc
     assert sizing_mod._physical_cores_from_darwin() is None
 
 
-# ---------------------------------------------------------------------------
 # The cascade: which source wins, and what happens when it does not answer
-# ---------------------------------------------------------------------------
 
 
 def _stub_cascade(
@@ -725,9 +709,7 @@ def test_a_quota_of_one_clamps_all_the_way_down(monkeypatch: pytest.MonkeyPatch)
     assert derive_sizing(cores).intra_op_threads == 1
 
 
-# ---------------------------------------------------------------------------
 # The cgroup v2 bandwidth clamp
-# ---------------------------------------------------------------------------
 
 
 def test_cgroup_quota_is_none_without_cgroup_v2(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -783,9 +765,7 @@ def test_cgroup_quota_read_survives_a_permission_error(monkeypatch: pytest.Monke
     assert sizing_mod._cgroup_cpu_quota() is None
 
 
-# ---------------------------------------------------------------------------
 # The operator override
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("raw", ["1", "2", "32", " 32 ", "+8"])
@@ -835,9 +815,7 @@ def test_the_override_is_the_documented_single_input(monkeypatch: pytest.MonkeyP
     )
 
 
-# ---------------------------------------------------------------------------
 # End to end: a fresh host with nothing configured
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -867,9 +845,7 @@ def test_a_fresh_linux_host_derives_correctly_from_real_sysfs_text(
     assert result.source == "sysfs:thread_siblings_list"
 
 
-# ---------------------------------------------------------------------------
 # Applying it to the process environment
-# ---------------------------------------------------------------------------
 
 
 def test_apply_thread_env_stamps_all_three_variables() -> None:
@@ -913,9 +889,7 @@ def test_apply_thread_env_defaults_to_the_real_process_environment(monkeypatch: 
     assert os.environ[INTRA_OP_ENV] == str(result.intra_op_threads)
 
 
-# ---------------------------------------------------------------------------
 # The one concurrency phaze picks without operator action
-# ---------------------------------------------------------------------------
 
 
 def test_zero_config_local_backend_cap_comes_from_the_same_policy(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -80,7 +80,6 @@ EMOJI_GIT="🔀"
 # epic phaze-0jpe).
 SERVICE_DIRS=()
 
-# Print colored output with emojis
 print_info() {
   echo -e "\033[0;34m$EMOJI_INFO  [INFO]\033[0m $1"
 }
@@ -118,7 +117,6 @@ sed_inplace() {
   fi
 }
 
-# Parse command line arguments
 while [[ $# -gt 0 ]]; do
   case $1 in
     --python)
@@ -152,13 +150,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Verify we're in the project root
 if [[ ! -f "pyproject.toml" ]] || [[ ! -f "uv.lock" ]]; then
   print_error "This script must be run from the project root directory"
   exit 1
 fi
 
-# Verify required tools
 for cmd in uv just pre-commit git curl jq; do
   if ! command -v "$cmd" &>/dev/null; then
     print_error "$cmd is required but not installed"
@@ -1060,7 +1056,6 @@ sweep_osv_scanner_ignores() {
 
   print_section "$EMOJI_VERIFY" "Sweeping osv-scanner Ignores"
 
-  # Extract vulnerability IDs
   local vuln_ids=()
   while IFS= read -r vid; do
     [[ -n "$vid" ]] && vuln_ids+=("$vid")

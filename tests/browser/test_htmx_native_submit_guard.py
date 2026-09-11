@@ -126,7 +126,6 @@ async def test_approving_bulk_tag_writes_the_instant_the_form_swaps_in_still_con
         assert "tag write" in toast_text and "queued" in toast_text, f"attempt {attempt}: the approval did not actually queue a write: {toast_text!r}"
 
 
-# --- phaze-tckiy: the remaining eight forms -------------------------------------------------
 #
 # phaze-5i74w asserted the two forms above were the only method-less htmx forms in the templates.
 # They were not: a multi-line-aware scan across hx-post/hx-patch/hx-put/hx-delete found ELEVEN, and
@@ -373,7 +372,6 @@ async def test_bulk_approving_changes_the_instant_the_list_swaps_in_still_patche
     assert "review_tokens=" not in page.url, f"the hx-patch click fell through to the native GET fallback: {page.url}"
 
 
-# --- The guard must not be a new way for a button to be stuck ---------------------------------
 #
 # Everything above asks "can a premature click still fall through?". These two ask the opposite, and
 # they exist because the fix's own failure mode is the mirror image of the bug: a guard that is never

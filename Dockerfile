@@ -118,10 +118,9 @@ RUN apt-get update \
     && ffmpeg -version | head -1 \
     && ffprobe -version | head -1
 
-# Install uv
 COPY --from=ghcr.io/astral-sh/uv:0.12.13 /uv /uvx /bin/
 
-# Install dependencies first (cache layer)
+# Keep dependency resolution ahead of source copies so application edits reuse this layer.
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
@@ -148,7 +147,6 @@ RUN mkdir -p /ms-playwright \
     && /app/.venv/bin/python -m patchright install --with-deps chrome \
     && chmod -R a+rX /ms-playwright
 
-# Copy source
 COPY src/ src/
 COPY alembic/ alembic/
 COPY alembic.ini ./
@@ -157,10 +155,9 @@ COPY alembic.ini ./
 # the repo, so it is copied from the css-builder stage rather than the context.
 COPY --from=css-builder /build/src/phaze/static/css/app.css src/phaze/static/css/app.css
 
-# Install project
 RUN uv sync --frozen --no-dev
 
-# Prevent uv run from re-syncing at runtime
+# Runtime commands must use the immutable environment assembled above.
 ENV UV_NO_SYNC=1
 
 # phaze-u5k0d: put the project venv's console scripts (phaze, alembic, uvicorn, ...) on

@@ -114,7 +114,6 @@ async def test_no_direct_to_compute_enqueue_path(session: AsyncSession) -> None:
     assert await _is_held_awaiting_cloud(session, long_file.id)
 
 
-# --- Phase 67 (REG-04, D-14): the registry cloud_enabled gate on the routing seam ---------
 # The helper takes a resolved ``cloud_enabled`` bool; the production callers source it from
 # ``settings.cloud_enabled`` (pipeline.py), the registry-derived property. These tests drive the bool
 # directly; the kueue case below proves a non-local registry resolves that property onto cloud-on.

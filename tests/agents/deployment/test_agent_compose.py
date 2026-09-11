@@ -629,7 +629,6 @@ def test_calver_scheme_documented() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
 # phaze-6bkk: the media mount must be WRITABLE wherever archive-mutating tasks run.
 #
 # This is the regression guard the bead asks for: "add a startup assertion or a
@@ -638,7 +637,6 @@ def test_calver_scheme_documented() -> None:
 # service list -- adding a new archive-mutating task to the meta lane, or moving one to
 # another lane, re-points the assertion automatically instead of leaving a stale test
 # that passes while production writes fail EROFS.
-# ---------------------------------------------------------------------------
 
 # Tasks whose whole purpose is to MUTATE the media archive. Every one of these must run in
 # a container whose SCAN_PATH mount is rw.

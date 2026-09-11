@@ -274,13 +274,11 @@ async def test_queue_depths_degrade_to_zero_without_app_state(session: AsyncSess
     assert all(v == 0 for v in result.depths.values())
 
 
-# ---------------------------------------------------------------------------
 # phaze-tbps: get_lane_queue_depths must key an agent-backed COMPUTE lane's queue lookup
 # off the backend's agent_ref, not its registry id -- the two are independent fields, and
 # real dispatch (routers/agent_push.py) enqueues to queue_for(agent_ref, lane). Passing the
 # raw id builds/counts a queue no producer writes and no worker consumes: SAQ.count returns
 # 0 (not an error), so a fully saturated lane renders indistinguishable from idle.
-# ---------------------------------------------------------------------------
 
 _COMPUTE_ID_NE_AGENT_REF_TOML = """
 [[backends]]
@@ -365,7 +363,6 @@ async def test_queue_depths_connects_runtime_registered_agent_lane(session: Asyn
     assert result.depths["io"] == 0
 
 
-# ---------------------------------------------------------------------------
 # phaze-2u8v.1: the SAME class of bug that phaze-tbps closed for COMPUTE lanes was left
 # open for the two kinds the operator actually runs. A registry of [local, kueue "vox"]
 # built ``phaze-agent-local-*`` / ``phaze-agent-vox-*`` -- queues no producer writes and
@@ -376,7 +373,6 @@ async def test_queue_depths_connects_runtime_registered_agent_lane(session: Asyn
 # AGENT's lane queues, so that is what it must count. A kueue lane enqueues onto NO
 # ``phaze-agent-*`` queue at all (its work is a k8s Job) -- so it must say so, not print a
 # zero row that reads as "idle".
-# ---------------------------------------------------------------------------
 
 _LOCAL_AND_KUEUE_TOML = """
 [[backends]]
@@ -521,9 +517,7 @@ async def test_lane_identity_maps_to_the_real_saq_queue_names(session: AsyncSess
     assert kueue.agent_id is None, "a kueue lane must resolve to NO agent queue -- there is none to name"
 
 
-# ---------------------------------------------------------------------------
 # Task 2: GET /pipeline/lanes/{backend_id} endpoint + _lane_detail.html body.
-# ---------------------------------------------------------------------------
 
 
 async def _first_lane(session: AsyncSession) -> dict:  # type: ignore[type-arg]
@@ -634,10 +628,8 @@ async def test_lane_detail_no_unsafe_filter(client: AsyncClient, session: AsyncS
     assert "|safe" not in response.text
 
 
-# ---------------------------------------------------------------------------
 # phaze-2u8v.1: the RENDERED panel. The service can resolve perfectly and the panel can still
 # lie, because "no SAQ queue" and "queue is empty" render identically as a zero row.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

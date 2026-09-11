@@ -363,7 +363,6 @@ def test_malloc_trim_never_raises() -> None:
         analysis_mod._malloc_trim()
 
 
-# ---------------------------------------------------------------------------
 # phaze-w55w1: the chunk decode gate (`stop_at_sec`)
 #
 # Exhaustive analysis decodes a tier one CHUNK at a time, and MonoLoader cannot seek, so each
@@ -371,7 +370,6 @@ def test_malloc_trim_never_raises() -> None:
 # deliberately without a Scale, so that reaching endTime stops the loader (the same upstream
 # behaviour the per-window Scale interposers exist to PREVENT). It is a wall-clock optimisation
 # only; these tests pin that it changes nothing else and that a broken gate degrades gracefully.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -532,9 +530,7 @@ def test_decode_windows_without_a_beat_callback_is_inert() -> None:
         assert _decode_windows("/fake/audio.mp3", _COARSE_SAMPLE_RATE, windows, lambda *_a: None) == {0: pytest.approx(np.zeros(4))}
 
 
-# ---------------------------------------------------------------------------
 # phaze-u1n7j — the chunk decode must not leak its network (D-09)
-# ---------------------------------------------------------------------------
 #
 # phaze-b2qs9 measured whole-process peak RSS growing +0.31 GiB per fine chunk on real audio —
 # linear in duration, 4.1854 GiB at four hours, past the deployed 4Gi limit — while

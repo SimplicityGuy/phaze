@@ -66,9 +66,6 @@ _RAIL_NODE_SPLIT = "data-rail-stage"
 _JINJA_COMMENT = re.compile(r"\{#.*?#\}", re.DOTALL)
 
 
-# --- Skip link (shell.html) -------------------------------------------------------
-
-
 def test_skip_link_is_first_focusable_in_body() -> None:
     """The sr-only skip link targets #stage-workspace and precedes any other focusable."""
     html = _SHELL.read_text()
@@ -96,9 +93,6 @@ def test_skip_link_target_id_exists() -> None:
     assert 'id="stage-workspace"' in html, "shell.html is missing the id=stage-workspace swap/skip target"
 
 
-# --- DAG rail landmarks + per-node state (rail.html) -------------------------------
-
-
 def test_rail_has_landmark_labels() -> None:
     """The rail exposes an <aside> and a <nav>, each with a non-empty aria-label."""
     html = _RAIL.read_text()
@@ -117,9 +111,6 @@ def test_rail_nodes_carry_aria_current_and_focus_visible() -> None:
     for i, chunk in enumerate(node_chunks):
         assert 'aria-current="page"' in chunk, f"rail node #{i} is missing the aria-current=page idiom"
         assert "focus-visible:" in chunk, f"rail node #{i} is missing a focus-visible ring class"
-
-
-# --- ⌘K command palette (cmdk_modal.html) -----------------------------------------
 
 
 def test_cmdk_combobox_semantics_present() -> None:
@@ -154,8 +145,6 @@ def test_cmdk_listbox_and_dialog_present() -> None:
     assert 'aria-modal="true"' in html, "cmdk_modal.html dialog is missing aria-modal=true"
     assert 'aria-label="Command palette"' in html, "cmdk_modal.html dialog is missing its aria-label"
 
-
-# --- phaze-jng72: the ⌘K command live region must outlive a search swap -------------
 
 # The live region rendered INSIDE palette_results.html, i.e. inside #cmdk-results, which is the
 # debounced search's hx-swap="innerHTML" target. That is the same trap as CONSOLE-03 below
@@ -223,9 +212,6 @@ def test_the_palette_results_fragment_references_the_live_region_without_owning_
     )
 
 
-# --- Record slide-in (record_host.html) -------------------------------------------
-
-
 def test_record_slide_in_is_a_trapped_modal_dialog() -> None:
     """The record slide-in panel is a labelled modal dialog with an x-trap focus-trap."""
     html = _RECORD.read_text()
@@ -281,9 +267,6 @@ def test_record_after_swap_waits_for_the_reveal_before_focusing_the_heading() ->
     )
 
 
-# --- Dead detail-pane removal (shell.html) ----------------------------------------
-
-
 def test_shell_has_no_dead_detail_pane_aside() -> None:
     """RED-until-fixed: the dead empty right detail-pane <aside> must be gone from the shell."""
     html = _SHELL.read_text()
@@ -291,8 +274,6 @@ def test_shell_has_no_dead_detail_pane_aside() -> None:
         'the dead empty right detail-pane <aside aria-label="Detail pane"> was superseded by the Phase 61 record slide-in — remove it (deferred from Phase 61)'
     )
 
-
-# --- Phase 88 detail-pane after-swap scope (browser-caught regression) -------------
 
 # `onLoaded` / `hide` are Alpine METHODS on the `<section x-data>` in _detail_pane.html.
 # hx-on::after-swap evaluates in the GLOBAL scope, so a bare `onLoaded()` there is a
@@ -328,8 +309,6 @@ def _strip_comments(text: str) -> str:
     """Blank out ``{# ... #}`` Jinja comment regions before scanning (prose may mention onLoaded)."""
     return _JINJA_COMMENT.sub("", text)
 
-
-# --- Phase 94 detail-pane full dismiss (browser-caught regression) ------------------
 
 # CONSOLE-03: clicking ✕ only removed the ✕ icon. Root cause chain: the trigger's
 # hx-swap="innerHTML" DESTROYS the resting empty-state div (it lived INSIDE the
@@ -386,9 +365,6 @@ def test_detail_pane_late_swap_cannot_resurrect_dismissed_pane() -> None:
     assert guard.start() < on_loaded.find("open = true"), "the missing-param guard must run BEFORE open flips true"
 
 
-# --- Phase 93 rail Alpine root (browser-caught regression) ---------------------------
-
-
 def test_rail_root_carries_alpine_x_data() -> None:
     """The rail subtree must be x-data-rooted — Alpine only walks x-data-rooted subtrees.
 
@@ -418,8 +394,6 @@ def test_rail_root_carries_alpine_x_data() -> None:
     # The nav must actually be INSIDE that root, not a sibling after it.
     assert "<aside" in html[root.end() :], "the rail <aside> escaped the Alpine root — its bindings would be inert"
 
-
-# --- phaze-am7c: detail-pane own-tick must not steal focus every 5s ------------------
 
 # The wave-2 body swapped into #detail-pane (_lane_detail.html) carries a bounded self-refresh
 # own-tick (`hx-trigger="every 5s" hx-target="#detail-pane" hx-swap="innerHTML"`). htmx fires
@@ -705,7 +679,6 @@ def test_the_duplicate_dark_utility_guard_permits_a_hover_variant_alongside_a_ba
     assert _worst_case("text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300") == 1
 
 
-# --- phaze-o8voj: same-file `{% set %}` class strings are no longer opaque to the guard -----------
 #
 # The bead's own example: `{% set _btn = 'text-gray-700 dark:text-gray-300' %}` followed by
 # `class="{{ _btn }} dark:text-gray-400"` puts two competing `dark:` text colours on one element,

@@ -32,9 +32,7 @@ def _glyph_cells() -> list[dict[str, int | float | None]]:
     return [{"camelot_number": 8, "energy": 0.2}, {"camelot_number": 9, "energy": 0.8}]
 
 
-# ---------------------------------------------------------------------------
 # Rename facet (`rename-row`)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -80,9 +78,7 @@ async def test_changes_review_rename_row_renders_no_glyph_without_a_profile(
     assert "No coarse windows" not in body
 
 
-# ---------------------------------------------------------------------------
 # Tag-write facet (`tagwrite-row`)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -119,9 +115,7 @@ async def test_changes_review_tagwrite_row_renders_no_glyph_without_a_profile(
     assert "data-set-glyph" not in body
 
 
-# ---------------------------------------------------------------------------
 # No N+1: one `set_profile` SELECT for the whole page, never one per row.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

@@ -136,9 +136,6 @@ def test_the_fail_fast_recipe_is_retained_and_labelled_as_local_iteration() -> N
     assert "NOT the validation gate" in doc_line
 
 
-# --- phaze-bk9el.21: branch coverage is MEASURED everywhere and GATED per bead, not repo-wide ---
-
-
 def test_branch_coverage_is_enabled_repo_wide() -> None:
     """Criterion 1. Without `branch = true` the number is invisible and every later check is moot."""
     assert _coverage_config("run")["branch"] is True, "pyproject.toml no longer enables branch coverage repo-wide"
@@ -192,7 +189,6 @@ def test_the_per_bead_branch_gate_is_runnable_from_a_worktree() -> None:
     assert "scripts/branch_coverage_check.py" in _dry_run("branch-check")
 
 
-# --- Operator directive 2026-08-21: branch data in EVERY coverage recipe (phaze-bk9el.21) -------
 #
 # Question as put to the operator during phaze-bk9el.21, 2026-08-21: what should this epic do about
 # branch coverage being off? Answer as given (selected option label, verbatim): "Enable it, gate the

@@ -52,9 +52,6 @@ async def _wait_for_stage(page: Any, document_title: str) -> None:
     )
 
 
-# --- Shell navigation, htmx swaps and history ---------------------------------------------
-
-
 async def test_rail_navigation_swaps_the_workspace_without_a_full_page_load(page: Any) -> None:
     """A rail click is an htmx swap, not a navigation: the document survives, the workspace changes.
 
@@ -108,9 +105,6 @@ async def test_focus_is_not_dropped_to_the_body_after_a_swap(page: Any) -> None:
 
     focused = await page.evaluate("document.activeElement === document.body ? 'body' : document.activeElement.tagName")
     assert focused != "body", "focus was dropped to <body> after the swap"
-
-
-# --- Responsive navigation (the phaze-tzy6s.13 contract, verified for real) ------------------
 
 
 async def test_phone_navigation_is_a_drawer_not_a_permanent_icon_rail(phone_page: Any) -> None:
@@ -214,9 +208,6 @@ async def test_the_page_never_scrolls_sideways_on_a_phone(phone_page: Any) -> No
         assert overflow <= 1, f"/s/{stage} overflows the viewport horizontally by {overflow}px"
 
 
-# --- Command palette, focus return -----------------------------------------------------------
-
-
 async def test_command_palette_opens_traps_and_returns_focus(page: Any) -> None:
     """⌘K opens the palette, Escape closes it, and focus returns to the trigger."""
     await _goto_shell(page)
@@ -232,9 +223,6 @@ async def test_command_palette_opens_traps_and_returns_focus(page: Any) -> None:
     assert returned == "cmdk-trigger", f"focus went to {returned!r} instead of back to the palette trigger"
 
 
-# --- Theme persistence -------------------------------------------------------------------------
-
-
 async def test_theme_choice_survives_a_reload(page: Any) -> None:
     """The theme toggle persists — a storage round-trip no server-side test can observe."""
     await _goto_shell(page)
@@ -248,9 +236,6 @@ async def test_theme_choice_survives_a_reload(page: Any) -> None:
     await page.wait_for_function("() => window.Alpine !== undefined")
     after = await page.evaluate("Alpine.store('theme').mode")
     assert after == chosen, f"theme did not persist: chose {chosen!r}, got {after!r} after reload"
-
-
-# --- Execute: the disabled state and the confirmation boundary ---------------------------------
 
 
 async def test_execute_explains_its_disabled_state_in_visible_text(page: Any) -> None:
@@ -308,9 +293,6 @@ async def test_execute_always_states_the_scope_it_will_not_dispatch(page: Any) -
     body = (await page.locator("#stage-workspace").inner_text()).lower()
     assert "not dispatched by this control" in body
     assert "execute approved runs approved filename and destination changes only." in body
-
-
-# --- Workspaces render their empty / populated states in a browser -----------------------------
 
 
 @pytest.mark.parametrize(

@@ -94,7 +94,7 @@ async def _compute_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
     out: dict[str, int] = {"metadata": 0, "analyze": 0}
     async with session.begin_nested():
         # Function-local import (see docstring): break the reenqueue<->pipeline import cycle and
-        # preserve the control-only boundary (tests/test_task_split.py).
+        # preserve the control-only boundary (tests/shared/core/test_task_split.py).
         from phaze.services.scheduling_ledger import get_ledger_rows  # noqa: PLC0415 -- deferred: keeps the reenqueue<->pipeline cycle broken
         from phaze.tasks.reenqueue import (  # noqa: PLC0415 -- deferred: reenqueue is control-only + imports FROM this module (cycle)
             _CLOUD_OWNED_FUNCTIONS,

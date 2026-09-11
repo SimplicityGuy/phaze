@@ -51,9 +51,7 @@ _VIDEO_TRACK = {"index": 0, "codec_name": "h264", "codec_type": "video", "dispos
 _COVER_ART = {"index": 1, "codec_name": "mjpeg", "codec_type": "video", "disposition": {"default": 0, "attached_pic": 1}}
 
 
-# ---------------------------------------------------------------------------
 # Fakes
-# ---------------------------------------------------------------------------
 
 
 class _FakeCommunicateProc:
@@ -204,11 +202,9 @@ def _ffmpeg_kwargs(make_fake_exec: Any) -> dict[str, Any]:
     return kwargs
 
 
-# ---------------------------------------------------------------------------
 # _select_track -- operator decision (phaze-3ea41), answered "Default/first track"
 # 2026-08-12: prefer disposition.default, fall back to first. Question as put, and the
 # label/description split it turns on, in services/video_audio.py's D-09 record 3.
-# ---------------------------------------------------------------------------
 
 
 def test_select_track_prefers_the_default_flagged_stream() -> None:
@@ -247,9 +243,7 @@ def test_select_track_single_stream_no_others() -> None:
     assert others == []
 
 
-# ---------------------------------------------------------------------------
 # probe_container_streams
-# ---------------------------------------------------------------------------
 
 
 async def test_probe_container_streams_returns_the_stream_list(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -295,9 +289,7 @@ async def test_probe_container_streams_missing_binary_raises_audio_extraction_er
         await probe_container_streams("/video/concert.mkv")
 
 
-# ---------------------------------------------------------------------------
 # extract_audio_track — track selection
-# ---------------------------------------------------------------------------
 
 
 async def test_extract_audio_track_no_streams_raises_no_audio_track_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -380,9 +372,7 @@ async def test_extract_audio_track_uses_scratch_dir_when_given(make_fake_exec: A
     assert scratch.is_dir()
 
 
-# ---------------------------------------------------------------------------
 # extract_audio_track — failure and cleanup
-# ---------------------------------------------------------------------------
 
 
 async def test_extract_audio_track_ffmpeg_nonzero_exit_raises_and_cleans_up(make_fake_exec: Any, tmp_path: Path) -> None:
@@ -541,9 +531,7 @@ async def _noop_heartbeat() -> None:
     return None
 
 
-# ---------------------------------------------------------------------------
 # extract_audio_track — no-progress-consumer optimization (review correction #8)
-# ---------------------------------------------------------------------------
 
 
 async def test_extract_audio_track_skips_progress_flag_and_stdout_pipe_without_heartbeat_cb(make_fake_exec: Any) -> None:
@@ -574,9 +562,7 @@ async def test_extract_audio_track_requests_progress_flag_and_pipe_with_heartbea
     assert kwargs["stdout"] is asyncio.subprocess.PIPE
 
 
-# ---------------------------------------------------------------------------
 # extract_audio_track — heartbeat throttling AND fire-and-forget (review correction #6)
-# ---------------------------------------------------------------------------
 
 
 async def test_extract_audio_track_invokes_heartbeat_cb_on_progress_lines(make_fake_exec: Any) -> None:
@@ -653,9 +639,7 @@ async def test_extract_audio_track_hung_heartbeat_does_not_stall_the_pump(make_f
     assert Path(result.analysis_path).exists()
 
 
-# ---------------------------------------------------------------------------
 # Real ffmpeg/ffprobe (skip-safe) — genuine argv/behavior confidence when available
-# ---------------------------------------------------------------------------
 
 _HAS_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
 
@@ -762,9 +746,7 @@ async def test_real_extract_audio_track_prefers_default_flagged_stream(tmp_path:
     assert selected["disposition"]["default"] == 1
 
 
-# ---------------------------------------------------------------------------
 # phaze-l832u: the already-plain-audio SKIP branch, and who owns which path
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -888,7 +870,6 @@ async def test_real_plain_audio_file_is_not_remuxed_and_survives(tmp_path: Path)
     assert list(tmp_path.iterdir()) == [src], "the skip branch left a scratch file behind"
 
 
-# ---------------------------------------------------------------------------
 # Real consumer verification (CLAUDE.md rule 3, phaze-bk9el.3's CCN cleanup)
 #
 # ``probe_container_streams``/ffprobe round-tripping the extracted artifact (the tests above)
@@ -898,7 +879,6 @@ async def test_real_plain_audio_file_is_not_remuxed_and_survives(tmp_path: Path)
 # behaviour-preserving (extract-method only), but the rule applies to any change here regardless,
 # so both of this module's return shapes -- the extraction branch AND the skip branch -- are
 # handed to the REAL essentia ``MetadataReader``, not merely re-probed with ffprobe.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg/ffprobe not installed on this runner")

@@ -76,9 +76,7 @@ NO_MATCH_FILENAME = "Zzyzx_Quorum-Live_At_Nonesuch_Festival-2019-06-01-WEB-MP3-G
 NOW = datetime(2026, 8, 3, 12, 0, tzinfo=UTC)
 
 
-# --------------------------------------------------------------------------------------------
 # Fixture-backed fakes. Neither ever touches the network.
-# --------------------------------------------------------------------------------------------
 
 
 def load_search(slug: str) -> list[TracklistSearchResult]:
@@ -157,9 +155,7 @@ def anchor_lookup(**kwargs: Any) -> tuple[FakeSearch, FakeRenderer]:
     return FakeSearch("time-warp-2024"), FakeRenderer(html=load_render(ANCHOR_ID), **kwargs)
 
 
-# --------------------------------------------------------------------------------------------
 # perform_lookup: the derive -> search -> score -> render -> parse sequence
-# --------------------------------------------------------------------------------------------
 
 
 class TestPerformLookupHappyPath:
@@ -367,9 +363,7 @@ class TestPerformLookupHonesty:
         assert producible - {LookupOutcome.FOUND, LookupOutcome.NOT_FOUND} == TRANSIENT_OUTCOMES
 
 
-# --------------------------------------------------------------------------------------------
 # Priority
-# --------------------------------------------------------------------------------------------
 
 
 class TestPriority:
@@ -415,9 +409,7 @@ class TestPriority:
         assert first == second
 
 
-# --------------------------------------------------------------------------------------------
 # Persistence and propagation (real Postgres)
-# --------------------------------------------------------------------------------------------
 
 
 def session_factory_for(session: AsyncSession) -> Callable[[], Any]:
@@ -668,9 +660,7 @@ class TestPropagation:
         assert set(done) == {first.id, second.id}
 
 
-# --------------------------------------------------------------------------------------------
 # The pass: queue, budget, resumption
-# --------------------------------------------------------------------------------------------
 
 
 class TestDrainPass:

@@ -168,9 +168,7 @@ _TEST_HEARTBEAT_INTERVAL_SEC = 0.01
 _WATCHDOG_THREAD_NAME = "phaze-decode-heartbeat"
 
 
-# ---------------------------------------------------------------------------
 # AC 1 / AC 5 -- the analysis above is pinned to the code, so it cannot rot silently
-# ---------------------------------------------------------------------------
 
 
 def _broad_catch_sites() -> Counter[str]:
@@ -280,9 +278,7 @@ def test_the_one_deliberately_narrow_catch_stays_narrow() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
 # AC 2 -- @324: a failing GATED attempt degrades to the ungated retry, for every type
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("make_exc", _TYPE_FACTORIES, ids=_TYPE_IDS)
@@ -330,9 +326,7 @@ def test_the_gated_rung_retries_ungated_for_every_exception_type(make_exc: Any) 
     assert beats, "a failed gated attempt must still beat before the ungated retry begins"
 
 
-# ---------------------------------------------------------------------------
 # AC 2 -- @329: a failing UNGATED attempt degrades to the per-window loop, for every type
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("make_exc", _TYPE_FACTORIES, ids=_TYPE_IDS)
@@ -367,9 +361,7 @@ def test_the_ungated_rung_falls_back_per_window_for_every_exception_type(make_ex
     assert skips == [], "nothing is skipped when the fallback can decode every window"
 
 
-# ---------------------------------------------------------------------------
 # AC 2 -- @345: one undecodable window does not take the chunk, for every type
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("make_exc", _TYPE_FACTORIES, ids=_TYPE_IDS)
@@ -404,9 +396,7 @@ def test_a_per_window_failure_is_isolated_for_every_exception_type(make_exc: Any
     assert skips == [(1, True)], "the undecodable window is skipped, with a live exception to log, whatever its type"
 
 
-# ---------------------------------------------------------------------------
 # AC 2 + AC 4 -- @300: the caller-supplied heartbeat callback, for every type
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("make_exc", _TYPE_FACTORIES, ids=_TYPE_IDS)
@@ -492,9 +482,7 @@ def test_the_heartbeat_thread_is_not_started_when_no_caller_wants_beats() -> Non
     assert _WATCHDOG_THREAD_NAME not in live_during_decode, f"a {_WATCHDOG_THREAD_NAME!r} thread ran for a decode that was never asked to beat"
 
 
-# ---------------------------------------------------------------------------
 # AC 2 -- @171 / @177: the two D-09 leak guards, for every type
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("make_exc", _TYPE_FACTORIES, ids=_TYPE_IDS)
@@ -577,9 +565,7 @@ def test_a_refusing_disconnect_never_escapes_the_teardown(make_exc: Any) -> None
     assert severed == ["good-sink"], f"a {exc!r} on one edge must not stop the sweep severing the others (D-09)"
 
 
-# ---------------------------------------------------------------------------
 # AC 2 -- @160: the ctypes trim, for every type
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("make_exc", _TYPE_FACTORIES, ids=_TYPE_IDS)

@@ -60,9 +60,7 @@ def _make_router_stub() -> MagicMock:
     return stub
 
 
-# --------------------------------------------------------------------------- #
 # Group 1: registration                                                       #
-# --------------------------------------------------------------------------- #
 
 
 def test_functions_list_includes_recover_orphaned_work() -> None:
@@ -152,9 +150,7 @@ def test_cron_does_not_regress_existing_jobs() -> None:
     assert refresh_tracklists in controller.settings["functions"], "refresh_tracklists must stay operator-enqueueable"
 
 
-# --------------------------------------------------------------------------- #
 # Group 2: startup behavior                                                   #
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.asyncio

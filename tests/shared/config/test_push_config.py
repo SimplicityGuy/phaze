@@ -51,9 +51,7 @@ def _agent_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PHAZE_QUEUE_URL", "postgresql://phaze:phaze@app-server.example:5432/phaze")
 
 
-# --------------------------------------------------------------------------- #
 # ControlSettings: push_max_attempts (D-12)
-# --------------------------------------------------------------------------- #
 def test_push_max_attempts_default() -> None:
     assert ControlSettings().push_max_attempts == 3
 
@@ -73,9 +71,7 @@ def test_push_max_attempts_rejects_too_large() -> None:
         ControlSettings(push_max_attempts=20)
 
 
-# --------------------------------------------------------------------------- #
 # AgentSettings: push/SSH/scratch knobs
-# --------------------------------------------------------------------------- #
 def test_agent_push_knob_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     _agent_env(monkeypatch)
     s = AgentSettings()
@@ -115,9 +111,7 @@ def test_agent_push_connect_timeout_rejects_too_large(monkeypatch: pytest.Monkey
         AgentSettings(push_connect_timeout_sec=3600)
 
 
-# --------------------------------------------------------------------------- #
 # AgentSettings: _FILE secret resolution for push_ssh_key / push_known_hosts
-# --------------------------------------------------------------------------- #
 def test_push_ssh_key_and_known_hosts_in_secret_file_fields() -> None:
     assert "push_ssh_key" in AgentSettings.SECRET_FILE_FIELDS
     assert "push_known_hosts" in AgentSettings.SECRET_FILE_FIELDS

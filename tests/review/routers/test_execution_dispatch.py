@@ -113,9 +113,7 @@ async def smoke(
         yield ac, mock_router, redis_client
 
 
-# ---------------------------------------------------------------------------
 # Seed helpers
-# ---------------------------------------------------------------------------
 
 
 async def _seed_agent(session: AsyncSession, *, agent_id: str, name: str | None = None, revoked: bool = False) -> Agent:
@@ -169,9 +167,7 @@ async def _seed_approved_proposal(
     return proposal
 
 
-# ---------------------------------------------------------------------------
 # 28-V-04: multi-agent dispatch enqueues one sub-job per (agent, chunk)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -220,9 +216,7 @@ async def test_multi_agent_dispatch_enqueues_per_chunk(
     assert sorted(by_agent["agent-c"]) == [0]
 
 
-# ---------------------------------------------------------------------------
 # 28-V-05: dispatch_summary visible in exec:{batch_id} Redis hash
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -287,9 +281,7 @@ async def test_dispatch_summary_in_redis_hash(
     assert 86000 < ttl <= 86400, f"expected ~24h TTL, got {ttl}"
 
 
-# ---------------------------------------------------------------------------
 # Dispatch INFO log line (D-11)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -319,9 +311,7 @@ async def test_dispatch_logs_info_line(
     assert "subjobs_expected=1" in messages
 
 
-# ---------------------------------------------------------------------------
 # Revoked-agents banner surfaces when skipped_revoked > 0
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -367,9 +357,7 @@ async def test_empty_dispatch_card_has_no_sse_connect(
     mock_router.enqueue_for_agent.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
 # phaze-fa2p: single-dispatch guard -- a second POST while a batch is active is refused
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -413,9 +401,7 @@ async def test_second_dispatch_rejected_while_active(
 # both branches of ``_reattach_active_progress``) in test_execution_helpers.py.
 
 
-# ---------------------------------------------------------------------------
 # phaze-1h6j: an agent whose chunk failed to enqueue reaches a terminal pill
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -461,9 +447,7 @@ async def test_undispatched_agent_reaches_terminal_pill(
     assert "ERRORS" in table.text, table.text
 
 
-# ---------------------------------------------------------------------------
 # phaze-pyv3: the sort-persist guard never resurrects a reaped exec hash
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -566,9 +550,7 @@ async def test_collision_short_circuits_dispatch(
     mock_router.enqueue_for_agent.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
 # SSE generator behavior
-# ---------------------------------------------------------------------------
 
 
 async def _consume_sse(generator, max_events: int) -> list[dict[str, str]]:
@@ -869,9 +851,7 @@ async def test_sse_closes_on_complete_with_errors(
     assert len(events) < 20, "SSE generator did not close after terminal 'complete_with_errors' status"
 
 
-# ---------------------------------------------------------------------------
 # Internal stub helpers
-# ---------------------------------------------------------------------------
 
 
 def _build_app_stub(redis_client: redis_async.Redis) -> object:

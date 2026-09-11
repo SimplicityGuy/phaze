@@ -95,9 +95,6 @@ async def _settle(page: Any, predicate: Any, *, timeout_ms: int = 2000) -> dict[
     return active
 
 
-# --- Step 1: keyboard only, no mouse -----------------------------------------------------------
-
-
 @pytest.mark.parametrize(("viewport", "theme"), _cells())
 async def test_the_first_tab_stops_are_reachable_and_visibly_focused(viewport: str, theme: str, page_at: Any) -> None:
     """ADR-0009 step 1: Tab from page load reaches navigation, and every stop shows a focus ring.
@@ -158,9 +155,6 @@ async def test_the_closed_drawer_contributes_no_tab_stops_below_lg(theme: str, p
         assert state["focusable"] == 0, f"tablet/{theme}: {state['focusable']} rail destinations remain focusable while the drawer is closed"
 
 
-# --- Step 2: the drawer -------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("viewport", [v for v in VIEWPORTS if _below_lg(v)])
 @pytest.mark.parametrize("theme", THEMES)
 async def test_the_drawer_opens_from_the_keyboard_traps_focus_and_returns_it(viewport: str, theme: str, page_at: Any) -> None:
@@ -199,9 +193,6 @@ async def test_the_drawer_opens_from_the_keyboard_traps_focus_and_returns_it(vie
         assert await trigger.get_attribute("aria-expanded") == "false"
         returned = await _settle(page, lambda a: a["id"] == "rail-drawer-trigger")
         assert returned["id"] == "rail-drawer-trigger", f"{viewport}/{theme}: Escape sent focus to {returned} instead of back to the trigger"
-
-
-# --- Step 3: the command palette ----------------------------------------------------------------
 
 
 @pytest.mark.parametrize(("viewport", "theme"), _cells())
@@ -254,9 +245,6 @@ async def test_the_command_palette_opens_on_the_shortcut_and_returns_focus(viewp
         print(f"[palette] {viewport}/{theme}: opened with {opened_with}")
 
 
-# --- Step 4: Execute ----------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(("viewport", "theme"), _cells())
 async def test_the_disabled_execute_state_is_announced_not_tooltipped(viewport: str, theme: str, page_at: Any, seed: Any) -> None:
     """ADR-0009 step 4 and §Controls: the reason is body text wired via aria-describedby, not a title.
@@ -300,9 +288,6 @@ async def test_the_disabled_execute_state_is_announced_not_tooltipped(viewport: 
             assert control["describedText"], f"{viewport}/{theme}: disabled control {control['label']!r} has no aria-describedby text"
 
 
-# --- Step 5: tables scroll inside themselves ----------------------------------------------------
-
-
 @pytest.mark.parametrize("viewport", list(VIEWPORTS))
 async def test_a_wide_table_scrolls_inside_its_own_container(viewport: str, page_at: Any, browser_dsn: str) -> None:
     """ADR-0009 step 5: the table's own container is what moves.
@@ -342,9 +327,6 @@ async def test_a_wide_table_scrolls_inside_its_own_container(viewport: str, page
             print(f"[tables] {viewport}: container scrollable by {scrolled['scrollable']}px, reached {scrolled['reached']}px")
     finally:
         await _seed.reset_dsn(browser_dsn)
-
-
-# --- Step 6: focus survives an htmx swap --------------------------------------------------------
 
 
 @pytest.mark.parametrize(("viewport", "theme"), _cells())
@@ -461,9 +443,6 @@ async def test_the_drawer_restores_focus_on_every_navigation_and_under_reduced_m
                 f"{active['id'] or active['name']!r}, outside the swapped-in workspace"
             )
         print(f"[drawer-focus] {viewport}/{motion}: {', '.join(landings)}")
-
-
-# --- The screen-reader surrogate: the platform accessibility tree -------------------------------
 
 
 @pytest.mark.parametrize(("viewport", "theme"), _cells())

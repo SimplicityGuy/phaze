@@ -21,9 +21,6 @@ from tests.browser.helpers import click_swap, open_shell, settled
 pytestmark = pytest.mark.browser
 
 
-# --- Scan management ------------------------------------------------------------------------
-
-
 async def test_a_failed_scan_shows_its_error_message_next_to_the_row(page: Any, seed: Any) -> None:
     """The ERROR state of the scan table: a failed batch renders its reason, not just "failed".
 
@@ -73,9 +70,6 @@ async def test_deleting_a_terminal_scan_removes_its_row_without_reloading(page: 
     assert await page.evaluate("window.__documentAlive === true"), "deleting a scan reloaded the document"
     assert await page.locator("#recent-scans").count() == 1, "the delete response nested a second table instead of replacing the first"
     assert await page.locator(f"#recent-scans [hx-delete*='{keep.id}']").count() == 1, "the surviving scan lost its row in the re-render"
-
-
-# --- Duplicate resolution -------------------------------------------------------------------
 
 
 async def test_resolving_a_duplicate_group_oob_swaps_its_undo_toast_into_the_shell(page: Any, seed: Any) -> None:

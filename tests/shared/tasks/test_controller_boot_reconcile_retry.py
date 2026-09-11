@@ -141,12 +141,10 @@ async def test_a_non_retryable_exception_stops_immediately_without_spending_the_
     assert "failed on final attempt" not in failures[0].getMessage(), "distinct log shape from the retry-exhausted case"
 
 
-# ---------------------------------------------------------------------------
 # startup()'s consumption of the retry helper's RESULT -- the recovery success log (line 254 of
 # controller.py), which none of the other test_controller_startup_*.py modules exercise: their
 # stubbed ``ctx["async_session"]()`` cannot support ``async with``, so ``_do_backfill`` always
 # fails non-retryably there and ``recover_orphaned_work`` is never mocked to actually succeed.
-# ---------------------------------------------------------------------------
 
 
 def _stub_controller_for_boot_log(monkeypatch: pytest.MonkeyPatch) -> None:

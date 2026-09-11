@@ -20,9 +20,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# === Layer 2: D-02 equivalence invariant =================================================
-
-
 @pytest.mark.asyncio
 async def test_in_flight_equivalence(session: AsyncSession) -> None:
     """D-02: sum(in_flight_count(b)) == the derived in-flight window for the single-backend case.

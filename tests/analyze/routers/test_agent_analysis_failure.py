@@ -100,9 +100,7 @@ async def _no_mixed_row_exists(session: AsyncSession) -> bool:
     return mixed == 0
 
 
-# ---------------------------------------------------------------------------
 # (a) failure with NO prior analysis row inserts the marker (RESEARCH OQ2)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -154,9 +152,7 @@ async def test_report_failed_error_message_bodyless_error(seed_test_agent: tuple
     assert row.analysis_completed_at is None
 
 
-# ---------------------------------------------------------------------------
 # (b) failure on a previously-COMPLETED file is a guarded no-op (phaze-ts1d)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -280,9 +276,7 @@ async def test_report_failed_repeat_bumps_updated_at_not_created_at(seed_test_ag
     assert row.updated_at >= before_repeat, "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
 
 
-# ---------------------------------------------------------------------------
 # (c) a success after a failure clears the marker and stamps completed_at (D-13)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

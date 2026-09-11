@@ -89,9 +89,7 @@ async def _seed_across_a_page_boundary(
     await session.commit()
 
 
-# ---------------------------------------------------------------------------
 # The contract object itself -- wiring that must fail at import, not on a click
-# ---------------------------------------------------------------------------
 
 
 def test_propose_contract_targets_the_real_list_container() -> None:
@@ -152,9 +150,7 @@ def test_unknown_sort_degrades_and_never_reaches_a_column() -> None:
         assert state.order_by(), "the resolved state must still produce a usable ORDER BY"
 
 
-# ---------------------------------------------------------------------------
 # The seam: one URL spelling, and view state that survives a sort
-# ---------------------------------------------------------------------------
 
 
 def test_sort_view_state_carries_filters_but_not_page_sort_or_order() -> None:
@@ -218,9 +214,7 @@ def test_clicking_the_active_column_toggles_and_another_column_starts_ascending(
     assert parse_qs(urlparse(descending.url_for("File")).query)["order"] == [ASCENDING]
 
 
-# ---------------------------------------------------------------------------
 # The rendered workspace
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

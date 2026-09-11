@@ -35,9 +35,7 @@ from phaze.tasks._shared.queue_defaults import (
 )
 
 
-# ----------------------------------------------------------------------
 # Behaviour 1: hook applies project defaults to a Job at SAQ defaults
-# ----------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -63,9 +61,7 @@ async def test_before_enqueue_applies_project_defaults(monkeypatch: pytest.Monke
     assert job.ttl == 3600, f"ttl not applied: got {job.ttl}"
 
 
-# ----------------------------------------------------------------------
 # Behaviour 2: hook preserves caller-supplied overrides
-# ----------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -91,14 +87,12 @@ async def test_before_enqueue_preserves_explicit_overrides(monkeypatch: pytest.M
     assert job.ttl == 7200, "explicit ttl was clobbered"
 
 
-# ----------------------------------------------------------------------
 # Behaviour 2b (phaze-plpnf, re-shaped by phaze-w55w1): per-function job policy -- process_file
 # can never land on the generic role default (600s/4 retries), regardless of producer or replay
 # path. Its policy is now `timeout=0` (SAQ's "disabled") plus a progress heartbeat, so the
 # timeout half is enforced as a PIN rather than a floor: 0 is below every value a floor could
 # raise from, and a floor would silently leave a replayed job on the 600s role default -- the
 # very defect this registry exists to prevent.
-# ----------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -191,9 +185,7 @@ async def test_policy_pin_does_not_apply_to_other_functions(monkeypatch: pytest.
     assert job.retries == 4
 
 
-# ----------------------------------------------------------------------
 # Behaviour 3: SAQ Worker can be constructed from the controller settings dict.
-# ----------------------------------------------------------------------
 
 
 def test_controller_settings_construct_real_worker(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -223,9 +215,7 @@ def test_controller_settings_construct_real_worker(monkeypatch: pytest.MonkeyPat
     assert worker is not None
 
 
-# ----------------------------------------------------------------------
 # Behaviour 4: SAQ Worker can be constructed from the agent_worker settings dict.
-# ----------------------------------------------------------------------
 
 
 def _record(sink: list[str], name: str) -> Any:
