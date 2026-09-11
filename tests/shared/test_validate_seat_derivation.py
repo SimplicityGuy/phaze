@@ -34,6 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 JUSTFILE_PATH = REPO_ROOT / "justfile"
 DERIVE_SCRIPT = REPO_ROOT / "scripts" / "derive-validate-seat-name.sh"
 PROVISION_SCRIPT = REPO_ROOT / "scripts" / "provision-test-seat.sh"
+PARALLEL_RUNNER = REPO_ROOT / "scripts" / "parallel_test_runner.py"
 # scripts/derive-seat-name.sh's validation rule; the derived raw name must satisfy it or
 # `test-db-for`/`test-validate` die at CREATE DATABASE with a raw Postgres parse error.
 SEAT_NAME_RULE = re.compile(r"^[a-z][a-z0-9_-]*$")
@@ -81,24 +82,30 @@ def test_test_validate_derives_its_seat_through_the_shared_provisioning_script()
     script, or the gate's seat and the operator's seat for one worktree silently diverge.
     """
     validate = _recipe_body("test-validate")
+    serial = _recipe_body("test-validate-serial")
+    runner = PARALLEL_RUNNER.read_text(encoding="utf-8")
 
-    assert "scripts/derive-validate-seat-name.sh" in validate
-    assert "scripts/provision-test-seat.sh" in validate
+    assert "just test-cov-parallel" in validate
+    assert "scripts/derive-validate-seat-name.sh" in runner
+    assert '"test-db-for"' in runner
+    assert "scripts/derive-validate-seat-name.sh" in serial
+    assert "scripts/provision-test-seat.sh" in serial
     assert "scripts/provision-test-seat.sh" in _recipe_body("test-db-for name")
 
 
 def test_test_validate_respects_an_exported_seat_verbatim() -> None:
     """Criterion 3: CI exports its own DSN against a 5432 service container.
 
-    Re-pointing that at the local 5433 harness would break CI outright, so provisioning must stay
-    inside the `TEST_DATABASE_URL` guard rather than running unconditionally.
+    Re-pointing that at the local 5433 harness would break CI outright, so the exported-seat branch
+    must select the retained serial primitive before the local parallel branch.
     """
     body = _recipe_body("test-validate")
-    guard = 'if [ -z "${TEST_DATABASE_URL:-}" ]; then'
+    guard = 'if [ -n "${TEST_DATABASE_URL:-}" ]; then'
 
     assert guard in body
-    provisioning = body.index("scripts/provision-test-seat.sh")
-    assert body.index(guard) < provisioning < body.index("fi\n")
+    assert "SERIAL FALLBACK" in body
+    assert "just test-cov" in body
+    assert body.index(guard) < body.index("just test-cov") < body.index("elif")
 
 
 def test_the_provisioning_script_emits_only_exports_on_stdout() -> None:

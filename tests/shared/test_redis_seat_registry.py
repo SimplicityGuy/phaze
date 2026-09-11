@@ -1523,9 +1523,14 @@ def test_test_validate_provisions_through_the_same_script_as_test_db_for() -> No
     exactly how the two would silently drift apart.
     """
     validate = _recipe_commands("test-validate:")
+    serial = _recipe_commands("test-validate-serial:")
+    runner = (Path(__file__).resolve().parents[2] / "scripts" / "parallel_test_runner.py").read_text(encoding="utf-8")
 
-    assert "scripts/provision-test-seat.sh" in validate
-    assert "scripts/derive-validate-seat-name.sh" in validate
+    assert "just test-cov-parallel" in validate
+    assert "scripts/provision-test-seat.sh" in serial
+    assert "scripts/derive-validate-seat-name.sh" in serial
+    assert "scripts/derive-validate-seat-name.sh" in runner
+    assert '"test-db-for"' in runner
     assert "/phaze_test" not in validate, "the shared-seat fallback is the defect; it must not come back"
 
 
